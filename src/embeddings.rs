@@ -199,42 +199,28 @@ fn get_onnx_runtime_path() -> Option<PathBuf> {
 // SESSION POOL
 // =============================================================================
 
-/// Number of parallel ONNX sessions (each uses THREADS_PER_SESSION CPU threads)
-const NUM_SESSIONS: usize = 8;
+/// Max parallel ONNX sessions for batch embedding (each uses THREADS_PER_SESSION CPU threads).
+/// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
+const MAX_SESSIONS: usize = 8;
 const THREADS_PER_SESSION: usize = 6;
 
 struct SessionPool {
-    sessions: Vec<Mutex<Session>>,
+    sessions: parking_lot::RwLock<Vec<Arc<Mutex<Session>>>>,
+    model_path: PathBuf,
     tokenizer: tokenizers::Tokenizer,
 }
 
 impl SessionPool {
+    /// Create pool with a single session (fast startup for search).
+    /// Additional sessions are added lazily via `ensure_sessions()`.
     fn new(config: &EmbeddingConfig) -> Result<Self> {
         use ort::session::builder::GraphOptimizationLevel;
 
-        eprintln!("  Loading {NUM_SESSIONS} ONNX sessions ({THREADS_PER_SESSION} threads each)...");
-        // Load sessions in parallel for faster startup
-        let model_path = &config.model_path;
-        let sessions: Vec<_> = std::thread::scope(|s| {
-            let handles: Vec<_> = (0..NUM_SESSIONS)
-                .map(|_| {
-                    s.spawn(|| {
-                        Session::builder()
-                            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
-                            .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
-                            .and_then(|b| b.commit_from_file(model_path))
-                    })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
-        let sessions: Vec<Mutex<Session>> = sessions
-            .into_iter()
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?
-            .into_iter()
-            .map(Mutex::new)
-            .collect();
+        let session = Session::builder()
+            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+            .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
+            .and_then(|b| b.commit_from_file(&config.model_path))
+            .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?;
 
         let mut tokenizer = tokenizers::Tokenizer::from_file(&config.tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer from {:?}: {e}", config.tokenizer_path))?;
@@ -250,19 +236,63 @@ impl SessionPool {
             ..Default::default()
         })).map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
 
-        Ok(Self { sessions, tokenizer })
+        Ok(Self {
+            sessions: parking_lot::RwLock::new(vec![Arc::new(Mutex::new(session))]),
+            model_path: config.model_path.clone(),
+            tokenizer,
+        })
     }
 
-    /// Get the first available (unlocked) session, or block on session 0
-    fn acquire_session(&self) -> parking_lot::MutexGuard<Session> {
+    /// Grow pool to `count` sessions (no-op if already large enough).
+    /// Called before parallel batch encoding.
+    fn ensure_sessions(&self, count: usize) -> Result<()> {
+        use ort::session::builder::GraphOptimizationLevel;
+
+        let current = self.sessions.read().len();
+        let needed = count.min(MAX_SESSIONS);
+        if current >= needed {
+            return Ok(());
+        }
+
+        let to_add = needed - current;
+        eprintln!("  Scaling to {needed} ONNX sessions ({THREADS_PER_SESSION} threads each)...");
+
+        let model_path = &self.model_path;
+        let new_sessions: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..to_add)
+                .map(|_| {
+                    s.spawn(|| {
+                        Session::builder()
+                            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                            .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
+                            .and_then(|b| b.commit_from_file(model_path))
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        let mut sessions = self.sessions.write();
+        for s in new_sessions {
+            sessions.push(Arc::new(Mutex::new(
+                s.with_context(|| format!("Failed to load ONNX model from {:?}", self.model_path))?,
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Get the first available (unlocked) session, or block on session 0.
+    fn acquire_session(&self) -> Arc<Mutex<Session>> {
+        let sessions = self.sessions.read();
         // Try each session without blocking
-        for session in &self.sessions {
-            if let Some(guard) = session.try_lock() {
-                return guard;
+        for session in sessions.iter() {
+            if session.try_lock().is_some() {
+                return Arc::clone(session);
             }
         }
-        // All busy — block on the first one
-        self.sessions[0].lock()
+        // All busy — return first (caller will block on lock)
+        Arc::clone(&sessions[0])
     }
 }
 
@@ -301,7 +331,9 @@ impl Embedder {
             }
 
             let models_dir = download_models()?;
-            config.model_path = models_dir.join("model.onnx");
+            let model_file = EmbeddingConfig::find_model(&models_dir)
+                .unwrap_or_else(|| "model_quint8_avx2.onnx".to_string());
+            config.model_path = models_dir.join(model_file);
             config.tokenizer_path = models_dir.join("tokenizer.json");
         }
 
@@ -343,10 +375,11 @@ impl Embedder {
 
         let pool = self.ensure_pool()?;
 
-        // For large inputs, split across sessions in parallel using rayon
+        // For large inputs, scale up sessions and split in parallel
         if texts.len() > Self::MAX_BATCH {
             use rayon::prelude::*;
             let sub_batches: Vec<&[&str]> = texts.chunks(Self::MAX_BATCH).collect();
+            pool.ensure_sessions(sub_batches.len())?;
             let results: Vec<Result<Vec<Vec<f32>>>> = sub_batches
                 .par_iter()
                 .map(|batch| self.encode_single_batch(batch, pool))
@@ -404,7 +437,8 @@ impl Embedder {
         let token_types_val = TensorRef::from_array_view((shape, token_type_data.as_slice()))?;
 
         // Acquire a session from the pool and run inference
-        let mut session = pool.acquire_session();
+        let session_arc = pool.acquire_session();
+        let mut session = session_arc.lock();
 
         let outputs = session.run(ort::inputs![
             input_ids_val, attention_val, token_types_val
