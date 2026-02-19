@@ -145,6 +145,33 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
     })
 }
 
+/// Scan a directory for ALL markdown files (ignoring .gitignore).
+///
+/// Used by graph building to capture all tasks regardless of git status.
+pub fn scan_directory_all(root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    let walker = WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .build();
+
+    for entry in walker.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "md" {
+                    paths.push(path.to_path_buf());
+                }
+            }
+        }
+    }
+
+    paths
+}
+
 /// Scan a directory for markdown files, respecting .gitignore
 pub fn scan_directory(root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();

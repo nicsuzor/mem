@@ -84,9 +84,8 @@ MCP Client ◄──stdio──► pkb-search
 | --------------------------- | ----------- | ------------------------------------ |
 | `ACA_DATA`                 | `~/brain`   | PKB root directory                   |
 | `RUST_LOG`                 | `info`      | Log level filter                     |
-| `SHODH_OFFLINE`            | `false`     | Disable model/runtime auto-download  |
-| `SHODH_MODEL_PATH`         | (auto)      | Override model directory path        |
-| `SHODH_USE_QUANTIZED_MODEL` | `true`      | Use quantized ONNX model             |
+| `AOPS_OFFLINE`             | `false`     | Disable model/runtime auto-download  |
+| `AOPS_MODEL_PATH`          | (auto)      | Override model directory path        |
 | `ORT_DYLIB_PATH`           | (auto)      | Override ONNX Runtime library path   |
 
 ## Requirements

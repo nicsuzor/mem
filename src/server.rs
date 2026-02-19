@@ -5,8 +5,13 @@
 
 mod distance;
 mod embeddings;
+mod graph;
+mod graph_store;
 mod mcp_server;
+mod metrics;
 mod pkb;
+mod task_crud;
+mod task_index;
 mod vectordb;
 
 use anyhow::Result;
@@ -45,14 +50,14 @@ fn default_db_path() -> String {
     std::env::var("ACA_DATA")
         .map(|d| {
             PathBuf::from(d)
-                .join("shodh_memory_data/pkb_vectors.bin")
+                .join("aops_data/pkb_vectors.bin")
                 .to_string_lossy()
                 .to_string()
         })
         .unwrap_or_else(|_| {
             dirs::home_dir()
                 .map(|h| {
-                    h.join("brain/shodh_memory_data/pkb_vectors.bin")
+                    h.join("brain/aops_data/pkb_vectors.bin")
                         .to_string_lossy()
                         .to_string()
                 })
@@ -169,6 +174,17 @@ async fn main() -> Result<()> {
         store_read.save(&db_path)?;
     }
 
+    // Build graph store
+    eprintln!("   Building knowledge graph...");
+    let graph = Arc::new(RwLock::new(
+        graph_store::GraphStore::build_from_directory(&pkb_root),
+    ));
+    eprintln!(
+        "   {} nodes, {} edges",
+        graph.read().node_count(),
+        graph.read().edge_count()
+    );
+
     // Create and start MCP server
     eprintln!("   Starting MCP server on stdio...");
     let server = mcp_server::PkbSearchServer::new(
@@ -176,6 +192,7 @@ async fn main() -> Result<()> {
         embedder.clone(),
         pkb_root.clone(),
         db_path.clone(),
+        graph.clone(),
     );
 
     let service = server.serve(rmcp::transport::stdio()).await?;

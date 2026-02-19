@@ -1,0 +1,854 @@
+//! Graph store — builds, queries, and exports knowledge graphs.
+//!
+//! [`GraphStore`] holds all nodes, edges, and pre-computed task indices.
+//! Build from `PkbDocument`s via [`GraphStore::build`], then query with
+//! the various accessor methods.
+
+use crate::graph::{self, deduplicate_vec, Edge, EdgeType, GraphNode};
+use crate::pkb::PkbDocument;
+use anyhow::Result;
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
+
+// ===========================================================================
+// Output graph (for JSON serialization)
+// ===========================================================================
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct OutputGraph {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<Edge>,
+}
+
+// ===========================================================================
+// GraphStore
+// ===========================================================================
+
+/// Knowledge graph over a PKB.
+///
+/// Holds all nodes and edges with pre-computed lookup indices,
+/// task lists (ready/blocked), and per-node downstream metrics.
+pub struct GraphStore {
+    nodes: HashMap<String, GraphNode>,
+    edges: Vec<Edge>,
+    ready: Vec<String>,
+    blocked: Vec<String>,
+    roots: Vec<String>,
+    by_project: HashMap<String, Vec<String>>,
+}
+
+impl GraphStore {
+    /// Build a complete graph from parsed PKB documents.
+    ///
+    /// Full pipeline:
+    /// 1. Extract `GraphNode`s from `PkbDocument`s
+    /// 2. Build lookup indices (permalink -> path, path -> id)
+    /// 3. Resolve links and frontmatter refs into edges
+    /// 4. Compute inverse relationships (depends_on -> blocks, etc.)
+    /// 5. Compute downstream_weight + stakeholder_exposure (BFS)
+    /// 6. Classify ready/blocked tasks
+    pub fn build(docs: &[PkbDocument]) -> Self {
+        // 1. Extract graph nodes
+        let mut nodes: Vec<GraphNode> = docs
+            .par_iter()
+            .map(GraphNode::from_pkb_document)
+            .collect();
+
+        // 2. Build lookup maps
+        let mut id_map: HashMap<String, String> = HashMap::new(); // permalink -> abs_path
+        let mut path_to_id: HashMap<String, String> = HashMap::new(); // abs_path -> id
+
+        for n in &nodes {
+            let abs_path = n
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| n.path.clone())
+                .to_string_lossy()
+                .to_string();
+            path_to_id.insert(abs_path.clone(), n.id.clone());
+            for key in &n.permalinks {
+                id_map.insert(key.clone(), abs_path.clone());
+            }
+        }
+
+        // 3. Build edges from links and frontmatter refs
+        let edges: Vec<Edge> = nodes
+            .par_iter()
+            .flat_map(|n| build_node_edges(n, &id_map, &path_to_id))
+            .collect();
+
+        // Deduplicate edges by (source, target, type)
+        let mut seen: HashSet<(String, String, String)> = HashSet::new();
+        let edges: Vec<Edge> = edges
+            .into_iter()
+            .filter(|e| {
+                let key = (
+                    e.source.clone(),
+                    e.target.clone(),
+                    format!("{:?}", e.edge_type),
+                );
+                seen.insert(key)
+            })
+            .collect();
+
+        // 4. Compute inverse relationships on nodes
+        compute_inverses(&mut nodes, &edges);
+
+        // 5. Compute downstream metrics (BFS through blocks/soft_blocks)
+        compute_downstream_metrics(&mut nodes);
+
+        // 6. Build node map and classify tasks
+        let node_map: HashMap<String, GraphNode> =
+            nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
+        let (ready, blocked, roots, by_project) = classify_tasks(&node_map);
+
+        GraphStore {
+            nodes: node_map,
+            edges,
+            ready,
+            blocked,
+            roots,
+            by_project,
+        }
+    }
+
+    /// Build from a directory: scan, parse, build graph.
+    pub fn build_from_directory(root: &Path) -> Self {
+        let files = crate::pkb::scan_directory_all(root);
+        let docs: Vec<PkbDocument> = files
+            .par_iter()
+            .filter_map(|p| crate::pkb::parse_file(p))
+            .collect();
+        Self::build(&docs)
+    }
+
+    // -----------------------------------------------------------------------
+    // Query API
+    // -----------------------------------------------------------------------
+
+    pub fn get_node(&self, id: &str) -> Option<&GraphNode> {
+        self.nodes.get(id)
+    }
+
+    pub fn nodes(&self) -> impl Iterator<Item = &GraphNode> {
+        self.nodes.values()
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn edges(&self) -> &[Edge] {
+        &self.edges
+    }
+
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
+
+    pub fn get_edges_for(&self, id: &str) -> Vec<&Edge> {
+        self.edges
+            .iter()
+            .filter(|e| e.source == id || e.target == id)
+            .collect()
+    }
+
+    pub fn get_outgoing_edges(&self, id: &str) -> Vec<&Edge> {
+        self.edges.iter().filter(|e| e.source == id).collect()
+    }
+
+    pub fn get_incoming_edges(&self, id: &str) -> Vec<&Edge> {
+        self.edges.iter().filter(|e| e.target == id).collect()
+    }
+
+    pub fn get_neighbors(&self, id: &str) -> Vec<&GraphNode> {
+        let mut neighbor_ids: HashSet<&str> = HashSet::new();
+        for e in &self.edges {
+            if e.source == id {
+                neighbor_ids.insert(&e.target);
+            } else if e.target == id {
+                neighbor_ids.insert(&e.source);
+            }
+        }
+        neighbor_ids
+            .iter()
+            .filter_map(|nid| self.nodes.get(*nid))
+            .collect()
+    }
+
+    pub fn ready_tasks(&self) -> Vec<&GraphNode> {
+        self.ready
+            .iter()
+            .filter_map(|id| self.nodes.get(id))
+            .collect()
+    }
+
+    pub fn blocked_tasks(&self) -> Vec<&GraphNode> {
+        self.blocked
+            .iter()
+            .filter_map(|id| self.nodes.get(id))
+            .collect()
+    }
+
+    pub fn all_tasks(&self) -> Vec<&GraphNode> {
+        let mut tasks: Vec<&GraphNode> = self
+            .nodes
+            .values()
+            .filter(|n| n.task_id.is_some())
+            .collect();
+        tasks.sort_by(|a, b| {
+            a.priority
+                .unwrap_or(2)
+                .cmp(&b.priority.unwrap_or(2))
+                .then(
+                    b.downstream_weight
+                        .partial_cmp(&a.downstream_weight)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(a.order.cmp(&b.order))
+                .then(a.label.cmp(&b.label))
+        });
+        tasks
+    }
+
+    pub fn roots(&self) -> &[String] {
+        &self.roots
+    }
+
+    pub fn by_project(&self) -> &HashMap<String, Vec<String>> {
+        &self.by_project
+    }
+
+    /// Get the dependency tree for a node (BFS through depends_on).
+    /// Returns (node_id, depth) pairs.
+    pub fn dependency_tree(&self, id: &str) -> Vec<(String, usize)> {
+        let mut result = Vec::new();
+        let mut visited = HashSet::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        queue.push_back((id.to_string(), 0));
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if !visited.insert(current_id.clone()) {
+                continue;
+            }
+            if depth > 0 {
+                result.push((current_id.clone(), depth));
+            }
+            if let Some(node) = self.nodes.get(&current_id) {
+                for dep_id in &node.depends_on {
+                    if !visited.contains(dep_id) {
+                        queue.push_back((dep_id.clone(), depth + 1));
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Get what this node blocks (BFS through blocks).
+    /// Returns (node_id, depth) pairs.
+    pub fn blocks_tree(&self, id: &str) -> Vec<(String, usize)> {
+        let mut result = Vec::new();
+        let mut visited = HashSet::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        queue.push_back((id.to_string(), 0));
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if !visited.insert(current_id.clone()) {
+                continue;
+            }
+            if depth > 0 {
+                result.push((current_id.clone(), depth));
+            }
+            if let Some(node) = self.nodes.get(&current_id) {
+                for blocked_id in &node.blocks {
+                    if !visited.contains(blocked_id) {
+                        queue.push_back((blocked_id.clone(), depth + 1));
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    // -----------------------------------------------------------------------
+    // Output formats
+    // -----------------------------------------------------------------------
+
+    /// Build an `OutputGraph` suitable for JSON/GraphML/DOT export.
+    pub fn to_output_graph(&self) -> OutputGraph {
+        let mut nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
+        nodes.sort_by(|a, b| a.label.cmp(&b.label));
+        OutputGraph {
+            nodes,
+            edges: self.edges.clone(),
+        }
+    }
+
+    pub fn output_json(&self) -> Result<String> {
+        let graph = self.to_output_graph();
+        Ok(serde_json::to_string_pretty(&graph)?)
+    }
+
+    pub fn output_graphml(&self) -> String {
+        let graph = self.to_output_graph();
+        let mut xml = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+  <key id="d0" for="node" attr.name="label" attr.type="string"/>
+  <key id="d1" for="node" attr.name="path" attr.type="string"/>
+  <key id="d2" for="node" attr.name="tags" attr.type="string"/>
+  <key id="d3" for="node" attr.name="type" attr.type="string"/>
+  <key id="d4" for="node" attr.name="status" attr.type="string"/>
+  <key id="d5" for="node" attr.name="priority" attr.type="int"/>
+  <key id="d6" for="node" attr.name="project" attr.type="string"/>
+  <key id="d7" for="node" attr.name="assignee" attr.type="string"/>
+  <key id="d8" for="node" attr.name="complexity" attr.type="string"/>
+  <key id="d9" for="node" attr.name="depends_on" attr.type="string"/>
+  <key id="d10" for="node" attr.name="soft_depends_on" attr.type="string"/>
+  <key id="d11" for="node" attr.name="blocks" attr.type="string"/>
+  <key id="d12" for="node" attr.name="soft_blocks" attr.type="string"/>
+  <key id="d13" for="node" attr.name="parent" attr.type="string"/>
+  <key id="d14" for="node" attr.name="children" attr.type="string"/>
+  <key id="d15" for="node" attr.name="due" attr.type="string"/>
+  <key id="e0" for="edge" attr.name="type" attr.type="string"/>
+  <graph id="G" edgedefault="directed">
+"#,
+        );
+
+        for node in &graph.nodes {
+            let esc = |s: &str| {
+                s.replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;")
+            };
+            let label = esc(&node.label);
+            let path = esc(&node.path.to_string_lossy());
+            let tags_str = node.tags.join(",");
+
+            let mut ns = format!(
+                "    <node id=\"{}\">\n      <data key=\"d0\">{}</data>\n      <data key=\"d1\">{}</data>\n      <data key=\"d2\">{}</data>\n",
+                node.id, label, path, tags_str
+            );
+
+            let append = |ns: &mut String, key: &str, val: &str| {
+                if !val.is_empty() {
+                    ns.push_str(&format!("      <data key=\"{}\">{}</data>\n", key, val));
+                }
+            };
+
+            append(&mut ns, "d3", node.node_type.as_deref().unwrap_or(""));
+            append(&mut ns, "d4", node.status.as_deref().unwrap_or(""));
+            if let Some(p) = node.priority {
+                ns.push_str(&format!("      <data key=\"d5\">{}</data>\n", p));
+            }
+            append(&mut ns, "d6", node.project.as_deref().unwrap_or(""));
+            append(&mut ns, "d7", node.assignee.as_deref().unwrap_or(""));
+            append(&mut ns, "d8", node.complexity.as_deref().unwrap_or(""));
+            append(&mut ns, "d9", &node.depends_on.join(","));
+            append(&mut ns, "d10", &node.soft_depends_on.join(","));
+            append(&mut ns, "d11", &node.blocks.join(","));
+            append(&mut ns, "d12", &node.soft_blocks.join(","));
+            append(&mut ns, "d13", node.parent.as_deref().unwrap_or(""));
+            append(&mut ns, "d14", &node.children.join(","));
+            append(&mut ns, "d15", node.due.as_deref().unwrap_or(""));
+
+            ns.push_str("    </node>\n");
+            xml.push_str(&ns);
+        }
+
+        for (i, edge) in graph.edges.iter().enumerate() {
+            xml.push_str(&format!(
+                "    <edge id=\"e{}\" source=\"{}\" target=\"{}\">\n      <data key=\"e0\">{}</data>\n    </edge>\n",
+                i, edge.source, edge.target, edge.edge_type.as_str()
+            ));
+        }
+
+        xml.push_str("  </graph>\n</graphml>\n");
+        xml
+    }
+
+    pub fn output_dot(&self) -> String {
+        let graph = self.to_output_graph();
+        let mut dot = String::from(
+            "digraph G {\n    rankdir=TB;\n    node [shape=box, style=filled, fillcolor=\"#e9ecef\"];\n\n",
+        );
+
+        for node in &graph.nodes {
+            let label = node.label.replace('"', "\\\"");
+            dot.push_str(&format!("    \"{}\" [label=\"{}\"];\n", node.id, label));
+        }
+        dot.push('\n');
+
+        for edge in &graph.edges {
+            let style = match edge.edge_type {
+                EdgeType::DependsOn => "style=bold, color=\"#dc3545\", penwidth=2",
+                EdgeType::SoftDependsOn => "style=dashed, color=\"#6c757d\", penwidth=1.5",
+                EdgeType::Parent => "style=solid, color=\"#0d6efd\", penwidth=3",
+                EdgeType::Link => "style=dotted, color=\"#adb5bd\", penwidth=1",
+            };
+            dot.push_str(&format!(
+                "    \"{}\" -> \"{}\" [{}];\n",
+                edge.source, edge.target, style
+            ));
+        }
+
+        dot.push_str("}\n");
+        dot
+    }
+
+    // -----------------------------------------------------------------------
+    // Persistence (optional — graph rebuilds in ~300ms)
+    // -----------------------------------------------------------------------
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let data = SavedGraph {
+            nodes: self.nodes.values().cloned().collect(),
+            edges: self.edges.clone(),
+        };
+        let bytes = bincode::serialize(&data)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("graph.tmp");
+        std::fs::write(&tmp, &bytes)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> Result<Self> {
+        let bytes = std::fs::read(path)?;
+        let data: SavedGraph = bincode::deserialize(&bytes)?;
+        let node_map: HashMap<String, GraphNode> =
+            data.nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
+        let (ready, blocked, roots, by_project) = classify_tasks(&node_map);
+        Ok(GraphStore {
+            nodes: node_map,
+            edges: data.edges,
+            ready,
+            blocked,
+            roots,
+            by_project,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedGraph {
+    nodes: Vec<GraphNode>,
+    edges: Vec<Edge>,
+}
+
+// ===========================================================================
+// Internal build helpers
+// ===========================================================================
+
+/// Build all edges originating from a single node.
+fn build_node_edges(
+    n: &GraphNode,
+    id_map: &HashMap<String, String>,
+    path_to_id: &HashMap<String, String>,
+) -> Vec<Edge> {
+    let mut edges = Vec::new();
+
+    // Wikilinks / markdown links -> Link edges
+    for link in &n.raw_links {
+        if let Some(target_path) = graph::resolve_link(link, &n.path, id_map) {
+            if let Some(target_id) = path_to_id.get(&target_path) {
+                if n.id != *target_id {
+                    edges.push(Edge {
+                        source: n.id.clone(),
+                        target: target_id.clone(),
+                        edge_type: EdgeType::Link,
+                    });
+                }
+            }
+        }
+    }
+
+    // Parent -> Parent edge (this -> parent)
+    if let Some(ref parent_ref) = n.parent {
+        if let Some(target_id) = graph::resolve_ref(parent_ref, id_map, path_to_id) {
+            if n.id != target_id {
+                edges.push(Edge {
+                    source: n.id.clone(),
+                    target: target_id,
+                    edge_type: EdgeType::Parent,
+                });
+            }
+        }
+    }
+
+    // depends_on -> DependsOn edge (this -> dependency)
+    for dep in &n.depends_on {
+        if let Some(target_id) = graph::resolve_ref(dep, id_map, path_to_id) {
+            if n.id != target_id {
+                edges.push(Edge {
+                    source: n.id.clone(),
+                    target: target_id,
+                    edge_type: EdgeType::DependsOn,
+                });
+            }
+        }
+    }
+
+    // soft_depends_on -> SoftDependsOn edge
+    for dep in &n.soft_depends_on {
+        if let Some(target_id) = graph::resolve_ref(dep, id_map, path_to_id) {
+            if n.id != target_id {
+                edges.push(Edge {
+                    source: n.id.clone(),
+                    target: target_id,
+                    edge_type: EdgeType::SoftDependsOn,
+                });
+            }
+        }
+    }
+
+    // children -> Parent edge (child -> this)
+    for child in &n.children {
+        if let Some(target_id) = graph::resolve_ref(child, id_map, path_to_id) {
+            if n.id != target_id {
+                edges.push(Edge {
+                    source: target_id,
+                    target: n.id.clone(),
+                    edge_type: EdgeType::Parent,
+                });
+            }
+        }
+    }
+
+    // blocks -> DependsOn edge (blocked -> this, i.e. blocked depends on this)
+    for blocked in &n.blocks {
+        if let Some(target_id) = graph::resolve_ref(blocked, id_map, path_to_id) {
+            if n.id != target_id {
+                edges.push(Edge {
+                    source: target_id,
+                    target: n.id.clone(),
+                    edge_type: EdgeType::DependsOn,
+                });
+            }
+        }
+    }
+
+    // soft_blocks -> SoftDependsOn edge (soft-blocked -> this)
+    for blocked in &n.soft_blocks {
+        if let Some(target_id) = graph::resolve_ref(blocked, id_map, path_to_id) {
+            if n.id != target_id {
+                edges.push(Edge {
+                    source: target_id,
+                    target: n.id.clone(),
+                    edge_type: EdgeType::SoftDependsOn,
+                });
+            }
+        }
+    }
+
+    // project -> Link edge (this -> project node)
+    if let Some(ref proj) = n.project {
+        if let Some(target_id) = graph::resolve_ref(proj, id_map, path_to_id) {
+            if n.id != target_id {
+                edges.push(Edge {
+                    source: n.id.clone(),
+                    target: target_id,
+                    edge_type: EdgeType::Link,
+                });
+            }
+        }
+    }
+
+    edges
+}
+
+/// Compute inverse relationships on nodes from resolved edges.
+///
+/// For each DependsOn edge (source depends on target):
+///   target.blocks += source
+/// For each SoftDependsOn edge:
+///   target.soft_blocks += source
+/// For each Parent edge (source is child of target):
+///   target.children += source
+fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
+    let id_to_idx: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    // Collect updates to avoid borrow issues
+    let mut block_updates: Vec<(usize, String)> = Vec::new(); // (target_idx, source_id)
+    let mut soft_block_updates: Vec<(usize, String)> = Vec::new();
+    let mut children_updates: Vec<(usize, String)> = Vec::new();
+
+    for edge in edges {
+        match edge.edge_type {
+            EdgeType::DependsOn => {
+                // source depends on target -> target blocks source
+                if let Some(&idx) = id_to_idx.get(&edge.target) {
+                    block_updates.push((idx, edge.source.clone()));
+                }
+            }
+            EdgeType::SoftDependsOn => {
+                if let Some(&idx) = id_to_idx.get(&edge.target) {
+                    soft_block_updates.push((idx, edge.source.clone()));
+                }
+            }
+            EdgeType::Parent => {
+                // source is child of target -> target.children += source
+                if let Some(&idx) = id_to_idx.get(&edge.target) {
+                    children_updates.push((idx, edge.source.clone()));
+                }
+            }
+            EdgeType::Link => {}
+        }
+    }
+
+    for (idx, blocked_id) in block_updates {
+        if !nodes[idx].blocks.contains(&blocked_id) {
+            nodes[idx].blocks.push(blocked_id);
+        }
+    }
+    for (idx, blocked_id) in soft_block_updates {
+        if !nodes[idx].soft_blocks.contains(&blocked_id) {
+            nodes[idx].soft_blocks.push(blocked_id);
+        }
+    }
+    for (idx, child_id) in children_updates {
+        if !nodes[idx].children.contains(&child_id) {
+            nodes[idx].children.push(child_id);
+        }
+    }
+
+    // Deduplicate and update leaf status
+    for node in nodes.iter_mut() {
+        deduplicate_vec(&mut node.blocks);
+        deduplicate_vec(&mut node.soft_blocks);
+        deduplicate_vec(&mut node.children);
+        deduplicate_vec(&mut node.depends_on);
+        deduplicate_vec(&mut node.soft_depends_on);
+        node.leaf = node.children.is_empty();
+    }
+}
+
+/// Compute downstream_weight and stakeholder_exposure via BFS through
+/// blocks/soft_blocks. Mirrors the logic from fast-indexer main.rs.
+fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
+    let excluded: HashSet<&str> = ["done", "cancelled"].into_iter().collect();
+
+    let id_to_idx: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    // Pre-compute base weight for non-excluded nodes
+    let base_weights: HashMap<String, f64> = nodes
+        .iter()
+        .filter(|n| {
+            n.status
+                .as_deref()
+                .map(|s| !excluded.contains(s))
+                .unwrap_or(false)
+        })
+        .map(|n| {
+            let pw = match n.priority.unwrap_or(2) {
+                0 => 5.0,
+                1 => 3.0,
+                2 => 2.0,
+                3 => 1.0,
+                _ => 0.5,
+            };
+            let dm = if n.due.is_some() { 2.0 } else { 1.0 };
+            (n.id.clone(), pw * dm)
+        })
+        .collect();
+
+    let has_due: HashSet<String> = nodes
+        .iter()
+        .filter(|n| {
+            n.due.is_some()
+                && n.status
+                    .as_deref()
+                    .map(|s| !excluded.contains(s))
+                    .unwrap_or(false)
+        })
+        .map(|n| n.id.clone())
+        .collect();
+
+    // Snapshot blocks/soft_blocks to avoid borrow issues
+    let blocks_map: HashMap<String, Vec<String>> = nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.blocks.clone()))
+        .collect();
+    let soft_blocks_map: HashMap<String, Vec<String>> = nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.soft_blocks.clone()))
+        .collect();
+
+    let all_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+
+    for start_id in &all_ids {
+        let mut total_weight: f64 = 0.0;
+        let mut has_stakeholder = false;
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: Vec<(String, u32, bool)> = Vec::new();
+
+        // Seed with direct blocks
+        if let Some(blocked) = blocks_map.get(start_id) {
+            for bid in blocked {
+                let status_ok = id_to_idx
+                    .get(bid)
+                    .and_then(|&idx| nodes[idx].status.as_deref())
+                    .map(|s| !excluded.contains(s))
+                    .unwrap_or(false);
+                if status_ok {
+                    queue.push((bid.clone(), 1, false));
+                }
+            }
+        }
+        if let Some(soft_blocked) = soft_blocks_map.get(start_id) {
+            for sbid in soft_blocked {
+                let status_ok = id_to_idx
+                    .get(sbid)
+                    .and_then(|&idx| nodes[idx].status.as_deref())
+                    .map(|s| !excluded.contains(s))
+                    .unwrap_or(false);
+                if status_ok {
+                    queue.push((sbid.clone(), 1, true));
+                }
+            }
+        }
+
+        while let Some((tid, depth, is_soft)) = queue.pop() {
+            if !visited.insert(tid.clone()) {
+                continue;
+            }
+            if let Some(&bw) = base_weights.get(&tid) {
+                let depth_decay = 1.0 / (depth as f64);
+                let soft_factor = if is_soft { 0.3 } else { 1.0 };
+                total_weight += depth_decay * bw * soft_factor;
+            }
+            if has_due.contains(&tid) {
+                has_stakeholder = true;
+            }
+            if let Some(next_blocks) = blocks_map.get(&tid) {
+                for next in next_blocks {
+                    if !visited.contains(next) {
+                        queue.push((next.clone(), depth + 1, is_soft));
+                    }
+                }
+            }
+            if let Some(next_soft) = soft_blocks_map.get(&tid) {
+                for next in next_soft {
+                    if !visited.contains(next) {
+                        queue.push((next.clone(), depth + 1, true));
+                    }
+                }
+            }
+        }
+
+        if let Some(&idx) = id_to_idx.get(start_id) {
+            nodes[idx].downstream_weight = (total_weight * 100.0).round() / 100.0;
+            nodes[idx].stakeholder_exposure = has_stakeholder;
+        }
+    }
+}
+
+/// Classify tasks into ready/blocked lists, compute roots and by_project.
+fn classify_tasks(
+    nodes: &HashMap<String, GraphNode>,
+) -> (
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    HashMap<String, Vec<String>>,
+) {
+    let completed: HashSet<&str> = ["done", "cancelled"].into_iter().collect();
+
+    let completed_ids: HashSet<String> = nodes
+        .iter()
+        .filter(|(_, n)| {
+            n.status
+                .as_deref()
+                .map(|s| completed.contains(s))
+                .unwrap_or(false)
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+
+    let mut ready: Vec<String> = Vec::new();
+    let mut blocked: Vec<String> = Vec::new();
+
+    for (id, node) in nodes {
+        // Only classify nodes that have a task_id
+        if node.task_id.is_none() {
+            continue;
+        }
+
+        let status = node.status.as_deref().unwrap_or("active");
+        if completed.contains(status) {
+            continue;
+        }
+
+        let unmet_deps: Vec<&String> = node
+            .depends_on
+            .iter()
+            .filter(|d| !completed_ids.contains(*d))
+            .collect();
+
+        if !unmet_deps.is_empty() || status == "blocked" {
+            blocked.push(id.clone());
+        } else if node.leaf && status == "active" {
+            // Learn tasks are observational, not actionable
+            if node.node_type.as_deref() != Some("learn") {
+                ready.push(id.clone());
+            }
+        }
+    }
+
+    // Sort ready by priority, then downstream_weight DESC, then order, then title
+    ready.sort_by(|a, b| {
+        let na = nodes.get(a).unwrap();
+        let nb = nodes.get(b).unwrap();
+        na.priority
+            .unwrap_or(2)
+            .cmp(&nb.priority.unwrap_or(2))
+            .then(
+                nb.downstream_weight
+                    .partial_cmp(&na.downstream_weight)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(na.order.cmp(&nb.order))
+            .then(na.label.cmp(&nb.label))
+    });
+
+    // Roots: tasks with no parent or parent not in index
+    let roots: Vec<String> = nodes
+        .iter()
+        .filter(|(_, n)| n.task_id.is_some())
+        .filter(|(_, n)| match &n.parent {
+            None => true,
+            Some(pid) => !nodes.contains_key(pid),
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+
+    // By project
+    let mut by_project: HashMap<String, Vec<String>> = HashMap::new();
+    for (id, node) in nodes {
+        if node.task_id.is_some() {
+            let proj = node
+                .project
+                .clone()
+                .unwrap_or_else(|| "_no_project".to_string());
+            by_project.entry(proj).or_default().push(id.clone());
+        }
+    }
+
+    (ready, blocked, roots, by_project)
+}

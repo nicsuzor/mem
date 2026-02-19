@@ -14,7 +14,7 @@ name = "pkb-search"
 path = "src/server.rs"
 
 [[bin]]
-name = "mem"
+name = "aops"
 path = "src/cli.rs"
 
 [dependencies]
@@ -72,6 +72,7 @@ tar = "0.4"
 # Schemars for MCP tool params
 schemars = "0.8"
 indicatif = "0.18.4"
+serde_yaml = "0.9"
 
 [profile.release]
 opt-level = 3

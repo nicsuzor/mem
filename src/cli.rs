@@ -4,8 +4,13 @@
 
 mod distance;
 mod embeddings;
+mod graph;
+mod graph_store;
 mod mcp_server;
+mod metrics;
 mod pkb;
+mod task_crud;
+mod task_index;
 mod vectordb;
 
 use anyhow::Result;
@@ -15,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "mem", about = "PKB memory — semantic search over your knowledge base")]
+#[command(name = "aops", about = "AcademicOps — semantic search and task management for your knowledge base")]
 struct Cli {
     /// Path to the PKB root directory
     #[arg(long, global = true, default_value_t = default_pkb_root())]
@@ -79,6 +84,76 @@ enum Commands {
 
     /// Show index status
     Status,
+
+    /// List tasks (ready, blocked, or all)
+    Tasks {
+        /// Filter: ready, blocked, all (default: ready)
+        #[arg(default_value = "ready")]
+        filter: String,
+
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Sort by: priority, weight, due (default: priority)
+        #[arg(short, long, default_value = "priority")]
+        sort: String,
+    },
+
+    /// Show task details and relationships
+    Task {
+        /// Task ID
+        id: String,
+    },
+
+    /// Show dependency tree for a task
+    Deps {
+        /// Task ID
+        id: String,
+
+        /// Show as tree
+        #[arg(long)]
+        tree: bool,
+    },
+
+    /// Show network metrics for a document or all tasks
+    Metrics {
+        /// Document/task ID (omit for summary)
+        id: Option<String>,
+    },
+
+    /// Create a new task
+    New {
+        /// Task title
+        title: Vec<String>,
+
+        /// Parent task ID
+        #[arg(long)]
+        parent: Option<String>,
+
+        /// Priority (0=critical, 1=high, 2=medium, 3=low, 4=someday)
+        #[arg(short, long)]
+        priority: Option<i32>,
+
+        /// Project name
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Tags (comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+    },
+
+    /// Export knowledge graph
+    Graph {
+        /// Output format: json, graphml, dot
+        #[arg(short, long, default_value = "json")]
+        format: String,
+
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 fn default_pkb_root() -> String {
@@ -93,14 +168,14 @@ fn default_db_path() -> String {
     std::env::var("ACA_DATA")
         .map(|d| {
             PathBuf::from(d)
-                .join("shodh_memory_data/pkb_vectors.bin")
+                .join("aops_data/pkb_vectors.bin")
                 .to_string_lossy()
                 .to_string()
         })
         .unwrap_or_else(|_| {
             dirs::home_dir()
                 .map(|h| {
-                    h.join("brain/shodh_memory_data/pkb_vectors.bin")
+                    h.join("brain/aops_data/pkb_vectors.bin")
                         .to_string_lossy()
                         .to_string()
                 })
@@ -282,6 +357,314 @@ fn main() -> Result<()> {
             println!("DB path:   {}", db_path.display());
             println!("Documents: {total}");
             println!("DB size:   {:.1} MB", db_size as f64 / 1_048_576.0);
+        }
+
+        Commands::Tasks {
+            filter,
+            project,
+            sort,
+        } => {
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+
+            let tasks: Vec<&graph::GraphNode> = match filter.as_str() {
+                "blocked" => gs.blocked_tasks(),
+                "all" => gs.all_tasks(),
+                _ => gs.ready_tasks(), // "ready" is default
+            };
+
+            // Filter by project
+            let tasks: Vec<&&graph::GraphNode> = if let Some(ref proj) = project {
+                tasks.iter().filter(|t| t.project.as_deref() == Some(proj)).collect()
+            } else {
+                tasks.iter().collect()
+            };
+
+            if tasks.is_empty() {
+                println!("No {} tasks found.", filter);
+                return Ok(());
+            }
+
+            println!();
+            println!(
+                "  \x1b[1m{:<12} {:>4}  {:>6}  {}\x1b[0m",
+                "ID", "PRI", "WEIGHT", "TITLE"
+            );
+            println!("  {}", "-".repeat(60));
+
+            for task in &tasks {
+                let pri = task.priority.unwrap_or(2);
+                let pri_color = match pri {
+                    0 => "\x1b[31m",  // red
+                    1 => "\x1b[33m",  // yellow
+                    2 => "\x1b[0m",   // default
+                    3 => "\x1b[2m",   // dim
+                    _ => "\x1b[2m",
+                };
+                let weight = if task.downstream_weight > 0.0 {
+                    format!("{:.1}", task.downstream_weight)
+                } else {
+                    "-".to_string()
+                };
+                let exposure = if task.stakeholder_exposure { "!" } else { "" };
+
+                println!(
+                    "  {:<12} {pri_color}{:>4}\x1b[0m  {:>5}{:<1}  {}",
+                    task.task_id.as_deref().unwrap_or(&task.id),
+                    pri,
+                    weight,
+                    exposure,
+                    task.label,
+                );
+            }
+            println!("\n  {} {} tasks", tasks.len(), filter);
+        }
+
+        Commands::Task { id } => {
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+
+            match gs.get_node(&id) {
+                Some(node) => {
+                    println!();
+                    println!("  \x1b[1m{}\x1b[0m", node.label);
+                    println!("  \x1b[2m{}\x1b[0m", node.path.display());
+                    println!();
+
+                    if let Some(ref t) = node.node_type {
+                        println!("  Type:     {t}");
+                    }
+                    if let Some(ref s) = node.status {
+                        println!("  Status:   {s}");
+                    }
+                    if let Some(p) = node.priority {
+                        println!("  Priority: {p}");
+                    }
+                    if let Some(ref proj) = node.project {
+                        println!("  Project:  {proj}");
+                    }
+                    if let Some(ref due) = node.due {
+                        println!("  Due:      {due}");
+                    }
+                    if let Some(ref a) = node.assignee {
+                        println!("  Assignee: {a}");
+                    }
+                    if !node.tags.is_empty() {
+                        println!("  Tags:     {}", node.tags.join(", "));
+                    }
+
+                    if !node.depends_on.is_empty() {
+                        println!("\n  \x1b[1mDepends on:\x1b[0m");
+                        for dep in &node.depends_on {
+                            let label = gs.get_node(dep).map(|n| n.label.as_str()).unwrap_or("?");
+                            println!("    <- {dep} ({label})");
+                        }
+                    }
+                    if !node.blocks.is_empty() {
+                        println!("\n  \x1b[1mBlocks:\x1b[0m");
+                        for b in &node.blocks {
+                            let label = gs.get_node(b).map(|n| n.label.as_str()).unwrap_or("?");
+                            println!("    -> {b} ({label})");
+                        }
+                    }
+                    if !node.children.is_empty() {
+                        println!("\n  \x1b[1mChildren:\x1b[0m");
+                        for c in &node.children {
+                            let label = gs.get_node(c).map(|n| n.label.as_str()).unwrap_or("?");
+                            println!("    {c} ({label})");
+                        }
+                    }
+                    if let Some(ref p) = node.parent {
+                        let label = gs.get_node(p).map(|n| n.label.as_str()).unwrap_or("?");
+                        println!("\n  \x1b[1mParent:\x1b[0m {p} ({label})");
+                    }
+
+                    if node.downstream_weight > 0.0 {
+                        println!(
+                            "\n  Weight: {:.2}{}",
+                            node.downstream_weight,
+                            if node.stakeholder_exposure {
+                                " (stakeholder exposure)"
+                            } else {
+                                ""
+                            }
+                        );
+                    }
+                    println!();
+                }
+                None => {
+                    eprintln!("Task not found: {id}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Deps { id, tree } => {
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+
+            if gs.get_node(&id).is_none() {
+                eprintln!("Task not found: {id}");
+                std::process::exit(1);
+            }
+
+            let deps = gs.dependency_tree(&id);
+            if deps.is_empty() {
+                println!("No dependencies for {id}");
+                return Ok(());
+            }
+
+            println!();
+            for (dep_id, depth) in &deps {
+                let indent = if tree {
+                    "  ".repeat(*depth)
+                } else {
+                    "  ".to_string()
+                };
+                let label = gs
+                    .get_node(dep_id)
+                    .map(|n| n.label.as_str())
+                    .unwrap_or("?");
+                let status = gs
+                    .get_node(dep_id)
+                    .and_then(|n| n.status.as_deref())
+                    .unwrap_or("?");
+                println!("{indent}{dep_id} [{status}] {label}");
+            }
+            println!();
+        }
+
+        Commands::Metrics { id } => {
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let node_ids: Vec<String> = gs.nodes().map(|n| n.id.clone()).collect();
+            let edges = gs.edges();
+
+            match id {
+                Some(ref nid) => {
+                    let node = gs.get_node(nid);
+                    if node.is_none() {
+                        eprintln!("Node not found: {nid}");
+                        std::process::exit(1);
+                    }
+                    let node = node.unwrap();
+                    let m = metrics::compute_network_metrics(
+                        nid,
+                        &node_ids,
+                        edges,
+                        node.downstream_weight,
+                        node.stakeholder_exposure,
+                    );
+                    if let Some(m) = m {
+                        println!();
+                        println!("  \x1b[1m{}\x1b[0m", node.label);
+                        println!("  In-degree:           {}", m.in_degree);
+                        println!("  Out-degree:          {}", m.out_degree);
+                        println!("  Downstream weight:   {:.2}", m.downstream_weight);
+                        println!("  Stakeholder:         {}", m.stakeholder_exposure);
+                        println!("  Betweenness:         {:.4}", m.betweenness);
+                        println!("  PageRank:            {:.4}", m.pagerank);
+                        println!();
+                    }
+                }
+                None => {
+                    // Summary: top 10 by pagerank
+                    let pr = metrics::compute_pagerank(&node_ids, edges);
+                    let mut ranked: Vec<_> = pr.iter().collect();
+                    ranked.sort_by(|a, b| {
+                        b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+
+                    println!();
+                    println!(
+                        "  \x1b[1m{:<30} {:>10}\x1b[0m",
+                        "NODE", "PAGERANK"
+                    );
+                    println!("  {}", "-".repeat(42));
+
+                    for (id, score) in ranked.iter().take(20) {
+                        let label = gs
+                            .get_node(id)
+                            .map(|n| n.label.as_str())
+                            .unwrap_or("?");
+                        let display = if label.len() > 28 {
+                            format!("{}...", &label[..25])
+                        } else {
+                            label.to_string()
+                        };
+                        println!("  {:<30} {:>10.4}", display, score);
+                    }
+                    println!(
+                        "\n  {} nodes, {} edges",
+                        gs.node_count(),
+                        gs.edge_count()
+                    );
+                    println!();
+                }
+            }
+        }
+
+        Commands::New {
+            title,
+            parent,
+            priority,
+            project,
+            tags,
+        } => {
+            let title_str = title.join(" ");
+            if title_str.is_empty() {
+                eprintln!("Error: title cannot be empty");
+                std::process::exit(1);
+            }
+
+            let fields = task_crud::TaskFields {
+                title: title_str,
+                parent,
+                priority,
+                project,
+                tags: tags.unwrap_or_default(),
+                ..Default::default()
+            };
+
+            match task_crud::create_task(&pkb_root, fields) {
+                Ok(path) => {
+                    println!("Created: {}", path.display());
+
+                    // Auto-index the new file
+                    if let Some(doc) = pkb::parse_file(&path) {
+                        match store.write().upsert(&doc, &embedder) {
+                            Ok(()) => {
+                                store.read().save(&db_path)?;
+                                println!("Indexed: {}", doc.title);
+                            }
+                            Err(e) => eprintln!("Warning: failed to index: {e}"),
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Graph { format, output } => {
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+
+            let content = match format.as_str() {
+                "graphml" => gs.output_graphml(),
+                "dot" => gs.output_dot(),
+                _ => gs.output_json()?,
+            };
+
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, &content)?;
+                    println!(
+                        "Graph: {} nodes, {} edges -> {}",
+                        gs.node_count(),
+                        gs.edge_count(),
+                        path
+                    );
+                }
+                None => print!("{content}"),
+            }
         }
     }
 

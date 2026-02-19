@@ -37,12 +37,12 @@ impl EmbeddingConfig {
     const MODEL_NAMES: &[&str] = &["model_quint8_avx2.onnx", "model.onnx"];
 
     pub fn from_env() -> Self {
-        let base_path = std::env::var("SHODH_MODEL_PATH")
+        let base_path = std::env::var("AOPS_MODEL_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
                 let candidates = vec![
                     Some(get_cache_dir().join("models/minilm-l6")),
-                    dirs::data_dir().map(|p| p.join("shodh-memory/models/minilm-l6")),
+                    dirs::data_dir().map(|p| p.join("aops/models/minilm-l6")),
                     Some(PathBuf::from("./models/minilm-l6")),
                 ];
 
@@ -79,7 +79,7 @@ impl EmbeddingConfig {
 pub fn get_cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from(".cache"))
-        .join("shodh-memory")
+        .join("aops")
 }
 
 fn get_models_dir() -> PathBuf {
@@ -277,7 +277,7 @@ pub struct Embedder {
 
 impl Embedder {
     pub fn new() -> Result<Self> {
-        let offline = std::env::var("SHODH_OFFLINE")
+        let offline = std::env::var("AOPS_OFFLINE")
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false);
 
@@ -291,7 +291,7 @@ impl Embedder {
         if !config.model_path.exists() || !config.tokenizer_path.exists() {
             if offline {
                 bail!(
-                    "Model files not found and SHODH_OFFLINE=true.\n\
+                    "Model files not found and AOPS_OFFLINE=true.\n\
                      Download manually:\n  \
                        model:     https://huggingface.co/{MODEL_REPO}/resolve/main/onnx/model.onnx\n  \
                        tokenizer: https://huggingface.co/{MODEL_REPO}/resolve/main/tokenizer.json\n\
@@ -485,7 +485,7 @@ fn init_ort_path(offline: bool) -> std::result::Result<PathBuf, String> {
     }
 
     if offline {
-        return Err("ONNX Runtime not found and SHODH_OFFLINE=true".to_string());
+        return Err("ONNX Runtime not found and AOPS_OFFLINE=true".to_string());
     }
 
     let path = download_onnx_runtime().map_err(|e| e.to_string())?;

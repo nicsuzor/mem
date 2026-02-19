@@ -1,8 +1,10 @@
-//! MCP server for PKB semantic search.
+//! MCP server for PKB semantic search + task graph.
 //!
 //! Implements rmcp 0.1.5 ServerHandler trait manually with tool dispatch.
+//! Provides 11 tools: 4 original search tools + 7 graph/task tools.
 
 use crate::embeddings::Embedder;
+use crate::graph_store::GraphStore;
 use crate::vectordb::VectorStore;
 use parking_lot::RwLock;
 use rmcp::model::*;
@@ -22,6 +24,7 @@ pub struct PkbSearchServer {
     embedder: Arc<Embedder>,
     pkb_root: PathBuf,
     db_path: PathBuf,
+    graph: Arc<RwLock<GraphStore>>,
 }
 
 impl PkbSearchServer {
@@ -30,12 +33,14 @@ impl PkbSearchServer {
         embedder: Arc<Embedder>,
         pkb_root: PathBuf,
         db_path: PathBuf,
+        graph: Arc<RwLock<GraphStore>>,
     ) -> Self {
         Self {
             store,
             embedder,
             pkb_root,
             db_path,
+            graph,
         }
     }
 
@@ -48,7 +53,6 @@ impl PkbSearchServer {
         }
     }
 
-    /// Convert Option<JsonObject> (Map<String, Value>) to a serde_json::Value
     fn args_to_value(args: Option<JsonObject>) -> JsonValue {
         match args {
             Some(map) => JsonValue::Object(map),
@@ -56,8 +60,14 @@ impl PkbSearchServer {
         }
     }
 
+    /// Rebuild the graph store (e.g. after CRUD operations)
+    fn rebuild_graph(&self) {
+        let new_graph = GraphStore::build_from_directory(&self.pkb_root);
+        *self.graph.write() = new_graph;
+    }
+
     // =========================================================================
-    // TOOL IMPLEMENTATIONS
+    // ORIGINAL TOOLS (4)
     // =========================================================================
 
     fn handle_semantic_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -188,14 +198,440 @@ impl PkbSearchServer {
         let (indexed, removed, total) =
             crate::index_pkb(&self.pkb_root, &self.db_path, &self.store, &self.embedder, true);
 
-        // Save after reindex
-        let store = self.store.read();
-        if let Err(e) = store.save(&self.db_path) {
+        // Save vector store
+        if let Err(e) = self.store.read().save(&self.db_path) {
             tracing::error!("Failed to save vector store: {e}");
         }
 
+        // Rebuild graph
+        self.rebuild_graph();
+
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Reindex complete: {indexed} indexed, {removed} removed, {total} total documents."
+        ))]))
+    }
+
+    // =========================================================================
+    // GRAPH/TASK TOOLS (7)
+    // =========================================================================
+
+    fn handle_task_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: query"),
+                data: None,
+            })?;
+
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
+
+        let query_embedding = self.embedder.encode(query).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Embedding error: {e}")),
+            data: None,
+        })?;
+
+        let store = self.store.read();
+        let results = store.search(&query_embedding, limit * 3);
+
+        let graph = self.graph.read();
+        let mut output = String::new();
+        let mut count = 0;
+
+        for r in &results {
+            if count >= limit {
+                break;
+            }
+            let is_task = r.doc_type.as_deref() == Some("task")
+                || r.doc_type.as_deref() == Some("project")
+                || r.doc_type.as_deref() == Some("goal");
+
+            if !is_task {
+                continue;
+            }
+
+            count += 1;
+            output.push_str(&format!(
+                "### {}. {} (score: {:.3})\n",
+                count, r.title, r.score
+            ));
+            output.push_str(&format!("**Path:** `{}`\n", r.path.display()));
+
+            let path_str = r.path.to_string_lossy();
+            for node in graph.nodes() {
+                if node.path.to_string_lossy() == path_str {
+                    if let Some(ref s) = node.status {
+                        output.push_str(&format!("**Status:** {s}\n"));
+                    }
+                    if let Some(p) = node.priority {
+                        output.push_str(&format!("**Priority:** {p}\n"));
+                    }
+                    if !node.blocks.is_empty() {
+                        output.push_str(&format!("**Blocks:** {}\n", node.blocks.join(", ")));
+                    }
+                    if !node.depends_on.is_empty() {
+                        output.push_str(&format!(
+                            "**Depends on:** {}\n",
+                            node.depends_on.join(", ")
+                        ));
+                    }
+                    break;
+                }
+            }
+            output.push('\n');
+        }
+
+        if count == 0 {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No tasks found matching query.",
+            )]));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "**Found {count} tasks for:** \"{query}\"\n\n{output}"
+        ))]))
+    }
+
+    fn handle_get_ready_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20) as usize;
+        let project = args.get("project").and_then(|v| v.as_str());
+
+        let graph = self.graph.read();
+        let mut tasks = graph.ready_tasks();
+
+        if let Some(proj) = project {
+            tasks.retain(|t| t.project.as_deref() == Some(proj));
+        }
+
+        if tasks.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No ready tasks found.",
+            )]));
+        }
+
+        let mut output = format!(
+            "**{} ready tasks** (sorted by priority + downstream weight)\n\n",
+            tasks.len()
+        );
+        output.push_str("| # | ID | Pri | Weight | Title |\n|---|---|---|---|---|\n");
+
+        for (i, t) in tasks.iter().take(limit).enumerate() {
+            let id = t.task_id.as_deref().unwrap_or(&t.id);
+            let weight = if t.downstream_weight > 0.0 {
+                format!(
+                    "{:.1}{}",
+                    t.downstream_weight,
+                    if t.stakeholder_exposure { "!" } else { "" }
+                )
+            } else {
+                "-".to_string()
+            };
+            output.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                i + 1,
+                id,
+                t.priority.unwrap_or(2),
+                weight,
+                t.label
+            ));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_get_blocked_tasks(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let graph = self.graph.read();
+        let tasks = graph.blocked_tasks();
+
+        if tasks.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No blocked tasks.",
+            )]));
+        }
+
+        let mut output = format!("**{} blocked tasks**\n\n", tasks.len());
+
+        for t in &tasks {
+            let id = t.task_id.as_deref().unwrap_or(&t.id);
+            output.push_str(&format!("### {} — {}\n", id, t.label));
+
+            if !t.depends_on.is_empty() {
+                output.push_str("**Blocked by:**\n");
+                for dep in &t.depends_on {
+                    let dep_label = graph
+                        .get_node(dep)
+                        .map(|n| n.label.as_str())
+                        .unwrap_or("?");
+                    let dep_status = graph
+                        .get_node(dep)
+                        .and_then(|n| n.status.as_deref())
+                        .unwrap_or("?");
+                    output.push_str(&format!("- `{}` [{}] {}\n", dep, dep_status, dep_label));
+                }
+            }
+            if t.status.as_deref() == Some("blocked") {
+                output.push_str("**Status:** explicitly blocked\n");
+            }
+            output.push('\n');
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_get_task_network(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let graph = self.graph.read();
+        let node = graph.get_node(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Task not found: {id}")),
+            data: None,
+        })?;
+
+        let mut output = format!("## {} — {}\n\n", id, node.label);
+        output.push_str(&format!("**Path:** `{}`\n", node.path.display()));
+
+        if let Some(ref s) = node.status {
+            output.push_str(&format!("**Status:** {s}\n"));
+        }
+        if let Some(p) = node.priority {
+            output.push_str(&format!("**Priority:** {p}\n"));
+        }
+        if let Some(ref proj) = node.project {
+            output.push_str(&format!("**Project:** {proj}\n"));
+        }
+        if let Some(ref due) = node.due {
+            output.push_str(&format!("**Due:** {due}\n"));
+        }
+        if !node.tags.is_empty() {
+            output.push_str(&format!("**Tags:** {}\n", node.tags.join(", ")));
+        }
+
+        if !node.depends_on.is_empty() {
+            output.push_str("\n### Depends on\n");
+            for dep in &node.depends_on {
+                let label = graph.get_node(dep).map(|n| n.label.as_str()).unwrap_or("?");
+                output.push_str(&format!("- `{dep}` — {label}\n"));
+            }
+        }
+        if !node.blocks.is_empty() {
+            output.push_str("\n### Blocks\n");
+            for b in &node.blocks {
+                let label = graph.get_node(b).map(|n| n.label.as_str()).unwrap_or("?");
+                output.push_str(&format!("- `{b}` — {label}\n"));
+            }
+        }
+        if !node.children.is_empty() {
+            output.push_str("\n### Children\n");
+            for c in &node.children {
+                let label = graph.get_node(c).map(|n| n.label.as_str()).unwrap_or("?");
+                let status = graph
+                    .get_node(c)
+                    .and_then(|n| n.status.as_deref())
+                    .unwrap_or("?");
+                output.push_str(&format!("- `{c}` [{status}] {label}\n"));
+            }
+        }
+        if let Some(ref p) = node.parent {
+            let label = graph.get_node(p).map(|n| n.label.as_str()).unwrap_or("?");
+            output.push_str(&format!("\n**Parent:** `{p}` — {label}\n"));
+        }
+
+        if node.downstream_weight > 0.0 {
+            output.push_str(&format!(
+                "\n**Downstream weight:** {:.2}{}\n",
+                node.downstream_weight,
+                if node.stakeholder_exposure {
+                    " (stakeholder exposure)"
+                } else {
+                    ""
+                }
+            ));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_get_network_metrics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let graph = self.graph.read();
+        let node = graph.get_node(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Node not found: {id}")),
+            data: None,
+        })?;
+
+        let node_ids: Vec<String> = graph.nodes().map(|n| n.id.clone()).collect();
+        let edges = graph.edges();
+
+        let m = crate::metrics::compute_network_metrics(
+            id,
+            &node_ids,
+            edges,
+            node.downstream_weight,
+            node.stakeholder_exposure,
+        );
+
+        match m {
+            Some(metrics) => {
+                let json = serde_json::to_string_pretty(&metrics).unwrap_or_default();
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "## Network metrics for {id}\n\n```json\n{json}\n```"
+                ))]))
+            }
+            None => Err(McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from("Failed to compute metrics"),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_create_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let title = args
+            .get("title")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: title"),
+                data: None,
+            })?;
+
+        let fields = crate::task_crud::TaskFields {
+            title: title.to_string(),
+            id: args.get("id").and_then(|v| v.as_str()).map(String::from),
+            parent: args
+                .get("parent")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            priority: args
+                .get("priority")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32),
+            project: args
+                .get("project")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            tags: args
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            depends_on: args
+                .get("depends_on")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            assignee: args
+                .get("assignee")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            complexity: args
+                .get("complexity")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            body: args
+                .get("body")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+        };
+
+        let path =
+            crate::task_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to create task: {e}")),
+                data: None,
+            })?;
+
+        // Index the new file
+        if let Some(doc) = crate::pkb::parse_file(&path) {
+            let _ = self.store.write().upsert(&doc, &self.embedder);
+            let _ = self.store.read().save(&self.db_path);
+        }
+
+        // Rebuild graph
+        self.rebuild_graph();
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Task created: `{}`",
+            path.display()
+        ))]))
+    }
+
+    fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let path_str = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: path"),
+                data: None,
+            })?;
+
+        let updates = args
+            .get("updates")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: updates (object)"),
+                data: None,
+            })?;
+
+        let path = self.resolve_path(path_str);
+        let update_map: std::collections::HashMap<String, serde_json::Value> = updates
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        crate::task_crud::update_task(&path, update_map).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to update task: {e}")),
+            data: None,
+        })?;
+
+        // Re-index the updated file
+        if let Some(doc) = crate::pkb::parse_file(&path) {
+            let _ = self.store.write().upsert(&doc, &self.embedder);
+            let _ = self.store.read().save(&self.db_path);
+        }
+
+        // Rebuild graph
+        self.rebuild_graph();
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Task updated: `{}`",
+            path.display()
         ))]))
     }
 }
@@ -212,6 +648,13 @@ impl ServerHandler for PkbSearchServer {
             "get_document" => self.handle_get_document(&args),
             "list_documents" => self.handle_list_documents(&args),
             "reindex" => self.handle_reindex(&args),
+            "task_search" => self.handle_task_search(&args),
+            "get_ready_tasks" => self.handle_get_ready_tasks(&args),
+            "get_blocked_tasks" => self.handle_get_blocked_tasks(&args),
+            "get_task_network" => self.handle_get_task_network(&args),
+            "get_network_metrics" => self.handle_get_network_metrics(&args),
+            "create_task" => self.handle_create_task(&args),
+            "update_task" => self.handle_update_task(&args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {}", request.name)),
@@ -229,19 +672,12 @@ impl ServerHandler for PkbSearchServer {
         let tools = vec![
             Tool::new(
                 "semantic_search",
-                "Search the personal knowledge base by semantic similarity. \
-                 Returns the most relevant documents ranked by how closely they match the query meaning.",
+                "Search the personal knowledge base by semantic similarity.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The natural language query to search for"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of results to return (default: 10)"
-                        }
+                        "query": { "type": "string", "description": "Natural language query" },
+                        "limit": { "type": "integer", "description": "Max results (default: 10)" }
                     },
                     "required": ["query"]
                 }))
@@ -253,10 +689,7 @@ impl ServerHandler for PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the document (absolute or relative to PKB root)"
-                        }
+                        "path": { "type": "string", "description": "Path to document" }
                     },
                     "required": ["path"]
                 }))
@@ -264,32 +697,115 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "list_documents",
-                "List indexed documents with optional filters by tag, type, or status.",
+                "List indexed documents with optional filters.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "tag": {
-                            "type": "string",
-                            "description": "Filter by tag"
-                        },
-                        "type": {
-                            "type": "string",
-                            "description": "Filter by document type (e.g. note, task)"
-                        },
-                        "status": {
-                            "type": "string",
-                            "description": "Filter by status"
-                        }
+                        "tag": { "type": "string", "description": "Filter by tag" },
+                        "type": { "type": "string", "description": "Filter by type" },
+                        "status": { "type": "string", "description": "Filter by status" }
                     }
                 }))
                 .unwrap(),
             ),
             Tool::new(
                 "reindex",
-                "Force re-scan and re-index the PKB directory. Use after bulk file changes.",
+                "Force re-scan and re-index. Rebuilds vector store and knowledge graph.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {}
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "task_search",
+                "Semantic search filtered to tasks. Returns tasks with graph context.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Query to search tasks" },
+                        "limit": { "type": "integer", "description": "Max results (default: 10)" }
+                    },
+                    "required": ["query"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "get_ready_tasks",
+                "Get actionable tasks sorted by priority and downstream impact.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "description": "Max results (default: 20)" },
+                        "project": { "type": "string", "description": "Filter by project" }
+                    }
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "get_blocked_tasks",
+                "Get blocked tasks with their blockers listed.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "get_task_network",
+                "Get full relationship context for a task.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task ID" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "get_network_metrics",
+                "Get centrality metrics: degree, betweenness, PageRank, downstream weight.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Node ID" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "create_task",
+                "Create a new task markdown file with YAML frontmatter.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Task title" },
+                        "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
+                        "parent": { "type": "string", "description": "Parent task ID" },
+                        "priority": { "type": "integer", "description": "0-4 (0=critical)" },
+                        "project": { "type": "string", "description": "Project name" },
+                        "tags": { "type": "array", "items": { "type": "string" } },
+                        "depends_on": { "type": "array", "items": { "type": "string" } },
+                        "assignee": { "type": "string" },
+                        "complexity": { "type": "string" },
+                        "body": { "type": "string", "description": "Markdown body" }
+                    },
+                    "required": ["title"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "update_task",
+                "Update frontmatter fields on an existing task file.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Path to task file" },
+                        "updates": { "type": "object", "description": "Fields to update (null to remove)" }
+                    },
+                    "required": ["path", "updates"]
                 }))
                 .unwrap(),
             ),
@@ -310,11 +826,10 @@ impl ServerHandler for PkbSearchServer {
                 version: env!("CARGO_PKG_VERSION").into(),
             },
             instructions: Some(
-                "PKB Search - semantic search over personal knowledge base markdown files. \
-                 Use semantic_search to find relevant documents by meaning. \
-                 Use get_document to read a specific file. \
-                 Use list_documents to browse by tag, type, or status. \
-                 Use reindex to force a full re-scan."
+                "PKB Search — semantic search + task graph over personal knowledge base. \
+                 11 tools: semantic_search, get_document, list_documents, reindex, \
+                 task_search, get_ready_tasks, get_blocked_tasks, get_task_network, \
+                 get_network_metrics, create_task, update_task."
                     .to_string(),
             ),
         }
