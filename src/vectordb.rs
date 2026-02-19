@@ -140,6 +140,22 @@ impl VectorStore {
         Ok(())
     }
 
+    /// Insert a document with pre-computed embeddings (no embedding call needed)
+    pub fn insert_precomputed(&mut self, doc: &PkbDocument, chunks: Vec<String>, chunk_embeddings: Vec<Vec<f32>>) {
+        let path_str = doc.path.to_string_lossy().to_string();
+        let entry = DocumentEntry {
+            path: doc.path.clone(),
+            title: doc.title.clone(),
+            doc_type: doc.doc_type.clone(),
+            status: doc.status.clone(),
+            tags: doc.tags.clone(),
+            mtime: doc.mtime,
+            chunk_embeddings,
+            chunk_texts: chunks,
+        };
+        self.documents.insert(path_str, entry);
+    }
+
     /// Remove documents whose files no longer exist
     pub fn remove_deleted(&mut self, existing_paths: &std::collections::HashSet<String>) -> usize {
         let before = self.documents.len();

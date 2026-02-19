@@ -266,7 +266,7 @@ fn main() -> Result<()> {
 
         Commands::Reindex { force } => {
             let (indexed, removed, total) =
-                index_pkb(&pkb_root, &store, &embedder, force);
+                index_pkb(&pkb_root, &db_path, &store, &embedder, force);
             store.read().save(&db_path)?;
             println!("✓ {total} documents ({indexed} indexed, {removed} removed)");
         }
@@ -290,11 +290,13 @@ fn main() -> Result<()> {
 
 fn index_pkb(
     pkb_root: &std::path::Path,
+    db_path: &std::path::Path,
     store: &Arc<RwLock<vectordb::VectorStore>>,
     embedder: &embeddings::Embedder,
     force_all: bool,
 ) -> (usize, usize, usize) {
     use indicatif::{ProgressBar, ProgressStyle};
+    use rayon::prelude::*;
 
     let files = pkb::scan_directory(pkb_root);
 
@@ -324,11 +326,17 @@ fn index_pkb(
                 store.needs_update(&path_str, mtime)
             }
         })
+        .cloned()
         .collect();
 
     let skipped = files.len() - to_process.len();
     if skipped > 0 {
         eprintln!("  {skipped} files unchanged, {} to index", to_process.len());
+    }
+
+    if to_process.is_empty() {
+        let total = store.read().len();
+        return (0, removed, total);
     }
 
     let pb = ProgressBar::new(to_process.len() as u64);
@@ -340,36 +348,57 @@ fn index_pkb(
         .progress_chars("━╸─"),
     );
 
+    // Parse all files in parallel with rayon
+    pb.set_message("parsing...");
+    let parsed: Vec<_> = to_process
+        .par_iter()
+        .filter_map(|path| {
+            pkb::parse_file(path).map(|doc| {
+                let text = doc.embedding_text();
+                let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
+                (doc, chunks)
+            })
+        })
+        .collect();
+
+    // Batch embed and store — batches of 100 docs with progressive saves
     let mut indexed = 0;
-    let mut failed = 0;
 
-    for file_path in &to_process {
-        let filename = file_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("?");
-        pb.set_message(filename.to_string());
+    for batch in parsed.chunks(100) {
+        // Collect all chunks from this batch
+        let mut all_chunks: Vec<&str> = Vec::new();
+        let mut chunk_counts: Vec<usize> = Vec::new();
 
-        match pkb::parse_file(file_path) {
-            Some(doc) => {
-                let mut store = store.write();
-                match store.upsert(&doc, embedder) {
-                    Ok(()) => {
-                        indexed += 1;
-                    }
-                    Err(e) => {
-                        pb.suspend(|| {
-                            eprintln!("  ✗ {}: {e}", file_path.display());
-                        });
-                        failed += 1;
-                    }
-                }
-            }
-            None => {
-                failed += 1;
+        for (_doc, chunks) in batch {
+            chunk_counts.push(chunks.len());
+            for chunk in chunks {
+                all_chunks.push(chunk.as_str());
             }
         }
-        pb.inc(1);
+
+        pb.set_message("embedding...");
+        match embedder.encode_batch(&all_chunks) {
+            Ok(all_embeddings) => {
+                let mut emb_offset = 0;
+                let mut s = store.write();
+                for (i, (doc, chunks)) in batch.iter().enumerate() {
+                    let count = chunk_counts[i];
+                    let doc_embeddings = all_embeddings[emb_offset..emb_offset + count].to_vec();
+                    emb_offset += count;
+                    s.insert_precomputed(doc, chunks.clone(), doc_embeddings);
+                    indexed += 1;
+                }
+            }
+            Err(e) => {
+                pb.suspend(|| eprintln!("  ✗ batch embed failed: {e}"));
+            }
+        }
+        pb.inc(batch.len() as u64);
+
+        // Progressive save so interrupted runs don't lose work
+        if let Err(e) = store.read().save(db_path) {
+            pb.suspend(|| eprintln!("  ✗ progressive save failed: {e}"));
+        }
     }
 
     pb.finish_and_clear();

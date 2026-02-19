@@ -196,28 +196,49 @@ fn get_onnx_runtime_path() -> Option<PathBuf> {
 }
 
 // =============================================================================
-// LAZY MODEL
+// SESSION POOL
 // =============================================================================
 
-struct LazyModel {
-    session: Mutex<Session>,
+/// Number of parallel ONNX sessions (each uses THREADS_PER_SESSION CPU threads)
+const NUM_SESSIONS: usize = 8;
+const THREADS_PER_SESSION: usize = 6;
+
+struct SessionPool {
+    sessions: Vec<Mutex<Session>>,
     tokenizer: tokenizers::Tokenizer,
 }
 
-impl LazyModel {
+impl SessionPool {
     fn new(config: &EmbeddingConfig) -> Result<Self> {
         use ort::session::builder::GraphOptimizationLevel;
 
-        let session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?
-            .commit_from_file(&config.model_path)
-            .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?;
+        eprintln!("  Loading {NUM_SESSIONS} ONNX sessions ({THREADS_PER_SESSION} threads each)...");
+        // Load sessions in parallel for faster startup
+        let model_path = &config.model_path;
+        let sessions: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..NUM_SESSIONS)
+                .map(|_| {
+                    s.spawn(|| {
+                        Session::builder()
+                            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                            .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
+                            .and_then(|b| b.commit_from_file(model_path))
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let sessions: Vec<Mutex<Session>> = sessions
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?
+            .into_iter()
+            .map(Mutex::new)
+            .collect();
 
         let mut tokenizer = tokenizers::Tokenizer::from_file(&config.tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer from {:?}: {e}", config.tokenizer_path))?;
 
-        // Enable padding for batch inference
         tokenizer.with_padding(Some(tokenizers::PaddingParams {
             strategy: tokenizers::PaddingStrategy::Fixed(config.max_length),
             pad_id: 0,
@@ -229,10 +250,19 @@ impl LazyModel {
             ..Default::default()
         })).map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
 
-        Ok(Self {
-            session: Mutex::new(session),
-            tokenizer,
-        })
+        Ok(Self { sessions, tokenizer })
+    }
+
+    /// Get the first available (unlocked) session, or block on session 0
+    fn acquire_session(&self) -> parking_lot::MutexGuard<Session> {
+        // Try each session without blocking
+        for session in &self.sessions {
+            if let Some(guard) = session.try_lock() {
+                return guard;
+            }
+        }
+        // All busy — block on the first one
+        self.sessions[0].lock()
     }
 }
 
@@ -242,7 +272,7 @@ impl LazyModel {
 
 pub struct Embedder {
     config: EmbeddingConfig,
-    lazy_model: OnceLock<std::result::Result<Arc<LazyModel>, String>>,
+    pool: OnceLock<std::result::Result<Arc<SessionPool>, String>>,
 }
 
 impl Embedder {
@@ -278,7 +308,7 @@ impl Embedder {
         eprintln!("  Using MiniLM-L6-v2 ONNX embeddings ({EMBEDDING_DIM}-dim)");
         Ok(Self {
             config,
-            lazy_model: OnceLock::new(),
+            pool: OnceLock::new(),
         })
     }
 
@@ -286,15 +316,15 @@ impl Embedder {
         EMBEDDING_DIM
     }
 
-    fn ensure_model_loaded(&self) -> Result<&Arc<LazyModel>> {
-        let result = self.lazy_model.get_or_init(|| {
-            LazyModel::new(&self.config)
+    fn ensure_pool(&self) -> Result<&Arc<SessionPool>> {
+        let result = self.pool.get_or_init(|| {
+            SessionPool::new(&self.config)
                 .map(Arc::new)
                 .map_err(|e| e.to_string())
         });
 
         match result {
-            Ok(model) => Ok(model),
+            Ok(pool) => Ok(pool),
             Err(e) => bail!("Failed to load ONNX model: {e}"),
         }
     }
@@ -304,31 +334,51 @@ impl Embedder {
         Ok(results.into_iter().next().unwrap_or_else(|| vec![0.0; EMBEDDING_DIM]))
     }
 
-    const MAX_BATCH: usize = 8;
+    const MAX_BATCH: usize = 128;
 
     pub fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(vec![]);
         }
 
-        // Sub-batch to avoid OOM on large documents
+        let pool = self.ensure_pool()?;
+
+        // For large inputs, split across sessions in parallel using rayon
         if texts.len() > Self::MAX_BATCH {
-            let mut all_results = Vec::with_capacity(texts.len());
-            for chunk in texts.chunks(Self::MAX_BATCH) {
-                all_results.extend(self.encode_batch(chunk)?);
+            use rayon::prelude::*;
+            let sub_batches: Vec<&[&str]> = texts.chunks(Self::MAX_BATCH).collect();
+            let results: Vec<Result<Vec<Vec<f32>>>> = sub_batches
+                .par_iter()
+                .map(|batch| self.encode_single_batch(batch, pool))
+                .collect();
+            let mut all = Vec::with_capacity(texts.len());
+            for r in results {
+                all.extend(r?);
             }
-            return Ok(all_results);
+            return Ok(all);
         }
 
-        let model = self.ensure_model_loaded()?;
-        let max_length = self.config.max_length;
+        self.encode_single_batch(texts, pool)
+    }
+
+    fn encode_single_batch(&self, texts: &[&str], pool: &Arc<SessionPool>) -> Result<Vec<Vec<f32>>> {
+        let configured_max = self.config.max_length;
         let batch_size = texts.len();
 
-        // Tokenize all texts at once (padding/truncation configured in LazyModel)
-        let encodings = model
+        // Tokenize all texts at once
+        let encodings = pool
             .tokenizer
             .encode_batch(texts.to_vec(), true)
             .map_err(|e| anyhow::anyhow!("Batch tokenization failed: {e}"))?;
+
+        // Dynamic padding: use the actual max token count in this batch
+        // instead of always padding to configured_max. This is the biggest
+        // speedup — most chunks use far fewer than 256 tokens.
+        let max_length = encodings
+            .iter()
+            .map(|enc| enc.get_ids().len().min(configured_max))
+            .max()
+            .unwrap_or(configured_max);
 
         // Build flat batched tensors [batch_size, max_length]
         let total_len = batch_size * max_length;
@@ -353,12 +403,8 @@ impl Embedder {
         let attention_val = TensorRef::from_array_view((shape, attention_data.as_slice()))?;
         let token_types_val = TensorRef::from_array_view((shape, token_type_data.as_slice()))?;
 
-        // Single ONNX call for entire batch
-        let lock_timeout = std::time::Duration::from_secs(60);
-        let mut session = model
-            .session
-            .try_lock_for(lock_timeout)
-            .ok_or_else(|| anyhow::anyhow!("ONNX session lock timeout"))?;
+        // Acquire a session from the pool and run inference
+        let mut session = pool.acquire_session();
 
         let outputs = session.run(ort::inputs![
             input_ids_val, attention_val, token_types_val
@@ -505,7 +551,12 @@ pub fn chunk_text(text: &str, config: &ChunkConfig) -> Vec<String> {
             break;
         }
 
+        // Ensure forward progress: new start must be past old start
+        let prev_start = start;
         start = end.saturating_sub(config.overlap);
+        if start <= prev_start {
+            start = end; // no overlap if it would go backward
+        }
         while start < text.len() && !text.is_char_boundary(start) {
             start += 1;
         }

@@ -63,6 +63,7 @@ fn default_db_path() -> String {
 /// Index PKB files into the vector store. Returns (indexed, removed, total).
 pub fn index_pkb(
     pkb_root: &std::path::Path,
+    db_path: &std::path::Path,
     store: &Arc<RwLock<vectordb::VectorStore>>,
     embedder: &embeddings::Embedder,
     force_all: bool,
@@ -159,7 +160,7 @@ async fn main() -> Result<()> {
 
     // Index PKB files
     eprintln!("   Indexing PKB files...");
-    let (indexed, removed, total) = index_pkb(&pkb_root, &store, &embedder, cli.reindex);
+    let (indexed, removed, total) = index_pkb(&pkb_root, &db_path, &store, &embedder, cli.reindex);
     eprintln!("   ✓ {total} documents indexed ({indexed} new/updated, {removed} removed)");
 
     // Save after initial indexing

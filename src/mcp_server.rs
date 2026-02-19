@@ -186,7 +186,7 @@ impl PkbSearchServer {
 
     fn handle_reindex(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
         let (indexed, removed, total) =
-            crate::index_pkb(&self.pkb_root, &self.store, &self.embedder, true);
+            crate::index_pkb(&self.pkb_root, &self.db_path, &self.store, &self.embedder, true);
 
         // Save after reindex
         let store = self.store.read();
