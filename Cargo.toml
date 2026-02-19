@@ -2,6 +2,7 @@
 name = "mem"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 description = "Fast-indexer and PKB semantic search MCP server"
 
 [[bin]]
@@ -11,11 +12,6 @@ path = "src/main.rs"
 [[bin]]
 name = "pkb-search"
 path = "src/server.rs"
-
-[features]
-default = []
-# Enable ONNX-based embeddings (requires rustc 1.88+)
-onnx = ["ort", "tokenizers", "ndarray"]
 
 [dependencies]
 # MCP Protocol
@@ -46,10 +42,10 @@ ignore = "0.4"
 notify = "7"
 notify-debouncer-mini = "0.5"
 
-# ONNX Runtime for MiniLM embeddings (optional, requires rustc 1.88+)
-ort = { version = "2.0.0-rc.9", default-features = false, features = ["load-dynamic", "half"], optional = true }
-tokenizers = { version = "0.20", default-features = false, features = ["onig"], optional = true }
-ndarray = { version = "0.16", optional = true }
+# ONNX Runtime for MiniLM embeddings
+ort = { version = "2.0.0-rc.11", default-features = false, features = ["load-dynamic", "half"] }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+ndarray = "0.16"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
@@ -64,7 +60,7 @@ parking_lot = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Model download (for ONNX feature)
+# Model download
 ureq = { version = "2", features = ["json"] }
 flate2 = "1"
 tar = "0.4"
