@@ -33,6 +33,9 @@ impl Default for EmbeddingConfig {
 }
 
 impl EmbeddingConfig {
+    /// Preferred model filenames in priority order (quantized first for speed).
+    const MODEL_NAMES: &[&str] = &["model_quint8_avx2.onnx", "model.onnx"];
+
     pub fn from_env() -> Self {
         let base_path = std::env::var("SHODH_MODEL_PATH")
             .map(PathBuf::from)
@@ -46,15 +49,26 @@ impl EmbeddingConfig {
                 candidates
                     .into_iter()
                     .flatten()
-                    .find(|p| p.join("model.onnx").exists())
+                    .find(|p| Self::find_model(p).is_some())
                     .unwrap_or_else(|| get_cache_dir().join("models/minilm-l6"))
             });
 
+        let model_file = Self::find_model(&base_path)
+            .unwrap_or_else(|| "model_quint8_avx2.onnx".to_string());
+
         Self {
-            model_path: base_path.join("model.onnx"),
+            model_path: base_path.join(model_file),
             tokenizer_path: base_path.join("tokenizer.json"),
             max_length: 256,
         }
+    }
+
+    /// Find the best available model file in a directory.
+    fn find_model(dir: &std::path::Path) -> Option<String> {
+        Self::MODEL_NAMES
+            .iter()
+            .find(|name| dir.join(name).exists())
+            .map(|s| s.to_string())
     }
 }
 
@@ -79,8 +93,9 @@ fn download_models() -> Result<PathBuf> {
 
     let base_url = format!("https://huggingface.co/{MODEL_REPO}/resolve/main");
 
+    // Prefer quantized model for speed (~23MB vs ~90MB, 3-4× faster)
     let files = [
-        ("model.onnx", format!("{base_url}/onnx/model.onnx")),
+        ("model_quint8_avx2.onnx", format!("{base_url}/onnx/model_quint8_avx2.onnx")),
         ("tokenizer.json", format!("{base_url}/tokenizer.json")),
     ];
 
@@ -191,13 +206,28 @@ struct LazyModel {
 
 impl LazyModel {
     fn new(config: &EmbeddingConfig) -> Result<Self> {
+        use ort::session::builder::GraphOptimizationLevel;
+
         let session = Session::builder()?
-            .with_intra_threads(2)?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(4)?
             .commit_from_file(&config.model_path)
             .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?;
 
-        let tokenizer = tokenizers::Tokenizer::from_file(&config.tokenizer_path)
+        let mut tokenizer = tokenizers::Tokenizer::from_file(&config.tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer from {:?}: {e}", config.tokenizer_path))?;
+
+        // Enable padding for batch inference
+        tokenizer.with_padding(Some(tokenizers::PaddingParams {
+            strategy: tokenizers::PaddingStrategy::Fixed(config.max_length),
+            pad_id: 0,
+            pad_token: "[PAD]".to_string(),
+            ..Default::default()
+        }));
+        tokenizer.with_truncation(Some(tokenizers::TruncationParams {
+            max_length: config.max_length,
+            ..Default::default()
+        })).map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
 
         Ok(Self {
             session: Mutex::new(session),
@@ -270,94 +300,118 @@ impl Embedder {
     }
 
     pub fn encode(&self, text: &str) -> Result<Vec<f32>> {
-        if text.is_empty() {
-            return Ok(vec![0.0; EMBEDDING_DIM]);
+        let results = self.encode_batch(&[text])?;
+        Ok(results.into_iter().next().unwrap_or_else(|| vec![0.0; EMBEDDING_DIM]))
+    }
+
+    const MAX_BATCH: usize = 8;
+
+    pub fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Sub-batch to avoid OOM on large documents
+        if texts.len() > Self::MAX_BATCH {
+            let mut all_results = Vec::with_capacity(texts.len());
+            for chunk in texts.chunks(Self::MAX_BATCH) {
+                all_results.extend(self.encode_batch(chunk)?);
+            }
+            return Ok(all_results);
         }
 
         let model = self.ensure_model_loaded()?;
-
-        let lock_timeout = std::time::Duration::from_secs(30);
-        let mut session = model
-            .session
-            .try_lock_for(lock_timeout)
-            .ok_or_else(|| anyhow::anyhow!("ONNX session lock timeout"))?;
-
-        let encoding = model
-            .tokenizer
-            .encode(text, true)
-            .map_err(|e| anyhow::anyhow!("Tokenization failed: {e}"))?;
-
-        let tokens = encoding.get_ids();
-        let attention_mask = encoding.get_attention_mask();
         let max_length = self.config.max_length;
+        let batch_size = texts.len();
 
-        // Build inputs
-        let mut input_ids_data = vec![0i64; max_length];
-        let mut attention_data = vec![0i64; max_length];
-        let token_type_data = vec![0i64; max_length];
+        // Tokenize all texts at once (padding/truncation configured in LazyModel)
+        let encodings = model
+            .tokenizer
+            .encode_batch(texts.to_vec(), true)
+            .map_err(|e| anyhow::anyhow!("Batch tokenization failed: {e}"))?;
 
-        for (i, &token) in tokens.iter().take(max_length).enumerate() {
-            input_ids_data[i] = token as i64;
+        // Build flat batched tensors [batch_size, max_length]
+        let total_len = batch_size * max_length;
+        let mut input_ids_data = vec![0i64; total_len];
+        let mut attention_data = vec![0i64; total_len];
+        let token_type_data = vec![0i64; total_len];
+
+        for (batch_idx, encoding) in encodings.iter().enumerate() {
+            let offset = batch_idx * max_length;
+            for (i, &token) in encoding.get_ids().iter().take(max_length).enumerate() {
+                input_ids_data[offset + i] = token as i64;
+            }
+            for (i, &mask) in encoding.get_attention_mask().iter().take(max_length).enumerate() {
+                attention_data[offset + i] = mask as i64;
+            }
         }
-        for (i, &mask) in attention_mask.iter().take(max_length).enumerate() {
-            attention_data[i] = mask as i64;
-        }
 
-        let shape = [1usize, max_length];
+        let shape = [batch_size, max_length];
 
         use ort::value::TensorRef;
         let input_ids_val = TensorRef::from_array_view((shape, input_ids_data.as_slice()))?;
         let attention_val = TensorRef::from_array_view((shape, attention_data.as_slice()))?;
         let token_types_val = TensorRef::from_array_view((shape, token_type_data.as_slice()))?;
 
+        // Single ONNX call for entire batch
+        let lock_timeout = std::time::Duration::from_secs(60);
+        let mut session = model
+            .session
+            .try_lock_for(lock_timeout)
+            .ok_or_else(|| anyhow::anyhow!("ONNX session lock timeout"))?;
+
         let outputs = session.run(ort::inputs![
             input_ids_val, attention_val, token_types_val
         ])?;
 
-        // Extract output — shape [1, seq_len, 384]
-        let (out_shape, out_data) = outputs[0].try_extract_tensor::<f32>()?;
-        let out_dim = out_shape.last().copied().unwrap_or(EMBEDDING_DIM as i64) as usize;
+        // Extract output — shape [batch_size, seq_len, 384]
+        let (_out_shape, out_data) = outputs[0].try_extract_tensor::<f32>()?;
+        let seq_dim = max_length;
 
-        // Mean pooling over sequence dimension (attention-masked)
-        let mut pooled = vec![0.0f32; EMBEDDING_DIM];
-        let mut mask_sum = 0.0f32;
+        // Mean pooling + L2 normalize for each item in batch
+        let mut results = Vec::with_capacity(batch_size);
+        for batch_idx in 0..batch_size {
+            let batch_offset = batch_idx * seq_dim * EMBEDDING_DIM;
+            let attn_offset = batch_idx * max_length;
 
-        for seq_idx in 0..max_length {
-            if attention_data[seq_idx] == 1 {
-                let offset = seq_idx * out_dim;
-                for dim_idx in 0..EMBEDDING_DIM.min(out_dim) {
-                    pooled[dim_idx] += out_data[offset + dim_idx];
+            let mut pooled = vec![0.0f32; EMBEDDING_DIM];
+            let mut mask_sum = 0.0f32;
+
+            for seq_idx in 0..seq_dim {
+                if attention_data[attn_offset + seq_idx] == 1 {
+                    let token_offset = batch_offset + seq_idx * EMBEDDING_DIM;
+                    for dim_idx in 0..EMBEDDING_DIM {
+                        pooled[dim_idx] += out_data[token_offset + dim_idx];
+                    }
+                    mask_sum += 1.0;
                 }
-                mask_sum += 1.0;
             }
+
+            if mask_sum > 0.0 {
+                for val in &mut pooled {
+                    *val /= mask_sum;
+                }
+            }
+
+            // Clean NaN/Inf
+            for val in pooled.iter_mut() {
+                if val.is_nan() || val.is_infinite() {
+                    *val = 0.0;
+                }
+            }
+
+            // L2 normalize
+            let norm: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > f32::EPSILON && !norm.is_nan() {
+                for val in &mut pooled {
+                    *val /= norm;
+                }
+            }
+
+            results.push(pooled);
         }
 
-        if mask_sum > 0.0 {
-            for val in &mut pooled {
-                *val /= mask_sum;
-            }
-        }
-
-        // Clean NaN/Inf
-        for val in pooled.iter_mut() {
-            if val.is_nan() || val.is_infinite() {
-                *val = 0.0;
-            }
-        }
-
-        // L2 normalize
-        let norm: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > f32::EPSILON && !norm.is_nan() {
-            for val in &mut pooled {
-                *val /= norm;
-            }
-        }
-
-        Ok(pooled)
-    }
-
-    pub fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        texts.iter().map(|text| self.encode(text)).collect()
+        Ok(results)
     }
 }
 
