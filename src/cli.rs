@@ -157,30 +157,18 @@ enum Commands {
 }
 
 fn default_pkb_root() -> String {
-    std::env::var("ACA_DATA").unwrap_or_else(|_| {
-        dirs::home_dir()
-            .map(|h| h.join("brain").to_string_lossy().to_string())
-            .unwrap_or_else(|| "~/brain".to_string())
-    })
+    std::env::var("ACA_DATA").unwrap_or_else(|_| ".".to_string())
 }
 
 fn default_db_path() -> String {
     std::env::var("ACA_DATA")
         .map(|d| {
             PathBuf::from(d)
-                .join("aops_data/pkb_vectors.bin")
+                .join("pkb_vectors.bin")
                 .to_string_lossy()
                 .to_string()
         })
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .map(|h| {
-                    h.join("brain/aops_data/pkb_vectors.bin")
-                        .to_string_lossy()
-                        .to_string()
-                })
-                .unwrap_or_else(|| "pkb_vectors.bin".to_string())
-        })
+        .unwrap_or_else(|_| "pkb_vectors.bin".to_string())
 }
 
 fn load_store(db_path: &PathBuf, dim: usize) -> Result<Arc<RwLock<vectordb::VectorStore>>> {
