@@ -59,7 +59,7 @@ impl EmbeddingConfig {
         Self {
             model_path: base_path.join(model_file),
             tokenizer_path: base_path.join("tokenizer.json"),
-            max_length: 256,
+            max_length: 512,
         }
     }
 
@@ -506,9 +506,9 @@ pub struct ChunkConfig {
 impl Default for ChunkConfig {
     fn default() -> Self {
         Self {
-            chunk_size: 800,
-            overlap: 200,
-            min_chunk_size: 200,
+            chunk_size: 2000,
+            overlap: 500,
+            min_chunk_size: 300,
         }
     }
 }
