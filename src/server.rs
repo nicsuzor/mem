@@ -10,7 +10,7 @@ mod graph_store;
 mod mcp_server;
 mod metrics;
 mod pkb;
-mod task_crud;
+mod document_crud;
 mod task_index;
 mod vectordb;
 

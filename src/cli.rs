@@ -9,7 +9,7 @@ mod graph_store;
 mod mcp_server;
 mod metrics;
 mod pkb;
-mod task_crud;
+mod document_crud;
 mod task_index;
 mod vectordb;
 
@@ -601,7 +601,7 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            let fields = task_crud::TaskFields {
+            let fields = document_crud::TaskFields {
                 title: title_str,
                 parent,
                 priority,
@@ -610,7 +610,7 @@ fn main() -> Result<()> {
                 ..Default::default()
             };
 
-            match task_crud::create_task(&pkb_root, fields) {
+            match document_crud::create_task(&pkb_root, fields) {
                 Ok(path) => {
                     println!("Created: {}", path.display());
 

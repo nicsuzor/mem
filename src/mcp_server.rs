@@ -520,7 +520,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let fields = crate::task_crud::TaskFields {
+        let fields = crate::document_crud::TaskFields {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
             parent: args
@@ -568,7 +568,7 @@ impl PkbSearchServer {
         };
 
         let path =
-            crate::task_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
+            crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!("Failed to create task: {e}")),
                 data: None,
@@ -614,7 +614,7 @@ impl PkbSearchServer {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        crate::task_crud::update_task(&path, update_map).map_err(|e| McpError {
+        crate::document_crud::update_document(&path, update_map).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to update task: {e}")),
             data: None,

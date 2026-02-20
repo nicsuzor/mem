@@ -156,6 +156,13 @@ impl VectorStore {
         self.documents.insert(path_str, entry);
     }
 
+    /// Remove a single document by its absolute path string.
+    ///
+    /// Returns true if the document was found and removed.
+    pub fn remove(&mut self, path: &str) -> bool {
+        self.documents.remove(path).is_some()
+    }
+
     /// Remove documents whose files no longer exist
     pub fn remove_deleted(&mut self, existing_paths: &std::collections::HashSet<String>) -> usize {
         let before = self.documents.len();
