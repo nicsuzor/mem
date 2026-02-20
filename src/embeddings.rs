@@ -167,8 +167,12 @@ fn download_onnx_runtime() -> Result<PathBuf> {
             continue;
         }
         let path = entry.path()?.to_string_lossy().to_string();
-        // Match the real versioned library (e.g. libonnxruntime.so.1.17.0)
-        if path.contains(lib_name) && entry.size() > 0 {
+        // Match the real versioned library:
+        //   Linux:  libonnxruntime.so.1.23.2    (contains "libonnxruntime.so")
+        //   macOS:  libonnxruntime.1.23.2.dylib (version before .dylib extension)
+        let is_ort = path.contains(lib_name)
+            || (path.contains("libonnxruntime.") && path.ends_with(".dylib"));
+        if is_ort && entry.size() > 0 {
             let mut file = std::fs::File::create(&lib_path)?;
             std::io::copy(&mut entry, &mut file)?;
             eprintln!("  ✓ Downloaded ONNX Runtime ({:.1} MB)", entry.size() as f64 / 1_048_576.0);
