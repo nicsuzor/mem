@@ -6,7 +6,7 @@ TARGET_MACOS  = aarch64-apple-darwin
 TARGET_LINUX  = x86_64-unknown-linux-gnu
 RELEASE_DIR   = target/release
 MACOS_DIR     = target/$(TARGET_MACOS)/release
-BINS          = fast-indexer pkb-search aops
+BINS          = pkb-search aops
 
 # macOS SDK sysroot with framework stubs (needed for cross-compile)
 MACOS_SYSROOT ?= /opt/debian/macos-sdk
@@ -16,6 +16,10 @@ MACOS_SYSROOT ?= /opt/debian/macos-sdk
 .PHONY: build
 build:
 	$(CARGO) build --release
+
+.PHONY: install
+install: build
+	$(CARGO) install --path . --bin aops --bin pkb-search
 
 # ── Apple Silicon cross-build ────────────────────────────────────────
 # Requires: zig 0.13, cargo-zigbuild, macOS sysroot with framework stubs
@@ -101,6 +105,7 @@ sizes:
 help:
 	@echo "Targets:"
 	@echo "  build        Release build for current host"
+	@echo "  install      Build and install binaries to CARGO_HOME/bin"
 	@echo "  apple        Cross-compile for Apple Silicon (aarch64-apple-darwin)"
 	@echo "  setup-cross  Install rustup target + cargo-zigbuild + zig instructions"
 	@echo "  check        Type-check without building"

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "aops", about = "AcademicOps — semantic search and task management for your knowledge base")]
+#[command(name = "aops", version, about = "AcademicOps — semantic search and task management for your knowledge base")]
 struct Cli {
     /// Path to the PKB root directory
     #[arg(long, global = true, default_value_t = default_pkb_root())]
