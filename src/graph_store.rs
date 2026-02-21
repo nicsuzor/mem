@@ -52,7 +52,7 @@ impl GraphStore {
     /// 4. Compute inverse relationships (depends_on -> blocks, etc.)
     /// 5. Compute downstream_weight + stakeholder_exposure (BFS)
     /// 6. Classify ready/blocked tasks
-    pub fn build(docs: &[PkbDocument]) -> Self {
+    pub fn build(docs: &[PkbDocument], pkb_root: &Path) -> Self {
         // 1. Extract graph nodes
         let mut nodes: Vec<GraphNode> = docs
             .par_iter()
@@ -60,14 +60,19 @@ impl GraphStore {
             .collect();
 
         // 2. Build lookup maps
+        // Node paths may be relative — reconstruct absolute for canonicalize & link resolution
         let mut id_map: HashMap<String, String> = HashMap::new(); // permalink -> abs_path
         let mut path_to_id: HashMap<String, String> = HashMap::new(); // abs_path -> id
 
         for n in &nodes {
-            let abs_path = n
-                .path
+            let full_path = if n.path.is_absolute() {
+                n.path.clone()
+            } else {
+                pkb_root.join(&n.path)
+            };
+            let abs_path = full_path
                 .canonicalize()
-                .unwrap_or_else(|_| n.path.clone())
+                .unwrap_or(full_path)
                 .to_string_lossy()
                 .to_string();
             path_to_id.insert(abs_path.clone(), n.id.clone());
@@ -79,7 +84,7 @@ impl GraphStore {
         // 3. Build edges from links and frontmatter refs
         let edges: Vec<Edge> = nodes
             .par_iter()
-            .flat_map(|n| build_node_edges(n, &id_map, &path_to_id))
+            .flat_map(|n| build_node_edges(n, &id_map, &path_to_id, pkb_root))
             .collect();
 
         // Deduplicate edges by (source, target, type)
@@ -121,14 +126,14 @@ impl GraphStore {
         }
     }
 
-    /// Build from a directory: scan, parse, build graph.
+    /// Build from a directory: scan, parse (with relative paths), build graph.
     pub fn build_from_directory(root: &Path) -> Self {
         let files = crate::pkb::scan_directory_all(root);
         let docs: Vec<PkbDocument> = files
             .par_iter()
-            .filter_map(|p| crate::pkb::parse_file(p))
+            .filter_map(|p| crate::pkb::parse_file_relative(p, root))
             .collect();
-        Self::build(&docs)
+        Self::build(&docs, root)
     }
 
     // -----------------------------------------------------------------------
@@ -700,11 +705,11 @@ impl GraphStore {
             nodes: self.nodes.values().cloned().collect(),
             edges: self.edges.clone(),
         };
-        let bytes = bincode::serialize(&data)?;
+        let bytes = serde_json::to_vec(&data)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let tmp = path.with_extension("graph.tmp");
+        let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, &bytes)?;
         std::fs::rename(&tmp, path)?;
         Ok(())
@@ -712,7 +717,7 @@ impl GraphStore {
 
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path)?;
-        let data: SavedGraph = bincode::deserialize(&bytes)?;
+        let data: SavedGraph = serde_json::from_slice(&bytes)?;
         let node_map: HashMap<String, GraphNode> =
             data.nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
         let (ready, blocked, roots, by_project) = classify_tasks(&node_map);
@@ -744,12 +749,20 @@ fn build_node_edges(
     n: &GraphNode,
     id_map: &HashMap<String, String>,
     path_to_id: &HashMap<String, String>,
+    pkb_root: &Path,
 ) -> Vec<Edge> {
     let mut edges = Vec::new();
 
+    // Reconstruct absolute source path for link resolution
+    let abs_source = if n.path.is_absolute() {
+        n.path.clone()
+    } else {
+        pkb_root.join(&n.path)
+    };
+
     // Wikilinks / markdown links -> Link edges
     for link in &n.raw_links {
-        if let Some(target_path) = graph::resolve_link(link, &n.path, id_map) {
+        if let Some(target_path) = graph::resolve_link(link, &abs_source, id_map) {
             if let Some(target_id) = path_to_id.get(&target_path) {
                 if n.id != *target_id {
                     edges.push(Edge {

@@ -235,6 +235,18 @@ fn load_store(db_path: &PathBuf, dim: usize) -> Result<Arc<RwLock<vectordb::Vect
     )))
 }
 
+/// Load cached graph from disk (written by MCP server), falling back to directory scan.
+fn load_graph(pkb_root: &std::path::Path, db_path: &std::path::Path) -> graph_store::GraphStore {
+    let graph_path = db_path.with_extension("graph.json");
+    match graph_store::GraphStore::load(&graph_path) {
+        Ok(gs) => gs,
+        Err(e) => {
+            tracing::debug!("Graph cache load failed ({}): {e}", graph_path.display());
+            graph_store::GraphStore::build_from_directory(pkb_root)
+        }
+    }
+}
+
 fn main() -> Result<()> {
     // Quiet logging for CLI mode — only warnings
     tracing_subscriber::fmt()
@@ -249,11 +261,28 @@ fn main() -> Result<()> {
     let pkb_root = PathBuf::from(&cli.pkb_root);
     let db_path = PathBuf::from(&cli.db_path);
 
-    let embedder = Arc::new(embeddings::Embedder::new()?);
-    let store = load_store(&db_path, embedder.dimension())?;
+    // Only load embedder + vector store for commands that need them
+    let needs_embedder = matches!(
+        cli.command,
+        Commands::Search { .. }
+            | Commands::Add { .. }
+            | Commands::Reindex { .. }
+            | Commands::List { .. }
+            | Commands::Status
+    );
+
+    let (embedder, store) = if needs_embedder {
+        let e = Arc::new(embeddings::Embedder::new()?);
+        let s = load_store(&db_path, e.dimension())?;
+        (Some(e), Some(s))
+    } else {
+        (None, None)
+    };
 
     match cli.command {
         Commands::Search { query, limit, full } => {
+            let embedder = embedder.as_ref().unwrap();
+            let store = store.as_ref().unwrap();
             let query_text = query.join(" ");
             if query_text.is_empty() {
                 eprintln!("Error: search query cannot be empty");
@@ -261,7 +290,7 @@ fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode(&query_text)?;
-            let results = store.read().search(&query_embedding, limit);
+            let results = store.read().search(&query_embedding, limit, &pkb_root);
 
             if results.is_empty() {
                 println!("No results found for: {query_text}");
@@ -300,6 +329,8 @@ fn main() -> Result<()> {
         }
 
         Commands::Add { files } => {
+            let embedder = embedder.as_ref().unwrap();
+            let store = store.as_ref().unwrap();
             if files.is_empty() {
                 eprintln!("Error: specify at least one file to add");
                 std::process::exit(1);
@@ -321,10 +352,10 @@ fn main() -> Result<()> {
                     continue;
                 }
 
-                match pkb::parse_file(&path) {
+                match pkb::parse_file_relative(&path, &pkb_root) {
                     Some(doc) => {
                         let title = doc.title.clone();
-                        match store.write().upsert(&doc, &embedder) {
+                        match store.write().upsert(&doc, embedder) {
                             Ok(()) => {
                                 println!("  \x1b[32m✓\x1b[0m {title}");
                                 added += 1;
@@ -353,10 +384,12 @@ fn main() -> Result<()> {
             status,
             count,
         } => {
+            let store = store.as_ref().unwrap();
             let results = store.read().list_documents(
                 tag.as_deref(),
                 doc_type.as_deref(),
                 status.as_deref(),
+                &pkb_root,
             );
 
             if count {
@@ -386,13 +419,24 @@ fn main() -> Result<()> {
         }
 
         Commands::Reindex { force } => {
+            let embedder = embedder.as_ref().unwrap();
+            let store = store.as_ref().unwrap();
             let (indexed, removed, total) =
-                index_pkb(&pkb_root, &db_path, &store, &embedder, force);
+                index_pkb(&pkb_root, &db_path, store, embedder, force);
             store.read().save(&db_path)?;
+
+            // Also rebuild and save graph cache
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let graph_path = db_path.with_extension("graph.json");
+            if let Err(e) = gs.save(&graph_path) {
+                eprintln!("Warning: failed to save graph cache: {e}");
+            }
+
             println!("✓ {total} documents ({indexed} indexed, {removed} removed)");
         }
 
         Commands::Status => {
+            let store = store.as_ref().unwrap();
             let s = store.read();
             let total = s.len();
             let db_size = std::fs::metadata(&db_path)
@@ -410,7 +454,7 @@ fn main() -> Result<()> {
             project,
             sort,
         } => {
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let gs = load_graph(&pkb_root, &db_path);
 
             let tasks: Vec<&graph::GraphNode> = match filter.as_str() {
                 "blocked" => gs.blocked_tasks(),
@@ -466,13 +510,13 @@ fn main() -> Result<()> {
         }
 
         Commands::Task { id } => {
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let gs = load_graph(&pkb_root, &db_path);
 
             match gs.get_node(&id) {
                 Some(node) => {
                     println!();
                     println!("  \x1b[1m{}\x1b[0m", node.label);
-                    println!("  \x1b[2m{}\x1b[0m", node.path.display());
+                    println!("  \x1b[2m{}\x1b[0m", abs_node_path(&node.path, &pkb_root).display());
                     println!();
 
                     if let Some(ref t) = node.node_type {
@@ -544,7 +588,7 @@ fn main() -> Result<()> {
         }
 
         Commands::Deps { id, tree } => {
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let gs = load_graph(&pkb_root, &db_path);
 
             if gs.get_node(&id).is_none() {
                 eprintln!("Task not found: {id}");
@@ -578,7 +622,7 @@ fn main() -> Result<()> {
         }
 
         Commands::Metrics { id } => {
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let gs = load_graph(&pkb_root, &db_path);
             let node_ids: Vec<String> = gs.nodes().map(|n| n.id.clone()).collect();
             let edges = gs.edges();
 
@@ -671,17 +715,6 @@ fn main() -> Result<()> {
             match document_crud::create_task(&pkb_root, fields) {
                 Ok(path) => {
                     println!("Created: {}", path.display());
-
-                    // Auto-index the new file
-                    if let Some(doc) = pkb::parse_file(&path) {
-                        match store.write().upsert(&doc, &embedder) {
-                            Ok(()) => {
-                                store.read().save(&db_path)?;
-                                println!("Indexed: {}", doc.title);
-                            }
-                            Err(e) => eprintln!("Warning: failed to index: {e}"),
-                        }
-                    }
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -691,11 +724,11 @@ fn main() -> Result<()> {
         }
 
         Commands::Done { id } => {
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let gs = load_graph(&pkb_root, &db_path);
 
             match gs.get_node(&id) {
                 Some(node) => {
-                    let path = node.path.clone();
+                    let path = abs_node_path(&node.path, &pkb_root);
                     let mut updates = std::collections::HashMap::new();
                     updates.insert(
                         "status".to_string(),
@@ -703,13 +736,6 @@ fn main() -> Result<()> {
                     );
 
                     document_crud::update_document(&path, updates)?;
-
-                    // Re-index the updated file
-                    if let Some(doc) = pkb::parse_file(&path) {
-                        let _ = store.write().upsert(&doc, &embedder);
-                        store.read().save(&db_path)?;
-                    }
-
                     println!("Done: {} ({})", node.label, id);
                 }
                 None => {
@@ -727,11 +753,11 @@ fn main() -> Result<()> {
             assignee,
             tags,
         } => {
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let gs = load_graph(&pkb_root, &db_path);
 
             match gs.get_node(&id) {
                 Some(node) => {
-                    let path = node.path.clone();
+                    let path = abs_node_path(&node.path, &pkb_root);
                     let mut updates = std::collections::HashMap::new();
 
                     if let Some(s) = status {
@@ -761,13 +787,6 @@ fn main() -> Result<()> {
                     }
 
                     document_crud::update_document(&path, updates)?;
-
-                    // Re-index the updated file
-                    if let Some(doc) = pkb::parse_file(&path) {
-                        let _ = store.write().upsert(&doc, &embedder);
-                        store.read().save(&db_path)?;
-                    }
-
                     println!("Updated: {} ({})", node.label, id);
                 }
                 None => {
@@ -778,14 +797,14 @@ fn main() -> Result<()> {
         }
 
         Commands::Context { id, hops } => {
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let gs = load_graph(&pkb_root, &db_path);
 
             match gs.resolve(&id) {
                 Some(node) => {
                     let node_id = node.id.clone();
                     println!();
                     println!("  \x1b[1m{}\x1b[0m", node.label);
-                    println!("  \x1b[2m{}\x1b[0m", node.path.display());
+                    println!("  \x1b[2m{}\x1b[0m", abs_node_path(&node.path, &pkb_root).display());
                     println!();
 
                     if let Some(ref t) = node.node_type {
@@ -887,7 +906,7 @@ fn main() -> Result<()> {
             to,
             max_paths,
         } => {
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let gs = load_graph(&pkb_root, &db_path);
 
             let from_node = match gs.resolve(&from) {
                 Some(n) => n,
@@ -940,7 +959,7 @@ fn main() -> Result<()> {
         }
 
         Commands::Orphans => {
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let gs = load_graph(&pkb_root, &db_path);
             let mut orphans = gs.orphans();
 
             if orphans.is_empty() {
@@ -966,12 +985,12 @@ fn main() -> Result<()> {
                     "  \x1b[1m{}\x1b[0m{type_str}",
                     node.label,
                 );
-                println!("  \x1b[2m{}\x1b[0m\n", node.path.display());
+                println!("  \x1b[2m{}\x1b[0m\n", abs_node_path(&node.path, &pkb_root).display());
             }
         }
 
         Commands::Graph { format, output } => {
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let gs = load_graph(&pkb_root, &db_path);
 
             match format.to_lowercase().as_str() {
                 "all" => {
@@ -1056,9 +1075,15 @@ fn index_pkb(
 
     let files = pkb::scan_directory(pkb_root);
 
+    // Use relative paths for store keys (portable across machines)
     let existing_paths: std::collections::HashSet<String> = files
         .iter()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| {
+            p.strip_prefix(pkb_root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .to_string()
+        })
         .collect();
 
     let removed = {
@@ -1070,7 +1095,11 @@ fn index_pkb(
     let to_process: Vec<_> = files
         .iter()
         .filter(|file_path| {
-            let path_str = file_path.to_string_lossy().to_string();
+            let path_str = file_path
+                .strip_prefix(pkb_root)
+                .unwrap_or(file_path)
+                .to_string_lossy()
+                .to_string();
             let mtime = std::fs::metadata(file_path)
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
@@ -1104,12 +1133,12 @@ fn index_pkb(
         .progress_chars("━╸─"),
     );
 
-    // Parse all files in parallel with rayon
+    // Parse all files in parallel with rayon (relative paths for portable storage)
     pb.set_message("parsing...");
     let parsed: Vec<_> = to_process
         .par_iter()
         .filter_map(|path| {
-            pkb::parse_file(path).map(|doc| {
+            pkb::parse_file_relative(path, pkb_root).map(|doc| {
                 let text = doc.embedding_text();
                 let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
                 (doc, chunks)
@@ -1161,6 +1190,15 @@ fn index_pkb(
 
     let total = store.read().len();
     (indexed, removed, total)
+}
+
+/// Reconstruct an absolute path from a (possibly relative) node path.
+fn abs_node_path(path: &std::path::Path, pkb_root: &std::path::Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        pkb_root.join(path)
+    }
 }
 
 fn score_to_bar(score: f32) -> String {

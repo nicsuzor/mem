@@ -53,6 +53,15 @@ impl PkbSearchServer {
         }
     }
 
+    /// Reconstruct an absolute path from a (possibly relative) graph node path.
+    fn abs_path(&self, rel: &Path) -> PathBuf {
+        if rel.is_absolute() {
+            rel.to_path_buf()
+        } else {
+            self.pkb_root.join(rel)
+        }
+    }
+
     fn args_to_value(args: Option<JsonObject>) -> JsonValue {
         match args {
             Some(map) => JsonValue::Object(map),
@@ -60,9 +69,13 @@ impl PkbSearchServer {
         }
     }
 
-    /// Rebuild the graph store (e.g. after CRUD operations)
+    /// Rebuild the graph store (e.g. after CRUD operations) and persist to disk
     fn rebuild_graph(&self) {
         let new_graph = GraphStore::build_from_directory(&self.pkb_root);
+        let graph_path = self.db_path.with_extension("graph.json");
+        if let Err(e) = new_graph.save(&graph_path) {
+            tracing::error!("Failed to save graph: {e}");
+        }
         *self.graph.write() = new_graph;
     }
 
@@ -92,7 +105,7 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let results = store.search(&query_embedding, limit);
+        let results = store.search(&query_embedding, limit, &self.pkb_root);
 
         if results.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -169,7 +182,7 @@ impl PkbSearchServer {
         let status = args.get("status").and_then(|v| v.as_str());
 
         let store = self.store.read();
-        let results = store.list_documents(tag, doc_type, status);
+        let results = store.list_documents(tag, doc_type, status, &self.pkb_root);
 
         if results.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -237,7 +250,7 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let results = store.search(&query_embedding, limit * 3);
+        let results = store.search(&query_embedding, limit * 3, &self.pkb_root);
 
         let graph = self.graph.read();
         let mut output = String::new();
@@ -262,9 +275,10 @@ impl PkbSearchServer {
             ));
             output.push_str(&format!("**Path:** `{}`\n", r.path.display()));
 
+            // Compare using absolute paths (SearchResult is abs, node.path may be relative)
             let path_str = r.path.to_string_lossy();
             for node in graph.nodes() {
-                if node.path.to_string_lossy() == path_str {
+                if self.abs_path(&node.path).to_string_lossy() == path_str {
                     if let Some(ref s) = node.status {
                         output.push_str(&format!("**Status:** {s}\n"));
                     }
@@ -404,7 +418,7 @@ impl PkbSearchServer {
         })?;
 
         let mut output = format!("## {} — {}\n\n", id, node.label);
-        output.push_str(&format!("**Path:** `{}`\n", node.path.display()));
+        output.push_str(&format!("**Path:** `{}`\n", self.abs_path(&node.path).display()));
 
         if let Some(ref s) = node.status {
             output.push_str(&format!("**Status:** {s}\n"));
@@ -574,8 +588,8 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        // Index the new file
-        if let Some(doc) = crate::pkb::parse_file(&path) {
+        // Index the new file (with relative path for portable storage)
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
             let _ = self.store.read().save(&self.db_path);
         }
@@ -617,7 +631,7 @@ impl PkbSearchServer {
 
         let node_id = node.id.clone();
         let mut output = format!("## {} — {}\n\n", node_id, node.label);
-        output.push_str(&format!("**Path:** `{}`\n", node.path.display()));
+        output.push_str(&format!("**Path:** `{}`\n", self.abs_path(&node.path).display()));
 
         if let Some(ref t) = node.node_type {
             output.push_str(&format!("**Type:** {t}\n"));
@@ -729,7 +743,7 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let results = store.search(&query_embedding, limit * 2);
+        let results = store.search(&query_embedding, limit * 2, &self.pkb_root);
 
         // Build proximity boost map if boost_id provided
         let boost_map: std::collections::HashMap<String, f32> = if let Some(bid) = boost_id {
@@ -756,7 +770,7 @@ impl PkbSearchServer {
                 let path_str = r.path.to_string_lossy();
                 let node_id = graph
                     .nodes()
-                    .find(|n| n.path.to_string_lossy() == path_str)
+                    .find(|n| self.abs_path(&n.path).to_string_lossy() == path_str)
                     .map(|n| n.id.clone());
 
                 let boost = node_id
@@ -917,7 +931,7 @@ impl PkbSearchServer {
             if let Some(ref t) = node.node_type {
                 output.push_str(&format!(" [{t}]"));
             }
-            output.push_str(&format!(" — `{}`\n", node.path.display()));
+            output.push_str(&format!(" — `{}`\n", self.abs_path(&node.path).display()));
         }
 
         if total > limit {
@@ -958,8 +972,8 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        // Re-index the updated file
-        if let Some(doc) = crate::pkb::parse_file(&path) {
+        // Re-index the updated file (with relative path for portable storage)
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
             let _ = self.store.read().save(&self.db_path);
         }

@@ -54,7 +54,8 @@ pub struct Edge {
 ///
 /// Contains all metadata needed for graph building, task management,
 /// and centrality computation. Constructed via [`GraphNode::from_pkb_document`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GraphNode {
     pub id: String,
     pub path: PathBuf,

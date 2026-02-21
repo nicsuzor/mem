@@ -64,9 +64,15 @@ pub fn index_pkb(
     let files = pkb::scan_directory(pkb_root);
     tracing::info!("Found {} markdown files in {}", files.len(), pkb_root.display());
 
+    // Use relative paths for store keys (portable across machines)
     let existing_paths: HashSet<String> = files
         .iter()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| {
+            p.strip_prefix(pkb_root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .to_string()
+        })
         .collect();
 
     // Remove deleted files
@@ -78,7 +84,10 @@ pub fn index_pkb(
     // Index new/modified files
     let mut indexed = 0;
     for file_path in &files {
-        let path_str = file_path.to_string_lossy().to_string();
+        let rel_path = file_path
+            .strip_prefix(pkb_root)
+            .unwrap_or(file_path);
+        let path_str = rel_path.to_string_lossy().to_string();
 
         // Check if file needs updating
         let mtime = std::fs::metadata(file_path)
@@ -97,7 +106,7 @@ pub fn index_pkb(
             continue;
         }
 
-        match pkb::parse_file(file_path) {
+        match pkb::parse_file_relative(file_path, pkb_root) {
             Some(doc) => {
                 let mut store = store.write();
                 match store.upsert(&doc, embedder) {
@@ -162,11 +171,12 @@ async fn main() -> Result<()> {
         store_read.save(&db_path)?;
     }
 
-    // Build graph store
+    // Build graph store and persist for CLI consumption
     eprintln!("   Building knowledge graph...");
-    let graph = Arc::new(RwLock::new(
-        graph_store::GraphStore::build_from_directory(&pkb_root),
-    ));
+    let graph_store = graph_store::GraphStore::build_from_directory(&pkb_root);
+    let graph_path = db_path.with_extension("graph.json");
+    let _ = graph_store.save(&graph_path);
+    let graph = Arc::new(RwLock::new(graph_store));
     eprintln!(
         "   {} nodes, {} edges",
         graph.read().node_count(),

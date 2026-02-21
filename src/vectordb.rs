@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// A stored document entry with its embeddings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentEntry {
-    /// Absolute file path
+    /// File path (relative to pkb_root for portability)
     pub path: PathBuf,
     /// Document title
     pub title: String,
@@ -47,7 +47,7 @@ pub struct SearchResult {
 /// Persistent vector store
 #[derive(Serialize, Deserialize)]
 pub struct VectorStore {
-    /// Map from absolute file path (string) to document entry
+    /// Map from file path (relative to pkb_root) to document entry
     documents: HashMap<String, DocumentEntry>,
     /// Embedding dimension
     dimension: usize,
@@ -174,8 +174,11 @@ impl VectorStore {
         removed
     }
 
-    /// Semantic search: find the top-k most similar documents to a query
-    pub fn search(&self, query_embedding: &[f32], limit: usize) -> Vec<SearchResult> {
+    /// Semantic search: find the top-k most similar documents to a query.
+    ///
+    /// Returned `SearchResult.path` values are reconstructed as absolute paths
+    /// by joining with `pkb_root`.
+    pub fn search(&self, query_embedding: &[f32], limit: usize, pkb_root: &Path) -> Vec<SearchResult> {
         // Build candidate list: for each document, use max similarity across chunks
         let mut results: Vec<SearchResult> = Vec::new();
 
@@ -200,8 +203,13 @@ impl VectorStore {
             }
 
             if best_score > f32::NEG_INFINITY {
+                let abs_path = if entry.path.is_absolute() {
+                    entry.path.clone()
+                } else {
+                    pkb_root.join(&entry.path)
+                };
                 results.push(SearchResult {
-                    path: entry.path.clone(),
+                    path: abs_path,
                     title: entry.title.clone(),
                     score: best_score,
                     snippet: best_snippet,
@@ -221,12 +229,15 @@ impl VectorStore {
         results
     }
 
-    /// List documents with optional filters
+    /// List documents with optional filters.
+    ///
+    /// Returned paths are reconstructed as absolute by joining with `pkb_root`.
     pub fn list_documents(
         &self,
         tag_filter: Option<&str>,
         type_filter: Option<&str>,
         status_filter: Option<&str>,
+        pkb_root: &Path,
     ) -> Vec<SearchResult> {
         let mut results: Vec<SearchResult> = Vec::new();
 
@@ -250,8 +261,13 @@ impl VectorStore {
                 }
             }
 
+            let abs_path = if entry.path.is_absolute() {
+                entry.path.clone()
+            } else {
+                pkb_root.join(&entry.path)
+            };
             results.push(SearchResult {
-                path: entry.path.clone(),
+                path: abs_path,
                 title: entry.title.clone(),
                 score: 0.0,
                 snippet: String::new(),

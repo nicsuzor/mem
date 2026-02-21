@@ -14,7 +14,7 @@ use std::time::SystemTime;
 /// Parsed document from the PKB
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PkbDocument {
-    /// Absolute file path
+    /// File path (relative to pkb_root when persisted, absolute at parse time)
     pub path: PathBuf,
     /// Document title (from frontmatter or filename)
     pub title: String,
@@ -143,6 +143,16 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         mtime,
         frontmatter: fm_data,
     })
+}
+
+/// Parse a file and store a path relative to `pkb_root` (for portable persistence).
+pub fn parse_file_relative(path: &Path, pkb_root: &Path) -> Option<PkbDocument> {
+    let mut doc = parse_file(path)?;
+    doc.path = path
+        .strip_prefix(pkb_root)
+        .unwrap_or(path)
+        .to_path_buf();
+    Some(doc)
 }
 
 /// Scan a directory for ALL markdown files (ignoring .gitignore).
