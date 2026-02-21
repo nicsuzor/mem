@@ -1,6 +1,6 @@
-//! PKB CLI — interactive search and file management for the PKB vector store
+//! PKB CLI — interactive search and task management for the PKB vector store
 //!
-//! Provides subcommands: search, add, list, reindex, status
+//! Provides subcommands: search, add, reindex, status, tasks, task, deps, ...
 
 mod distance;
 mod embeddings;
@@ -56,37 +56,6 @@ enum Commands {
         files: Vec<PathBuf>,
     },
 
-    /// List indexed documents
-    List {
-        /// Filter by tag
-        #[arg(short, long)]
-        tag: Option<String>,
-
-        /// Filter by document type
-        #[arg(short = 'T', long = "type")]
-        doc_type: Option<String>,
-
-        /// Filter by status
-        #[arg(short, long)]
-        status: Option<String>,
-
-        /// Filter by project
-        #[arg(short = 'P', long)]
-        project: Option<String>,
-
-        /// Maximum number of results
-        #[arg(short = 'n', long)]
-        limit: Option<usize>,
-
-        /// Skip first N results
-        #[arg(long, default_value_t = 0)]
-        offset: usize,
-
-        /// Show counts only
-        #[arg(short, long)]
-        count: bool,
-    },
-
     /// Reindex all PKB files
     Reindex {
         /// Force reindex even if files unchanged
@@ -97,7 +66,7 @@ enum Commands {
     /// Show index status
     Status,
 
-    /// List tasks (ready, blocked, or all)
+    /// List tasks (ready, blocked, or all) — tree view by default
     Tasks {
         /// Filter: ready, blocked, all (default: ready)
         #[arg(default_value = "ready")]
@@ -107,9 +76,9 @@ enum Commands {
         #[arg(short, long)]
         project: Option<String>,
 
-        /// Sort by: priority, weight, due (default: priority)
-        #[arg(short, long, default_value = "priority")]
-        sort: String,
+        /// Show flat table instead of tree
+        #[arg(long)]
+        flat: bool,
     },
 
     /// Show task details and relationships
@@ -348,7 +317,6 @@ fn main() -> Result<()> {
         Commands::Search { .. }
             | Commands::Add { .. }
             | Commands::Reindex { .. }
-            | Commands::List { .. }
             | Commands::Status
     );
 
@@ -459,57 +427,6 @@ fn main() -> Result<()> {
             println!("\n{added} added, {failed} failed, {} total", store.read().len());
         }
 
-        Commands::List {
-            tag,
-            doc_type,
-            status,
-            project,
-            limit,
-            offset,
-            count,
-        } => {
-            let store = store.as_ref().unwrap();
-            let results = store.read().list_documents(
-                tag.as_deref(),
-                doc_type.as_deref(),
-                status.as_deref(),
-                project.as_deref(),
-                &pkb_root,
-            );
-            let total = results.len();
-
-            if count {
-                println!("{total}");
-                return Ok(());
-            }
-
-            if results.is_empty() {
-                println!("No documents found.");
-                return Ok(());
-            }
-
-            let page: Vec<_> = results.into_iter().skip(offset).take(limit.unwrap_or(total)).collect();
-
-            println!();
-            for result in &page {
-                let meta = format_meta(&result.doc_type, &result.status, &result.tags);
-                println!(
-                    "  \x1b[1m{}\x1b[0m{meta}",
-                    result.title,
-                );
-                println!(
-                    "  \x1b[2m{}\x1b[0m",
-                    result.path.display()
-                );
-                println!();
-            }
-            if page.len() < total {
-                println!("{} of {total} documents (offset {offset})", page.len());
-            } else {
-                println!("{total} documents");
-            }
-        }
-
         Commands::Reindex { force } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
@@ -544,7 +461,7 @@ fn main() -> Result<()> {
         Commands::Tasks {
             filter,
             project,
-            sort,
+            flat,
         } => {
             let gs = load_graph(&pkb_root, &db_path);
 
@@ -555,10 +472,10 @@ fn main() -> Result<()> {
             };
 
             // Filter by project
-            let tasks: Vec<&&graph::GraphNode> = if let Some(ref proj) = project {
-                tasks.iter().filter(|t| t.project.as_deref() == Some(proj)).collect()
+            let tasks: Vec<&graph::GraphNode> = if let Some(ref proj) = project {
+                tasks.into_iter().filter(|t| t.project.as_deref() == Some(proj)).collect()
             } else {
-                tasks.iter().collect()
+                tasks
             };
 
             if tasks.is_empty() {
@@ -566,39 +483,192 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
-            println!();
-            println!(
-                "  \x1b[1m{:<12} {:>4}  {:>6}  {}\x1b[0m",
-                "ID", "PRI", "WEIGHT", "TITLE"
-            );
-            println!("  {}", "-".repeat(60));
-
-            for task in &tasks {
-                let pri = task.priority.unwrap_or(2);
-                let pri_color = match pri {
-                    0 => "\x1b[31m",  // red
-                    1 => "\x1b[33m",  // yellow
-                    2 => "\x1b[0m",   // default
-                    3 => "\x1b[2m",   // dim
-                    _ => "\x1b[2m",
-                };
-                let weight = if task.downstream_weight > 0.0 {
-                    format!("{:.1}", task.downstream_weight)
-                } else {
-                    "-".to_string()
-                };
-                let exposure = if task.stakeholder_exposure { "!" } else { "" };
-
+            if flat {
+                // ── Flat table (old default) ──
+                println!();
                 println!(
-                    "  {:<12} {pri_color}{:>4}\x1b[0m  {:>5}{:<1}  {}",
-                    task.task_id.as_deref().unwrap_or(&task.id),
-                    pri,
-                    weight,
-                    exposure,
-                    task.label,
+                    "  \x1b[1m{:<12} {:>4}  {:>6}  {}\x1b[0m",
+                    "ID", "PRI", "WEIGHT", "TITLE"
                 );
+                println!("  {}", "-".repeat(60));
+
+                for task in &tasks {
+                    let pri = task.priority.unwrap_or(2);
+                    let pri_color = match pri {
+                        0 => "\x1b[31m",
+                        1 => "\x1b[33m",
+                        2 => "\x1b[0m",
+                        3 => "\x1b[2m",
+                        _ => "\x1b[2m",
+                    };
+                    let weight = if task.downstream_weight > 0.0 {
+                        format!("{:.1}", task.downstream_weight)
+                    } else {
+                        "-".to_string()
+                    };
+                    let exposure = if task.stakeholder_exposure { "!" } else { "" };
+                    println!(
+                        "  {:<12} {pri_color}{:>4}\x1b[0m  {:>5}{:<1}  {}",
+                        task.task_id.as_deref().unwrap_or(&task.id),
+                        pri,
+                        weight,
+                        exposure,
+                        task.label,
+                    );
+                }
+                println!("\n  {} {} tasks", tasks.len(), filter);
+            } else {
+                // ── Tree view (default) ──
+                use std::collections::{HashMap, HashSet};
+
+                // Build set of visible task IDs for filtering
+                let visible: HashSet<&str> = tasks
+                    .iter()
+                    .map(|t| t.id.as_str())
+                    .collect();
+
+                // Group by project
+                let mut by_proj: HashMap<&str, Vec<&graph::GraphNode>> = HashMap::new();
+                for task in &tasks {
+                    let proj = task
+                        .project
+                        .as_deref()
+                        .unwrap_or("_no_project");
+                    by_proj.entry(proj).or_default().push(task);
+                }
+
+                // Sort project names: alphabetical, _no_project last
+                let mut proj_names: Vec<&str> = by_proj.keys().copied().collect();
+                proj_names.sort_by(|a, b| {
+                    if *a == "_no_project" {
+                        std::cmp::Ordering::Greater
+                    } else if *b == "_no_project" {
+                        std::cmp::Ordering::Less
+                    } else {
+                        a.cmp(b)
+                    }
+                });
+
+                // Helper: format a single task line
+                fn format_task_line(task: &graph::GraphNode) -> String {
+                    let pri = task.priority.unwrap_or(2);
+                    let pri_color = match pri {
+                        0 => "\x1b[31m",
+                        1 => "\x1b[33m",
+                        2 => "",
+                        _ => "\x1b[2m",
+                    };
+                    let pri_reset = if pri_color.is_empty() { "" } else { "\x1b[0m" };
+                    let exposure = if task.stakeholder_exposure { "!" } else { " " };
+                    let weight = if task.downstream_weight > 0.0 {
+                        format!("  \x1b[2mwt:{:.1}\x1b[0m", task.downstream_weight)
+                    } else {
+                        String::new()
+                    };
+                    let tid = task.task_id.as_deref().unwrap_or(&task.id);
+                    format!(
+                        "{pri_color}P{pri}{exposure}{pri_reset} {:<50} \x1b[2m{tid}\x1b[0m{weight}",
+                        task.label,
+                    )
+                }
+
+                // Helper: sort siblings by priority then weight desc
+                fn sort_siblings(nodes: &mut [&graph::GraphNode]) {
+                    nodes.sort_by(|a, b| {
+                        a.priority
+                            .unwrap_or(2)
+                            .cmp(&b.priority.unwrap_or(2))
+                            .then(
+                                b.downstream_weight
+                                    .partial_cmp(&a.downstream_weight)
+                                    .unwrap_or(std::cmp::Ordering::Equal),
+                            )
+                            .then(a.label.cmp(&b.label))
+                    });
+                }
+
+                // Recursive tree renderer
+                fn render_tree(
+                    gs: &graph_store::GraphStore,
+                    node: &graph::GraphNode,
+                    visible: &HashSet<&str>,
+                    prefix: &str,
+                    is_last: bool,
+                    output: &mut Vec<String>,
+                ) {
+                    let connector = if is_last { "└── " } else { "├── " };
+                    let line = format_task_line(node);
+                    output.push(format!("{prefix}{connector}{line}"));
+
+                    // Find visible children
+                    let mut children: Vec<&graph::GraphNode> = node
+                        .children
+                        .iter()
+                        .filter(|cid| visible.contains(cid.as_str()))
+                        .filter_map(|cid| gs.get_node(cid))
+                        .collect();
+                    sort_siblings(&mut children);
+
+                    let child_prefix = if is_last {
+                        format!("{prefix}    ")
+                    } else {
+                        format!("{prefix}│   ")
+                    };
+
+                    for (i, child) in children.iter().enumerate() {
+                        let child_is_last = i == children.len() - 1;
+                        render_tree(gs, child, visible, &child_prefix, child_is_last, output);
+                    }
+                }
+
+                let mut total = 0;
+                println!();
+                for (pi, proj_name) in proj_names.iter().enumerate() {
+                    let proj_tasks = by_proj.get(proj_name).unwrap();
+                    let count = proj_tasks.len();
+                    total += count;
+
+                    // Find roots for this project: tasks whose parent is not in visible set
+                    let mut roots: Vec<&graph::GraphNode> = proj_tasks
+                        .iter()
+                        .filter(|t| {
+                            match &t.parent {
+                                None => true,
+                                Some(pid) => !visible.contains(pid.as_str()),
+                            }
+                        })
+                        .copied()
+                        .collect();
+                    sort_siblings(&mut roots);
+
+                    // Project header
+                    let display_name = if *proj_name == "_no_project" {
+                        "ungrouped"
+                    } else {
+                        proj_name
+                    };
+                    println!(
+                        "\x1b[1;36m{}\x1b[0m  \x1b[2m({} {})\x1b[0m",
+                        display_name, count, filter
+                    );
+
+                    // Render each root and its subtree
+                    let mut lines: Vec<String> = Vec::new();
+                    for (i, root) in roots.iter().enumerate() {
+                        let is_last = i == roots.len() - 1;
+                        render_tree(&gs, root, &visible, "", is_last, &mut lines);
+                    }
+                    for line in &lines {
+                        println!("{line}");
+                    }
+
+                    // Blank line between projects (but not after the last)
+                    if pi < proj_names.len() - 1 {
+                        println!();
+                    }
+                }
+                println!("\n\x1b[2m{} {} tasks across {} projects\x1b[0m", total, filter, proj_names.len());
             }
-            println!("\n  {} {} tasks", tasks.len(), filter);
         }
 
         Commands::Task { id } => {
@@ -1459,24 +1529,3 @@ fn truncate_snippet(text: &str, max_len: usize) -> String {
     format!("{}…", &text[..end])
 }
 
-fn format_meta(
-    doc_type: &Option<String>,
-    status: &Option<String>,
-    tags: &[String],
-) -> String {
-    let mut parts = Vec::new();
-    if let Some(t) = doc_type {
-        parts.push(format!("\x1b[35m{t}\x1b[0m"));
-    }
-    if let Some(s) = status {
-        parts.push(format!("\x1b[33m{s}\x1b[0m"));
-    }
-    if !tags.is_empty() {
-        parts.push(format!("\x1b[36m[{}]\x1b[0m", tags.join(", ")));
-    }
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!("  {}", parts.join(" "))
-    }
-}
