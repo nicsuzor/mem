@@ -1012,6 +1012,65 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    fn handle_get_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        // Resolve ID to graph node (supports exact ID, filename stem, title)
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Task not found: {id}")),
+            data: None,
+        })?;
+
+        let abs_path = self.abs_path(&node.path);
+
+        if !abs_path.exists() {
+            return Err(McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!(
+                    "Task file not found on disk: {}",
+                    abs_path.display()
+                )),
+                data: None,
+            });
+        }
+
+        let content = std::fs::read_to_string(&abs_path).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to read task file: {e}")),
+            data: None,
+        })?;
+
+        // Parse YAML frontmatter
+        let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+        let parsed = matter.parse(&content);
+
+        let frontmatter = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<JsonValue>().ok())
+            .unwrap_or(JsonValue::Object(serde_json::Map::new()));
+
+        let body = parsed.content.trim().to_string();
+
+        let result = serde_json::json!({
+            "frontmatter": frontmatter,
+            "body": body,
+            "path": abs_path.to_string_lossy(),
+        });
+
+        let json = serde_json::to_string_pretty(&result).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
     fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let path_str = args
             .get("path")
@@ -1077,6 +1136,7 @@ impl ServerHandler for PkbSearchServer {
             "get_task_network" => self.handle_get_task_network(&args),
             "get_network_metrics" => self.handle_get_network_metrics(&args),
             "create_task" => self.handle_create_task(&args),
+            "get_task" => self.handle_get_task(&args),
             "update_task" => self.handle_update_task(&args),
             "pkb_context" => self.handle_pkb_context(&args),
             "pkb_search" => self.handle_pkb_search(&args),
@@ -1231,6 +1291,18 @@ impl ServerHandler for PkbSearchServer {
                 .unwrap(),
             ),
             Tool::new(
+                "get_task",
+                "Retrieve a task by ID. Returns parsed YAML frontmatter as structured JSON, the markdown body, and the file path.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task ID (e.g. 'framework-6b4325a1'). Also accepts filename stem or title." }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
                 "update_task",
                 "Update frontmatter fields on an existing task file.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -1316,9 +1388,9 @@ impl ServerHandler for PkbSearchServer {
             },
             instructions: Some(
                 "PKB Search — semantic search + task graph over personal knowledge base. \
-                 15 tools: semantic_search, get_document, list_documents, reindex, \
+                 16 tools: semantic_search, get_document, list_documents, reindex, \
                  task_search, get_ready_tasks, get_blocked_tasks, get_task_network, \
-                 get_network_metrics, create_task, update_task, pkb_context, \
+                 get_network_metrics, create_task, get_task, update_task, pkb_context, \
                  pkb_search, pkb_trace, pkb_orphans."
                     .to_string(),
             ),
