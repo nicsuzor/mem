@@ -905,10 +905,29 @@ impl PkbSearchServer {
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
-            .unwrap_or(20) as usize;
+            .map(|v| v as usize);
+
+        let type_filter: Option<Vec<String>> = args
+            .get("types")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            });
 
         let graph = self.graph.read();
         let mut orphans = graph.orphans();
+
+        // Filter by type if requested
+        if let Some(ref types) = type_filter {
+            orphans.retain(|n| {
+                n.node_type
+                    .as_deref()
+                    .map(|t| types.iter().any(|f| f.eq_ignore_ascii_case(t)))
+                    .unwrap_or(false)
+            });
+        }
 
         if orphans.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -919,14 +938,20 @@ impl PkbSearchServer {
         // Sort by label for consistent output
         orphans.sort_by(|a, b| a.label.cmp(&b.label));
 
+        let max = limit.unwrap_or(orphans.len());
         let total = orphans.len();
-        let showing = total.min(limit);
+        let showing = total.min(max);
+
+        let type_desc = type_filter
+            .as_ref()
+            .map(|t| format!(" (types: {})", t.join(", ")))
+            .unwrap_or_default();
 
         let mut output = format!(
-            "**{total} orphan nodes** (showing {showing})\n\nThese nodes have no edges — no incoming or outgoing connections.\n\n"
+            "**{total} orphan nodes{type_desc}** (showing {showing})\n\nThese nodes have no edges — no incoming or outgoing connections.\n\n"
         );
 
-        for node in orphans.iter().take(limit) {
+        for node in orphans.iter().take(max) {
             output.push_str(&format!("- **{}**", node.label));
             if let Some(ref t) = node.node_type {
                 output.push_str(&format!(" [{t}]"));
@@ -934,8 +959,8 @@ impl PkbSearchServer {
             output.push_str(&format!(" — `{}`\n", self.abs_path(&node.path).display()));
         }
 
-        if total > limit {
-            output.push_str(&format!("\n...and {} more\n", total - limit));
+        if total > max {
+            output.push_str(&format!("\n...and {} more\n", total - max));
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -1208,11 +1233,12 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "pkb_orphans",
-                "Find disconnected nodes with zero edges (no incoming or outgoing connections).",
+                "Find disconnected nodes with zero edges (no incoming or outgoing connections). Filter by node type to find e.g. orphan tasks only.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "limit": { "type": "integer", "description": "Max results (default: 20)" }
+                        "limit": { "type": "integer", "description": "Max results (default: all). Set to 0 for unlimited." },
+                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Omit for all types." }
                     }
                 }))
                 .unwrap(),

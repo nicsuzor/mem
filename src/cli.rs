@@ -200,7 +200,11 @@ enum Commands {
     },
 
     /// Find disconnected (orphan) nodes with no edges
-    Orphans,
+    Orphans {
+        /// Filter by node type (e.g. task, project, note)
+        #[arg(short = 'T', long = "type")]
+        node_type: Option<String>,
+    },
 
     /// Export knowledge graph
     Graph {
@@ -958,9 +962,18 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Orphans => {
+        Commands::Orphans { node_type } => {
             let gs = load_graph(&pkb_root, &db_path);
             let mut orphans = gs.orphans();
+
+            if let Some(ref t) = node_type {
+                orphans.retain(|n| {
+                    n.node_type
+                        .as_deref()
+                        .map(|nt| nt.eq_ignore_ascii_case(t))
+                        .unwrap_or(false)
+                });
+            }
 
             if orphans.is_empty() {
                 println!("No orphan nodes found.");
@@ -969,9 +982,14 @@ fn main() -> Result<()> {
 
             orphans.sort_by(|a, b| a.label.cmp(&b.label));
 
+            let type_desc = node_type
+                .as_ref()
+                .map(|t| format!(" [{t}]"))
+                .unwrap_or_default();
+
             println!();
             println!(
-                "  \x1b[1m{} orphan nodes\x1b[0m (no incoming or outgoing edges)\n",
+                "  \x1b[1m{} orphan nodes{type_desc}\x1b[0m (no incoming or outgoing edges)\n",
                 orphans.len()
             );
 
