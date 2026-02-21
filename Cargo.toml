@@ -6,10 +6,6 @@ rust-version = "1.88"
 description = "Fast-indexer and PKB semantic search MCP server"
 
 [[bin]]
-name = "fast-indexer"
-path = "src/main.rs"
-
-[[bin]]
 name = "pkb-search"
 path = "src/server.rs"
 

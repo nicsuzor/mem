@@ -178,11 +178,11 @@ enum Commands {
 
     /// Export knowledge graph
     Graph {
-        /// Output format: json, graphml, dot
+        /// Output format: json, graphml, dot, mcp-index, all
         #[arg(short, long, default_value = "json")]
         format: String,
 
-        /// Output file (default: stdout)
+        /// Output file (default: stdout; for 'all' format, used as base name)
         #[arg(short, long)]
         output: Option<String>,
     },
@@ -754,23 +754,70 @@ fn main() -> Result<()> {
         Commands::Graph { format, output } => {
             let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
 
-            let content = match format.as_str() {
-                "graphml" => gs.output_graphml(),
-                "dot" => gs.output_dot(),
-                _ => gs.output_json()?,
-            };
+            match format.to_lowercase().as_str() {
+                "all" => {
+                    let base = output.as_deref().unwrap_or("graph");
+                    let base = base
+                        .trim_end_matches(".json")
+                        .trim_end_matches(".graphml")
+                        .trim_end_matches(".dot");
 
-            match output {
-                Some(path) => {
-                    std::fs::write(&path, &content)?;
+                    let json_path = format!("{base}.json");
+                    std::fs::write(&json_path, gs.output_json()?)?;
+                    println!("  Saved {json_path}");
+
+                    let graphml_path = format!("{base}.graphml");
+                    std::fs::write(&graphml_path, gs.output_graphml())?;
+                    println!("  Saved {graphml_path}");
+
+                    let dot_path = format!("{base}.dot");
+                    std::fs::write(&dot_path, gs.output_dot())?;
+                    println!("  Saved {dot_path}");
+
                     println!(
-                        "Graph: {} nodes, {} edges -> {}",
+                        "Graph: {} nodes, {} edges (3 formats)",
                         gs.node_count(),
                         gs.edge_count(),
-                        path
                     );
                 }
-                None => print!("{content}"),
+                "mcp-index" => {
+                    let index = task_index::build_mcp_index(&gs, &pkb_root);
+                    let json = serde_json::to_string_pretty(&index)?;
+
+                    match output {
+                        Some(path) => {
+                            std::fs::write(&path, &json)?;
+                            println!(
+                                "MCP index: {} tasks, {} ready, {} blocked -> {}",
+                                index.tasks.len(),
+                                index.ready.len(),
+                                index.blocked.len(),
+                                path,
+                            );
+                        }
+                        None => print!("{json}"),
+                    }
+                }
+                _ => {
+                    let content = match format.as_str() {
+                        "graphml" => gs.output_graphml(),
+                        "dot" => gs.output_dot(),
+                        _ => gs.output_json()?,
+                    };
+
+                    match output {
+                        Some(path) => {
+                            std::fs::write(&path, &content)?;
+                            println!(
+                                "Graph: {} nodes, {} edges -> {}",
+                                gs.node_count(),
+                                gs.edge_count(),
+                                path
+                            );
+                        }
+                        None => print!("{content}"),
+                    }
+                }
             }
         }
     }
