@@ -176,6 +176,32 @@ enum Commands {
         tags: Option<Vec<String>>,
     },
 
+    /// Show full knowledge neighbourhood for a node
+    Context {
+        /// Node ID, task ID, filename stem, or title
+        id: String,
+
+        /// Neighbourhood radius in hops
+        #[arg(long, default_value_t = 2)]
+        hops: usize,
+    },
+
+    /// Find shortest paths between two nodes
+    Trace {
+        /// Source node (ID, filename, or title)
+        from: String,
+
+        /// Target node (ID, filename, or title)
+        to: String,
+
+        /// Maximum paths to show
+        #[arg(short = 'n', long, default_value_t = 3)]
+        max_paths: usize,
+    },
+
+    /// Find disconnected (orphan) nodes with no edges
+    Orphans,
+
     /// Export knowledge graph
     Graph {
         /// Output format: json, graphml, dot, mcp-index, all
@@ -748,6 +774,199 @@ fn main() -> Result<()> {
                     eprintln!("Task not found: {id}");
                     std::process::exit(1);
                 }
+            }
+        }
+
+        Commands::Context { id, hops } => {
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+
+            match gs.resolve(&id) {
+                Some(node) => {
+                    let node_id = node.id.clone();
+                    println!();
+                    println!("  \x1b[1m{}\x1b[0m", node.label);
+                    println!("  \x1b[2m{}\x1b[0m", node.path.display());
+                    println!();
+
+                    if let Some(ref t) = node.node_type {
+                        println!("  Type:     {t}");
+                    }
+                    if let Some(ref s) = node.status {
+                        println!("  Status:   {s}");
+                    }
+                    if let Some(p) = node.priority {
+                        println!("  Priority: {p}");
+                    }
+                    if let Some(ref proj) = node.project {
+                        println!("  Project:  {proj}");
+                    }
+                    if let Some(ref due) = node.due {
+                        println!("  Due:      {due}");
+                    }
+                    if !node.tags.is_empty() {
+                        println!("  Tags:     {}", node.tags.join(", "));
+                    }
+
+                    // Relationships
+                    if !node.depends_on.is_empty() {
+                        println!("\n  \x1b[1mDepends on:\x1b[0m");
+                        for dep in &node.depends_on {
+                            let label = gs.get_node(dep).map(|n| n.label.as_str()).unwrap_or("?");
+                            println!("    <- {dep} ({label})");
+                        }
+                    }
+                    if !node.blocks.is_empty() {
+                        println!("\n  \x1b[1mBlocks:\x1b[0m");
+                        for b in &node.blocks {
+                            let label = gs.get_node(b).map(|n| n.label.as_str()).unwrap_or("?");
+                            println!("    -> {b} ({label})");
+                        }
+                    }
+                    if !node.children.is_empty() {
+                        println!("\n  \x1b[1mChildren:\x1b[0m");
+                        for c in &node.children {
+                            let label = gs.get_node(c).map(|n| n.label.as_str()).unwrap_or("?");
+                            let status = gs
+                                .get_node(c)
+                                .and_then(|n| n.status.as_deref())
+                                .unwrap_or("?");
+                            println!("    {c} [{status}] {label}");
+                        }
+                    }
+                    if let Some(ref p) = node.parent {
+                        let label = gs.get_node(p).map(|n| n.label.as_str()).unwrap_or("?");
+                        println!("\n  \x1b[1mParent:\x1b[0m {p} ({label})");
+                    }
+
+                    // Backlinks by type
+                    let backlinks = gs.backlinks_by_type(&node_id);
+                    if !backlinks.is_empty() {
+                        println!("\n  \x1b[1mBacklinks:\x1b[0m");
+                        let mut types: Vec<_> = backlinks.keys().collect();
+                        types.sort();
+                        for ntype in types {
+                            let entries = &backlinks[ntype];
+                            println!("    \x1b[36m{ntype}\x1b[0m ({} links)", entries.len());
+                            for (src, edge_type) in entries {
+                                println!(
+                                    "      {} \x1b[2m[{}]\x1b[0m {}",
+                                    src.id,
+                                    edge_type.as_str(),
+                                    src.label
+                                );
+                            }
+                        }
+                    }
+
+                    // Ego subgraph
+                    let nearby = gs.ego_subgraph(&node_id, hops);
+                    if !nearby.is_empty() {
+                        println!("\n  \x1b[1mNearby ({hops}-hop):\x1b[0m");
+                        let mut sorted = nearby;
+                        sorted.sort_by_key(|(_, d)| *d);
+                        for (nid, dist) in &sorted {
+                            let label = gs
+                                .get_node(nid)
+                                .map(|n| n.label.as_str())
+                                .unwrap_or("?");
+                            println!("    [{dist}] {nid} ({label})");
+                        }
+                    }
+
+                    println!();
+                }
+                None => {
+                    eprintln!("Node not found: {id}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Trace {
+            from,
+            to,
+            max_paths,
+        } => {
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+
+            let from_node = match gs.resolve(&from) {
+                Some(n) => n,
+                None => {
+                    eprintln!("Source node not found: {from}");
+                    std::process::exit(1);
+                }
+            };
+            let from_id = from_node.id.clone();
+
+            let to_node = match gs.resolve(&to) {
+                Some(n) => n,
+                None => {
+                    eprintln!("Target node not found: {to}");
+                    std::process::exit(1);
+                }
+            };
+            let to_id = to_node.id.clone();
+
+            let paths = gs.all_shortest_paths(&from_id, &to_id, max_paths);
+
+            if paths.is_empty() {
+                println!("No path found between {from_id} and {to_id}");
+                return Ok(());
+            }
+
+            println!();
+            println!(
+                "  \x1b[1m{} path(s)\x1b[0m ({} hops)",
+                paths.len(),
+                paths[0].len() - 1
+            );
+            println!();
+
+            for (i, path) in paths.iter().enumerate() {
+                println!("  Path {}:", i + 1);
+                for (j, nid) in path.iter().enumerate() {
+                    let label = gs
+                        .get_node(nid)
+                        .map(|n| n.label.as_str())
+                        .unwrap_or("?");
+                    if j == 0 {
+                        println!("    {nid} ({label})");
+                    } else {
+                        println!("    \x1b[2m→\x1b[0m {nid} ({label})");
+                    }
+                }
+                println!();
+            }
+        }
+
+        Commands::Orphans => {
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let mut orphans = gs.orphans();
+
+            if orphans.is_empty() {
+                println!("No orphan nodes found.");
+                return Ok(());
+            }
+
+            orphans.sort_by(|a, b| a.label.cmp(&b.label));
+
+            println!();
+            println!(
+                "  \x1b[1m{} orphan nodes\x1b[0m (no incoming or outgoing edges)\n",
+                orphans.len()
+            );
+
+            for node in &orphans {
+                let type_str = node
+                    .node_type
+                    .as_deref()
+                    .map(|t| format!(" \x1b[35m[{t}]\x1b[0m"))
+                    .unwrap_or_default();
+                println!(
+                    "  \x1b[1m{}\x1b[0m{type_str}",
+                    node.label,
+                );
+                println!("  \x1b[2m{}\x1b[0m\n", node.path.display());
             }
         }
 

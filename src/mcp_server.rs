@@ -589,6 +589,344 @@ impl PkbSearchServer {
         ))]))
     }
 
+    // =========================================================================
+    // KNOWLEDGE GRAPH TOOLS (4)
+    // =========================================================================
+
+    fn handle_pkb_context(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let hops = args
+            .get("hops")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(2) as usize;
+
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Node not found: {id}")),
+            data: None,
+        })?;
+
+        let node_id = node.id.clone();
+        let mut output = format!("## {} — {}\n\n", node_id, node.label);
+        output.push_str(&format!("**Path:** `{}`\n", node.path.display()));
+
+        if let Some(ref t) = node.node_type {
+            output.push_str(&format!("**Type:** {t}\n"));
+        }
+        if let Some(ref s) = node.status {
+            output.push_str(&format!("**Status:** {s}\n"));
+        }
+        if let Some(p) = node.priority {
+            output.push_str(&format!("**Priority:** {p}\n"));
+        }
+        if let Some(ref proj) = node.project {
+            output.push_str(&format!("**Project:** {proj}\n"));
+        }
+        if let Some(ref due) = node.due {
+            output.push_str(&format!("**Due:** {due}\n"));
+        }
+        if !node.tags.is_empty() {
+            output.push_str(&format!("**Tags:** {}\n", node.tags.join(", ")));
+        }
+
+        // Direct relationships
+        if !node.depends_on.is_empty() {
+            output.push_str("\n### Depends on\n");
+            for dep in &node.depends_on {
+                let label = graph.get_node(dep).map(|n| n.label.as_str()).unwrap_or("?");
+                output.push_str(&format!("- `{dep}` — {label}\n"));
+            }
+        }
+        if !node.blocks.is_empty() {
+            output.push_str("\n### Blocks\n");
+            for b in &node.blocks {
+                let label = graph.get_node(b).map(|n| n.label.as_str()).unwrap_or("?");
+                output.push_str(&format!("- `{b}` — {label}\n"));
+            }
+        }
+        if !node.children.is_empty() {
+            output.push_str("\n### Children\n");
+            for c in &node.children {
+                let label = graph.get_node(c).map(|n| n.label.as_str()).unwrap_or("?");
+                let status = graph
+                    .get_node(c)
+                    .and_then(|n| n.status.as_deref())
+                    .unwrap_or("?");
+                output.push_str(&format!("- `{c}` [{status}] {label}\n"));
+            }
+        }
+        if let Some(ref p) = node.parent {
+            let label = graph.get_node(p).map(|n| n.label.as_str()).unwrap_or("?");
+            output.push_str(&format!("\n**Parent:** `{p}` — {label}\n"));
+        }
+
+        // Backlinks grouped by type
+        let backlinks = graph.backlinks_by_type(&node_id);
+        if !backlinks.is_empty() {
+            output.push_str("\n### Backlinks (by source type)\n");
+            let mut types: Vec<_> = backlinks.keys().collect();
+            types.sort();
+            for ntype in types {
+                let entries = &backlinks[ntype];
+                output.push_str(&format!("\n**{ntype}** ({} links)\n", entries.len()));
+                for (source_node, edge_type) in entries {
+                    output.push_str(&format!(
+                        "- `{}` [{:?}] {}\n",
+                        source_node.id, edge_type, source_node.label
+                    ));
+                }
+            }
+        }
+
+        // Ego subgraph (nearby nodes)
+        let nearby = graph.ego_subgraph(&node_id, hops);
+        if !nearby.is_empty() {
+            output.push_str(&format!("\n### Nearby nodes ({hops}-hop neighbourhood)\n"));
+            let mut sorted = nearby;
+            sorted.sort_by_key(|(_, d)| *d);
+            for (nid, dist) in &sorted {
+                let label = graph
+                    .get_node(nid)
+                    .map(|n| n.label.as_str())
+                    .unwrap_or("?");
+                output.push_str(&format!("- [hop {dist}] `{nid}` — {label}\n"));
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_pkb_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: query"),
+                data: None,
+            })?;
+
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
+
+        let boost_id = args.get("boost_id").and_then(|v| v.as_str());
+
+        let query_embedding = self.embedder.encode(query).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Embedding error: {e}")),
+            data: None,
+        })?;
+
+        let store = self.store.read();
+        let results = store.search(&query_embedding, limit * 2);
+
+        // Build proximity boost map if boost_id provided
+        let boost_map: std::collections::HashMap<String, f32> = if let Some(bid) = boost_id {
+            let graph = self.graph.read();
+            if let Some(node) = graph.resolve(bid) {
+                let node_id = node.id.clone();
+                graph
+                    .ego_subgraph(&node_id, 3)
+                    .into_iter()
+                    .map(|(nid, dist)| (nid, 0.3 / dist as f32))
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            }
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        // Score and sort results
+        let graph = self.graph.read();
+        let mut scored: Vec<_> = results
+            .iter()
+            .map(|r| {
+                let path_str = r.path.to_string_lossy();
+                let node_id = graph
+                    .nodes()
+                    .find(|n| n.path.to_string_lossy() == path_str)
+                    .map(|n| n.id.clone());
+
+                let boost = node_id
+                    .as_ref()
+                    .and_then(|nid| boost_map.get(nid))
+                    .unwrap_or(&0.0);
+
+                (r, r.score * (1.0 + boost))
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+
+        if scored.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No results found.",
+            )]));
+        }
+
+        let mut output = format!(
+            "**Found {} results for:** \"{}\"{}\n\n",
+            scored.len(),
+            query,
+            if boost_id.is_some() {
+                " (with graph proximity boost)"
+            } else {
+                ""
+            }
+        );
+
+        for (i, (r, score)) in scored.iter().enumerate() {
+            output.push_str(&format!(
+                "### {}. {} (score: {:.3})\n",
+                i + 1,
+                r.title,
+                score
+            ));
+            output.push_str(&format!("**Path:** `{}`\n", r.path.display()));
+            if let Some(ref dt) = r.doc_type {
+                output.push_str(&format!("**Type:** {dt}\n"));
+            }
+            if !r.tags.is_empty() {
+                output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
+            }
+            if !r.snippet.is_empty() {
+                output.push_str(&format!("\n> {}\n", r.snippet.replace('\n', "\n> ")));
+            }
+            output.push('\n');
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_pkb_trace(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let from = args
+            .get("from")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: from"),
+                data: None,
+            })?;
+
+        let to = args
+            .get("to")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: to"),
+                data: None,
+            })?;
+
+        let max_paths = args
+            .get("max_paths")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3) as usize;
+
+        let graph = self.graph.read();
+
+        let from_node = graph.resolve(from).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Source node not found: {from}")),
+            data: None,
+        })?;
+        let from_id = from_node.id.clone();
+        let from_label = from_node.label.clone();
+
+        let to_node = graph.resolve(to).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Target node not found: {to}")),
+            data: None,
+        })?;
+        let to_id = to_node.id.clone();
+        let to_label = to_node.label.clone();
+
+        let paths = graph.all_shortest_paths(&from_id, &to_id, max_paths);
+
+        if paths.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No path found between `{from_id}` ({from_label}) and `{to_id}` ({to_label})."
+            ))]));
+        }
+
+        let mut output = format!(
+            "## Paths from `{from_id}` to `{to_id}`\n\n**{} path(s) found** (length: {} hops)\n\n",
+            paths.len(),
+            paths[0].len() - 1
+        );
+
+        for (i, path) in paths.iter().enumerate() {
+            output.push_str(&format!("### Path {}\n", i + 1));
+            for (j, nid) in path.iter().enumerate() {
+                let label = graph
+                    .get_node(nid)
+                    .map(|n| n.label.as_str())
+                    .unwrap_or("?");
+                let prefix = if j == 0 {
+                    "  "
+                } else {
+                    "  → "
+                };
+                output.push_str(&format!("{prefix}`{nid}` ({label})\n"));
+            }
+            output.push('\n');
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_pkb_orphans(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20) as usize;
+
+        let graph = self.graph.read();
+        let mut orphans = graph.orphans();
+
+        if orphans.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No orphan nodes found. All nodes have at least one connection.",
+            )]));
+        }
+
+        // Sort by label for consistent output
+        orphans.sort_by(|a, b| a.label.cmp(&b.label));
+
+        let total = orphans.len();
+        let showing = total.min(limit);
+
+        let mut output = format!(
+            "**{total} orphan nodes** (showing {showing})\n\nThese nodes have no edges — no incoming or outgoing connections.\n\n"
+        );
+
+        for node in orphans.iter().take(limit) {
+            output.push_str(&format!("- **{}**", node.label));
+            if let Some(ref t) = node.node_type {
+                output.push_str(&format!(" [{t}]"));
+            }
+            output.push_str(&format!(" — `{}`\n", node.path.display()));
+        }
+
+        if total > limit {
+            output.push_str(&format!("\n...and {} more\n", total - limit));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
     fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let path_str = args
             .get("path")
@@ -655,6 +993,10 @@ impl ServerHandler for PkbSearchServer {
             "get_network_metrics" => self.handle_get_network_metrics(&args),
             "create_task" => self.handle_create_task(&args),
             "update_task" => self.handle_update_task(&args),
+            "pkb_context" => self.handle_pkb_context(&args),
+            "pkb_search" => self.handle_pkb_search(&args),
+            "pkb_trace" => self.handle_pkb_trace(&args),
+            "pkb_orphans" => self.handle_pkb_orphans(&args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {}", request.name)),
@@ -809,6 +1151,58 @@ impl ServerHandler for PkbSearchServer {
                 }))
                 .unwrap(),
             ),
+            Tool::new(
+                "pkb_context",
+                "Get full knowledge neighbourhood for a node: metadata, relationships, backlinks grouped by source type, and nearby nodes within N hops. Supports flexible ID resolution (by ID, filename, title).",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Node ID, task ID, filename stem, or title" },
+                        "hops": { "type": "integer", "description": "Neighbourhood radius in hops (default: 2)" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "pkb_search",
+                "Hybrid semantic + graph-proximity search. Optionally boost results near a specific node.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Natural language search query" },
+                        "limit": { "type": "integer", "description": "Max results (default: 10)" },
+                        "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" }
+                    },
+                    "required": ["query"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "pkb_trace",
+                "Find shortest paths between two nodes in the knowledge graph. Shows up to N paths with node labels.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "from": { "type": "string", "description": "Source node (ID, filename, or title)" },
+                        "to": { "type": "string", "description": "Target node (ID, filename, or title)" },
+                        "max_paths": { "type": "integer", "description": "Maximum paths to return (default: 3)" }
+                    },
+                    "required": ["from", "to"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "pkb_orphans",
+                "Find disconnected nodes with zero edges (no incoming or outgoing connections).",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "description": "Max results (default: 20)" }
+                    }
+                }))
+                .unwrap(),
+            ),
         ];
 
         std::future::ready(Ok(ListToolsResult {
@@ -827,9 +1221,10 @@ impl ServerHandler for PkbSearchServer {
             },
             instructions: Some(
                 "PKB Search — semantic search + task graph over personal knowledge base. \
-                 11 tools: semantic_search, get_document, list_documents, reindex, \
+                 15 tools: semantic_search, get_document, list_documents, reindex, \
                  task_search, get_ready_tasks, get_blocked_tasks, get_task_network, \
-                 get_network_metrics, create_task, update_task."
+                 get_network_metrics, create_task, update_task, pkb_context, \
+                 pkb_search, pkb_trace, pkb_orphans."
                     .to_string(),
             ),
         }
