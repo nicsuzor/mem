@@ -144,6 +144,38 @@ enum Commands {
         tags: Option<Vec<String>>,
     },
 
+    /// Mark a task as done
+    Done {
+        /// Task ID
+        id: String,
+    },
+
+    /// Update task frontmatter fields
+    Update {
+        /// Task ID
+        id: String,
+
+        /// Status (active, in_progress, blocked, waiting, review, merge_ready, done, cancelled)
+        #[arg(short, long)]
+        status: Option<String>,
+
+        /// Priority (0=critical, 1=high, 2=medium, 3=low, 4=someday)
+        #[arg(short, long)]
+        priority: Option<i32>,
+
+        /// Project name
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Assignee
+        #[arg(short, long)]
+        assignee: Option<String>,
+
+        /// Tags (comma-separated, replaces existing)
+        #[arg(short, long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+    },
+
     /// Export knowledge graph
     Graph {
         /// Output format: json, graphml, dot
@@ -627,6 +659,93 @@ fn main() -> Result<()> {
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Done { id } => {
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+
+            match gs.get_node(&id) {
+                Some(node) => {
+                    let path = node.path.clone();
+                    let mut updates = std::collections::HashMap::new();
+                    updates.insert(
+                        "status".to_string(),
+                        serde_json::Value::String("done".to_string()),
+                    );
+
+                    document_crud::update_document(&path, updates)?;
+
+                    // Re-index the updated file
+                    if let Some(doc) = pkb::parse_file(&path) {
+                        let _ = store.write().upsert(&doc, &embedder);
+                        store.read().save(&db_path)?;
+                    }
+
+                    println!("Done: {} ({})", node.label, id);
+                }
+                None => {
+                    eprintln!("Task not found: {id}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Update {
+            id,
+            status,
+            priority,
+            project,
+            assignee,
+            tags,
+        } => {
+            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
+
+            match gs.get_node(&id) {
+                Some(node) => {
+                    let path = node.path.clone();
+                    let mut updates = std::collections::HashMap::new();
+
+                    if let Some(s) = status {
+                        updates.insert("status".to_string(), serde_json::Value::String(s));
+                    }
+                    if let Some(p) = priority {
+                        updates.insert(
+                            "priority".to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(p)),
+                        );
+                    }
+                    if let Some(proj) = project {
+                        updates.insert("project".to_string(), serde_json::Value::String(proj));
+                    }
+                    if let Some(a) = assignee {
+                        updates.insert("assignee".to_string(), serde_json::Value::String(a));
+                    }
+                    if let Some(t) = tags {
+                        let tag_values: Vec<serde_json::Value> =
+                            t.into_iter().map(serde_json::Value::String).collect();
+                        updates.insert("tags".to_string(), serde_json::Value::Array(tag_values));
+                    }
+
+                    if updates.is_empty() {
+                        eprintln!("No updates specified. Use --status, --priority, --project, --assignee, or --tags.");
+                        std::process::exit(1);
+                    }
+
+                    document_crud::update_document(&path, updates)?;
+
+                    // Re-index the updated file
+                    if let Some(doc) = pkb::parse_file(&path) {
+                        let _ = store.write().upsert(&doc, &embedder);
+                        store.read().save(&db_path)?;
+                    }
+
+                    println!("Updated: {} ({})", node.label, id);
+                }
+                None => {
+                    eprintln!("Task not found: {id}");
                     std::process::exit(1);
                 }
             }
