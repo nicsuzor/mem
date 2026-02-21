@@ -1,49 +1,92 @@
 # mem
 
-Semantic search over personal knowledge base markdown files, exposed as an MCP server.
+Semantic search and knowledge graph over personal knowledge base markdown files, exposed as an MCP server and CLI.
 
 Uses [MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) for 384-dimensional sentence embeddings via ONNX Runtime. Models and runtime are auto-downloaded on first run.
 
 ## Quick Start
 
 ```bash
-cargo build --release --bin pkb-search
+# Build both binaries
+cargo build --release
 
-# Run with defaults (PKB at ~/brain or $ACA_DATA)
+# Run MCP server (stdio transport)
 ./target/release/pkb-search
 
-# Custom PKB root
-./target/release/pkb-search /path/to/notes
-
-# Force full reindex
-./target/release/pkb-search --reindex
+# Run CLI
+./target/release/aops search "my query"
 ```
+
+## CLI Commands
+
+The `aops` binary provides direct access to search, task management, and graph analysis.
+
+### Search & Index
+
+| Command | Description |
+|---------|-------------|
+| `aops search <query> [-n limit] [--full]` | Semantic search across the knowledge base |
+| `aops add <files...>` | Add markdown files to the index |
+| `aops list [--tag T] [--type T] [--status S] [--count]` | List indexed documents with optional filters |
+| `aops reindex [--force]` | Re-scan and re-index all PKB files |
+| `aops status` | Show index statistics (document count, DB size) |
+
+### Task Management
+
+| Command | Description |
+|---------|-------------|
+| `aops tasks [ready\|blocked\|all] [--project P] [--sort S]` | List tasks sorted by priority + downstream weight |
+| `aops task <id>` | Show task details and relationships |
+| `aops new <title> [--parent ID] [--priority N] [--project P] [--tags T]` | Create a new task |
+| `aops done <id>` | Mark a task as done |
+| `aops update <id> [--status S] [--priority N] [--project P] [--assignee A] [--tags T]` | Update task frontmatter fields |
+| `aops deps <id> [--tree]` | Show dependency tree for a task |
+
+### Knowledge Graph
+
+| Command | Description |
+|---------|-------------|
+| `aops context <id> [--hops N]` | Full knowledge neighbourhood: metadata, backlinks by type, nearby nodes within N hops. Supports flexible ID resolution (by ID, filename, or title). |
+| `aops trace <from> <to> [-n max_paths]` | Find shortest paths between two nodes in the graph |
+| `aops orphans` | List disconnected nodes with no incoming or outgoing edges |
+| `aops metrics [id]` | Network centrality metrics (PageRank, betweenness, degree). Omit ID for top-20 summary. |
+| `aops graph [--format json\|graphml\|dot\|mcp-index\|all] [--output path]` | Export the full knowledge graph |
 
 ## MCP Tools
 
-| Tool               | Description                                                                 |
-| ------------------- | --------------------------------------------------------------------------- |
-| `semantic_search`  | Find documents by meaning. Params: `query` (string), `limit` (int, default 10) |
-| `get_document`     | Read full contents of a file. Params: `path` (string)                      |
-| `list_documents`   | Browse/filter documents. Params: `tag`, `type`, `status` (all optional)    |
-| `reindex`          | Force a full re-scan of the PKB directory                                  |
+The `pkb-search` server exposes 15 tools over MCP (stdio transport).
+
+### Search Tools
+
+| Tool | Description |
+|------|-------------|
+| `semantic_search` | Find documents by meaning. Params: `query` (string), `limit` (int, default 10) |
+| `get_document` | Read full contents of a file. Params: `path` (string) |
+| `list_documents` | Browse/filter documents. Params: `tag`, `type`, `status` (all optional) |
+| `reindex` | Force a full re-scan of the PKB directory and rebuild the knowledge graph |
+
+### Task Tools
+
+| Tool | Description |
+|------|-------------|
+| `task_search` | Semantic search filtered to tasks/projects/goals. Returns graph context. Params: `query`, `limit` |
+| `get_ready_tasks` | Actionable tasks sorted by priority + downstream impact. Params: `limit` (default 20), `project` |
+| `get_blocked_tasks` | Blocked tasks with their blockers listed |
+| `get_task_network` | Full relationship context for a task (depends_on, blocks, children, parent). Params: `id` |
+| `get_network_metrics` | Centrality metrics: degree, betweenness, PageRank, downstream weight. Params: `id` |
+| `create_task` | Create a new task markdown file. Params: `title` (required), `id`, `parent`, `priority`, `project`, `tags`, `depends_on`, `assignee`, `complexity`, `body` |
+| `update_task` | Update frontmatter fields on an existing task. Params: `path`, `updates` (object) |
+
+### Knowledge Graph Tools
+
+| Tool | Description |
+|------|-------------|
+| `pkb_context` | Full knowledge neighbourhood: metadata, relationships, backlinks grouped by source type, nearby nodes within N hops. Supports flexible ID resolution. Params: `id` (required), `hops` (default 2) |
+| `pkb_search` | Hybrid semantic + graph-proximity search. Optionally boost results near a specific node. Params: `query` (required), `limit` (default 10), `boost_id` (optional) |
+| `pkb_trace` | Find shortest paths between two nodes. Params: `from`, `to` (required), `max_paths` (default 3) |
+| `pkb_orphans` | Find disconnected nodes with zero edges. Params: `limit` (default 20) |
 
 ## MCP Client Configuration
-
-### Gemini CLI
-
-Add to your extension or `settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "pkb-search": {
-      "command": "/home/nic/src/mem/target/release/pkb-search",
-      "args": []
-    }
-  }
-}
-```
 
 ### Claude Code
 
@@ -53,7 +96,22 @@ Add to `.mcp.json`:
 {
   "mcpServers": {
     "pkb-search": {
-      "command": "/home/nic/src/mem/target/release/pkb-search",
+      "command": "/path/to/pkb-search",
+      "args": []
+    }
+  }
+}
+```
+
+### Gemini CLI
+
+Add to your extension or `settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "pkb-search": {
+      "command": "/path/to/pkb-search",
       "args": []
     }
   }
@@ -68,29 +126,34 @@ MCP Client ◄──stdio──► pkb-search
                     ┌─────┴──────┐
                     │ MCP Server │  (rmcp 0.1, ServerHandler trait)
                     └─────┬──────┘
+                     ┌────┼────┐
+              ┌──────┴┐ ┌─┴──┐ ┌┴──────────┐
+              │Vector │ │Graph│ │ Document  │
+              │Store  │ │Store│ │ CRUD      │
+              └───┬───┘ └─┬──┘ └───────────┘
+                  │       │
+            ┌─────┴──────┐│
+            │  Embedder  ││  (MiniLM-L6-v2 via ONNX Runtime)
+            └────────────┘│
                           │
                     ┌─────┴──────┐
-                    │VectorStore │  (bincode persistence, brute-force cosine search)
-                    └─────┬──────┘
-                          │
-                    ┌─────┴──────┐
-                    │  Embedder  │  (MiniLM-L6-v2 via ONNX Runtime)
+                    │ PKB Files  │  (markdown + YAML frontmatter)
                     └────────────┘
 ```
 
 ## Environment Variables
 
-| Variable                    | Default     | Description                          |
-| --------------------------- | ----------- | ------------------------------------ |
-| `ACA_DATA`                 | `~/brain`   | PKB root directory                   |
-| `RUST_LOG`                 | `info`      | Log level filter                     |
-| `AOPS_OFFLINE`             | `false`     | Disable model/runtime auto-download  |
-| `AOPS_MODEL_PATH`          | (auto)      | Override model directory path        |
-| `ORT_DYLIB_PATH`           | (auto)      | Override ONNX Runtime library path   |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ACA_DATA` | `~/brain` | PKB root directory |
+| `RUST_LOG` | `info` | Log level filter |
+| `AOPS_OFFLINE` | `false` | Disable model/runtime auto-download |
+| `AOPS_MODEL_PATH` | (auto) | Override model directory path |
+| `ORT_DYLIB_PATH` | (auto) | Override ONNX Runtime library path |
 
 ## Requirements
 
-- Rust ≥ 1.88
+- Rust >= 1.88
 
 ## License
 
