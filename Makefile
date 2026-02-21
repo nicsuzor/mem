@@ -1,4 +1,4 @@
-# mem — fast-indexer, pkb-search, aops
+# mem — pkb-search, aops
 # Cross-compile to Apple Silicon from Linux using cargo-zigbuild + zig 0.13
 
 CARGO        ?= cargo
@@ -7,6 +7,7 @@ TARGET_LINUX  = x86_64-unknown-linux-gnu
 RELEASE_DIR   = target/release
 MACOS_DIR     = target/$(TARGET_MACOS)/release
 BINS          = pkb-search aops
+VERSION       = $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
 # macOS SDK sysroot with framework stubs (needed for cross-compile)
 MACOS_SYSROOT ?= /opt/debian/macos-sdk
@@ -32,7 +33,77 @@ apple: $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd
 	@echo "Binaries:"
 	@for b in $(BINS); do ls -lh $(MACOS_DIR)/$$b 2>/dev/null; done
 	@echo ""
-	@file $(MACOS_DIR)/fast-indexer
+	@file $(MACOS_DIR)/aops
+
+# ── Release ────────────────────────────────────────────────────────
+# Bump patch version, build both architectures, install locally, tag and push.
+#
+#   make release          # bump patch: 0.1.0 → 0.1.1
+#   make release-minor    # bump minor: 0.1.0 → 0.2.0
+#   make release-major    # bump major: 0.1.0 → 1.0.0
+
+.PHONY: release
+release: bump-patch release-build
+
+.PHONY: release-minor
+release-minor: bump-minor release-build
+
+.PHONY: release-major
+release-major: bump-major release-build
+
+.PHONY: release-build
+release-build: build apple install
+	@echo ""
+	@echo "══════════════════════════════════════════════════════════"
+	@echo "  Release v$(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')"
+	@echo "══════════════════════════════════════════════════════════"
+	@echo ""
+	@echo "── Linux (x86_64) ──"
+	@for b in $(BINS); do ls -lh $(RELEASE_DIR)/$$b 2>/dev/null || true; done
+	@echo ""
+	@echo "── Apple Silicon (aarch64) ──"
+	@for b in $(BINS); do ls -lh $(MACOS_DIR)/$$b 2>/dev/null || true; done
+	@echo ""
+	@NEW_VER=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
+		git add Cargo.toml Cargo.lock && \
+		git commit -m "release: v$$NEW_VER" && \
+		git tag -a "v$$NEW_VER" -m "Release v$$NEW_VER" && \
+		git push && git push --tags
+	@echo ""
+	@echo "Done. Binaries installed locally. Tag pushed."
+
+# ── Version bumping ───────────────────────────────────────────────
+
+.PHONY: bump-patch
+bump-patch:
+	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	MAJOR=$$(echo $$OLD | cut -d. -f1); \
+	MINOR=$$(echo $$OLD | cut -d. -f2); \
+	PATCH=$$(echo $$OLD | cut -d. -f3); \
+	NEW="$$MAJOR.$$MINOR.$$((PATCH + 1))"; \
+	sed -i "0,/^version = \"$$OLD\"/s//version = \"$$NEW\"/" Cargo.toml; \
+	echo "Version: $$OLD → $$NEW"
+
+.PHONY: bump-minor
+bump-minor:
+	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	MAJOR=$$(echo $$OLD | cut -d. -f1); \
+	MINOR=$$(echo $$OLD | cut -d. -f2); \
+	NEW="$$MAJOR.$$((MINOR + 1)).0"; \
+	sed -i "0,/^version = \"$$OLD\"/s//version = \"$$NEW\"/" Cargo.toml; \
+	echo "Version: $$OLD → $$NEW"
+
+.PHONY: bump-major
+bump-major:
+	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	MAJOR=$$(echo $$OLD | cut -d. -f1); \
+	NEW="$$((MAJOR + 1)).0.0"; \
+	sed -i "0,/^version = \"$$OLD\"/s//version = \"$$NEW\"/" Cargo.toml; \
+	echo "Version: $$OLD → $$NEW"
+
+.PHONY: version
+version:
+	@echo $(VERSION)
 
 # ── macOS SDK sysroot (auto-created) ─────────────────────────────────
 
@@ -104,15 +175,21 @@ sizes:
 .PHONY: help
 help:
 	@echo "Targets:"
-	@echo "  build        Release build for current host"
-	@echo "  install      Build and install binaries to CARGO_HOME/bin"
-	@echo "  apple        Cross-compile for Apple Silicon (aarch64-apple-darwin)"
-	@echo "  setup-cross  Install rustup target + cargo-zigbuild + zig instructions"
-	@echo "  check        Type-check without building"
-	@echo "  test         Run tests"
-	@echo "  clean        Remove target/"
-	@echo "  sizes        Show binary sizes"
+	@echo "  build          Release build for current host"
+	@echo "  install        Build and install binaries to CARGO_HOME/bin"
+	@echo "  apple          Cross-compile for Apple Silicon (aarch64-apple-darwin)"
+	@echo "  release        Bump patch, build all archs, install, tag, push"
+	@echo "  release-minor  Bump minor version, build all archs, tag, push"
+	@echo "  release-major  Bump major version, build all archs, tag, push"
+	@echo "  bump-patch     Bump patch version in Cargo.toml (no build)"
+	@echo "  bump-minor     Bump minor version in Cargo.toml (no build)"
+	@echo "  version        Print current version"
+	@echo "  setup-cross    Install rustup target + cargo-zigbuild + zig instructions"
+	@echo "  check          Type-check without building"
+	@echo "  test           Run tests"
+	@echo "  clean          Remove target/"
+	@echo "  sizes          Show binary sizes"
 	@echo ""
-	@echo "Prerequisites for 'make apple':"
+	@echo "Prerequisites for cross-compile:"
 	@echo "  1. make setup-cross"
 	@echo "  2. zig 0.13.x on PATH (see setup-cross output)"
