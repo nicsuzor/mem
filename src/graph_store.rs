@@ -553,18 +553,20 @@ impl GraphStore {
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    /// Build undirected adjacency list from edges.
+    /// Build undirected adjacency list from edges (deduplicated).
     fn undirected_adjacency(&self) -> HashMap<&str, Vec<&str>> {
-        let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut adj: HashMap<&str, HashSet<&str>> = HashMap::new();
         for edge in &self.edges {
             adj.entry(edge.source.as_str())
                 .or_default()
-                .push(edge.target.as_str());
+                .insert(edge.target.as_str());
             adj.entry(edge.target.as_str())
                 .or_default()
-                .push(edge.source.as_str());
+                .insert(edge.source.as_str());
         }
-        adj
+        adj.into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect()
     }
 
     // -----------------------------------------------------------------------

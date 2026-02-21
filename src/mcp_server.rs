@@ -97,6 +97,7 @@ impl PkbSearchServer {
             .get("limit")
             .and_then(|v| v.as_u64())
             .unwrap_or(10) as usize;
+        let project = args.get("project").and_then(|v| v.as_str());
 
         let query_embedding = self.embedder.encode(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -105,7 +106,19 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let results = store.search(&query_embedding, limit, &self.pkb_root);
+        // Over-fetch when filtering by project
+        let fetch_limit = if project.is_some() { limit * 5 } else { limit };
+        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
+
+        let results: Vec<_> = if let Some(proj) = project {
+            results
+                .into_iter()
+                .filter(|r| r.project.as_deref().map(|p| p.eq_ignore_ascii_case(proj)).unwrap_or(false))
+                .take(limit)
+                .collect()
+        } else {
+            results.into_iter().take(limit).collect()
+        };
 
         if results.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -180,19 +193,26 @@ impl PkbSearchServer {
         let tag = args.get("tag").and_then(|v| v.as_str());
         let doc_type = args.get("type").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
+        let project = args.get("project").and_then(|v| v.as_str());
+        let limit = args.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         let store = self.store.read();
-        let results = store.list_documents(tag, doc_type, status, &self.pkb_root);
+        let results = store.list_documents(tag, doc_type, status, project, &self.pkb_root);
+        let total = results.len();
 
-        if results.is_empty() {
+        if total == 0 {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No documents found matching filters.",
             )]));
         }
 
-        let mut output = format!("**{} documents found**\n\n", results.len());
+        let page: Vec<_> = results.into_iter().skip(offset).take(limit.unwrap_or(total)).collect();
+        let showing = page.len();
 
-        for r in &results {
+        let mut output = format!("**{total} documents found** (showing {showing}, offset {offset})\n\n");
+
+        for r in &page {
             output.push_str(&format!("- **{}**", r.title));
             if let Some(ref dt) = r.doc_type {
                 output.push_str(&format!(" [{dt}]"));
@@ -242,6 +262,7 @@ impl PkbSearchServer {
             .get("limit")
             .and_then(|v| v.as_u64())
             .unwrap_or(10) as usize;
+        let project = args.get("project").and_then(|v| v.as_str());
 
         let query_embedding = self.embedder.encode(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -250,7 +271,8 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let results = store.search(&query_embedding, limit * 3, &self.pkb_root);
+        let fetch_limit = if project.is_some() { limit * 10 } else { limit * 3 };
+        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         let graph = self.graph.read();
         let mut output = String::new();
@@ -266,6 +288,12 @@ impl PkbSearchServer {
 
             if !is_task {
                 continue;
+            }
+
+            if let Some(proj) = project {
+                if !r.project.as_deref().map(|p| p.eq_ignore_ascii_case(proj)).unwrap_or(false) {
+                    continue;
+                }
             }
 
             count += 1;
@@ -361,9 +389,15 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    fn handle_get_blocked_tasks(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+    fn handle_get_blocked_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let project = args.get("project").and_then(|v| v.as_str());
+
         let graph = self.graph.read();
-        let tasks = graph.blocked_tasks();
+        let mut tasks = graph.blocked_tasks();
+
+        if let Some(proj) = project {
+            tasks.retain(|t| t.project.as_deref() == Some(proj));
+        }
 
         if tasks.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -735,6 +769,7 @@ impl PkbSearchServer {
             .unwrap_or(10) as usize;
 
         let boost_id = args.get("boost_id").and_then(|v| v.as_str());
+        let project = args.get("project").and_then(|v| v.as_str());
 
         let query_embedding = self.embedder.encode(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -743,7 +778,8 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let results = store.search(&query_embedding, limit * 2, &self.pkb_root);
+        let fetch_limit = if project.is_some() { limit * 5 } else { limit * 2 };
+        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         // Build proximity boost map if boost_id provided
         let boost_map: std::collections::HashMap<String, f32> = if let Some(bid) = boost_id {
@@ -783,6 +819,10 @@ impl PkbSearchServer {
             .collect();
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        if let Some(proj) = project {
+            scored.retain(|(r, _)| r.project.as_deref().map(|p| p.eq_ignore_ascii_case(proj)).unwrap_or(false));
+        }
         scored.truncate(limit);
 
         if scored.is_empty() {
@@ -915,6 +955,7 @@ impl PkbSearchServer {
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
             });
+        let project = args.get("project").and_then(|v| v.as_str());
 
         let graph = self.graph.read();
         let mut orphans = graph.orphans();
@@ -927,6 +968,11 @@ impl PkbSearchServer {
                     .map(|t| types.iter().any(|f| f.eq_ignore_ascii_case(t)))
                     .unwrap_or(false)
             });
+        }
+
+        // Filter by project if requested
+        if let Some(proj) = project {
+            orphans.retain(|n| n.project.as_deref() == Some(proj));
         }
 
         if orphans.is_empty() {
@@ -1058,7 +1104,8 @@ impl ServerHandler for PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Natural language query" },
-                        "limit": { "type": "integer", "description": "Max results (default: 10)" }
+                        "limit": { "type": "integer", "description": "Max results (default: 10)" },
+                        "project": { "type": "string", "description": "Filter by project" }
                     },
                     "required": ["query"]
                 }))
@@ -1078,13 +1125,16 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "list_documents",
-                "List indexed documents with optional filters.",
+                "List indexed documents with optional filters and pagination.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "tag": { "type": "string", "description": "Filter by tag" },
                         "type": { "type": "string", "description": "Filter by type" },
-                        "status": { "type": "string", "description": "Filter by status" }
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "project": { "type": "string", "description": "Filter by project" },
+                        "limit": { "type": "integer", "description": "Max results (default: all)" },
+                        "offset": { "type": "integer", "description": "Skip first N results (default: 0)" }
                     }
                 }))
                 .unwrap(),
@@ -1105,7 +1155,8 @@ impl ServerHandler for PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Query to search tasks" },
-                        "limit": { "type": "integer", "description": "Max results (default: 10)" }
+                        "limit": { "type": "integer", "description": "Max results (default: 10)" },
+                        "project": { "type": "string", "description": "Filter by project" }
                     },
                     "required": ["query"]
                 }))
@@ -1128,7 +1179,9 @@ impl ServerHandler for PkbSearchServer {
                 "Get blocked tasks with their blockers listed.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
-                    "properties": {}
+                    "properties": {
+                        "project": { "type": "string", "description": "Filter by project" }
+                    }
                 }))
                 .unwrap(),
             ),
@@ -1211,7 +1264,8 @@ impl ServerHandler for PkbSearchServer {
                     "properties": {
                         "query": { "type": "string", "description": "Natural language search query" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" }
+                        "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
+                        "project": { "type": "string", "description": "Filter by project" }
                     },
                     "required": ["query"]
                 }))
@@ -1233,12 +1287,13 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "pkb_orphans",
-                "Find disconnected nodes with zero edges (no incoming or outgoing connections). Filter by node type to find e.g. orphan tasks only.",
+                "Find disconnected nodes with zero edges (no incoming or outgoing connections). Filter by node type or project.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "limit": { "type": "integer", "description": "Max results (default: all). Set to 0 for unlimited." },
-                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Omit for all types." }
+                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Omit for all types." },
+                        "project": { "type": "string", "description": "Filter by project" }
                     }
                 }))
                 .unwrap(),

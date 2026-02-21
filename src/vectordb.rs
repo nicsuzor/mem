@@ -24,6 +24,9 @@ pub struct DocumentEntry {
     pub status: Option<String>,
     /// Tags
     pub tags: Vec<String>,
+    /// Project name (from frontmatter)
+    #[serde(default)]
+    pub project: Option<String>,
     /// File modification time (unix timestamp) — used for staleness detection
     pub mtime: u64,
     /// Embedding vectors for each chunk of the document
@@ -42,6 +45,7 @@ pub struct SearchResult {
     pub doc_type: Option<String>,
     pub status: Option<String>,
     pub tags: Vec<String>,
+    pub project: Option<String>,
 }
 
 /// Persistent vector store
@@ -125,12 +129,18 @@ impl VectorStore {
         let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
         let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
 
+        let project = doc
+            .frontmatter
+            .as_ref()
+            .and_then(|fm| fm.get("project").and_then(|v| v.as_str()).map(String::from));
+
         let entry = DocumentEntry {
             path: doc.path.clone(),
             title: doc.title.clone(),
             doc_type: doc.doc_type.clone(),
             status: doc.status.clone(),
             tags: doc.tags.clone(),
+            project,
             mtime: doc.mtime,
             chunk_embeddings,
             chunk_texts: chunks,
@@ -143,12 +153,17 @@ impl VectorStore {
     /// Insert a document with pre-computed embeddings (no embedding call needed)
     pub fn insert_precomputed(&mut self, doc: &PkbDocument, chunks: Vec<String>, chunk_embeddings: Vec<Vec<f32>>) {
         let path_str = doc.path.to_string_lossy().to_string();
+        let project = doc
+            .frontmatter
+            .as_ref()
+            .and_then(|fm| fm.get("project").and_then(|v| v.as_str()).map(String::from));
         let entry = DocumentEntry {
             path: doc.path.clone(),
             title: doc.title.clone(),
             doc_type: doc.doc_type.clone(),
             status: doc.status.clone(),
             tags: doc.tags.clone(),
+            project,
             mtime: doc.mtime,
             chunk_embeddings,
             chunk_texts: chunks,
@@ -216,6 +231,7 @@ impl VectorStore {
                     doc_type: entry.doc_type.clone(),
                     status: entry.status.clone(),
                     tags: entry.tags.clone(),
+                    project: entry.project.clone(),
                 });
             }
         }
@@ -237,6 +253,7 @@ impl VectorStore {
         tag_filter: Option<&str>,
         type_filter: Option<&str>,
         status_filter: Option<&str>,
+        project_filter: Option<&str>,
         pkb_root: &Path,
     ) -> Vec<SearchResult> {
         let mut results: Vec<SearchResult> = Vec::new();
@@ -260,6 +277,12 @@ impl VectorStore {
                     _ => continue,
                 }
             }
+            if let Some(proj) = project_filter {
+                match &entry.project {
+                    Some(p) if p.eq_ignore_ascii_case(proj) => {}
+                    _ => continue,
+                }
+            }
 
             let abs_path = if entry.path.is_absolute() {
                 entry.path.clone()
@@ -274,6 +297,7 @@ impl VectorStore {
                 doc_type: entry.doc_type.clone(),
                 status: entry.status.clone(),
                 tags: entry.tags.clone(),
+                project: entry.project.clone(),
             });
         }
 

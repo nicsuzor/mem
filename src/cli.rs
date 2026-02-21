@@ -70,6 +70,18 @@ enum Commands {
         #[arg(short, long)]
         status: Option<String>,
 
+        /// Filter by project
+        #[arg(short = 'P', long)]
+        project: Option<String>,
+
+        /// Maximum number of results
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+
+        /// Skip first N results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
         /// Show counts only
         #[arg(short, long)]
         count: bool,
@@ -204,6 +216,10 @@ enum Commands {
         /// Filter by node type (e.g. task, project, note)
         #[arg(short = 'T', long = "type")]
         node_type: Option<String>,
+
+        /// Filter by project
+        #[arg(short = 'P', long)]
+        project: Option<String>,
     },
 
     /// Export knowledge graph
@@ -386,6 +402,9 @@ fn main() -> Result<()> {
             tag,
             doc_type,
             status,
+            project,
+            limit,
+            offset,
             count,
         } => {
             let store = store.as_ref().unwrap();
@@ -393,11 +412,13 @@ fn main() -> Result<()> {
                 tag.as_deref(),
                 doc_type.as_deref(),
                 status.as_deref(),
+                project.as_deref(),
                 &pkb_root,
             );
+            let total = results.len();
 
             if count {
-                println!("{}", results.len());
+                println!("{total}");
                 return Ok(());
             }
 
@@ -406,8 +427,10 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
+            let page: Vec<_> = results.into_iter().skip(offset).take(limit.unwrap_or(total)).collect();
+
             println!();
-            for result in &results {
+            for result in &page {
                 let meta = format_meta(&result.doc_type, &result.status, &result.tags);
                 println!(
                     "  \x1b[1m{}\x1b[0m{meta}",
@@ -419,7 +442,11 @@ fn main() -> Result<()> {
                 );
                 println!();
             }
-            println!("{} documents", results.len());
+            if page.len() < total {
+                println!("{} of {total} documents (offset {offset})", page.len());
+            } else {
+                println!("{total} documents");
+            }
         }
 
         Commands::Reindex { force } => {
@@ -962,7 +989,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Orphans { node_type } => {
+        Commands::Orphans { node_type, project } => {
             let gs = load_graph(&pkb_root, &db_path);
             let mut orphans = gs.orphans();
 
@@ -973,6 +1000,10 @@ fn main() -> Result<()> {
                         .map(|nt| nt.eq_ignore_ascii_case(t))
                         .unwrap_or(false)
                 });
+            }
+
+            if let Some(ref proj) = project {
+                orphans.retain(|n| n.project.as_deref() == Some(proj.as_str()));
             }
 
             if orphans.is_empty() {
