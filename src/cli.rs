@@ -156,6 +156,67 @@ enum Commands {
         tags: Option<Vec<String>>,
     },
 
+    /// Create a new document (note, knowledge, memory, or any type)
+    Remember {
+        /// Document title
+        title: Vec<String>,
+
+        /// Document type (default: note). Examples: note, knowledge, memory, insight, observation
+        #[arg(short = 'T', long = "type", default_value = "note")]
+        doc_type: String,
+
+        /// Tags (comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+
+        /// Status
+        #[arg(short, long)]
+        status: Option<String>,
+
+        /// Priority (0=critical, 1=high, 2=medium, 3=low, 4=someday)
+        #[arg(short, long)]
+        priority: Option<i32>,
+
+        /// Parent document ID
+        #[arg(long)]
+        parent: Option<String>,
+
+        /// Project name
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Source context (e.g. session ID)
+        #[arg(long)]
+        source: Option<String>,
+
+        /// Body text
+        #[arg(short, long)]
+        body: Option<String>,
+
+        /// Override subdirectory placement
+        #[arg(long)]
+        dir: Option<String>,
+    },
+
+    /// Append timestamped content to an existing document
+    Append {
+        /// Document ID (flexible resolution)
+        id: String,
+
+        /// Content to append
+        content: Vec<String>,
+
+        /// Target section heading (e.g. "Log", "References")
+        #[arg(long)]
+        section: Option<String>,
+    },
+
+    /// Delete a task or memory by ID
+    Delete {
+        /// Task or memory ID
+        id: String,
+    },
+
     /// Mark a task as done
     Done {
         /// Task ID
@@ -746,6 +807,136 @@ fn main() -> Result<()> {
             match document_crud::create_task(&pkb_root, fields) {
                 Ok(path) => {
                     println!("Created: {}", path.display());
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Remember {
+            title,
+            doc_type,
+            tags,
+            status,
+            priority,
+            parent,
+            project,
+            source,
+            body,
+            dir,
+        } => {
+            let title_str = title.join(" ");
+            if title_str.is_empty() {
+                eprintln!("Error: title cannot be empty");
+                std::process::exit(1);
+            }
+
+            let fields = document_crud::DocumentFields {
+                title: title_str,
+                doc_type,
+                tags: tags.unwrap_or_default(),
+                status,
+                priority,
+                parent,
+                project,
+                source,
+                body,
+                dir,
+                ..Default::default()
+            };
+
+            match document_crud::create_document(&pkb_root, fields) {
+                Ok(path) => {
+                    println!("Created: {}", path.display());
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Append {
+            id,
+            content,
+            section,
+        } => {
+            let content_str = content.join(" ");
+            if content_str.is_empty() {
+                eprintln!("Error: content cannot be empty");
+                std::process::exit(1);
+            }
+
+            let gs = load_graph(&pkb_root, &db_path);
+
+            match gs.resolve(&id) {
+                Some(node) => {
+                    let path = abs_node_path(&node.path, &pkb_root);
+                    match document_crud::append_to_document(
+                        &path,
+                        &content_str,
+                        section.as_deref(),
+                    ) {
+                        Ok(()) => {
+                            println!("Appended to: {} ({})", node.label, id);
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("Document not found: {id}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Delete { id } => {
+            // Try graph resolution first, fall back to filesystem glob
+            let gs = load_graph(&pkb_root, &db_path);
+
+            let (path, label) = match gs.resolve(&id) {
+                Some(node) => (abs_node_path(&node.path, &pkb_root), node.label.clone()),
+                None => {
+                    // Filesystem fallback: search for files starting with the ID
+                    let mut found = None;
+                    for subdir in &["tasks", "memories", "."] {
+                        let dir = pkb_root.join(subdir);
+                        if dir.is_dir() {
+                            if let Ok(entries) = std::fs::read_dir(&dir) {
+                                for entry in entries.flatten() {
+                                    let name = entry.file_name().to_string_lossy().to_string();
+                                    if name.starts_with(&id) && name.ends_with(".md") {
+                                        found = Some(entry.path());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if found.is_some() {
+                            break;
+                        }
+                    }
+                    match found {
+                        Some(p) => {
+                            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            (p, name)
+                        }
+                        None => {
+                            eprintln!("Not found: {id}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            };
+
+            match document_crud::delete_document(&path) {
+                Ok(_) => {
+                    println!("Deleted: {} ({})", label, id);
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");

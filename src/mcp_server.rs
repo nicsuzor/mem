@@ -1071,15 +1071,414 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let path_str = args
-            .get("path")
+    // =========================================================================
+    // MEMORY + DELETE + COMPLETE TOOLS (4)
+    // =========================================================================
+
+    fn handle_create_memory(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let title = args
+            .get("title")
             .and_then(|v| v.as_str())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: path"),
+                message: Cow::from("Missing required parameter: title"),
                 data: None,
             })?;
+
+        let fields = crate::document_crud::MemoryFields {
+            title: title.to_string(),
+            id: args.get("id").and_then(|v| v.as_str()).map(String::from),
+            tags: args
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            body: args
+                .get("body")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            memory_type: args
+                .get("memory_type")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            source: args
+                .get("source")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+        };
+
+        let path = crate::document_crud::create_memory(&self.pkb_root, fields).map_err(|e| {
+            McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to create memory: {e}")),
+                data: None,
+            }
+        })?;
+
+        // Index the new file
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            let _ = self.store.write().upsert(&doc, &self.embedder);
+            let _ = self.store.read().save(&self.db_path);
+        }
+
+        self.rebuild_graph();
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Memory created: `{}`",
+            path.display()
+        ))]))
+    }
+
+    fn handle_create_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let title = args
+            .get("title")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: title"),
+                data: None,
+            })?;
+
+        let doc_type = args
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: type"),
+                data: None,
+            })?;
+
+        let fields = crate::document_crud::DocumentFields {
+            title: title.to_string(),
+            doc_type: doc_type.to_string(),
+            id: args.get("id").and_then(|v| v.as_str()).map(String::from),
+            tags: args
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            body: args
+                .get("body")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            status: args
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            priority: args
+                .get("priority")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32),
+            parent: args
+                .get("parent")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            depends_on: args
+                .get("depends_on")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            project: args
+                .get("project")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            assignee: args
+                .get("assignee")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            complexity: args
+                .get("complexity")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            source: args
+                .get("source")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            due: args
+                .get("due")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            dir: args
+                .get("dir")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+        };
+
+        let path = crate::document_crud::create_document(&self.pkb_root, fields).map_err(|e| {
+            McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to create document: {e}")),
+                data: None,
+            }
+        })?;
+
+        // Index the new file
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            let _ = self.store.write().upsert(&doc, &self.embedder);
+            let _ = self.store.read().save(&self.db_path);
+        }
+
+        self.rebuild_graph();
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Document created: `{}`",
+            path.display()
+        ))]))
+    }
+
+    fn handle_append_to_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: content"),
+                data: None,
+            })?;
+
+        let section = args.get("section").and_then(|v| v.as_str());
+
+        // Resolve ID to path via graph
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Document not found: {id}")),
+            data: None,
+        })?;
+
+        let abs_path = self.abs_path(&node.path);
+        let label = node.label.clone();
+        drop(graph);
+
+        crate::document_crud::append_to_document(&abs_path, content, section).map_err(|e| {
+            McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to append: {e}")),
+                data: None,
+            }
+        })?;
+
+        // Re-index the updated file
+        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            let _ = self.store.write().upsert(&doc, &self.embedder);
+            let _ = self.store.read().save(&self.db_path);
+        }
+
+        self.rebuild_graph();
+
+        let section_msg = section
+            .map(|s| format!(" under ## {s}"))
+            .unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Appended to: {} (`{}`){section_msg}",
+            label, id
+        ))]))
+    }
+
+    fn handle_delete_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Document not found: {id}")),
+            data: None,
+        })?;
+
+        let abs_path = self.abs_path(&node.path);
+        let label = node.label.clone();
+        let rel_path = node
+            .path
+            .to_string_lossy()
+            .to_string();
+        drop(graph); // release read lock before write operations
+
+        crate::document_crud::delete_document(&abs_path).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to delete: {e}")),
+            data: None,
+        })?;
+
+        // Remove from vector store
+        self.store.write().remove(&rel_path);
+        let _ = self.store.read().save(&self.db_path);
+
+        // Rebuild graph
+        self.rebuild_graph();
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Deleted: {} (`{}`)",
+            label,
+            abs_path.display()
+        ))]))
+    }
+
+    fn handle_complete_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Task not found: {id}")),
+            data: None,
+        })?;
+
+        let abs_path = self.abs_path(&node.path);
+        let label = node.label.clone();
+        drop(graph);
+
+        let mut updates = std::collections::HashMap::new();
+        updates.insert(
+            "status".to_string(),
+            serde_json::Value::String("done".to_string()),
+        );
+
+        crate::document_crud::update_document(&abs_path, updates).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to complete task: {e}")),
+            data: None,
+        })?;
+
+        // Re-index
+        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            let _ = self.store.write().upsert(&doc, &self.embedder);
+            let _ = self.store.read().save(&self.db_path);
+        }
+
+        self.rebuild_graph();
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Completed: {} (`{}`)",
+            label, id
+        ))]))
+    }
+
+    fn handle_list_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let project = args.get("project").and_then(|v| v.as_str());
+        let status = args.get("status").and_then(|v| v.as_str());
+        let priority = args.get("priority").and_then(|v| v.as_i64()).map(|v| v as i32);
+        let assignee = args.get("assignee").and_then(|v| v.as_str());
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(50) as usize;
+
+        let graph = self.graph.read();
+        let mut tasks: Vec<_> = graph.all_tasks().into_iter().collect();
+
+        if let Some(proj) = project {
+            tasks.retain(|t| {
+                t.project
+                    .as_deref()
+                    .map(|p| p.eq_ignore_ascii_case(proj))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(s) = status {
+            tasks.retain(|t| {
+                t.status
+                    .as_deref()
+                    .map(|st| st.eq_ignore_ascii_case(s))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(pri) = priority {
+            tasks.retain(|t| t.priority == Some(pri));
+        }
+        if let Some(a) = assignee {
+            tasks.retain(|t| {
+                t.assignee
+                    .as_deref()
+                    .map(|ag| ag.eq_ignore_ascii_case(a))
+                    .unwrap_or(false)
+            });
+        }
+
+        if tasks.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No tasks found matching filters.",
+            )]));
+        }
+
+        let total = tasks.len();
+        tasks.truncate(limit);
+
+        let mut output = format!(
+            "**{total} tasks** (showing {})\n\n| # | ID | Pri | Status | Title |\n|---|---|---|---|---|\n",
+            tasks.len()
+        );
+
+        for (i, t) in tasks.iter().enumerate() {
+            let id = t.task_id.as_deref().unwrap_or(&t.id);
+            let pri = t.priority.unwrap_or(2);
+            let status_str = t.status.as_deref().unwrap_or("-");
+            output.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                i + 1,
+                id,
+                pri,
+                status_str,
+                t.label
+            ));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        // Accept either `path` or `id` — resolve id via graph if path not given
+        let path = if let Some(path_str) = args.get("path").and_then(|v| v.as_str()) {
+            self.resolve_path(path_str)
+        } else if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
+            let graph = self.graph.read();
+            let node = graph.resolve(id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Document not found: {id}")),
+                data: None,
+            })?;
+            self.abs_path(&node.path)
+        } else {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: path or id"),
+                data: None,
+            });
+        };
 
         let updates = args
             .get("updates")
@@ -1090,7 +1489,6 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let path = self.resolve_path(path_str);
         let update_map: std::collections::HashMap<String, serde_json::Value> = updates
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -1136,6 +1534,12 @@ impl ServerHandler for PkbSearchServer {
             "get_task_network" => self.handle_get_task_network(&args),
             "get_network_metrics" => self.handle_get_network_metrics(&args),
             "create_task" => self.handle_create_task(&args),
+            "create_memory" => self.handle_create_memory(&args),
+            "create_document" => self.handle_create_document(&args),
+            "append_to_document" => self.handle_append_to_document(&args),
+            "delete_document" => self.handle_delete_document(&args),
+            "complete_task" => self.handle_complete_task(&args),
+            "list_tasks" => self.handle_list_tasks(&args),
             "get_task" => self.handle_get_task(&args),
             "update_task" => self.handle_update_task(&args),
             "pkb_context" => self.handle_pkb_context(&args),
@@ -1291,6 +1695,102 @@ impl ServerHandler for PkbSearchServer {
                 .unwrap(),
             ),
             Tool::new(
+                "create_memory",
+                "Create a new memory/note markdown file with YAML frontmatter. Stored in memories/ directory.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Memory title" },
+                        "id": { "type": "string", "description": "Memory ID (auto-generated if omitted)" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags for the memory" },
+                        "body": { "type": "string", "description": "Markdown body content" },
+                        "memory_type": { "type": "string", "description": "Subtype: memory (default), note, insight, observation" },
+                        "source": { "type": "string", "description": "Source context (e.g. session ID)" }
+                    },
+                    "required": ["title"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "create_document",
+                "Create a new document (note, knowledge, memory, or any type) with full enforced frontmatter (id, title, type, created, modified, alias, permalink). Subdirectory routing: task/bug/epic/feature → tasks/, project → projects/, goal → goals/, else → notes/.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Document title (required)" },
+                        "type": { "type": "string", "description": "Document type (required): note, knowledge, memory, insight, observation, task, project, goal, etc." },
+                        "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
+                        "tags": { "type": "array", "items": { "type": "string" } },
+                        "body": { "type": "string", "description": "Markdown body" },
+                        "status": { "type": "string" },
+                        "priority": { "type": "integer", "description": "0-4 (0=critical)" },
+                        "parent": { "type": "string", "description": "Parent document ID" },
+                        "depends_on": { "type": "array", "items": { "type": "string" } },
+                        "project": { "type": "string", "description": "Project name" },
+                        "assignee": { "type": "string" },
+                        "complexity": { "type": "string" },
+                        "source": { "type": "string", "description": "Source context" },
+                        "due": { "type": "string", "description": "Due date" },
+                        "dir": { "type": "string", "description": "Override subdirectory placement" }
+                    },
+                    "required": ["title", "type"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "append_to_document",
+                "Append timestamped content to an existing document. Optionally target a specific section heading. Auto-updates modified timestamp.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Document ID (supports flexible resolution: ID, filename stem, or title)" },
+                        "content": { "type": "string", "description": "Content to append (will be timestamped)" },
+                        "section": { "type": "string", "description": "Optional target section heading (e.g. 'Log', 'References'). Creates section if not found." }
+                    },
+                    "required": ["id", "content"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "delete_document",
+                "Delete a task or memory by ID. Removes the file from disk and the vector store index.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Document ID (task ID, memory ID, filename stem, or title). Uses flexible resolution." }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "complete_task",
+                "Mark a task as done. Sets status to 'done' and re-indexes.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task ID (supports flexible resolution: ID, filename stem, or title)" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "list_tasks",
+                "List tasks with filtering by project, status, priority, and assignee.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "project": { "type": "string", "description": "Filter by project" },
+                        "status": { "type": "string", "description": "Filter by status (active, in_progress, blocked, done, etc.)" },
+                        "priority": { "type": "integer", "description": "Filter by exact priority (0-4)" },
+                        "assignee": { "type": "string", "description": "Filter by assignee" },
+                        "limit": { "type": "integer", "description": "Max results (default: 50)" }
+                    }
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
                 "get_task",
                 "Retrieve a task by ID. Returns parsed YAML frontmatter as structured JSON, the markdown body, and the file path.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -1304,14 +1804,15 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "update_task",
-                "Update frontmatter fields on an existing task file.",
+                "Update frontmatter fields on an existing task file. Auto-sets modified timestamp.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Path to task file" },
+                        "id": { "type": "string", "description": "Document ID (alternative to path — uses flexible resolution)" },
                         "updates": { "type": "object", "description": "Fields to update (null to remove)" }
                     },
-                    "required": ["path", "updates"]
+                    "required": ["updates"]
                 }))
                 .unwrap(),
             ),
@@ -1388,10 +1889,11 @@ impl ServerHandler for PkbSearchServer {
             },
             instructions: Some(
                 "PKB Search — semantic search + task graph over personal knowledge base. \
-                 16 tools: semantic_search, get_document, list_documents, reindex, \
+                 22 tools: semantic_search, get_document, list_documents, reindex, \
                  task_search, get_ready_tasks, get_blocked_tasks, get_task_network, \
-                 get_network_metrics, create_task, get_task, update_task, pkb_context, \
-                 pkb_search, pkb_trace, pkb_orphans."
+                 get_network_metrics, create_task, create_memory, create_document, \
+                 append_to_document, delete_document, complete_task, list_tasks, \
+                 get_task, update_task, pkb_context, pkb_search, pkb_trace, pkb_orphans."
                     .to_string(),
             ),
         }
