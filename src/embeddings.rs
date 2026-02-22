@@ -205,8 +205,9 @@ fn get_onnx_runtime_path() -> Option<PathBuf> {
 
 /// Max parallel ONNX sessions for batch embedding (each uses THREADS_PER_SESSION CPU threads).
 /// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
-const MAX_SESSIONS: usize = 8;
-const THREADS_PER_SESSION: usize = 6;
+/// On a 48-core machine: 16 sessions x 4 threads = 64 thread-slots (oversubscribe slightly for throughput).
+const MAX_SESSIONS: usize = 16;
+const THREADS_PER_SESSION: usize = 4;
 
 struct SessionPool {
     sessions: parking_lot::RwLock<Vec<Arc<Mutex<Session>>>>,
@@ -341,7 +342,7 @@ impl Embedder {
             config.tokenizer_path = models_dir.join("tokenizer.json");
         }
 
-        eprintln!("  Using MiniLM-L6-v2 ONNX embeddings ({EMBEDDING_DIM}-dim)");
+        tracing::info!("Using MiniLM-L6-v2 ONNX embeddings ({EMBEDDING_DIM}-dim)");
         Ok(Self {
             config,
             pool: OnceLock::new(),

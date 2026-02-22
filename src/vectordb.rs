@@ -27,12 +27,18 @@ pub struct DocumentEntry {
     /// Project name (from frontmatter)
     #[serde(default)]
     pub project: Option<String>,
+    /// Document ID (from frontmatter)
+    #[serde(default)]
+    pub id: Option<String>,
     /// File modification time (unix timestamp) — used for staleness detection
     pub mtime: u64,
     /// Embedding vectors for each chunk of the document
     pub chunk_embeddings: Vec<Vec<f32>>,
     /// The text chunks that were embedded (for returning snippets)
     pub chunk_texts: Vec<String>,
+    /// Body-only text chunks for display snippets (excludes frontmatter metadata)
+    #[serde(default)]
+    pub body_chunks: Vec<String>,
 }
 
 /// Search result returned from queries
@@ -42,6 +48,7 @@ pub struct SearchResult {
     pub title: String,
     pub score: f32,
     pub snippet: String,
+    pub id: Option<String>,
     pub doc_type: Option<String>,
     pub status: Option<String>,
     pub tags: Vec<String>,
@@ -119,20 +126,26 @@ impl VectorStore {
         }
     }
 
+    /// Extract id and project from frontmatter
+    fn extract_frontmatter_fields(doc: &PkbDocument) -> (Option<String>, Option<String>) {
+        let fm = doc.frontmatter.as_ref();
+        let id = fm.and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
+        let project = fm.and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
+        (id, project)
+    }
+
     /// Insert or update a document
     pub fn upsert(&mut self, doc: &PkbDocument, embedder: &embeddings::Embedder) -> Result<()> {
         let path_str = doc.path.to_string_lossy().to_string();
 
         let embedding_text = doc.embedding_text();
         let chunks = embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
+        let body_chunks = embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
 
         let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
         let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
 
-        let project = doc
-            .frontmatter
-            .as_ref()
-            .and_then(|fm| fm.get("project").and_then(|v| v.as_str()).map(String::from));
+        let (id, project) = Self::extract_frontmatter_fields(doc);
 
         let entry = DocumentEntry {
             path: doc.path.clone(),
@@ -141,9 +154,11 @@ impl VectorStore {
             status: doc.status.clone(),
             tags: doc.tags.clone(),
             project,
+            id,
             mtime: doc.mtime,
             chunk_embeddings,
             chunk_texts: chunks,
+            body_chunks,
         };
 
         self.documents.insert(path_str, entry);
@@ -153,10 +168,8 @@ impl VectorStore {
     /// Insert a document with pre-computed embeddings (no embedding call needed)
     pub fn insert_precomputed(&mut self, doc: &PkbDocument, chunks: Vec<String>, chunk_embeddings: Vec<Vec<f32>>) {
         let path_str = doc.path.to_string_lossy().to_string();
-        let project = doc
-            .frontmatter
-            .as_ref()
-            .and_then(|fm| fm.get("project").and_then(|v| v.as_str()).map(String::from));
+        let (id, project) = Self::extract_frontmatter_fields(doc);
+        let body_chunks = embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
         let entry = DocumentEntry {
             path: doc.path.clone(),
             title: doc.title.clone(),
@@ -164,9 +177,11 @@ impl VectorStore {
             status: doc.status.clone(),
             tags: doc.tags.clone(),
             project,
+            id,
             mtime: doc.mtime,
             chunk_embeddings,
             chunk_texts: chunks,
+            body_chunks,
         };
         self.documents.insert(path_str, entry);
     }
@@ -199,25 +214,41 @@ impl VectorStore {
 
         for entry in self.documents.values() {
             let mut best_score = f32::NEG_INFINITY;
-            let mut best_snippet = String::new();
+            let mut best_chunk_idx = 0usize;
 
             for (i, chunk_emb) in entry.chunk_embeddings.iter().enumerate() {
                 let score = distance::cosine_similarity(query_embedding, chunk_emb);
                 if score > best_score {
                     best_score = score;
-                    if i < entry.chunk_texts.len() {
-                        // Truncate snippet for display
-                        let text = &entry.chunk_texts[i];
-                        let mut trunc = 300.min(text.len());
-                        while trunc > 0 && !text.is_char_boundary(trunc) {
-                            trunc -= 1;
-                        }
-                        best_snippet = format!("{}...", &text[..trunc]);
-                    }
+                    best_chunk_idx = i;
                 }
             }
 
             if best_score > f32::NEG_INFINITY {
+                // Use body-only chunks for snippet (falls back to embedding chunks for old indexes)
+                let snippet_source = if !entry.body_chunks.is_empty() {
+                    &entry.body_chunks
+                } else {
+                    &entry.chunk_texts
+                };
+                let best_snippet = if best_chunk_idx < snippet_source.len() {
+                    let text = &snippet_source[best_chunk_idx];
+                    let mut trunc = 300.min(text.len());
+                    while trunc > 0 && !text.is_char_boundary(trunc) {
+                        trunc -= 1;
+                    }
+                    text[..trunc].to_string()
+                } else if !snippet_source.is_empty() {
+                    let text = &snippet_source[0];
+                    let mut trunc = 300.min(text.len());
+                    while trunc > 0 && !text.is_char_boundary(trunc) {
+                        trunc -= 1;
+                    }
+                    text[..trunc].to_string()
+                } else {
+                    String::new()
+                };
+
                 let abs_path = if entry.path.is_absolute() {
                     entry.path.clone()
                 } else {
@@ -228,6 +259,7 @@ impl VectorStore {
                     title: entry.title.clone(),
                     score: best_score,
                     snippet: best_snippet,
+                    id: entry.id.clone(),
                     doc_type: entry.doc_type.clone(),
                     status: entry.status.clone(),
                     tags: entry.tags.clone(),
@@ -294,6 +326,7 @@ impl VectorStore {
                 title: entry.title.clone(),
                 score: 0.0,
                 snippet: String::new(),
+                id: entry.id.clone(),
                 doc_type: entry.doc_type.clone(),
                 status: entry.status.clone(),
                 tags: entry.tags.clone(),

@@ -367,6 +367,7 @@ fn main() -> Result<()> {
             }
 
             println!();
+            let mut first_id = String::new();
             for (i, result) in results.iter().enumerate() {
                 let score_bar = score_to_bar(result.score);
                 let tags = if result.tags.is_empty() {
@@ -375,15 +376,22 @@ fn main() -> Result<()> {
                     format!("  [{}]", result.tags.join(", "))
                 };
 
+                // Show ID prominently if available
+                let id_str = result.id.as_deref().unwrap_or("");
+                if i == 0 && !id_str.is_empty() {
+                    first_id = id_str.to_string();
+                }
+
                 println!(
                     "  \x1b[1;36m{}.\x1b[0m \x1b[1m{}\x1b[0m {score_bar}{tags}",
                     i + 1,
                     result.title,
                 );
-                println!(
-                    "     \x1b[2m{}\x1b[0m",
-                    result.path.display()
-                );
+                if !id_str.is_empty() {
+                    println!("     \x1b[36m{id_str}\x1b[0m  \x1b[2m{}\x1b[0m", result.path.display());
+                } else {
+                    println!("     \x1b[2m{}\x1b[0m", result.path.display());
+                }
 
                 if !result.snippet.is_empty() {
                     let snippet = if full {
@@ -394,6 +402,11 @@ fn main() -> Result<()> {
                     println!("     {snippet}");
                 }
                 println!();
+            }
+
+            // Navigation hint
+            if !first_id.is_empty() {
+                println!("  \x1b[2mTip: aops task {first_id}  — show full details\x1b[0m");
             }
         }
 
@@ -841,7 +854,32 @@ fn main() -> Result<()> {
                             }
                         );
                     }
+
+                    // Show markdown body
+                    let file_path = abs_node_path(&node.path, &pkb_root);
+                    if let Ok(content) = std::fs::read_to_string(&file_path) {
+                        // Strip frontmatter
+                        let body = if content.starts_with("---") {
+                            content
+                                .splitn(3, "---")
+                                .nth(2)
+                                .unwrap_or("")
+                                .trim()
+                        } else {
+                            content.trim()
+                        };
+                        if !body.is_empty() {
+                            println!();
+                            for line in body.lines() {
+                                println!("  {line}");
+                            }
+                        }
+                    }
+
+                    // Navigation hints
+                    let node_id = node.task_id.as_deref().unwrap_or(&node.id);
                     println!();
+                    println!("  \x1b[2mTip: aops context {node_id}  — show knowledge neighbourhood\x1b[0m");
                 }
                 None => {
                     eprintln!("Task not found: {id}");
@@ -977,7 +1015,16 @@ fn main() -> Result<()> {
 
             match document_crud::create_task(&pkb_root, fields) {
                 Ok(path) => {
-                    println!("Created: {}", path.display());
+                    // Extract ID from filename (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4")
+                    let id = extract_id_from_path(&path);
+                    let title_display = path.file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    println!("Created \x1b[1m{id}\x1b[0m: {title_display}");
+                    println!("  \x1b[2m{}\x1b[0m", path.display());
+
+                    // Rebuild graph cache so the task is immediately usable
+                    rebuild_graph_cache(&pkb_root, &db_path);
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -1020,7 +1067,14 @@ fn main() -> Result<()> {
 
             match document_crud::create_document(&pkb_root, fields) {
                 Ok(path) => {
-                    println!("Created: {}", path.display());
+                    let id = extract_id_from_path(&path);
+                    let title_display = path.file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    println!("Created \x1b[1m{id}\x1b[0m: {title_display}");
+                    println!("  \x1b[2m{}\x1b[0m", path.display());
+
+                    rebuild_graph_cache(&pkb_root, &db_path);
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -1557,10 +1611,10 @@ fn index_pkb(
         })
         .collect();
 
-    // Batch embed and store — batches of 100 docs with progressive saves
+    // Batch embed and store — batches of 500 docs with progressive saves
     let mut indexed = 0;
 
-    for batch in parsed.chunks(100) {
+    for batch in parsed.chunks(500) {
         // Collect all chunks from this batch
         let mut all_chunks: Vec<&str> = Vec::new();
         let mut chunk_counts: Vec<usize> = Vec::new();
@@ -1609,6 +1663,26 @@ fn abs_node_path(path: &std::path::Path, pkb_root: &std::path::Path) -> PathBuf 
         path.to_path_buf()
     } else {
         pkb_root.join(path)
+    }
+}
+
+/// Extract the document ID from a created file path.
+/// E.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4"
+fn extract_id_from_path(path: &std::path::Path) -> String {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    // ID is prefix-8hexchars, match the pattern
+    let re = regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").unwrap();
+    re.find(&stem)
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| stem.to_string())
+}
+
+/// Rebuild and save the graph cache so newly created tasks are immediately visible.
+fn rebuild_graph_cache(pkb_root: &std::path::Path, db_path: &std::path::Path) {
+    let gs = graph_store::GraphStore::build_from_directory(pkb_root);
+    let graph_path = db_path.with_extension("graph.json");
+    if let Err(e) = gs.save(&graph_path) {
+        eprintln!("Warning: failed to save graph cache: {e}");
     }
 }
 
