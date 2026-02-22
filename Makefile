@@ -36,41 +36,30 @@ apple: $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd
 	@file $(MACOS_DIR)/aops
 
 # ── Release ────────────────────────────────────────────────────────
-# Bump patch version, build both architectures, install locally, tag and push.
+# Bump version, commit, tag, push. CI builds and publishes binaries.
 #
 #   make release          # bump patch: 0.1.0 → 0.1.1
 #   make release-minor    # bump minor: 0.1.0 → 0.2.0
 #   make release-major    # bump major: 0.1.0 → 1.0.0
 
 .PHONY: release
-release: bump-patch release-build
+release: bump-patch release-tag
 
 .PHONY: release-minor
-release-minor: bump-minor release-build
+release-minor: bump-minor release-tag
 
 .PHONY: release-major
-release-major: bump-major release-build
+release-major: bump-major release-tag
 
-.PHONY: release-build
-release-build: build apple install
-	@echo ""
-	@echo "══════════════════════════════════════════════════════════"
-	@echo "  Release v$(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')"
-	@echo "══════════════════════════════════════════════════════════"
-	@echo ""
-	@echo "── Linux (x86_64) ──"
-	@for b in $(BINS); do ls -lh $(RELEASE_DIR)/$$b 2>/dev/null || true; done
-	@echo ""
-	@echo "── Apple Silicon (aarch64) ──"
-	@for b in $(BINS); do ls -lh $(MACOS_DIR)/$$b 2>/dev/null || true; done
-	@echo ""
+.PHONY: release-tag
+release-tag:
 	@NEW_VER=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
 		git add Cargo.toml Cargo.lock && \
 		git commit -m "release: v$$NEW_VER" && \
 		git tag -a "v$$NEW_VER" -m "Release v$$NEW_VER" && \
-		git push && git push --tags
-	@echo ""
-	@echo "Done. Binaries installed locally. Tag pushed."
+		git push && git push --tags && \
+		echo "" && \
+		echo "Tagged v$$NEW_VER — CI will build and publish the release."
 
 # ── Version bumping ───────────────────────────────────────────────
 
@@ -178,9 +167,9 @@ help:
 	@echo "  build          Release build for current host"
 	@echo "  install        Build and install binaries to CARGO_HOME/bin"
 	@echo "  apple          Cross-compile for Apple Silicon (aarch64-apple-darwin)"
-	@echo "  release        Bump patch, build all archs, install, tag, push"
-	@echo "  release-minor  Bump minor version, build all archs, tag, push"
-	@echo "  release-major  Bump major version, build all archs, tag, push"
+	@echo "  release        Bump patch, commit, tag, push (CI builds + publishes)"
+	@echo "  release-minor  Bump minor, commit, tag, push (CI builds + publishes)"
+	@echo "  release-major  Bump major, commit, tag, push (CI builds + publishes)"
 	@echo "  bump-patch     Bump patch version in Cargo.toml (no build)"
 	@echo "  bump-minor     Bump minor version in Cargo.toml (no build)"
 	@echo "  version        Print current version"
