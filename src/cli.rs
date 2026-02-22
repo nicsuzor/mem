@@ -14,7 +14,7 @@ mod task_index;
 mod vectordb;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,6 +32,26 @@ struct Cli {
 
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, ValueEnum)]
+enum TaskFilter {
+    /// Actionable leaf tasks with no unmet dependencies
+    Ready,
+    /// Tasks waiting on unfinished dependencies
+    Blocked,
+    /// All open tasks (excludes done/cancelled)
+    All,
+}
+
+impl std::fmt::Display for TaskFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskFilter::Ready => write!(f, "ready"),
+            TaskFilter::Blocked => write!(f, "blocked"),
+            TaskFilter::All => write!(f, "all"),
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -68,9 +88,9 @@ enum Commands {
 
     /// List tasks (ready, blocked, or all) — tree view by default
     Tasks {
-        /// Filter: ready, blocked, all (default: ready)
-        #[arg(default_value = "ready")]
-        filter: String,
+        /// Which tasks to show
+        #[arg(default_value = "ready", value_enum)]
+        filter: TaskFilter,
 
         /// Filter by project
         #[arg(short, long)]
@@ -465,10 +485,10 @@ fn main() -> Result<()> {
         } => {
             let gs = load_graph(&pkb_root, &db_path);
 
-            let tasks: Vec<&graph::GraphNode> = match filter.as_str() {
-                "blocked" => gs.blocked_tasks(),
-                "all" => gs.all_tasks(),
-                _ => gs.ready_tasks(), // "ready" is default
+            let tasks: Vec<&graph::GraphNode> = match filter {
+                TaskFilter::Blocked => gs.blocked_tasks(),
+                TaskFilter::All => gs.all_tasks(),
+                TaskFilter::Ready => gs.ready_tasks(),
             };
 
             // Filter by project
@@ -522,12 +542,47 @@ fn main() -> Result<()> {
                 use std::collections::{HashMap, HashSet};
 
                 // Build set of visible task IDs for filtering
-                let visible: HashSet<&str> = tasks
+                let mut visible: HashSet<&str> = tasks
                     .iter()
                     .map(|t| t.id.as_str())
                     .collect();
 
-                // Group by project
+                // Collect ancestor context nodes (projects, epics, goals)
+                // that provide hierarchy even though they're not in the filter
+                let context_types = ["project", "epic", "goal", "subproject"];
+                let mut context_ids: HashSet<String> = HashSet::new();
+
+                for task in &tasks {
+                    let mut current_id = task.parent.as_deref();
+                    while let Some(pid) = current_id {
+                        if visible.contains(pid) {
+                            break; // already visible, ancestors above are too
+                        }
+                        if context_ids.contains(pid) {
+                            break; // already collected
+                        }
+                        if let Some(parent_node) = gs.get_node(pid) {
+                            if parent_node
+                                .node_type
+                                .as_deref()
+                                .map(|t| context_types.contains(&t))
+                                .unwrap_or(false)
+                            {
+                                context_ids.insert(pid.to_string());
+                            }
+                            current_id = parent_node.parent.as_deref();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                // Expand visible set to include context ancestors
+                for cid in &context_ids {
+                    visible.insert(cid.as_str());
+                }
+
+                // Group by project (tasks only, not context nodes)
                 let mut by_proj: HashMap<&str, Vec<&graph::GraphNode>> = HashMap::new();
                 for task in &tasks {
                     let proj = task
@@ -572,18 +627,37 @@ fn main() -> Result<()> {
                     )
                 }
 
-                // Helper: sort siblings by priority then weight desc
-                fn sort_siblings(nodes: &mut [&graph::GraphNode]) {
+                // Helper: format a context node (dimmed, type prefix, no priority)
+                fn format_context_line(node: &graph::GraphNode) -> String {
+                    let ntype = node.node_type.as_deref().unwrap_or("group");
+                    let tid = node.task_id.as_deref().unwrap_or(&node.id);
+                    format!(
+                        "\x1b[2m{ntype}: {:<50} {tid}\x1b[0m",
+                        node.label,
+                    )
+                }
+
+                // Helper: sort siblings — context nodes first (by label), then tasks by priority/weight
+                fn sort_siblings(nodes: &mut [&graph::GraphNode], context_ids: &HashSet<String>) {
                     nodes.sort_by(|a, b| {
-                        a.priority
-                            .unwrap_or(2)
-                            .cmp(&b.priority.unwrap_or(2))
-                            .then(
-                                b.downstream_weight
-                                    .partial_cmp(&a.downstream_weight)
-                                    .unwrap_or(std::cmp::Ordering::Equal),
-                            )
-                            .then(a.label.cmp(&b.label))
+                        let a_ctx = context_ids.contains(&a.id);
+                        let b_ctx = context_ids.contains(&b.id);
+                        match (a_ctx, b_ctx) {
+                            (true, false) => std::cmp::Ordering::Less,
+                            (false, true) => std::cmp::Ordering::Greater,
+                            (true, true) => a.label.cmp(&b.label),
+                            (false, false) => {
+                                a.priority
+                                    .unwrap_or(2)
+                                    .cmp(&b.priority.unwrap_or(2))
+                                    .then(
+                                        b.downstream_weight
+                                            .partial_cmp(&a.downstream_weight)
+                                            .unwrap_or(std::cmp::Ordering::Equal),
+                                    )
+                                    .then(a.label.cmp(&b.label))
+                            }
+                        }
                     });
                 }
 
@@ -592,12 +666,17 @@ fn main() -> Result<()> {
                     gs: &graph_store::GraphStore,
                     node: &graph::GraphNode,
                     visible: &HashSet<&str>,
+                    context_ids: &HashSet<String>,
                     prefix: &str,
                     is_last: bool,
                     output: &mut Vec<String>,
                 ) {
                     let connector = if is_last { "└── " } else { "├── " };
-                    let line = format_task_line(node);
+                    let line = if context_ids.contains(&node.id) {
+                        format_context_line(node)
+                    } else {
+                        format_task_line(node)
+                    };
                     output.push(format!("{prefix}{connector}{line}"));
 
                     // Find visible children
@@ -607,7 +686,7 @@ fn main() -> Result<()> {
                         .filter(|cid| visible.contains(cid.as_str()))
                         .filter_map(|cid| gs.get_node(cid))
                         .collect();
-                    sort_siblings(&mut children);
+                    sort_siblings(&mut children, context_ids);
 
                     let child_prefix = if is_last {
                         format!("{prefix}    ")
@@ -617,7 +696,7 @@ fn main() -> Result<()> {
 
                     for (i, child) in children.iter().enumerate() {
                         let child_is_last = i == children.len() - 1;
-                        render_tree(gs, child, visible, &child_prefix, child_is_last, output);
+                        render_tree(gs, child, visible, context_ids, &child_prefix, child_is_last, output);
                     }
                 }
 
@@ -628,18 +707,40 @@ fn main() -> Result<()> {
                     let count = proj_tasks.len();
                     total += count;
 
-                    // Find roots for this project: tasks whose parent is not in visible set
-                    let mut roots: Vec<&graph::GraphNode> = proj_tasks
+                    // Collect all visible nodes for this project (tasks + their context ancestors)
+                    let proj_task_ids: HashSet<&str> = proj_tasks.iter().map(|t| t.id.as_str()).collect();
+
+                    // Context nodes that are ancestors of tasks in this project
+                    let proj_context: HashSet<&str> = context_ids
                         .iter()
-                        .filter(|t| {
-                            match &t.parent {
-                                None => true,
-                                Some(pid) => !visible.contains(pid.as_str()),
-                            }
+                        .filter(|cid| {
+                            // A context node belongs to this project if any of its
+                            // descendant tasks are in proj_task_ids
+                            gs.get_node(cid)
+                                .map(|n| n.project.as_deref() == proj_tasks[0].project.as_deref())
+                                .unwrap_or(false)
                         })
+                        .map(|s| s.as_str())
+                        .collect();
+
+                    let proj_visible: HashSet<&str> = proj_task_ids
+                        .iter()
+                        .chain(proj_context.iter())
                         .copied()
                         .collect();
-                    sort_siblings(&mut roots);
+
+                    // Find roots: nodes whose parent is not in the project's visible set
+                    let mut roots: Vec<&graph::GraphNode> = proj_visible
+                        .iter()
+                        .filter_map(|id| gs.get_node(id))
+                        .filter(|n| {
+                            match &n.parent {
+                                None => true,
+                                Some(pid) => !proj_visible.contains(pid.as_str()),
+                            }
+                        })
+                        .collect();
+                    sort_siblings(&mut roots, &context_ids);
 
                     // Project header
                     let display_name = if *proj_name == "_no_project" {
@@ -656,7 +757,7 @@ fn main() -> Result<()> {
                     let mut lines: Vec<String> = Vec::new();
                     for (i, root) in roots.iter().enumerate() {
                         let is_last = i == roots.len() - 1;
-                        render_tree(&gs, root, &visible, "", is_last, &mut lines);
+                        render_tree(&gs, root, &proj_visible, &context_ids, "", is_last, &mut lines);
                     }
                     for line in &lines {
                         println!("{line}");
