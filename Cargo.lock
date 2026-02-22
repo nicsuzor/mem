@@ -1121,7 +1121,7 @@ checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 
 [[package]]
 name = "mem"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1147,6 +1147,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tar",
+ "terminal_size",
  "thiserror 2.0.18",
  "tokenizers",
  "tokio",
@@ -1985,6 +1986,16 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "terminal_size"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60b8cb979cb11c32ce1603f8137b22262a9d131aaa5c37b5678025f22b8becd0"
+dependencies = [
+ "rustix",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

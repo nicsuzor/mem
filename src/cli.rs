@@ -101,6 +101,13 @@ enum Commands {
         flat: bool,
     },
 
+    /// Show top focus tasks — what to work on right now
+    Focus {
+        /// Maximum number of focus picks
+        #[arg(short = 'n', long, default_value_t = 5)]
+        limit: usize,
+    },
+
     /// Show task details and relationships
     Task {
         /// Task ID
@@ -517,42 +524,44 @@ fn main() -> Result<()> {
             }
 
             if flat {
-                // ── Flat table (old default) ──
+                // ── Flat table ──
+                let width = term_width();
+                println!();
+                print_dashboard(&tasks, &filter);
                 println!();
                 println!(
-                    "  \x1b[1m{:<12} {:>4}  {:>6}  {}\x1b[0m",
-                    "ID", "PRI", "WEIGHT", "TITLE"
+                    "  {}{}  {:<50}  {:>6}  {:<14}{}",
+                    colors::BOLD, "PRI", "TITLE", "WEIGHT", "ID", colors::RESET
                 );
-                println!("  {}", "-".repeat(60));
+                println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
 
                 for task in &tasks {
                     let pri = task.priority.unwrap_or(2);
-                    let pri_color = match pri {
-                        0 => "\x1b[31m",
-                        1 => "\x1b[33m",
-                        2 => "\x1b[0m",
-                        3 => "\x1b[2m",
-                        _ => "\x1b[2m",
-                    };
+                    let color = pri_color(pri);
                     let weight = if task.downstream_weight > 0.0 {
                         format!("{:.1}", task.downstream_weight)
                     } else {
                         "-".to_string()
                     };
                     let exposure = if task.stakeholder_exposure { "!" } else { "" };
+                    let tid = task.task_id.as_deref().unwrap_or(&task.id);
+                    let age = days_since_created(task.created.as_deref())
+                        .map(|d| format!("  {}", format_staleness(d)))
+                        .unwrap_or_default();
                     println!(
-                        "  {:<12} {pri_color}{:>4}\x1b[0m  {:>5}{:<1}  {}",
-                        task.task_id.as_deref().unwrap_or(&task.id),
-                        pri,
-                        weight,
-                        exposure,
+                        "  {color}P{pri}{exposure}{} {:<50}  {:>5}  {}[{tid}]{}{age}",
+                        colors::RESET,
                         task.label,
+                        weight,
+                        colors::DIM_GRAY,
+                        colors::RESET,
                     );
                 }
-                println!("\n  {} {} tasks", tasks.len(), filter);
+                println!("\n  {}{} {} tasks{}", colors::DIM, tasks.len(), filter, colors::RESET);
             } else {
                 // ── Tree view (default) ──
                 use std::collections::{HashMap, HashSet};
+                let width = term_width();
 
                 // Build set of visible task IDs for filtering
                 let mut visible: HashSet<&str> = tasks
@@ -561,7 +570,6 @@ fn main() -> Result<()> {
                     .collect();
 
                 // Collect ancestor context nodes (projects, epics, goals)
-                // that provide hierarchy even though they're not in the filter
                 let context_types = ["project", "epic", "goal", "subproject"];
                 let mut context_ids: HashSet<String> = HashSet::new();
 
@@ -569,10 +577,10 @@ fn main() -> Result<()> {
                     let mut current_id = task.parent.as_deref();
                     while let Some(pid) = current_id {
                         if visible.contains(pid) {
-                            break; // already visible, ancestors above are too
+                            break;
                         }
                         if context_ids.contains(pid) {
-                            break; // already collected
+                            break;
                         }
                         if let Some(parent_node) = gs.get_node(pid) {
                             if parent_node
@@ -590,12 +598,11 @@ fn main() -> Result<()> {
                     }
                 }
 
-                // Expand visible set to include context ancestors
                 for cid in &context_ids {
                     visible.insert(cid.as_str());
                 }
 
-                // Group by project (tasks only, not context nodes)
+                // Group by project
                 let mut by_proj: HashMap<&str, Vec<&graph::GraphNode>> = HashMap::new();
                 for task in &tasks {
                     let proj = task
@@ -605,7 +612,6 @@ fn main() -> Result<()> {
                     by_proj.entry(proj).or_default().push(task);
                 }
 
-                // Sort project names: alphabetical, _no_project last
                 let mut proj_names: Vec<&str> = by_proj.keys().copied().collect();
                 proj_names.sort_by(|a, b| {
                     if *a == "_no_project" {
@@ -617,40 +623,7 @@ fn main() -> Result<()> {
                     }
                 });
 
-                // Helper: format a single task line
-                fn format_task_line(task: &graph::GraphNode) -> String {
-                    let pri = task.priority.unwrap_or(2);
-                    let pri_color = match pri {
-                        0 => "\x1b[31m",
-                        1 => "\x1b[33m",
-                        2 => "",
-                        _ => "\x1b[2m",
-                    };
-                    let pri_reset = if pri_color.is_empty() { "" } else { "\x1b[0m" };
-                    let exposure = if task.stakeholder_exposure { "!" } else { " " };
-                    let weight = if task.downstream_weight > 0.0 {
-                        format!("  \x1b[2mwt:{:.1}\x1b[0m", task.downstream_weight)
-                    } else {
-                        String::new()
-                    };
-                    let tid = task.task_id.as_deref().unwrap_or(&task.id);
-                    format!(
-                        "{pri_color}P{pri}{exposure}{pri_reset} {:<50} \x1b[2m{tid}\x1b[0m{weight}",
-                        task.label,
-                    )
-                }
-
-                // Helper: format a context node (dimmed, type prefix, no priority)
-                fn format_context_line(node: &graph::GraphNode) -> String {
-                    let ntype = node.node_type.as_deref().unwrap_or("group");
-                    let tid = node.task_id.as_deref().unwrap_or(&node.id);
-                    format!(
-                        "\x1b[2m{ntype}: {:<50} {tid}\x1b[0m",
-                        node.label,
-                    )
-                }
-
-                // Helper: sort siblings — context nodes first (by label), then tasks by priority/weight
+                // Sort siblings — context nodes first, then tasks by priority/weight
                 fn sort_siblings(nodes: &mut [&graph::GraphNode], context_ids: &HashSet<String>) {
                     nodes.sort_by(|a, b| {
                         let a_ctx = context_ids.contains(&a.id);
@@ -683,16 +656,21 @@ fn main() -> Result<()> {
                     prefix: &str,
                     is_last: bool,
                     output: &mut Vec<String>,
+                    width: usize,
                 ) {
-                    let connector = if is_last { "└── " } else { "├── " };
-                    let line = if context_ids.contains(&node.id) {
-                        format_context_line(node)
+                    let connector = if is_last { "\u{2514}\u{2500}\u{2500} " } else { "\u{251C}\u{2500}\u{2500} " };
+                    let prefix_vis = strip_ansi(prefix).len() + 4;
+                    let available = width.saturating_sub(prefix_vis);
+
+                    let is_context = context_ids.contains(&node.id);
+                    let line = if is_context {
+                        let task_count = count_visible_tasks(gs, &node.id, visible, context_ids);
+                        format_context_line_v2(node, task_count)
                     } else {
-                        format_task_line(node)
+                        format_task_line_v2(node, available)
                     };
                     output.push(format!("{prefix}{connector}{line}"));
 
-                    // Find visible children
                     let mut children: Vec<&graph::GraphNode> = node
                         .children
                         .iter()
@@ -704,15 +682,44 @@ fn main() -> Result<()> {
                     let child_prefix = if is_last {
                         format!("{prefix}    ")
                     } else {
-                        format!("{prefix}│   ")
+                        format!("{prefix}\u{2502}   ")
                     };
 
+                    let mut prev_was_context = false;
                     for (i, child) in children.iter().enumerate() {
                         let child_is_last = i == children.len() - 1;
-                        render_tree(gs, child, visible, context_ids, &child_prefix, child_is_last, output);
+                        let child_is_context = context_ids.contains(&child.id);
+
+                        // Breathing room between epic groups
+                        if child_is_context && prev_was_context && i > 0 {
+                            output.push(format!("{child_prefix}"));
+                        }
+
+                        render_tree(gs, child, visible, context_ids, &child_prefix, child_is_last, output, width);
+                        prev_was_context = child_is_context;
                     }
                 }
 
+                // ── Dashboard ──
+                println!();
+                print_dashboard(&tasks, &filter);
+
+                // ── Focus picks (only for default ready view) ──
+                if matches!(filter, TaskFilter::Ready) && project.is_none() {
+                    let picks = select_focus_picks(&tasks, 5);
+                    if !picks.is_empty() {
+                        println!();
+                        println!("  {}\u{2501}\u{2501} Today\u{2019}s Focus \u{2501}\u{2501}{}", colors::BOLD_WHITE, colors::RESET);
+                        println!();
+                        for pick in &picks {
+                            println!("    {}", format_task_line_v2(pick, width.saturating_sub(4)));
+                        }
+                        println!();
+                        println!("  {}{}{}", colors::DIM, "\u{2500}".repeat(width.saturating_sub(4)), colors::RESET);
+                    }
+                }
+
+                // ── Project trees ──
                 let mut total = 0;
                 println!();
                 for (pi, proj_name) in proj_names.iter().enumerate() {
@@ -720,15 +727,11 @@ fn main() -> Result<()> {
                     let count = proj_tasks.len();
                     total += count;
 
-                    // Collect all visible nodes for this project (tasks + their context ancestors)
                     let proj_task_ids: HashSet<&str> = proj_tasks.iter().map(|t| t.id.as_str()).collect();
 
-                    // Context nodes that are ancestors of tasks in this project
                     let proj_context: HashSet<&str> = context_ids
                         .iter()
                         .filter(|cid| {
-                            // A context node belongs to this project if any of its
-                            // descendant tasks are in proj_task_ids
                             gs.get_node(cid)
                                 .map(|n| n.project.as_deref() == proj_tasks[0].project.as_deref())
                                 .unwrap_or(false)
@@ -742,7 +745,6 @@ fn main() -> Result<()> {
                         .copied()
                         .collect();
 
-                    // Find roots: nodes whose parent is not in the project's visible set
                     let mut roots: Vec<&graph::GraphNode> = proj_visible
                         .iter()
                         .filter_map(|id| gs.get_node(id))
@@ -762,27 +764,45 @@ fn main() -> Result<()> {
                         proj_name
                     };
                     println!(
-                        "\x1b[1;36m{}\x1b[0m  \x1b[2m({} {})\x1b[0m",
-                        display_name, count, filter
+                        "  {}{}{} {}({} {}){}",
+                        colors::BOLD_CYAN, display_name, colors::RESET,
+                        colors::DIM, count, filter, colors::RESET
                     );
 
-                    // Render each root and its subtree
                     let mut lines: Vec<String> = Vec::new();
                     for (i, root) in roots.iter().enumerate() {
                         let is_last = i == roots.len() - 1;
-                        render_tree(&gs, root, &proj_visible, &context_ids, "", is_last, &mut lines);
+                        render_tree(&gs, root, &proj_visible, &context_ids, "", is_last, &mut lines, width);
                     }
                     for line in &lines {
                         println!("{line}");
                     }
 
-                    // Blank line between projects (but not after the last)
                     if pi < proj_names.len() - 1 {
                         println!();
                     }
                 }
-                println!("\n\x1b[2m{} {} tasks across {} projects\x1b[0m", total, filter, proj_names.len());
+                println!("\n  {}{} {} tasks across {} projects{}", colors::DIM, total, filter, proj_names.len(), colors::RESET);
             }
+        }
+
+        Commands::Focus { limit } => {
+            let gs = load_graph(&pkb_root, &db_path);
+            let tasks = gs.ready_tasks();
+
+            if tasks.is_empty() {
+                println!("No ready tasks.");
+                return Ok(());
+            }
+
+            let picks = select_focus_picks(&tasks, limit);
+            let width = term_width();
+
+            println!();
+            for pick in &picks {
+                println!("  {}", format_task_line_v2(pick, width.saturating_sub(2)));
+            }
+            println!();
         }
 
         Commands::Task { id } => {
@@ -1702,5 +1722,256 @@ fn truncate_snippet(text: &str, max_len: usize) -> String {
         end -= 1;
     }
     format!("{}…", &text[..end])
+}
+
+// ── Task tree display helpers ──────────────────────────────────────
+
+mod colors {
+    pub const RESET: &str = "\x1b[0m";
+    pub const BOLD: &str = "\x1b[1m";
+    pub const DIM: &str = "\x1b[2m";
+    pub const P0: &str = "\x1b[1;31m";      // bold red
+    pub const P1: &str = "\x1b[1;33m";      // bold yellow
+    pub const P2: &str = "\x1b[36m";        // cyan
+    pub const P3: &str = "\x1b[2m";         // dim
+    pub const RED: &str = "\x1b[31m";
+    pub const YELLOW: &str = "\x1b[33m";
+    pub const CYAN: &str = "\x1b[36m";
+    pub const BOLD_CYAN: &str = "\x1b[1;36m";
+    pub const DIM_GRAY: &str = "\x1b[2;37m";
+    pub const BOLD_WHITE: &str = "\x1b[1;37m";
+}
+
+fn term_width() -> usize {
+    terminal_size::terminal_size()
+        .map(|(w, _)| w.0 as usize)
+        .unwrap_or(100)
+}
+
+fn strip_ansi(s: &str) -> String {
+    let re = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    re.replace_all(s, "").to_string()
+}
+
+fn pri_color(pri: i32) -> &'static str {
+    match pri {
+        0 => colors::P0,
+        1 => colors::P1,
+        2 => colors::P2,
+        _ => colors::P3,
+    }
+}
+
+fn days_since_created(created: Option<&str>) -> Option<i64> {
+    let created = created?;
+    if created.len() < 10 {
+        return None;
+    }
+    let created_dt = chrono::NaiveDate::parse_from_str(&created[..10], "%Y-%m-%d").ok()?;
+    let today = chrono::Utc::now().date_naive();
+    Some((today - created_dt).num_days())
+}
+
+fn format_staleness(days: i64) -> String {
+    let color = if days > 30 {
+        colors::RED
+    } else if days >= 14 {
+        colors::YELLOW
+    } else {
+        colors::DIM
+    };
+    format!("{color}{days}d{}", colors::RESET)
+}
+
+fn format_due(due: &str) -> String {
+    let today = chrono::Utc::now().date_naive();
+    let len = std::cmp::min(10, due.len());
+    if let Ok(due_date) = chrono::NaiveDate::parse_from_str(&due[..len], "%Y-%m-%d") {
+        let days_until = (due_date - today).num_days();
+        let color = if days_until < 0 {
+            colors::RED
+        } else if days_until <= 7 {
+            colors::YELLOW
+        } else {
+            colors::DIM
+        };
+        format!("{color}due:{due_date}{}", colors::RESET)
+    } else {
+        format!("{}due:{due}{}", colors::DIM, colors::RESET)
+    }
+}
+
+fn format_complexity(complexity: &str) -> String {
+    format!("{}[{complexity}]{}", colors::DIM, colors::RESET)
+}
+
+fn select_focus_picks<'a>(tasks: &[&'a graph::GraphNode], max: usize) -> Vec<&'a graph::GraphNode> {
+    let today = chrono::Utc::now().date_naive();
+
+    let mut scored: Vec<(&graph::GraphNode, i64)> = tasks
+        .iter()
+        .map(|&t| {
+            let pri = t.priority.unwrap_or(2);
+            let mut score: i64 = match pri {
+                0 => 10000,
+                1 => 5000,
+                _ => 0,
+            };
+
+            if let Some(ref due) = t.due {
+                let len = std::cmp::min(10, due.len());
+                if let Ok(due_date) = chrono::NaiveDate::parse_from_str(&due[..len], "%Y-%m-%d") {
+                    let days_until = (due_date - today).num_days();
+                    if days_until < 0 {
+                        score += 8000;
+                    } else if days_until <= 7 {
+                        score += 3000 + (7 - days_until) * 100;
+                    } else if days_until <= 30 {
+                        score += 1000;
+                    }
+                }
+            }
+
+            if pri >= 2 {
+                if let Some(days) = days_since_created(t.created.as_deref()) {
+                    score += std::cmp::min(days, 200);
+                }
+            }
+
+            score += (t.downstream_weight * 10.0) as i64;
+
+            (t, score)
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.into_iter().take(max).map(|(t, _)| t).collect()
+}
+
+fn format_task_line_v2(task: &graph::GraphNode, width: usize) -> String {
+    let pri = task.priority.unwrap_or(2);
+    let color = pri_color(pri);
+    let exposure = if task.stakeholder_exposure { "!" } else { " " };
+
+    // Left: priority + label
+    let left = format!("{color}P{pri}{exposure}{} {}", colors::RESET, task.label);
+
+    // Right: metadata pieces
+    let mut right_parts: Vec<String> = Vec::new();
+
+    if task.downstream_weight > 0.0 {
+        right_parts.push(format!("{}wt:{:.1}{}", colors::DIM, task.downstream_weight, colors::RESET));
+    }
+    if let Some(ref cx) = task.complexity {
+        right_parts.push(format_complexity(cx));
+    }
+    if let Some(ref due) = task.due {
+        right_parts.push(format_due(due));
+    }
+    if let Some(days) = days_since_created(task.created.as_deref()) {
+        right_parts.push(format_staleness(days));
+    }
+    let tid = task.task_id.as_deref().unwrap_or(&task.id);
+    right_parts.push(format!("{}[{tid}]{}", colors::DIM_GRAY, colors::RESET));
+
+    let right = right_parts.join("  ");
+
+    let left_vis = strip_ansi(&left).len();
+    let right_vis = strip_ansi(&right).len();
+    let padding = width.saturating_sub(left_vis).saturating_sub(right_vis).max(2);
+
+    format!("{left}{:>pad$}{right}", "", pad = padding)
+}
+
+fn format_context_line_v2(
+    node: &graph::GraphNode,
+    child_task_count: usize,
+) -> String {
+    let ntype = node.node_type.as_deref().unwrap_or("group");
+    let tid = node.task_id.as_deref().unwrap_or(&node.id);
+
+    let block_color = match ntype {
+        "epic" => colors::CYAN,
+        "goal" => colors::YELLOW,
+        "project" => colors::BOLD_CYAN,
+        _ => colors::DIM,
+    };
+
+    let count_str = if child_task_count > 0 {
+        format!(" {}({child_task_count}){}", colors::DIM, colors::RESET)
+    } else {
+        String::new()
+    };
+
+    format!(
+        "{block_color}\u{258E}{} {}{}{}{count_str}  {}[{tid}]{}",
+        colors::RESET,
+        colors::BOLD,
+        node.label,
+        colors::RESET,
+        colors::DIM_GRAY,
+        colors::RESET,
+    )
+}
+
+fn count_visible_tasks(
+    gs: &graph_store::GraphStore,
+    node_id: &str,
+    visible: &std::collections::HashSet<&str>,
+    context_ids: &std::collections::HashSet<String>,
+) -> usize {
+    let mut count = 0;
+    if let Some(node) = gs.get_node(node_id) {
+        for cid in &node.children {
+            if !visible.contains(cid.as_str()) {
+                continue;
+            }
+            if context_ids.contains(cid) {
+                count += count_visible_tasks(gs, cid, visible, context_ids);
+            } else {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
+    let total = tasks.len();
+    let urgent = tasks.iter().filter(|t| t.priority.unwrap_or(2) <= 1).count();
+    let with_due = tasks.iter().filter(|t| t.due.is_some()).count();
+    let overdue_count = {
+        let today = chrono::Utc::now().date_naive();
+        tasks.iter().filter(|t| {
+            t.due.as_deref().and_then(|d| {
+                let len = std::cmp::min(10, d.len());
+                chrono::NaiveDate::parse_from_str(&d[..len], "%Y-%m-%d").ok()
+            }).map(|d| d < today).unwrap_or(false)
+        }).count()
+    };
+
+    let oldest_days = tasks
+        .iter()
+        .filter_map(|t| days_since_created(t.created.as_deref()))
+        .max()
+        .unwrap_or(0);
+
+    let mut parts: Vec<String> = vec![
+        format!("{}{} {filter}{}", colors::BOLD, total, colors::RESET),
+    ];
+    if urgent > 0 {
+        parts.push(format!("{}{}  urgent{}", colors::RED, urgent, colors::RESET));
+    }
+    if overdue_count > 0 {
+        parts.push(format!("{}{} overdue{}", colors::RED, overdue_count, colors::RESET));
+    }
+    if with_due > 0 {
+        parts.push(format!("{with_due} with deadlines"));
+    }
+    if oldest_days > 0 {
+        parts.push(format!("oldest: {oldest_days}d"));
+    }
+
+    println!("  {}", parts.join(&format!(" {}│{} ", colors::DIM, colors::RESET)));
 }
 

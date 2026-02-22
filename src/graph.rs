@@ -87,6 +87,8 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
@@ -268,6 +270,9 @@ impl GraphNode {
         let due = fm
             .as_ref()
             .and_then(|f| f.get("due").and_then(|v| v.as_str()).map(String::from));
+        let created = fm
+            .as_ref()
+            .and_then(|f| f.get("created").and_then(|v| v.as_str()).map(String::from));
         let depth = fm
             .as_ref()
             .and_then(|f| f.get("depth").and_then(|v| v.as_i64()).map(|v| v as i32))
@@ -338,6 +343,7 @@ impl GraphNode {
             children,
             project,
             due,
+            created,
             assignee,
             complexity,
             depth,
