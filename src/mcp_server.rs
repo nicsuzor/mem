@@ -1,7 +1,7 @@
 //! MCP server for PKB semantic search + task graph.
 //!
 //! Implements rmcp 0.1.5 ServerHandler trait manually with tool dispatch.
-//! Provides 11 tools: 4 original search tools + 7 graph/task tools.
+//! Provides 18 tools for search, documents, tasks, and knowledge graph.
 
 use crate::embeddings::Embedder;
 use crate::graph_store::GraphStore;
@@ -80,81 +80,8 @@ impl PkbSearchServer {
     }
 
     // =========================================================================
-    // ORIGINAL TOOLS (4)
+    // SEARCH & DOCUMENT TOOLS
     // =========================================================================
-
-    fn handle_semantic_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let query = args
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: query"),
-                data: None,
-            })?;
-
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
-        let project = args.get("project").and_then(|v| v.as_str());
-
-        let query_embedding = self.embedder.encode(query).map_err(|e| McpError {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Embedding error: {e}")),
-            data: None,
-        })?;
-
-        let store = self.store.read();
-        // Over-fetch when filtering by project
-        let fetch_limit = if project.is_some() { limit * 5 } else { limit };
-        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
-
-        let results: Vec<_> = if let Some(proj) = project {
-            results
-                .into_iter()
-                .filter(|r| r.project.as_deref().map(|p| p.eq_ignore_ascii_case(proj)).unwrap_or(false))
-                .take(limit)
-                .collect()
-        } else {
-            results.into_iter().take(limit).collect()
-        };
-
-        if results.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No results found.",
-            )]));
-        }
-
-        let mut output = format!(
-            "**Found {} results for:** \"{}\"\n\n",
-            results.len(),
-            query
-        );
-
-        for (i, r) in results.iter().enumerate() {
-            output.push_str(&format!(
-                "### {}. {} (score: {:.3})\n",
-                i + 1,
-                r.title,
-                r.score
-            ));
-            output.push_str(&format!("**Path:** `{}`\n", r.path.display()));
-
-            if let Some(ref dt) = r.doc_type {
-                output.push_str(&format!("**Type:** {dt}\n"));
-            }
-            if !r.tags.is_empty() {
-                output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
-            }
-            if !r.snippet.is_empty() {
-                output.push_str(&format!("\n> {}\n", r.snippet.replace('\n', "\n> ")));
-            }
-            output.push('\n');
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(output)]))
-    }
 
     fn handle_get_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let path_str = args
@@ -337,182 +264,6 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "**Found {count} tasks for:** \"{query}\"\n\n{output}"
         ))]))
-    }
-
-    fn handle_get_ready_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(20) as usize;
-        let project = args.get("project").and_then(|v| v.as_str());
-
-        let graph = self.graph.read();
-        let mut tasks = graph.ready_tasks();
-
-        if let Some(proj) = project {
-            tasks.retain(|t| t.project.as_deref() == Some(proj));
-        }
-
-        if tasks.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No ready tasks found.",
-            )]));
-        }
-
-        let mut output = format!(
-            "**{} ready tasks** (sorted by priority + downstream weight)\n\n",
-            tasks.len()
-        );
-        output.push_str("| # | ID | Pri | Weight | Title |\n|---|---|---|---|---|\n");
-
-        for (i, t) in tasks.iter().take(limit).enumerate() {
-            let id = t.task_id.as_deref().unwrap_or(&t.id);
-            let weight = if t.downstream_weight > 0.0 {
-                format!(
-                    "{:.1}{}",
-                    t.downstream_weight,
-                    if t.stakeholder_exposure { "!" } else { "" }
-                )
-            } else {
-                "-".to_string()
-            };
-            output.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
-                i + 1,
-                id,
-                t.priority.unwrap_or(2),
-                weight,
-                t.label
-            ));
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(output)]))
-    }
-
-    fn handle_get_blocked_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let project = args.get("project").and_then(|v| v.as_str());
-
-        let graph = self.graph.read();
-        let mut tasks = graph.blocked_tasks();
-
-        if let Some(proj) = project {
-            tasks.retain(|t| t.project.as_deref() == Some(proj));
-        }
-
-        if tasks.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No blocked tasks.",
-            )]));
-        }
-
-        let mut output = format!("**{} blocked tasks**\n\n", tasks.len());
-
-        for t in &tasks {
-            let id = t.task_id.as_deref().unwrap_or(&t.id);
-            output.push_str(&format!("### {} — {}\n", id, t.label));
-
-            if !t.depends_on.is_empty() {
-                output.push_str("**Blocked by:**\n");
-                for dep in &t.depends_on {
-                    let dep_label = graph
-                        .get_node(dep)
-                        .map(|n| n.label.as_str())
-                        .unwrap_or("?");
-                    let dep_status = graph
-                        .get_node(dep)
-                        .and_then(|n| n.status.as_deref())
-                        .unwrap_or("?");
-                    output.push_str(&format!("- `{}` [{}] {}\n", dep, dep_status, dep_label));
-                }
-            }
-            if t.status.as_deref() == Some("blocked") {
-                output.push_str("**Status:** explicitly blocked\n");
-            }
-            output.push('\n');
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(output)]))
-    }
-
-    fn handle_get_task_network(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let id = args
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: id"),
-                data: None,
-            })?;
-
-        let graph = self.graph.read();
-        let node = graph.get_node(id).ok_or_else(|| McpError {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from(format!("Task not found: {id}")),
-            data: None,
-        })?;
-
-        let mut output = format!("## {} — {}\n\n", id, node.label);
-        output.push_str(&format!("**Path:** `{}`\n", self.abs_path(&node.path).display()));
-
-        if let Some(ref s) = node.status {
-            output.push_str(&format!("**Status:** {s}\n"));
-        }
-        if let Some(p) = node.priority {
-            output.push_str(&format!("**Priority:** {p}\n"));
-        }
-        if let Some(ref proj) = node.project {
-            output.push_str(&format!("**Project:** {proj}\n"));
-        }
-        if let Some(ref due) = node.due {
-            output.push_str(&format!("**Due:** {due}\n"));
-        }
-        if !node.tags.is_empty() {
-            output.push_str(&format!("**Tags:** {}\n", node.tags.join(", ")));
-        }
-
-        if !node.depends_on.is_empty() {
-            output.push_str("\n### Depends on\n");
-            for dep in &node.depends_on {
-                let label = graph.get_node(dep).map(|n| n.label.as_str()).unwrap_or("?");
-                output.push_str(&format!("- `{dep}` — {label}\n"));
-            }
-        }
-        if !node.blocks.is_empty() {
-            output.push_str("\n### Blocks\n");
-            for b in &node.blocks {
-                let label = graph.get_node(b).map(|n| n.label.as_str()).unwrap_or("?");
-                output.push_str(&format!("- `{b}` — {label}\n"));
-            }
-        }
-        if !node.children.is_empty() {
-            output.push_str("\n### Children\n");
-            for c in &node.children {
-                let label = graph.get_node(c).map(|n| n.label.as_str()).unwrap_or("?");
-                let status = graph
-                    .get_node(c)
-                    .and_then(|n| n.status.as_deref())
-                    .unwrap_or("?");
-                output.push_str(&format!("- `{c}` [{status}] {label}\n"));
-            }
-        }
-        if let Some(ref p) = node.parent {
-            let label = graph.get_node(p).map(|n| n.label.as_str()).unwrap_or("?");
-            output.push_str(&format!("\n**Parent:** `{p}` — {label}\n"));
-        }
-
-        if node.downstream_weight > 0.0 {
-            output.push_str(&format!(
-                "\n**Downstream weight:** {:.2}{}\n",
-                node.downstream_weight,
-                if node.stakeholder_exposure {
-                    " (stakeholder exposure)"
-                } else {
-                    ""
-                }
-            ));
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     fn handle_get_network_metrics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -1061,10 +812,37 @@ impl PkbSearchServer {
 
         let body = parsed.content.trim().to_string();
 
+        // Build relationship context from graph
+        let resolve_ref = |rid: &str| -> serde_json::Value {
+            if let Some(n) = graph.get_node(rid) {
+                serde_json::json!({
+                    "id": rid,
+                    "title": n.label,
+                    "status": n.status,
+                })
+            } else {
+                serde_json::json!({ "id": rid })
+            }
+        };
+
+        let depends_on: Vec<serde_json::Value> =
+            node.depends_on.iter().map(|d| resolve_ref(d)).collect();
+        let blocks: Vec<serde_json::Value> =
+            node.blocks.iter().map(|b| resolve_ref(b)).collect();
+        let children: Vec<serde_json::Value> =
+            node.children.iter().map(|c| resolve_ref(c)).collect();
+        let parent = node.parent.as_ref().map(|p| resolve_ref(p));
+
         let result = serde_json::json!({
             "frontmatter": frontmatter,
             "body": body,
             "path": abs_path.to_string_lossy(),
+            "depends_on": depends_on,
+            "blocks": blocks,
+            "children": children,
+            "parent": parent,
+            "downstream_weight": node.downstream_weight,
+            "stakeholder_exposure": node.stakeholder_exposure,
         });
 
         let json = serde_json::to_string_pretty(&result).unwrap_or_default();
@@ -1399,21 +1177,47 @@ impl PkbSearchServer {
             .unwrap_or(50) as usize;
 
         let graph = self.graph.read();
-        let mut tasks: Vec<_> = graph.all_tasks().into_iter().collect();
+
+        // Detect special status filters: "ready" and "blocked"
+        let is_ready = status.map(|s| s.eq_ignore_ascii_case("ready")).unwrap_or(false);
+        let is_blocked = status.map(|s| s.eq_ignore_ascii_case("blocked")).unwrap_or(false);
+
+        let mut tasks: Vec<_> = if is_ready {
+            // Use graph.ready_tasks() for the ready filter
+            let ready_ids: std::collections::HashSet<String> =
+                graph.ready_tasks().iter().map(|n| n.id.clone()).collect();
+            graph
+                .all_tasks()
+                .into_iter()
+                .filter(|t| ready_ids.contains(&t.id))
+                .collect()
+        } else if is_blocked {
+            // Use graph.blocked_tasks() for the blocked filter
+            let blocked_ids: std::collections::HashSet<String> =
+                graph.blocked_tasks().iter().map(|n| n.id.clone()).collect();
+            graph
+                .all_tasks()
+                .into_iter()
+                .filter(|t| blocked_ids.contains(&t.id))
+                .collect()
+        } else {
+            let mut all: Vec<_> = graph.all_tasks().into_iter().collect();
+            if let Some(s) = status {
+                all.retain(|t| {
+                    t.status
+                        .as_deref()
+                        .map(|st| st.eq_ignore_ascii_case(s))
+                        .unwrap_or(false)
+                });
+            }
+            all
+        };
 
         if let Some(proj) = project {
             tasks.retain(|t| {
                 t.project
                     .as_deref()
                     .map(|p| p.eq_ignore_ascii_case(proj))
-                    .unwrap_or(false)
-            });
-        }
-        if let Some(s) = status {
-            tasks.retain(|t| {
-                t.status
-                    .as_deref()
-                    .map(|st| st.eq_ignore_ascii_case(s))
                     .unwrap_or(false)
             });
         }
@@ -1430,32 +1234,94 @@ impl PkbSearchServer {
         }
 
         if tasks.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No tasks found matching filters.",
-            )]));
+            let label = if is_ready {
+                "No ready tasks found."
+            } else if is_blocked {
+                "No blocked tasks."
+            } else {
+                "No tasks found matching filters."
+            };
+            return Ok(CallToolResult::success(vec![Content::text(label)]));
         }
 
         let total = tasks.len();
         tasks.truncate(limit);
 
-        let mut output = format!(
-            "**{total} tasks** (showing {})\n\n| # | ID | Pri | Status | Title |\n|---|---|---|---|---|\n",
-            tasks.len()
-        );
-
-        for (i, t) in tasks.iter().enumerate() {
-            let id = t.task_id.as_deref().unwrap_or(&t.id);
-            let pri = t.priority.unwrap_or(2);
-            let status_str = t.status.as_deref().unwrap_or("-");
-            output.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
-                i + 1,
-                id,
-                pri,
-                status_str,
-                t.label
-            ));
-        }
+        let output = if is_blocked {
+            // Blocked view: heading per task with blocker details
+            let mut out = format!("**{total} blocked tasks** (showing {})\n\n", tasks.len());
+            for t in &tasks {
+                let id = t.task_id.as_deref().unwrap_or(&t.id);
+                out.push_str(&format!("### {} — {}\n", id, t.label));
+                if !t.depends_on.is_empty() {
+                    out.push_str("**Blocked by:**\n");
+                    for dep in &t.depends_on {
+                        let dep_label = graph
+                            .get_node(dep)
+                            .map(|n| n.label.as_str())
+                            .unwrap_or("?");
+                        let dep_status = graph
+                            .get_node(dep)
+                            .and_then(|n| n.status.as_deref())
+                            .unwrap_or("?");
+                        out.push_str(&format!("- `{}` [{}] {}\n", dep, dep_status, dep_label));
+                    }
+                }
+                if t.status.as_deref() == Some("blocked") {
+                    out.push_str("**Status:** explicitly blocked\n");
+                }
+                out.push('\n');
+            }
+            out
+        } else if is_ready {
+            // Ready view: table with Weight column, sorted by priority + downstream weight
+            let mut out = format!(
+                "**{total} ready tasks** (showing {}, sorted by priority + downstream weight)\n\n",
+                tasks.len()
+            );
+            out.push_str("| # | ID | Pri | Weight | Title |\n|---|---|---|---|---|\n");
+            for (i, t) in tasks.iter().enumerate() {
+                let id = t.task_id.as_deref().unwrap_or(&t.id);
+                let weight = if t.downstream_weight > 0.0 {
+                    format!(
+                        "{:.1}{}",
+                        t.downstream_weight,
+                        if t.stakeholder_exposure { "!" } else { "" }
+                    )
+                } else {
+                    "-".to_string()
+                };
+                out.push_str(&format!(
+                    "| {} | {} | {} | {} | {} |\n",
+                    i + 1,
+                    id,
+                    t.priority.unwrap_or(2),
+                    weight,
+                    t.label
+                ));
+            }
+            out
+        } else {
+            // Default view: standard table
+            let mut out = format!(
+                "**{total} tasks** (showing {})\n\n| # | ID | Pri | Status | Title |\n|---|---|---|---|---|\n",
+                tasks.len()
+            );
+            for (i, t) in tasks.iter().enumerate() {
+                let id = t.task_id.as_deref().unwrap_or(&t.id);
+                let pri = t.priority.unwrap_or(2);
+                let status_str = t.status.as_deref().unwrap_or("-");
+                out.push_str(&format!(
+                    "| {} | {} | {} | {} | {} |\n",
+                    i + 1,
+                    id,
+                    pri,
+                    status_str,
+                    t.label
+                ));
+            }
+            out
+        };
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
@@ -1524,26 +1390,22 @@ impl ServerHandler for PkbSearchServer {
     ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
         let args = Self::args_to_value(request.arguments);
         let result = match &*request.name {
-            "semantic_search" => self.handle_semantic_search(&args),
+            "search" => self.handle_pkb_search(&args),
             "get_document" => self.handle_get_document(&args),
             "list_documents" => self.handle_list_documents(&args),
             "reindex" => self.handle_reindex(&args),
             "task_search" => self.handle_task_search(&args),
-            "get_ready_tasks" => self.handle_get_ready_tasks(&args),
-            "get_blocked_tasks" => self.handle_get_blocked_tasks(&args),
-            "get_task_network" => self.handle_get_task_network(&args),
             "get_network_metrics" => self.handle_get_network_metrics(&args),
             "create_task" => self.handle_create_task(&args),
             "create_memory" => self.handle_create_memory(&args),
-            "create_document" => self.handle_create_document(&args),
-            "append_to_document" => self.handle_append_to_document(&args),
-            "delete_document" => self.handle_delete_document(&args),
+            "create" => self.handle_create_document(&args),
+            "append" => self.handle_append_to_document(&args),
+            "delete" => self.handle_delete_document(&args),
             "complete_task" => self.handle_complete_task(&args),
             "list_tasks" => self.handle_list_tasks(&args),
             "get_task" => self.handle_get_task(&args),
             "update_task" => self.handle_update_task(&args),
             "pkb_context" => self.handle_pkb_context(&args),
-            "pkb_search" => self.handle_pkb_search(&args),
             "pkb_trace" => self.handle_pkb_trace(&args),
             "pkb_orphans" => self.handle_pkb_orphans(&args),
             _ => Err(McpError {
@@ -1562,13 +1424,14 @@ impl ServerHandler for PkbSearchServer {
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = vec![
             Tool::new(
-                "semantic_search",
-                "Search the personal knowledge base by semantic similarity.",
+                "search",
+                "Hybrid semantic + graph-proximity search across the personal knowledge base. Optionally boost results near a specific node.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "Natural language query" },
+                        "query": { "type": "string", "description": "Natural language search query" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
+                        "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
                         "project": { "type": "string", "description": "Filter by project" }
                     },
                     "required": ["query"]
@@ -1627,41 +1490,6 @@ impl ServerHandler for PkbSearchServer {
                 .unwrap(),
             ),
             Tool::new(
-                "get_ready_tasks",
-                "Get actionable tasks sorted by priority and downstream impact.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "limit": { "type": "integer", "description": "Max results (default: 20)" },
-                        "project": { "type": "string", "description": "Filter by project" }
-                    }
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "get_blocked_tasks",
-                "Get blocked tasks with their blockers listed.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "project": { "type": "string", "description": "Filter by project" }
-                    }
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "get_task_network",
-                "Get full relationship context for a task.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Task ID" }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
                 "get_network_metrics",
                 "Get centrality metrics: degree, betweenness, PageRank, downstream weight.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -1712,8 +1540,8 @@ impl ServerHandler for PkbSearchServer {
                 .unwrap(),
             ),
             Tool::new(
-                "create_document",
-                "Create a new document (note, knowledge, memory, or any type) with full enforced frontmatter (id, title, type, created, modified, alias, permalink). Subdirectory routing: task/bug/epic/feature → tasks/, project → projects/, goal → goals/, else → notes/.",
+                "create",
+                "Create a new document with full enforced frontmatter. Subdirectory routing: task/bug/epic/feature -> tasks/, project -> projects/, goal -> goals/, else -> notes/.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -1738,7 +1566,7 @@ impl ServerHandler for PkbSearchServer {
                 .unwrap(),
             ),
             Tool::new(
-                "append_to_document",
+                "append",
                 "Append timestamped content to an existing document. Optionally target a specific section heading. Auto-updates modified timestamp.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
@@ -1752,8 +1580,8 @@ impl ServerHandler for PkbSearchServer {
                 .unwrap(),
             ),
             Tool::new(
-                "delete_document",
-                "Delete a task or memory by ID. Removes the file from disk and the vector store index.",
+                "delete",
+                "Delete a document by ID. Removes the file from disk and the vector store index.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -1777,12 +1605,12 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "list_tasks",
-                "List tasks with filtering by project, status, priority, and assignee.",
+                "List tasks with filtering by project, status, priority, and assignee. Use status='ready' for actionable tasks sorted by priority + downstream weight, or status='blocked' to see blocked tasks with their blockers.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "project": { "type": "string", "description": "Filter by project" },
-                        "status": { "type": "string", "description": "Filter by status (active, in_progress, blocked, done, etc.)" },
+                        "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, done, etc." },
                         "priority": { "type": "integer", "description": "Filter by exact priority (0-4)" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" }
@@ -1792,7 +1620,7 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "get_task",
-                "Retrieve a task by ID. Returns parsed YAML frontmatter as structured JSON, the markdown body, and the file path.",
+                "Retrieve a task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, parent with titles/statuses, downstream_weight, stakeholder_exposure).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -1826,21 +1654,6 @@ impl ServerHandler for PkbSearchServer {
                         "hops": { "type": "integer", "description": "Neighbourhood radius in hops (default: 2)" }
                     },
                     "required": ["id"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "pkb_search",
-                "Hybrid semantic + graph-proximity search. Optionally boost results near a specific node.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Natural language search query" },
-                        "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
-                        "project": { "type": "string", "description": "Filter by project" }
-                    },
-                    "required": ["query"]
                 }))
                 .unwrap(),
             ),
@@ -1889,11 +1702,10 @@ impl ServerHandler for PkbSearchServer {
             },
             instructions: Some(
                 "PKB Search — semantic search + task graph over personal knowledge base. \
-                 22 tools: semantic_search, get_document, list_documents, reindex, \
-                 task_search, get_ready_tasks, get_blocked_tasks, get_task_network, \
-                 get_network_metrics, create_task, create_memory, create_document, \
-                 append_to_document, delete_document, complete_task, list_tasks, \
-                 get_task, update_task, pkb_context, pkb_search, pkb_trace, pkb_orphans."
+                 18 tools: search, get_document, list_documents, reindex, \
+                 task_search, get_network_metrics, create_task, create_memory, \
+                 create, append, delete, complete_task, list_tasks, \
+                 get_task, update_task, pkb_context, pkb_trace, pkb_orphans."
                     .to_string(),
             ),
         }

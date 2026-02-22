@@ -54,15 +54,15 @@ The `aops` binary provides direct access to search, task management, and graph a
 
 ## MCP Tools
 
-The `pkb-search` server exposes 15 tools over MCP (stdio transport).
+The `pkb-search` server exposes 18 tools over MCP (stdio transport).
 
 ### Search Tools
 
 | Tool | Description |
 |------|-------------|
-| `semantic_search` | Find documents by meaning. Params: `query` (string), `limit` (int, default 10) |
+| `search` | Hybrid semantic + graph-proximity search. Params: `query` (required), `limit` (default 10), `boost_id` (optional), `project` |
 | `get_document` | Read full contents of a file. Params: `path` (string) |
-| `list_documents` | Browse/filter documents. Params: `tag`, `type`, `status` (all optional) |
+| `list_documents` | Browse/filter documents. Params: `tag`, `type`, `status`, `project` (all optional) |
 | `reindex` | Force a full re-scan of the PKB directory and rebuild the knowledge graph |
 
 ### Task Tools
@@ -70,19 +70,27 @@ The `pkb-search` server exposes 15 tools over MCP (stdio transport).
 | Tool | Description |
 |------|-------------|
 | `task_search` | Semantic search filtered to tasks/projects/goals. Returns graph context. Params: `query`, `limit` |
-| `get_ready_tasks` | Actionable tasks sorted by priority + downstream impact. Params: `limit` (default 20), `project` |
-| `get_blocked_tasks` | Blocked tasks with their blockers listed |
-| `get_task_network` | Full relationship context for a task (depends_on, blocks, children, parent). Params: `id` |
-| `get_network_metrics` | Centrality metrics: degree, betweenness, PageRank, downstream weight. Params: `id` |
+| `list_tasks` | List tasks with filtering. Use `status="ready"` for actionable tasks with weight column, `status="blocked"` for tasks with blocker details. Params: `project`, `status`, `priority`, `assignee`, `limit` |
+| `get_task` | Retrieve task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, parent with titles/statuses, downstream_weight, stakeholder_exposure). Params: `id` |
 | `create_task` | Create a new task markdown file. Params: `title` (required), `id`, `parent`, `priority`, `project`, `tags`, `depends_on`, `assignee`, `complexity`, `body` |
-| `update_task` | Update frontmatter fields on an existing task. Params: `path`, `updates` (object) |
+| `update_task` | Update frontmatter fields on an existing task. Params: `path` or `id`, `updates` (object) |
+| `complete_task` | Mark a task as done. Params: `id` |
+| `get_network_metrics` | Centrality metrics: degree, betweenness, PageRank, downstream weight. Params: `id` |
+
+### Document CRUD Tools
+
+| Tool | Description |
+|------|-------------|
+| `create` | Create a new document with enforced frontmatter. Subdirectory routing by type. Params: `title`, `type` (required), plus optional fields |
+| `create_memory` | Create a new memory/note. Stored in memories/ directory. Params: `title` (required) |
+| `append` | Append timestamped content to an existing document. Params: `id`, `content` (required), `section` (optional) |
+| `delete` | Delete a document by ID. Removes from disk and vector store. Params: `id` |
 
 ### Knowledge Graph Tools
 
 | Tool | Description |
 |------|-------------|
 | `pkb_context` | Full knowledge neighbourhood: metadata, relationships, backlinks grouped by source type, nearby nodes within N hops. Supports flexible ID resolution. Params: `id` (required), `hops` (default 2) |
-| `pkb_search` | Hybrid semantic + graph-proximity search. Optionally boost results near a specific node. Params: `query` (required), `limit` (default 10), `boost_id` (optional) |
 | `pkb_trace` | Find shortest paths between two nodes. Params: `from`, `to` (required), `max_paths` (default 3) |
 | `pkb_orphans` | Find disconnected nodes with zero edges. Params: `limit` (default 20) |
 
