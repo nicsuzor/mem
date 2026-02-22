@@ -665,9 +665,9 @@ fn main() -> Result<()> {
                     let is_context = context_ids.contains(&node.id);
                     let line = if is_context {
                         let task_count = count_visible_tasks(gs, &node.id, visible, context_ids);
-                        format_context_line_v2(node, task_count)
+                        format_context_line(node, task_count)
                     } else {
-                        format_task_line_v2(node, available)
+                        format_task_line(node, available)
                     };
                     output.push(format!("{prefix}{connector}{line}"));
 
@@ -712,7 +712,7 @@ fn main() -> Result<()> {
                         println!("  {}\u{2501}\u{2501} Today\u{2019}s Focus \u{2501}\u{2501}{}", colors::BOLD_WHITE, colors::RESET);
                         println!();
                         for pick in &picks {
-                            println!("    {}", format_task_line_v2(pick, width.saturating_sub(4)));
+                            println!("    {}", format_task_line(pick, width.saturating_sub(4)));
                         }
                         println!();
                         println!("  {}{}{}", colors::DIM, "\u{2500}".repeat(width.saturating_sub(4)), colors::RESET);
@@ -800,7 +800,7 @@ fn main() -> Result<()> {
 
             println!();
             for pick in &picks {
-                println!("  {}", format_task_line_v2(pick, width.saturating_sub(2)));
+                println!("  {}", format_task_line(pick, width.saturating_sub(2)));
             }
             println!();
         }
@@ -1848,7 +1848,7 @@ fn select_focus_picks<'a>(tasks: &[&'a graph::GraphNode], max: usize) -> Vec<&'a
     scored.into_iter().take(max).map(|(t, _)| t).collect()
 }
 
-fn format_task_line_v2(task: &graph::GraphNode, width: usize) -> String {
+fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     let pri = task.priority.unwrap_or(2);
     let color = pri_color(pri);
     let exposure = if task.stakeholder_exposure { "!" } else { " " };
@@ -1883,7 +1883,7 @@ fn format_task_line_v2(task: &graph::GraphNode, width: usize) -> String {
     format!("{left}{:>pad$}{right}", "", pad = padding)
 }
 
-fn format_context_line_v2(
+fn format_context_line(
     node: &graph::GraphNode,
     child_task_count: usize,
 ) -> String {
