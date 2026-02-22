@@ -1697,7 +1697,7 @@ impl ServerHandler for PkbSearchServer {
             protocol_version: ProtocolVersion::V_2024_11_05,
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
-                name: "pkb-search".into(),
+                name: "pkb".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
             },
             instructions: Some(

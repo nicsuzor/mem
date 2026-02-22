@@ -1,5 +1,8 @@
 //! SIMD-optimized distance functions for vector similarity search.
 //! SIMD-accelerated cosine similarity and Euclidean distance.
+//!
+//! Adapted from shodh-memory's distance_inline.rs (Apache-2.0).
+//! See: https://github.com/varun29ankuS/shodh-memory
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;

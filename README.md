@@ -11,7 +11,7 @@ Uses [MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v
 cargo build --release
 
 # Run MCP server (stdio transport)
-./target/release/pkb-search
+./target/release/pkb
 
 # Run CLI
 ./target/release/aops search "my query"
@@ -54,7 +54,7 @@ The `aops` binary provides direct access to search, task management, and graph a
 
 ## MCP Tools
 
-The `pkb-search` server exposes 18 tools over MCP (stdio transport).
+The `pkb` server exposes 18 tools over MCP (stdio transport).
 
 ### Search Tools
 
@@ -103,8 +103,8 @@ Add to `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "pkb-search": {
-      "command": "/path/to/pkb-search",
+    "pkb": {
+      "command": "/path/to/pkb",
       "args": []
     }
   }
@@ -118,8 +118,8 @@ Add to your extension or `settings.json`:
 ```json
 {
   "mcpServers": {
-    "pkb-search": {
-      "command": "/path/to/pkb-search",
+    "pkb": {
+      "command": "/path/to/pkb",
       "args": []
     }
   }
@@ -129,7 +129,7 @@ Add to your extension or `settings.json`:
 ## Architecture
 
 ```text
-MCP Client ◄──stdio──► pkb-search
+MCP Client ◄──stdio──► pkb
                           │
                     ┌─────┴──────┐
                     │ MCP Server │  (rmcp 0.1, ServerHandler trait)
@@ -163,6 +163,20 @@ MCP Client ◄──stdio──► pkb-search
 
 - Rust >= 1.88
 
+## Acknowledgments
+
+The SIMD-optimized vector distance functions in `src/distance.rs` are adapted from
+[shodh-memory](https://github.com/varun29ankuS/shodh-memory) by Varun Ankus,
+originally licensed under Apache-2.0. The overall embedding and vector search
+architecture also drew inspiration from shodh-memory's design.
+
 ## License
 
-Private.
+Copyright (C) 2025 Nicolas Suzor
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+See [LICENSE](LICENSE) for the full text.

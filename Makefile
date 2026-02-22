@@ -1,4 +1,4 @@
-# mem — pkb-search, aops
+# mem — pkb, aops
 # Cross-compile to Apple Silicon from Linux using cargo-zigbuild + zig 0.13
 
 CARGO        ?= cargo
@@ -6,7 +6,7 @@ TARGET_MACOS  = aarch64-apple-darwin
 TARGET_LINUX  = x86_64-unknown-linux-gnu
 RELEASE_DIR   = target/release
 MACOS_DIR     = target/$(TARGET_MACOS)/release
-BINS          = pkb-search aops
+BINS          = pkb aops
 VERSION       = $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
 # macOS SDK sysroot with framework stubs (needed for cross-compile)
@@ -20,7 +20,7 @@ build:
 
 .PHONY: install
 install: build
-	$(CARGO) install --path . --bin aops --bin pkb-search
+	$(CARGO) install --path . --bin aops --bin pkb
 
 # ── Apple Silicon cross-build ────────────────────────────────────────
 # Requires: zig 0.13, cargo-zigbuild, macOS sysroot with framework stubs

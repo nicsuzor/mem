@@ -8,7 +8,7 @@ Semantic search + knowledge graph MCP server over a personal knowledge base (PKB
 
 ```
 src/
-  server.rs       — main() for pkb-search binary (MCP stdio transport)
+  server.rs       — main() for pkb binary (MCP stdio transport)
   cli.rs          — main() for aops CLI binary
   mcp_server.rs   — MCP ServerHandler: 18 tools, dispatch, tool registrations
   graph_store.rs  — GraphStore: builds/queries knowledge graph from PKB docs
