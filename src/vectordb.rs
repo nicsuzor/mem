@@ -337,4 +337,15 @@ impl VectorStore {
         results.sort_by(|a, b| a.title.cmp(&b.title));
         results
     }
+
+    /// List all tags across all documents with their occurrence counts.
+    pub fn list_all_tags(&self) -> HashMap<String, usize> {
+        let mut tags: HashMap<String, usize> = HashMap::new();
+        for entry in self.documents.values() {
+            for tag in &entry.tags {
+                *tags.entry(tag.clone()).or_insert(0) += 1;
+            }
+        }
+        tags
+    }
 }
