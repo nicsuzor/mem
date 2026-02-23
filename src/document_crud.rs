@@ -114,10 +114,19 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         other => &other[..other.len().min(4)],
     };
 
-    let id = fields.id.unwrap_or_else(|| {
-        let hash = format!("{:x}", md5::compute(fields.title.as_bytes()));
-        format!("{}-{}", type_prefix, &hash[..8])
-    });
+    let id = match fields.id {
+        Some(explicit_id) => {
+            // Always append GUID suffix to explicit IDs to avoid git conflicts
+            let hash = format!("{:x}", md5::compute(fields.title.as_bytes()));
+            format!("{}-{}", explicit_id, &hash[..8])
+        }
+        None => {
+            // Use project as prefix when available, otherwise type-based prefix
+            let prefix = fields.project.as_deref().unwrap_or(type_prefix);
+            let hash = format!("{:x}", md5::compute(fields.title.as_bytes()));
+            format!("{}-{}", prefix, &hash[..8])
+        }
+    };
 
     let slug = slugify(&fields.title);
     let filename = format!("{}-{}.md", id, slug);
@@ -225,9 +234,18 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 /// Returns the path to the created file. The filename is derived from the
 /// task ID and title (slugified).
 pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
-    let id = fields
-        .id
-        .unwrap_or_else(|| generate_id("task", &fields.title));
+    let id = match fields.id {
+        Some(explicit_id) => {
+            // Always append GUID suffix to explicit IDs to avoid git conflicts
+            let hash = format!("{:x}", md5::compute(fields.title.as_bytes()));
+            format!("{}-{}", explicit_id, &hash[..8])
+        }
+        None => {
+            // Use project as prefix when available, otherwise "task"
+            let prefix = fields.project.as_deref().unwrap_or("task");
+            generate_id(prefix, &fields.title)
+        }
+    };
 
     let slug = slugify(&fields.title);
     let filename = format!("{}-{}.md", id, slug);
@@ -307,9 +325,14 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 /// Returns the path to the created file. Creates the `memories/` subdirectory
 /// if it doesn't exist.
 pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
-    let id = fields
-        .id
-        .unwrap_or_else(|| generate_id("mem", &fields.title));
+    let id = match fields.id {
+        Some(explicit_id) => {
+            // Always append GUID suffix to explicit IDs to avoid git conflicts
+            let hash = format!("{:x}", md5::compute(fields.title.as_bytes()));
+            format!("{}-{}", explicit_id, &hash[..8])
+        }
+        None => generate_id("mem", &fields.title),
+    };
 
     let slug = slugify(&fields.title);
     let filename = format!("{}-{}.md", id, slug);

@@ -154,9 +154,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    fn handle_reindex(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+    fn handle_reindex(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
         let (indexed, removed, total) =
-            crate::index_pkb(&self.pkb_root, &self.db_path, &self.store, &self.embedder, true);
+            crate::index_pkb(&self.pkb_root, &self.db_path, &self.store, &self.embedder, force);
 
         // Save vector store
         if let Err(e) = self.store.read().save(&self.db_path) {
@@ -1468,10 +1469,12 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "reindex",
-                "Force re-scan and re-index. Rebuilds vector store and knowledge graph.",
+                "Re-scan and re-index. Rebuilds vector store and knowledge graph. Incremental by default (mtime-based); set force=true to re-embed all files.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
-                    "properties": {}
+                    "properties": {
+                        "force": { "type": "boolean", "description": "Force full re-index of all files (default: false, incremental mtime-based)" }
+                    }
                 }))
                 .unwrap(),
             ),
