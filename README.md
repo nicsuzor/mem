@@ -35,12 +35,22 @@ The `aops` binary provides direct access to search, task management, and graph a
 
 | Command | Description |
 |---------|-------------|
-| `aops tasks [ready\|blocked\|all] [--project P] [--sort S]` | List tasks sorted by priority + downstream weight |
+| `aops tasks [ready\|blocked\|all] [--project P] [--sort S]` | List tasks sorted by priority + downstream weight. `--sort` accepts `priority`, `weight`, or `due`. |
 | `aops task <id>` | Show task details and relationships |
-| `aops new <title> [--parent ID] [--priority N] [--project P] [--tags T]` | Create a new task |
+| `aops new <title> [--parent ID] [--priority N] [--project P] [--tags T] [--depends-on ID] [--assignee A] [--complexity C] [--body B]` | Create a new task with full metadata |
 | `aops done <id>` | Mark a task as done |
 | `aops update <id> [--status S] [--priority N] [--project P] [--assignee A] [--tags T]` | Update task frontmatter fields |
 | `aops deps <id> [--tree]` | Show dependency tree for a task |
+| `aops blocks <id> [--tree]` | Show what completing a task would unblock |
+
+### Memory Management
+
+| Command | Description |
+|---------|-------------|
+| `aops recall <query> [-n limit]` | Semantic search over memories/notes/insights with full body display |
+| `aops memories [--tag T]` | List all memory-type documents, optionally filtered by tag |
+| `aops tags [tag...] [--count] [--type T]` | Without args: show tag frequency summary. With args: search documents by tags. |
+| `aops forget <id>` | Delete a memory document (validates type before deletion) |
 
 ### Knowledge Graph
 
@@ -54,7 +64,7 @@ The `aops` binary provides direct access to search, task management, and graph a
 
 ## MCP Tools
 
-The `pkb` server exposes 18 tools over MCP (stdio transport).
+The `pkb` server exposes 25 tools over MCP (stdio transport).
 
 ### Search Tools
 
@@ -76,6 +86,18 @@ The `pkb` server exposes 18 tools over MCP (stdio transport).
 | `update_task` | Update frontmatter fields on an existing task. Params: `path` or `id`, `updates` (object) |
 | `complete_task` | Mark a task as done. Params: `id` |
 | `get_network_metrics` | Centrality metrics: degree, betweenness, PageRank, downstream weight. Params: `id` |
+| `decompose_task` | Batch create subtasks under a parent. Params: `parent_id`, `subtasks` (array of objects with `title` + optional fields) |
+| `get_dependency_tree` | Get upstream or downstream dependency tree. Params: `id`, `direction` (`upstream`\|`downstream`, default: upstream) |
+| `get_task_children` | Get direct or recursive children with completion counts. Params: `id`, `recursive` (bool, default: false) |
+
+### Memory Tools
+
+| Tool | Description |
+|------|-------------|
+| `retrieve_memory` | Semantic search filtered to memory/note/insight/observation types. Shows full body. Params: `query`, `limit`, `tags` |
+| `search_by_tag` | Find documents by tag intersection. Params: `tags` (array, required), `type`, `limit` |
+| `list_memories` | List memory-type documents with optional tag filter. Params: `limit`, `tags` |
+| `delete_memory` | Delete a memory document (validates type before deletion). Params: `id` |
 
 ### Document CRUD Tools
 

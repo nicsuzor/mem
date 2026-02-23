@@ -349,3 +349,314 @@ impl VectorStore {
         tags
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Helper to create a DocumentEntry without needing an Embedder.
+    fn make_entry(
+        path: &str,
+        title: &str,
+        doc_type: Option<&str>,
+        status: Option<&str>,
+        tags: &[&str],
+        project: Option<&str>,
+        id: Option<&str>,
+        embedding: Vec<f32>,
+    ) -> DocumentEntry {
+        DocumentEntry {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            doc_type: doc_type.map(String::from),
+            status: status.map(String::from),
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            project: project.map(String::from),
+            id: id.map(String::from),
+            mtime: 1000,
+            chunk_embeddings: vec![embedding],
+            chunk_texts: vec![format!("chunk text for {title}")],
+            body_chunks: vec![format!("body of {title}")],
+        }
+    }
+
+    fn build_test_store() -> VectorStore {
+        let mut store = VectorStore::new(3);
+        store.documents.insert(
+            "tasks/task-abc.md".to_string(),
+            make_entry(
+                "tasks/task-abc.md",
+                "Fix the bug",
+                Some("task"),
+                Some("active"),
+                &["bugfix", "urgent"],
+                Some("mem"),
+                Some("task-abc"),
+                vec![1.0, 0.0, 0.0],
+            ),
+        );
+        store.documents.insert(
+            "memories/mem-001.md".to_string(),
+            make_entry(
+                "memories/mem-001.md",
+                "Important insight",
+                Some("memory"),
+                None,
+                &["pattern", "urgent"],
+                None,
+                Some("mem-001"),
+                vec![0.0, 1.0, 0.0],
+            ),
+        );
+        store.documents.insert(
+            "notes/note-xyz.md".to_string(),
+            make_entry(
+                "notes/note-xyz.md",
+                "Research notes",
+                Some("note"),
+                None,
+                &["research"],
+                Some("mem"),
+                Some("note-xyz"),
+                vec![0.0, 0.0, 1.0],
+            ),
+        );
+        store
+    }
+
+    // ── list_all_tags ──
+
+    #[test]
+    fn test_list_all_tags_counts() {
+        let store = build_test_store();
+        let tags = store.list_all_tags();
+        assert_eq!(tags.get("urgent"), Some(&2)); // appears in task + memory
+        assert_eq!(tags.get("bugfix"), Some(&1));
+        assert_eq!(tags.get("research"), Some(&1));
+        assert_eq!(tags.get("pattern"), Some(&1));
+        assert_eq!(tags.len(), 4);
+    }
+
+    #[test]
+    fn test_list_all_tags_empty_store() {
+        let store = VectorStore::new(3);
+        let tags = store.list_all_tags();
+        assert!(tags.is_empty());
+    }
+
+    // ── list_documents filters ──
+
+    #[test]
+    fn test_list_documents_no_filters() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.list_documents(None, None, None, None, root);
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_list_documents_filter_by_tag() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.list_documents(Some("urgent"), None, None, None, root);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_list_documents_filter_by_type() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.list_documents(None, Some("task"), None, None, root);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Fix the bug");
+    }
+
+    #[test]
+    fn test_list_documents_filter_by_type_case_insensitive() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.list_documents(None, Some("TASK"), None, None, root);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_list_documents_filter_by_status() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.list_documents(None, None, Some("active"), None, root);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Fix the bug");
+    }
+
+    #[test]
+    fn test_list_documents_filter_by_project() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.list_documents(None, None, None, Some("mem"), root);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_list_documents_combined_filters() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.list_documents(Some("urgent"), Some("memory"), None, None, root);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Important insight");
+    }
+
+    #[test]
+    fn test_list_documents_no_match() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.list_documents(Some("nonexistent"), None, None, None, root);
+        assert!(results.is_empty());
+    }
+
+    // ── search ──
+
+    #[test]
+    fn test_search_returns_best_match() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        // Query vector aligned with [1,0,0] should match the task entry
+        let results = store.search(&[1.0, 0.0, 0.0], 10, root);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].title, "Fix the bug");
+        assert!((results[0].score - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_search_respects_limit() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.search(&[0.5, 0.5, 0.5], 2, root);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_search_sorted_by_score_descending() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.search(&[0.5, 0.5, 0.0], 10, root);
+        for i in 1..results.len() {
+            assert!(results[i - 1].score >= results[i].score);
+        }
+    }
+
+    #[test]
+    fn test_search_uses_body_chunks_for_snippets() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.search(&[1.0, 0.0, 0.0], 1, root);
+        assert!(results[0].snippet.contains("body of"));
+    }
+
+    #[test]
+    fn test_search_empty_store() {
+        let store = VectorStore::new(3);
+        let root = Path::new("/pkb");
+        let results = store.search(&[1.0, 0.0, 0.0], 10, root);
+        assert!(results.is_empty());
+    }
+
+    // ── remove / remove_deleted ──
+
+    #[test]
+    fn test_remove_existing() {
+        let mut store = build_test_store();
+        assert_eq!(store.len(), 3);
+        assert!(store.remove("tasks/task-abc.md"));
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn test_remove_nonexistent() {
+        let mut store = build_test_store();
+        assert!(!store.remove("nonexistent.md"));
+        assert_eq!(store.len(), 3);
+    }
+
+    #[test]
+    fn test_remove_deleted() {
+        let mut store = build_test_store();
+        let mut existing = std::collections::HashSet::new();
+        existing.insert("tasks/task-abc.md".to_string());
+        // Only keep task-abc, remove the other two
+        let removed = store.remove_deleted(&existing);
+        assert_eq!(removed, 2);
+        assert_eq!(store.len(), 1);
+    }
+
+    // ── needs_update ──
+
+    #[test]
+    fn test_needs_update_new_doc() {
+        let store = build_test_store();
+        assert!(store.needs_update("new-doc.md", 999));
+    }
+
+    #[test]
+    fn test_needs_update_stale() {
+        let store = build_test_store();
+        // mtime is 1000, so 2000 is newer
+        assert!(store.needs_update("tasks/task-abc.md", 2000));
+    }
+
+    #[test]
+    fn test_needs_update_fresh() {
+        let store = build_test_store();
+        // mtime is 1000, so 500 is older
+        assert!(!store.needs_update("tasks/task-abc.md", 500));
+    }
+
+    // ── persistence ──
+
+    #[test]
+    fn test_save_and_load() {
+        let store = build_test_store();
+        let dir = std::env::temp_dir().join("mem_vectordb_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_store.bin");
+
+        store.save(&path).unwrap();
+        let loaded = VectorStore::load_or_create(&path, 3).unwrap();
+        assert_eq!(loaded.len(), 3);
+        let tags = loaded.list_all_tags();
+        assert_eq!(tags.get("urgent"), Some(&2));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_nonexistent_creates_new() {
+        let path = Path::new("/tmp/mem_test_nonexistent.bin");
+        let _ = std::fs::remove_file(path); // ensure clean
+        let store = VectorStore::load_or_create(path, 384).unwrap();
+        assert_eq!(store.len(), 0);
+    }
+
+    // ── insert_precomputed ──
+
+    #[test]
+    fn test_insert_precomputed() {
+        let mut store = VectorStore::new(3);
+        let doc = crate::pkb::PkbDocument {
+            path: PathBuf::from("test.md"),
+            title: "Test Doc".to_string(),
+            body: "Some body text".to_string(),
+            doc_type: Some("note".to_string()),
+            status: None,
+            tags: vec!["test".to_string()],
+            frontmatter: None,
+            mtime: 42,
+        };
+        store.insert_precomputed(&doc, vec!["chunk1".to_string()], vec![vec![1.0, 0.0, 0.0]]);
+        assert_eq!(store.len(), 1);
+        let root = Path::new("/pkb");
+        let results = store.search(&[1.0, 0.0, 0.0], 1, root);
+        assert_eq!(results[0].title, "Test Doc");
+    }
+}

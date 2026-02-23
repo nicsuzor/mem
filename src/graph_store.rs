@@ -1194,3 +1194,234 @@ fn build_resolution_map(nodes: &HashMap<String, GraphNode>) -> HashMap<String, S
     }
     map
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pkb::PkbDocument;
+    use std::path::PathBuf;
+
+    /// Helper: create a PkbDocument with frontmatter for graph building.
+    fn make_doc(
+        path: &str,
+        title: &str,
+        doc_type: &str,
+        status: &str,
+        id: &str,
+        parent: Option<&str>,
+        depends_on: &[&str],
+    ) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), serde_json::json!(title));
+        fm.insert("type".to_string(), serde_json::json!(doc_type));
+        fm.insert("status".to_string(), serde_json::json!(status));
+        fm.insert("id".to_string(), serde_json::json!(id));
+        if let Some(p) = parent {
+            fm.insert("parent".to_string(), serde_json::json!(p));
+        }
+        if !depends_on.is_empty() {
+            fm.insert(
+                "depends_on".to_string(),
+                serde_json::json!(depends_on),
+            );
+        }
+
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some(doc_type.to_string()),
+            status: Some(status.to_string()),
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            mtime: 1000,
+        }
+    }
+
+    /// Build a small test graph:
+    ///   epic-1 (parent of task-a, task-b)
+    ///   task-a depends on task-b
+    ///   task-c depends on task-a
+    fn build_test_graph() -> GraphStore {
+        let docs = vec![
+            make_doc(
+                "tasks/epic-1.md",
+                "Epic One",
+                "epic",
+                "active",
+                "epic-1",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/task-a.md",
+                "Task A",
+                "task",
+                "active",
+                "task-a",
+                Some("epic-1"),
+                &["task-b"],
+            ),
+            make_doc(
+                "tasks/task-b.md",
+                "Task B",
+                "task",
+                "active",
+                "task-b",
+                Some("epic-1"),
+                &[],
+            ),
+            make_doc(
+                "tasks/task-c.md",
+                "Task C",
+                "task",
+                "active",
+                "task-c",
+                None,
+                &["task-a"],
+            ),
+        ];
+        // Use an empty temp dir as pkb_root since we use relative paths
+        GraphStore::build(&docs, Path::new("/tmp/test-pkb"))
+    }
+
+    // ── resolve ──
+
+    #[test]
+    fn test_resolve_by_exact_id() {
+        let graph = build_test_graph();
+        let node = graph.resolve("task-a");
+        assert!(node.is_some());
+        assert_eq!(node.unwrap().label, "Task A");
+    }
+
+    #[test]
+    fn test_resolve_by_label_case_insensitive() {
+        let graph = build_test_graph();
+        let node = graph.resolve("task a");
+        assert!(node.is_some());
+        assert_eq!(node.unwrap().id.contains("task"), true);
+    }
+
+    #[test]
+    fn test_resolve_by_filename_stem() {
+        let graph = build_test_graph();
+        let node = graph.resolve("task-b");
+        assert!(node.is_some());
+    }
+
+    #[test]
+    fn test_resolve_nonexistent() {
+        let graph = build_test_graph();
+        assert!(graph.resolve("nonexistent").is_none());
+    }
+
+    // ── dependency_tree ──
+
+    #[test]
+    fn test_dependency_tree_direct() {
+        let graph = build_test_graph();
+        // task-a depends on task-b
+        // Find node ID for task-a (may be computed hash)
+        let task_a = graph.resolve("task-a").expect("task-a not found");
+        let tree = graph.dependency_tree(&task_a.id);
+        // Should include task-b at depth 1
+        assert!(!tree.is_empty());
+        let task_b_id = graph.resolve("task-b").unwrap().id.clone();
+        assert!(tree.iter().any(|(id, depth)| id == &task_b_id && *depth == 1));
+    }
+
+    #[test]
+    fn test_dependency_tree_transitive() {
+        let graph = build_test_graph();
+        // task-c depends on task-a, which depends on task-b
+        let task_c = graph.resolve("task-c").expect("task-c not found");
+        let tree = graph.dependency_tree(&task_c.id);
+        // Should include task-a at depth 1 and task-b at depth 2
+        let task_a_id = graph.resolve("task-a").unwrap().id.clone();
+        let task_b_id = graph.resolve("task-b").unwrap().id.clone();
+        assert!(tree.iter().any(|(id, _)| id == &task_a_id));
+        assert!(tree.iter().any(|(id, _)| id == &task_b_id));
+    }
+
+    #[test]
+    fn test_dependency_tree_empty() {
+        let graph = build_test_graph();
+        // task-b has no dependencies
+        let task_b = graph.resolve("task-b").expect("task-b not found");
+        let tree = graph.dependency_tree(&task_b.id);
+        assert!(tree.is_empty());
+    }
+
+    // ── blocks_tree ──
+
+    #[test]
+    fn test_blocks_tree_direct() {
+        let graph = build_test_graph();
+        // task-b is depended upon by task-a, so task-b blocks task-a
+        let task_b = graph.resolve("task-b").expect("task-b not found");
+        let tree = graph.blocks_tree(&task_b.id);
+        let task_a_id = graph.resolve("task-a").unwrap().id.clone();
+        assert!(tree.iter().any(|(id, depth)| id == &task_a_id && *depth == 1));
+    }
+
+    #[test]
+    fn test_blocks_tree_transitive() {
+        let graph = build_test_graph();
+        // task-b blocks task-a, task-a blocks task-c
+        let task_b = graph.resolve("task-b").expect("task-b not found");
+        let tree = graph.blocks_tree(&task_b.id);
+        let task_c_id = graph.resolve("task-c").unwrap().id.clone();
+        assert!(tree.iter().any(|(id, _)| id == &task_c_id));
+    }
+
+    #[test]
+    fn test_blocks_tree_leaf_empty() {
+        let graph = build_test_graph();
+        // task-c blocks nothing
+        let task_c = graph.resolve("task-c").expect("task-c not found");
+        let tree = graph.blocks_tree(&task_c.id);
+        assert!(tree.is_empty());
+    }
+
+    // ── parent/children relationships ──
+
+    #[test]
+    fn test_parent_child_relationships() {
+        let graph = build_test_graph();
+        let epic = graph.resolve("epic-1").expect("epic-1 not found");
+        // epic-1 should have task-a and task-b as children
+        assert!(epic.children.len() >= 2);
+    }
+
+    // ── node_count / edge_count ──
+
+    #[test]
+    fn test_graph_counts() {
+        let graph = build_test_graph();
+        assert_eq!(graph.node_count(), 4);
+        // Edges: task-a->task-b (depends_on), task-c->task-a (depends_on),
+        //        task-a->epic-1 (parent), task-b->epic-1 (parent)
+        assert!(graph.edge_count() >= 4);
+    }
+
+    // ── ready/blocked classification ──
+
+    #[test]
+    fn test_ready_tasks() {
+        let graph = build_test_graph();
+        let ready = graph.ready_tasks();
+        // task-b should be ready (no deps, leaf, active)
+        let task_b_id = graph.resolve("task-b").unwrap().id.clone();
+        assert!(ready.iter().any(|n| n.id == task_b_id));
+    }
+
+    #[test]
+    fn test_blocked_tasks() {
+        let graph = build_test_graph();
+        let blocked = graph.blocked_tasks();
+        // task-a should be blocked (depends on task-b which isn't done)
+        let task_a_id = graph.resolve("task-a").unwrap().id.clone();
+        assert!(blocked.iter().any(|n| n.id == task_a_id));
+    }
+}
