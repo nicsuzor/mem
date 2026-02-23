@@ -116,15 +116,13 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     let id = match fields.id {
         Some(explicit_id) => {
-            // Always append GUID suffix to explicit IDs to avoid git conflicts
-            let hash = format!("{:x}", md5::compute(fields.title.as_bytes()));
-            format!("{}-{}", explicit_id, &hash[..8])
+            // Always append random GUID suffix to explicit IDs to avoid git conflicts
+            format!("{}-{}", explicit_id, random_suffix())
         }
         None => {
             // Use project as prefix when available, otherwise type-based prefix
             let prefix = fields.project.as_deref().unwrap_or(type_prefix);
-            let hash = format!("{:x}", md5::compute(fields.title.as_bytes()));
-            format!("{}-{}", prefix, &hash[..8])
+            generate_id(prefix, &fields.title)
         }
     };
 
@@ -236,9 +234,8 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     let id = match fields.id {
         Some(explicit_id) => {
-            // Always append GUID suffix to explicit IDs to avoid git conflicts
-            let hash = format!("{:x}", md5::compute(fields.title.as_bytes()));
-            format!("{}-{}", explicit_id, &hash[..8])
+            // Always append random GUID suffix to explicit IDs to avoid git conflicts
+            format!("{}-{}", explicit_id, random_suffix())
         }
         None => {
             // Use project as prefix when available, otherwise "task"
@@ -327,9 +324,8 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     let id = match fields.id {
         Some(explicit_id) => {
-            // Always append GUID suffix to explicit IDs to avoid git conflicts
-            let hash = format!("{:x}", md5::compute(fields.title.as_bytes()));
-            format!("{}-{}", explicit_id, &hash[..8])
+            // Always append random GUID suffix to explicit IDs to avoid git conflicts
+            format!("{}-{}", explicit_id, random_suffix())
         }
         None => generate_id("mem", &fields.title),
     };
@@ -532,6 +528,11 @@ pub fn delete_document(path: &Path) -> Result<PathBuf> {
 fn generate_id(prefix: &str, title: &str) -> String {
     let hash = format!("{:x}", md5::compute(title.as_bytes()));
     format!("{}-{}", prefix, &hash[..8])
+}
+
+/// Generate a random 8-char hex suffix for document IDs.
+fn random_suffix() -> String {
+    format!("{:08x}", rand::random::<u32>())
 }
 
 /// Convert a title to a URL-safe slug.
