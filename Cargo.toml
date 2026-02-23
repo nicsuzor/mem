@@ -52,6 +52,7 @@ ndarray = "0.16"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 md5 = "0.7"
+rand = "0.9"
 rayon = "1"
 ordered-float = "4"
 dirs = "5"
