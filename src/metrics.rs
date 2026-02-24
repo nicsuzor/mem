@@ -3,8 +3,8 @@
 //! Computes betweenness centrality (Brandes), PageRank (power iteration),
 //! and per-node degree metrics over all edge types.
 
-use crate::graph::{Edge, EdgeType};
-use std::collections::{HashMap, HashSet, VecDeque};
+use crate::graph::Edge;
+use std::collections::{HashMap, VecDeque};
 
 /// Network metrics for a single node.
 #[derive(Debug, Clone, serde::Serialize)]

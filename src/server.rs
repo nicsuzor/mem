@@ -56,7 +56,7 @@ fn default_db_path() -> String {
 /// Index PKB files into the vector store. Returns (indexed, removed, total).
 pub fn index_pkb(
     pkb_root: &std::path::Path,
-    db_path: &std::path::Path,
+    _db_path: &std::path::Path,
     store: &Arc<RwLock<vectordb::VectorStore>>,
     embedder: &embeddings::Embedder,
     force_all: bool,
