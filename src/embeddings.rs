@@ -38,8 +38,8 @@ impl Default for EmbeddingConfig {
 }
 
 impl EmbeddingConfig {
-    /// Preferred model filenames in priority order.
-    const MODEL_NAMES: &[&str] = &["model.onnx"];
+    /// Preferred model filenames in priority order (quantized first for speed).
+    const MODEL_NAMES: &[&str] = &["model_quantized.onnx", "model.onnx"];
 
     pub fn from_env() -> Self {
         let base_path = std::env::var("AOPS_MODEL_PATH")
