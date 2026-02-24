@@ -1,6 +1,7 @@
-//! Embedding generation using MiniLM-L6-v2 via ONNX Runtime.
+//! Embedding generation using BGE-M3 via ONNX Runtime.
 //!
-//! Generates 384-dimensional sentence embeddings for semantic search.
+//! Generates 1024-dimensional sentence embeddings for semantic search.
+//! Uses asymmetric encoding: queries get an instruction prefix, documents do not.
 //! Auto-downloads model files and ONNX Runtime on first run.
 
 use anyhow::{bail, Context, Result};
@@ -9,8 +10,12 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-pub const EMBEDDING_DIM: usize = 384;
-const MODEL_REPO: &str = "sentence-transformers/all-MiniLM-L6-v2";
+pub const EMBEDDING_DIM: usize = 1024;
+const MODEL_REPO: &str = "BAAI/bge-m3";
+
+/// Instruction prefix for query encoding (asymmetric retrieval).
+/// Documents are embedded without prefix.
+const QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
 
 /// Thread-safe guard for ORT_DYLIB_PATH initialization.
 static ORT_PATH_INIT: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
@@ -34,27 +39,27 @@ impl Default for EmbeddingConfig {
 
 impl EmbeddingConfig {
     /// Preferred model filenames in priority order (quantized first for speed).
-    const MODEL_NAMES: &[&str] = &["model_quint8_avx2.onnx", "model.onnx"];
+    const MODEL_NAMES: &[&str] = &["model_quantized.onnx", "model.onnx"];
 
     pub fn from_env() -> Self {
         let base_path = std::env::var("AOPS_MODEL_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
                 let candidates = vec![
-                    Some(get_cache_dir().join("models/minilm-l6")),
-                    dirs::data_dir().map(|p| p.join("aops/models/minilm-l6")),
-                    Some(PathBuf::from("./models/minilm-l6")),
+                    Some(get_cache_dir().join("models/bge-m3")),
+                    dirs::data_dir().map(|p| p.join("aops/models/bge-m3")),
+                    Some(PathBuf::from("./models/bge-m3")),
                 ];
 
                 candidates
                     .into_iter()
                     .flatten()
                     .find(|p| Self::find_model(p).is_some())
-                    .unwrap_or_else(|| get_cache_dir().join("models/minilm-l6"))
+                    .unwrap_or_else(|| get_cache_dir().join("models/bge-m3"))
             });
 
         let model_file = Self::find_model(&base_path)
-            .unwrap_or_else(|| "model_quint8_avx2.onnx".to_string());
+            .unwrap_or_else(|| "model.onnx".to_string());
 
         Self {
             model_path: base_path.join(model_file),
@@ -83,19 +88,22 @@ pub fn get_cache_dir() -> PathBuf {
 }
 
 fn get_models_dir() -> PathBuf {
-    get_cache_dir().join("models/minilm-l6")
+    get_cache_dir().join("models/bge-m3")
 }
 
 /// Download model files from HuggingFace if not present.
+/// BGE-M3 uses split ONNX format: model.onnx (graph) + model.onnx_data (weights).
 fn download_models() -> Result<PathBuf> {
     let models_dir = get_models_dir();
     std::fs::create_dir_all(&models_dir)?;
 
-    let base_url = format!("https://huggingface.co/{MODEL_REPO}/resolve/main");
+    let base_url = format!("https://huggingface.co/{MODEL_REPO}/resolve/main/onnx");
 
-    // Prefer quantized model for speed (~23MB vs ~90MB, 3-4× faster)
+    // BGE-M3 split ONNX: graph (724KB) + weights (2.1GB) + external initializer + tokenizer
     let files = [
-        ("model_quint8_avx2.onnx", format!("{base_url}/onnx/model_quint8_avx2.onnx")),
+        ("model.onnx", format!("{base_url}/model.onnx")),
+        ("model.onnx_data", format!("{base_url}/model.onnx_data")),
+        ("Constant_7_attr__value", format!("{base_url}/Constant_7_attr__value")),
         ("tokenizer.json", format!("{base_url}/tokenizer.json")),
     ];
 
@@ -111,8 +119,8 @@ fn download_models() -> Result<PathBuf> {
             .with_context(|| format!("Failed to download {url}"))?;
         let mut reader = resp.into_reader();
         let mut file = std::fs::File::create(&dest)?;
-        std::io::copy(&mut reader, &mut file)?;
-        eprintln!("  ✓ Downloaded {filename}");
+        let bytes = std::io::copy(&mut reader, &mut file)?;
+        eprintln!("  ✓ Downloaded {filename} ({:.1} MB)", bytes as f64 / 1_048_576.0);
     }
 
     Ok(models_dir)
@@ -203,16 +211,26 @@ fn get_onnx_runtime_path() -> Option<PathBuf> {
 // SESSION POOL
 // =============================================================================
 
-/// Max parallel ONNX sessions for batch embedding (each uses THREADS_PER_SESSION CPU threads).
-/// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
-/// On a 48-core machine: 16 sessions x 4 threads = 64 thread-slots (oversubscribe slightly for throughput).
-const MAX_SESSIONS: usize = 16;
+/// Threads per ONNX inference session.
 const THREADS_PER_SESSION: usize = 4;
+
+/// Max parallel ONNX sessions, computed from available cores.
+/// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
+fn max_sessions() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    // Use all cores: e.g. 48 cores / 4 threads = 12 sessions
+    // Clamp to at least 2 and at most 24 (avoid excessive memory with large models)
+    (cores / THREADS_PER_SESSION).clamp(2, 24)
+}
 
 struct SessionPool {
     sessions: parking_lot::RwLock<Vec<Arc<Mutex<Session>>>>,
     model_path: PathBuf,
     tokenizer: tokenizers::Tokenizer,
+    /// Whether the model expects token_type_ids as input (BERT: yes, XLM-RoBERTa: no).
+    uses_token_type_ids: bool,
 }
 
 impl SessionPool {
@@ -227,13 +245,20 @@ impl SessionPool {
             .and_then(|b| b.commit_from_file(&config.model_path))
             .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?;
 
+        // Detect whether model expects token_type_ids (BERT does, XLM-RoBERTa does not)
+        let uses_token_type_ids = session
+            .inputs()
+            .iter()
+            .any(|i| i.name() == "token_type_ids");
+
         let mut tokenizer = tokenizers::Tokenizer::from_file(&config.tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer from {:?}: {e}", config.tokenizer_path))?;
 
+        // BGE-M3 (XLM-RoBERTa): pad_id=1, pad_token="<pad>"
         tokenizer.with_padding(Some(tokenizers::PaddingParams {
             strategy: tokenizers::PaddingStrategy::Fixed(config.max_length),
-            pad_id: 0,
-            pad_token: "[PAD]".to_string(),
+            pad_id: 1,
+            pad_token: "<pad>".to_string(),
             ..Default::default()
         }));
         tokenizer.with_truncation(Some(tokenizers::TruncationParams {
@@ -245,6 +270,7 @@ impl SessionPool {
             sessions: parking_lot::RwLock::new(vec![Arc::new(Mutex::new(session))]),
             model_path: config.model_path.clone(),
             tokenizer,
+            uses_token_type_ids,
         })
     }
 
@@ -253,8 +279,9 @@ impl SessionPool {
     fn ensure_sessions(&self, count: usize) -> Result<()> {
         use ort::session::builder::GraphOptimizationLevel;
 
+        let max_sess = max_sessions();
         let current = self.sessions.read().len();
-        let needed = count.min(MAX_SESSIONS);
+        let needed = count.min(max_sess);
         if current >= needed {
             return Ok(());
         }
@@ -327,9 +354,8 @@ impl Embedder {
             if offline {
                 bail!(
                     "Model files not found and AOPS_OFFLINE=true.\n\
-                     Download manually:\n  \
-                       model:     https://huggingface.co/{MODEL_REPO}/resolve/main/onnx/model.onnx\n  \
-                       tokenizer: https://huggingface.co/{MODEL_REPO}/resolve/main/tokenizer.json\n\
+                     Download manually from https://huggingface.co/{MODEL_REPO}/tree/main/onnx:\n  \
+                       model.onnx, model.onnx_data, Constant_7_attr__value, tokenizer.json\n\
                      Place them in: {:?}",
                     config.model_path.parent().unwrap_or(&config.model_path)
                 );
@@ -342,7 +368,10 @@ impl Embedder {
             config.tokenizer_path = models_dir.join("tokenizer.json");
         }
 
-        tracing::info!("Using MiniLM-L6-v2 ONNX embeddings ({EMBEDDING_DIM}-dim)");
+        let max_sess = max_sessions();
+        tracing::info!(
+            "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, up to {max_sess} sessions × {THREADS_PER_SESSION} threads)"
+        );
         Ok(Self {
             config,
             pool: OnceLock::new(),
@@ -351,6 +380,17 @@ impl Embedder {
 
     pub fn dimension(&self) -> usize {
         EMBEDDING_DIM
+    }
+
+    /// Encode a query with instruction prefix (asymmetric retrieval).
+    pub fn encode_query(&self, text: &str) -> Result<Vec<f32>> {
+        let prefixed = format!("{QUERY_PREFIX}{text}");
+        self.encode(&prefixed)
+    }
+
+    /// Encode a document without prefix (asymmetric retrieval).
+    pub fn encode_document(&self, text: &str) -> Result<Vec<f32>> {
+        self.encode(text)
     }
 
     fn ensure_pool(&self) -> Result<&Arc<SessionPool>> {
@@ -371,7 +411,9 @@ impl Embedder {
         Ok(results.into_iter().next().unwrap_or_else(|| vec![0.0; EMBEDDING_DIM]))
     }
 
-    const MAX_BATCH: usize = 128;
+    /// Chunks per ONNX sub-batch. Smaller = more sub-batches = more sessions used in parallel.
+    /// With BGE-M3 FP32, inference dominates so sub-batch overhead is negligible.
+    const MAX_BATCH: usize = 32;
 
     pub fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
@@ -422,7 +464,6 @@ impl Embedder {
         let total_len = batch_size * max_length;
         let mut input_ids_data = vec![0i64; total_len];
         let mut attention_data = vec![0i64; total_len];
-        let token_type_data = vec![0i64; total_len];
 
         for (batch_idx, encoding) in encodings.iter().enumerate() {
             let offset = batch_idx * max_length;
@@ -439,17 +480,25 @@ impl Embedder {
         use ort::value::TensorRef;
         let input_ids_val = TensorRef::from_array_view((shape, input_ids_data.as_slice()))?;
         let attention_val = TensorRef::from_array_view((shape, attention_data.as_slice()))?;
-        let token_types_val = TensorRef::from_array_view((shape, token_type_data.as_slice()))?;
 
         // Acquire a session from the pool and run inference
         let session_arc = pool.acquire_session();
         let mut session = session_arc.lock();
 
-        let outputs = session.run(ort::inputs![
-            input_ids_val, attention_val, token_types_val
-        ])?;
+        // Conditionally include token_type_ids (BERT needs them, XLM-RoBERTa does not)
+        let outputs = if pool.uses_token_type_ids {
+            let token_type_data = vec![0i64; total_len];
+            let token_types_val = TensorRef::from_array_view((shape, token_type_data.as_slice()))?;
+            session.run(ort::inputs![
+                input_ids_val, attention_val, token_types_val
+            ])?
+        } else {
+            session.run(ort::inputs![
+                input_ids_val, attention_val
+            ])?
+        };
 
-        // Extract output — shape [batch_size, seq_len, 384]
+        // Extract output — shape [batch_size, seq_len, EMBEDDING_DIM]
         let (_out_shape, out_data) = outputs[0].try_extract_tensor::<f32>()?;
         let seq_dim = max_length;
 

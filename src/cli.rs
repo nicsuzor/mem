@@ -451,7 +451,7 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            let query_embedding = embedder.encode(&query_text)?;
+            let query_embedding = embedder.encode_query(&query_text)?;
             let results = store.read().search(&query_embedding, limit, &pkb_root);
 
             if results.is_empty() {
@@ -2067,10 +2067,12 @@ fn index_pkb(
         })
         .collect();
 
-    // Batch embed and store — batches of 500 docs with progressive saves
+    // Batch embed and store — batches of 200 docs with progressive saves.
+    // 200 docs × ~3 chunks = ~600 chunks / 32 per sub-batch = ~19 sub-batches,
+    // enough to saturate all ONNX sessions across available cores.
     let mut indexed = 0;
 
-    for batch in parsed.chunks(500) {
+    for batch in parsed.chunks(200) {
         // Collect all chunks from this batch
         let mut all_chunks: Vec<&str> = Vec::new();
         let mut chunk_counts: Vec<usize> = Vec::new();

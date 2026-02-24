@@ -72,15 +72,25 @@ impl VectorStore {
         }
     }
 
-    /// Load from disk, or create new if file doesn't exist
+    /// Load from disk, or create new if file doesn't exist.
+    /// Detects dimension mismatch (e.g. model upgrade) and creates a fresh store.
     pub fn load_or_create(path: &Path, dimension: usize) -> Result<Self> {
         if path.exists() {
             tracing::info!("Loading vector store from {path:?}");
             let data = std::fs::read(path)?;
             match bincode::deserialize::<VectorStore>(&data) {
                 Ok(store) => {
-                    tracing::info!("Loaded {} documents from store", store.documents.len());
-                    Ok(store)
+                    if store.dimension != dimension {
+                        tracing::warn!(
+                            "Vector store dimension mismatch: stored={}, expected={}. \
+                             Creating fresh store (full reindex required).",
+                            store.dimension, dimension
+                        );
+                        Ok(Self::new(dimension))
+                    } else {
+                        tracing::info!("Loaded {} documents from store", store.documents.len());
+                        Ok(store)
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("Failed to deserialize vector store: {e}. Creating new.");
