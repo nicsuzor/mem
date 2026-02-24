@@ -10,7 +10,7 @@ Semantic search + knowledge graph MCP server over a personal knowledge base (PKB
 src/
   server.rs       — main() for pkb binary (MCP stdio transport)
   cli.rs          — main() for aops CLI binary
-  mcp_server.rs   — MCP ServerHandler: 18 tools, dispatch, tool registrations
+  mcp_server.rs   — MCP ServerHandler: 25 tools, dispatch, tool registrations
   graph_store.rs  — GraphStore: builds/queries knowledge graph from PKB docs
   graph.rs        — GraphNode, Edge, EdgeType, link resolution helpers
   vectordb.rs     — VectorStore: cosine similarity search over embeddings
@@ -21,7 +21,7 @@ src/
   task_index.rs   — MCP index export (used by CLI graph command)
 ```
 
-## MCP Tools (18, as of v0.1.5)
+## MCP Tools (25, as of v0.1.11)
 
 ### Search
 - `search` — hybrid semantic + graph-proximity (was `pkb_search`)
@@ -37,6 +37,15 @@ src/
 - `update_task` — patch frontmatter fields
 - `complete_task` — set status=done
 - `get_network_metrics` — centrality metrics for a node
+- `decompose_task` — batch create subtasks under a parent
+- `get_dependency_tree` — upstream/downstream dependency tree traversal
+- `get_task_children` — direct/recursive children with completion counts
+
+### Memory
+- `retrieve_memory` — semantic search filtered to memory/note/insight/observation types
+- `search_by_tag` — find documents by tag intersection
+- `list_memories` — list memory-type documents with optional tag filter
+- `delete_memory` — delete a memory (validates type before deletion)
 
 ### Document CRUD
 - `create` — generic document creation (was `create_document`)

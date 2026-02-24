@@ -99,6 +99,10 @@ enum Commands {
         /// Show flat table instead of tree
         #[arg(long)]
         flat: bool,
+
+        /// Sort order: priority (default), weight, due
+        #[arg(short, long)]
+        sort: Option<String>,
     },
 
     /// Show top focus tasks — what to work on right now
@@ -150,6 +154,22 @@ enum Commands {
         /// Tags (comma-separated)
         #[arg(short, long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
+
+        /// Dependencies (comma-separated task IDs)
+        #[arg(long = "depends-on", value_delimiter = ',')]
+        depends_on: Option<Vec<String>>,
+
+        /// Assignee
+        #[arg(short, long)]
+        assignee: Option<String>,
+
+        /// Complexity (mechanical, requires-judgment, multi-step, needs-decomposition, blocked-human)
+        #[arg(long)]
+        complexity: Option<String>,
+
+        /// Body text / description
+        #[arg(short, long)]
+        body: Option<String>,
     },
 
     /// Create a new document (note, knowledge, memory, or any type)
@@ -289,6 +309,62 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
+
+    /// Search memories by semantic similarity
+    Recall {
+        /// Search query
+        query: Vec<String>,
+
+        /// Filter by tags (comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+
+        /// Maximum number of results
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: usize,
+    },
+
+    /// List or search tags across the knowledge base
+    Tags {
+        /// Tags to search for (comma-separated). Omit to show tag summary.
+        #[arg(value_delimiter = ',')]
+        search_tags: Option<Vec<String>>,
+
+        /// Filter by document type
+        #[arg(short = 'T', long = "type")]
+        doc_type: Option<String>,
+
+        /// Show only counts
+        #[arg(long)]
+        count: bool,
+    },
+
+    /// Delete a memory by ID
+    Forget {
+        /// Memory ID
+        id: String,
+    },
+
+    /// List memories
+    Memories {
+        /// Filter by tags (comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+
+        /// Maximum number of results
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
+
+    /// Show what completing a task would unblock
+    Blocks {
+        /// Task ID
+        id: String,
+
+        /// Show as tree
+        #[arg(long)]
+        tree: bool,
+    },
 }
 
 fn default_pkb_root() -> String {
@@ -345,12 +421,22 @@ fn main() -> Result<()> {
             | Commands::Add { .. }
             | Commands::Reindex { .. }
             | Commands::Status
+            | Commands::Recall { .. }
+    );
+
+    // Some commands need the store but not the embedder
+    let needs_store_only = matches!(
+        cli.command,
+        Commands::Tags { .. } | Commands::Memories { .. } | Commands::Forget { .. }
     );
 
     let (embedder, store) = if needs_embedder {
         let e = Arc::new(embeddings::Embedder::new()?);
         let s = load_store(&db_path, e.dimension())?;
         (Some(e), Some(s))
+    } else if needs_store_only {
+        let s = load_store(&db_path, embeddings::EMBEDDING_DIM)?;
+        (None, Some(s))
     } else {
         (None, None)
     };
@@ -502,6 +588,7 @@ fn main() -> Result<()> {
             filter,
             project,
             flat,
+            sort,
         } => {
             let gs = load_graph(&pkb_root, &db_path);
 
@@ -512,11 +599,46 @@ fn main() -> Result<()> {
             };
 
             // Filter by project
-            let tasks: Vec<&graph::GraphNode> = if let Some(ref proj) = project {
+            let mut tasks: Vec<&graph::GraphNode> = if let Some(ref proj) = project {
                 tasks.into_iter().filter(|t| t.project.as_deref() == Some(proj)).collect()
             } else {
                 tasks
             };
+
+            // Apply --sort if specified
+            if let Some(ref sort_key) = sort {
+                match sort_key.as_str() {
+                    "weight" => {
+                        tasks.sort_by(|a, b| {
+                            b.downstream_weight
+                                .partial_cmp(&a.downstream_weight)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then(a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2)))
+                        });
+                    }
+                    "due" => {
+                        tasks.sort_by(|a, b| {
+                            let a_due = a.due.as_deref().unwrap_or("9999-99-99");
+                            let b_due = b.due.as_deref().unwrap_or("9999-99-99");
+                            a_due.cmp(b_due)
+                        });
+                    }
+                    "priority" => {
+                        tasks.sort_by(|a, b| {
+                            a.priority
+                                .unwrap_or(2)
+                                .cmp(&b.priority.unwrap_or(2))
+                                .then(
+                                    b.downstream_weight
+                                        .partial_cmp(&a.downstream_weight)
+                                        .unwrap_or(std::cmp::Ordering::Equal),
+                                )
+                        });
+                    }
+                    // Unknown sort key: leave ordering unchanged
+                    _ => {}
+                }
+            }
 
             if tasks.is_empty() {
                 println!("No {} tasks found.", filter);
@@ -1017,6 +1139,10 @@ fn main() -> Result<()> {
             priority,
             project,
             tags,
+            depends_on,
+            assignee,
+            complexity,
+            body,
         } => {
             let title_str = title.join(" ");
             if title_str.is_empty() {
@@ -1030,6 +1156,10 @@ fn main() -> Result<()> {
                 priority,
                 project,
                 tags: tags.unwrap_or_default(),
+                depends_on: depends_on.unwrap_or_default(),
+                assignee,
+                complexity,
+                body,
                 ..Default::default()
             };
 
@@ -1542,6 +1672,312 @@ fn main() -> Result<()> {
                     }
                 }
             }
+        }
+
+        Commands::Recall { query, tags, limit } => {
+            let embedder = embedder.as_ref().unwrap();
+            let store = store.as_ref().unwrap();
+            let query_text = query.join(" ");
+            if query_text.is_empty() {
+                eprintln!("Error: search query cannot be empty");
+                std::process::exit(1);
+            }
+
+            let query_embedding = embedder.encode(&query_text)?;
+            let results = store.read().search(&query_embedding, limit * 3, &pkb_root);
+
+            let memory_types = ["memory", "note", "insight", "observation"];
+            let mut count = 0;
+
+            println!();
+            for r in &results {
+                if count >= limit {
+                    break;
+                }
+                let is_memory = r
+                    .doc_type
+                    .as_deref()
+                    .map(|t| memory_types.iter().any(|mt| t.eq_ignore_ascii_case(mt)))
+                    .unwrap_or(false);
+                if !is_memory {
+                    continue;
+                }
+
+                if let Some(ref required_tags) = tags {
+                    let has_all = required_tags
+                        .iter()
+                        .all(|rt| r.tags.iter().any(|t| t.eq_ignore_ascii_case(rt)));
+                    if !has_all {
+                        continue;
+                    }
+                }
+
+                count += 1;
+                let score_bar = score_to_bar(r.score);
+                let tags_str = if r.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [{}]", r.tags.join(", "))
+                };
+
+                println!(
+                    "  \x1b[1;36m{}.\x1b[0m \x1b[1m{}\x1b[0m {score_bar}{tags_str}",
+                    count, r.title,
+                );
+                println!("     \x1b[2m{}\x1b[0m", r.path.display());
+
+                // Show full body for memories
+                if let Ok(content) = std::fs::read_to_string(&r.path) {
+                    let body = if content.starts_with("---") {
+                        content
+                            .splitn(3, "---")
+                            .nth(2)
+                            .unwrap_or("")
+                            .trim()
+                    } else {
+                        content.trim()
+                    };
+                    if !body.is_empty() {
+                        for line in body.lines().take(10) {
+                            println!("     {line}");
+                        }
+                    }
+                }
+                println!();
+            }
+
+            if count == 0 {
+                println!("No memories found for: {query_text}");
+            }
+        }
+
+        Commands::Tags {
+            search_tags,
+            doc_type,
+            count,
+        } => {
+            let store = store.as_ref().unwrap();
+
+            match search_tags {
+                None => {
+                    // Show tag frequency summary
+                    let all_tags = store.read().list_all_tags();
+                    if all_tags.is_empty() {
+                        println!("No tags found in index.");
+                        return Ok(());
+                    }
+
+                    let mut sorted: Vec<_> = all_tags.into_iter().collect();
+                    sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+                    println!();
+                    if count {
+                        println!("  {} unique tags", sorted.len());
+                    } else {
+                        println!(
+                            "  \x1b[1m{:<30} {:>6}\x1b[0m",
+                            "TAG", "COUNT"
+                        );
+                        println!("  {}", "-".repeat(38));
+                        for (tag, cnt) in sorted.iter().take(30) {
+                            println!("  {:<30} {:>6}", tag, cnt);
+                        }
+                        if sorted.len() > 30 {
+                            println!(
+                                "\n  \x1b[2m...and {} more tags\x1b[0m",
+                                sorted.len() - 30
+                            );
+                        }
+                    }
+                    println!();
+                }
+                Some(ref tags_list) => {
+                    // Search for documents with these tags
+                    let s = store.read();
+                    let all = s.list_documents(
+                        None,
+                        doc_type.as_deref(),
+                        None,
+                        None,
+                        &pkb_root,
+                    );
+                    let matching: Vec<_> = all
+                        .into_iter()
+                        .filter(|r| {
+                            tags_list
+                                .iter()
+                                .all(|tag| r.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)))
+                        })
+                        .collect();
+
+                    if matching.is_empty() {
+                        println!("No documents with tags: {}", tags_list.join(", "));
+                        return Ok(());
+                    }
+
+                    if count {
+                        println!("{}", matching.len());
+                    } else {
+                        println!();
+                        for r in &matching {
+                            let type_str = r
+                                .doc_type
+                                .as_deref()
+                                .map(|t| format!(" \x1b[35m[{t}]\x1b[0m"))
+                                .unwrap_or_default();
+                            println!(
+                                "  \x1b[1m{}\x1b[0m{type_str}  [{}]",
+                                r.title,
+                                r.tags.join(", ")
+                            );
+                            println!("  \x1b[2m{}\x1b[0m\n", r.path.display());
+                        }
+                        println!(
+                            "  {} documents with tags [{}]",
+                            matching.len(),
+                            tags_list.join(", ")
+                        );
+                    }
+                }
+            }
+        }
+
+        Commands::Forget { id } => {
+            let gs = load_graph(&pkb_root, &db_path);
+
+            match gs.resolve(&id) {
+                Some(node) => {
+                    let memory_types = ["memory", "note", "insight", "observation"];
+                    let is_memory = node
+                        .node_type
+                        .as_deref()
+                        .map(|t| memory_types.iter().any(|mt| t.eq_ignore_ascii_case(mt)))
+                        .unwrap_or(false);
+
+                    if !is_memory {
+                        eprintln!(
+                            "Not a memory document: {id} (type: {})",
+                            node.node_type.as_deref().unwrap_or("unknown")
+                        );
+                        eprintln!("Use 'aops delete' for non-memory documents.");
+                        std::process::exit(1);
+                    }
+
+                    let path = abs_node_path(&node.path, &pkb_root);
+                    let rel_path = node.path.to_string_lossy().to_string();
+                    let label = node.label.clone();
+
+                    match document_crud::delete_document(&path) {
+                        Ok(_) => {
+                            println!("Forgot: {} ({})", label, id);
+
+                            // Remove from vector store to keep index consistent
+                            if let Some(ref store) = store {
+                                let mut w = store.write();
+                                w.remove(&rel_path);
+                                let _ = w.save(&db_path);
+                            }
+
+                            // Rebuild graph cache
+                            rebuild_graph_cache(&pkb_root, &db_path);
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("Memory not found: {id}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Memories { tags, limit } => {
+            let store = store.as_ref().unwrap();
+            let memory_types = ["memory", "note", "insight", "observation"];
+
+            let s = store.read();
+            let all = s.list_documents(None, None, None, None, &pkb_root);
+            let mut memories: Vec<_> = all
+                .into_iter()
+                .filter(|r| {
+                    r.doc_type
+                        .as_deref()
+                        .map(|t| memory_types.iter().any(|mt| t.eq_ignore_ascii_case(mt)))
+                        .unwrap_or(false)
+                })
+                .collect();
+
+            if let Some(ref required_tags) = tags {
+                memories.retain(|r| {
+                    required_tags
+                        .iter()
+                        .all(|rt| r.tags.iter().any(|t| t.eq_ignore_ascii_case(rt)))
+                });
+            }
+
+            memories.truncate(limit);
+
+            if memories.is_empty() {
+                println!("No memories found.");
+                return Ok(());
+            }
+
+            println!();
+            for r in &memories {
+                let type_str = r
+                    .doc_type
+                    .as_deref()
+                    .map(|t| format!(" \x1b[35m[{t}]\x1b[0m"))
+                    .unwrap_or_default();
+                let tags_str = if r.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [{}]", r.tags.join(", "))
+                };
+                println!(
+                    "  \x1b[1m{}\x1b[0m{type_str}{tags_str}",
+                    r.title,
+                );
+                println!("  \x1b[2m{}\x1b[0m\n", r.path.display());
+            }
+            println!("  {} memories", memories.len());
+        }
+
+        Commands::Blocks { id, tree } => {
+            let gs = load_graph(&pkb_root, &db_path);
+
+            if gs.get_node(&id).is_none() {
+                eprintln!("Task not found: {id}");
+                std::process::exit(1);
+            }
+
+            let blocks = gs.blocks_tree(&id);
+            if blocks.is_empty() {
+                println!("Completing {id} would not unblock any tasks.");
+                return Ok(());
+            }
+
+            println!();
+            for (blocked_id, depth) in &blocks {
+                let indent = if tree {
+                    "  ".repeat(*depth)
+                } else {
+                    "  ".to_string()
+                };
+                let label = gs
+                    .get_node(blocked_id)
+                    .map(|n| n.label.as_str())
+                    .unwrap_or("?");
+                let status = gs
+                    .get_node(blocked_id)
+                    .and_then(|n| n.status.as_deref())
+                    .unwrap_or("?");
+                println!("{indent}{blocked_id} [{status}] {label}");
+            }
+            println!();
         }
     }
 

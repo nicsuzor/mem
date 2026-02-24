@@ -203,6 +203,13 @@ impl PkbSearchServer {
         let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         let graph = self.graph.read();
+
+        // Build path -> node index for O(1) lookups instead of O(n) per result
+        let path_map: std::collections::HashMap<String, &crate::graph::GraphNode> = graph
+            .nodes()
+            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n))
+            .collect();
+
         let mut output = String::new();
         let mut count = 0;
 
@@ -231,26 +238,23 @@ impl PkbSearchServer {
             ));
             output.push_str(&format!("**Path:** `{}`\n", r.path.display()));
 
-            // Compare using absolute paths (SearchResult is abs, node.path may be relative)
+            // O(1) path lookup via pre-built index
             let path_str = r.path.to_string_lossy();
-            for node in graph.nodes() {
-                if self.abs_path(&node.path).to_string_lossy() == path_str {
-                    if let Some(ref s) = node.status {
-                        output.push_str(&format!("**Status:** {s}\n"));
-                    }
-                    if let Some(p) = node.priority {
-                        output.push_str(&format!("**Priority:** {p}\n"));
-                    }
-                    if !node.blocks.is_empty() {
-                        output.push_str(&format!("**Blocks:** {}\n", node.blocks.join(", ")));
-                    }
-                    if !node.depends_on.is_empty() {
-                        output.push_str(&format!(
-                            "**Depends on:** {}\n",
-                            node.depends_on.join(", ")
-                        ));
-                    }
-                    break;
+            if let Some(node) = path_map.get(&*path_str) {
+                if let Some(ref s) = node.status {
+                    output.push_str(&format!("**Status:** {s}\n"));
+                }
+                if let Some(p) = node.priority {
+                    output.push_str(&format!("**Priority:** {p}\n"));
+                }
+                if !node.blocks.is_empty() {
+                    output.push_str(&format!("**Blocks:** {}\n", node.blocks.join(", ")));
+                }
+                if !node.depends_on.is_empty() {
+                    output.push_str(&format!(
+                        "**Depends on:** {}\n",
+                        node.depends_on.join(", ")
+                    ));
                 }
             }
             output.push('\n');
@@ -1167,6 +1171,572 @@ impl PkbSearchServer {
         ))]))
     }
 
+    // =========================================================================
+    // NEW TOOLS: Memory CRUD, decompose, dependency tree, children
+    // =========================================================================
+
+    fn handle_retrieve_memory(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: query"),
+                data: None,
+            })?;
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
+        let tags: Option<Vec<String>> = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            });
+
+        let query_embedding = self.embedder.encode(query).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Embedding error: {e}")),
+            data: None,
+        })?;
+
+        let store = self.store.read();
+        let results = store.search(&query_embedding, limit * 3, &self.pkb_root);
+
+        let memory_types = ["memory", "note", "insight", "observation"];
+        let mut output = String::new();
+        let mut count = 0;
+
+        for r in &results {
+            if count >= limit {
+                break;
+            }
+            let is_memory = r
+                .doc_type
+                .as_deref()
+                .map(|t| memory_types.iter().any(|mt| t.eq_ignore_ascii_case(mt)))
+                .unwrap_or(false);
+            if !is_memory {
+                continue;
+            }
+
+            if let Some(ref required_tags) = tags {
+                let has_all = required_tags
+                    .iter()
+                    .all(|rt| r.tags.iter().any(|t| t.eq_ignore_ascii_case(rt)));
+                if !has_all {
+                    continue;
+                }
+            }
+
+            count += 1;
+            output.push_str(&format!(
+                "### {}. {} (score: {:.3})\n",
+                count, r.title, r.score
+            ));
+            output.push_str(&format!("**Path:** `{}`\n", r.path.display()));
+            if !r.tags.is_empty() {
+                output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
+            }
+            // Show full body for memories (typically short)
+            if let Ok(content) = std::fs::read_to_string(&r.path) {
+                let body = if content.starts_with("---") {
+                    content
+                        .splitn(3, "---")
+                        .nth(2)
+                        .unwrap_or("")
+                        .trim()
+                } else {
+                    content.trim()
+                };
+                if !body.is_empty() {
+                    output.push_str(&format!("\n{body}\n"));
+                }
+            }
+            output.push('\n');
+        }
+
+        if count == 0 {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No memories found matching query.",
+            )]));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "**Found {count} memories for:** \"{query}\"\n\n{output}"
+        ))]))
+    }
+
+    fn handle_search_by_tag(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let tags: Vec<String> = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: tags"),
+                data: None,
+            })?;
+
+        if tags.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("tags array cannot be empty"),
+                data: None,
+            });
+        }
+
+        let type_filter = args.get("type").and_then(|v| v.as_str());
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(50) as usize;
+
+        let store = self.store.read();
+        let all = store.list_documents(None, type_filter, None, None, &self.pkb_root);
+
+        let mut matching: Vec<_> = all
+            .into_iter()
+            .filter(|r| {
+                tags.iter()
+                    .all(|tag| r.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)))
+            })
+            .collect();
+        matching.truncate(limit);
+
+        if matching.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No documents found with tags: {}",
+                tags.join(", ")
+            ))]));
+        }
+
+        let total = matching.len();
+        let mut output = format!(
+            "**{total} documents with tags [{}]**\n\n",
+            tags.join(", ")
+        );
+        for r in &matching {
+            output.push_str(&format!("- **{}**", r.title));
+            if let Some(ref dt) = r.doc_type {
+                output.push_str(&format!(" [{dt}]"));
+            }
+            output.push_str(&format!(" ({})", r.tags.join(", ")));
+            output.push_str(&format!(" — `{}`\n", r.path.display()));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_list_memories(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20) as usize;
+        let tags: Option<Vec<String>> = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            });
+
+        let memory_types = ["memory", "note", "insight", "observation"];
+        let store = self.store.read();
+
+        let mut memories: Vec<_> = store
+            .list_documents(None, None, None, None, &self.pkb_root)
+            .into_iter()
+            .filter(|r| {
+                r.doc_type
+                    .as_deref()
+                    .map(|t| memory_types.iter().any(|mt| t.eq_ignore_ascii_case(mt)))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        if let Some(ref required_tags) = tags {
+            memories.retain(|r| {
+                required_tags
+                    .iter()
+                    .all(|rt| r.tags.iter().any(|t| t.eq_ignore_ascii_case(rt)))
+            });
+        }
+
+        memories.truncate(limit);
+
+        if memories.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No memories found.",
+            )]));
+        }
+
+        let total = memories.len();
+        let mut output = format!("**{total} memories**\n\n");
+        for r in &memories {
+            output.push_str(&format!("- **{}**", r.title));
+            if !r.tags.is_empty() {
+                output.push_str(&format!(" ({})", r.tags.join(", ")));
+            }
+            output.push_str(&format!(" — `{}`\n", r.path.display()));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_delete_memory(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Memory not found: {id}")),
+            data: None,
+        })?;
+
+        let memory_types = ["memory", "note", "insight", "observation"];
+        let is_memory = node
+            .node_type
+            .as_deref()
+            .map(|t| memory_types.iter().any(|mt| t.eq_ignore_ascii_case(mt)))
+            .unwrap_or(false);
+
+        if !is_memory {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "Not a memory document: {id} (type: {:?})",
+                    node.node_type
+                )),
+                data: None,
+            });
+        }
+        drop(graph);
+
+        self.handle_delete_document(args)
+    }
+
+    fn handle_decompose_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let parent_id = args
+            .get("parent_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: parent_id"),
+                data: None,
+            })?;
+
+        let subtasks = args
+            .get("subtasks")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: subtasks (array)"),
+                data: None,
+            })?;
+
+        if subtasks.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("subtasks array cannot be empty"),
+                data: None,
+            });
+        }
+
+        {
+            let graph = self.graph.read();
+            match graph.resolve(parent_id) {
+                None => {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!("Parent task not found: {parent_id}")),
+                        data: None,
+                    });
+                }
+                Some(node) => {
+                    if node.task_id.is_none() {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(format!(
+                                "Parent ID must refer to a task node, but `{parent_id}` is not a task"
+                            )),
+                            data: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        let mut created: Vec<(String, String)> = Vec::new();
+        static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex")
+        });
+
+        for subtask in subtasks {
+            let title = subtask
+                .get("title")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Each subtask must have a 'title'"),
+                    data: None,
+                })?;
+
+            let fields = crate::document_crud::TaskFields {
+                title: title.to_string(),
+                id: subtask.get("id").and_then(|v| v.as_str()).map(String::from),
+                parent: Some(parent_id.to_string()),
+                priority: subtask
+                    .get("priority")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                project: subtask
+                    .get("project")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                tags: subtask
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                depends_on: subtask
+                    .get("depends_on")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                assignee: subtask
+                    .get("assignee")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                complexity: subtask
+                    .get("complexity")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                body: subtask
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+            };
+
+            let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(
+                |e| McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from(format!("Failed to create subtask '{title}': {e}")),
+                    data: None,
+                },
+            )?;
+
+            if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+                let _ = self.store.write().upsert(&doc, &self.embedder);
+            }
+
+            let id_str = path
+                .file_stem()
+                .map(|s| {
+                    let stem = s.to_string_lossy();
+                    ID_RE
+                        .find(&stem)
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_else(|| stem.to_string())
+                })
+                .unwrap_or_default();
+            created.push((id_str, path.display().to_string()));
+        }
+
+        let _ = self.store.read().save(&self.db_path);
+        self.rebuild_graph();
+
+        let mut output = format!(
+            "**Created {} subtasks under `{parent_id}`:**\n\n",
+            created.len()
+        );
+        for (id_str, path) in &created {
+            output.push_str(&format!("- `{id_str}` — `{path}`\n"));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_get_dependency_tree(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let direction = args
+            .get("direction")
+            .and_then(|v| v.as_str())
+            .unwrap_or("upstream");
+
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Task not found: {id}")),
+            data: None,
+        })?;
+        let node_id = node.id.clone();
+        let node_label = node.label.clone();
+
+        let tree = if direction.eq_ignore_ascii_case("downstream") {
+            graph.blocks_tree(&node_id)
+        } else {
+            graph.dependency_tree(&node_id)
+        };
+
+        if tree.is_empty() {
+            let dir_label = if direction.eq_ignore_ascii_case("downstream") {
+                "downstream"
+            } else {
+                "upstream"
+            };
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No {dir_label} dependencies for `{id}` ({node_label})."
+            ))]));
+        }
+
+        let dir_label = if direction.eq_ignore_ascii_case("downstream") {
+            "Downstream (blocks)"
+        } else {
+            "Upstream (depends on)"
+        };
+        let mut output = format!("## {dir_label} tree for `{id}` ({node_label})\n\n");
+
+        for (dep_id, depth) in &tree {
+            let indent = "  ".repeat(*depth);
+            let label = graph
+                .get_node(dep_id)
+                .map(|n| n.label.as_str())
+                .unwrap_or("?");
+            let status = graph
+                .get_node(dep_id)
+                .and_then(|n| n.status.as_deref())
+                .unwrap_or("?");
+            output.push_str(&format!("{indent}- `{dep_id}` [{status}] {label}\n"));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_get_task_children(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+        let recursive = args
+            .get("recursive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Task not found: {id}")),
+            data: None,
+        })?;
+        let node_id = node.id.clone();
+        let node_label = node.label.clone();
+
+        if node.children.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No children for `{id}` ({node_label})."
+            ))]));
+        }
+
+        let mut output = format!("## Children of `{id}` ({node_label})\n\n");
+
+        fn collect_children(
+            graph: &GraphStore,
+            parent_id: &str,
+            recursive: bool,
+            depth: usize,
+            output: &mut String,
+            total: &mut usize,
+            done: &mut usize,
+        ) {
+            if let Some(node) = graph.get_node(parent_id) {
+                for child_id in &node.children {
+                    if let Some(child) = graph.get_node(child_id) {
+                        *total += 1;
+                        let is_done = child.status.as_deref() == Some("done")
+                            || child.status.as_deref() == Some("cancelled");
+                        if is_done {
+                            *done += 1;
+                        }
+                        let indent = "  ".repeat(depth);
+                        let status = child.status.as_deref().unwrap_or("-");
+                        let pri = child
+                            .priority
+                            .map(|p| format!("P{p} "))
+                            .unwrap_or_default();
+                        let cid = child.task_id.as_deref().unwrap_or(&child.id);
+                        output.push_str(&format!(
+                            "{indent}- `{cid}` [{status}] {pri}{}\n",
+                            child.label
+                        ));
+                        if recursive && !child.children.is_empty() {
+                            collect_children(
+                                graph,
+                                &child.id,
+                                recursive,
+                                depth + 1,
+                                output,
+                                total,
+                                done,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut total = 0usize;
+        let mut done_count = 0usize;
+        collect_children(
+            &graph,
+            &node_id,
+            recursive,
+            0,
+            &mut output,
+            &mut total,
+            &mut done_count,
+        );
+
+        output.push_str(&format!("\n**Summary:** {done_count}/{total} complete\n"));
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
     fn handle_list_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let project = args.get("project").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
@@ -1406,6 +1976,13 @@ impl ServerHandler for PkbSearchServer {
             "list_tasks" => self.handle_list_tasks(&args),
             "get_task" => self.handle_get_task(&args),
             "update_task" => self.handle_update_task(&args),
+            "retrieve_memory" => self.handle_retrieve_memory(&args),
+            "search_by_tag" => self.handle_search_by_tag(&args),
+            "list_memories" => self.handle_list_memories(&args),
+            "delete_memory" => self.handle_delete_memory(&args),
+            "decompose_task" => self.handle_decompose_task(&args),
+            "get_dependency_tree" => self.handle_get_dependency_tree(&args),
+            "get_task_children" => self.handle_get_task_children(&args),
             "pkb_context" => self.handle_pkb_context(&args),
             "pkb_trace" => self.handle_pkb_trace(&args),
             "pkb_orphans" => self.handle_pkb_orphans(&args),
@@ -1648,6 +2225,116 @@ impl ServerHandler for PkbSearchServer {
                 .unwrap(),
             ),
             Tool::new(
+                "retrieve_memory",
+                "Semantic search filtered to memory-type documents. Returns full content since memories are typically short.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Search query for finding relevant memories" },
+                        "limit": { "type": "integer", "description": "Maximum number of memories to return (default: 10)" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Only return memories with all of these tags" }
+                    },
+                    "required": ["query"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "search_by_tag",
+                "Search documents by tags. Returns all documents matching the specified tags.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags to search for (all must match)" },
+                        "type": { "type": "string", "description": "Filter by document type (e.g. 'memory', 'task')" },
+                        "limit": { "type": "integer", "description": "Max results (default: 50)" }
+                    },
+                    "required": ["tags"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "list_memories",
+                "List memory-type documents (memory, note, insight, observation) with optional tag filtering.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "description": "Max results (default: 20)" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags (all must match)" },
+
+                    }
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "delete_memory",
+                "Delete a memory document by ID. Only works on memory-type documents (memory, note, insight, observation).",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Memory ID (supports flexible resolution)" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "decompose_task",
+                "Batch creation of subtasks under a parent task. More efficient than calling create_task N times (single graph rebuild).",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "parent_id": { "type": "string", "description": "Parent task ID to create subtasks under" },
+                        "subtasks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": { "type": "string" },
+                                    "id": { "type": "string", "description": "Optional custom task ID" },
+                                    "priority": { "type": "integer" },
+                                    "depends_on": { "type": "array", "items": { "type": "string" } },
+                                    "tags": { "type": "array", "items": { "type": "string" } },
+                                    "assignee": { "type": "string" },
+                                    "complexity": { "type": "string" },
+                                    "body": { "type": "string" },
+                                    "project": { "type": "string" }
+                                },
+                                "required": ["title"]
+                            },
+                            "description": "Array of subtask definitions"
+                        }
+                    },
+                    "required": ["parent_id", "subtasks"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "get_dependency_tree",
+                "Get the dependency tree for a task. Upstream shows what it depends on, downstream shows what it unblocks.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task ID" },
+                        "direction": { "type": "string", "description": "Direction: 'upstream' (depends on, default) or 'downstream' (blocks)" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "get_task_children",
+                "Get direct children of a task, or the full subtree if recursive. Returns status and completion counts.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task ID" },
+                        "recursive": { "type": "boolean", "description": "Include all descendants, not just direct children (default: false)" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
                 "pkb_context",
                 "Get full knowledge neighbourhood for a node: metadata, relationships, backlinks grouped by source type, and nearby nodes within N hops. Supports flexible ID resolution (by ID, filename, title).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -1705,10 +2392,13 @@ impl ServerHandler for PkbSearchServer {
             },
             instructions: Some(
                 "PKB Search — semantic search + task graph over personal knowledge base. \
-                 18 tools: search, get_document, list_documents, reindex, \
+                 25 tools: search, get_document, list_documents, reindex, \
                  task_search, get_network_metrics, create_task, create_memory, \
                  create, append, delete, complete_task, list_tasks, \
-                 get_task, update_task, pkb_context, pkb_trace, pkb_orphans."
+                 get_task, update_task, retrieve_memory, search_by_tag, \
+                 list_memories, delete_memory, decompose_task, \
+                 get_dependency_tree, get_task_children, \
+                 pkb_context, pkb_trace, pkb_orphans."
                     .to_string(),
             ),
         }
