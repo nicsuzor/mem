@@ -1873,8 +1873,9 @@ fn main() -> Result<()> {
 
                             // Remove from vector store to keep index consistent
                             if let Some(ref store) = store {
-                                store.write().remove(&rel_path);
-                                let _ = store.read().save(&db_path);
+                                let mut w = store.write();
+                                w.remove(&rel_path);
+                                let _ = w.save(&db_path);
                             }
 
                             // Rebuild graph cache

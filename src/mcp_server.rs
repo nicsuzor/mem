@@ -1482,7 +1482,9 @@ impl PkbSearchServer {
         }
 
         let mut created: Vec<(String, String)> = Vec::new();
-        let id_re = regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex");
+        static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex")
+        });
 
         for subtask in subtasks {
             let title = subtask
@@ -1554,7 +1556,7 @@ impl PkbSearchServer {
                 .file_stem()
                 .map(|s| {
                     let stem = s.to_string_lossy();
-                    id_re
+                    ID_RE
                         .find(&stem)
                         .map(|m| m.as_str().to_string())
                         .unwrap_or_else(|| stem.to_string())
