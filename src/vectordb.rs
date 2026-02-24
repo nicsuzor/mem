@@ -225,12 +225,8 @@ impl VectorStore {
             }
 
             if best_score > f32::NEG_INFINITY {
-                // Use body-only chunks for snippet (falls back to embedding chunks for old indexes)
-                let snippet_source = if !entry.body_chunks.is_empty() {
-                    &entry.body_chunks
-                } else {
-                    &entry.chunk_texts
-                };
+                // Use chunk_texts for snippet to ensure alignment with embedding index
+                let snippet_source = &entry.chunk_texts;
                 let best_snippet = if best_chunk_idx < snippet_source.len() {
                     let text = &snippet_source[best_chunk_idx];
                     let mut trunc = 300.min(text.len());
