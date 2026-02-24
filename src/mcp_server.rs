@@ -192,7 +192,7 @@ impl PkbSearchServer {
             .unwrap_or(10) as usize;
         let project = args.get("project").and_then(|v| v.as_str());
 
-        let query_embedding = self.embedder.encode(query).map_err(|e| McpError {
+        let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Embedding error: {e}")),
             data: None,
@@ -523,7 +523,7 @@ impl PkbSearchServer {
         let boost_id = args.get("boost_id").and_then(|v| v.as_str());
         let project = args.get("project").and_then(|v| v.as_str());
 
-        let query_embedding = self.embedder.encode(query).map_err(|e| McpError {
+        let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Embedding error: {e}")),
             data: None,

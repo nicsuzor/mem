@@ -365,7 +365,7 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            let query_embedding = embedder.encode(&query_text)?;
+            let query_embedding = embedder.encode_query(&query_text)?;
             let results = store.read().search(&query_embedding, limit, &pkb_root);
 
             if results.is_empty() {
@@ -1631,10 +1631,11 @@ fn index_pkb(
         })
         .collect();
 
-    // Batch embed and store — batches of 500 docs with progressive saves
+    // Batch embed and store — batches of 50 docs with progressive saves
+    // (smaller batches give more frequent saves and better resumability)
     let mut indexed = 0;
 
-    for batch in parsed.chunks(500) {
+    for batch in parsed.chunks(50) {
         // Collect all chunks from this batch
         let mut all_chunks: Vec<&str> = Vec::new();
         let mut chunk_counts: Vec<usize> = Vec::new();
