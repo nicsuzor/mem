@@ -411,7 +411,9 @@ impl Embedder {
         Ok(results.into_iter().next().unwrap_or_else(|| vec![0.0; EMBEDDING_DIM]))
     }
 
-    const MAX_BATCH: usize = 128;
+    /// Chunks per ONNX sub-batch. Smaller = more sub-batches = more sessions used in parallel.
+    /// With BGE-M3 FP32, inference dominates so sub-batch overhead is negligible.
+    const MAX_BATCH: usize = 32;
 
     pub fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
