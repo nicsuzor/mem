@@ -6,6 +6,10 @@ rust-version = "1.88"
 license = "GPL-3.0-or-later"
 description = "Fast-indexer and PKB semantic search MCP server"
 
+[lib]
+name = "mem"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pkb"
 path = "src/server.rs"

@@ -2,16 +2,7 @@
 //!
 //! Provides subcommands: search, add, reindex, status, tasks, task, deps, ...
 
-mod distance;
-mod embeddings;
-mod graph;
-mod graph_store;
-mod mcp_server;
-mod metrics;
-mod pkb;
-mod document_crud;
-mod task_index;
-mod vectordb;
+use mem::{document_crud, embeddings, graph, graph_store, metrics, pkb, task_index, vectordb};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
