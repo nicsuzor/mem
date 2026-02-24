@@ -427,7 +427,7 @@ fn main() -> Result<()> {
     // Some commands need the store but not the embedder
     let needs_store_only = matches!(
         cli.command,
-        Commands::Tags { .. } | Commands::Memories { .. }
+        Commands::Tags { .. } | Commands::Memories { .. } | Commands::Forget { .. }
     );
 
     let (embedder, store) = if needs_embedder {
@@ -435,7 +435,7 @@ fn main() -> Result<()> {
         let s = load_store(&db_path, e.dimension())?;
         (Some(e), Some(s))
     } else if needs_store_only {
-        let s = load_store(&db_path, 384)?; // MiniLM-L6-v2 dimension
+        let s = load_store(&db_path, embeddings::EMBEDDING_DIM)?;
         (None, Some(s))
     } else {
         (None, None)
@@ -623,7 +623,19 @@ fn main() -> Result<()> {
                             a_due.cmp(b_due)
                         });
                     }
-                    // "priority" is the default sort — already applied
+                    "priority" => {
+                        tasks.sort_by(|a, b| {
+                            a.priority
+                                .unwrap_or(2)
+                                .cmp(&b.priority.unwrap_or(2))
+                                .then(
+                                    b.downstream_weight
+                                        .partial_cmp(&a.downstream_weight)
+                                        .unwrap_or(std::cmp::Ordering::Equal),
+                                )
+                        });
+                    }
+                    // Unknown sort key: leave ordering unchanged
                     _ => {}
                 }
             }
@@ -1852,11 +1864,22 @@ fn main() -> Result<()> {
                     }
 
                     let path = abs_node_path(&node.path, &pkb_root);
+                    let rel_path = node.path.to_string_lossy().to_string();
                     let label = node.label.clone();
 
                     match document_crud::delete_document(&path) {
                         Ok(_) => {
                             println!("Forgot: {} ({})", label, id);
+
+                            // Remove from vector store to keep index consistent
+                            if let Some(ref store) = store {
+                                let mut w = store.write();
+                                w.remove(&rel_path);
+                                let _ = w.save(&db_path);
+                            }
+
+                            // Rebuild graph cache
+                            rebuild_graph_cache(&pkb_root, &db_path);
                         }
                         Err(e) => {
                             eprintln!("Error: {e}");

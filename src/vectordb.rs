@@ -343,7 +343,8 @@ impl VectorStore {
         let mut tags: HashMap<String, usize> = HashMap::new();
         for entry in self.documents.values() {
             for tag in &entry.tags {
-                *tags.entry(tag.clone()).or_insert(0) += 1;
+                let normalized = tag.to_lowercase();
+                *tags.entry(normalized).or_insert(0) += 1;
             }
         }
         tags

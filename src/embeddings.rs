@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-const EMBEDDING_DIM: usize = 384;
+pub const EMBEDDING_DIM: usize = 384;
 const MODEL_REPO: &str = "sentence-transformers/all-MiniLM-L6-v2";
 
 /// Thread-safe guard for ORT_DYLIB_PATH initialization.
