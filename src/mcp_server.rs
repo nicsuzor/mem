@@ -1284,6 +1284,14 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        if tags.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("tags array cannot be empty"),
+                data: None,
+            });
+        }
+
         let type_filter = args.get("type").and_then(|v| v.as_str());
         let limit = args
             .get("limit")
@@ -1451,16 +1459,30 @@ impl PkbSearchServer {
 
         {
             let graph = self.graph.read();
-            if graph.resolve(parent_id).is_none() {
-                return Err(McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!("Parent task not found: {parent_id}")),
-                    data: None,
-                });
+            match graph.resolve(parent_id) {
+                None => {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!("Parent task not found: {parent_id}")),
+                        data: None,
+                    });
+                }
+                Some(node) => {
+                    if node.task_id.is_none() {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(format!(
+                                "Parent ID must refer to a task node, but `{parent_id}` is not a task"
+                            )),
+                            data: None,
+                        });
+                    }
+                }
             }
         }
 
         let mut created: Vec<(String, String)> = Vec::new();
+        let id_re = regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex");
 
         for subtask in subtasks {
             let title = subtask
@@ -1532,8 +1554,8 @@ impl PkbSearchServer {
                 .file_stem()
                 .map(|s| {
                     let stem = s.to_string_lossy();
-                    let re = regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").unwrap();
-                    re.find(&stem)
+                    id_re
+                        .find(&stem)
                         .map(|m| m.as_str().to_string())
                         .unwrap_or_else(|| stem.to_string())
                 })
@@ -2233,7 +2255,7 @@ impl ServerHandler for PkbSearchServer {
                     "properties": {
                         "limit": { "type": "integer", "description": "Max results (default: 20)" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags (all must match)" },
-                        "recent": { "type": "boolean", "description": "Sort by most recent first (default: false)" }
+
                     }
                 }))
                 .unwrap(),
@@ -2263,6 +2285,7 @@ impl ServerHandler for PkbSearchServer {
                                 "type": "object",
                                 "properties": {
                                     "title": { "type": "string" },
+                                    "id": { "type": "string", "description": "Optional custom task ID" },
                                     "priority": { "type": "integer" },
                                     "depends_on": { "type": "array", "items": { "type": "string" } },
                                     "tags": { "type": "array", "items": { "type": "string" } },
