@@ -20,6 +20,31 @@ const QUERY_PREFIX: &str = "Represent this sentence for searching relevant passa
 /// Thread-safe guard for ORT_DYLIB_PATH initialization.
 static ORT_PATH_INIT: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
 
+/// Cached GPU availability check (computed once at startup).
+static GPU_AVAILABLE: OnceLock<bool> = OnceLock::new();
+
+/// Check if CUDA GPU is available for ONNX Runtime inference.
+/// Looks for libcuda.so in WSL2 paravirtualization path and standard locations.
+fn gpu_available() -> bool {
+    *GPU_AVAILABLE.get_or_init(|| {
+        // Allow explicit override: AOPS_GPU=0 disables, AOPS_GPU=1 forces
+        if let Ok(val) = std::env::var("AOPS_GPU") {
+            return val == "1" || val.to_lowercase() == "true";
+        }
+
+        let cuda_paths = [
+            "/usr/lib/wsl/lib/libcuda.so",
+            "/usr/lib/x86_64-linux-gnu/libcuda.so",
+            "/usr/local/cuda/lib64/libcudart.so",
+        ];
+        let found = cuda_paths.iter().any(|p| std::path::Path::new(p).exists());
+        if found {
+            tracing::info!("CUDA libraries detected, GPU acceleration available");
+        }
+        found
+    })
+}
+
 // =============================================================================
 // CONFIGURATION
 // =============================================================================
@@ -127,68 +152,119 @@ fn download_models() -> Result<PathBuf> {
 }
 
 /// Download ONNX Runtime shared library if not present.
+/// Downloads the GPU (CUDA) build when CUDA is detected, otherwise CPU-only.
+/// For GPU builds, extracts all shared libraries (CUDA EP providers must be
+/// co-located with libonnxruntime.so for runtime discovery).
 fn download_onnx_runtime() -> Result<PathBuf> {
+    let use_gpu = gpu_available();
     let cache = get_cache_dir().join("onnxruntime");
     std::fs::create_dir_all(&cache)?;
 
+    // If we have the GPU build marker but are requesting CPU (or vice versa),
+    // we need to re-download. Use a marker file to track which variant is cached.
+    let variant_marker = cache.join(".variant");
+    let cached_variant = std::fs::read_to_string(&variant_marker).unwrap_or_default();
+    let wanted_variant = if use_gpu { "gpu" } else { "cpu" };
+
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    let (url, lib_name) = (
+    let (cpu_url, gpu_url, lib_name) = (
         "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-gpu-1.23.2.tgz",
         "libonnxruntime.so",
     );
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    let (url, lib_name) = (
+    let (cpu_url, gpu_url, lib_name) = (
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz",
+        // No GPU build for aarch64 — fall back to CPU
         "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz",
         "libonnxruntime.so",
     );
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    let (url, lib_name) = (
+    let (cpu_url, gpu_url, lib_name) = (
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz",
+        // No CUDA on macOS — always CPU
         "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz",
         "libonnxruntime.dylib",
     );
 
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    let (url, lib_name) = (
+    let (cpu_url, gpu_url, lib_name) = (
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz",
         "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz",
         "libonnxruntime.dylib",
     );
 
+    let url = if use_gpu { gpu_url } else { cpu_url };
+
     let lib_path = cache.join(lib_name);
-    if lib_path.exists() {
+    if lib_path.exists() && cached_variant.trim() == wanted_variant {
         return Ok(lib_path);
     }
 
-    eprintln!("  Downloading ONNX Runtime...");
+    let variant_label = if use_gpu { "ONNX Runtime (GPU/CUDA)" } else { "ONNX Runtime" };
+    eprintln!("  Downloading {variant_label}...");
     let resp = ureq::get(url)
         .call()
-        .with_context(|| format!("Failed to download ONNX Runtime from {url}"))?;
+        .with_context(|| format!("Failed to download {variant_label} from {url}"))?;
     let reader = resp.into_reader();
     let decoder = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
 
+    let mut found_main = false;
     for entry in archive.entries()? {
         let mut entry = entry?;
-        // Skip symlinks — they're 0 bytes in tar
         if entry.header().entry_type().is_symlink() {
             continue;
         }
         let path = entry.path()?.to_string_lossy().to_string();
-        // Match the real versioned library:
-        //   Linux:  libonnxruntime.so.1.23.2    (contains "libonnxruntime.so")
-        //   macOS:  libonnxruntime.1.23.2.dylib (version before .dylib extension)
-        let is_ort = path.contains(lib_name)
-            || (path.contains("libonnxruntime.") && path.ends_with(".dylib"));
-        if is_ort && entry.size() > 0 {
-            let mut file = std::fs::File::create(&lib_path)?;
-            std::io::copy(&mut entry, &mut file)?;
-            eprintln!("  ✓ Downloaded ONNX Runtime ({:.1} MB)", entry.size() as f64 / 1_048_576.0);
-            return Ok(lib_path);
+
+        // For GPU builds, extract ALL shared libraries from the lib/ directory.
+        // CUDA EP requires libonnxruntime_providers_shared.so and
+        // libonnxruntime_providers_cuda.so to be next to libonnxruntime.so.
+        let is_shared_lib = if cfg!(target_os = "linux") {
+            path.contains(".so") && entry.size() > 0
+        } else {
+            path.contains(".dylib") && entry.size() > 0
+        };
+
+        if is_shared_lib {
+            // Extract filename from archive path (e.g. "onnxruntime-linux-x64-gpu-1.23.2/lib/libfoo.so")
+            let filename = std::path::Path::new(&path)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string());
+
+            if let Some(fname) = filename {
+                // Normalize the main library name (strip version suffix)
+                let dest_name = if fname.contains(lib_name) {
+                    lib_name.to_string()
+                } else {
+                    fname
+                };
+                let dest = cache.join(&dest_name);
+                let mut file = std::fs::File::create(&dest)?;
+                let bytes = std::io::copy(&mut entry, &mut file)?;
+
+                if dest_name == lib_name {
+                    found_main = true;
+                    eprintln!("  + {dest_name} ({:.1} MB)", bytes as f64 / 1_048_576.0);
+                } else {
+                    eprintln!("  + {dest_name} ({:.1} MB)", bytes as f64 / 1_048_576.0);
+                }
+            }
         }
     }
 
-    bail!("Could not find {lib_name} in ONNX Runtime archive")
+    if !found_main {
+        bail!("Could not find {lib_name} in ONNX Runtime archive");
+    }
+
+    // Write variant marker so we know which build is cached
+    let _ = std::fs::write(&variant_marker, wanted_variant);
+    eprintln!("  Done ({variant_label})");
+
+    Ok(lib_path)
 }
 
 fn get_onnx_runtime_path() -> Option<PathBuf> {
@@ -216,7 +292,11 @@ const THREADS_PER_SESSION: usize = 2;
 
 /// Max parallel ONNX sessions, computed from available cores.
 /// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
+/// GPU mode uses exactly 1 session — the GPU itself parallelizes internally.
 fn max_sessions() -> usize {
+    if gpu_available() {
+        return 1;
+    }
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -231,19 +311,51 @@ struct SessionPool {
     tokenizer: tokenizers::Tokenizer,
     /// Whether the model expects token_type_ids as input (BERT: yes, XLM-RoBERTa: no).
     uses_token_type_ids: bool,
+    /// True if the session is running on GPU (CUDA EP registered successfully).
+    gpu_mode: bool,
 }
 
 impl SessionPool {
     /// Create pool with a single session (fast startup for search).
     /// Additional sessions are added lazily via `ensure_sessions()`.
+    /// Tries CUDA execution provider first if GPU is available, falls back to CPU.
     fn new(config: &EmbeddingConfig) -> Result<Self> {
         use ort::session::builder::GraphOptimizationLevel;
 
-        let session = Session::builder()
-            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
-            .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
-            .and_then(|b| b.commit_from_file(&config.model_path))
-            .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?;
+        let want_gpu = gpu_available();
+        let mut using_gpu = false;
+
+        let session = if want_gpu {
+            // Try GPU: register CUDA EP with silent fallback to CPU.
+            // We detect actual GPU usage by checking if CUDA registered successfully.
+            match Session::builder()
+                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                .and_then(|b| {
+                    b.with_execution_providers([ort::ep::CUDA::default().build()])
+                })
+                .and_then(|b| b.commit_from_file(&config.model_path))
+            {
+                Ok(session) => {
+                    using_gpu = true;
+                    eprintln!("  CUDA execution provider registered — using GPU");
+                    session
+                }
+                Err(e) => {
+                    eprintln!("  CUDA EP failed ({e}), falling back to CPU");
+                    Session::builder()
+                        .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                        .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
+                        .and_then(|b| b.commit_from_file(&config.model_path))
+                        .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?
+                }
+            }
+        } else {
+            Session::builder()
+                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
+                .and_then(|b| b.commit_from_file(&config.model_path))
+                .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?
+        };
 
         // Detect whether model expects token_type_ids (BERT does, XLM-RoBERTa does not)
         let uses_token_type_ids = session
@@ -271,12 +383,18 @@ impl SessionPool {
             model_path: config.model_path.clone(),
             tokenizer,
             uses_token_type_ids,
+            gpu_mode: using_gpu,
         })
     }
 
-    /// Grow pool to `count` sessions (no-op if already large enough).
+    /// Grow pool to `count` sessions (no-op if already large enough or in GPU mode).
     /// Called before parallel batch encoding.
     fn ensure_sessions(&self, count: usize) -> Result<()> {
+        // GPU mode: single session, GPU parallelizes internally
+        if self.gpu_mode {
+            return Ok(());
+        }
+
         use ort::session::builder::GraphOptimizationLevel;
 
         let max_sess = max_sessions();
@@ -369,9 +487,16 @@ impl Embedder {
         }
 
         let max_sess = max_sessions();
-        tracing::info!(
-            "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, up to {max_sess} sessions × {THREADS_PER_SESSION} threads)"
-        );
+        if gpu_available() {
+            tracing::info!(
+                "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, GPU/CUDA mode, batch size {})",
+                Self::MAX_BATCH_GPU,
+            );
+        } else {
+            tracing::info!(
+                "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, up to {max_sess} sessions × {THREADS_PER_SESSION} threads)"
+            );
+        }
         Ok(Self {
             config,
             pool: OnceLock::new(),
@@ -411,9 +536,11 @@ impl Embedder {
         Ok(results.into_iter().next().unwrap_or_else(|| vec![0.0; EMBEDDING_DIM]))
     }
 
-    /// Chunks per ONNX sub-batch. Smaller = more sub-batches = more sessions used in parallel.
-    /// With BGE-M3 FP32, inference dominates so sub-batch overhead is negligible.
-    const MAX_BATCH: usize = 32;
+    /// Chunks per ONNX sub-batch (CPU). Smaller = more sub-batches = more sessions in parallel.
+    const MAX_BATCH_CPU: usize = 32;
+    /// Chunks per ONNX sub-batch (GPU). GPU thrives on large batches — HBM bandwidth
+    /// is 10-20x higher than DDR so we feed much more data per inference call.
+    const MAX_BATCH_GPU: usize = 256;
 
     pub fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
@@ -421,9 +548,22 @@ impl Embedder {
         }
 
         let pool = self.ensure_pool()?;
+        let max_batch = if pool.gpu_mode { Self::MAX_BATCH_GPU } else { Self::MAX_BATCH_CPU };
 
-        // For large inputs, scale up sessions and split in parallel
-        if texts.len() > Self::MAX_BATCH {
+        // GPU mode: single session, sequential large batches (GPU parallelizes internally)
+        if pool.gpu_mode {
+            if texts.len() <= max_batch {
+                return self.encode_single_batch(texts, pool);
+            }
+            let mut all = Vec::with_capacity(texts.len());
+            for chunk in texts.chunks(max_batch) {
+                all.extend(self.encode_single_batch(chunk, pool)?);
+            }
+            return Ok(all);
+        }
+
+        // CPU mode: scale up sessions and split in parallel via rayon
+        if texts.len() > max_batch {
             use rayon::prelude::*;
             use std::sync::atomic::{AtomicUsize, Ordering};
 
