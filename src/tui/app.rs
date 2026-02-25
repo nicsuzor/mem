@@ -699,7 +699,7 @@ impl App {
             .to_string();
         let slug = if slug.len() > 50 { slug[..50].to_string() } else { slug };
 
-        let tasks_dir = self.pkb_root.join("tasks");
+        let tasks_dir = self.pkb_root.join("incoming");
         if !tasks_dir.exists() {
             let _ = std::fs::create_dir_all(&tasks_dir);
         }
@@ -732,6 +732,23 @@ impl App {
         self.load_graph();
         self.show_capture = false;
         true
+    }
+
+    pub fn change_priority(&mut self, delta: i32) {
+        let node_id = match self.current_view {
+            View::EpicTree | View::Graph => {
+                self.tree_rows.get(self.selected_index).map(|r| r.node_id.clone())
+            }
+            View::Focus => self.focus_picks.get(self.selected_index).cloned(),
+            _ => None,
+        };
+        if let Some(id) = node_id {
+            if let Some(node) = self.get_node(&id) {
+                let current_pri = node.priority.unwrap_or(2);
+                let new_pri = (current_pri + delta).clamp(0, 4);
+                self.set_priority(&id, new_pri);
+            }
+        }
     }
 
     pub fn set_status(&mut self, id: &str, status: &str) {
