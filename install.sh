@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO="nicsuzor/academicOps"
+REPO="nicsuzor/mem"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 # Detect platform

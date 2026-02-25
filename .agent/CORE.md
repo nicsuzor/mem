@@ -10,18 +10,18 @@ Semantic search + knowledge graph MCP server over a personal knowledge base (PKB
 src/
   server.rs       — main() for pkb binary (MCP stdio transport)
   cli.rs          — main() for aops CLI binary
-  mcp_server.rs   — MCP ServerHandler: 25 tools, dispatch, tool registrations
+  mcp_server.rs   — MCP ServerHandler: 18 tools, dispatch, tool registrations
   graph_store.rs  — GraphStore: builds/queries knowledge graph from PKB docs
   graph.rs        — GraphNode, Edge, EdgeType, link resolution helpers
   vectordb.rs     — VectorStore: cosine similarity search over embeddings
-  embeddings.rs   — Embedder: MiniLM-L6-v2 via ONNX Runtime (384-dim)
+  embeddings.rs   — Embedder: BGE-M3 via ONNX Runtime (1024-dim)
   pkb.rs          — PkbDocument parsing, directory scanning
   document_crud.rs— Create/update/delete/append for markdown docs
   metrics.rs      — Network centrality (PageRank, betweenness, degree)
   task_index.rs   — MCP index export (used by CLI graph command)
 ```
 
-## MCP Tools (25, as of v0.1.11)
+## MCP Tools (18, as of v0.1.15)
 
 ### Search
 - `search` — hybrid semantic + graph-proximity (was `pkb_search`)
@@ -89,4 +89,4 @@ Requires: Rust >= 1.88, zig 0.13 for cross-compile.
 - **Renamed**: `pkb_search` -> `search`, `create_document` -> `create`, `append_to_document` -> `append`, `delete_document` -> `delete`
 - **Enhanced**: `get_task` now includes relationship context; `list_tasks` supports `status=ready` and `status=blocked` with specialized output formats
 
-Spec reference: `/opt/nic/academicOps/specs/pkb-server-spec.md`
+Spec reference: see `README.md`

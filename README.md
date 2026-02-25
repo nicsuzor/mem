@@ -2,7 +2,7 @@
 
 Semantic search and knowledge graph over personal knowledge base markdown files, exposed as an MCP server and CLI.
 
-Uses [MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) for 384-dimensional sentence embeddings via ONNX Runtime. Models and runtime are auto-downloaded on first run.
+Uses [BGE-M3](https://huggingface.co/BAAI/bge-m3) for 1024-dimensional sentence embeddings via ONNX Runtime. Models and runtime are auto-downloaded on first run.
 
 ## Quick Start
 
@@ -64,7 +64,7 @@ The `aops` binary provides direct access to search, task management, and graph a
 
 ## MCP Tools
 
-The `pkb` server exposes 25 tools over MCP (stdio transport).
+The `pkb` server exposes 18 tools over MCP (stdio transport).
 
 ### Search Tools
 
@@ -163,7 +163,7 @@ MCP Client ◄──stdio──► pkb
               └───┬───┘ └─┬──┘ └───────────┘
                   │       │
             ┌─────┴──────┐│
-            │  Embedder  ││  (MiniLM-L6-v2 via ONNX Runtime)
+            │  Embedder  ││  (BGE-M3 via ONNX Runtime)
             └────────────┘│
                           │
                     ┌─────┴──────┐

@@ -10,7 +10,7 @@ BINS          = pkb aops
 VERSION       = $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
 # macOS SDK sysroot with framework stubs (needed for cross-compile)
-MACOS_SYSROOT ?= /opt/debian/macos-sdk
+MACOS_SYSROOT ?= $(HOME)/.local/share/macos-sdk
 
 # ── Native (host) build ──────────────────────────────────────────────
 
@@ -136,8 +136,8 @@ setup-cross:
 	$(CARGO) install cargo-zigbuild
 	@echo ""
 	@echo "Zig 0.13 is required (bundles macOS libc stubs)."
-	@echo "Install via: uv venv /opt/debian/zigenv && uv pip install --python /opt/debian/zigenv/bin/python 'ziglang>=0.13,<0.14'"
-	@echo "Then:        ln -sf /opt/debian/zigenv/lib/python3.11/site-packages/ziglang/zig /opt/debian/bin/zig"
+	@echo "Install via: pip install 'ziglang>=0.13,<0.14'"
+	@echo "Then ensure 'zig' is on your PATH."
 	@echo ""
 	@echo "Verify: zig version  (should be 0.13.x)"
 
