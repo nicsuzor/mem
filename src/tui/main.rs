@@ -17,7 +17,7 @@ use std::io::stdout;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use app::{App, View};
+use app::{App, CaptureField, View};
 
 fn main() -> Result<()> {
     // Quiet logging
@@ -71,6 +71,65 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
     // Ctrl-C always quits
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return true;
+    }
+
+    // Quick capture overlay
+    if app.show_capture {
+        match key.code {
+            KeyCode::Esc => {
+                app.show_capture = false;
+            }
+            KeyCode::Tab => {
+                app.capture_field = match app.capture_field {
+                    CaptureField::Title => CaptureField::Project,
+                    CaptureField::Project => CaptureField::Priority,
+                    CaptureField::Priority => CaptureField::Title,
+                };
+            }
+            KeyCode::Enter => {
+                app.submit_capture();
+            }
+            KeyCode::Left => match app.capture_field {
+                CaptureField::Project => {
+                    if app.capture_project_idx > 0 {
+                        app.capture_project_idx -= 1;
+                    }
+                }
+                CaptureField::Priority => {
+                    if app.capture_priority > 0 {
+                        app.capture_priority -= 1;
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Right => match app.capture_field {
+                CaptureField::Project => {
+                    if !app.project_names.is_empty()
+                        && app.capture_project_idx < app.project_names.len() - 1
+                    {
+                        app.capture_project_idx += 1;
+                    }
+                }
+                CaptureField::Priority => {
+                    if app.capture_priority < 4 {
+                        app.capture_priority += 1;
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Backspace => {
+                if app.capture_field == CaptureField::Title {
+                    app.capture_title.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if app.capture_field == CaptureField::Title {
+                    app.capture_title.push(c);
+                }
+            }
+            _ => {}
+        }
+        return false;
     }
 
     // Search overlay captures all key input
@@ -145,6 +204,9 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
 
         // Detail view
         KeyCode::Enter => app.open_detail(),
+
+        // Quick capture
+        KeyCode::Char('n') => app.open_capture(),
 
         // Search
         KeyCode::Char('/') => {

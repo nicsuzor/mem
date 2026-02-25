@@ -3,9 +3,18 @@
 use mem::graph::GraphNode;
 use mem::graph_store::GraphStore;
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The five main views.
+/// Which field is active in the capture modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureField {
+    Title,
+    Project,
+    Priority,
+}
+
+/// The four main views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Focus,
@@ -80,6 +89,14 @@ pub struct App {
     pub search_results: Vec<SearchHit>,
     pub search_selected: usize,
 
+    // Quick capture overlay
+    pub show_capture: bool,
+    pub capture_title: String,
+    pub capture_project_idx: usize,
+    pub capture_priority: i32,
+    pub capture_field: CaptureField,
+    pub project_names: Vec<String>,
+
     // Focus view state
     pub focus_picks: Vec<String>,
 
@@ -123,6 +140,12 @@ impl App {
             search_query: String::new(),
             search_results: Vec::new(),
             search_selected: 0,
+            show_capture: false,
+            capture_title: String::new(),
+            capture_project_idx: 0,
+            capture_priority: 2,
+            capture_field: CaptureField::Title,
+            project_names: Vec::new(),
             focus_picks: Vec::new(),
             untested_assumptions: Vec::new(),
             total_tasks: 0,
@@ -182,6 +205,12 @@ impl App {
         untested_list.truncate(10);
         self.untested_assumptions = untested_list;
         self.assumption_counts = (untested, confirmed, invalidated);
+
+        // Collect project names for quick capture
+        let by_proj = gs.by_project();
+        let mut proj_names: Vec<String> = by_proj.keys().cloned().collect();
+        proj_names.sort();
+        self.project_names = proj_names;
 
         self.graph = Some(gs);
 
@@ -542,6 +571,69 @@ impl App {
             self.show_detail = true;
             self.show_search = false;
         }
+    }
+
+    pub fn open_capture(&mut self) {
+        self.show_capture = true;
+        self.capture_title.clear();
+        self.capture_project_idx = 0;
+        self.capture_priority = 2;
+        self.capture_field = CaptureField::Title;
+    }
+
+    /// Create a new task markdown file from capture fields and reload graph.
+    pub fn submit_capture(&mut self) -> bool {
+        let title = self.capture_title.trim().to_string();
+        if title.is_empty() {
+            return false;
+        }
+
+        let project = self.project_names.get(self.capture_project_idx).cloned();
+        let priority = self.capture_priority;
+
+        // Generate a filename-safe slug
+        let slug: String = title
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        let slug = if slug.len() > 50 { slug[..50].to_string() } else { slug };
+
+        let tasks_dir = self.pkb_root.join("tasks");
+        if !tasks_dir.exists() {
+            let _ = std::fs::create_dir_all(&tasks_dir);
+        }
+
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let filename = format!("{slug}.md");
+        let filepath = tasks_dir.join(&filename);
+
+        // Build YAML frontmatter
+        let mut frontmatter = format!(
+            "---\ntitle: \"{}\"\ntype: task\nstatus: active\npriority: {}\ncreated: {}\n",
+            title.replace('"', "\\\""),
+            priority,
+            today,
+        );
+        if let Some(ref proj) = project {
+            frontmatter.push_str(&format!("project: {proj}\n"));
+        }
+        frontmatter.push_str("---\n\n");
+
+        // Write the file
+        match std::fs::File::create(&filepath) {
+            Ok(mut f) => {
+                let _ = f.write_all(frontmatter.as_bytes());
+            }
+            Err(_) => return false,
+        }
+
+        // Reload graph
+        self.load_graph();
+        self.show_capture = false;
+        true
     }
 }
 

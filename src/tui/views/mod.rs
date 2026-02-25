@@ -1,5 +1,6 @@
 //! View rendering for the Planning Web TUI.
 
+mod capture;
 mod dashboard;
 mod detail;
 mod epic_tree;
@@ -45,6 +46,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if app.show_search {
         search::render(frame, app, area);
+    }
+    if app.show_capture {
+        capture::render(frame, app, area);
     }
     if app.show_help {
         help::render(frame, area);
