@@ -212,7 +212,7 @@ fn get_onnx_runtime_path() -> Option<PathBuf> {
 // =============================================================================
 
 /// Threads per ONNX inference session.
-const THREADS_PER_SESSION: usize = 4;
+const THREADS_PER_SESSION: usize = 2;
 
 /// Max parallel ONNX sessions, computed from available cores.
 /// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
@@ -498,34 +498,15 @@ impl Embedder {
             ])?
         };
 
-        // Extract output — shape [batch_size, seq_len, EMBEDDING_DIM]
-        let (_out_shape, out_data) = outputs[0].try_extract_tensor::<f32>()?;
-        let seq_dim = max_length;
+        // Use the model's sentence_embedding output (pre-pooled, shape [batch_size, EMBEDDING_DIM]).
+        // BGE-M3 outputs: [0] token_embeddings [batch, seq, dim], [1] sentence_embedding [batch, dim].
+        // The model's built-in pooling produces much better embeddings than manual mean pooling.
+        let (_, sent_data) = outputs["sentence_embedding"].try_extract_tensor::<f32>()?;
 
-        // Mean pooling + L2 normalize for each item in batch
         let mut results = Vec::with_capacity(batch_size);
         for batch_idx in 0..batch_size {
-            let batch_offset = batch_idx * seq_dim * EMBEDDING_DIM;
-            let attn_offset = batch_idx * max_length;
-
-            let mut pooled = vec![0.0f32; EMBEDDING_DIM];
-            let mut mask_sum = 0.0f32;
-
-            for seq_idx in 0..seq_dim {
-                if attention_data[attn_offset + seq_idx] == 1 {
-                    let token_offset = batch_offset + seq_idx * EMBEDDING_DIM;
-                    for dim_idx in 0..EMBEDDING_DIM {
-                        pooled[dim_idx] += out_data[token_offset + dim_idx];
-                    }
-                    mask_sum += 1.0;
-                }
-            }
-
-            if mask_sum > 0.0 {
-                for val in &mut pooled {
-                    *val /= mask_sum;
-                }
-            }
+            let offset = batch_idx * EMBEDDING_DIM;
+            let mut pooled: Vec<f32> = sent_data[offset..offset + EMBEDDING_DIM].to_vec();
 
             // Clean NaN/Inf
             for val in pooled.iter_mut() {
@@ -667,4 +648,62 @@ fn find_sentence_break(text: &str, start: usize, ideal_end: usize) -> Option<usi
     }
 
     last_boundary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that the embedding model produces discriminative vectors.
+    /// A query should be more similar to a topically-related document than to an unrelated one.
+    /// This prevents regressions like using the wrong model output (token_embeddings vs
+    /// sentence_embedding) or broken mean pooling that collapses all vectors.
+    #[test]
+    #[ignore] // Requires ONNX model files on disk — run with: cargo test -- --ignored
+    fn embedding_quality_regression() {
+        let embedder = Embedder::new().expect("failed to create embedder");
+
+        let query = embedder
+            .encode_query("keyboard EMR interference")
+            .expect("encode_query failed");
+
+        let relevant_doc = embedder
+            .encode_document(
+                "The crkbd keyboard has EMR interference issues. \
+                 Moving the phone and Bluetooth transmitter away from \
+                 the keyboard fixed the disconnection problem.",
+            )
+            .expect("encode relevant doc failed");
+
+        let irrelevant_doc = embedder
+            .encode_document(
+                "The Oversight Board considered whether the indefinite \
+                 suspension of a political figure from Facebook was \
+                 consistent with international human rights standards.",
+            )
+            .expect("encode irrelevant doc failed");
+
+        let sim_relevant = crate::distance::cosine_similarity(&query, &relevant_doc);
+        let sim_irrelevant = crate::distance::cosine_similarity(&query, &irrelevant_doc);
+
+        eprintln!("sim(query, relevant)   = {sim_relevant:.4}");
+        eprintln!("sim(query, irrelevant) = {sim_irrelevant:.4}");
+        eprintln!("delta                  = {:.4}", sim_relevant - sim_irrelevant);
+
+        // The relevant doc must score meaningfully higher than the irrelevant one.
+        // A delta < 0.05 indicates degenerate embeddings (the old mean-pooling bug
+        // produced deltas near 0.0 with all scores clustered around 0.71).
+        assert!(
+            sim_relevant > sim_irrelevant + 0.05,
+            "Relevant doc should score at least 0.05 higher than irrelevant doc, \
+             got relevant={sim_relevant:.4} irrelevant={sim_irrelevant:.4} delta={:.4}",
+            sim_relevant - sim_irrelevant,
+        );
+
+        // Sanity: relevant score should be in a reasonable range
+        assert!(
+            sim_relevant > 0.3,
+            "Relevant doc similarity too low: {sim_relevant:.4}"
+        );
+    }
 }
