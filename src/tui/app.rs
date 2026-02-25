@@ -83,11 +83,15 @@ pub struct App {
     // Focus view state
     pub focus_picks: Vec<String>,
 
+    // Assumption stats
+    pub untested_assumptions: Vec<(String, String, f64)>, // (node_id, assumption_text, downstream_weight)
+
     // Stats
     pub total_tasks: usize,
     pub ready_count: usize,
     pub blocked_count: usize,
     pub project_count: usize,
+    pub assumption_counts: (usize, usize, usize), // (untested, confirmed, invalidated)
 }
 
 /// A search result for the fuzzy search overlay.
@@ -120,10 +124,12 @@ impl App {
             search_results: Vec::new(),
             search_selected: 0,
             focus_picks: Vec::new(),
+            untested_assumptions: Vec::new(),
             total_tasks: 0,
             ready_count: 0,
             blocked_count: 0,
             project_count: 0,
+            assumption_counts: (0, 0, 0),
         }
     }
 
@@ -148,6 +154,34 @@ impl App {
             .into_iter()
             .map(|n| n.id.clone())
             .collect();
+
+        // Compute assumption stats
+        let mut untested = 0usize;
+        let mut confirmed = 0usize;
+        let mut invalidated = 0usize;
+        let mut untested_list: Vec<(String, String, f64)> = Vec::new();
+        for node in gs.nodes() {
+            for a in &node.assumptions {
+                match a.status.as_str() {
+                    "confirmed" => confirmed += 1,
+                    "invalidated" => invalidated += 1,
+                    _ => {
+                        untested += 1;
+                        untested_list.push((
+                            node.id.clone(),
+                            a.text.clone(),
+                            node.downstream_weight,
+                        ));
+                    }
+                }
+            }
+        }
+        untested_list.sort_by(|a, b| {
+            b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        untested_list.truncate(10);
+        self.untested_assumptions = untested_list;
+        self.assumption_counts = (untested, confirmed, invalidated);
 
         self.graph = Some(gs);
 

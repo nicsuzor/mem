@@ -107,6 +107,20 @@ pub struct GraphNode {
     pub downstream_weight: f64,
     #[serde(default, skip_serializing_if = "is_false")]
     pub stakeholder_exposure: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumptions: Vec<Assumption>,
+}
+
+/// An assumption attached to a planning node.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Assumption {
+    pub text: String,
+    #[serde(default = "default_assumption_status")]
+    pub status: String,
+}
+
+fn default_assumption_status() -> String {
+    "untested".to_string()
 }
 
 fn is_zero_f64(v: &f64) -> bool {
@@ -326,6 +340,45 @@ impl GraphNode {
         // Extract links from body content
         let raw_links = parse_links(&doc.body);
 
+        // Parse assumptions from frontmatter
+        let assumptions = fm
+            .as_ref()
+            .and_then(|f| f.get("assumptions"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        if let Some(text) = item.as_str() {
+                            // Simple string: "some assumption"
+                            Some(Assumption {
+                                text: text.to_string(),
+                                status: "untested".to_string(),
+                            })
+                        } else if let Some(obj) = item.as_object() {
+                            // Object: { text: "...", status: "..." }
+                            let text = obj
+                                .get("text")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let status = obj
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("untested")
+                                .to_string();
+                            if text.is_empty() {
+                                None
+                            } else {
+                                Some(Assumption { text, status })
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         GraphNode {
             id,
             path: doc.path.clone(),
@@ -353,6 +406,7 @@ impl GraphNode {
             task_id,
             downstream_weight: 0.0,
             stakeholder_exposure: false,
+            assumptions,
         }
     }
 }

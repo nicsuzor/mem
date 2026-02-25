@@ -221,6 +221,34 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
+    // Assumptions
+    if !node.assumptions.is_empty() {
+        left_lines.push(Line::from(""));
+        left_lines.push(Line::from(Span::styled(
+            "  ASSUMPTIONS",
+            Style::default().fg(Color::Yellow).bold(),
+        )));
+        left_lines.push(Line::from(Span::styled(
+            "  ─────",
+            Style::default().fg(Color::DarkGray),
+        )));
+        for a in &node.assumptions {
+            let (icon, color) = match a.status.as_str() {
+                "confirmed" => ("✓", Color::Green),
+                "invalidated" => ("✗", Color::Red),
+                _ => ("?", Color::Yellow), // untested
+            };
+            left_lines.push(Line::from(vec![
+                Span::styled(format!("  {icon} "), Style::default().fg(color)),
+                Span::styled(a.text.clone(), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("  [{}]", a.status),
+                    Style::default().fg(color),
+                ),
+            ]));
+        }
+    }
+
     let scroll = app.detail_scroll.min(left_lines.len().saturating_sub(1));
     let left_text = Text::from(left_lines);
     let left_panel = Paragraph::new(left_text)

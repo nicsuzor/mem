@@ -93,6 +93,43 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    // Untested assumptions (sorted by downstream weight)
+    if !app.untested_assumptions.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  UNTESTED ASSUMPTIONS", Style::default().fg(Color::Yellow).bold()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  ────", Style::default().fg(Color::DarkGray)),
+        ]));
+        for (node_id, text, weight) in app.untested_assumptions.iter().take(5) {
+            let label = app
+                .graph
+                .as_ref()
+                .and_then(|gs| gs.get_node(node_id))
+                .map(|n| n.label.as_str())
+                .unwrap_or("?");
+            lines.push(Line::from(vec![
+                Span::styled("    ? ", Style::default().fg(Color::Yellow)),
+                Span::styled(text.clone(), Style::default().fg(Color::White)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("      ↳ {label}"),
+                    Style::default().fg(Color::DarkGray).italic(),
+                ),
+                if *weight > 0.0 {
+                    Span::styled(
+                        format!("  (weight: {weight:.1})"),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                } else {
+                    Span::raw("")
+                },
+            ]));
+        }
+    }
+
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text);
     frame.render_widget(paragraph, area);

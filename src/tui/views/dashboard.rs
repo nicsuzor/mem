@@ -20,6 +20,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(2),  // header
             Constraint::Length(8),  // health stats
             Constraint::Length(8),  // by project
+            Constraint::Length(8),  // assumptions
             Constraint::Min(1),    // rest
         ])
         .split(area);
@@ -102,15 +103,70 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let projects = Paragraph::new(proj_lines);
     frame.render_widget(projects, chunks[2]);
 
+    // Assumptions health
+    let (untested, confirmed, invalidated) = app.assumption_counts;
+    let total_assumptions = untested + confirmed + invalidated;
+    if total_assumptions > 0 {
+        let mut assumption_lines = vec![
+            Line::from(Span::styled(
+                "  ASSUMPTIONS",
+                Style::default().fg(Color::Yellow).bold(),
+            )),
+            Line::from(Span::styled(
+                "  ─────",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(vec![
+                Span::styled(
+                    format!("  {total_assumptions} total │ "),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    format!("{untested} untested"),
+                    Style::default().fg(if untested > 0 { Color::Yellow } else { Color::Green }),
+                ),
+                Span::styled(" │ ", Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("{confirmed} confirmed"),
+                    Style::default().fg(Color::Green),
+                ),
+                Span::styled(" │ ", Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("{invalidated} invalidated"),
+                    Style::default().fg(if invalidated > 0 { Color::Red } else { Color::DarkGray }),
+                ),
+            ]),
+        ];
+        // Show top risky untested assumptions
+        for (_node_id, text, weight) in app.untested_assumptions.iter().take(3) {
+            assumption_lines.push(Line::from(vec![
+                Span::styled("  ? ", Style::default().fg(Color::Yellow)),
+                Span::styled(text.clone(), Style::default().fg(Color::White)),
+                if *weight > 0.0 {
+                    Span::styled(
+                        format!("  (w:{weight:.0})"),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                } else {
+                    Span::raw("")
+                },
+            ]));
+        }
+        frame.render_widget(Paragraph::new(assumption_lines), chunks[3]);
+    }
+
     // Orphans
     let orphans = gs.orphans();
+    let mut bottom_lines: Vec<Line> = Vec::new();
     if !orphans.is_empty() {
-        let orphan_text = Paragraph::new(Line::from(vec![
+        bottom_lines.push(Line::from(vec![
             Span::styled(
                 format!("  ○ {} orphan nodes (unlinked)", orphans.len()),
                 Style::default().fg(Color::Yellow),
             ),
         ]));
-        frame.render_widget(orphan_text, chunks[3]);
+    }
+    if !bottom_lines.is_empty() {
+        frame.render_widget(Paragraph::new(bottom_lines), chunks[4]);
     }
 }
