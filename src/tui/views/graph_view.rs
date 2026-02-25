@@ -1,12 +1,11 @@
-//! Graph View — goal→project→task hierarchy showing the planning web.
+//! Graph View — Local Context Visualization.
 //!
-//! Shows all nodes organized by their graph depth, with goals at root,
-//! projects underneath, and tasks at the leaves. Includes orphan detection.
+//! Shows the selected node in the center, with parents/ancestors above,
+//! children below, blockers to the left, and blocked tasks to the right.
 
 use ratatui::prelude::*;
 use ratatui::widgets::*;
-
-use crate::tui::app::App;
+use crate::tui::app::{App, View};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let gs = match &app.graph {
@@ -17,202 +16,169 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    let mut lines: Vec<Line> = Vec::new();
+    // Determine selected node ID
+    let node_id = match app.current_view {
+        View::EpicTree | View::Graph => {
+            app.tree_rows.get(app.selected_index).map(|r| r.node_id.clone())
+        }
+        View::Focus => app.focus_picks.get(app.selected_index).cloned(),
+        _ => None,
+    };
 
-    lines.push(Line::from(""));
+    let node_id = match node_id {
+        Some(id) => id,
+        None => {
+             let p = Paragraph::new("Select a node in Tree or Focus view to see context.")
+                .block(Block::default().borders(Borders::ALL).title(" Context "));
+             frame.render_widget(p, area);
+             return;
+        }
+    };
 
-    // Build the full hierarchy: goals → projects → tasks
-    // Find all goal nodes
-    let mut goals: Vec<&mem::graph::GraphNode> = gs
-        .nodes()
-        .filter(|n| n.node_type.as_deref() == Some("goal"))
-        .filter(|n| !matches!(n.status.as_deref(), Some("done") | Some("dead")))
-        .collect();
-    goals.sort_by(|a, b| a.label.cmp(&b.label));
+    let node = match gs.get_node(&node_id) {
+        Some(n) => n,
+        None => return,
+    };
 
-    for goal in &goals {
-        // Goal line
-        lines.push(Line::from(vec![
-            Span::styled("  ◉ ", Style::default().fg(Color::Yellow).bold()),
-            Span::styled(goal.label.clone(), Style::default().fg(Color::Yellow).bold()),
-            Span::styled(
-                format!("  [{}]", goal.status.as_deref().unwrap_or("goal")),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
+    // Layout:
+    // Top: Parents (Containment Upstream)
+    // Middle: Blockers (Left) | Node (Center) | Blocked (Right)
+    // Bottom: Children (Containment Downstream)
 
-        // Find child projects/epics
-        let mut children: Vec<&mem::graph::GraphNode> = goal
-            .children
-            .iter()
-            .filter_map(|cid| gs.get_node(cid))
-            .filter(|n| !matches!(n.status.as_deref(), Some("done") | Some("dead")))
-            .collect();
-        children.sort_by(|a, b| a.label.cmp(&b.label));
+    let vertical_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(25), // Parents area
+            Constraint::Length(8),      // Middle area
+            Constraint::Percentage(65), // Children area
+        ])
+        .split(area);
 
-        for (pi, project) in children.iter().enumerate() {
-            let proj_is_last = pi == children.len() - 1;
-            let connector = if proj_is_last { "  └── " } else { "  ├── " };
-            let cont = if proj_is_last { "      " } else { "  │   " };
+    let middle_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(30), // Dependencies (Blockers)
+            Constraint::Percentage(40), // Node Details
+            Constraint::Percentage(30), // Reverse Dependencies (Blocked)
+        ])
+        .split(vertical_chunks[1]);
 
-            let icon = match project.node_type.as_deref() {
-                Some("project") | Some("subproject") => "◈ ",
-                Some("epic") => "◈ ",
-                _ => "◇ ",
+    // 1. PARENTS (Top)
+    let mut ancestors = Vec::new();
+    let mut curr = node.parent.clone();
+    while let Some(pid) = curr {
+        if let Some(p) = gs.get_node(&pid) {
+            ancestors.push(p);
+            curr = p.parent.clone();
+        } else {
+            break;
+        }
+    }
+    ancestors.reverse(); // Root first
+
+    let parent_lines: Vec<Line> = ancestors.iter().enumerate().map(|(i, p)| {
+        let indent = "  ".repeat(i);
+        Line::from(vec![
+            Span::raw(format!("{}└─ ", indent)),
+            Span::styled(p.label.clone(), Style::default().fg(Color::Cyan)),
+            Span::styled(format!(" [{}]", p.node_type.as_deref().unwrap_or("?")), Style::default().fg(Color::DarkGray)),
+        ])
+    }).collect();
+
+    let parents_block = Block::default().borders(Borders::ALL).title(" Ancestors (Containment) ");
+    let parents_widget = Paragraph::new(parent_lines).block(parents_block);
+    frame.render_widget(parents_widget, vertical_chunks[0]);
+
+    // 2. BLOCKERS (Left)
+    let blockers: Vec<ListItem> = node.depends_on.iter().map(|did| {
+        let label = gs.get_node(did).map(|n| n.label.as_str()).unwrap_or(did);
+        let status = gs.get_node(did).and_then(|n| n.status.as_deref()).unwrap_or("?");
+        let style = if status == "done" { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Red) };
+        ListItem::new(Line::from(vec![
+            Span::styled(label, style),
+        ]))
+    }).collect();
+
+    let blockers_block = Block::default().borders(Borders::ALL).title(" Depends On ");
+    let blockers_list = List::new(blockers).block(blockers_block);
+    frame.render_widget(blockers_list, middle_chunks[0]);
+
+    // 3. NODE DETAILS (Center)
+    let status_color = match node.status.as_deref() {
+        Some("done") => Color::Green,
+        Some("blocked") => Color::Red,
+        Some("active") => Color::Blue,
+        _ => Color::White,
+    };
+
+    let details = vec![
+        Line::from(vec![
+            Span::styled(node.label.clone(), Style::default().fg(status_color).bold()),
+        ]),
+        Line::from(vec![
+            Span::raw("Type: "), Span::raw(node.node_type.as_deref().unwrap_or("task")),
+        ]),
+        Line::from(vec![
+            Span::raw("Status: "), Span::styled(node.status.as_deref().unwrap_or("active"), Style::default().fg(status_color)),
+        ]),
+        Line::from(vec![
+            Span::raw("Priority: "), Span::raw(node.priority.unwrap_or(2).to_string()),
+        ]),
+        Line::from(vec![
+            Span::raw("ID: "), Span::raw(node.id.clone()),
+        ]),
+    ];
+
+    let node_block = Block::default().borders(Borders::ALL).title(" Selected Node ").border_style(Style::default().fg(status_color));
+    let node_widget = Paragraph::new(details).block(node_block).alignment(Alignment::Center);
+    frame.render_widget(node_widget, middle_chunks[1]);
+
+    // 4. BLOCKED (Right)
+    let blocked: Vec<ListItem> = node.blocks.iter().map(|bid| {
+        let label = gs.get_node(bid).map(|n| n.label.as_str()).unwrap_or(bid);
+        ListItem::new(Line::from(vec![
+            Span::raw(label),
+        ]))
+    }).collect();
+
+    let blocked_block = Block::default().borders(Borders::ALL).title(" Blocks ");
+    let blocked_list = List::new(blocked).block(blocked_block);
+    frame.render_widget(blocked_list, middle_chunks[2]);
+
+    // 5. CHILDREN (Bottom)
+    // We want to list children, maybe grouped by type?
+    let mut children_lines: Vec<Line> = Vec::new();
+    for cid in &node.children {
+        if let Some(child) = gs.get_node(cid) {
+            let icon = match child.node_type.as_deref() {
+                Some("project") => "◈ ",
+                Some("task") => "◇ ",
+                _ => "○ ",
             };
-            let color = Color::Cyan;
+            let color = match child.status.as_deref() {
+                Some("done") => Color::Green,
+                Some("blocked") => Color::Red,
+                _ => Color::White,
+            };
 
-            lines.push(Line::from(vec![
-                Span::styled(connector, Style::default().fg(Color::DarkGray)),
+            children_lines.push(Line::from(vec![
+                Span::raw("  "),
                 Span::styled(icon, Style::default().fg(color)),
-                Span::styled(project.label.clone(), Style::default().fg(color)),
-                Span::styled(
-                    format!("  [{}]", project.node_type.as_deref().unwrap_or("project")),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]));
-
-            // Find child tasks
-            let mut tasks: Vec<&mem::graph::GraphNode> = project
-                .children
-                .iter()
-                .filter_map(|cid| gs.get_node(cid))
-                .filter(|n| !matches!(n.status.as_deref(), Some("done") | Some("dead")))
-                .collect();
-            tasks.sort_by(|a, b| {
-                a.priority
-                    .unwrap_or(2)
-                    .cmp(&b.priority.unwrap_or(2))
-                    .then(a.label.cmp(&b.label))
-            });
-
-            for (ti, task) in tasks.iter().enumerate() {
-                let task_is_last = ti == tasks.len() - 1;
-                let task_connector = if task_is_last { "└── " } else { "├── " };
-
-                let pri = task.priority.unwrap_or(2);
-                let task_color = match pri {
-                    0 | 1 => Color::Red,
-                    2 => Color::White,
-                    _ => Color::DarkGray,
-                };
-
-                let status_str = task.status.as_deref().unwrap_or("active");
-                let status_style = match status_str {
-                    "active" | "in_progress" => Style::default().fg(Color::Green),
-                    "blocked" => Style::default().fg(Color::Red),
-                    "seed" => Style::default().fg(Color::DarkGray),
-                    "growing" => Style::default().fg(Color::Yellow),
-                    _ => Style::default().fg(Color::DarkGray),
-                };
-
-                // Blocked annotation
-                let blocked_annotation = if !task.depends_on.is_empty() {
-                    let unmet: Vec<&str> = task
-                        .depends_on
-                        .iter()
-                        .filter(|did| {
-                            gs.get_node(did)
-                                .map(|n| !matches!(n.status.as_deref(), Some("done")))
-                                .unwrap_or(false)
-                        })
-                        .map(|_| "←")
-                        .collect();
-                    if !unmet.is_empty() {
-                        format!(" ← ← ")
-                    } else {
-                        String::new()
-                    }
-                } else {
-                    String::new()
-                };
-
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{cont}{task_connector}"),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled("◇ ", Style::default().fg(task_color)),
-                    Span::styled(task.label.clone(), Style::default().fg(task_color)),
-                    if !blocked_annotation.is_empty() {
-                        Span::styled(blocked_annotation, Style::default().fg(Color::Red))
-                    } else {
-                        Span::raw("")
-                    },
-                    Span::styled(
-                        format!(" [{status_str}]"),
-                        status_style,
-                    ),
-                ]));
-            }
-        }
-
-        lines.push(Line::from(""));
-    }
-
-    // Orphan detection
-    let orphans = gs.orphans();
-    let task_orphans: Vec<_> = orphans
-        .iter()
-        .filter(|n| {
-            matches!(n.node_type.as_deref(), Some("task") | None)
-                && !matches!(n.status.as_deref(), Some("done") | Some("dead"))
-        })
-        .collect();
-
-    if !task_orphans.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  ○ {} orphan tasks (unlinked to any goal)", task_orphans.len()),
-                Style::default().fg(Color::Yellow),
-            ),
-        ]));
-        lines.push(Line::from(""));
-    }
-
-    // Also show projects not under any goal
-    let mut rootless_projects: Vec<&mem::graph::GraphNode> = gs
-        .nodes()
-        .filter(|n| {
-            matches!(n.node_type.as_deref(), Some("project") | Some("epic"))
-                && !matches!(n.status.as_deref(), Some("done") | Some("dead"))
-                && n.parent.as_ref().map(|pid| {
-                    gs.get_node(pid)
-                        .map(|p| p.node_type.as_deref() != Some("goal"))
-                        .unwrap_or(true)
-                }).unwrap_or(true)
-        })
-        .collect();
-
-    if !rootless_projects.is_empty() {
-        rootless_projects.sort_by(|a, b| a.label.cmp(&b.label));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  (projects not under a goal)",
-                Style::default().fg(Color::DarkGray).italic(),
-            ),
-        ]));
-        for proj in &rootless_projects {
-            let child_count = proj.children.iter()
-                .filter(|cid| {
-                    gs.get_node(cid)
-                        .map(|n| !matches!(n.status.as_deref(), Some("done") | Some("dead")))
-                        .unwrap_or(false)
-                })
-                .count();
-            lines.push(Line::from(vec![
-                Span::styled("  ◈ ", Style::default().fg(Color::Blue)),
-                Span::styled(proj.label.clone(), Style::default().fg(Color::Blue)),
-                Span::styled(
-                    format!(" ({child_count} tasks)"),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(child.label.clone(), Style::default().fg(color)),
+                Span::raw(format!(" [{}]", child.status.as_deref().unwrap_or("?"))),
             ]));
         }
     }
 
-    let scroll = app.scroll_offset.min(lines.len().saturating_sub(1));
-    let text = Text::from(lines);
-    let paragraph = Paragraph::new(text).scroll((scroll as u16, 0));
-    frame.render_widget(paragraph, area);
+    let children_block = Block::default().borders(Borders::ALL).title(" Children (Containment) ");
+    // Use paragraph for children so we can scroll if needed? App struct has detail_scroll but not specific scroll for this view.
+    // For now just show top items.
+    let children_widget = Paragraph::new(children_lines).block(children_block);
+    frame.render_widget(children_widget, vertical_chunks[2]);
+
+    // Draw arrows/connectors if we can?
+    // Drawing lines on top of widgets is hard in ratatui without canvas.
+    // We'll rely on the layout positioning to imply relationship.
+    // Top -> Middle -> Bottom (Containment)
+    // Left -> Middle -> Right (Dependency)
 }

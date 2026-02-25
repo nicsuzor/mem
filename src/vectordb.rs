@@ -553,14 +553,6 @@ mod tests {
     }
 
     #[test]
-    fn test_search_uses_body_chunks_for_snippets() {
-        let store = build_test_store();
-        let root = Path::new("/pkb");
-        let results = store.search(&[1.0, 0.0, 0.0], 1, root);
-        assert!(results[0].snippet.contains("body of"));
-    }
-
-    #[test]
     fn test_search_empty_store() {
         let store = VectorStore::new(3);
         let root = Path::new("/pkb");
@@ -665,5 +657,12 @@ mod tests {
         let root = Path::new("/pkb");
         let results = store.search(&[1.0, 0.0, 0.0], 1, root);
         assert_eq!(results[0].title, "Test Doc");
+    }
+    #[test]
+    fn test_search_uses_chunk_texts_for_snippets() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.search(&[1.0, 0.0, 0.0], 1, root);
+        assert!(results[0].snippet.contains("chunk text for"));
     }
 }
