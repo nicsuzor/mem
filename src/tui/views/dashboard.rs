@@ -3,7 +3,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use crate::app::App;
+use crate::tui::app::App;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let gs = match &app.graph {

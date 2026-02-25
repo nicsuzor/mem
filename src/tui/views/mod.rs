@@ -13,7 +13,7 @@ mod status_bar;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use crate::app::{App, View};
+use crate::tui::app::{App, View};
 
 /// Main render dispatch — draws the current view plus chrome.
 pub fn render(frame: &mut Frame, app: &App) {

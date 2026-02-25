@@ -2,6 +2,8 @@
 //!
 //! Provides subcommands: search, add, reindex, status, tasks, task, deps, ...
 
+mod tui;
+
 use mem::{document_crud, embeddings, graph, graph_store, metrics, pkb, task_index, vectordb};
 
 use anyhow::Result;
@@ -356,6 +358,9 @@ enum Commands {
         #[arg(long)]
         tree: bool,
     },
+
+    /// Launch the interactive planning TUI
+    Tui,
 }
 
 fn default_pkb_root() -> String {
@@ -1969,6 +1974,10 @@ fn main() -> Result<()> {
                 println!("{indent}{blocked_id} [{status}] {label}");
             }
             println!();
+        }
+
+        Commands::Tui => {
+            tui::run(&pkb_root, &db_path)?;
         }
     }
 

@@ -3,7 +3,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use crate::app::{App, View};
+use crate::tui::app::{App, View};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::new();

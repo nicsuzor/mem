@@ -3,7 +3,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use crate::app::{App, CaptureField};
+use crate::tui::app::{App, CaptureField};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let width = 50u16.min(area.width.saturating_sub(4));

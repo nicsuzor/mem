@@ -3,7 +3,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use crate::app::{App, TreeRow};
+use crate::tui::app::{App, TreeRow};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.tree_rows.is_empty() {
