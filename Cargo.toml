@@ -79,14 +79,14 @@ indicatif = "0.18.4"
 serde_yaml = "0.9"
 
 [package.metadata.binstall]
-pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{ version }-{ target }.tar.gz"
+pkg-url = "https://github.com/nicsuzor/academicOps/releases/download/v{ version }/mem-v{ version }-{ target }.tar.gz"
 bin-dir = "{ bin }{ binary-ext }"
 
 [package.metadata.binstall.overrides.aarch64-apple-darwin]
-pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{ version }-aarch64-darwin.tar.gz"
+pkg-url = "https://github.com/nicsuzor/academicOps/releases/download/v{ version }/mem-v{ version }-aarch64-darwin.tar.gz"
 
 [package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
-pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{ version }-x86_64-linux.tar.gz"
+pkg-url = "https://github.com/nicsuzor/academicOps/releases/download/v{ version }/mem-v{ version }-x86_64-linux.tar.gz"
 
 [profile.release]
 opt-level = 3
