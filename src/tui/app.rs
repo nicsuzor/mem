@@ -74,6 +74,12 @@ pub struct App {
     // Help overlay
     pub show_help: bool,
 
+    // Search overlay
+    pub show_search: bool,
+    pub search_query: String,
+    pub search_results: Vec<SearchHit>,
+    pub search_selected: usize,
+
     // Focus view state
     pub focus_picks: Vec<String>,
 
@@ -82,6 +88,15 @@ pub struct App {
     pub ready_count: usize,
     pub blocked_count: usize,
     pub project_count: usize,
+}
+
+/// A search result for the fuzzy search overlay.
+#[derive(Debug, Clone)]
+pub struct SearchHit {
+    pub node_id: String,
+    pub label: String,
+    pub node_type: Option<String>,
+    pub score: i64,
 }
 
 impl App {
@@ -100,6 +115,10 @@ impl App {
             detail_node_id: None,
             detail_scroll: 0,
             show_help: false,
+            show_search: false,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_selected: 0,
             focus_picks: Vec::new(),
             total_tasks: 0,
             ready_count: 0,
@@ -424,6 +443,71 @@ impl App {
     #[allow(dead_code)]
     pub fn get_node(&self, id: &str) -> Option<&GraphNode> {
         self.graph.as_ref()?.get_node(id)
+    }
+
+    /// Update search results based on current query (fuzzy substring match).
+    pub fn update_search(&mut self) {
+        let gs = match &self.graph {
+            Some(gs) => gs,
+            None => return,
+        };
+        let query = self.search_query.to_lowercase();
+        if query.is_empty() {
+            self.search_results.clear();
+            return;
+        }
+
+        let mut hits: Vec<SearchHit> = gs
+            .nodes()
+            .filter(|n| !matches!(n.status.as_deref(), Some("done") | Some("dead")))
+            .filter_map(|n| {
+                let label_lower = n.label.to_lowercase();
+                // Score: exact prefix match > contains > tag match
+                let mut score: i64 = 0;
+                if label_lower.starts_with(&query) {
+                    score += 100;
+                } else if label_lower.contains(&query) {
+                    score += 50;
+                }
+                // Tag match
+                for tag in &n.tags {
+                    if tag.to_lowercase().contains(&query) {
+                        score += 20;
+                    }
+                }
+                // ID match
+                if let Some(ref tid) = n.task_id {
+                    if tid.to_lowercase().contains(&query) {
+                        score += 30;
+                    }
+                }
+                if score > 0 {
+                    Some(SearchHit {
+                        node_id: n.id.clone(),
+                        label: n.label.clone(),
+                        node_type: n.node_type.clone(),
+                        score,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        hits.sort_by(|a, b| b.score.cmp(&a.score).then(a.label.cmp(&b.label)));
+        hits.truncate(20);
+        self.search_results = hits;
+        self.search_selected = 0;
+    }
+
+    /// Open detail for the currently selected search result.
+    pub fn open_search_result(&mut self) {
+        if let Some(hit) = self.search_results.get(self.search_selected) {
+            self.detail_node_id = Some(hit.node_id.clone());
+            self.detail_scroll = 0;
+            self.show_detail = true;
+            self.show_search = false;
+        }
     }
 }
 

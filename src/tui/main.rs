@@ -73,6 +73,39 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
         return true;
     }
 
+    // Search overlay captures all key input
+    if app.show_search {
+        match key.code {
+            KeyCode::Esc => {
+                app.show_search = false;
+                app.search_query.clear();
+                app.search_results.clear();
+            }
+            KeyCode::Enter => {
+                app.open_search_result();
+            }
+            KeyCode::Up => {
+                app.search_selected = app.search_selected.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                if !app.search_results.is_empty() {
+                    app.search_selected =
+                        (app.search_selected + 1).min(app.search_results.len() - 1);
+                }
+            }
+            KeyCode::Backspace => {
+                app.search_query.pop();
+                app.update_search();
+            }
+            KeyCode::Char(c) => {
+                app.search_query.push(c);
+                app.update_search();
+            }
+            _ => {}
+        }
+        return false;
+    }
+
     // View-specific keys when in detail overlay
     if app.show_detail {
         match key.code {
@@ -112,6 +145,14 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
 
         // Detail view
         KeyCode::Enter => app.open_detail(),
+
+        // Search
+        KeyCode::Char('/') => {
+            app.show_search = true;
+            app.search_query.clear();
+            app.search_results.clear();
+            app.search_selected = 0;
+        }
 
         // Priority filter (epic tree)
         KeyCode::Char('1') => app.toggle_priority_filter(1),

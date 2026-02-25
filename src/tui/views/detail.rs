@@ -2,6 +2,8 @@
 //!
 //! Split panel layout: metadata/body on the left, graph context + PKB on the right.
 
+use std::collections::HashSet;
+
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
@@ -84,7 +86,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // ── LEFT PANEL: metadata, subtasks, body ──
     let mut left_lines: Vec<Line> = Vec::new();
 
-    // Status + Priority
+    // Type + Status + Priority
     let status = node.status.as_deref().unwrap_or("unknown");
     let status_color = match status {
         "active" | "in_progress" => Color::Green,
@@ -97,6 +99,26 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
     let pri = node.priority.unwrap_or(2);
     left_lines.push(Line::from(""));
+
+    // Node type badge (prominent for non-task types)
+    if let Some(ref ntype) = node.node_type {
+        if ntype != "task" {
+            let (icon, color) = match ntype.as_str() {
+                "source" => ("📖", Color::Magenta),
+                "note" | "knowledge" => ("📝", Color::Blue),
+                "goal" => ("◉", Color::Yellow),
+                "project" | "subproject" => ("◈", Color::Cyan),
+                "epic" => ("◈", Color::Cyan),
+                "memory" | "insight" => ("💡", Color::Yellow),
+                _ => ("·", Color::White),
+            };
+            left_lines.push(Line::from(vec![
+                Span::styled(format!("  {icon} "), Style::default().fg(color)),
+                Span::styled(ntype.clone(), Style::default().fg(color).bold()),
+            ]));
+        }
+    }
+
     left_lines.push(Line::from(vec![
         Span::styled("  Status: ", Style::default().fg(Color::DarkGray)),
         Span::styled(status, Style::default().fg(status_color).bold()),
@@ -329,6 +351,96 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(Color::White),
                     )));
                 }
+            }
+        }
+    }
+
+    // ── PKB CONNECTIONS ──
+
+    // Backlinks (nodes that link TO this node via wikilinks/references)
+    let backlinks = gs.backlinks_by_type(&node.id);
+    if !backlinks.is_empty() {
+        right_lines.push(Line::from(""));
+        right_lines.push(Line::from(Span::styled(
+            "  PKB BACKLINKS",
+            Style::default().fg(Color::Yellow).bold(),
+        )));
+        right_lines.push(Line::from(Span::styled(
+            "  ─────",
+            Style::default().fg(Color::DarkGray),
+        )));
+        for (source_type, refs) in &backlinks {
+            // Skip structural edges we already show above
+            let has_link = refs.iter().any(|(_, et)| {
+                matches!(et, mem::graph::EdgeType::Link)
+            });
+            if !has_link {
+                continue;
+            }
+            right_lines.push(Line::from(Span::styled(
+                format!("  [{source_type}]"),
+                Style::default().fg(Color::DarkGray).italic(),
+            )));
+            for (source_node, edge_type) in refs {
+                if !matches!(edge_type, mem::graph::EdgeType::Link) {
+                    continue;
+                }
+                let icon = match source_node.node_type.as_deref() {
+                    Some("source") => "📖",
+                    Some("note") | Some("knowledge") => "📝",
+                    Some("task") => "◇",
+                    Some("project") => "◈",
+                    _ => "·",
+                };
+                right_lines.push(Line::from(Span::styled(
+                    format!("    {icon} {}", source_node.label),
+                    Style::default().fg(Color::White),
+                )));
+            }
+        }
+    }
+
+    // Tag overlap — other nodes sharing tags with this one
+    if !node.tags.is_empty() {
+        let node_tags: HashSet<&str> = node.tags.iter().map(|t| t.as_str()).collect();
+        let mut tag_matches: Vec<(&str, usize)> = Vec::new();
+        for other in gs.nodes() {
+            if other.id == node.id {
+                continue;
+            }
+            let overlap = other
+                .tags
+                .iter()
+                .filter(|t| node_tags.contains(t.as_str()))
+                .count();
+            if overlap > 0 {
+                tag_matches.push((&other.label, overlap));
+            }
+        }
+        tag_matches.sort_by(|a, b| b.1.cmp(&a.1));
+        tag_matches.truncate(8);
+
+        if !tag_matches.is_empty() {
+            right_lines.push(Line::from(""));
+            right_lines.push(Line::from(Span::styled(
+                "  TAG OVERLAP",
+                Style::default().fg(Color::Yellow).bold(),
+            )));
+            right_lines.push(Line::from(Span::styled(
+                "  ─────",
+                Style::default().fg(Color::DarkGray),
+            )));
+            for (label, count) in &tag_matches {
+                right_lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("    · {label}"),
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled(
+                        format!("  ({count} shared)"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
             }
         }
     }

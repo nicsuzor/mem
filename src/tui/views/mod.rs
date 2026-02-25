@@ -6,6 +6,7 @@ mod epic_tree;
 mod focus;
 mod graph_view;
 mod help;
+mod search;
 mod status_bar;
 
 use ratatui::prelude::*;
@@ -42,6 +43,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.show_detail {
         detail::render(frame, app, area);
     }
+    if app.show_search {
+        search::render(frame, app, area);
+    }
     if app.show_help {
         help::render(frame, area);
     }
@@ -49,10 +53,10 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_keybindings(frame: &mut Frame, app: &App, area: Rect) {
     let keys = match app.current_view {
-        View::EpicTree => "↑↓ navigate │ ←→ expand/collapse │ Enter detail │ Space toggle │ 1-3 filter │ Tab views │ ? help │ q quit",
-        View::Focus => "↑↓ navigate │ Enter detail │ Tab views │ ? help │ q quit",
-        View::Graph => "↑↓ navigate │ ←→ expand/collapse │ Enter detail │ Tab views │ ? help │ q quit",
-        View::Dashboard => "Tab views │ ? help │ q quit",
+        View::EpicTree => "↑↓ navigate │ ←→ expand/collapse │ Enter detail │ Space toggle │ 1-3 filter │ / search │ Tab views │ ? help │ q quit",
+        View::Focus => "↑↓ navigate │ Enter detail │ / search │ Tab views │ ? help │ q quit",
+        View::Graph => "↑↓ navigate │ ←→ expand/collapse │ Enter detail │ / search │ Tab views │ ? help │ q quit",
+        View::Dashboard => "/ search │ Tab views │ ? help │ q quit",
     };
 
     let bar = Paragraph::new(keys)
