@@ -58,4 +58,4 @@ jobs:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
           files: mem-*.tar.gz
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ secrets.AOPS_RELEASE_TOKEN }}
