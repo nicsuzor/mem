@@ -425,11 +425,26 @@ impl Embedder {
         // For large inputs, scale up sessions and split in parallel
         if texts.len() > Self::MAX_BATCH {
             use rayon::prelude::*;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
             let sub_batches: Vec<&[&str]> = texts.chunks(Self::MAX_BATCH).collect();
+            let total_batches = sub_batches.len();
+            let total_texts = texts.len();
             pool.ensure_sessions(sub_batches.len())?;
+
+            let done = AtomicUsize::new(0);
             let results: Vec<Result<Vec<Vec<f32>>>> = sub_batches
                 .par_iter()
-                .map(|batch| self.encode_single_batch(batch, pool))
+                .map(|batch| {
+                    let r = self.encode_single_batch(batch, pool);
+                    let completed = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if completed % 10 == 0 || completed == total_batches {
+                        let pct = (completed * 100) / total_batches;
+                        let chunks_done = (completed * Self::MAX_BATCH).min(total_texts);
+                        eprintln!("  Embedded {chunks_done}/{total_texts} chunks ({pct}%)");
+                    }
+                    r
+                })
                 .collect();
             let mut all = Vec::with_capacity(texts.len());
             for r in results {
