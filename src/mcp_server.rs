@@ -371,6 +371,18 @@ impl PkbSearchServer {
                 .map(String::from),
         };
 
+        // Hierarchy validation: warn if task type should have a parent
+        let mut warnings = Vec::new();
+        if fields.parent.is_none() {
+            // create_task always creates type "task", which should have a parent
+            warnings.push(
+                "Hierarchy warning: Task type 'task' should have a parent. \
+                 Only goal, learn, and project types can be root-level. \
+                 Consider assigning a parent to maintain graph hierarchy."
+                    .to_string(),
+            );
+        }
+
         let path =
             crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
@@ -387,10 +399,15 @@ impl PkbSearchServer {
         // Rebuild graph
         self.rebuild_graph();
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Task created: `{}`",
-            path.display()
-        ))]))
+        let mut msg = format!("Task created: `{}`", path.display());
+        if !warnings.is_empty() {
+            msg.push_str("\n\nHierarchy warnings:\n");
+            for w in &warnings {
+                msg.push_str(&format!("- {}\n", w));
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
     // =========================================================================
@@ -999,6 +1016,22 @@ impl PkbSearchServer {
                 .map(String::from),
         };
 
+        // Hierarchy validation: warn if task-like type without parent
+        let mut warnings = Vec::new();
+        let root_allowed = ["goal", "learn", "project"];
+        let task_like = ["task", "epic", "action", "bug", "feature"];
+        if task_like.contains(&doc_type)
+            && fields.parent.is_none()
+        {
+            warnings.push(format!(
+                "Hierarchy warning: Type '{}' should have a parent. \
+                 Only {} types can be root-level. \
+                 Consider assigning a parent to maintain graph hierarchy.",
+                doc_type,
+                root_allowed.join(", "),
+            ));
+        }
+
         let path = crate::document_crud::create_document(&self.pkb_root, fields).map_err(|e| {
             McpError {
                 code: ErrorCode::INTERNAL_ERROR,
@@ -1015,10 +1048,15 @@ impl PkbSearchServer {
 
         self.rebuild_graph();
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Document created: `{}`",
-            path.display()
-        ))]))
+        let mut msg = format!("Document created: `{}`", path.display());
+        if !warnings.is_empty() {
+            msg.push_str("\n\nHierarchy warnings:\n");
+            for w in &warnings {
+                msg.push_str(&format!("- {}\n", w));
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
     fn handle_append_to_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
