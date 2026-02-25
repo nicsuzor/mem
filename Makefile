@@ -53,6 +53,7 @@ release-major: bump-major release-tag
 
 .PHONY: release-tag
 release-tag:
+	@$(CARGO) generate-lockfile
 	@NEW_VER=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
 		git add Cargo.toml Cargo.lock && \
 		git commit -m "release: v$$NEW_VER" && \
