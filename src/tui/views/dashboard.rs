@@ -21,6 +21,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(8),  // health stats
             Constraint::Length(8),  // by project
             Constraint::Length(8),  // assumptions
+            Constraint::Length(8),  // synergies
             Constraint::Min(1),    // rest
         ])
         .split(area);
@@ -155,6 +156,33 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Paragraph::new(assumption_lines), chunks[3]);
     }
 
+    // Cross-project synergies
+    if !app.synergies.is_empty() {
+        let mut syn_lines = vec![
+            Line::from(Span::styled(
+                "  SYNERGIES",
+                Style::default().fg(Color::Yellow).bold(),
+            )),
+            Line::from(Span::styled(
+                "  ─────",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+        for (label_a, label_b, shared) in &app.synergies {
+            syn_lines.push(Line::from(vec![
+                Span::styled("  ↔ ", Style::default().fg(Color::Magenta)),
+                Span::styled(label_a.clone(), Style::default().fg(Color::White)),
+                Span::styled(" ⟷ ", Style::default().fg(Color::DarkGray)),
+                Span::styled(label_b.clone(), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("  ({shared} tags)"),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+        frame.render_widget(Paragraph::new(syn_lines), chunks[4]);
+    }
+
     // Orphans
     let orphans = gs.orphans();
     let mut bottom_lines: Vec<Line> = Vec::new();
@@ -167,6 +195,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
     if !bottom_lines.is_empty() {
-        frame.render_widget(Paragraph::new(bottom_lines), chunks[4]);
+        frame.render_widget(Paragraph::new(bottom_lines), chunks[5]);
     }
 }

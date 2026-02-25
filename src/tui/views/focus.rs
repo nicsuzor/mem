@@ -38,7 +38,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(first_id) = app.focus_picks.first() {
         if let Some(node) = gs.get_node(first_id) {
             let selected = app.selected_index == 0;
-            render_focus_item(&mut lines, node, gs, selected, true);
+            let reason = app.focus_reasons.get(first_id).map(|s| s.as_str());
+            render_focus_item(&mut lines, node, gs, selected, true, reason);
         }
     }
 
@@ -55,7 +56,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         for (idx, id) in app.focus_picks.iter().enumerate().skip(1) {
             if let Some(node) = gs.get_node(id) {
                 let selected = idx == app.selected_index;
-                render_focus_item(&mut lines, node, gs, selected, false);
+                let reason = app.focus_reasons.get(id).map(|s| s.as_str());
+                render_focus_item(&mut lines, node, gs, selected, false, reason);
             }
         }
     }
@@ -141,6 +143,7 @@ fn render_focus_item(
     gs: &mem::graph_store::GraphStore,
     selected: bool,
     is_now: bool,
+    reason: Option<&str>,
 ) {
     let pri = node.priority.unwrap_or(2);
     let pri_color = match pri {
@@ -242,6 +245,16 @@ fn render_focus_item(
                     ),
                 ]));
             }
+        }
+
+        // Reason annotation (why this task was picked)
+        if let Some(reason) = reason {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("       ∵ {reason}"),
+                    Style::default().fg(Color::Rgb(100, 100, 140)).italic(),
+                ),
+            ]));
         }
     }
 }

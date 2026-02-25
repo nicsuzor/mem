@@ -99,6 +99,10 @@ pub struct App {
 
     // Focus view state
     pub focus_picks: Vec<String>,
+    pub focus_reasons: HashMap<String, String>, // node_id -> reason string
+
+    // Cross-project synergies
+    pub synergies: Vec<(String, String, usize)>, // (label_a, label_b, shared_tag_count)
 
     // Assumption stats
     pub untested_assumptions: Vec<(String, String, f64)>, // (node_id, assumption_text, downstream_weight)
@@ -147,6 +151,8 @@ impl App {
             capture_field: CaptureField::Title,
             project_names: Vec::new(),
             focus_picks: Vec::new(),
+            focus_reasons: HashMap::new(),
+            synergies: Vec::new(),
             untested_assumptions: Vec::new(),
             total_tasks: 0,
             ready_count: 0,
@@ -172,10 +178,15 @@ impl App {
         self.total_tasks = all.len();
         self.project_count = gs.by_project().len();
 
-        // Compute focus picks
-        self.focus_picks = select_focus_picks(&ready)
-            .into_iter()
-            .map(|n| n.id.clone())
+        // Compute focus picks with reasons
+        let picks_with_reasons = select_focus_picks(&ready);
+        self.focus_reasons.clear();
+        self.focus_picks = picks_with_reasons
+            .iter()
+            .map(|(n, reason)| {
+                self.focus_reasons.insert(n.id.clone(), reason.clone());
+                n.id.clone()
+            })
             .collect();
 
         // Compute assumption stats
@@ -205,6 +216,29 @@ impl App {
         untested_list.truncate(10);
         self.untested_assumptions = untested_list;
         self.assumption_counts = (untested, confirmed, invalidated);
+
+        // Detect cross-project synergies (nodes from different projects sharing tags)
+        let active_nodes: Vec<&GraphNode> = gs
+            .nodes()
+            .filter(|n| !matches!(n.status.as_deref(), Some("done") | Some("dead")))
+            .filter(|n| !n.tags.is_empty() && n.project.is_some())
+            .collect();
+        let mut synergy_pairs: Vec<(String, String, usize)> = Vec::new();
+        for (i, a) in active_nodes.iter().enumerate() {
+            for b in active_nodes.iter().skip(i + 1) {
+                if a.project == b.project {
+                    continue;
+                }
+                let a_tags: HashSet<&str> = a.tags.iter().map(|t| t.as_str()).collect();
+                let shared = b.tags.iter().filter(|t| a_tags.contains(t.as_str())).count();
+                if shared >= 2 {
+                    synergy_pairs.push((a.label.clone(), b.label.clone(), shared));
+                }
+            }
+        }
+        synergy_pairs.sort_by(|a, b| b.2.cmp(&a.2));
+        synergy_pairs.truncate(5);
+        self.synergies = synergy_pairs;
 
         // Collect project names for quick capture
         let by_proj = gs.by_project();
@@ -638,34 +672,56 @@ impl App {
 }
 
 /// Select top focus picks from ready tasks.
-fn select_focus_picks<'a>(tasks: &[&'a GraphNode]) -> Vec<&'a GraphNode> {
-    let mut scored: Vec<(&GraphNode, f64)> = tasks
+fn select_focus_picks<'a>(tasks: &[&'a GraphNode]) -> Vec<(&'a GraphNode, String)> {
+    let mut scored: Vec<(&GraphNode, f64, String)> = tasks
         .iter()
         .map(|t| {
             let mut score = 0.0;
+            let mut reasons: Vec<&str> = Vec::new();
             // P1 tasks get massive boost
             if t.priority == Some(1) || t.priority == Some(0) {
                 score += 1000.0;
+                reasons.push("high priority");
             }
             // Downstream weight (unblocks other work)
-            score += t.downstream_weight * 10.0;
+            if t.downstream_weight > 0.0 {
+                score += t.downstream_weight * 10.0;
+                reasons.push("unblocks other work");
+            }
             // Stakeholder exposure
             if t.stakeholder_exposure {
                 score += 50.0;
+                reasons.push("stakeholder visibility");
+            }
+            // Due date urgency
+            if t.due.is_some() {
+                score += 30.0;
+                reasons.push("has deadline");
             }
             // Staleness — older tasks get a boost
             if let Some(ref created) = t.created {
                 if let Ok(dt) = chrono::NaiveDate::parse_from_str(created, "%Y-%m-%d") {
                     let days = (chrono::Local::now().date_naive() - dt).num_days();
                     score += (days as f64).min(60.0);
+                    if days > 14 {
+                        reasons.push("aging");
+                    }
                 }
             }
-            (*t, score)
+            if reasons.is_empty() {
+                reasons.push("ready");
+            }
+            let reason = reasons.join(" + ");
+            (*t, score, reason)
         })
         .collect();
 
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored.into_iter().take(5).map(|(t, _)| t).collect()
+    scored
+        .into_iter()
+        .take(5)
+        .map(|(t, _, reason)| (t, reason))
+        .collect()
 }
 
 /// Sort siblings: context nodes first, then tasks by priority/weight.
