@@ -71,7 +71,7 @@ bump-patch:
 	MINOR=$$(echo $$OLD | cut -d. -f2); \
 	PATCH=$$(echo $$OLD | cut -d. -f3); \
 	NEW="$$MAJOR.$$MINOR.$$((PATCH + 1))"; \
-	sed -i "0,/^version = \"$$OLD\"/s//version = \"$$NEW\"/" Cargo.toml; \
+	sed "s/^version = \"$$OLD\"/version = \"$$NEW\"/" Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml; \
 	echo "Version: $$OLD → $$NEW"
 
 .PHONY: bump-minor
@@ -80,7 +80,7 @@ bump-minor:
 	MAJOR=$$(echo $$OLD | cut -d. -f1); \
 	MINOR=$$(echo $$OLD | cut -d. -f2); \
 	NEW="$$MAJOR.$$((MINOR + 1)).0"; \
-	sed -i "0,/^version = \"$$OLD\"/s//version = \"$$NEW\"/" Cargo.toml; \
+	sed "s/^version = \"$$OLD\"/version = \"$$NEW\"/" Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml; \
 	echo "Version: $$OLD → $$NEW"
 
 .PHONY: bump-major
@@ -88,7 +88,7 @@ bump-major:
 	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
 	MAJOR=$$(echo $$OLD | cut -d. -f1); \
 	NEW="$$((MAJOR + 1)).0.0"; \
-	sed -i "0,/^version = \"$$OLD\"/s//version = \"$$NEW\"/" Cargo.toml; \
+	sed "s/^version = \"$$OLD\"/version = \"$$NEW\"/" Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml; \
 	echo "Version: $$OLD → $$NEW"
 
 .PHONY: version
