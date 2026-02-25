@@ -54,7 +54,16 @@ fn run_event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, ap
     Ok(())
 }
 
-/// Handle a key event. Returns true if the app should quit.
+fn get_selected_node_id(app: &App) -> Option<String> {
+    match app.current_view {
+        View::EpicTree | View::Graph => {
+            app.tree_rows.get(app.selected_index).map(|r| r.node_id.clone())
+        }
+        View::Focus => app.focus_picks.get(app.selected_index).cloned(),
+        _ => None,
+    }
+}
+
 fn handle_key(key: KeyEvent, app: &mut App) -> bool {
     // Ctrl-C always quits
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -191,7 +200,13 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
         KeyCode::Char(' ') => app.toggle_expand(),
 
         // Detail view
-        KeyCode::Enter => app.open_detail(),
+        KeyCode::Enter => {
+            if app.reparent_mode {
+                app.confirm_reparent();
+            } else {
+                app.open_detail();
+            }
+        },
 
         // Quick capture
         KeyCode::Char('n') => app.open_capture(),
@@ -208,6 +223,41 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
         KeyCode::Char('1') => app.toggle_priority_filter(1),
         KeyCode::Char('2') => app.toggle_priority_filter(2),
         KeyCode::Char('3') => app.toggle_priority_filter(3),
+
+        // Toggles
+        KeyCode::Char('C') => app.toggle_show_completed(),
+        KeyCode::Char('T') => app.cycle_type_filter(),
+
+        // Manipulation
+        KeyCode::Char('s') => {
+            if let Some(id) = get_selected_node_id(app) {
+                if let Some(node) = app.get_node(&id) {
+                    let new_status = match node.status.as_deref().unwrap_or("active") {
+                        "active" => "done",
+                        "done" => "blocked",
+                        "blocked" => "dead",
+                        "dead" => "active",
+                        _ => "active",
+                    };
+                    app.set_status(&id, new_status);
+                }
+            }
+        },
+        KeyCode::Char('p') => {
+            if let Some(id) = get_selected_node_id(app) {
+                if let Some(node) = app.get_node(&id) {
+                    let new_pri = match node.priority.unwrap_or(2) {
+                        0 => 1,
+                        1 => 2,
+                        2 => 3,
+                        3 => 0,
+                        _ => 2,
+                    };
+                    app.set_priority(&id, new_pri);
+                }
+            }
+        },
+        KeyCode::Char('r') => app.enter_reparent_mode(),
 
         // Help
         KeyCode::Char('?') => app.show_help = !app.show_help,

@@ -107,6 +107,14 @@ pub struct App {
     // Assumption stats
     pub untested_assumptions: Vec<(String, String, f64)>, // (node_id, assumption_text, downstream_weight)
 
+    // Filters
+    pub show_completed: bool,
+    pub type_filter: Option<String>,
+
+    // Reparenting state
+    pub reparent_mode: bool,
+    pub reparent_node_id: Option<String>,
+
     // Stats
     pub total_tasks: usize,
     pub ready_count: usize,
@@ -153,6 +161,10 @@ impl App {
             focus_picks: Vec::new(),
             focus_reasons: HashMap::new(),
             synergies: Vec::new(),
+            show_completed: false,
+            type_filter: None,
+            reparent_mode: false,
+            reparent_node_id: None,
             untested_assumptions: Vec::new(),
             total_tasks: 0,
             ready_count: 0,
@@ -265,18 +277,63 @@ impl App {
     }
 
     /// Rebuild the flattened tree rows from the graph.
+    // Toggles
+    pub fn toggle_show_completed(&mut self) {
+        self.show_completed = !self.show_completed;
+        self.rebuild_tree();
+    }
+
+    pub fn cycle_type_filter(&mut self) {
+        let options = [None, Some("task".to_string()), Some("project".to_string()), Some("memory".to_string())];
+        let current_pos = options.iter().position(|x| *x == self.type_filter).unwrap_or(0);
+        self.type_filter = options[(current_pos + 1) % options.len()].clone();
+        self.rebuild_tree();
+    }
+
+    /// Rebuild the flattened tree rows from the graph.
     pub fn rebuild_tree(&mut self) {
         let gs = match &self.graph {
             Some(gs) => gs,
             None => return,
         };
 
-        let tasks: Vec<&GraphNode> = gs.ready_tasks();
+        let mut tasks: Vec<&GraphNode> = gs.nodes()
+            .filter(|n| {
+                // Filter completed
+                if !self.show_completed {
+                    if matches!(n.status.as_deref(), Some("done") | Some("cancelled") | Some("dead")) {
+                        return false;
+                    }
+                }
+
+                // Filter by type
+                if let Some(ref tf) = self.type_filter {
+                    if n.node_type.as_deref().unwrap_or("task") != tf {
+                        return false;
+                    }
+                } else {
+                    // Default to tasks only if no filter (preserves original behavior mostly)
+                    if n.node_type.as_deref().unwrap_or("task") != "task" {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
+        // Sort like ready_tasks did
+        tasks.sort_by(|a, b| {
+            a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2))
+                .then(b.downstream_weight.partial_cmp(&a.downstream_weight).unwrap_or(std::cmp::Ordering::Equal))
+                .then(a.label.cmp(&b.label))
+        });
+
         if tasks.is_empty() {
             self.tree_rows.clear();
             return;
         }
 
+        // Build visible set: tasks + ancestor context nodes
         // Build visible set: tasks + ancestor context nodes
         let context_types = ["project", "epic", "goal", "subproject"];
         let mut visible: HashSet<String> = tasks.iter().map(|t| t.id.clone()).collect();
@@ -556,7 +613,14 @@ impl App {
 
         let mut hits: Vec<SearchHit> = gs
             .nodes()
-            .filter(|n| !matches!(n.status.as_deref(), Some("done") | Some("dead")))
+            .filter(|n| {
+                if !self.show_completed {
+                    if matches!(n.status.as_deref(), Some("done") | Some("dead") | Some("cancelled")) {
+                        return false;
+                    }
+                }
+                true
+            })
             .filter_map(|n| {
                 let label_lower = n.label.to_lowercase();
                 // Score: exact prefix match > contains > tag match
@@ -664,14 +728,94 @@ impl App {
             Err(_) => return false,
         }
 
-        // Reload graph
+    // Reload graph
         self.load_graph();
         self.show_capture = false;
         true
     }
+
+    pub fn set_status(&mut self, id: &str, status: &str) {
+        if let Some(node) = self.get_node(id) {
+            let path = &node.path;
+            let mut updates = HashMap::new();
+            updates.insert("status".to_string(), serde_json::json!(status));
+
+            if let Err(_) = crate::document_crud::update_document(path, updates) {
+                // Ignore error
+            } else {
+                self.load_graph();
+            }
+        }
+    }
+
+    pub fn set_priority(&mut self, id: &str, priority: i32) {
+        if let Some(node) = self.get_node(id) {
+            let path = &node.path;
+            let mut updates = HashMap::new();
+            updates.insert("priority".to_string(), serde_json::json!(priority));
+
+            if let Err(_) = crate::document_crud::update_document(path, updates) {
+                // Ignore error
+            } else {
+                self.load_graph();
+            }
+        }
+    }
+
+    pub fn set_parent(&mut self, child_id: &str, parent_id: Option<&str>) {
+        if let Some(node) = self.get_node(child_id) {
+            let path = &node.path;
+            let mut updates = HashMap::new();
+            match parent_id {
+                Some(pid) => { updates.insert("parent".to_string(), serde_json::json!(pid)); }
+                None => { updates.insert("parent".to_string(), serde_json::Value::Null); }
+            }
+
+            if let Err(_) = crate::document_crud::update_document(path, updates) {
+                // Ignore error
+            } else {
+                self.load_graph();
+            }
+        }
+    }
+
+    pub fn enter_reparent_mode(&mut self) {
+        let node_id = match self.current_view {
+            View::EpicTree | View::Graph => {
+                self.tree_rows.get(self.selected_index).map(|r| r.node_id.clone())
+            }
+            View::Focus => self.focus_picks.get(self.selected_index).cloned(),
+            _ => None,
+        };
+
+        if let Some(id) = node_id {
+            self.reparent_mode = true;
+            self.reparent_node_id = Some(id);
+        }
+    }
+
+    pub fn confirm_reparent(&mut self) {
+        if !self.reparent_mode { return; }
+
+        let target_parent_id = match self.current_view {
+            View::EpicTree | View::Graph => {
+                self.tree_rows.get(self.selected_index).map(|r| r.node_id.clone())
+            }
+            _ => None,
+        };
+
+        if let (Some(child_id), Some(parent_id)) = (self.reparent_node_id.clone(), target_parent_id) {
+            if child_id != parent_id {
+                self.set_parent(&child_id, Some(&parent_id));
+            }
+        }
+
+        self.reparent_mode = false;
+        self.reparent_node_id = None;
+    }
 }
 
-/// Select top focus picks from ready tasks.
+/// Select top focus picks
 fn select_focus_picks<'a>(tasks: &[&'a GraphNode]) -> Vec<(&'a GraphNode, String)> {
     let mut scored: Vec<(&GraphNode, f64, String)> = tasks
         .iter()
