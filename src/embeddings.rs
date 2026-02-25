@@ -567,7 +567,7 @@ impl Embedder {
             use rayon::prelude::*;
             use std::sync::atomic::{AtomicUsize, Ordering};
 
-            let sub_batches: Vec<&[&str]> = texts.chunks(Self::MAX_BATCH).collect();
+            let sub_batches: Vec<&[&str]> = texts.chunks(max_batch).collect();
             let total_batches = sub_batches.len();
             let total_texts = texts.len();
             pool.ensure_sessions(sub_batches.len())?;
@@ -580,7 +580,7 @@ impl Embedder {
                     let completed = done.fetch_add(1, Ordering::Relaxed) + 1;
                     if completed % 10 == 0 || completed == total_batches {
                         let pct = (completed * 100) / total_batches;
-                        let chunks_done = (completed * Self::MAX_BATCH).min(total_texts);
+                        let chunks_done = (completed * max_batch).min(total_texts);
                         eprintln!("  Embedded {chunks_done}/{total_texts} chunks ({pct}%)");
                     }
                     r
