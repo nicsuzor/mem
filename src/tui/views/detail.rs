@@ -1,4 +1,6 @@
 //! Node Detail overlay — shows full context for a selected node.
+//!
+//! Split panel layout: metadata/body on the left, graph context + PKB on the right.
 
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -22,8 +24,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     // Center the overlay with margins
-    let margin_h = (area.width / 8).max(2);
-    let margin_v = (area.height / 8).max(1);
+    let margin_h = (area.width / 10).max(2);
+    let margin_v = (area.height / 10).max(1);
     let overlay = Rect::new(
         area.x + margin_h,
         area.y + margin_v,
@@ -31,17 +33,56 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         area.height.saturating_sub(margin_v * 2),
     );
 
-    // Clear background
     frame.render_widget(Clear, overlay);
 
-    // Build detail content
-    let mut lines: Vec<Line> = Vec::new();
+    // Split into left and right panels
+    let inner = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // title bar
+            Constraint::Min(1),   // content
+            Constraint::Length(1), // keybindings
+        ])
+        .split(overlay);
 
-    // Title
-    lines.push(Line::from(vec![
+    // Title bar
+    let tid = node.task_id.as_deref().unwrap_or(&node.id);
+    let short_id = if tid.len() > 20 {
+        format!("{}…", &tid[..20])
+    } else {
+        tid.to_string()
+    };
+    let title_bar = Paragraph::new(Line::from(vec![
+        Span::styled("  ", Style::default()),
         Span::styled(&node.label, Style::default().fg(Color::White).bold()),
+        Span::styled(
+            format!("  {short_id}"),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]))
+    .style(Style::default().bg(Color::Rgb(30, 30, 60)));
+    frame.render_widget(title_bar, inner[0]);
+
+    // Bottom keybindings
+    let keys = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " Esc back │ j/k scroll ",
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
-    lines.push(Line::from(""));
+    frame.render_widget(keys, inner[2]);
+
+    // Split content area into left and right panels
+    let panels = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50), // left: metadata
+            Constraint::Percentage(50), // right: graph context
+        ])
+        .split(inner[1]);
+
+    // ── LEFT PANEL: metadata, subtasks, body ──
+    let mut left_lines: Vec<Line> = Vec::new();
 
     // Status + Priority
     let status = node.status.as_deref().unwrap_or("unknown");
@@ -55,47 +96,134 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         _ => Color::White,
     };
     let pri = node.priority.unwrap_or(2);
-    lines.push(Line::from(vec![
+    left_lines.push(Line::from(""));
+    left_lines.push(Line::from(vec![
         Span::styled("  Status: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(status, Style::default().fg(status_color)),
+        Span::styled(status, Style::default().fg(status_color).bold()),
         Span::styled(format!("   P{pri}"), Style::default().fg(Color::White).bold()),
     ]));
 
     // Dates
     if let Some(ref created) = node.created {
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled("  Created: ", Style::default().fg(Color::DarkGray)),
             Span::styled(created.clone(), Style::default().fg(Color::White)),
-        ]));
+        ];
+        // Staleness
+        if let Ok(dt) = chrono::NaiveDate::parse_from_str(created, "%Y-%m-%d") {
+            let days = (chrono::Local::now().date_naive() - dt).num_days();
+            let color = if days > 30 {
+                Color::Red
+            } else if days > 14 {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            };
+            spans.push(Span::styled(format!("  ({days}d)"), Style::default().fg(color)));
+        }
+        left_lines.push(Line::from(spans));
     }
     if let Some(ref due) = node.due {
-        lines.push(Line::from(vec![
+        left_lines.push(Line::from(vec![
             Span::styled("  Due: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(due.clone(), Style::default().fg(Color::Yellow)),
+            Span::styled(due.clone(), Style::default().fg(Color::Yellow).bold()),
         ]));
     }
 
     // Project
     if let Some(ref project) = node.project {
-        lines.push(Line::from(vec![
+        left_lines.push(Line::from(vec![
             Span::styled("  Project: ", Style::default().fg(Color::DarkGray)),
             Span::styled(project.clone(), Style::default().fg(Color::Cyan)),
         ]));
     }
 
-    lines.push(Line::from(""));
+    // Assignee
+    if let Some(ref assignee) = node.assignee {
+        left_lines.push(Line::from(vec![
+            Span::styled("  Assignee: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(assignee.clone(), Style::default().fg(Color::White)),
+        ]));
+    }
 
-    // Graph context — parent chain
-    lines.push(Line::from(Span::styled(
+    // Tags
+    if !node.tags.is_empty() {
+        left_lines.push(Line::from(vec![
+            Span::styled("  Tags: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(node.tags.join(", "), Style::default().fg(Color::Green)),
+        ]));
+    }
+
+    // Children / Subtasks
+    if !node.children.is_empty() {
+        left_lines.push(Line::from(""));
+        left_lines.push(Line::from(Span::styled(
+            "  SUBTASKS",
+            Style::default().fg(Color::Yellow).bold(),
+        )));
+        left_lines.push(Line::from(Span::styled(
+            "  ─────",
+            Style::default().fg(Color::DarkGray),
+        )));
+        for child_id in &node.children {
+            if let Some(child) = gs.get_node(child_id) {
+                let (icon, color) = match child.status.as_deref() {
+                    Some("done") | Some("complete") => ("✓", Color::Green),
+                    Some("active") | Some("in_progress") => ("●", Color::Cyan),
+                    Some("blocked") => ("✗", Color::Red),
+                    Some("seed") => ("○", Color::DarkGray),
+                    _ => ("○", Color::White),
+                };
+                left_lines.push(Line::from(vec![
+                    Span::styled(format!("  {icon} "), Style::default().fg(color)),
+                    Span::styled(child.label.clone(), Style::default().fg(Color::White)),
+                ]));
+            }
+        }
+    }
+
+    // Downstream weight
+    if node.downstream_weight > 0.0 {
+        left_lines.push(Line::from(""));
+        left_lines.push(Line::from(vec![
+            Span::styled("  Weight: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.1}", node.downstream_weight),
+                Style::default().fg(Color::White),
+            ),
+            if node.stakeholder_exposure {
+                Span::styled(" (stakeholder!)", Style::default().fg(Color::Yellow))
+            } else {
+                Span::raw("")
+            },
+        ]));
+    }
+
+    let scroll = app.detail_scroll.min(left_lines.len().saturating_sub(1));
+    let left_text = Text::from(left_lines);
+    let left_panel = Paragraph::new(left_text)
+        .scroll((scroll as u16, 0))
+        .block(
+            Block::default()
+                .borders(Borders::LEFT | Borders::BOTTOM | Borders::TOP)
+                .border_style(Style::default().fg(Color::Rgb(50, 50, 70))),
+        );
+    frame.render_widget(left_panel, panels[0]);
+
+    // ── RIGHT PANEL: graph context ──
+    let mut right_lines: Vec<Line> = Vec::new();
+
+    right_lines.push(Line::from(""));
+    right_lines.push(Line::from(Span::styled(
         "  GRAPH CONTEXT",
         Style::default().fg(Color::Yellow).bold(),
     )));
-    lines.push(Line::from(Span::styled(
+    right_lines.push(Line::from(Span::styled(
         "  ─────",
         Style::default().fg(Color::DarkGray),
     )));
 
-    // Walk up parents
+    // Walk up parent chain (enables)
     let mut parent_id = node.parent.as_deref();
     let mut parent_chain = Vec::new();
     while let Some(pid) = parent_id {
@@ -103,121 +231,129 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             let icon = match parent.node_type.as_deref() {
                 Some("goal") => "◉",
                 Some("project") | Some("subproject") => "◈",
-                Some("epic") => "██",
+                Some("epic") => "◈",
                 _ => "◇",
             };
-            parent_chain.push(format!("{icon} {}", parent.label));
+            let color = match parent.node_type.as_deref() {
+                Some("goal") => Color::Yellow,
+                Some("project") | Some("subproject") | Some("epic") => Color::Cyan,
+                _ => Color::White,
+            };
+            parent_chain.push((format!("{icon} {}", parent.label), color));
             parent_id = parent.parent.as_deref();
         } else {
             break;
         }
     }
-    parent_chain.reverse();
+
     if parent_chain.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  (orphan — no parent)",
+        right_lines.push(Line::from(Span::styled(
+            "  ↑ (orphan — no parent chain)",
             Style::default().fg(Color::Yellow),
         )));
     } else {
-        lines.push(Line::from(Span::styled(
+        right_lines.push(Line::from(Span::styled(
             "  ↑ enables:",
             Style::default().fg(Color::DarkGray),
         )));
-        for p in &parent_chain {
-            lines.push(Line::from(Span::styled(
-                format!("    {p}"),
-                Style::default().fg(Color::White),
+        parent_chain.reverse();
+        for (label, color) in &parent_chain {
+            right_lines.push(Line::from(Span::styled(
+                format!("    {label}"),
+                Style::default().fg(*color),
             )));
         }
     }
 
-    // Dependencies (blocks / blocked by)
+    // Dependencies (depends_on — blocked by)
     if !node.depends_on.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
+        right_lines.push(Line::from(""));
+        right_lines.push(Line::from(Span::styled(
             "  ↓ depends on:",
             Style::default().fg(Color::DarkGray),
         )));
         for dep_id in &node.depends_on {
-            let label = gs
-                .get_node(dep_id)
-                .map(|n| n.label.as_str())
-                .unwrap_or(dep_id);
-            lines.push(Line::from(Span::styled(
-                format!("    ◇ {label}"),
-                Style::default().fg(Color::Red),
-            )));
+            if let Some(dep) = gs.get_node(dep_id) {
+                let done = matches!(dep.status.as_deref(), Some("done"));
+                let color = if done { Color::Green } else { Color::Red };
+                let icon = if done { "✓" } else { "✗" };
+                right_lines.push(Line::from(vec![
+                    Span::styled(format!("    {icon} "), Style::default().fg(color)),
+                    Span::styled(dep.label.clone(), Style::default().fg(color)),
+                ]));
+            } else {
+                right_lines.push(Line::from(Span::styled(
+                    format!("    ? {dep_id}"),
+                    Style::default().fg(Color::Red),
+                )));
+            }
         }
     }
 
+    // Blocks (what completing this would unblock)
     if !node.blocks.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  → blocks:",
+        right_lines.push(Line::from(""));
+        right_lines.push(Line::from(Span::styled(
+            "  → completing this unblocks:",
             Style::default().fg(Color::DarkGray),
         )));
         for block_id in &node.blocks {
-            let label = gs
-                .get_node(block_id)
-                .map(|n| n.label.as_str())
-                .unwrap_or(block_id);
-            lines.push(Line::from(Span::styled(
-                format!("    ◇ {label}"),
-                Style::default().fg(Color::White),
-            )));
-        }
-    }
-
-    // Children
-    if !node.children.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  CHILDREN",
-            Style::default().fg(Color::Yellow).bold(),
-        )));
-        lines.push(Line::from(Span::styled(
-            "  ─────",
-            Style::default().fg(Color::DarkGray),
-        )));
-        for child_id in &node.children {
-            if let Some(child) = gs.get_node(child_id) {
-                let status_icon = match child.status.as_deref() {
-                    Some("done") | Some("complete") => "✓",
-                    Some("active") | Some("in_progress") => "●",
-                    Some("blocked") => "✗",
-                    _ => "○",
-                };
-                lines.push(Line::from(Span::styled(
-                    format!("  {status_icon} {}", child.label),
+            if let Some(blocked) = gs.get_node(block_id) {
+                right_lines.push(Line::from(Span::styled(
+                    format!("    ◇ {}", blocked.label),
                     Style::default().fg(Color::White),
                 )));
             }
         }
     }
 
-    // Task ID
-    lines.push(Line::from(""));
-    let tid = node.task_id.as_deref().unwrap_or(&node.id);
-    lines.push(Line::from(Span::styled(
-        format!("  ID: {tid}"),
+    // Related (siblings — same parent, different node)
+    if let Some(ref pid) = node.parent {
+        if let Some(parent) = gs.get_node(pid) {
+            let siblings: Vec<&str> = parent
+                .children
+                .iter()
+                .filter(|cid| cid.as_str() != node.id)
+                .filter_map(|cid| gs.get_node(cid).map(|n| n.label.as_str()))
+                .take(5)
+                .collect();
+            if !siblings.is_empty() {
+                right_lines.push(Line::from(""));
+                right_lines.push(Line::from(Span::styled(
+                    "  ↔ related (siblings):",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                for sib in &siblings {
+                    right_lines.push(Line::from(Span::styled(
+                        format!("    ◇ {sib}"),
+                        Style::default().fg(Color::White),
+                    )));
+                }
+            }
+        }
+    }
+
+    // Node ID at bottom
+    right_lines.push(Line::from(""));
+    let full_id = node.task_id.as_deref().unwrap_or(&node.id);
+    right_lines.push(Line::from(Span::styled(
+        format!("  ID: {full_id}"),
         Style::default().fg(Color::DarkGray),
     )));
+    if let Some(ref path) = Some(&node.path) {
+        right_lines.push(Line::from(Span::styled(
+            format!("  Path: {}", path.display()),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
 
-    // Scrollable text
-    let scroll = app.detail_scroll.min(lines.len().saturating_sub(1));
-    let text = Text::from(lines);
-
-    let detail = Paragraph::new(text)
+    let right_text = Text::from(right_lines);
+    let right_panel = Paragraph::new(right_text)
         .scroll((scroll as u16, 0))
         .block(
             Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(Span::styled(
-                    " Node Detail (Esc to close) ",
-                    Style::default().fg(Color::Cyan).bold(),
-                )),
+                .borders(Borders::RIGHT | Borders::BOTTOM | Borders::TOP)
+                .border_style(Style::default().fg(Color::Rgb(50, 50, 70))),
         );
-
-    frame.render_widget(detail, overlay);
+    frame.render_widget(right_panel, panels[1]);
 }
