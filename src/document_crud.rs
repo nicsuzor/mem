@@ -114,20 +114,21 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         other => &other[..other.len().min(4)],
     };
 
-    let id = match fields.id {
+    let (id, filename) = match fields.id {
         Some(explicit_id) => {
-            // Always append random GUID suffix to explicit IDs to avoid git conflicts
-            format!("{}-{}", explicit_id, random_suffix())
+            // Explicit ID: use as-is for both frontmatter and filename
+            let filename = format!("{}.md", explicit_id);
+            (explicit_id, filename)
         }
         None => {
             // Use project as prefix when available, otherwise type-based prefix
             let prefix = fields.project.as_deref().unwrap_or(type_prefix);
-            generate_id(prefix, &fields.title)
+            let id = generate_id(prefix, &fields.title);
+            let slug = slugify(&fields.title);
+            let filename = format!("{}-{}.md", id, slug);
+            (id, filename)
         }
     };
-
-    let slug = slugify(&fields.title);
-    let filename = format!("{}-{}.md", id, slug);
 
     // Determine subdirectory
     let subdir = fields.dir.unwrap_or_else(|| {
@@ -162,6 +163,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     fm.push_str(&format!("modified: {}\n", now));
 
     // Alias and permalink
+    let slug = slugify(&fields.title);
     fm.push_str("alias:\n");
     fm.push_str(&format!("  - \"{}-{}\"\n", id, slug));
     fm.push_str(&format!("  - \"{}\"\n", id));
@@ -232,20 +234,21 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 /// Returns the path to the created file. The filename is derived from the
 /// task ID and title (slugified).
 pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
-    let id = match fields.id {
+    let (id, filename) = match fields.id {
         Some(explicit_id) => {
-            // Always append random GUID suffix to explicit IDs to avoid git conflicts
-            format!("{}-{}", explicit_id, random_suffix())
+            // Explicit ID: use as-is for both frontmatter and filename
+            let filename = format!("{}.md", explicit_id);
+            (explicit_id, filename)
         }
         None => {
             // Use project as prefix when available, otherwise "task"
             let prefix = fields.project.as_deref().unwrap_or("task");
-            generate_id(prefix, &fields.title)
+            let id = generate_id(prefix, &fields.title);
+            let slug = slugify(&fields.title);
+            let filename = format!("{}-{}.md", id, slug);
+            (id, filename)
         }
     };
-
-    let slug = slugify(&fields.title);
-    let filename = format!("{}-{}.md", id, slug);
 
     // Use tasks/ subdirectory if it exists, otherwise root
     let tasks_dir = root.join("tasks");
@@ -322,16 +325,19 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 /// Returns the path to the created file. Creates the `memories/` subdirectory
 /// if it doesn't exist.
 pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
-    let id = match fields.id {
+    let (id, filename) = match fields.id {
         Some(explicit_id) => {
-            // Always append random GUID suffix to explicit IDs to avoid git conflicts
-            format!("{}-{}", explicit_id, random_suffix())
+            // Explicit ID: use as-is for both frontmatter and filename
+            let filename = format!("{}.md", explicit_id);
+            (explicit_id, filename)
         }
-        None => generate_id("mem", &fields.title),
+        None => {
+            let id = generate_id("mem", &fields.title);
+            let slug = slugify(&fields.title);
+            let filename = format!("{}-{}.md", id, slug);
+            (id, filename)
+        }
     };
-
-    let slug = slugify(&fields.title);
-    let filename = format!("{}-{}.md", id, slug);
 
     // Create memories/ subdirectory if needed
     let dir = root.join("memories");
@@ -528,11 +534,6 @@ pub fn delete_document(path: &Path) -> Result<PathBuf> {
 fn generate_id(prefix: &str, title: &str) -> String {
     let hash = format!("{:x}", md5::compute(title.as_bytes()));
     format!("{}-{}", prefix, &hash[..8])
-}
-
-/// Generate a random 8-char hex suffix for document IDs.
-fn random_suffix() -> String {
-    format!("{:08x}", rand::random::<u32>())
 }
 
 /// Convert a title to a URL-safe slug.
