@@ -137,14 +137,26 @@ fn download_models() -> Result<PathBuf> {
         if dest.exists() {
             continue;
         }
+        // Clean up any leftover partial downloads from previous interrupted runs
+        let tmp = models_dir.join(format!(".{filename}.part"));
+        let _ = std::fs::remove_file(&tmp);
 
         eprintln!("  Downloading {filename}...");
         let resp = ureq::get(url)
             .call()
             .with_context(|| format!("Failed to download {url}"))?;
         let mut reader = resp.into_reader();
-        let mut file = std::fs::File::create(&dest)?;
-        let bytes = std::io::copy(&mut reader, &mut file)?;
+        // Write to a temp file, then atomically rename — a partial download
+        // will never be mistaken for a complete one on the next run.
+        let mut file = std::fs::File::create(&tmp)?;
+        let bytes = std::io::copy(&mut reader, &mut file)
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                e
+            })?;
+        drop(file);
+        std::fs::rename(&tmp, &dest)
+            .with_context(|| format!("Failed to move {tmp:?} to {dest:?}"))?;
         eprintln!("  ✓ Downloaded {filename} ({:.1} MB)", bytes as f64 / 1_048_576.0);
     }
 
