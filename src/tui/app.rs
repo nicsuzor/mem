@@ -284,7 +284,15 @@ impl App {
     }
 
     pub fn cycle_type_filter(&mut self) {
-        let options = [None, Some("task".to_string()), Some("project".to_string()), Some("memory".to_string())];
+        let options = [
+            None,
+            Some("task".to_string()),
+            Some("project".to_string()),
+            Some("bug".to_string()),
+            Some("feature".to_string()),
+            Some("learn".to_string()),
+            Some("memory".to_string()),
+        ];
         let current_pos = options.iter().position(|x| *x == self.type_filter).unwrap_or(0);
         self.type_filter = options[(current_pos + 1) % options.len()].clone();
         self.rebuild_tree();
@@ -297,6 +305,10 @@ impl App {
             None => return,
         };
 
+        let actionable_types = [
+            "task", "bug", "feature", "project", "goal", "epic", "learn", "subproject",
+        ];
+
         let mut tasks: Vec<&GraphNode> = gs.nodes()
             .filter(|n| {
                 // Filter completed
@@ -306,15 +318,27 @@ impl App {
                     }
                 }
 
+                let nt = n.node_type.as_deref().unwrap_or("task");
+
                 // Filter by type
                 if let Some(ref tf) = self.type_filter {
-                    if n.node_type.as_deref().unwrap_or("task") != tf {
+                    if nt != tf {
                         return false;
                     }
                 } else {
-                    // Default to tasks only if no filter (preserves original behavior mostly)
-                    if n.node_type.as_deref().unwrap_or("task") != "task" {
+                    // Default to actionable types
+                    if !actionable_types.contains(&nt) {
                         return false;
+                    }
+
+                    // For nodes with no explicit type (which default to "task"),
+                    // only include them if they look like actual tasks (have ID or in tasks/ dir).
+                    if n.node_type.is_none() {
+                        let path_str = n.path.to_string_lossy();
+                        let in_tasks_dir = path_str.starts_with("tasks/") || path_str.contains("/tasks/");
+                        if n.task_id.is_none() && !in_tasks_dir {
+                            return false;
+                        }
                     }
                 }
                 true
@@ -334,15 +358,23 @@ impl App {
         }
 
         // Build visible set: tasks + ancestor context nodes
-        // Build visible set: tasks + ancestor context nodes
         let context_types = ["project", "epic", "goal", "subproject"];
         let mut visible: HashSet<String> = tasks.iter().map(|t| t.id.clone()).collect();
         let mut context_ids: HashSet<String> = HashSet::new();
 
+        // Any actionable item that is also a context type should be marked as context
+        for task in &tasks {
+            if let Some(nt) = task.node_type.as_deref() {
+                if context_types.contains(&nt) {
+                    context_ids.insert(task.id.clone());
+                }
+            }
+        }
+
         for task in &tasks {
             let mut current_id = task.parent.as_deref();
             while let Some(pid) = current_id {
-                if visible.contains(pid) || context_ids.contains(pid) {
+                if context_ids.contains(pid) {
                     break;
                 }
                 if let Some(parent_node) = gs.get_node(pid) {
@@ -353,15 +385,13 @@ impl App {
                         .unwrap_or(false)
                     {
                         context_ids.insert(pid.to_string());
+                        visible.insert(pid.to_string());
                     }
                     current_id = parent_node.parent.as_deref();
                 } else {
                     break;
                 }
             }
-        }
-        for cid in &context_ids {
-            visible.insert(cid.clone());
         }
 
         // Group by project
