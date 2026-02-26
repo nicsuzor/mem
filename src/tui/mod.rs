@@ -41,6 +41,7 @@ pub fn run(pkb_root: &Path, db_path: &Path) -> Result<()> {
 
 fn run_event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) -> Result<()> {
     loop {
+        app.poll_worker();
         terminal.draw(|frame| views::render(frame, app))?;
 
         if event::poll(Duration::from_millis(100))? {
