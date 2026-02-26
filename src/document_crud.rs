@@ -131,15 +131,15 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     };
 
     // Determine subdirectory
-    let subdir = fields.dir.unwrap_or_else(|| {
-        match fields.doc_type.as_str() {
+    let subdir = fields
+        .dir
+        .unwrap_or_else(|| match fields.doc_type.as_str() {
             "task" | "bug" | "epic" | "feature" => "tasks".to_string(),
             "project" => "projects".to_string(),
             "goal" => "goals".to_string(),
             "memory" => "memories".to_string(),
             _ => "notes".to_string(),
-        }
-    });
+        });
 
     let dir = root.join(&subdir);
     if !dir.is_dir() {
@@ -157,7 +157,10 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     // Build YAML frontmatter
     let mut fm = String::from("---\n");
     fm.push_str(&format!("id: {}\n", id));
-    fm.push_str(&format!("title: \"{}\"\n", fields.title.replace('"', "\\\"")));
+    fm.push_str(&format!(
+        "title: \"{}\"\n",
+        fields.title.replace('"', "\\\"")
+    ));
     fm.push_str(&format!("type: {}\n", fields.doc_type));
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
@@ -266,7 +269,10 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     // Build YAML frontmatter
     let mut fm = String::from("---\n");
     fm.push_str(&format!("id: {}\n", id));
-    fm.push_str(&format!("title: \"{}\"\n", fields.title.replace('"', "\\\"")));
+    fm.push_str(&format!(
+        "title: \"{}\"\n",
+        fields.title.replace('"', "\\\"")
+    ));
     fm.push_str("type: task\n");
     fm.push_str("status: active\n");
 
@@ -354,7 +360,10 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     // Build YAML frontmatter
     let mut fm = String::from("---\n");
     fm.push_str(&format!("id: {}\n", id));
-    fm.push_str(&format!("title: \"{}\"\n", fields.title.replace('"', "\\\"")));
+    fm.push_str(&format!(
+        "title: \"{}\"\n",
+        fields.title.replace('"', "\\\"")
+    ));
 
     let mem_type = fields.memory_type.as_deref().unwrap_or("memory");
     fm.push_str(&format!("type: {}\n", mem_type));
@@ -423,8 +432,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
     );
 
     // Rebuild the file
-    let yaml = serde_yaml::to_string(&fm)
-        .context("Failed to serialize frontmatter")?;
+    let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
     let body = result.content.trim();
 
     let new_content = format!("---\n{}---\n\n{}\n", yaml, body);
@@ -464,8 +472,7 @@ pub fn append_to_document(path: &Path, content: &str, section: Option<&str>) -> 
         serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
     );
 
-    let yaml = serde_yaml::to_string(&fm)
-        .context("Failed to serialize frontmatter")?;
+    let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
     let timestamped = format!("\n**{}** — {}\n", now, content);
@@ -541,7 +548,13 @@ fn slugify(title: &str) -> String {
     title
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())

@@ -222,9 +222,7 @@ impl App {
                 }
             }
         }
-        untested_list.sort_by(|a, b| {
-            b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        untested_list.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         untested_list.truncate(10);
         self.untested_assumptions = untested_list;
         self.assumption_counts = (untested, confirmed, invalidated);
@@ -242,7 +240,11 @@ impl App {
                     continue;
                 }
                 let a_tags: HashSet<&str> = a.tags.iter().map(|t| t.as_str()).collect();
-                let shared = b.tags.iter().filter(|t| a_tags.contains(t.as_str())).count();
+                let shared = b
+                    .tags
+                    .iter()
+                    .filter(|t| a_tags.contains(t.as_str()))
+                    .count();
                 if shared >= 2 {
                     synergy_pairs.push((a.label.clone(), b.label.clone(), shared));
                 }
@@ -284,8 +286,16 @@ impl App {
     }
 
     pub fn cycle_type_filter(&mut self) {
-        let options = [None, Some("task".to_string()), Some("project".to_string()), Some("memory".to_string())];
-        let current_pos = options.iter().position(|x| *x == self.type_filter).unwrap_or(0);
+        let options = [
+            None,
+            Some("task".to_string()),
+            Some("project".to_string()),
+            Some("memory".to_string()),
+        ];
+        let current_pos = options
+            .iter()
+            .position(|x| *x == self.type_filter)
+            .unwrap_or(0);
         self.type_filter = options[(current_pos + 1) % options.len()].clone();
         self.rebuild_tree();
     }
@@ -297,11 +307,15 @@ impl App {
             None => return,
         };
 
-        let mut tasks: Vec<&GraphNode> = gs.nodes()
+        let mut tasks: Vec<&GraphNode> = gs
+            .nodes()
             .filter(|n| {
                 // Filter completed
                 if !self.show_completed {
-                    if matches!(n.status.as_deref(), Some("done") | Some("cancelled") | Some("dead")) {
+                    if matches!(
+                        n.status.as_deref(),
+                        Some("done") | Some("cancelled") | Some("dead")
+                    ) {
                         return false;
                     }
                 }
@@ -323,8 +337,14 @@ impl App {
 
         // Sort like ready_tasks did
         tasks.sort_by(|a, b| {
-            a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2))
-                .then(b.downstream_weight.partial_cmp(&a.downstream_weight).unwrap_or(std::cmp::Ordering::Equal))
+            a.priority
+                .unwrap_or(2)
+                .cmp(&b.priority.unwrap_or(2))
+                .then(
+                    b.downstream_weight
+                        .partial_cmp(&a.downstream_weight)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
                 .then(a.label.cmp(&b.label))
         });
 
@@ -432,9 +452,7 @@ impl App {
 
         // Apply priority filter
         if let Some(max_pri) = self.priority_filter {
-            rows.retain(|r| {
-                r.is_context || r.priority.map(|p| p <= max_pri).unwrap_or(true)
-            });
+            rows.retain(|r| r.is_context || r.priority.map(|p| p <= max_pri).unwrap_or(true));
         }
 
         self.tree_rows = rows;
@@ -499,7 +517,15 @@ impl App {
                 let child_is_last = i == children.len() - 1;
                 let mut child_depths = is_last_at_depth.clone();
                 child_depths.push(child_is_last);
-                self.flatten_node(gs, child, visible, context_ids, depth + 1, child_depths, rows);
+                self.flatten_node(
+                    gs,
+                    child,
+                    visible,
+                    context_ids,
+                    depth + 1,
+                    child_depths,
+                    rows,
+                );
             }
         }
     }
@@ -507,14 +533,20 @@ impl App {
     // Navigation
 
     pub fn next_view(&mut self) {
-        let idx = View::ALL.iter().position(|v| *v == self.current_view).unwrap_or(0);
+        let idx = View::ALL
+            .iter()
+            .position(|v| *v == self.current_view)
+            .unwrap_or(0);
         self.current_view = View::ALL[(idx + 1) % View::ALL.len()];
         self.selected_index = 0;
         self.scroll_offset = 0;
     }
 
     pub fn prev_view(&mut self) {
-        let idx = View::ALL.iter().position(|v| *v == self.current_view).unwrap_or(0);
+        let idx = View::ALL
+            .iter()
+            .position(|v| *v == self.current_view)
+            .unwrap_or(0);
         self.current_view = View::ALL[(idx + View::ALL.len() - 1) % View::ALL.len()];
         self.selected_index = 0;
         self.scroll_offset = 0;
@@ -571,9 +603,10 @@ impl App {
 
     pub fn open_detail(&mut self) {
         let node_id = match self.current_view {
-            View::EpicTree | View::Graph => {
-                self.tree_rows.get(self.selected_index).map(|r| r.node_id.clone())
-            }
+            View::EpicTree | View::Graph => self
+                .tree_rows
+                .get(self.selected_index)
+                .map(|r| r.node_id.clone()),
             View::Focus => self.focus_picks.get(self.selected_index).cloned(),
             _ => None,
         };
@@ -615,7 +648,10 @@ impl App {
             .nodes()
             .filter(|n| {
                 if !self.show_completed {
-                    if matches!(n.status.as_deref(), Some("done") | Some("dead") | Some("cancelled")) {
+                    if matches!(
+                        n.status.as_deref(),
+                        Some("done") | Some("dead") | Some("cancelled")
+                    ) {
                         return false;
                     }
                 }
@@ -697,7 +733,11 @@ impl App {
             .collect::<String>()
             .trim_matches('-')
             .to_string();
-        let slug = if slug.len() > 50 { slug[..50].to_string() } else { slug };
+        let slug = if slug.len() > 50 {
+            slug[..50].to_string()
+        } else {
+            slug
+        };
 
         let tasks_dir = self.pkb_root.join("incoming");
         if !tasks_dir.exists() {
@@ -728,7 +768,7 @@ impl App {
             Err(_) => return false,
         }
 
-    // Reload graph
+        // Reload graph
         self.load_graph();
         self.show_capture = false;
         true
@@ -736,9 +776,10 @@ impl App {
 
     pub fn change_priority(&mut self, delta: i32) {
         let node_id = match self.current_view {
-            View::EpicTree | View::Graph => {
-                self.tree_rows.get(self.selected_index).map(|r| r.node_id.clone())
-            }
+            View::EpicTree | View::Graph => self
+                .tree_rows
+                .get(self.selected_index)
+                .map(|r| r.node_id.clone()),
             View::Focus => self.focus_picks.get(self.selected_index).cloned(),
             _ => None,
         };
@@ -784,8 +825,12 @@ impl App {
             let path = &node.path;
             let mut updates = HashMap::new();
             match parent_id {
-                Some(pid) => { updates.insert("parent".to_string(), serde_json::json!(pid)); }
-                None => { updates.insert("parent".to_string(), serde_json::Value::Null); }
+                Some(pid) => {
+                    updates.insert("parent".to_string(), serde_json::json!(pid));
+                }
+                None => {
+                    updates.insert("parent".to_string(), serde_json::Value::Null);
+                }
             }
 
             if let Err(_) = crate::document_crud::update_document(path, updates) {
@@ -798,9 +843,10 @@ impl App {
 
     pub fn enter_reparent_mode(&mut self) {
         let node_id = match self.current_view {
-            View::EpicTree | View::Graph => {
-                self.tree_rows.get(self.selected_index).map(|r| r.node_id.clone())
-            }
+            View::EpicTree | View::Graph => self
+                .tree_rows
+                .get(self.selected_index)
+                .map(|r| r.node_id.clone()),
             View::Focus => self.focus_picks.get(self.selected_index).cloned(),
             _ => None,
         };
@@ -812,16 +858,20 @@ impl App {
     }
 
     pub fn confirm_reparent(&mut self) {
-        if !self.reparent_mode { return; }
+        if !self.reparent_mode {
+            return;
+        }
 
         let target_parent_id = match self.current_view {
-            View::EpicTree | View::Graph => {
-                self.tree_rows.get(self.selected_index).map(|r| r.node_id.clone())
-            }
+            View::EpicTree | View::Graph => self
+                .tree_rows
+                .get(self.selected_index)
+                .map(|r| r.node_id.clone()),
             _ => None,
         };
 
-        if let (Some(child_id), Some(parent_id)) = (self.reparent_node_id.clone(), target_parent_id) {
+        if let (Some(child_id), Some(parent_id)) = (self.reparent_node_id.clone(), target_parent_id)
+        {
             if child_id != parent_id {
                 self.set_parent(&child_id, Some(&parent_id));
             }

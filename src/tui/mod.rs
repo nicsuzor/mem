@@ -4,6 +4,7 @@
 //! Makes the PKB graph the interface rather than a flat task list.
 
 mod app;
+pub mod theme;
 mod views;
 
 use anyhow::Result;
@@ -39,7 +40,10 @@ pub fn run(pkb_root: &Path, db_path: &Path) -> Result<()> {
     result
 }
 
-fn run_event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) -> Result<()> {
+fn run_event_loop(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+) -> Result<()> {
     loop {
         terminal.draw(|frame| views::render(frame, app))?;
 
@@ -56,9 +60,10 @@ fn run_event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, ap
 
 fn get_selected_node_id(app: &App) -> Option<String> {
     match app.current_view {
-        View::EpicTree | View::Graph => {
-            app.tree_rows.get(app.selected_index).map(|r| r.node_id.clone())
-        }
+        View::EpicTree | View::Graph => app
+            .tree_rows
+            .get(app.selected_index)
+            .map(|r| r.node_id.clone()),
         View::Focus => app.focus_picks.get(app.selected_index).cloned(),
         _ => None,
     }
@@ -222,7 +227,7 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
             } else {
                 app.open_detail();
             }
-        },
+        }
 
         // Quick capture
         KeyCode::Char('n') => app.open_capture(),
@@ -258,7 +263,7 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
                     app.set_status(&id, new_status);
                 }
             }
-        },
+        }
         KeyCode::Char('p') => {
             if let Some(id) = get_selected_node_id(app) {
                 if let Some(node) = app.get_node(&id) {
@@ -272,7 +277,7 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
                     app.set_priority(&id, new_pri);
                 }
             }
-        },
+        }
         KeyCode::Char('r') => app.enter_reparent_mode(),
 
         // Priority

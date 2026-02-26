@@ -54,10 +54,7 @@ impl GraphStore {
     /// 6. Classify ready/blocked tasks
     pub fn build(docs: &[PkbDocument], pkb_root: &Path) -> Self {
         // 1. Extract graph nodes
-        let mut nodes: Vec<GraphNode> = docs
-            .par_iter()
-            .map(GraphNode::from_pkb_document)
-            .collect();
+        let mut nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
 
         // 2. Build lookup maps
         // Node paths may be relative — reconstruct absolute for canonicalize & link resolution
@@ -387,12 +384,7 @@ impl GraphStore {
     ///
     /// All returned paths have the same (minimum) length. Uses BFS to find
     /// the shortest distance, then bounded DFS to enumerate paths at that distance.
-    pub fn all_shortest_paths(
-        &self,
-        from: &str,
-        to: &str,
-        max_paths: usize,
-    ) -> Vec<Vec<String>> {
+    pub fn all_shortest_paths(&self, from: &str, to: &str, max_paths: usize) -> Vec<Vec<String>> {
         if from == to {
             return vec![vec![from.to_string()]];
         }
@@ -1176,8 +1168,7 @@ fn build_resolution_map(nodes: &HashMap<String, GraphNode>) -> HashMap<String, S
 
         // Task ID
         if let Some(ref tid) = node.task_id {
-            map.entry(tid.to_lowercase())
-                .or_insert_with(|| id.clone());
+            map.entry(tid.to_lowercase()).or_insert_with(|| id.clone());
         }
 
         // Filename stem
@@ -1220,10 +1211,7 @@ mod tests {
             fm.insert("parent".to_string(), serde_json::json!(p));
         }
         if !depends_on.is_empty() {
-            fm.insert(
-                "depends_on".to_string(),
-                serde_json::json!(depends_on),
-            );
+            fm.insert("depends_on".to_string(), serde_json::json!(depends_on));
         }
 
         PkbDocument {
@@ -1328,7 +1316,9 @@ mod tests {
         // Should include task-b at depth 1
         assert!(!tree.is_empty());
         let task_b_id = graph.resolve("task-b").unwrap().id.clone();
-        assert!(tree.iter().any(|(id, depth)| id == &task_b_id && *depth == 1));
+        assert!(tree
+            .iter()
+            .any(|(id, depth)| id == &task_b_id && *depth == 1));
     }
 
     #[test]
@@ -1362,7 +1352,9 @@ mod tests {
         let task_b = graph.resolve("task-b").expect("task-b not found");
         let tree = graph.blocks_tree(&task_b.id);
         let task_a_id = graph.resolve("task-a").unwrap().id.clone();
-        assert!(tree.iter().any(|(id, depth)| id == &task_a_id && *depth == 1));
+        assert!(tree
+            .iter()
+            .any(|(id, depth)| id == &task_a_id && *depth == 1));
     }
 
     #[test]

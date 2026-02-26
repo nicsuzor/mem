@@ -121,7 +121,10 @@ impl PkbSearchServer {
         let doc_type = args.get("type").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
         let project = args.get("project").and_then(|v| v.as_str());
-        let limit = args.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
         let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         let store = self.store.read();
@@ -134,10 +137,15 @@ impl PkbSearchServer {
             )]));
         }
 
-        let page: Vec<_> = results.into_iter().skip(offset).take(limit.unwrap_or(total)).collect();
+        let page: Vec<_> = results
+            .into_iter()
+            .skip(offset)
+            .take(limit.unwrap_or(total))
+            .collect();
         let showing = page.len();
 
-        let mut output = format!("**{total} documents found** (showing {showing}, offset {offset})\n\n");
+        let mut output =
+            format!("**{total} documents found** (showing {showing}, offset {offset})\n\n");
 
         for r in &page {
             output.push_str(&format!("- **{}**", r.title));
@@ -156,8 +164,13 @@ impl PkbSearchServer {
 
     fn handle_reindex(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-        let (indexed, removed, total) =
-            crate::index_pkb(&self.pkb_root, &self.db_path, &self.store, &self.embedder, force);
+        let (indexed, removed, total) = crate::index_pkb(
+            &self.pkb_root,
+            &self.db_path,
+            &self.store,
+            &self.embedder,
+            force,
+        );
 
         // Save vector store
         if let Err(e) = self.store.read().save(&self.db_path) {
@@ -186,10 +199,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
         let project = args.get("project").and_then(|v| v.as_str());
 
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
@@ -199,7 +209,11 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let fetch_limit = if project.is_some() { limit * 10 } else { limit * 3 };
+        let fetch_limit = if project.is_some() {
+            limit * 10
+        } else {
+            limit * 3
+        };
         let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         let graph = self.graph.read();
@@ -226,7 +240,12 @@ impl PkbSearchServer {
             }
 
             if let Some(proj) = project {
-                if !r.project.as_deref().map(|p| p.eq_ignore_ascii_case(proj)).unwrap_or(false) {
+                if !r
+                    .project
+                    .as_deref()
+                    .map(|p| p.eq_ignore_ascii_case(proj))
+                    .unwrap_or(false)
+                {
                     continue;
                 }
             }
@@ -251,10 +270,7 @@ impl PkbSearchServer {
                     output.push_str(&format!("**Blocks:** {}\n", node.blocks.join(", ")));
                 }
                 if !node.depends_on.is_empty() {
-                    output.push_str(&format!(
-                        "**Depends on:** {}\n",
-                        node.depends_on.join(", ")
-                    ));
+                    output.push_str(&format!("**Depends on:** {}\n", node.depends_on.join(", ")));
                 }
             }
             output.push('\n');
@@ -365,10 +381,7 @@ impl PkbSearchServer {
                 .get("complexity")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            body: args
-                .get("body")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            body: args.get("body").and_then(|v| v.as_str()).map(String::from),
         };
 
         // Hierarchy validation: warn if task type should have a parent
@@ -424,10 +437,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let hops = args
-            .get("hops")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2) as usize;
+        let hops = args.get("hops").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
 
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
@@ -438,7 +448,10 @@ impl PkbSearchServer {
 
         let node_id = node.id.clone();
         let mut output = format!("## {} — {}\n\n", node_id, node.label);
-        output.push_str(&format!("**Path:** `{}`\n", self.abs_path(&node.path).display()));
+        output.push_str(&format!(
+            "**Path:** `{}`\n",
+            self.abs_path(&node.path).display()
+        ));
 
         if let Some(ref t) = node.node_type {
             output.push_str(&format!("**Type:** {t}\n"));
@@ -515,10 +528,7 @@ impl PkbSearchServer {
             let mut sorted = nearby;
             sorted.sort_by_key(|(_, d)| *d);
             for (nid, dist) in &sorted {
-                let label = graph
-                    .get_node(nid)
-                    .map(|n| n.label.as_str())
-                    .unwrap_or("?");
+                let label = graph.get_node(nid).map(|n| n.label.as_str()).unwrap_or("?");
                 output.push_str(&format!("- [hop {dist}] `{nid}` — {label}\n"));
             }
         }
@@ -536,10 +546,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let boost_id = args.get("boost_id").and_then(|v| v.as_str());
         let project = args.get("project").and_then(|v| v.as_str());
@@ -551,7 +558,11 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let fetch_limit = if project.is_some() { limit * 5 } else { limit * 2 };
+        let fetch_limit = if project.is_some() {
+            limit * 5
+        } else {
+            limit * 2
+        };
         let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         // Build proximity boost map if boost_id provided
@@ -594,7 +605,12 @@ impl PkbSearchServer {
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         if let Some(proj) = project {
-            scored.retain(|(r, _)| r.project.as_deref().map(|p| p.eq_ignore_ascii_case(proj)).unwrap_or(false));
+            scored.retain(|(r, _)| {
+                r.project
+                    .as_deref()
+                    .map(|p| p.eq_ignore_ascii_case(proj))
+                    .unwrap_or(false)
+            });
         }
         scored.truncate(limit);
 
@@ -657,10 +673,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let max_paths = args
-            .get("max_paths")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(3) as usize;
+        let max_paths = args.get("max_paths").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
 
         let graph = self.graph.read();
 
@@ -697,15 +710,8 @@ impl PkbSearchServer {
         for (i, path) in paths.iter().enumerate() {
             output.push_str(&format!("### Path {}\n", i + 1));
             for (j, nid) in path.iter().enumerate() {
-                let label = graph
-                    .get_node(nid)
-                    .map(|n| n.label.as_str())
-                    .unwrap_or("?");
-                let prefix = if j == 0 {
-                    "  "
-                } else {
-                    "  → "
-                };
+                let label = graph.get_node(nid).map(|n| n.label.as_str()).unwrap_or("?");
+                let prefix = if j == 0 { "  " } else { "  → " };
                 output.push_str(&format!("{prefix}`{nid}` ({label})\n"));
             }
             output.push('\n');
@@ -720,10 +726,8 @@ impl PkbSearchServer {
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
 
-        let type_filter: Option<Vec<String>> = args
-            .get("types")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
+        let type_filter: Option<Vec<String>> =
+            args.get("types").and_then(|v| v.as_array()).map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
@@ -849,8 +853,7 @@ impl PkbSearchServer {
 
         let depends_on: Vec<serde_json::Value> =
             node.depends_on.iter().map(|d| resolve_ref(d)).collect();
-        let blocks: Vec<serde_json::Value> =
-            node.blocks.iter().map(|b| resolve_ref(b)).collect();
+        let blocks: Vec<serde_json::Value> = node.blocks.iter().map(|b| resolve_ref(b)).collect();
         let children: Vec<serde_json::Value> =
             node.children.iter().map(|c| resolve_ref(c)).collect();
         let parent = node.parent.as_ref().map(|p| resolve_ref(p));
@@ -897,10 +900,7 @@ impl PkbSearchServer {
                         .collect()
                 })
                 .unwrap_or_default(),
-            body: args
-                .get("body")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            body: args.get("body").and_then(|v| v.as_str()).map(String::from),
             memory_type: args
                 .get("memory_type")
                 .and_then(|v| v.as_str())
@@ -911,13 +911,12 @@ impl PkbSearchServer {
                 .map(String::from),
         };
 
-        let path = crate::document_crud::create_memory(&self.pkb_root, fields).map_err(|e| {
-            McpError {
+        let path =
+            crate::document_crud::create_memory(&self.pkb_root, fields).map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!("Failed to create memory: {e}")),
                 data: None,
-            }
-        })?;
+            })?;
 
         // Index the new file
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
@@ -965,10 +964,7 @@ impl PkbSearchServer {
                         .collect()
                 })
                 .unwrap_or_default(),
-            body: args
-                .get("body")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            body: args.get("body").and_then(|v| v.as_str()).map(String::from),
             status: args
                 .get("status")
                 .and_then(|v| v.as_str())
@@ -1006,23 +1002,15 @@ impl PkbSearchServer {
                 .get("source")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            due: args
-                .get("due")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            dir: args
-                .get("dir")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            due: args.get("due").and_then(|v| v.as_str()).map(String::from),
+            dir: args.get("dir").and_then(|v| v.as_str()).map(String::from),
         };
 
         // Hierarchy validation: warn if task-like type without parent
         let mut warnings = Vec::new();
         let root_allowed = ["goal", "learn", "project"];
         let task_like = ["task", "epic", "action", "bug", "feature"];
-        if task_like.contains(&doc_type)
-            && fields.parent.is_none()
-        {
+        if task_like.contains(&doc_type) && fields.parent.is_none() {
             warnings.push(format!(
                 "Hierarchy warning: Type '{}' should have a parent. \
                  Only {} types can be root-level. \
@@ -1136,10 +1124,7 @@ impl PkbSearchServer {
 
         let abs_path = self.abs_path(&node.path);
         let label = node.label.clone();
-        let rel_path = node
-            .path
-            .to_string_lossy()
-            .to_string();
+        let rel_path = node.path.to_string_lossy().to_string();
         drop(graph); // release read lock before write operations
 
         crate::document_crud::delete_document(&abs_path).map_err(|e| McpError {
@@ -1222,18 +1207,12 @@ impl PkbSearchServer {
                 message: Cow::from("Missing required parameter: query"),
                 data: None,
             })?;
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
-        let tags: Option<Vec<String>> = args
-            .get("tags")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            });
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let tags: Option<Vec<String>> = args.get("tags").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        });
 
         let query_embedding = self.embedder.encode(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -1282,11 +1261,7 @@ impl PkbSearchServer {
             // Show full body for memories (typically short)
             if let Ok(content) = std::fs::read_to_string(&r.path) {
                 let body = if content.starts_with("---") {
-                    content
-                        .splitn(3, "---")
-                        .nth(2)
-                        .unwrap_or("")
-                        .trim()
+                    content.splitn(3, "---").nth(2).unwrap_or("").trim()
                 } else {
                     content.trim()
                 };
@@ -1332,10 +1307,7 @@ impl PkbSearchServer {
         }
 
         let type_filter = args.get("type").and_then(|v| v.as_str());
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(50) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
         let store = self.store.read();
         let all = store.list_documents(None, type_filter, None, None, &self.pkb_root);
@@ -1357,10 +1329,7 @@ impl PkbSearchServer {
         }
 
         let total = matching.len();
-        let mut output = format!(
-            "**{total} documents with tags [{}]**\n\n",
-            tags.join(", ")
-        );
+        let mut output = format!("**{total} documents with tags [{}]**\n\n", tags.join(", "));
         for r in &matching {
             output.push_str(&format!("- **{}**", r.title));
             if let Some(ref dt) = r.doc_type {
@@ -1374,18 +1343,12 @@ impl PkbSearchServer {
     }
 
     fn handle_list_memories(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(20) as usize;
-        let tags: Option<Vec<String>> = args
-            .get("tags")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            });
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+        let tags: Option<Vec<String>> = args.get("tags").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        });
 
         let memory_types = ["memory", "note", "insight", "observation"];
         let store = self.store.read();
@@ -1579,13 +1542,13 @@ impl PkbSearchServer {
                     .map(String::from),
             };
 
-            let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(
-                |e| McpError {
+            let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
+                McpError {
                     code: ErrorCode::INTERNAL_ERROR,
                     message: Cow::from(format!("Failed to create subtask '{title}': {e}")),
                     data: None,
-                },
-            )?;
+                }
+            })?;
 
             if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
                 let _ = self.store.write().upsert(&doc, &self.embedder);
@@ -1733,10 +1696,7 @@ impl PkbSearchServer {
                         }
                         let indent = "  ".repeat(depth);
                         let status = child.status.as_deref().unwrap_or("-");
-                        let pri = child
-                            .priority
-                            .map(|p| format!("P{p} "))
-                            .unwrap_or_default();
+                        let pri = child.priority.map(|p| format!("P{p} ")).unwrap_or_default();
                         let cid = child.task_id.as_deref().unwrap_or(&child.id);
                         output.push_str(&format!(
                             "{indent}- `{cid}` [{status}] {pri}{}\n",
@@ -1778,18 +1738,22 @@ impl PkbSearchServer {
     fn handle_list_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let project = args.get("project").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
-        let priority = args.get("priority").and_then(|v| v.as_i64()).map(|v| v as i32);
+        let priority = args
+            .get("priority")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
         let assignee = args.get("assignee").and_then(|v| v.as_str());
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(50) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
         let graph = self.graph.read();
 
         // Detect special status filters: "ready" and "blocked"
-        let is_ready = status.map(|s| s.eq_ignore_ascii_case("ready")).unwrap_or(false);
-        let is_blocked = status.map(|s| s.eq_ignore_ascii_case("blocked")).unwrap_or(false);
+        let is_ready = status
+            .map(|s| s.eq_ignore_ascii_case("ready"))
+            .unwrap_or(false);
+        let is_blocked = status
+            .map(|s| s.eq_ignore_ascii_case("blocked"))
+            .unwrap_or(false);
 
         let mut tasks: Vec<_> = if is_ready {
             // Use graph.ready_tasks() for the ready filter
@@ -1865,10 +1829,8 @@ impl PkbSearchServer {
                 if !t.depends_on.is_empty() {
                     out.push_str("**Blocked by:**\n");
                     for dep in &t.depends_on {
-                        let dep_label = graph
-                            .get_node(dep)
-                            .map(|n| n.label.as_str())
-                            .unwrap_or("?");
+                        let dep_label =
+                            graph.get_node(dep).map(|n| n.label.as_str()).unwrap_or("?");
                         let dep_status = graph
                             .get_node(dep)
                             .and_then(|n| n.status.as_deref())

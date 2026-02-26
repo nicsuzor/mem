@@ -4,42 +4,52 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use crate::tui::app::App;
+use crate::tui::theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Center the overlay
-    let width = (area.width * 3 / 5).max(40).min(area.width.saturating_sub(4));
-    let height = (area.height * 3 / 5).max(10).min(area.height.saturating_sub(4));
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let width = (area.width * 3 / 5)
+        .max(60)
+        .min(area.width.saturating_sub(4));
+    let height = (area.height * 3 / 5)
+        .max(15)
+        .min(area.height.saturating_sub(4));
+
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
     let overlay = Rect::new(x, y, width, height);
 
     frame.render_widget(Clear, overlay);
+
+    // Draw main border
+    frame.render_widget(Theme::active_block().title(" Search "), overlay);
 
     let inner = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // search input
-            Constraint::Min(1),   // results
+            Constraint::Min(1),    // results
         ])
+        .margin(1)
         .split(overlay);
 
     // Search input
-    let input_text = format!(" / {}", app.search_query);
+    let input_text = format!(" > {}", app.search_query);
     let input = Paragraph::new(input_text)
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(Theme::FG))
         .block(
             Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title(" Search ")
-                .title_style(Style::default().fg(Color::Cyan).bold()),
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(Theme::ACCENT_SECONDARY)),
         );
+
     frame.render_widget(input, inner[0]);
 
-    // Cursor position
-    let cursor_x = inner[0].x + 4 + app.search_query.len() as u16;
+    // Cursor position (account for border and margin)
+    // overlay.x + 1 (margin) + 1 (border) + 3 (" > ") + len
+    let cursor_x = inner[0].x + 3 + app.search_query.len() as u16;
     let cursor_y = inner[0].y + 1;
-    frame.set_cursor_position((cursor_x.min(inner[0].right().saturating_sub(2)), cursor_y));
+    frame.set_cursor_position((cursor_x.min(inner[0].right().saturating_sub(1)), cursor_y));
 
     // Results
     let mut lines: Vec<Line> = Vec::new();
@@ -47,12 +57,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.search_query.is_empty() {
         lines.push(Line::from(Span::styled(
             "  Type to search tasks, notes, projects...",
-            Style::default().fg(Color::DarkGray).italic(),
+            Style::default().fg(Theme::MUTED).italic(),
         )));
     } else if app.search_results.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  No matches",
-            Style::default().fg(Color::DarkGray),
+            "  No matches found.",
+            Style::default().fg(Theme::MUTED),
         )));
     } else {
         for (i, hit) in app.search_results.iter().enumerate() {
@@ -65,44 +75,46 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Some("note") | Some("knowledge") => "📝",
                 _ => "◇",
             };
+
             let type_label = hit.node_type.as_deref().unwrap_or("task");
 
-            let spans = vec![
+            let mut spans = Vec::new();
+
+            if selected {
+                spans.push(Span::styled(
+                    "▸ ",
+                    Style::default().fg(Theme::ACCENT_SECONDARY).bold(),
+                ));
+            } else {
+                spans.push(Span::raw("  "));
+            }
+
+            spans.push(Span::styled(
+                format!("{icon} "),
+                Style::default().fg(Theme::FG),
+            ));
+            spans.push(Span::styled(
+                hit.label.clone(),
                 if selected {
-                    Span::styled("  ▸ ", Style::default().fg(Color::Cyan).bold())
+                    Style::default().fg(Theme::FG).bold()
                 } else {
-                    Span::raw("    ")
+                    Style::default().fg(Theme::FG)
                 },
-                Span::styled(
-                    format!("{icon} "),
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled(
-                    hit.label.clone(),
-                    if selected {
-                        Style::default().fg(Color::White).bold()
-                    } else {
-                        Style::default().fg(Color::White)
-                    },
-                ),
-                Span::styled(
-                    format!("  [{type_label}]"),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ];
+            ));
+
+            spans.push(Span::styled(
+                format!("  [{type_label}]"),
+                Style::default().fg(Theme::MUTED),
+            ));
 
             let mut line = Line::from(spans);
             if selected {
-                line = line.style(Style::default().bg(Color::Rgb(30, 30, 50)));
+                line = line.style(Style::default().bg(Theme::HIGHLIGHT_BG));
             }
             lines.push(line);
         }
     }
 
-    let results = Paragraph::new(Text::from(lines)).block(
-        Block::default()
-            .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
-            .border_style(Style::default().fg(Color::Rgb(50, 50, 70))),
-    );
+    let results = List::new(lines).block(Block::default().borders(Borders::NONE)); // No border for inner list
     frame.render_widget(results, inner[1]);
 }

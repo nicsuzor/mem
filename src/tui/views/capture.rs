@@ -4,15 +4,17 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use crate::tui::app::{App, CaptureField};
+use crate::tui::theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let width = 50u16.min(area.width.saturating_sub(4));
-    let height = 12u16.min(area.height.saturating_sub(4));
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let height = 14u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
     let overlay = Rect::new(x, y, width, height);
 
     frame.render_widget(Clear, overlay);
+    frame.render_widget(Theme::active_block().title(" Quick Capture "), overlay);
 
     let inner = Layout::default()
         .direction(Direction::Vertical)
@@ -20,18 +22,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(3), // title input
             Constraint::Length(3), // project selector
             Constraint::Length(3), // priority selector
-            Constraint::Min(1),   // status / keybindings
+            Constraint::Min(1),    // status / keybindings
         ])
+        .margin(1)
         .split(overlay);
 
     // Title field
     let title_style = if app.capture_field == CaptureField::Title {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(Theme::ACCENT_PRIMARY)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Theme::MUTED)
     };
+
     let title_input = Paragraph::new(format!(" {}", app.capture_title))
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(Theme::FG))
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -49,9 +53,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Project selector
     let proj_style = if app.capture_field == CaptureField::Project {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(Theme::ACCENT_PRIMARY)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Theme::MUTED)
     };
     let proj_name = app
         .project_names
@@ -60,7 +64,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or("(none)");
     let proj_display = format!(" ◀ {proj_name} ▶");
     let project_input = Paragraph::new(proj_display)
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(Theme::FG))
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -72,14 +76,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Priority selector
     let pri_style = if app.capture_field == CaptureField::Priority {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(Theme::ACCENT_PRIMARY)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Theme::MUTED)
     };
     let pri_color = match app.capture_priority {
-        0 | 1 => Color::Red,
-        2 => Color::White,
-        _ => Color::DarkGray,
+        0 | 1 => Theme::ERROR,
+        2 => Theme::FG,
+        _ => Theme::MUTED,
     };
     let pri_display = format!(" ◀ P{} ▶", app.capture_priority);
     let priority_input = Paragraph::new(pri_display)
@@ -94,11 +98,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(priority_input, inner[2]);
 
     // Status bar
-    let keys = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " Tab fields │ ←→ cycle │ Enter create │ Esc cancel",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]));
+    let keys = Paragraph::new(Line::from(vec![Span::styled(
+        " Tab fields │ ←→ cycle │ Enter create │ Esc cancel",
+        Style::default().fg(Theme::MUTED),
+    )]));
     frame.render_widget(keys, inner[3]);
 }

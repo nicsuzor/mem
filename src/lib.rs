@@ -28,7 +28,11 @@ pub fn index_pkb(
     force_all: bool,
 ) -> (usize, usize, usize) {
     let files = pkb::scan_directory(pkb_root);
-    tracing::info!("Found {} markdown files in {}", files.len(), pkb_root.display());
+    tracing::info!(
+        "Found {} markdown files in {}",
+        files.len(),
+        pkb_root.display()
+    );
 
     let existing_paths: HashSet<String> = files
         .iter()
@@ -71,7 +75,8 @@ pub fn index_pkb(
 
         if let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) {
             let embedding_text = doc.embedding_text();
-            let chunks = embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
+            let chunks =
+                embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
             let chunk_start = all_chunks.len();
             let chunk_count = chunks.len();
             all_chunks.extend(chunks);

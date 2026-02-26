@@ -4,6 +4,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use crate::tui::app::App;
+use crate::tui::theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let gs = match &app.graph {
@@ -17,22 +18,23 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),  // header
-            Constraint::Length(8),  // health stats
-            Constraint::Length(8),  // by project
-            Constraint::Length(8),  // assumptions
-            Constraint::Length(8),  // synergies
-            Constraint::Min(1),    // rest
+            Constraint::Length(12), // Top row: Health & Assumptions
+            Constraint::Min(10),    // Middle row: Projects & Synergies
+            Constraint::Length(3),  // Bottom: Orphans
         ])
         .split(area);
 
-    // Header
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled("  DASHBOARD", Style::default().fg(Color::White).bold()),
-    ]));
-    frame.render_widget(header, chunks[0]);
+    let top_row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[0]);
 
-    // Health stats
+    let mid_row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[1]);
+
+    // --- Health Stats ---
     let all_tasks = gs.all_tasks();
     let ready = gs.ready_tasks();
     let blocked = gs.blocked_tasks();
@@ -58,143 +60,161 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let health_lines = vec![
-        Line::from(vec![
-            Span::styled("  HEALTH", Style::default().fg(Color::Yellow).bold()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ─────", Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {} total │ {} ready │ {} blocked", all_tasks.len(), ready.len(), blocked.len()),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {} P0/P1 │ {} P2 │ {} P3+", p1_count, p2_count, p3_count),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  Oldest task: {oldest_days}d"),
-                Style::default().fg(if oldest_days > 30 { Color::Red } else { Color::Yellow }),
-            ),
-        ]),
+    let health_text = vec![
+        Line::from(vec![Span::styled(
+            format!("Total Tasks:   {}", all_tasks.len()),
+            Style::default().fg(Theme::FG),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("Ready:         {}", ready.len()),
+            Style::default().fg(Theme::SUCCESS),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("Blocked:       {}", blocked.len()),
+            Style::default().fg(Theme::ERROR),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            format!("P0/P1 High:    {}", p1_count),
+            Style::default().fg(Theme::ACCENT_PRIMARY),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("P2 Normal:     {}", p2_count),
+            Style::default().fg(Theme::FG),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("P3 Low:        {}", p3_count),
+            Style::default().fg(Theme::MUTED),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            format!("Oldest Task:   {} days", oldest_days),
+            if oldest_days > 30 {
+                Style::default().fg(Theme::ERROR)
+            } else {
+                Style::default().fg(Theme::WARNING)
+            },
+        )]),
     ];
-    let health = Paragraph::new(health_lines);
-    frame.render_widget(health, chunks[1]);
 
-    // By project
-    let by_project = gs.by_project();
-    let mut proj_lines = vec![
-        Line::from(Span::styled("  BY PROJECT", Style::default().fg(Color::Yellow).bold())),
-        Line::from(Span::styled("  ─────", Style::default().fg(Color::DarkGray))),
-    ];
-    let mut proj_list: Vec<(&String, &Vec<String>)> = by_project.iter().collect();
-    proj_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
-    for (proj, ids) in proj_list.iter().take(8) {
-        proj_lines.push(Line::from(vec![
-            Span::styled(format!("  ◈ {}", proj), Style::default().fg(Color::Cyan)),
-            Span::styled(format!("  ({})", ids.len()), Style::default().fg(Color::DarkGray)),
-        ]));
-    }
-    let projects = Paragraph::new(proj_lines);
-    frame.render_widget(projects, chunks[2]);
+    let health_block = Theme::block().title(" Health ");
+    frame.render_widget(Paragraph::new(health_text).block(health_block), top_row[0]);
 
-    // Assumptions health
+    // --- Assumptions ---
     let (untested, confirmed, invalidated) = app.assumption_counts;
     let total_assumptions = untested + confirmed + invalidated;
-    if total_assumptions > 0 {
-        let mut assumption_lines = vec![
-            Line::from(Span::styled(
-                "  ASSUMPTIONS",
-                Style::default().fg(Color::Yellow).bold(),
-            )),
-            Line::from(Span::styled(
-                "  ─────",
-                Style::default().fg(Color::DarkGray),
-            )),
-            Line::from(vec![
-                Span::styled(
-                    format!("  {total_assumptions} total │ "),
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled(
-                    format!("{untested} untested"),
-                    Style::default().fg(if untested > 0 { Color::Yellow } else { Color::Green }),
-                ),
-                Span::styled(" │ ", Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("{confirmed} confirmed"),
-                    Style::default().fg(Color::Green),
-                ),
-                Span::styled(" │ ", Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("{invalidated} invalidated"),
-                    Style::default().fg(if invalidated > 0 { Color::Red } else { Color::DarkGray }),
-                ),
-            ]),
-        ];
-        // Show top risky untested assumptions
-        for (_node_id, text, weight) in app.untested_assumptions.iter().take(3) {
-            assumption_lines.push(Line::from(vec![
-                Span::styled("  ? ", Style::default().fg(Color::Yellow)),
-                Span::styled(text.clone(), Style::default().fg(Color::White)),
-                if *weight > 0.0 {
-                    Span::styled(
-                        format!("  (w:{weight:.0})"),
-                        Style::default().fg(Color::DarkGray),
-                    )
-                } else {
-                    Span::raw("")
-                },
-            ]));
-        }
-        frame.render_widget(Paragraph::new(assumption_lines), chunks[3]);
-    }
 
-    // Cross-project synergies
-    if !app.synergies.is_empty() {
-        let mut syn_lines = vec![
-            Line::from(Span::styled(
-                "  SYNERGIES",
-                Style::default().fg(Color::Yellow).bold(),
-            )),
-            Line::from(Span::styled(
-                "  ─────",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ];
-        for (label_a, label_b, shared) in &app.synergies {
-            syn_lines.push(Line::from(vec![
-                Span::styled("  ↔ ", Style::default().fg(Color::Magenta)),
-                Span::styled(label_a.clone(), Style::default().fg(Color::White)),
-                Span::styled(" ⟷ ", Style::default().fg(Color::DarkGray)),
-                Span::styled(label_b.clone(), Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("  ({shared} tags)"),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]));
-        }
-        frame.render_widget(Paragraph::new(syn_lines), chunks[4]);
-    }
+    let mut assumption_lines = vec![
+        Line::from(vec![Span::styled(
+            format!("Total:         {}", total_assumptions),
+            Style::default().fg(Theme::FG),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("Untested:      {}", untested),
+            Style::default().fg(Theme::WARNING),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("Confirmed:     {}", confirmed),
+            Style::default().fg(Theme::SUCCESS),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("Invalidated:   {}", invalidated),
+            Style::default().fg(Theme::ERROR),
+        )]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Top Risky Assumptions:",
+            Style::default().fg(Theme::MUTED).italic(),
+        )),
+    ];
 
-    // Orphans
-    let orphans = gs.orphans();
-    let mut bottom_lines: Vec<Line> = Vec::new();
-    if !orphans.is_empty() {
-        bottom_lines.push(Line::from(vec![
-            Span::styled(
-                format!("  ○ {} orphan nodes (unlinked)", orphans.len()),
-                Style::default().fg(Color::Yellow),
-            ),
+    for (_node_id, text, weight) in app.untested_assumptions.iter().take(4) {
+        assumption_lines.push(Line::from(vec![
+            Span::styled(" ? ", Style::default().fg(Theme::WARNING)),
+            Span::styled(text.clone(), Style::default().fg(Theme::FG)),
+            if *weight > 0.0 {
+                Span::styled(
+                    format!(" (w:{:.0})", weight),
+                    Style::default().fg(Theme::MUTED),
+                )
+            } else {
+                Span::raw("")
+            },
         ]));
     }
-    if !bottom_lines.is_empty() {
-        frame.render_widget(Paragraph::new(bottom_lines), chunks[5]);
+
+    let assumption_block = Theme::block().title(" Assumptions ");
+    frame.render_widget(
+        Paragraph::new(assumption_lines).block(assumption_block),
+        top_row[1],
+    );
+
+    // --- By Project ---
+    let by_project = gs.by_project();
+    let mut proj_list: Vec<(&String, &Vec<String>)> = by_project.iter().collect();
+    proj_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+    let mut proj_items = Vec::new();
+    for (proj, ids) in proj_list.iter().take(15) {
+        let count = ids.len();
+        // Simple text bar
+        let bar_len = (count as f32 / 5.0).ceil() as usize; // scale it down
+        let bar = "█".repeat(bar_len.min(10));
+
+        proj_items.push(ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("{: <20} ", proj),
+                Style::default().fg(Theme::ACCENT_SECONDARY),
+            ),
+            Span::styled(format!("{: <3} ", count), Style::default().fg(Theme::FG)),
+            Span::styled(bar, Style::default().fg(Theme::MUTED)),
+        ])));
+    }
+
+    let projects_block = Theme::block().title(" Active Projects ");
+    let projects_list = List::new(proj_items).block(projects_block);
+    frame.render_widget(projects_list, mid_row[0]);
+
+    // --- Synergies ---
+    let mut syn_items = Vec::new();
+    for (label_a, label_b, shared) in &app.synergies {
+        syn_items.push(ListItem::new(vec![
+            Line::from(vec![
+                Span::styled(" ↔ ", Style::default().fg(Theme::ACCENT_PRIMARY)),
+                Span::styled(
+                    format!("{} & {}", label_a, label_b),
+                    Style::default().fg(Theme::FG),
+                ),
+            ]),
+            Line::from(vec![Span::styled(
+                format!("    Shared Tags: {}", shared),
+                Style::default().fg(Theme::MUTED),
+            )]),
+        ]));
+    }
+
+    if syn_items.is_empty() {
+        syn_items.push(ListItem::new(Line::from(Span::styled(
+            "No synergies detected.",
+            Style::default().fg(Theme::MUTED),
+        ))));
+    }
+
+    let syn_block = Theme::block().title(" Synergies ");
+    let syn_list = List::new(syn_items).block(syn_block);
+    frame.render_widget(syn_list, mid_row[1]);
+
+    // --- Orphans ---
+    let orphans = gs.orphans();
+    if !orphans.is_empty() {
+        let text = Paragraph::new(Line::from(vec![
+            Span::styled(" ○ ", Style::default().fg(Theme::WARNING)),
+            Span::styled(
+                format!("{} orphan nodes found (unlinked)", orphans.len()),
+                Style::default().fg(Theme::WARNING),
+            ),
+        ]))
+        .alignment(Alignment::Center);
+        frame.render_widget(text, chunks[2]);
     }
 }

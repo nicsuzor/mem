@@ -14,28 +14,36 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use crate::tui::app::{App, View};
+use crate::tui::theme::Theme;
 
 /// Main render dispatch — draws the current view plus chrome.
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
+
+    // Fill background
+    frame.render_widget(Block::default().style(Theme::root()), area);
 
     // Layout: status bar (1 line) at top, main content, keybindings (1 line) at bottom
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // status bar
-            Constraint::Min(1),   // main content
+            Constraint::Min(1),    // main content
             Constraint::Length(1), // keybindings
         ])
         .split(area);
 
     status_bar::render(frame, app, chunks[0]);
 
+    // Add a bit of margin for the main view if desired, but for TUI usually fullscreen is good.
+    // We can wrap the main view in a block if we want a global border, but let's keep it simple for now.
+    let main_area = chunks[1];
+
     match app.current_view {
-        View::Focus => focus::render(frame, app, chunks[1]),
-        View::Graph => graph_view::render(frame, app, chunks[1]),
-        View::EpicTree => epic_tree::render(frame, app, chunks[1]),
-        View::Dashboard => dashboard::render(frame, app, chunks[1]),
+        View::Focus => focus::render(frame, app, main_area),
+        View::Graph => graph_view::render(frame, app, main_area),
+        View::EpicTree => epic_tree::render(frame, app, main_area),
+        View::Dashboard => dashboard::render(frame, app, main_area),
     }
 
     render_keybindings(frame, app, chunks[2]);
@@ -64,6 +72,7 @@ fn render_keybindings(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let bar = Paragraph::new(keys)
-        .style(Style::default().fg(Color::DarkGray));
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Theme::MUTED).bg(Theme::BG));
     frame.render_widget(bar, area);
 }
