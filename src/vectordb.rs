@@ -682,6 +682,7 @@ mod tests {
             body: "Some body text".to_string(),
             doc_type: Some("note".to_string()),
             status: None,
+            modified: None,
             tags: vec!["test".to_string()],
             frontmatter: None,
             content_hash: "test_doc_hash".to_string(),

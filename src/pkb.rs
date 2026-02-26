@@ -23,6 +23,8 @@ pub struct PkbDocument {
     pub doc_type: Option<String>,
     /// Document status
     pub status: Option<String>,
+    /// Last modified time (RFC3339)
+    pub modified: Option<String>,
     /// Full body content (without frontmatter)
     pub body: String,
     /// Content hash (blake3, hex-encoded) for change detection
@@ -100,6 +102,14 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
     let content_hash = compute_content_hash(&content_bytes);
     let content = String::from_utf8(content_bytes).ok()?;
 
+    let modified = std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| {
+            let dt: chrono::DateTime<chrono::Utc> = t.into();
+            dt.to_rfc3339()
+        });
+
     let matter = Matter::<YAML>::new();
     let result = matter.parse(&content);
 
@@ -135,6 +145,7 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         tags,
         doc_type,
         status,
+        modified,
         body: result.content.trim().to_string(),
         content_hash,
         frontmatter: fm_data,

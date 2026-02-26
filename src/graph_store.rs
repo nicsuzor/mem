@@ -5,6 +5,7 @@
 //! the various accessor methods.
 
 use crate::graph::{self, deduplicate_vec, Edge, EdgeType, GraphNode};
+use crate::metrics;
 use crate::pkb::PkbDocument;
 use anyhow::Result;
 use rayon::prelude::*;
@@ -104,15 +105,21 @@ impl GraphStore {
         // 4. Compute inverse relationships on nodes
         compute_inverses(&mut nodes, &edges);
 
-        // 5. Compute downstream metrics (BFS through blocks/soft_blocks)
+        // 5. Compute degree metrics (indegree/outdegree)
+        compute_degree_metrics(&mut nodes, &edges);
+
+        // 6. Compute centrality metrics (PageRank, betweenness)
+        compute_centrality_metrics(&mut nodes, &edges);
+
+        // 7. Compute downstream metrics (BFS through blocks/soft_blocks)
         compute_downstream_metrics(&mut nodes);
 
-        // 6. Build node map and classify tasks
+        // 7. Build node map and classify tasks
         let node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
         let (ready, blocked, roots, by_project) = classify_tasks(&node_map);
 
-        // 7. Build resolution map for flexible node lookup
+        // 8. Build resolution map for flexible node lookup
         let resolution_map = build_resolution_map(&node_map);
 
         GraphStore {
@@ -941,6 +948,43 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
     }
 }
 
+/// Compute indegree and outdegree for each node.
+fn compute_degree_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
+    let mut out_counts: HashMap<String, i32> = HashMap::new();
+    let mut in_counts: HashMap<String, i32> = HashMap::new();
+    let mut backlink_counts: HashMap<String, i32> = HashMap::new();
+
+    for edge in edges {
+        *out_counts.entry(edge.source.clone()).or_insert(0) += 1;
+        *in_counts.entry(edge.target.clone()).or_insert(0) += 1;
+        if edge.edge_type == EdgeType::Link {
+            *backlink_counts.entry(edge.target.clone()).or_insert(0) += 1;
+        }
+    }
+
+    for node in nodes.iter_mut() {
+        node.outdegree = *out_counts.get(&node.id).unwrap_or(&0);
+        node.indegree = *in_counts.get(&node.id).unwrap_or(&0);
+        node.backlink_count = *backlink_counts.get(&node.id).unwrap_or(&0);
+    }
+}
+
+/// Compute PageRank and betweenness centrality.
+fn compute_centrality_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
+    let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    let pagerank = metrics::compute_pagerank(&node_ids, edges);
+    let betweenness = metrics::compute_betweenness_centrality(&node_ids, edges);
+
+    for node in nodes.iter_mut() {
+        if let Some(&pr) = pagerank.get(&node.id) {
+            node.pagerank = pr;
+        }
+        if let Some(&bt) = betweenness.get(&node.id) {
+            node.betweenness = bt;
+        }
+    }
+}
+
 /// Compute downstream_weight and stakeholder_exposure via BFS through
 /// blocks/soft_blocks. Mirrors the logic from fast-indexer main.rs.
 fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
@@ -1232,6 +1276,7 @@ mod tests {
             body: String::new(),
             doc_type: Some(doc_type.to_string()),
             status: Some(status.to_string()),
+            modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
             content_hash: "test_hash".to_string(),
