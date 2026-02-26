@@ -30,8 +30,9 @@ pub struct DocumentEntry {
     /// Document ID (from frontmatter)
     #[serde(default)]
     pub id: Option<String>,
-    /// File modification time (unix timestamp) — used for staleness detection
-    pub mtime: u64,
+    /// Content hash (blake3, hex-encoded) — used for staleness detection
+    #[serde(default)]
+    pub content_hash: Option<String>,
     /// Embedding vectors for each chunk of the document
     pub chunk_embeddings: Vec<Vec<f32>>,
     /// The text chunks that were embedded (for returning snippets)
@@ -128,10 +129,21 @@ impl VectorStore {
         self.documents.len()
     }
 
-    /// Check if a document needs re-indexing based on mtime
-    pub fn needs_update(&self, path: &str, mtime: u64) -> bool {
+    /// Check if the store is empty
+    pub fn is_empty(&self) -> bool {
+        self.documents.is_empty()
+    }
+
+    /// Check if a document needs re-indexing based on content hash
+    pub fn needs_update(&self, path: &str, content_hash: &str) -> bool {
         match self.documents.get(path) {
-            Some(entry) => entry.mtime < mtime,
+            Some(entry) => {
+                // If entry has no hash (old format), needs update
+                match &entry.content_hash {
+                    Some(stored_hash) => stored_hash != content_hash,
+                    None => true,
+                }
+            }
             None => true,
         }
     }
@@ -165,7 +177,7 @@ impl VectorStore {
             tags: doc.tags.clone(),
             project,
             id,
-            mtime: doc.mtime,
+            content_hash: Some(doc.content_hash.clone()),
             chunk_embeddings,
             chunk_texts: chunks,
             body_chunks,
@@ -188,7 +200,7 @@ impl VectorStore {
             tags: doc.tags.clone(),
             project,
             id,
-            mtime: doc.mtime,
+            content_hash: Some(doc.content_hash.clone()),
             chunk_embeddings,
             chunk_texts: chunks,
             body_chunks,
@@ -381,7 +393,7 @@ mod tests {
             tags: tags.iter().map(|s| s.to_string()).collect(),
             project: project.map(String::from),
             id: id.map(String::from),
-            mtime: 1000,
+            content_hash: Some("test_hash_123".to_string()),
             chunk_embeddings: vec![embedding],
             chunk_texts: vec![format!("chunk text for {title}")],
             body_chunks: vec![format!("body of {title}")],
@@ -593,21 +605,43 @@ mod tests {
     #[test]
     fn test_needs_update_new_doc() {
         let store = build_test_store();
-        assert!(store.needs_update("new-doc.md", 999));
+        assert!(store.needs_update("new-doc.md", "any_hash"));
     }
 
     #[test]
     fn test_needs_update_stale() {
         let store = build_test_store();
-        // mtime is 1000, so 2000 is newer
-        assert!(store.needs_update("tasks/task-abc.md", 2000));
+        // Stored hash is "test_hash_123", different hash means changed
+        assert!(store.needs_update("tasks/task-abc.md", "different_hash"));
     }
 
     #[test]
     fn test_needs_update_fresh() {
         let store = build_test_store();
-        // mtime is 1000, so 500 is older
-        assert!(!store.needs_update("tasks/task-abc.md", 500));
+        // Stored hash is "test_hash_123", same hash means unchanged
+        assert!(!store.needs_update("tasks/task-abc.md", "test_hash_123"));
+    }
+
+    #[test]
+    fn test_needs_update_migration_old_format() {
+        // Test migration: old format documents without content_hash should need update
+        let mut store = VectorStore::new(3);
+        let mut entry = make_entry(
+            "tasks/old-task.md",
+            "Old Task",
+            Some("task"),
+            None,
+            &[],
+            None,
+            None,
+            vec![1.0, 0.0, 0.0],
+        );
+        // Simulate old format by removing content_hash
+        entry.content_hash = None;
+        store.documents.insert("tasks/old-task.md".to_string(), entry);
+
+        // Document with no hash should always need update
+        assert!(store.needs_update("tasks/old-task.md", "any_hash"));
     }
 
     // ── persistence ──
@@ -650,7 +684,7 @@ mod tests {
             status: None,
             tags: vec!["test".to_string()],
             frontmatter: None,
-            mtime: 42,
+            content_hash: "test_doc_hash".to_string(),
         };
         store.insert_precomputed(&doc, vec!["chunk1".to_string()], vec![vec![1.0, 0.0, 0.0]]);
         assert_eq!(store.len(), 1);

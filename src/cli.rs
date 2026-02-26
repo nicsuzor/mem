@@ -2021,15 +2021,14 @@ fn index_pkb(
                 .unwrap_or(file_path)
                 .to_string_lossy()
                 .to_string();
-            let mtime = std::fs::metadata(file_path)
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            // Compute content hash for change detection
+            let content_hash = std::fs::read(file_path)
+                .ok()
+                .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+                .unwrap_or_default();
             force_all || {
                 let store = store.read();
-                store.needs_update(&path_str, mtime)
+                store.needs_update(&path_str, &content_hash)
             }
         })
         .cloned()
