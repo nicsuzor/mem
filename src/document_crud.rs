@@ -55,6 +55,8 @@ pub struct DocumentFields {
     pub complexity: Option<String>,
     pub source: Option<String>,
     pub due: Option<String>,
+    pub confidence: Option<f64>,
+    pub supersedes: Option<String>,
     /// Override subdirectory placement (e.g. "notes", "projects")
     pub dir: Option<String>,
 }
@@ -85,6 +87,8 @@ pub struct MemoryFields {
     pub memory_type: Option<String>,
     /// Source context (e.g. session ID)
     pub source: Option<String>,
+    pub confidence: Option<f64>,
+    pub supersedes: Option<String>,
 }
 
 /// Create a new document file with YAML frontmatter.
@@ -209,6 +213,14 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     if let Some(ref source) = fields.source {
         fm.push_str(&format!("source: \"{}\"\n", source.replace('"', "\\\"")));
+    }
+
+    if let Some(c) = fields.confidence {
+        fm.push_str(&format!("confidence: {}\n", c));
+    }
+
+    if let Some(ref s) = fields.supersedes {
+        fm.push_str(&format!("supersedes: {}\n", s));
     }
 
     if let Some(ref due) = fields.due {
@@ -368,6 +380,14 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
 
     if let Some(ref source) = fields.source {
         fm.push_str(&format!("source: \"{}\"\n", source.replace('"', "\\\"")));
+    }
+
+    if let Some(c) = fields.confidence {
+        fm.push_str(&format!("confidence: {}\n", c));
+    }
+
+    if let Some(ref s) = fields.supersedes {
+        fm.push_str(&format!("supersedes: {}\n", s));
     }
 
     fm.push_str(&format!("created: {}\n", chrono::Utc::now().to_rfc3339()));

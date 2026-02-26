@@ -28,6 +28,9 @@ pub enum EdgeType {
     /// Wiki/markdown link reference — thin line
     #[serde(rename = "link")]
     Link,
+    /// Supersedes relationship (this node replaces the target)
+    #[serde(rename = "supersedes")]
+    Supersedes,
 }
 
 impl EdgeType {
@@ -37,6 +40,7 @@ impl EdgeType {
             EdgeType::SoftDependsOn => "soft_depends_on",
             EdgeType::Parent => "parent",
             EdgeType::Link => "link",
+            EdgeType::Supersedes => "supersedes",
         }
     }
 }
@@ -92,6 +96,12 @@ pub struct GraphNode {
     pub assignee: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
     #[serde(skip_serializing_if = "is_zero_i32")]
     pub depth: i32,
     pub leaf: bool,
@@ -301,6 +311,15 @@ impl GraphNode {
         let complexity = fm
             .as_ref()
             .and_then(|f| f.get("complexity").and_then(|v| v.as_str()).map(String::from));
+        let source = fm
+            .as_ref()
+            .and_then(|f| f.get("source").and_then(|v| v.as_str()).map(String::from));
+        let confidence = fm
+            .as_ref()
+            .and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
+        let supersedes = fm
+            .as_ref()
+            .and_then(|f| f.get("supersedes").and_then(|v| v.as_str()).map(String::from));
 
         let (depends_on, soft_depends_on, children, blocks, soft_blocks) = match fm {
             Some(f) => (
@@ -399,6 +418,9 @@ impl GraphNode {
             created,
             assignee,
             complexity,
+            source,
+            confidence,
+            supersedes,
             depth,
             leaf,
             raw_links,
