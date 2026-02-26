@@ -14,23 +14,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),  // header
-            Constraint::Length(8),  // health stats
-            Constraint::Length(8),  // by project
-            Constraint::Length(8),  // assumptions
-            Constraint::Length(8),  // synergies
-            Constraint::Min(1),    // rest
-        ])
-        .split(area);
+    let mut lines = Vec::new();
 
     // Header
-    let header = Paragraph::new(Line::from(vec![
+    lines.push(Line::from(vec![
         Span::styled("  DASHBOARD", Style::default().fg(Color::White).bold()),
     ]));
-    frame.render_widget(header, chunks[0]);
+    lines.push(Line::from(""));
 
     // Health stats
     let all_tasks = gs.all_tasks();
@@ -58,89 +48,84 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let health_lines = vec![
-        Line::from(vec![
-            Span::styled("  HEALTH", Style::default().fg(Color::Yellow).bold()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ─────", Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {} total │ {} ready │ {} blocked", all_tasks.len(), ready.len(), blocked.len()),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {} P0/P1 │ {} P2 │ {} P3+", p1_count, p2_count, p3_count),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  Oldest task: {oldest_days}d"),
-                Style::default().fg(if oldest_days > 30 { Color::Red } else { Color::Yellow }),
-            ),
-        ]),
-    ];
-    let health = Paragraph::new(health_lines);
-    frame.render_widget(health, chunks[1]);
+    lines.push(Line::from(vec![
+        Span::styled("  HEALTH", Style::default().fg(Color::Yellow).bold()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  ─────", Style::default().fg(Color::DarkGray)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {} total │ {} ready │ {} blocked", all_tasks.len(), ready.len(), blocked.len()),
+            Style::default().fg(Color::White),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {} P0/P1 │ {} P2 │ {} P3+", p1_count, p2_count, p3_count),
+            Style::default().fg(Color::White),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  Oldest task: {oldest_days}d"),
+            Style::default().fg(if oldest_days > 30 { Color::Red } else { Color::Yellow }),
+        ),
+    ]));
+    lines.push(Line::from(""));
 
     // By project
     let by_project = gs.by_project();
-    let mut proj_lines = vec![
-        Line::from(Span::styled("  BY PROJECT", Style::default().fg(Color::Yellow).bold())),
-        Line::from(Span::styled("  ─────", Style::default().fg(Color::DarkGray))),
-    ];
+    lines.push(Line::from(Span::styled("  BY PROJECT", Style::default().fg(Color::Yellow).bold())));
+    lines.push(Line::from(Span::styled("  ─────", Style::default().fg(Color::DarkGray))));
+
     let mut proj_list: Vec<(&String, &Vec<String>)> = by_project.iter().collect();
     proj_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
-    for (proj, ids) in proj_list.iter().take(8) {
-        proj_lines.push(Line::from(vec![
+
+    for (proj, ids) in proj_list {
+        lines.push(Line::from(vec![
             Span::styled(format!("  ◈ {}", proj), Style::default().fg(Color::Cyan)),
             Span::styled(format!("  ({})", ids.len()), Style::default().fg(Color::DarkGray)),
         ]));
     }
-    let projects = Paragraph::new(proj_lines);
-    frame.render_widget(projects, chunks[2]);
+    lines.push(Line::from(""));
 
     // Assumptions health
     let (untested, confirmed, invalidated) = app.assumption_counts;
     let total_assumptions = untested + confirmed + invalidated;
     if total_assumptions > 0 {
-        let mut assumption_lines = vec![
-            Line::from(Span::styled(
-                "  ASSUMPTIONS",
-                Style::default().fg(Color::Yellow).bold(),
-            )),
-            Line::from(Span::styled(
-                "  ─────",
-                Style::default().fg(Color::DarkGray),
-            )),
-            Line::from(vec![
-                Span::styled(
-                    format!("  {total_assumptions} total │ "),
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled(
-                    format!("{untested} untested"),
-                    Style::default().fg(if untested > 0 { Color::Yellow } else { Color::Green }),
-                ),
-                Span::styled(" │ ", Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("{confirmed} confirmed"),
-                    Style::default().fg(Color::Green),
-                ),
-                Span::styled(" │ ", Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("{invalidated} invalidated"),
-                    Style::default().fg(if invalidated > 0 { Color::Red } else { Color::DarkGray }),
-                ),
-            ]),
-        ];
+        lines.push(Line::from(Span::styled(
+            "  ASSUMPTIONS",
+            Style::default().fg(Color::Yellow).bold(),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  ─────",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {total_assumptions} total │ "),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(
+                format!("{untested} untested"),
+                Style::default().fg(if untested > 0 { Color::Yellow } else { Color::Green }),
+            ),
+            Span::styled(" │ ", Style::default().fg(Color::White)),
+            Span::styled(
+                format!("{confirmed} confirmed"),
+                Style::default().fg(Color::Green),
+            ),
+            Span::styled(" │ ", Style::default().fg(Color::White)),
+            Span::styled(
+                format!("{invalidated} invalidated"),
+                Style::default().fg(if invalidated > 0 { Color::Red } else { Color::DarkGray }),
+            ),
+        ]));
+
         // Show top risky untested assumptions
-        for (_node_id, text, weight) in app.untested_assumptions.iter().take(3) {
-            assumption_lines.push(Line::from(vec![
+        for (_node_id, text, weight) in app.untested_assumptions.iter().take(5) {
+            lines.push(Line::from(vec![
                 Span::styled("  ? ", Style::default().fg(Color::Yellow)),
                 Span::styled(text.clone(), Style::default().fg(Color::White)),
                 if *weight > 0.0 {
@@ -153,23 +138,22 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 },
             ]));
         }
-        frame.render_widget(Paragraph::new(assumption_lines), chunks[3]);
+        lines.push(Line::from(""));
     }
 
     // Cross-project synergies
     if !app.synergies.is_empty() {
-        let mut syn_lines = vec![
-            Line::from(Span::styled(
-                "  SYNERGIES",
-                Style::default().fg(Color::Yellow).bold(),
-            )),
-            Line::from(Span::styled(
-                "  ─────",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ];
+        lines.push(Line::from(Span::styled(
+            "  SYNERGIES",
+            Style::default().fg(Color::Yellow).bold(),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  ─────",
+            Style::default().fg(Color::DarkGray),
+        )));
+
         for (label_a, label_b, shared) in &app.synergies {
-            syn_lines.push(Line::from(vec![
+            lines.push(Line::from(vec![
                 Span::styled("  ↔ ", Style::default().fg(Color::Magenta)),
                 Span::styled(label_a.clone(), Style::default().fg(Color::White)),
                 Span::styled(" ⟷ ", Style::default().fg(Color::DarkGray)),
@@ -180,21 +164,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 ),
             ]));
         }
-        frame.render_widget(Paragraph::new(syn_lines), chunks[4]);
+        lines.push(Line::from(""));
     }
 
     // Orphans
-    let orphans = gs.orphans();
-    let mut bottom_lines: Vec<Line> = Vec::new();
-    if !orphans.is_empty() {
-        bottom_lines.push(Line::from(vec![
+    if !app.orphans.is_empty() {
+        lines.push(Line::from(vec![
             Span::styled(
-                format!("  ○ {} orphan nodes (unlinked)", orphans.len()),
+                format!("  ○ {} orphan nodes (unlinked)", app.orphans.len()),
                 Style::default().fg(Color::Yellow),
             ),
         ]));
     }
-    if !bottom_lines.is_empty() {
-        frame.render_widget(Paragraph::new(bottom_lines), chunks[5]);
-    }
+
+    let paragraph = Paragraph::new(lines)
+        .scroll((app.dashboard_scroll, 0));
+
+    frame.render_widget(paragraph, area);
 }

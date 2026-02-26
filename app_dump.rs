@@ -122,6 +122,7 @@ pub struct App {
     pub blocked_count: usize,
     pub project_count: usize,
     pub assumption_counts: (usize, usize, usize),
+    pub orphans: Vec<String>, // (untested, confirmed, invalidated)
     pub orphans: Vec<String>,
 }
 
@@ -173,10 +174,12 @@ impl App {
             ready_count: 0,
             blocked_count: 0,
             project_count: 0,
+            dashboard_scroll: 0,
             assumption_counts: (0, 0, 0),
             orphans: Vec::new(),
         }
     }
+
     pub fn load_graph(&mut self) {
         let graph_path = self.db_path.with_extension("graph.json");
         let gs = match GraphStore::load(&graph_path) {
@@ -233,6 +236,8 @@ impl App {
         self.assumption_counts = (untested, confirmed, invalidated);
 
         // Orphans
+        let orphan_nodes = gs.orphans();
+                // Orphans
         let orphan_nodes = gs.orphans();
         self.orphans = orphan_nodes.iter().map(|n| n.id.clone()).collect();
 

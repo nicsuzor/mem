@@ -173,6 +173,7 @@ impl App {
             ready_count: 0,
             blocked_count: 0,
             project_count: 0,
+            dashboard_scroll: 0,
             assumption_counts: (0, 0, 0),
             orphans: Vec::new(),
         }
@@ -231,6 +232,8 @@ impl App {
         untested_list.truncate(10);
         self.untested_assumptions = untested_list;
         self.assumption_counts = (untested, confirmed, invalidated);
+
+        // Orphans        // Orphans
 
         // Orphans
         let orphan_nodes = gs.orphans();

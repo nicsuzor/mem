@@ -51,7 +51,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         capture::render(frame, app, area);
     }
     if app.show_help {
-        help::render(frame, area);
+        help::render(frame, app, area);
     }
 }
 
@@ -60,7 +60,7 @@ fn render_keybindings(frame: &mut Frame, app: &App, area: Rect) {
         View::EpicTree => "↑↓ navigate │ ←→ expand/collapse │ Enter detail │ Space toggle │ 1-3 filter │ / search │ Tab views │ ? help │ q quit",
         View::Focus => "↑↓ navigate │ Enter detail │ / search │ Tab views │ ? help │ q quit",
         View::Graph => "↑↓ navigate │ ←→ expand/collapse │ Enter detail │ / search │ Tab views │ ? help │ q quit",
-        View::Dashboard => "/ search │ Tab views │ ? help │ q quit",
+        View::Dashboard => "↑↓ scroll │ / search │ Tab views │ ? help │ q quit",
     };
 
     let bar = Paragraph::new(keys)
