@@ -84,7 +84,8 @@ impl VectorStore {
                         tracing::warn!(
                             "Vector store dimension mismatch: stored={}, expected={}. \
                              Creating fresh store (full reindex required).",
-                            store.dimension, dimension
+                            store.dimension,
+                            dimension
                         );
                         Ok(Self::new(dimension))
                     } else {
@@ -150,7 +151,8 @@ impl VectorStore {
 
         let embedding_text = doc.embedding_text();
         let chunks = embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
-        let body_chunks = embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
+        let body_chunks =
+            embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
 
         let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
         let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
@@ -176,10 +178,16 @@ impl VectorStore {
     }
 
     /// Insert a document with pre-computed embeddings (no embedding call needed)
-    pub fn insert_precomputed(&mut self, doc: &PkbDocument, chunks: Vec<String>, chunk_embeddings: Vec<Vec<f32>>) {
+    pub fn insert_precomputed(
+        &mut self,
+        doc: &PkbDocument,
+        chunks: Vec<String>,
+        chunk_embeddings: Vec<Vec<f32>>,
+    ) {
         let path_str = doc.path.to_string_lossy().to_string();
         let (id, project) = Self::extract_frontmatter_fields(doc);
-        let body_chunks = embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
+        let body_chunks =
+            embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
         let entry = DocumentEntry {
             path: doc.path.clone(),
             title: doc.title.clone(),
@@ -206,7 +214,8 @@ impl VectorStore {
     /// Remove documents whose files no longer exist
     pub fn remove_deleted(&mut self, existing_paths: &std::collections::HashSet<String>) -> usize {
         let before = self.documents.len();
-        self.documents.retain(|path, _| existing_paths.contains(path));
+        self.documents
+            .retain(|path, _| existing_paths.contains(path));
         let removed = before - self.documents.len();
         if removed > 0 {
             tracing::info!("Removed {removed} deleted documents from index");
@@ -218,7 +227,12 @@ impl VectorStore {
     ///
     /// Returned `SearchResult.path` values are reconstructed as absolute paths
     /// by joining with `pkb_root`.
-    pub fn search(&self, query_embedding: &[f32], limit: usize, pkb_root: &Path) -> Vec<SearchResult> {
+    pub fn search(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        pkb_root: &Path,
+    ) -> Vec<SearchResult> {
         // Build candidate list: for each document, use max similarity across chunks
         let mut results: Vec<SearchResult> = Vec::new();
 

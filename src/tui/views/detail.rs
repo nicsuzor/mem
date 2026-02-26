@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
+use crate::graph::GraphNode;
+use crate::graph_store::GraphStore;
 use crate::tui::app::App;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -42,7 +44,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // title bar
-            Constraint::Min(1),   // content
+            Constraint::Min(1),    // content
             Constraint::Length(1), // keybindings
         ])
         .split(overlay);
@@ -66,12 +68,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(title_bar, inner[0]);
 
     // Bottom keybindings
-    let keys = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " Esc back │ j/k scroll ",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]));
+    let keys = Paragraph::new(Line::from(vec![Span::styled(
+        " Esc back │ j/k scroll ",
+        Style::default().fg(Color::DarkGray),
+    )]));
     frame.render_widget(keys, inner[2]);
 
     // Split content area into left and right panels
@@ -122,7 +122,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     left_lines.push(Line::from(vec![
         Span::styled("  Status: ", Style::default().fg(Color::DarkGray)),
         Span::styled(status, Style::default().fg(status_color).bold()),
-        Span::styled(format!("   P{pri}"), Style::default().fg(Color::White).bold()),
+        Span::styled(
+            format!("   P{pri}"),
+            Style::default().fg(Color::White).bold(),
+        ),
     ]));
 
     // Dates
@@ -141,7 +144,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 Color::DarkGray
             };
-            spans.push(Span::styled(format!("  ({days}d)"), Style::default().fg(color)));
+            spans.push(Span::styled(
+                format!("  ({days}d)"),
+                Style::default().fg(color),
+            ));
         }
         left_lines.push(Line::from(spans));
     }
@@ -241,23 +247,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             left_lines.push(Line::from(vec![
                 Span::styled(format!("  {icon} "), Style::default().fg(color)),
                 Span::styled(a.text.clone(), Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("  [{}]", a.status),
-                    Style::default().fg(color),
-                ),
+                Span::styled(format!("  [{}]", a.status), Style::default().fg(color)),
             ]));
         }
     }
 
     let scroll = app.detail_scroll.min(left_lines.len().saturating_sub(1));
     let left_text = Text::from(left_lines);
-    let left_panel = Paragraph::new(left_text)
-        .scroll((scroll as u16, 0))
-        .block(
-            Block::default()
-                .borders(Borders::LEFT | Borders::BOTTOM | Borders::TOP)
-                .border_style(Style::default().fg(Color::Rgb(50, 50, 70))),
-        );
+    let left_panel = Paragraph::new(left_text).scroll((scroll as u16, 0)).block(
+        Block::default()
+            .borders(Borders::LEFT | Borders::BOTTOM | Borders::TOP)
+            .border_style(Style::default().fg(Color::Rgb(50, 50, 70))),
+    );
     frame.render_widget(left_panel, panels[0]);
 
     // ── RIGHT PANEL: graph context ──
@@ -273,89 +274,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray),
     )));
 
-    // Walk up parent chain (enables)
-    let mut parent_id = node.parent.as_deref();
-    let mut parent_chain = Vec::new();
-    while let Some(pid) = parent_id {
-        if let Some(parent) = gs.get_node(pid) {
-            let icon = match parent.node_type.as_deref() {
-                Some("goal") => "◉",
-                Some("project") | Some("subproject") => "◈",
-                Some("epic") => "◈",
-                _ => "◇",
-            };
-            let color = match parent.node_type.as_deref() {
-                Some("goal") => Color::Yellow,
-                Some("project") | Some("subproject") | Some("epic") => Color::Cyan,
-                _ => Color::White,
-            };
-            parent_chain.push((format!("{icon} {}", parent.label), color));
-            parent_id = parent.parent.as_deref();
-        } else {
-            break;
-        }
-    }
-
-    if parent_chain.is_empty() {
-        right_lines.push(Line::from(Span::styled(
-            "  ↑ (orphan — no parent chain)",
-            Style::default().fg(Color::Yellow),
-        )));
-    } else {
-        right_lines.push(Line::from(Span::styled(
-            "  ↑ enables:",
-            Style::default().fg(Color::DarkGray),
-        )));
-        parent_chain.reverse();
-        for (label, color) in &parent_chain {
-            right_lines.push(Line::from(Span::styled(
-                format!("    {label}"),
-                Style::default().fg(*color),
-            )));
-        }
-    }
-
-    // Dependencies (depends_on — blocked by)
-    if !node.depends_on.is_empty() {
-        right_lines.push(Line::from(""));
-        right_lines.push(Line::from(Span::styled(
-            "  ↓ depends on:",
-            Style::default().fg(Color::DarkGray),
-        )));
-        for dep_id in &node.depends_on {
-            if let Some(dep) = gs.get_node(dep_id) {
-                let done = matches!(dep.status.as_deref(), Some("done"));
-                let color = if done { Color::Green } else { Color::Red };
-                let icon = if done { "✓" } else { "✗" };
-                right_lines.push(Line::from(vec![
-                    Span::styled(format!("    {icon} "), Style::default().fg(color)),
-                    Span::styled(dep.label.clone(), Style::default().fg(color)),
-                ]));
-            } else {
-                right_lines.push(Line::from(Span::styled(
-                    format!("    ? {dep_id}"),
-                    Style::default().fg(Color::Red),
-                )));
-            }
-        }
-    }
-
-    // Blocks (what completing this would unblock)
-    if !node.blocks.is_empty() {
-        right_lines.push(Line::from(""));
-        right_lines.push(Line::from(Span::styled(
-            "  → completing this unblocks:",
-            Style::default().fg(Color::DarkGray),
-        )));
-        for block_id in &node.blocks {
-            if let Some(blocked) = gs.get_node(block_id) {
-                right_lines.push(Line::from(Span::styled(
-                    format!("    ◇ {}", blocked.label),
-                    Style::default().fg(Color::White),
-                )));
-            }
-        }
-    }
+    // Insert ASCII visualization here
+    right_lines.extend(render_ascii_context(node, gs));
 
     // Related (siblings — same parent, different node)
     if let Some(ref pid) = node.parent {
@@ -399,9 +319,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )));
         for (source_type, refs) in &backlinks {
             // Skip structural edges we already show above
-            let has_link = refs.iter().any(|(_, et)| {
-                matches!(et, mem::graph::EdgeType::Link)
-            });
+            let has_link = refs
+                .iter()
+                .any(|(_, et)| matches!(et, crate::graph::EdgeType::Link));
             if !has_link {
                 continue;
             }
@@ -410,7 +330,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::DarkGray).italic(),
             )));
             for (source_node, edge_type) in refs {
-                if !matches!(edge_type, mem::graph::EdgeType::Link) {
+                if !matches!(edge_type, crate::graph::EdgeType::Link) {
                     continue;
                 }
                 let icon = match source_node.node_type.as_deref() {
@@ -460,10 +380,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             )));
             for (label, count) in &tag_matches {
                 right_lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("    · {label}"),
-                        Style::default().fg(Color::White),
-                    ),
+                    Span::styled(format!("    · {label}"), Style::default().fg(Color::White)),
                     Span::styled(
                         format!("  ({count} shared)"),
                         Style::default().fg(Color::DarkGray),
@@ -488,12 +405,103 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let right_text = Text::from(right_lines);
-    let right_panel = Paragraph::new(right_text)
-        .scroll((scroll as u16, 0))
-        .block(
-            Block::default()
-                .borders(Borders::RIGHT | Borders::BOTTOM | Borders::TOP)
-                .border_style(Style::default().fg(Color::Rgb(50, 50, 70))),
-        );
+    let right_panel = Paragraph::new(right_text).scroll((scroll as u16, 0)).block(
+        Block::default()
+            .borders(Borders::RIGHT | Borders::BOTTOM | Borders::TOP)
+            .border_style(Style::default().fg(Color::Rgb(50, 50, 70))),
+    );
     frame.render_widget(right_panel, panels[1]);
+}
+
+/// Render an ASCII visualization of the node's local context.
+fn render_ascii_context<'a>(node: &GraphNode, gs: &'a GraphStore) -> Vec<Line<'a>> {
+    let mut lines = Vec::new();
+
+    // 1. Parent
+    if let Some(ref pid) = node.parent {
+        if let Some(parent) = gs.get_node(pid) {
+            lines.push(Line::from(Span::styled(
+                format!("  ^ Parent: {}", parent.label),
+                Style::default().fg(Color::Cyan),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  │",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    // 2. Dependencies (Incoming)
+    if !node.depends_on.is_empty() {
+        for dep_id in &node.depends_on {
+            let connector = "  ├─";
+
+            if let Some(dep) = gs.get_node(dep_id) {
+                let status = dep.status.as_deref().unwrap_or("active");
+                let color = if status == "done" || status == "complete" {
+                    Color::Green
+                } else {
+                    Color::Red
+                };
+                let icon = if status == "done" || status == "complete" {
+                    "✓"
+                } else {
+                    "○"
+                };
+
+                lines.push(Line::from(vec![
+                    Span::styled(connector, Style::default().fg(Color::DarkGray)),
+                    Span::styled(format!(" {} ", icon), Style::default().fg(color)),
+                    Span::styled(dep.label.clone(), Style::default().fg(color)),
+                ]));
+            }
+        }
+        lines.push(Line::from(Span::styled(
+            "  │",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  ▼",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else if node.parent.is_some() {
+        lines.push(Line::from(Span::styled(
+            "  ▼",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    // 3. Current Node
+    lines.push(Line::from(Span::styled(
+        format!("  [{}]", node.label),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    // 4. Blocks (Outgoing)
+    if !node.blocks.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  │",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  ▼",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        for (i, block_id) in node.blocks.iter().enumerate() {
+            let is_last = i == node.blocks.len() - 1;
+            let connector = if is_last { "  └─" } else { "  ├─" };
+            if let Some(blocked) = gs.get_node(block_id) {
+                lines.push(Line::from(vec![
+                    Span::styled(connector, Style::default().fg(Color::DarkGray)),
+                    Span::styled(" ◇ ", Style::default().fg(Color::White)),
+                    Span::styled(blocked.label.clone(), Style::default().fg(Color::White)),
+                ]));
+            }
+        }
+    }
+
+    lines
 }

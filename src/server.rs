@@ -74,7 +74,8 @@ async fn main() -> Result<()> {
 
     // Index PKB files
     eprintln!("   Indexing PKB files...");
-    let (indexed, removed, total) = mem::index_pkb(&pkb_root, &db_path, &store, &embedder, cli.reindex);
+    let (indexed, removed, total) =
+        mem::index_pkb(&pkb_root, &db_path, &store, &embedder, cli.reindex);
     eprintln!("   ✓ {total} documents indexed ({indexed} new/updated, {removed} removed)");
 
     // Save after initial indexing
