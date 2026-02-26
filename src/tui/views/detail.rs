@@ -273,114 +273,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray),
     )));
 
-    // Walk up parent chain (enables)
-    let mut parent_id = node.parent.as_deref();
-    let mut parent_chain = Vec::new();
-    while let Some(pid) = parent_id {
-        if let Some(parent) = gs.get_node(pid) {
-            let icon = match parent.node_type.as_deref() {
-                Some("goal") => "◉",
-                Some("project") | Some("subproject") => "◈",
-                Some("epic") => "◈",
-                _ => "◇",
-            };
-            let color = match parent.node_type.as_deref() {
-                Some("goal") => Color::Yellow,
-                Some("project") | Some("subproject") | Some("epic") => Color::Cyan,
-                _ => Color::White,
-            };
-            parent_chain.push((format!("{icon} {}", parent.label), color));
-            parent_id = parent.parent.as_deref();
-        } else {
-            break;
-        }
-    }
-
-    if parent_chain.is_empty() {
+    let graph_lines = crate::graph_display::render_ascii_graph(gs, node_id);
+    for line in graph_lines {
         right_lines.push(Line::from(Span::styled(
-            "  ↑ (orphan — no parent chain)",
-            Style::default().fg(Color::Yellow),
+            format!("  {line}"),
+            Style::default().fg(Color::White),
         )));
-    } else {
-        right_lines.push(Line::from(Span::styled(
-            "  ↑ enables:",
-            Style::default().fg(Color::DarkGray),
-        )));
-        parent_chain.reverse();
-        for (label, color) in &parent_chain {
-            right_lines.push(Line::from(Span::styled(
-                format!("    {label}"),
-                Style::default().fg(*color),
-            )));
-        }
-    }
-
-    // Dependencies (depends_on — blocked by)
-    if !node.depends_on.is_empty() {
-        right_lines.push(Line::from(""));
-        right_lines.push(Line::from(Span::styled(
-            "  ↓ depends on:",
-            Style::default().fg(Color::DarkGray),
-        )));
-        for dep_id in &node.depends_on {
-            if let Some(dep) = gs.get_node(dep_id) {
-                let done = matches!(dep.status.as_deref(), Some("done"));
-                let color = if done { Color::Green } else { Color::Red };
-                let icon = if done { "✓" } else { "✗" };
-                right_lines.push(Line::from(vec![
-                    Span::styled(format!("    {icon} "), Style::default().fg(color)),
-                    Span::styled(dep.label.clone(), Style::default().fg(color)),
-                ]));
-            } else {
-                right_lines.push(Line::from(Span::styled(
-                    format!("    ? {dep_id}"),
-                    Style::default().fg(Color::Red),
-                )));
-            }
-        }
-    }
-
-    // Blocks (what completing this would unblock)
-    if !node.blocks.is_empty() {
-        right_lines.push(Line::from(""));
-        right_lines.push(Line::from(Span::styled(
-            "  → completing this unblocks:",
-            Style::default().fg(Color::DarkGray),
-        )));
-        for block_id in &node.blocks {
-            if let Some(blocked) = gs.get_node(block_id) {
-                right_lines.push(Line::from(Span::styled(
-                    format!("    ◇ {}", blocked.label),
-                    Style::default().fg(Color::White),
-                )));
-            }
-        }
-    }
-
-    // Related (siblings — same parent, different node)
-    if let Some(ref pid) = node.parent {
-        if let Some(parent) = gs.get_node(pid) {
-            let siblings: Vec<&str> = parent
-                .children
-                .iter()
-                .filter(|cid| cid.as_str() != node.id)
-                .filter_map(|cid| gs.get_node(cid).map(|n| n.label.as_str()))
-                .take(5)
-                .collect();
-            if !siblings.is_empty() {
-                right_lines.push(Line::from(""));
-                right_lines.push(Line::from(Span::styled(
-                    "  ↔ related (siblings):",
-                    Style::default().fg(Color::DarkGray),
-                )));
-                for sib in &siblings {
-                    right_lines.push(Line::from(Span::styled(
-                        format!("    ◇ {sib}"),
-                        Style::default().fg(Color::White),
-                    )));
-                }
-            }
-        }
     }
 
     // ── PKB CONNECTIONS ──

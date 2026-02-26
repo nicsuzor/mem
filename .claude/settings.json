@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Write(/home/nic/.aops/mem-a29aae98/**)",
+      "Edit(/home/nic/.aops/mem-a29aae98/**)",
+      "Bash(cd /home/nic/.aops/mem-a29aae98:*)"
+    ],
+    "deny": [
+      "Write(**)",
+      "Edit(**)"
+    ]
+  }
+}
