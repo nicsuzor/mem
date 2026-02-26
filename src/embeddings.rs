@@ -133,25 +133,25 @@ fn download_onnx_runtime() -> Result<PathBuf> {
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     let (url, lib_name) = (
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-linux-x64-1.24.2.tgz",
         "libonnxruntime.so",
     );
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     let (url, lib_name) = (
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz",
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-linux-aarch64-1.24.2.tgz",
         "libonnxruntime.so",
     );
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let (url, lib_name) = (
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz",
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-osx-arm64-1.24.2.tgz",
         "libonnxruntime.dylib",
     );
 
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     let (url, lib_name) = (
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz",
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-osx-x86_64-1.24.2.tgz",
         "libonnxruntime.dylib",
     );
 
@@ -225,6 +225,43 @@ fn max_sessions() -> usize {
     (cores / THREADS_PER_SESSION).clamp(2, 24)
 }
 
+/// Build an ONNX session with platform-appropriate execution providers.
+/// On macOS ARM64, tries CoreML EP (Neural Engine) first, falls back to CPU.
+fn build_session(model_path: &std::path::Path, threads: usize) -> Result<Session> {
+    use ort::session::builder::GraphOptimizationLevel;
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        // Try CoreML first — dispatches to the Apple Neural Engine.
+        let coreml_result = Session::builder()
+            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+            .and_then(|b| b.with_intra_threads(threads))
+            .and_then(|b| {
+                b.with_execution_providers([
+                    ort::ep::CoreML::default()
+                        .with_subgraphs(true)
+                        .with_compute_units(ort::ep::coreml::ComputeUnits::CPUAndNeuralEngine)
+                        .build(),
+                ])
+            })
+            .and_then(|b| b.commit_from_file(model_path));
+
+        match coreml_result {
+            Ok(session) => return Ok(session),
+            Err(e) => {
+                tracing::warn!("CoreML EP unavailable ({e}), using CPU fallback");
+            }
+        }
+    }
+
+    // CPU fallback (or primary path on non-Apple platforms)
+    Session::builder()
+        .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+        .and_then(|b| b.with_intra_threads(threads))
+        .and_then(|b| b.commit_from_file(model_path))
+        .with_context(|| format!("Failed to load ONNX model from {:?}", model_path))
+}
+
 struct SessionPool {
     sessions: parking_lot::RwLock<Vec<Arc<Mutex<Session>>>>,
     model_path: PathBuf,
@@ -237,13 +274,7 @@ impl SessionPool {
     /// Create pool with a single session (fast startup for search).
     /// Additional sessions are added lazily via `ensure_sessions()`.
     fn new(config: &EmbeddingConfig) -> Result<Self> {
-        use ort::session::builder::GraphOptimizationLevel;
-
-        let session = Session::builder()
-            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
-            .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
-            .and_then(|b| b.commit_from_file(&config.model_path))
-            .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?;
+        let session = build_session(&config.model_path, THREADS_PER_SESSION)?;
 
         // Detect whether model expects token_type_ids (BERT does, XLM-RoBERTa does not)
         let uses_token_type_ids = session
@@ -277,8 +308,6 @@ impl SessionPool {
     /// Grow pool to `count` sessions (no-op if already large enough).
     /// Called before parallel batch encoding.
     fn ensure_sessions(&self, count: usize) -> Result<()> {
-        use ort::session::builder::GraphOptimizationLevel;
-
         let max_sess = max_sessions();
         let current = self.sessions.read().len();
         let needed = count.min(max_sess);
@@ -293,12 +322,7 @@ impl SessionPool {
         let new_sessions: Vec<_> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..to_add)
                 .map(|_| {
-                    s.spawn(|| {
-                        Session::builder()
-                            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
-                            .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
-                            .and_then(|b| b.commit_from_file(model_path))
-                    })
+                    s.spawn(|| build_session(model_path, THREADS_PER_SESSION))
                 })
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
@@ -369,8 +393,14 @@ impl Embedder {
         }
 
         let max_sess = max_sessions();
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let ep_name = "CoreML (CPU+ANE)";
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let ep_name = "CPU";
+
         tracing::info!(
-            "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, up to {max_sess} sessions × {THREADS_PER_SESSION} threads)"
+            "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, {ep_name}, up to {max_sess} sessions × {THREADS_PER_SESSION} threads)"
         );
         Ok(Self {
             config,

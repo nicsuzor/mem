@@ -49,7 +49,7 @@ notify = "7"
 notify-debouncer-mini = "0.5"
 
 # ONNX Runtime for MiniLM embeddings
-ort = { version = "2.0.0-rc.11", default-features = false, features = ["load-dynamic", "half"] }
+ort = { version = "2.0.0-rc.11", default-features = false, features = ["load-dynamic", "half", "coreml"] }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 ndarray = "0.16"
 
