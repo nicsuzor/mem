@@ -1,25 +1,103 @@
 # mem
 
-Semantic search and knowledge graph over personal knowledge base markdown files, exposed as an MCP server and CLI.
+A fast, local semantic search engine and knowledge graph for your personal knowledge base. Works with plain markdown files, exposes an [MCP](https://modelcontextprotocol.io/) server for AI assistants, and includes a CLI for direct access.
 
-Uses [BGE-M3](https://huggingface.co/BAAI/bge-m3) for 1024-dimensional sentence embeddings via ONNX Runtime. Models and runtime are auto-downloaded on first run.
+**What it does:** Point it at a directory of markdown files and it builds a searchable vector index + knowledge graph from YAML frontmatter links. AI assistants (Claude, Gemini, etc.) can then search, create, and manage documents through MCP tools. You can also use the CLI directly.
+
+## Features
+
+- **Semantic search** — BGE-M3 embeddings (1024-dim) via ONNX Runtime, with hybrid graph-proximity boosting
+- **Knowledge graph** — Automatic relationship extraction from YAML frontmatter (`depends_on`, `parent`, `tags`, etc.), with PageRank, betweenness centrality, and path tracing
+- **Task management** — Create, prioritize, and track tasks with dependency graphs; `ready` and `blocked` filters use graph analysis
+- **Memory system** — Store and retrieve observations, notes, and insights with semantic search
+- **MCP server** — 18 tools for AI assistants over stdio transport
+- **CLI** — Full-featured command-line interface for search, tasks, memory, and graph operations
+- **Fast** — Lazy ONNX session pooling, SIMD-accelerated vector ops, parallel batch embedding
+- **Local** — Everything runs on your machine. No cloud services, no API keys, no data leaves your disk
+- **Auto-setup** — Model files and ONNX Runtime are downloaded automatically on first run
+
+## Install
+
+### Pre-built binaries (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nicsuzor/mem/main/install.sh | sh
+```
+
+Supports Linux x86_64 and macOS Apple Silicon. Installs `pkb` (MCP server) and `aops` (CLI) to `/usr/local/bin`.
+
+### From source
+
+```bash
+cargo install --git https://github.com/nicsuzor/mem.git
+```
+
+Requires Rust >= 1.88.
+
+### cargo-binstall
+
+```bash
+cargo binstall mem
+```
 
 ## Quick Start
 
+### 1. Set your PKB directory
+
 ```bash
-# Build both binaries
-cargo build --release
-
-# Run MCP server (stdio transport)
-./target/release/pkb
-
-# Run CLI
-./target/release/aops search "my query"
+export ACA_DATA=~/brain  # or wherever your markdown files live
 ```
 
-## CLI Commands
+### 2. Index your files
 
-The `aops` binary provides direct access to search, task management, and graph analysis.
+```bash
+aops reindex
+```
+
+### 3. Search
+
+```bash
+aops search "how does authentication work"
+```
+
+### 4. Connect to an AI assistant
+
+Add to your MCP client config (e.g. Claude Code `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "pkb": {
+      "command": "pkb",
+      "args": []
+    }
+  }
+}
+```
+
+## Document Format
+
+mem works with plain markdown files that have YAML frontmatter:
+
+```markdown
+---
+id: my-task-123
+title: Implement user auth
+type: task
+status: active
+priority: 2
+tags: [backend, security]
+depends_on: [design-doc-456]
+parent: project-789
+---
+
+The actual content of the document goes here.
+Any markdown is fine.
+```
+
+All frontmatter fields are optional. Files without frontmatter are indexed by filename and content.
+
+## CLI Commands
 
 ### Search & Index
 
@@ -35,140 +113,66 @@ The `aops` binary provides direct access to search, task management, and graph a
 
 | Command | Description |
 |---------|-------------|
-| `aops tasks [ready\|blocked\|all] [--project P] [--sort S]` | List tasks sorted by priority + downstream weight. `--sort` accepts `priority`, `weight`, or `due`. |
+| `aops tasks [ready\|blocked\|all] [--project P] [--sort S]` | List tasks sorted by priority + downstream weight |
 | `aops task <id>` | Show task details and relationships |
-| `aops new <title> [--parent ID] [--priority N] [--project P] [--tags T] [--depends-on ID] [--assignee A] [--complexity C] [--body B]` | Create a new task with full metadata |
+| `aops new <title> [--parent ID] [--priority N] [--project P] [--tags T] [--depends-on ID]` | Create a new task |
 | `aops done <id>` | Mark a task as done |
-| `aops update <id> [--status S] [--priority N] [--project P] [--assignee A] [--tags T]` | Update task frontmatter fields |
-| `aops deps <id> [--tree]` | Show dependency tree for a task |
+| `aops update <id> [--status S] [--priority N] [--project P] [--tags T]` | Update task fields |
+| `aops deps <id> [--tree]` | Show dependency tree |
 | `aops blocks <id> [--tree]` | Show what completing a task would unblock |
 
-### Memory Management
+### Memory
 
 | Command | Description |
 |---------|-------------|
-| `aops recall <query> [-n limit]` | Semantic search over memories/notes/insights with full body display |
-| `aops memories [--tag T]` | List all memory-type documents, optionally filtered by tag |
-| `aops tags [tag...] [--count] [--type T]` | Without args: show tag frequency summary. With args: search documents by tags. |
-| `aops forget <id>` | Delete a memory document (validates type before deletion) |
+| `aops recall <query> [-n limit]` | Semantic search over memories and notes |
+| `aops memories [--tag T]` | List memory-type documents |
+| `aops tags [tag...] [--count] [--type T]` | Tag frequency summary or search by tags |
+| `aops forget <id>` | Delete a memory document |
 
 ### Knowledge Graph
 
 | Command | Description |
 |---------|-------------|
-| `aops context <id> [--hops N]` | Full knowledge neighbourhood: metadata, backlinks by type, nearby nodes within N hops. Supports flexible ID resolution (by ID, filename, or title). |
-| `aops trace <from> <to> [-n max_paths]` | Find shortest paths between two nodes in the graph |
-| `aops orphans` | List disconnected nodes with no incoming or outgoing edges |
-| `aops metrics [id]` | Network centrality metrics (PageRank, betweenness, degree). Omit ID for top-20 summary. |
-| `aops graph [--format json\|graphml\|dot\|mcp-index\|all] [--output path]` | Export the full knowledge graph |
+| `aops context <id> [--hops N]` | Neighbourhood: metadata, backlinks, nearby nodes |
+| `aops trace <from> <to> [-n max_paths]` | Shortest paths between two nodes |
+| `aops orphans` | Disconnected nodes with no edges |
+| `aops metrics [id]` | PageRank, betweenness, degree centrality |
+| `aops graph [--format json\|graphml\|dot] [--output path]` | Export the knowledge graph |
 
 ## MCP Tools
 
-The `pkb` server exposes 18 tools over MCP (stdio transport).
+The `pkb` binary exposes 18 tools over MCP stdio transport. Any MCP-compatible client can use them.
 
-### Search Tools
-
-| Tool | Description |
-|------|-------------|
-| `search` | Hybrid semantic + graph-proximity search. Params: `query` (required), `limit` (default 10), `boost_id` (optional), `project` |
-| `get_document` | Read full contents of a file. Params: `path` (string) |
-| `list_documents` | Browse/filter documents. Params: `tag`, `type`, `status`, `project` (all optional) |
-| `reindex` | Force a full re-scan of the PKB directory and rebuild the knowledge graph |
-
-### Task Tools
-
-| Tool | Description |
-|------|-------------|
-| `task_search` | Semantic search filtered to tasks/projects/goals. Returns graph context. Params: `query`, `limit` |
-| `list_tasks` | List tasks with filtering. Use `status="ready"` for actionable tasks with weight column, `status="blocked"` for tasks with blocker details. Params: `project`, `status`, `priority`, `assignee`, `limit` |
-| `get_task` | Retrieve task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, parent with titles/statuses, downstream_weight, stakeholder_exposure). Params: `id` |
-| `create_task` | Create a new task markdown file. Params: `title` (required), `id`, `parent`, `priority`, `project`, `tags`, `depends_on`, `assignee`, `complexity`, `body` |
-| `update_task` | Update frontmatter fields on an existing task. Params: `path` or `id`, `updates` (object) |
-| `complete_task` | Mark a task as done. Params: `id` |
-| `get_network_metrics` | Centrality metrics: degree, betweenness, PageRank, downstream weight. Params: `id` |
-| `decompose_task` | Batch create subtasks under a parent. Params: `parent_id`, `subtasks` (array of objects with `title` + optional fields) |
-| `get_dependency_tree` | Get upstream or downstream dependency tree. Params: `id`, `direction` (`upstream`\|`downstream`, default: upstream) |
-| `get_task_children` | Get direct or recursive children with completion counts. Params: `id`, `recursive` (bool, default: false) |
-
-### Memory Tools
-
-| Tool | Description |
-|------|-------------|
-| `retrieve_memory` | Semantic search filtered to memory/note/insight/observation types. Shows full body. Params: `query`, `limit`, `tags` |
-| `search_by_tag` | Find documents by tag intersection. Params: `tags` (array, required), `type`, `limit` |
-| `list_memories` | List memory-type documents with optional tag filter. Params: `limit`, `tags` |
-| `delete_memory` | Delete a memory document (validates type before deletion). Params: `id` |
-
-### Document CRUD Tools
-
-| Tool | Description |
-|------|-------------|
-| `create` | Create a new document with enforced frontmatter. Subdirectory routing by type. Params: `title`, `type` (required), plus optional fields |
-| `create_memory` | Create a new memory/note. Stored in memories/ directory. Params: `title` (required) |
-| `append` | Append timestamped content to an existing document. Params: `id`, `content` (required), `section` (optional) |
-| `delete` | Delete a document by ID. Removes from disk and vector store. Params: `id` |
-
-### Knowledge Graph Tools
-
-| Tool | Description |
-|------|-------------|
-| `pkb_context` | Full knowledge neighbourhood: metadata, relationships, backlinks grouped by source type, nearby nodes within N hops. Supports flexible ID resolution. Params: `id` (required), `hops` (default 2) |
-| `pkb_trace` | Find shortest paths between two nodes. Params: `from`, `to` (required), `max_paths` (default 3) |
-| `pkb_orphans` | Find disconnected nodes with zero edges. Params: `limit` (default 20) |
-
-## MCP Client Configuration
-
-### Claude Code
-
-Add to `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "pkb": {
-      "command": "/path/to/pkb",
-      "args": []
-    }
-  }
-}
-```
-
-### Gemini CLI
-
-Add to your extension or `settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "pkb": {
-      "command": "/path/to/pkb",
-      "args": []
-    }
-  }
-}
-```
+| Category | Tools |
+|----------|-------|
+| **Search** | `search`, `get_document`, `list_documents`, `reindex` |
+| **Tasks** | `task_search`, `list_tasks`, `get_task`, `create_task`, `update_task`, `complete_task`, `get_network_metrics`, `decompose_task`, `get_dependency_tree`, `get_task_children` |
+| **Memory** | `retrieve_memory`, `search_by_tag`, `list_memories`, `delete_memory` |
+| **CRUD** | `create`, `create_memory`, `append`, `delete` |
+| **Graph** | `pkb_context`, `pkb_trace`, `pkb_orphans` |
 
 ## Architecture
 
 ```text
-MCP Client ◄──stdio──► pkb
-                          │
-                    ┌─────┴──────┐
-                    │ MCP Server │  (rmcp 0.1, ServerHandler trait)
-                    └─────┬──────┘
-                     ┌────┼────┐
-              ┌──────┴┐ ┌─┴──┐ ┌┴──────────┐
-              │Vector │ │Graph│ │ Document  │
-              │Store  │ │Store│ │ CRUD      │
-              └───┬───┘ └─┬──┘ └───────────┘
-                  │       │
-            ┌─────┴──────┐│
-            │  Embedder  ││  (BGE-M3 via ONNX Runtime)
-            └────────────┘│
-                          │
-                    ┌─────┴──────┐
-                    │ PKB Files  │  (markdown + YAML frontmatter)
-                    └────────────┘
+MCP Client <--stdio--> pkb (MCP server)
+                         |
+                   +-----+------+
+                   |  Dispatch  |  (18 tools, ServerHandler trait)
+                   +-----+------+
+                    +----|----+
+             +------+ +--+-+ +----------+
+             |Vector| |Graph| | Document |
+             |Store | |Store| | CRUD     |
+             +--+---+ +--+--+ +----------+
+                |         |
+          +-----+------+  |
+          |  Embedder   |  |  BGE-M3 via ONNX Runtime (1024-dim)
+          +-------------+  |
+                           |
+                     +-----+------+
+                     | PKB Files  |  markdown + YAML frontmatter
+                     +------------+
 ```
 
 ## Environment Variables
@@ -181,20 +185,16 @@ MCP Client ◄──stdio──► pkb
 | `AOPS_MODEL_PATH` | (auto) | Override model directory path |
 | `ORT_DYLIB_PATH` | (auto) | Override ONNX Runtime library path |
 
-## Requirements
-
-- Rust >= 1.88
-
 ## Acknowledgments
 
 The SIMD-optimized vector distance functions in `src/distance.rs` are adapted from
 [shodh-memory](https://github.com/varun29ankuS/shodh-memory) by Varun Ankus,
-originally licensed under Apache-2.0. The overall embedding and vector search
-architecture also drew inspiration from shodh-memory's design.
+originally licensed under Apache-2.0. The embedding and vector search architecture
+also drew inspiration from shodh-memory's design.
 
 ## License
 
-Copyright (C) 2025 Nicolas Suzor
+Copyright (C) 2025-2026 Nicolas Suzor
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
