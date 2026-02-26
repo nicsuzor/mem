@@ -69,6 +69,10 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return true;
     }
+    // Ctrl-D also quits
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+        return true;
+    }
 
     // Quick capture overlay
     if app.show_capture {
@@ -162,10 +166,24 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
         return false;
     }
 
+    // Help overlay
+    if app.show_help {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Left | KeyCode::Char('?')) {
+            app.show_help = false;
+        }
+        return false;
+    }
+
+    // Quick capture (global shortcut)
+    if key.code == KeyCode::Char('q') {
+        app.open_capture();
+        return false;
+    }
+
     // View-specific keys when in detail overlay
     if app.show_detail {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
+            KeyCode::Esc | KeyCode::Left => {
                 app.show_detail = false;
                 return false;
             }
@@ -182,8 +200,6 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
     }
 
     match key.code {
-        KeyCode::Char('q') => return true,
-
         // View switching
         KeyCode::Tab => app.next_view(),
         KeyCode::BackTab => app.prev_view(),
@@ -258,6 +274,10 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
             }
         },
         KeyCode::Char('r') => app.enter_reparent_mode(),
+
+        // Priority
+        KeyCode::Char('+') => app.change_priority(-1),
+        KeyCode::Char('-') => app.change_priority(1),
 
         // Help
         KeyCode::Char('?') => app.show_help = !app.show_help,
