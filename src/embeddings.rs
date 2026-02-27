@@ -83,8 +83,7 @@ impl EmbeddingConfig {
                     .unwrap_or_else(|| get_cache_dir().join("models/bge-m3"))
             });
 
-        let model_file = Self::find_model(&base_path)
-            .unwrap_or_else(|| "model.onnx".to_string());
+        let model_file = Self::find_model(&base_path).unwrap_or_else(|| "model.onnx".to_string());
 
         Self {
             model_path: base_path.join(model_file),
@@ -128,7 +127,10 @@ fn download_models() -> Result<PathBuf> {
     let files = [
         ("model.onnx", format!("{base_url}/model.onnx")),
         ("model.onnx_data", format!("{base_url}/model.onnx_data")),
-        ("Constant_7_attr__value", format!("{base_url}/Constant_7_attr__value")),
+        (
+            "Constant_7_attr__value",
+            format!("{base_url}/Constant_7_attr__value"),
+        ),
         ("tokenizer.json", format!("{base_url}/tokenizer.json")),
     ];
 
@@ -149,15 +151,17 @@ fn download_models() -> Result<PathBuf> {
         // Write to a temp file, then atomically rename — a partial download
         // will never be mistaken for a complete one on the next run.
         let mut file = std::fs::File::create(&tmp)?;
-        let bytes = std::io::copy(&mut reader, &mut file)
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&tmp);
-                e
-            })?;
+        let bytes = std::io::copy(&mut reader, &mut file).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            e
+        })?;
         drop(file);
         std::fs::rename(&tmp, &dest)
             .with_context(|| format!("Failed to move {tmp:?} to {dest:?}"))?;
-        eprintln!("  ✓ Downloaded {filename} ({:.1} MB)", bytes as f64 / 1_048_576.0);
+        eprintln!(
+            "  ✓ Downloaded {filename} ({:.1} MB)",
+            bytes as f64 / 1_048_576.0
+        );
     }
 
     Ok(models_dir)
@@ -215,7 +219,11 @@ fn download_onnx_runtime() -> Result<PathBuf> {
         return Ok(lib_path);
     }
 
-    let variant_label = if use_gpu { "ONNX Runtime (GPU/CUDA)" } else { "ONNX Runtime" };
+    let variant_label = if use_gpu {
+        "ONNX Runtime (GPU/CUDA)"
+    } else {
+        "ONNX Runtime"
+    };
     eprintln!("  Downloading {variant_label}...");
     let resp = ureq::get(url)
         .call()
@@ -342,9 +350,7 @@ impl SessionPool {
             // We detect actual GPU usage by checking if CUDA registered successfully.
             match Session::builder()
                 .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
-                .and_then(|b| {
-                    b.with_execution_providers([ort::ep::CUDA::default().build()])
-                })
+                .and_then(|b| b.with_execution_providers([ort::ep::CUDA::default().build()]))
                 .and_then(|b| b.commit_from_file(&config.model_path))
             {
                 Ok(session) => {
@@ -358,7 +364,9 @@ impl SessionPool {
                         .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
                         .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
                         .and_then(|b| b.commit_from_file(&config.model_path))
-                        .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?
+                        .with_context(|| {
+                            format!("Failed to load ONNX model from {:?}", config.model_path)
+                        })?
                 }
             }
         } else {
@@ -366,7 +374,9 @@ impl SessionPool {
                 .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
                 .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
                 .and_then(|b| b.commit_from_file(&config.model_path))
-                .with_context(|| format!("Failed to load ONNX model from {:?}", config.model_path))?
+                .with_context(|| {
+                    format!("Failed to load ONNX model from {:?}", config.model_path)
+                })?
         };
 
         // Detect whether model expects token_type_ids (BERT does, XLM-RoBERTa does not)
@@ -375,8 +385,13 @@ impl SessionPool {
             .iter()
             .any(|i| i.name() == "token_type_ids");
 
-        let mut tokenizer = tokenizers::Tokenizer::from_file(&config.tokenizer_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load tokenizer from {:?}: {e}", config.tokenizer_path))?;
+        let mut tokenizer =
+            tokenizers::Tokenizer::from_file(&config.tokenizer_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to load tokenizer from {:?}: {e}",
+                    config.tokenizer_path
+                )
+            })?;
 
         // BGE-M3 (XLM-RoBERTa): pad_id=1, pad_token="<pad>"
         tokenizer.with_padding(Some(tokenizers::PaddingParams {
@@ -385,10 +400,12 @@ impl SessionPool {
             pad_token: "<pad>".to_string(),
             ..Default::default()
         }));
-        tokenizer.with_truncation(Some(tokenizers::TruncationParams {
-            max_length: config.max_length,
-            ..Default::default()
-        })).map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
+        tokenizer
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: config.max_length,
+                ..Default::default()
+            }))
+            .map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
 
         Ok(Self {
             sessions: parking_lot::RwLock::new(vec![Arc::new(Mutex::new(session))]),
@@ -436,9 +453,9 @@ impl SessionPool {
 
         let mut sessions = self.sessions.write();
         for s in new_sessions {
-            sessions.push(Arc::new(Mutex::new(
-                s.with_context(|| format!("Failed to load ONNX model from {:?}", self.model_path))?,
-            )));
+            sessions.push(Arc::new(Mutex::new(s.with_context(|| {
+                format!("Failed to load ONNX model from {:?}", self.model_path)
+            })?)));
         }
 
         Ok(())
@@ -545,7 +562,10 @@ impl Embedder {
 
     pub fn encode(&self, text: &str) -> Result<Vec<f32>> {
         let results = self.encode_batch(&[text])?;
-        Ok(results.into_iter().next().unwrap_or_else(|| vec![0.0; EMBEDDING_DIM]))
+        Ok(results
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| vec![0.0; EMBEDDING_DIM]))
     }
 
     /// Chunks per ONNX sub-batch (CPU). Smaller = more sub-batches = more sessions in parallel.
@@ -560,7 +580,11 @@ impl Embedder {
         }
 
         let pool = self.ensure_pool()?;
-        let max_batch = if pool.gpu_mode { Self::MAX_BATCH_GPU } else { Self::MAX_BATCH_CPU };
+        let max_batch = if pool.gpu_mode {
+            Self::MAX_BATCH_GPU
+        } else {
+            Self::MAX_BATCH_CPU
+        };
 
         // GPU mode: single session, sequential large batches (GPU parallelizes internally)
         if pool.gpu_mode {
@@ -608,7 +632,11 @@ impl Embedder {
         self.encode_single_batch(texts, pool)
     }
 
-    fn encode_single_batch(&self, texts: &[&str], pool: &Arc<SessionPool>) -> Result<Vec<Vec<f32>>> {
+    fn encode_single_batch(
+        &self,
+        texts: &[&str],
+        pool: &Arc<SessionPool>,
+    ) -> Result<Vec<Vec<f32>>> {
         let configured_max = self.config.max_length;
         let batch_size = texts.len();
 
@@ -637,7 +665,12 @@ impl Embedder {
             for (i, &token) in encoding.get_ids().iter().take(max_length).enumerate() {
                 input_ids_data[offset + i] = token as i64;
             }
-            for (i, &mask) in encoding.get_attention_mask().iter().take(max_length).enumerate() {
+            for (i, &mask) in encoding
+                .get_attention_mask()
+                .iter()
+                .take(max_length)
+                .enumerate()
+            {
                 attention_data[offset + i] = mask as i64;
             }
         }
@@ -656,13 +689,9 @@ impl Embedder {
         let outputs = if pool.uses_token_type_ids {
             let token_type_data = vec![0i64; total_len];
             let token_types_val = TensorRef::from_array_view((shape, token_type_data.as_slice()))?;
-            session.run(ort::inputs![
-                input_ids_val, attention_val, token_types_val
-            ])?
+            session.run(ort::inputs![input_ids_val, attention_val, token_types_val])?
         } else {
-            session.run(ort::inputs![
-                input_ids_val, attention_val
-            ])?
+            session.run(ort::inputs![input_ids_val, attention_val])?
         };
 
         // Use the model's sentence_embedding output (pre-pooled, shape [batch_size, EMBEDDING_DIM]).
@@ -855,7 +884,10 @@ mod tests {
 
         eprintln!("sim(query, relevant)   = {sim_relevant:.4}");
         eprintln!("sim(query, irrelevant) = {sim_irrelevant:.4}");
-        eprintln!("delta                  = {:.4}", sim_relevant - sim_irrelevant);
+        eprintln!(
+            "delta                  = {:.4}",
+            sim_relevant - sim_irrelevant
+        );
 
         // The relevant doc must score meaningfully higher than the irrelevant one.
         // A delta < 0.05 indicates degenerate embeddings (the old mean-pooling bug

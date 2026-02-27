@@ -17,19 +17,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),  // header
-            Constraint::Length(8),  // health stats
-            Constraint::Length(8),  // by project
-            Constraint::Length(8),  // assumptions
-            Constraint::Length(8),  // synergies
+            Constraint::Length(2), // header
+            Constraint::Length(8), // health stats
+            Constraint::Length(8), // by project
+            Constraint::Length(8), // assumptions
+            Constraint::Length(8), // synergies
             Constraint::Min(1),    // rest
         ])
         .split(area);
 
     // Header
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled("  DASHBOARD", Style::default().fg(Color::White).bold()),
-    ]));
+    let header = Paragraph::new(Line::from(vec![Span::styled(
+        "  DASHBOARD",
+        Style::default().fg(Color::White).bold(),
+    )]));
     frame.render_widget(header, chunks[0]);
 
     // Health stats
@@ -59,30 +60,35 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let health_lines = vec![
-        Line::from(vec![
-            Span::styled("  HEALTH", Style::default().fg(Color::Yellow).bold()),
-        ]),
-        Line::from(vec![
-            Span::styled("  ─────", Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {} total │ {} ready │ {} blocked", all_tasks.len(), ready.len(), blocked.len()),
-                Style::default().fg(Color::White),
+        Line::from(vec![Span::styled(
+            "  HEALTH",
+            Style::default().fg(Color::Yellow).bold(),
+        )]),
+        Line::from(vec![Span::styled(
+            "  ─────",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(vec![Span::styled(
+            format!(
+                "  {} total │ {} ready │ {} blocked",
+                all_tasks.len(),
+                ready.len(),
+                blocked.len()
             ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {} P0/P1 │ {} P2 │ {} P3+", p1_count, p2_count, p3_count),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  Oldest task: {oldest_days}d"),
-                Style::default().fg(if oldest_days > 30 { Color::Red } else { Color::Yellow }),
-            ),
-        ]),
+            Style::default().fg(Color::White),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("  {} P0/P1 │ {} P2 │ {} P3+", p1_count, p2_count, p3_count),
+            Style::default().fg(Color::White),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("  Oldest task: {oldest_days}d"),
+            Style::default().fg(if oldest_days > 30 {
+                Color::Red
+            } else {
+                Color::Yellow
+            }),
+        )]),
     ];
     let health = Paragraph::new(health_lines);
     frame.render_widget(health, chunks[1]);
@@ -90,15 +96,24 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // By project
     let by_project = gs.by_project();
     let mut proj_lines = vec![
-        Line::from(Span::styled("  BY PROJECT", Style::default().fg(Color::Yellow).bold())),
-        Line::from(Span::styled("  ─────", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(
+            "  BY PROJECT",
+            Style::default().fg(Color::Yellow).bold(),
+        )),
+        Line::from(Span::styled(
+            "  ─────",
+            Style::default().fg(Color::DarkGray),
+        )),
     ];
     let mut proj_list: Vec<(&String, &Vec<String>)> = by_project.iter().collect();
     proj_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
     for (proj, ids) in proj_list.iter().take(8) {
         proj_lines.push(Line::from(vec![
             Span::styled(format!("  ◈ {}", proj), Style::default().fg(Color::Cyan)),
-            Span::styled(format!("  ({})", ids.len()), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("  ({})", ids.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
     }
     let projects = Paragraph::new(proj_lines);
@@ -124,7 +139,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(
                     format!("{untested} untested"),
-                    Style::default().fg(if untested > 0 { Color::Yellow } else { Color::Green }),
+                    Style::default().fg(if untested > 0 {
+                        Color::Yellow
+                    } else {
+                        Color::Green
+                    }),
                 ),
                 Span::styled(" │ ", Style::default().fg(Color::White)),
                 Span::styled(
@@ -134,7 +153,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" │ ", Style::default().fg(Color::White)),
                 Span::styled(
                     format!("{invalidated} invalidated"),
-                    Style::default().fg(if invalidated > 0 { Color::Red } else { Color::DarkGray }),
+                    Style::default().fg(if invalidated > 0 {
+                        Color::Red
+                    } else {
+                        Color::DarkGray
+                    }),
                 ),
             ]),
         ];
@@ -187,12 +210,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let orphans = gs.orphans();
     let mut bottom_lines: Vec<Line> = Vec::new();
     if !orphans.is_empty() {
-        bottom_lines.push(Line::from(vec![
-            Span::styled(
-                format!("  ○ {} orphan nodes (unlinked)", orphans.len()),
-                Style::default().fg(Color::Yellow),
-            ),
-        ]));
+        bottom_lines.push(Line::from(vec![Span::styled(
+            format!("  ○ {} orphan nodes (unlinked)", orphans.len()),
+            Style::default().fg(Color::Yellow),
+        )]));
     }
     if !bottom_lines.is_empty() {
         frame.render_widget(Paragraph::new(bottom_lines), chunks[5]);

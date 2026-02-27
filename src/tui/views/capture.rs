@@ -20,7 +20,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(3), // title input
             Constraint::Length(3), // project selector
             Constraint::Length(3), // priority selector
-            Constraint::Min(1),   // status / keybindings
+            Constraint::Min(1),    // status / keybindings
         ])
         .split(overlay);
 
@@ -94,11 +94,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(priority_input, inner[2]);
 
     // Status bar
-    let keys = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " Tab fields │ ←→ cycle │ Enter create │ Esc cancel",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]));
+    let keys = Paragraph::new(Line::from(vec![Span::styled(
+        " Tab fields │ ←→ cycle │ Enter create │ Esc cancel",
+        Style::default().fg(Color::DarkGray),
+    )]));
     frame.render_widget(keys, inner[3]);
 }

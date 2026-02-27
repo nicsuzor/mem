@@ -119,10 +119,7 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         .and_then(|d| d.deserialize::<serde_json::Value>().ok());
 
     // Title: frontmatter > filename
-    let mut title = path
-        .file_stem()?
-        .to_string_lossy()
-        .to_string();
+    let mut title = path.file_stem()?.to_string_lossy().to_string();
     if let Some(ref fm) = fm_data {
         if let Some(t) = fm.get("title").and_then(|v| v.as_str()) {
             title = t.to_string();
@@ -155,10 +152,7 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
 /// Parse a file and store a path relative to `pkb_root` (for portable persistence).
 pub fn parse_file_relative(path: &Path, pkb_root: &Path) -> Option<PkbDocument> {
     let mut doc = parse_file(path)?;
-    doc.path = path
-        .strip_prefix(pkb_root)
-        .unwrap_or(path)
-        .to_path_buf();
+    doc.path = path.strip_prefix(pkb_root).unwrap_or(path).to_path_buf();
     Some(doc)
 }
 
@@ -202,8 +196,14 @@ pub fn scan_directory(root: &Path) -> Vec<PathBuf> {
             // Skip common non-content directories
             !matches!(
                 name.as_ref(),
-                ".git" | ".obsidian" | ".venv" | "node_modules" | ".claude" | ".aops"
-                    | "__pycache__" | ".agent"
+                ".git"
+                    | ".obsidian"
+                    | ".venv"
+                    | "node_modules"
+                    | ".claude"
+                    | ".aops"
+                    | "__pycache__"
+                    | ".agent"
             )
         })
         .build();

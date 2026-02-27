@@ -224,13 +224,7 @@ pub fn resolve_link(
     if let Some(parent) = source_path.parent() {
         let joined = parent.join(link);
         if joined.exists() {
-            return Some(
-                joined
-                    .canonicalize()
-                    .ok()?
-                    .to_string_lossy()
-                    .to_string(),
-            );
+            return Some(joined.canonicalize().ok()?.to_string_lossy().to_string());
         }
     }
 
@@ -270,9 +264,7 @@ impl GraphNode {
         let task_id = fm
             .as_ref()
             .and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
-        let id = task_id
-            .clone()
-            .unwrap_or_else(|| compute_id(&doc.path));
+        let id = task_id.clone().unwrap_or_else(|| compute_id(&doc.path));
 
         let node_type = fm
             .as_ref()
@@ -312,9 +304,11 @@ impl GraphNode {
         let assignee = fm
             .as_ref()
             .and_then(|f| f.get("assignee").and_then(|v| v.as_str()).map(String::from));
-        let complexity = fm
-            .as_ref()
-            .and_then(|f| f.get("complexity").and_then(|v| v.as_str()).map(String::from));
+        let complexity = fm.as_ref().and_then(|f| {
+            f.get("complexity")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
 
         let word_count = doc.body.split_whitespace().count() as i32;
 

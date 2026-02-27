@@ -13,7 +13,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "aops", version, about = "AcademicOps — semantic search and task management for your knowledge base")]
+#[command(
+    name = "aops",
+    version,
+    about = "AcademicOps — semantic search and task management for your knowledge base"
+)]
 struct Cli {
     /// Path to the PKB root directory
     #[arg(long, global = true, default_value_t = default_pkb_root())]
@@ -478,7 +482,10 @@ fn main() -> Result<()> {
                     result.title,
                 );
                 if !id_str.is_empty() {
-                    println!("     \x1b[36m{id_str}\x1b[0m  \x1b[2m{}\x1b[0m", result.path.display());
+                    println!(
+                        "     \x1b[36m{id_str}\x1b[0m  \x1b[2m{}\x1b[0m",
+                        result.path.display()
+                    );
                 } else {
                     println!("     \x1b[2m{}\x1b[0m", result.path.display());
                 }
@@ -547,14 +554,16 @@ fn main() -> Result<()> {
 
             // Save
             store.read().save(&db_path)?;
-            println!("\n{added} added, {failed} failed, {} total", store.read().len());
+            println!(
+                "\n{added} added, {failed} failed, {} total",
+                store.read().len()
+            );
         }
 
         Commands::Reindex { force } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
-            let (indexed, removed, total) =
-                index_pkb(&pkb_root, &db_path, store, embedder, force);
+            let (indexed, removed, total) = index_pkb(&pkb_root, &db_path, store, embedder, force);
             store.read().save(&db_path)?;
 
             // Also rebuild and save graph cache
@@ -571,9 +580,7 @@ fn main() -> Result<()> {
             let store = store.as_ref().unwrap();
             let s = store.read();
             let total = s.len();
-            let db_size = std::fs::metadata(&db_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
             println!("PKB root:  {}", pkb_root.display());
             println!("DB path:   {}", db_path.display());
@@ -597,7 +604,10 @@ fn main() -> Result<()> {
 
             // Filter by project
             let mut tasks: Vec<&graph::GraphNode> = if let Some(ref proj) = project {
-                tasks.into_iter().filter(|t| t.project.as_deref() == Some(proj)).collect()
+                tasks
+                    .into_iter()
+                    .filter(|t| t.project.as_deref() == Some(proj))
+                    .collect()
             } else {
                 tasks
             };
@@ -622,14 +632,11 @@ fn main() -> Result<()> {
                     }
                     "priority" => {
                         tasks.sort_by(|a, b| {
-                            a.priority
-                                .unwrap_or(2)
-                                .cmp(&b.priority.unwrap_or(2))
-                                .then(
-                                    b.downstream_weight
-                                        .partial_cmp(&a.downstream_weight)
-                                        .unwrap_or(std::cmp::Ordering::Equal),
-                                )
+                            a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2)).then(
+                                b.downstream_weight
+                                    .partial_cmp(&a.downstream_weight)
+                                    .unwrap_or(std::cmp::Ordering::Equal),
+                            )
                         });
                     }
                     // Unknown sort key: leave ordering unchanged
@@ -650,7 +657,12 @@ fn main() -> Result<()> {
                 println!();
                 println!(
                     "  {}{}  {:<50}  {:>6}  {:<14}{}",
-                    colors::BOLD, "PRI", "TITLE", "WEIGHT", "ID", colors::RESET
+                    colors::BOLD,
+                    "PRI",
+                    "TITLE",
+                    "WEIGHT",
+                    "ID",
+                    colors::RESET
                 );
                 println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
 
@@ -676,17 +688,20 @@ fn main() -> Result<()> {
                         colors::RESET,
                     );
                 }
-                println!("\n  {}{} {} tasks{}", colors::DIM, tasks.len(), filter, colors::RESET);
+                println!(
+                    "\n  {}{} {} tasks{}",
+                    colors::DIM,
+                    tasks.len(),
+                    filter,
+                    colors::RESET
+                );
             } else {
                 // ── Tree view (default) ──
                 use std::collections::{HashMap, HashSet};
                 let width = term_width();
 
                 // Build set of visible task IDs for filtering
-                let mut visible: HashSet<&str> = tasks
-                    .iter()
-                    .map(|t| t.id.as_str())
-                    .collect();
+                let mut visible: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
 
                 // Collect ancestor context nodes (projects, epics, goals)
                 let context_types = ["project", "epic", "goal", "subproject"];
@@ -724,10 +739,7 @@ fn main() -> Result<()> {
                 // Group by project
                 let mut by_proj: HashMap<&str, Vec<&graph::GraphNode>> = HashMap::new();
                 for task in &tasks {
-                    let proj = task
-                        .project
-                        .as_deref()
-                        .unwrap_or("_no_project");
+                    let proj = task.project.as_deref().unwrap_or("_no_project");
                     by_proj.entry(proj).or_default().push(task);
                 }
 
@@ -751,17 +763,16 @@ fn main() -> Result<()> {
                             (true, false) => std::cmp::Ordering::Less,
                             (false, true) => std::cmp::Ordering::Greater,
                             (true, true) => a.label.cmp(&b.label),
-                            (false, false) => {
-                                a.priority
-                                    .unwrap_or(2)
-                                    .cmp(&b.priority.unwrap_or(2))
-                                    .then(
-                                        b.downstream_weight
-                                            .partial_cmp(&a.downstream_weight)
-                                            .unwrap_or(std::cmp::Ordering::Equal),
-                                    )
-                                    .then(a.label.cmp(&b.label))
-                            }
+                            (false, false) => a
+                                .priority
+                                .unwrap_or(2)
+                                .cmp(&b.priority.unwrap_or(2))
+                                .then(
+                                    b.downstream_weight
+                                        .partial_cmp(&a.downstream_weight)
+                                        .unwrap_or(std::cmp::Ordering::Equal),
+                                )
+                                .then(a.label.cmp(&b.label)),
                         }
                     });
                 }
@@ -777,7 +788,11 @@ fn main() -> Result<()> {
                     output: &mut Vec<String>,
                     width: usize,
                 ) {
-                    let connector = if is_last { "\u{2514}\u{2500}\u{2500} " } else { "\u{251C}\u{2500}\u{2500} " };
+                    let connector = if is_last {
+                        "\u{2514}\u{2500}\u{2500} "
+                    } else {
+                        "\u{251C}\u{2500}\u{2500} "
+                    };
                     let prefix_vis = strip_ansi(prefix).len() + 4;
                     let available = width.saturating_sub(prefix_vis);
 
@@ -814,7 +829,16 @@ fn main() -> Result<()> {
                             output.push(format!("{child_prefix}"));
                         }
 
-                        render_tree(gs, child, visible, context_ids, &child_prefix, child_is_last, output, width);
+                        render_tree(
+                            gs,
+                            child,
+                            visible,
+                            context_ids,
+                            &child_prefix,
+                            child_is_last,
+                            output,
+                            width,
+                        );
                         prev_was_context = child_is_context;
                     }
                 }
@@ -828,13 +852,22 @@ fn main() -> Result<()> {
                     let picks = select_focus_picks(&tasks, 5);
                     if !picks.is_empty() {
                         println!();
-                        println!("  {}\u{2501}\u{2501} Today\u{2019}s Focus \u{2501}\u{2501}{}", colors::BOLD_WHITE, colors::RESET);
+                        println!(
+                            "  {}\u{2501}\u{2501} Today\u{2019}s Focus \u{2501}\u{2501}{}",
+                            colors::BOLD_WHITE,
+                            colors::RESET
+                        );
                         println!();
                         for pick in &picks {
                             println!("    {}", format_task_line(pick, width.saturating_sub(4)));
                         }
                         println!();
-                        println!("  {}{}{}", colors::DIM, "\u{2500}".repeat(width.saturating_sub(4)), colors::RESET);
+                        println!(
+                            "  {}{}{}",
+                            colors::DIM,
+                            "\u{2500}".repeat(width.saturating_sub(4)),
+                            colors::RESET
+                        );
                     }
                 }
 
@@ -846,7 +879,8 @@ fn main() -> Result<()> {
                     let count = proj_tasks.len();
                     total += count;
 
-                    let proj_task_ids: HashSet<&str> = proj_tasks.iter().map(|t| t.id.as_str()).collect();
+                    let proj_task_ids: HashSet<&str> =
+                        proj_tasks.iter().map(|t| t.id.as_str()).collect();
 
                     let proj_context: HashSet<&str> = context_ids
                         .iter()
@@ -867,11 +901,9 @@ fn main() -> Result<()> {
                     let mut roots: Vec<&graph::GraphNode> = proj_visible
                         .iter()
                         .filter_map(|id| gs.get_node(id))
-                        .filter(|n| {
-                            match &n.parent {
-                                None => true,
-                                Some(pid) => !proj_visible.contains(pid.as_str()),
-                            }
+                        .filter(|n| match &n.parent {
+                            None => true,
+                            Some(pid) => !proj_visible.contains(pid.as_str()),
                         })
                         .collect();
                     sort_siblings(&mut roots, &context_ids);
@@ -884,14 +916,28 @@ fn main() -> Result<()> {
                     };
                     println!(
                         "  {}{}{} {}({} {}){}",
-                        colors::BOLD_CYAN, display_name, colors::RESET,
-                        colors::DIM, count, filter, colors::RESET
+                        colors::BOLD_CYAN,
+                        display_name,
+                        colors::RESET,
+                        colors::DIM,
+                        count,
+                        filter,
+                        colors::RESET
                     );
 
                     let mut lines: Vec<String> = Vec::new();
                     for (i, root) in roots.iter().enumerate() {
                         let is_last = i == roots.len() - 1;
-                        render_tree(&gs, root, &proj_visible, &context_ids, "", is_last, &mut lines, width);
+                        render_tree(
+                            &gs,
+                            root,
+                            &proj_visible,
+                            &context_ids,
+                            "",
+                            is_last,
+                            &mut lines,
+                            width,
+                        );
                     }
                     for line in &lines {
                         println!("{line}");
@@ -901,7 +947,14 @@ fn main() -> Result<()> {
                         println!();
                     }
                 }
-                println!("\n  {}{} {} tasks across {} projects{}", colors::DIM, total, filter, proj_names.len(), colors::RESET);
+                println!(
+                    "\n  {}{} {} tasks across {} projects{}",
+                    colors::DIM,
+                    total,
+                    filter,
+                    proj_names.len(),
+                    colors::RESET
+                );
             }
         }
 
@@ -931,7 +984,10 @@ fn main() -> Result<()> {
                 Some(node) => {
                     println!();
                     println!("  \x1b[1m{}\x1b[0m", node.label);
-                    println!("  \x1b[2m{}\x1b[0m", abs_node_path(&node.path, &pkb_root).display());
+                    println!(
+                        "  \x1b[2m{}\x1b[0m",
+                        abs_node_path(&node.path, &pkb_root).display()
+                    );
                     println!();
 
                     // --- Metadata ---
@@ -1003,11 +1059,7 @@ fn main() -> Result<()> {
                     let file_path = abs_node_path(&node.path, &pkb_root);
                     if let Ok(content) = std::fs::read_to_string(&file_path) {
                         let body = if content.starts_with("---") {
-                            content
-                                .splitn(3, "---")
-                                .nth(2)
-                                .unwrap_or("")
-                                .trim()
+                            content.splitn(3, "---").nth(2).unwrap_or("").trim()
                         } else {
                             content.trim()
                         };
@@ -1056,10 +1108,7 @@ fn main() -> Result<()> {
                 } else {
                     "  ".to_string()
                 };
-                let label = gs
-                    .get_node(dep_id)
-                    .map(|n| n.label.as_str())
-                    .unwrap_or("?");
+                let label = gs.get_node(dep_id).map(|n| n.label.as_str()).unwrap_or("?");
                 let status = gs
                     .get_node(dep_id)
                     .and_then(|n| n.status.as_deref())
@@ -1105,22 +1154,15 @@ fn main() -> Result<()> {
                     // Summary: top 10 by pagerank
                     let pr = metrics::compute_pagerank(&node_ids, edges);
                     let mut ranked: Vec<_> = pr.iter().collect();
-                    ranked.sort_by(|a, b| {
-                        b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal)
-                    });
+                    ranked
+                        .sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
 
                     println!();
-                    println!(
-                        "  \x1b[1m{:<30} {:>10}\x1b[0m",
-                        "NODE", "PAGERANK"
-                    );
+                    println!("  \x1b[1m{:<30} {:>10}\x1b[0m", "NODE", "PAGERANK");
                     println!("  {}", "-".repeat(42));
 
                     for (id, score) in ranked.iter().take(20) {
-                        let label = gs
-                            .get_node(id)
-                            .map(|n| n.label.as_str())
-                            .unwrap_or("?");
+                        let label = gs.get_node(id).map(|n| n.label.as_str()).unwrap_or("?");
                         let display = if label.len() > 28 {
                             format!("{}...", &label[..25])
                         } else {
@@ -1128,11 +1170,7 @@ fn main() -> Result<()> {
                         };
                         println!("  {:<30} {:>10.4}", display, score);
                     }
-                    println!(
-                        "\n  {} nodes, {} edges",
-                        gs.node_count(),
-                        gs.edge_count()
-                    );
+                    println!("\n  {} nodes, {} edges", gs.node_count(), gs.edge_count());
                     println!();
                 }
             }
@@ -1172,7 +1210,8 @@ fn main() -> Result<()> {
                 Ok(path) => {
                     // Extract ID from filename (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4")
                     let id = extract_id_from_path(&path);
-                    let title_display = path.file_stem()
+                    let title_display = path
+                        .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_default();
                     println!("Created \x1b[1m{id}\x1b[0m: {title_display}");
@@ -1223,7 +1262,8 @@ fn main() -> Result<()> {
             match document_crud::create_document(&pkb_root, fields) {
                 Ok(path) => {
                     let id = extract_id_from_path(&path);
-                    let title_display = path.file_stem()
+                    let title_display = path
+                        .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_default();
                     println!("Created \x1b[1m{id}\x1b[0m: {title_display}");
@@ -1254,11 +1294,8 @@ fn main() -> Result<()> {
             match gs.resolve(&id) {
                 Some(node) => {
                     let path = abs_node_path(&node.path, &pkb_root);
-                    match document_crud::append_to_document(
-                        &path,
-                        &content_str,
-                        section.as_deref(),
-                    ) {
+                    match document_crud::append_to_document(&path, &content_str, section.as_deref())
+                    {
                         Ok(()) => {
                             println!("Appended to: {} ({})", node.label, id);
                         }
@@ -1303,7 +1340,11 @@ fn main() -> Result<()> {
                     }
                     match found {
                         Some(p) => {
-                            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            let name = p
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
                             (p, name)
                         }
                         None => {
@@ -1406,7 +1447,10 @@ fn main() -> Result<()> {
                     let node_id = node.id.clone();
                     println!();
                     println!("  \x1b[1m{}\x1b[0m", node.label);
-                    println!("  \x1b[2m{}\x1b[0m", abs_node_path(&node.path, &pkb_root).display());
+                    println!(
+                        "  \x1b[2m{}\x1b[0m",
+                        abs_node_path(&node.path, &pkb_root).display()
+                    );
                     println!();
 
                     if let Some(ref t) = node.node_type {
@@ -1486,10 +1530,7 @@ fn main() -> Result<()> {
                         let mut sorted = nearby;
                         sorted.sort_by_key(|(_, d)| *d);
                         for (nid, dist) in &sorted {
-                            let label = gs
-                                .get_node(nid)
-                                .map(|n| n.label.as_str())
-                                .unwrap_or("?");
+                            let label = gs.get_node(nid).map(|n| n.label.as_str()).unwrap_or("?");
                             println!("    [{dist}] {nid} ({label})");
                         }
                     }
@@ -1546,10 +1587,7 @@ fn main() -> Result<()> {
             for (i, path) in paths.iter().enumerate() {
                 println!("  Path {}:", i + 1);
                 for (j, nid) in path.iter().enumerate() {
-                    let label = gs
-                        .get_node(nid)
-                        .map(|n| n.label.as_str())
-                        .unwrap_or("?");
+                    let label = gs.get_node(nid).map(|n| n.label.as_str()).unwrap_or("?");
                     if j == 0 {
                         println!("    {nid} ({label})");
                     } else {
@@ -1601,11 +1639,11 @@ fn main() -> Result<()> {
                     .as_deref()
                     .map(|t| format!(" \x1b[35m[{t}]\x1b[0m"))
                     .unwrap_or_default();
+                println!("  \x1b[1m{}\x1b[0m{type_str}", node.label,);
                 println!(
-                    "  \x1b[1m{}\x1b[0m{type_str}",
-                    node.label,
+                    "  \x1b[2m{}\x1b[0m\n",
+                    abs_node_path(&node.path, &pkb_root).display()
                 );
-                println!("  \x1b[2m{}\x1b[0m\n", abs_node_path(&node.path, &pkb_root).display());
             }
         }
 
@@ -1734,11 +1772,7 @@ fn main() -> Result<()> {
                 // Show full body for memories
                 if let Ok(content) = std::fs::read_to_string(&r.path) {
                     let body = if content.starts_with("---") {
-                        content
-                            .splitn(3, "---")
-                            .nth(2)
-                            .unwrap_or("")
-                            .trim()
+                        content.splitn(3, "---").nth(2).unwrap_or("").trim()
                     } else {
                         content.trim()
                     };
@@ -1779,19 +1813,13 @@ fn main() -> Result<()> {
                     if count {
                         println!("  {} unique tags", sorted.len());
                     } else {
-                        println!(
-                            "  \x1b[1m{:<30} {:>6}\x1b[0m",
-                            "TAG", "COUNT"
-                        );
+                        println!("  \x1b[1m{:<30} {:>6}\x1b[0m", "TAG", "COUNT");
                         println!("  {}", "-".repeat(38));
                         for (tag, cnt) in sorted.iter().take(30) {
                             println!("  {:<30} {:>6}", tag, cnt);
                         }
                         if sorted.len() > 30 {
-                            println!(
-                                "\n  \x1b[2m...and {} more tags\x1b[0m",
-                                sorted.len() - 30
-                            );
+                            println!("\n  \x1b[2m...and {} more tags\x1b[0m", sorted.len() - 30);
                         }
                     }
                     println!();
@@ -1799,13 +1827,7 @@ fn main() -> Result<()> {
                 Some(ref tags_list) => {
                     // Search for documents with these tags
                     let s = store.read();
-                    let all = s.list_documents(
-                        None,
-                        doc_type.as_deref(),
-                        None,
-                        None,
-                        &pkb_root,
-                    );
+                    let all = s.list_documents(None, doc_type.as_deref(), None, None, &pkb_root);
                     let matching: Vec<_> = all
                         .into_iter()
                         .filter(|r| {
@@ -1942,10 +1964,7 @@ fn main() -> Result<()> {
                 } else {
                     format!("  [{}]", r.tags.join(", "))
                 };
-                println!(
-                    "  \x1b[1m{}\x1b[0m{type_str}{tags_str}",
-                    r.title,
-                );
+                println!("  \x1b[1m{}\x1b[0m{type_str}{tags_str}", r.title,);
                 println!("  \x1b[2m{}\x1b[0m\n", r.path.display());
             }
             println!("  {} memories", memories.len());
@@ -2056,7 +2075,7 @@ fn index_pkb(
     let pb = ProgressBar::new(to_process.len() as u64);
     pb.set_style(
         ProgressStyle::with_template(
-            "  {bar:30.cyan/dim} {pos}/{len} [{elapsed_precise}] {per_sec} {msg}"
+            "  {bar:30.cyan/dim} {pos}/{len} [{elapsed_precise}] {per_sec} {msg}",
         )
         .unwrap()
         .progress_chars("━╸─"),
@@ -2176,10 +2195,10 @@ mod colors {
     pub const RESET: &str = "\x1b[0m";
     pub const BOLD: &str = "\x1b[1m";
     pub const DIM: &str = "\x1b[2m";
-    pub const P0: &str = "\x1b[1;31m";      // bold red
-    pub const P1: &str = "\x1b[1;33m";      // bold yellow
-    pub const P2: &str = "\x1b[36m";        // cyan
-    pub const P3: &str = "\x1b[2m";         // dim
+    pub const P0: &str = "\x1b[1;31m"; // bold red
+    pub const P1: &str = "\x1b[1;33m"; // bold yellow
+    pub const P2: &str = "\x1b[36m"; // cyan
+    pub const P3: &str = "\x1b[2m"; // dim
     pub const RED: &str = "\x1b[31m";
     pub const YELLOW: &str = "\x1b[33m";
     pub const CYAN: &str = "\x1b[36m";
@@ -2306,7 +2325,12 @@ fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     let mut right_parts: Vec<String> = Vec::new();
 
     if task.downstream_weight > 0.0 {
-        right_parts.push(format!("{}wt:{:.1}{}", colors::DIM, task.downstream_weight, colors::RESET));
+        right_parts.push(format!(
+            "{}wt:{:.1}{}",
+            colors::DIM,
+            task.downstream_weight,
+            colors::RESET
+        ));
     }
     if let Some(ref cx) = task.complexity {
         right_parts.push(format_complexity(cx));
@@ -2324,15 +2348,15 @@ fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
 
     let left_vis = strip_ansi(&left).len();
     let right_vis = strip_ansi(&right).len();
-    let padding = width.saturating_sub(left_vis).saturating_sub(right_vis).max(2);
+    let padding = width
+        .saturating_sub(left_vis)
+        .saturating_sub(right_vis)
+        .max(2);
 
     format!("{left}{:>pad$}{right}", "", pad = padding)
 }
 
-fn format_context_line(
-    node: &graph::GraphNode,
-    child_task_count: usize,
-) -> String {
+fn format_context_line(node: &graph::GraphNode, child_task_count: usize) -> String {
     let ntype = node.node_type.as_deref().unwrap_or("group");
     let tid = node.task_id.as_deref().unwrap_or(&node.id);
 
@@ -2384,16 +2408,26 @@ fn count_visible_tasks(
 
 fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
     let total = tasks.len();
-    let urgent = tasks.iter().filter(|t| t.priority.unwrap_or(2) <= 1).count();
+    let urgent = tasks
+        .iter()
+        .filter(|t| t.priority.unwrap_or(2) <= 1)
+        .count();
     let with_due = tasks.iter().filter(|t| t.due.is_some()).count();
     let overdue_count = {
         let today = chrono::Utc::now().date_naive();
-        tasks.iter().filter(|t| {
-            t.due.as_deref().and_then(|d| {
-                let len = std::cmp::min(10, d.len());
-                chrono::NaiveDate::parse_from_str(&d[..len], "%Y-%m-%d").ok()
-            }).map(|d| d < today).unwrap_or(false)
-        }).count()
+        tasks
+            .iter()
+            .filter(|t| {
+                t.due
+                    .as_deref()
+                    .and_then(|d| {
+                        let len = std::cmp::min(10, d.len());
+                        chrono::NaiveDate::parse_from_str(&d[..len], "%Y-%m-%d").ok()
+                    })
+                    .map(|d| d < today)
+                    .unwrap_or(false)
+            })
+            .count()
     };
 
     let oldest_days = tasks
@@ -2402,14 +2436,27 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
         .max()
         .unwrap_or(0);
 
-    let mut parts: Vec<String> = vec![
-        format!("{}{} {filter}{}", colors::BOLD, total, colors::RESET),
-    ];
+    let mut parts: Vec<String> = vec![format!(
+        "{}{} {filter}{}",
+        colors::BOLD,
+        total,
+        colors::RESET
+    )];
     if urgent > 0 {
-        parts.push(format!("{}{}  urgent{}", colors::RED, urgent, colors::RESET));
+        parts.push(format!(
+            "{}{}  urgent{}",
+            colors::RED,
+            urgent,
+            colors::RESET
+        ));
     }
     if overdue_count > 0 {
-        parts.push(format!("{}{} overdue{}", colors::RED, overdue_count, colors::RESET));
+        parts.push(format!(
+            "{}{} overdue{}",
+            colors::RED,
+            overdue_count,
+            colors::RESET
+        ));
     }
     if with_due > 0 {
         parts.push(format!("{with_due} with deadlines"));
@@ -2418,6 +2465,8 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
         parts.push(format!("oldest: {oldest_days}d"));
     }
 
-    println!("  {}", parts.join(&format!(" {}│{} ", colors::DIM, colors::RESET)));
+    println!(
+        "  {}",
+        parts.join(&format!(" {}│{} ", colors::DIM, colors::RESET))
+    );
 }
-

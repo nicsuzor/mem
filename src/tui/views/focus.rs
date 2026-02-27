@@ -18,8 +18,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     if app.focus_picks.is_empty() {
-        let msg = Paragraph::new("  No focus tasks. All clear!")
-            .style(Style::default().fg(Color::Green));
+        let msg =
+            Paragraph::new("  No focus tasks. All clear!").style(Style::default().fg(Color::Green));
         frame.render_widget(msg, area);
         return;
     }
@@ -28,12 +28,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // NOW section (first pick)
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  NOW", Style::default().fg(Color::White).bold()),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  ────", Style::default().fg(Color::DarkGray)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  NOW",
+        Style::default().fg(Color::White).bold(),
+    )]));
+    lines.push(Line::from(vec![Span::styled(
+        "  ────",
+        Style::default().fg(Color::DarkGray),
+    )]));
 
     if let Some(first_id) = app.focus_picks.first() {
         if let Some(node) = gs.get_node(first_id) {
@@ -46,12 +48,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // NEXT section (remaining picks)
     if app.focus_picks.len() > 1 {
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("  NEXT", Style::default().fg(Color::White).bold()),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("  ────", Style::default().fg(Color::DarkGray)),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            "  NEXT",
+            Style::default().fg(Color::White).bold(),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            "  ────",
+            Style::default().fg(Color::DarkGray),
+        )]));
 
         for (idx, id) in app.focus_picks.iter().enumerate().skip(1) {
             if let Some(node) = gs.get_node(id) {
@@ -66,12 +70,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let remaining = app.ready_count.saturating_sub(app.focus_picks.len());
     if remaining > 0 {
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  ─── {remaining} more: Tab to Epic Tree ───"),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            format!("  ─── {remaining} more: Tab to Epic Tree ───"),
+            Style::default().fg(Color::DarkGray),
+        )]));
     }
 
     // Orphan count
@@ -86,24 +88,27 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .collect();
         if !task_orphans.is_empty() {
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  ○ {} orphan tasks (unlinked to any goal)", task_orphans.len()),
-                    Style::default().fg(Color::Yellow),
+            lines.push(Line::from(vec![Span::styled(
+                format!(
+                    "  ○ {} orphan tasks (unlinked to any goal)",
+                    task_orphans.len()
                 ),
-            ]));
+                Style::default().fg(Color::Yellow),
+            )]));
         }
     }
 
     // Untested assumptions (sorted by downstream weight)
     if !app.untested_assumptions.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("  UNTESTED ASSUMPTIONS", Style::default().fg(Color::Yellow).bold()),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("  ────", Style::default().fg(Color::DarkGray)),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            "  UNTESTED ASSUMPTIONS",
+            Style::default().fg(Color::Yellow).bold(),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            "  ────",
+            Style::default().fg(Color::DarkGray),
+        )]));
         for (node_id, text, weight) in app.untested_assumptions.iter().take(5) {
             let label = app
                 .graph
@@ -156,7 +161,10 @@ fn render_focus_item(
 
     // Selection indicator
     if selected {
-        spans.push(Span::styled("  ▸ ", Style::default().fg(Color::Cyan).bold()));
+        spans.push(Span::styled(
+            "  ▸ ",
+            Style::default().fg(Color::Cyan).bold(),
+        ));
     } else {
         spans.push(Span::raw("    "));
     }
@@ -172,7 +180,10 @@ fn render_focus_item(
         // Type icon for NEXT items
         let icon = infer_type_icon(&node.label);
         if !icon.is_empty() {
-            spans.push(Span::styled(format!("{icon}  "), Style::default().fg(Color::Gray)));
+            spans.push(Span::styled(
+                format!("{icon}  "),
+                Style::default().fg(Color::Gray),
+            ));
         }
     }
 
@@ -195,7 +206,10 @@ fn render_focus_item(
             } else {
                 Color::DarkGray
             };
-            spans.push(Span::styled(format!("  {days}d"), Style::default().fg(color)));
+            spans.push(Span::styled(
+                format!("  {days}d"),
+                Style::default().fg(color),
+            ));
         }
     }
 
@@ -219,12 +233,10 @@ fn render_focus_item(
                     parent.node_type.as_deref(),
                     Some("project") | Some("epic") | Some("goal")
                 ) {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("       → enables: {}", parent.label),
-                            Style::default().fg(Color::DarkGray).italic(),
-                        ),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("       → enables: {}", parent.label),
+                        Style::default().fg(Color::DarkGray).italic(),
+                    )]));
                 }
             }
         }
@@ -238,23 +250,19 @@ fn render_focus_item(
                 .filter_map(|bid| gs.get_node(bid).map(|n| n.label.clone()))
                 .collect();
             if !blocked_labels.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("       → unblocks: {}", blocked_labels.join(", ")),
-                        Style::default().fg(Color::DarkGray).italic(),
-                    ),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("       → unblocks: {}", blocked_labels.join(", ")),
+                    Style::default().fg(Color::DarkGray).italic(),
+                )]));
             }
         }
 
         // Reason annotation (why this task was picked)
         if let Some(reason) = reason {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("       ∵ {reason}"),
-                    Style::default().fg(Color::Rgb(100, 100, 140)).italic(),
-                ),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                format!("       ∵ {reason}"),
+                Style::default().fg(Color::Rgb(100, 100, 140)).italic(),
+            )]));
         }
     }
 }
@@ -264,7 +272,10 @@ fn infer_type_icon(title: &str) -> &'static str {
     let lower = title.to_lowercase();
     if lower.starts_with("decide:") || lower.starts_with("decision:") {
         "⚖"
-    } else if lower.starts_with("reply to") || lower.starts_with("email:") || lower.starts_with("respond to") {
+    } else if lower.starts_with("reply to")
+        || lower.starts_with("email:")
+        || lower.starts_with("respond to")
+    {
         "✉"
     } else if lower.starts_with("call ") || lower.starts_with("phone:") {
         "📞"

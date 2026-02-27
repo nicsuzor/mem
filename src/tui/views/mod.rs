@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // status bar
-            Constraint::Min(1),   // main content
+            Constraint::Min(1),    // main content
             Constraint::Length(1), // keybindings
         ])
         .split(area);
@@ -63,7 +63,6 @@ fn render_keybindings(frame: &mut Frame, app: &App, area: Rect) {
         View::Dashboard => "/ search │ Tab views │ ? help │ q quit",
     };
 
-    let bar = Paragraph::new(keys)
-        .style(Style::default().fg(Color::DarkGray));
+    let bar = Paragraph::new(keys).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(bar, area);
 }
