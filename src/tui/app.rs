@@ -1,7 +1,7 @@
 //! Application state for the Planning Web TUI.
 
 use mem::graph::GraphNode;
-use mem::graph_store::GraphStore;
+use mem::graph_store::{self, GraphStore};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -305,10 +305,6 @@ impl App {
             None => return,
         };
 
-        let actionable_types = [
-            "task", "bug", "feature", "project", "goal", "epic", "learn", "subproject",
-        ];
-
         let mut tasks: Vec<&GraphNode> = gs.nodes()
             .filter(|n| {
                 // Filter completed
@@ -318,26 +314,28 @@ impl App {
                     }
                 }
 
-                let nt = n.node_type.as_deref().unwrap_or("task");
-
                 // Filter by type
                 if let Some(ref tf) = self.type_filter {
+                    let nt = n.node_type.as_deref().unwrap_or("task");
                     if nt != tf {
                         return false;
                     }
                 } else {
-                    // Default to actionable types
-                    if !actionable_types.contains(&nt) {
-                        return false;
-                    }
-
-                    // For nodes with no explicit type (which default to "task"),
-                    // only include them if they look like actual tasks (have ID or in tasks/ dir).
-                    if n.node_type.is_none() {
-                        let path_str = n.path.to_string_lossy();
-                        let in_tasks_dir = path_str.starts_with("tasks/") || path_str.contains("/tasks/");
-                        if n.task_id.is_none() && !in_tasks_dir {
-                            return false;
+                    // Default to actionable types only
+                    match n.node_type.as_deref() {
+                        Some(t) => {
+                            if !graph_store::ACTIONABLE_TYPES.contains(&t) {
+                                return false;
+                            }
+                        }
+                        None => {
+                            // Untyped nodes: only include if they have a task ID
+                            // or live in tasks/ directory
+                            let path_str = n.path.to_string_lossy();
+                            let in_tasks_dir = path_str.starts_with("tasks/") || path_str.contains("/tasks/");
+                            if n.task_id.is_none() && !in_tasks_dir {
+                                return false;
+                            }
                         }
                     }
                 }

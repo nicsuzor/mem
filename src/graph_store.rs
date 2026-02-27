@@ -42,6 +42,11 @@ pub struct GraphStore {
     resolution_map: HashMap<String, String>,
 }
 
+/// Document types considered actionable work items in task trees and dashboards.
+pub const ACTIONABLE_TYPES: &[&str] = &[
+    "task", "bug", "feature", "project", "goal", "epic", "learn", "subproject",
+];
+
 impl GraphStore {
     /// Build a complete graph from parsed PKB documents.
     ///
