@@ -276,29 +276,81 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Insert ASCII visualization here
     right_lines.extend(render_ascii_context(node, gs));
-
-    // Related (siblings — same parent, different node)
-    if let Some(ref pid) = node.parent {
-        if let Some(parent) = gs.get_node(pid) {
-            let siblings: Vec<&str> = parent
-                .children
-                .iter()
-                .filter(|cid| cid.as_str() != node.id)
-                .filter_map(|cid| gs.get_node(cid).map(|n| n.label.as_str()))
-                .take(5)
-                .collect();
-            if !siblings.is_empty() {
-                right_lines.push(Line::from(""));
+    if let Some(ctx) = crate::graph_display::get_local_context(gs, node_id) {
+        // Parent chain (walk up)
+        if ctx.is_orphan {
+            right_lines.push(Line::from(Span::styled(
+                "  ↑ (orphan — no parent chain)",
+                Style::default().fg(Color::Yellow),
+            )));
+        } else {
+            right_lines.push(Line::from(Span::styled(
+                "  ↑ enables:",
+                Style::default().fg(Color::DarkGray),
+            )));
+            for parent in ctx.parents.iter().rev() {
+                let icon = match parent.node_type.as_deref() {
+                    Some("goal") => "◉",
+                    Some("project") | Some("subproject") | Some("epic") => "◈",
+                    _ => "◇",
+                };
+                let color = match parent.node_type.as_deref() {
+                    Some("goal") => Color::Yellow,
+                    Some("project") | Some("subproject") | Some("epic") => Color::Cyan,
+                    _ => Color::White,
+                };
                 right_lines.push(Line::from(Span::styled(
-                    "  ↔ related (siblings):",
-                    Style::default().fg(Color::DarkGray),
+                    format!("    {icon} {}", parent.label),
+                    Style::default().fg(color),
                 )));
-                for sib in &siblings {
-                    right_lines.push(Line::from(Span::styled(
-                        format!("    ◇ {sib}"),
-                        Style::default().fg(Color::White),
-                    )));
-                }
+            }
+        }
+
+        // Dependencies (depends_on)
+        if !ctx.depends_on.is_empty() {
+            right_lines.push(Line::from(""));
+            right_lines.push(Line::from(Span::styled(
+                "  ↓ depends on:",
+                Style::default().fg(Color::DarkGray),
+            )));
+            for dep in &ctx.depends_on {
+                let done = matches!(dep.status.as_deref(), Some("done"));
+                let color = if done { Color::Green } else { Color::Red };
+                let icon = if done { "✓" } else { "✗" };
+                right_lines.push(Line::from(vec![
+                    Span::styled(format!("    {icon} "), Style::default().fg(color)),
+                    Span::styled(dep.label.clone(), Style::default().fg(color)),
+                ]));
+            }
+        }
+
+        // Blocks (what completing this would unblock)
+        if !ctx.blocks.is_empty() {
+            right_lines.push(Line::from(""));
+            right_lines.push(Line::from(Span::styled(
+                "  → completing this unblocks:",
+                Style::default().fg(Color::DarkGray),
+            )));
+            for blocked in &ctx.blocks {
+                right_lines.push(Line::from(Span::styled(
+                    format!("    ◇ {}", blocked.label),
+                    Style::default().fg(Color::White),
+                )));
+            }
+        }
+
+        // Siblings
+        if !ctx.siblings.is_empty() {
+            right_lines.push(Line::from(""));
+            right_lines.push(Line::from(Span::styled(
+                "  ↔ related (siblings):",
+                Style::default().fg(Color::DarkGray),
+            )));
+            for sib in &ctx.siblings {
+                right_lines.push(Line::from(Span::styled(
+                    format!("    ◇ {}", sib.label),
+                    Style::default().fg(Color::White),
+                )));
             }
         }
     }

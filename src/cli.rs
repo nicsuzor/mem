@@ -4,7 +4,7 @@
 
 mod tui;
 
-use mem::{document_crud, embeddings, graph, graph_store, metrics, pkb, task_index, vectordb};
+use mem::{document_crud, embeddings, graph, graph_display, graph_store, metrics, pkb, task_index, vectordb};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -109,9 +109,10 @@ enum Commands {
         limit: usize,
     },
 
-    /// Show task details and relationships
-    Task {
-        /// Task ID
+    /// Show details, metadata, and local graph context for any document
+    #[command(alias = "task")]
+    Show {
+        /// Document ID (flexible resolution)
         id: String,
     },
 
@@ -976,10 +977,10 @@ fn main() -> Result<()> {
             println!();
         }
 
-        Commands::Task { id } => {
+        Commands::Show { id } => {
             let gs = load_graph(&pkb_root, &db_path);
 
-            match gs.get_node(&id) {
+            match gs.resolve(&id) {
                 Some(node) => {
                     println!();
                     println!("  \x1b[1m{}\x1b[0m", node.label);
@@ -989,6 +990,7 @@ fn main() -> Result<()> {
                     );
                     println!();
 
+                    // --- Metadata ---
                     if let Some(ref t) = node.node_type {
                         println!("  Type:     {t}");
                     }
@@ -1010,33 +1012,37 @@ fn main() -> Result<()> {
                     if !node.tags.is_empty() {
                         println!("  Tags:     {}", node.tags.join(", "));
                     }
-
-                    if !node.depends_on.is_empty() {
-                        println!("\n  \x1b[1mDepends on:\x1b[0m");
-                        for dep in &node.depends_on {
-                            let label = gs.get_node(dep).map(|n| n.label.as_str()).unwrap_or("?");
-                            println!("    <- {dep} ({label})");
-                        }
-                    }
-                    if !node.blocks.is_empty() {
-                        println!("\n  \x1b[1mBlocks:\x1b[0m");
-                        for b in &node.blocks {
-                            let label = gs.get_node(b).map(|n| n.label.as_str()).unwrap_or("?");
-                            println!("    -> {b} ({label})");
-                        }
-                    }
-                    if !node.children.is_empty() {
-                        println!("\n  \x1b[1mChildren:\x1b[0m");
-                        for c in &node.children {
-                            let label = gs.get_node(c).map(|n| n.label.as_str()).unwrap_or("?");
-                            println!("    {c} ({label})");
-                        }
-                    }
-                    if let Some(ref p) = node.parent {
-                        let label = gs.get_node(p).map(|n| n.label.as_str()).unwrap_or("?");
-                        println!("\n  \x1b[1mParent:\x1b[0m {p} ({label})");
+                    if let Some(ref created) = node.created {
+                        println!("  Created:  {created}");
                     }
 
+                    // --- Local Graph Context (ASCII) ---
+                    println!("\n  \x1b[1mGraph Context:\x1b[0m");
+                    let graph_lines = graph_display::render_ascii_graph(&gs, &node.id);
+                    for line in graph_lines {
+                        println!("    {line}");
+                    }
+
+                    // --- Parent Chain ---
+                    let mut parents = Vec::new();
+                    let mut curr = node.parent.as_deref();
+                    while let Some(pid) = curr {
+                        if let Some(p) = gs.get_node(pid) {
+                            parents.push(format!("{} ({})", p.label, pid));
+                            curr = p.parent.as_deref();
+                        } else {
+                            break;
+                        }
+                    }
+                    if !parents.is_empty() {
+                        parents.reverse();
+                        println!("\n  \x1b[1mParent Chain:\x1b[0m");
+                        for (i, p) in parents.iter().enumerate() {
+                            println!("    {} \x1b[2m{}\x1b[0m", "  ".repeat(i), p);
+                        }
+                    }
+
+                    // --- Weight / Metrics ---
                     if node.downstream_weight > 0.0 {
                         println!(
                             "\n  Weight: {:.2}{}",
@@ -1049,19 +1055,22 @@ fn main() -> Result<()> {
                         );
                     }
 
-                    // Show markdown body
+                    // --- Body ---
                     let file_path = abs_node_path(&node.path, &pkb_root);
                     if let Ok(content) = std::fs::read_to_string(&file_path) {
-                        // Strip frontmatter
                         let body = if content.starts_with("---") {
                             content.splitn(3, "---").nth(2).unwrap_or("").trim()
                         } else {
                             content.trim()
                         };
                         if !body.is_empty() {
-                            println!();
-                            for line in body.lines() {
+                            println!("\n  \x1b[1mBody:\x1b[0m");
+                            let lines: Vec<_> = body.lines().collect();
+                            for line in lines.iter().take(20) {
                                 println!("  {line}");
+                            }
+                            if lines.len() > 20 {
+                                println!("  \x1b[2m... (truncated)\x1b[0m");
                             }
                         }
                     }
@@ -1069,10 +1078,10 @@ fn main() -> Result<()> {
                     // Navigation hints
                     let node_id = node.task_id.as_deref().unwrap_or(&node.id);
                     println!();
-                    println!("  \x1b[2mTip: aops context {node_id}  — show knowledge neighbourhood\x1b[0m");
+                    println!("  \x1b[2mTip: aops context {node_id}  — show full knowledge neighbourhood\x1b[0m");
                 }
                 None => {
-                    eprintln!("Task not found: {id}");
+                    eprintln!("Document not found: {id}");
                     std::process::exit(1);
                 }
             }
@@ -2040,15 +2049,14 @@ fn index_pkb(
                 .unwrap_or(file_path)
                 .to_string_lossy()
                 .to_string();
-            let mtime = std::fs::metadata(file_path)
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            // Compute content hash for change detection
+            let content_hash = std::fs::read(file_path)
+                .ok()
+                .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+                .unwrap_or_default();
             force_all || {
                 let store = store.read();
-                store.needs_update(&path_str, mtime)
+                store.needs_update(&path_str, &content_hash)
             }
         })
         .cloned()

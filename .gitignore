@@ -1,3 +1,4 @@
 target/
 models/
 mem
+.claude/settings.json

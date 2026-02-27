@@ -44,6 +44,7 @@ fn run_event_loop(
     app: &mut App,
 ) -> Result<()> {
     loop {
+        app.poll_worker();
         terminal.draw(|frame| views::render(frame, app))?;
 
         if event::poll(Duration::from_millis(100))? {
