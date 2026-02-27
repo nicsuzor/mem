@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Write(/Users/suzor/.aops/mem-12915b4d/**)",
-      "Edit(/Users/suzor/.aops/mem-12915b4d/**)"
-    ]
-  }
-}

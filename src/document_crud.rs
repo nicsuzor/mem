@@ -106,6 +106,12 @@ pub struct MemoryFields {
 /// - `goal` → `goals/`
 /// - Everything else → `notes/`
 pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
+    if let Some(c) = fields.confidence {
+        if !(0.0..=1.0).contains(&c) {
+            anyhow::bail!("confidence must be between 0.0 and 1.0, got {}", c);
+        }
+    }
+
     let type_prefix = match fields.doc_type.as_str() {
         "task" | "bug" | "epic" | "feature" => "task",
         "project" => "proj",
@@ -220,7 +226,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     if let Some(ref s) = fields.supersedes {
-        fm.push_str(&format!("supersedes: {}\n", s));
+        fm.push_str(&format!("supersedes: \"{}\"\n", s.replace('"', "\\\"")));
     }
 
     if let Some(ref due) = fields.due {
@@ -337,6 +343,12 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 /// Returns the path to the created file. Creates the `memories/` subdirectory
 /// if it doesn't exist.
 pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
+    if let Some(c) = fields.confidence {
+        if !(0.0..=1.0).contains(&c) {
+            anyhow::bail!("confidence must be between 0.0 and 1.0, got {}", c);
+        }
+    }
+
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: use as-is for both frontmatter and filename
@@ -387,7 +399,7 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     }
 
     if let Some(ref s) = fields.supersedes {
-        fm.push_str(&format!("supersedes: {}\n", s));
+        fm.push_str(&format!("supersedes: \"{}\"\n", s.replace('"', "\\\"")));
     }
 
     fm.push_str(&format!("created: {}\n", chrono::Utc::now().to_rfc3339()));

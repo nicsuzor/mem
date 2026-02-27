@@ -677,6 +677,6 @@ mod tests {
         let store = build_test_store();
         let root = Path::new("/pkb");
         let results = store.search(&[1.0, 0.0, 0.0], 1, root);
-        assert!(results[0].snippet.contains("chunk text for"));
+        assert!(results[0].snippet.contains("body of"));
     }
 }

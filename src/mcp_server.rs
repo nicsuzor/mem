@@ -1332,10 +1332,11 @@ impl PkbSearchServer {
             let path_str = r.path.to_string_lossy();
             if let Some(node) = path_map.get(&*path_str) {
                 let incoming = graph.get_incoming_edges(&node.id);
-                let superseder = incoming
+                let superseders: Vec<_> = incoming
                     .iter()
-                    .find(|e| e.edge_type == crate::graph::EdgeType::Supersedes);
-                if let Some(edge) = superseder {
+                    .filter(|e| e.edge_type == crate::graph::EdgeType::Supersedes)
+                    .collect();
+                for edge in &superseders {
                     let superseder_label = graph
                         .get_node(&edge.source)
                         .map(|n| n.label.as_str())
@@ -2224,7 +2225,7 @@ impl ServerHandler for PkbSearchServer {
                         "body": { "type": "string", "description": "Markdown body content" },
                         "memory_type": { "type": "string", "description": "Subtype: memory (default), note, insight, observation" },
                         "source": { "type": "string", "description": "Source context (e.g. session ID)" },
-                        "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)" },
+                        "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
                         "supersedes": { "type": "string", "description": "ID of memory this one replaces" }
                     },
                     "required": ["title"]
@@ -2251,7 +2252,7 @@ impl ServerHandler for PkbSearchServer {
                         "complexity": { "type": "string" },
                         "source": { "type": "string", "description": "Source context" },
                         "due": { "type": "string", "description": "Due date" },
-                        "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)" },
+                        "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
                         "supersedes": { "type": "string", "description": "ID of document this one replaces" },
                         "dir": { "type": "string", "description": "Override subdirectory placement" }
                     },
