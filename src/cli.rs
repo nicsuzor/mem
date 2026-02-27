@@ -1013,10 +1013,11 @@ fn main() -> Result<()> {
                         };
                         if !body.is_empty() {
                             println!("\n  \x1b[1mBody:\x1b[0m");
-                            for line in body.lines().take(20) {
+                            let lines: Vec<_> = body.lines().collect();
+                            for line in lines.iter().take(20) {
                                 println!("  {line}");
                             }
-                            if body.lines().count() > 20 {
+                            if lines.len() > 20 {
                                 println!("  \x1b[2m... (truncated)\x1b[0m");
                             }
                         }
