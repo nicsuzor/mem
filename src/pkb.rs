@@ -9,7 +9,6 @@ use ignore::WalkBuilder;
 use regex::Regex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 /// Parsed document from the PKB
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -24,10 +23,12 @@ pub struct PkbDocument {
     pub doc_type: Option<String>,
     /// Document status
     pub status: Option<String>,
+    /// Last modified time (RFC3339)
+    pub modified: Option<String>,
     /// Full body content (without frontmatter)
     pub body: String,
-    /// File modification time (unix timestamp)
-    pub mtime: u64,
+    /// Content hash (blake3, hex-encoded) for change detection
+    pub content_hash: String,
     /// Frontmatter fields as JSON for metadata queries
     pub frontmatter: Option<serde_json::Value>,
 }
@@ -57,14 +58,9 @@ impl PkbDocument {
     }
 }
 
-/// Get the modification time of a file as a unix timestamp
-fn get_mtime(path: &Path) -> u64 {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH)
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+/// Compute the blake3 content hash of a file
+fn compute_content_hash(content: &[u8]) -> String {
+    blake3::hash(content).to_hex().to_string()
 }
 
 /// Extract tags from frontmatter and inline hashtags in content
@@ -101,7 +97,19 @@ fn extract_tags(frontmatter: &Option<serde_json::Value>, content: &str) -> Vec<S
 
 /// Parse a single markdown file into a PkbDocument
 pub fn parse_file(path: &Path) -> Option<PkbDocument> {
-    let content = std::fs::read_to_string(path).ok()?;
+    // Read file as bytes for hash computation, then convert to string
+    let content_bytes = std::fs::read(path).ok()?;
+    let content_hash = compute_content_hash(&content_bytes);
+    let content = String::from_utf8(content_bytes).ok()?;
+
+    let modified = std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| {
+            let dt: chrono::DateTime<chrono::Utc> = t.into();
+            dt.to_rfc3339()
+        });
+
     let matter = Matter::<YAML>::new();
     let result = matter.parse(&content);
 
@@ -131,16 +139,15 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         .as_ref()
         .and_then(|fm| fm.get("status").and_then(|v| v.as_str()).map(String::from));
 
-    let mtime = get_mtime(path);
-
     Some(PkbDocument {
         path: path.to_path_buf(),
         title,
         tags,
         doc_type,
         status,
+        modified,
         body: result.content.trim().to_string(),
-        mtime,
+        content_hash,
         frontmatter: fm_data,
     })
 }

@@ -89,11 +89,15 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
     #[serde(skip_serializing_if = "is_zero_i32")]
     pub depth: i32,
+    #[serde(skip_serializing_if = "is_zero_i32")]
+    pub word_count: i32,
     pub leaf: bool,
     /// Raw wikilinks/md links from body (not serialized — used only during build)
     #[serde(skip)]
@@ -105,6 +109,16 @@ pub struct GraphNode {
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub downstream_weight: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub pagerank: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub betweenness: f64,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub indegree: i32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub outdegree: i32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub backlink_count: i32,
     #[serde(default, skip_serializing_if = "is_false")]
     pub stakeholder_exposure: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -302,6 +316,8 @@ impl GraphNode {
             .as_ref()
             .and_then(|f| f.get("complexity").and_then(|v| v.as_str()).map(String::from));
 
+        let word_count = doc.body.split_whitespace().count() as i32;
+
         let (depends_on, soft_depends_on, children, blocks, soft_blocks) = match fm {
             Some(f) => (
                 parse_string_array(f, "depends_on"),
@@ -397,14 +413,21 @@ impl GraphNode {
             project,
             due,
             created,
+            modified: doc.modified.clone(),
             assignee,
             complexity,
             depth,
+            word_count,
             leaf,
             raw_links,
             permalinks,
             task_id,
             downstream_weight: 0.0,
+            pagerank: 0.0,
+            betweenness: 0.0,
+            indegree: 0,
+            outdegree: 0,
+            backlink_count: 0,
             stakeholder_exposure: false,
             assumptions,
         }
