@@ -19,10 +19,7 @@ pub struct NetworkMetrics {
 }
 
 /// Compute degree metrics for all nodes.
-pub fn compute_degrees(
-    node_ids: &[String],
-    edges: &[Edge],
-) -> HashMap<String, (usize, usize)> {
+pub fn compute_degrees(node_ids: &[String], edges: &[Edge]) -> HashMap<String, (usize, usize)> {
     let mut degrees: HashMap<String, (usize, usize)> = HashMap::new();
     for id in node_ids {
         degrees.insert(id.clone(), (0, 0));
@@ -42,10 +39,7 @@ pub fn compute_degrees(
 ///
 /// Exact computation, O(V*E). Trivial at ~3.4k nodes.
 /// Considers all edge types equally.
-pub fn compute_betweenness_centrality(
-    node_ids: &[String],
-    edges: &[Edge],
-) -> HashMap<String, f64> {
+pub fn compute_betweenness_centrality(node_ids: &[String], edges: &[Edge]) -> HashMap<String, f64> {
     let n = node_ids.len();
     let id_to_idx: HashMap<&str, usize> = node_ids
         .iter()
@@ -56,7 +50,10 @@ pub fn compute_betweenness_centrality(
     // Build adjacency list
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
     for e in edges {
-        if let (Some(&si), Some(&ti)) = (id_to_idx.get(e.source.as_str()), id_to_idx.get(e.target.as_str())) {
+        if let (Some(&si), Some(&ti)) = (
+            id_to_idx.get(e.source.as_str()),
+            id_to_idx.get(e.target.as_str()),
+        ) {
             adj[si].push(ti);
         }
     }
@@ -116,10 +113,7 @@ pub fn compute_betweenness_centrality(
 }
 
 /// PageRank via power iteration (20 iterations, damping=0.85).
-pub fn compute_pagerank(
-    node_ids: &[String],
-    edges: &[Edge],
-) -> HashMap<String, f64> {
+pub fn compute_pagerank(node_ids: &[String], edges: &[Edge]) -> HashMap<String, f64> {
     let n = node_ids.len();
     if n == 0 {
         return HashMap::new();
@@ -135,7 +129,10 @@ pub fn compute_pagerank(
     let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut in_edges: Vec<Vec<usize>> = vec![Vec::new(); n];
     for e in edges {
-        if let (Some(&si), Some(&ti)) = (id_to_idx.get(e.source.as_str()), id_to_idx.get(e.target.as_str())) {
+        if let (Some(&si), Some(&ti)) = (
+            id_to_idx.get(e.source.as_str()),
+            id_to_idx.get(e.target.as_str()),
+        ) {
             out_edges[si].push(ti);
             in_edges[ti].push(si);
         }

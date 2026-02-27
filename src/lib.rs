@@ -4,6 +4,7 @@ pub mod distance;
 pub mod document_crud;
 pub mod embeddings;
 pub mod graph;
+pub mod graph_display;
 pub mod graph_store;
 pub mod mcp_server;
 pub mod metrics;
@@ -28,7 +29,11 @@ pub fn index_pkb(
     force_all: bool,
 ) -> (usize, usize, usize) {
     let files = pkb::scan_directory(pkb_root);
-    tracing::info!("Found {} markdown files in {}", files.len(), pkb_root.display());
+    tracing::info!(
+        "Found {} markdown files in {}",
+        files.len(),
+        pkb_root.display()
+    );
 
     let existing_paths: HashSet<String> = files
         .iter()
@@ -53,16 +58,15 @@ pub fn index_pkb(
         let rel_path = file_path.strip_prefix(pkb_root).unwrap_or(file_path);
         let path_str = rel_path.to_string_lossy().to_string();
 
-        let mtime = std::fs::metadata(file_path)
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        // Compute content hash for change detection
+        let content_hash = std::fs::read(file_path)
+            .ok()
+            .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+            .unwrap_or_default();
 
         let needs_update = force_all || {
             let store = store.read();
-            store.needs_update(&path_str, mtime)
+            store.needs_update(&path_str, &content_hash)
         };
 
         if !needs_update {
@@ -71,7 +75,8 @@ pub fn index_pkb(
 
         if let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) {
             let embedding_text = doc.embedding_text();
-            let chunks = embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
+            let chunks =
+                embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
             let chunk_start = all_chunks.len();
             let chunk_count = chunks.len();
             all_chunks.extend(chunks);

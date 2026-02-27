@@ -16,7 +16,10 @@ pub fn render(frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, overlay);
 
     let help_text = vec![
-        Line::from(Span::styled("  Navigation", Style::default().fg(Color::Yellow).bold())),
+        Line::from(Span::styled(
+            "  Navigation",
+            Style::default().fg(Color::Yellow).bold(),
+        )),
         Line::from(""),
         Line::from("  Tab / Shift-Tab    Cycle views"),
         Line::from("  f g t d            Jump to Focus / Graph / Tree / Dashboard"),
@@ -26,12 +29,18 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("  Enter              Open node detail"),
         Line::from("  Esc / ←            Close detail / help"),
         Line::from(""),
-        Line::from(Span::styled("  Filters & Priority", Style::default().fg(Color::Yellow).bold())),
+        Line::from(Span::styled(
+            "  Filters & Priority",
+            Style::default().fg(Color::Yellow).bold(),
+        )),
         Line::from(""),
         Line::from("  1 2 3              Filter by priority (toggle)"),
         Line::from("  + / -              Increase / Decrease priority"),
         Line::from(""),
-        Line::from(Span::styled("  General", Style::default().fg(Color::Yellow).bold())),
+        Line::from(Span::styled(
+            "  General",
+            Style::default().fg(Color::Yellow).bold(),
+        )),
         Line::from(""),
         Line::from("  ?                  Toggle this help"),
         Line::from("  q                  Quick capture"),

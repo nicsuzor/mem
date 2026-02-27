@@ -105,7 +105,10 @@ fn render_row(row: &TreeRow, selected: bool, width: usize) -> ListItem<'static> 
         // Expand/collapse indicator
         if row.has_children {
             let indicator = if row.expanded { " ▾" } else { " ▸" };
-            spans.push(Span::styled(indicator, Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                indicator,
+                Style::default().fg(Color::DarkGray),
+            ));
         }
     } else {
         // Task node
@@ -183,7 +186,10 @@ fn render_row(row: &TreeRow, selected: bool, width: usize) -> ListItem<'static> 
             if padding > 0 {
                 spans.push(Span::raw(" ".repeat(padding)));
             }
-            spans.push(Span::styled(right_text, Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                right_text,
+                Style::default().fg(Color::DarkGray),
+            ));
         }
     }
 
@@ -201,7 +207,10 @@ fn infer_type_icon(title: &str) -> &'static str {
     let lower = title.to_lowercase();
     if lower.starts_with("decide:") || lower.starts_with("decision:") {
         "⚖"
-    } else if lower.starts_with("reply to") || lower.starts_with("email:") || lower.starts_with("respond to") {
+    } else if lower.starts_with("reply to")
+        || lower.starts_with("email:")
+        || lower.starts_with("respond to")
+    {
         "✉"
     } else if lower.starts_with("call ") || lower.starts_with("phone:") {
         "📞"

@@ -7,8 +7,12 @@ use crate::tui::app::App;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Center the overlay
-    let width = (area.width * 3 / 5).max(40).min(area.width.saturating_sub(4));
-    let height = (area.height * 3 / 5).max(10).min(area.height.saturating_sub(4));
+    let width = (area.width * 3 / 5)
+        .max(40)
+        .min(area.width.saturating_sub(4));
+    let height = (area.height * 3 / 5)
+        .max(10)
+        .min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let overlay = Rect::new(x, y, width, height);
@@ -19,7 +23,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // search input
-            Constraint::Min(1),   // results
+            Constraint::Min(1),    // results
         ])
         .split(overlay);
 
@@ -73,10 +77,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Span::raw("    ")
                 },
-                Span::styled(
-                    format!("{icon} "),
-                    Style::default().fg(Color::White),
-                ),
+                Span::styled(format!("{icon} "), Style::default().fg(Color::White)),
                 Span::styled(
                     hit.label.clone(),
                     if selected {
