@@ -3,6 +3,7 @@
 //! Split panel layout: metadata/body on the left, graph context + PKB on the right.
 
 use std::collections::HashSet;
+use std::fs;
 
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -10,6 +11,21 @@ use ratatui::widgets::*;
 use crate::graph::GraphNode;
 use crate::graph_store::GraphStore;
 use crate::tui::app::App;
+
+/// Read the body of a document (everything after YAML frontmatter).
+fn read_node_body(node: &GraphNode) -> String {
+    let content = match fs::read_to_string(&node.path) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    // Strip YAML frontmatter (--- ... ---)
+    if content.starts_with("---") {
+        if let Some(end) = content[3..].find("\n---") {
+            return content[3 + end + 4..].trim().to_string();
+        }
+    }
+    content
+}
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let node_id = match &app.detail_node_id {
@@ -254,7 +270,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Body
-    if !node.body.is_empty() {
+    let body = read_node_body(node);
+    if !body.is_empty() {
         left_lines.push(Line::from(""));
         left_lines.push(Line::from(Span::styled(
             "  DESCRIPTION",
@@ -267,7 +284,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
         // Simple word wrap and line splitting for the body
         let wrap_width = panels[0].width.saturating_sub(6) as usize;
-        for line in node.body.lines() {
+        for line in body.lines() {
             if line.trim().is_empty() {
                 left_lines.push(Line::from(""));
                 continue;
