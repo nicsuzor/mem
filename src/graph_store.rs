@@ -22,6 +22,14 @@ use std::path::Path;
 pub struct OutputGraph {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<Edge>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ready: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub by_project: HashMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<String>,
 }
 
 // ===========================================================================
@@ -588,6 +596,10 @@ impl GraphStore {
         OutputGraph {
             nodes,
             edges: self.edges.clone(),
+            ready: self.ready.clone(),
+            blocked: self.blocked.clone(),
+            by_project: self.by_project.clone(),
+            roots: self.roots.clone(),
         }
     }
 
