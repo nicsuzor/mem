@@ -123,6 +123,12 @@ pub struct GraphNode {
     pub stakeholder_exposure: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assumptions: Vec<Assumption>,
+    /// Precomputed layout X coordinate (force-directed graph layout)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<f64>,
+    /// Precomputed layout Y coordinate (force-directed graph layout)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<f64>,
 }
 
 /// An assumption attached to a planning node.
@@ -424,6 +430,8 @@ impl GraphNode {
             backlink_count: 0,
             stakeholder_exposure: false,
             assumptions,
+            x: None,
+            y: None,
         }
     }
 }

@@ -5,6 +5,7 @@
 //! the various accessor methods.
 
 use crate::graph::{self, deduplicate_vec, Edge, EdgeType, GraphNode};
+use crate::layout;
 use crate::metrics;
 use crate::pkb::PkbDocument;
 use anyhow::Result;
@@ -116,7 +117,10 @@ impl GraphStore {
         // 7. Compute downstream metrics (BFS through blocks/soft_blocks)
         compute_downstream_metrics(&mut nodes);
 
-        // 7. Build node map and classify tasks
+        // 8. Compute force-directed layout (ForceAtlas2)
+        layout::compute_layout(&mut nodes, &edges);
+
+        // 9. Build node map and classify tasks
         let node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
         let (ready, blocked, roots, by_project) = classify_tasks(&node_map);
@@ -584,6 +588,14 @@ impl GraphStore {
         OutputGraph {
             nodes,
             edges: self.edges.clone(),
+        }
+    }
+
+    /// Remove precomputed layout coordinates from all nodes.
+    pub fn strip_layout(&mut self) {
+        for node in self.nodes.values_mut() {
+            node.x = None;
+            node.y = None;
         }
     }
 

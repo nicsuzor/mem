@@ -306,6 +306,10 @@ enum Commands {
         /// Output file (default: stdout; for 'all' format, used as base name)
         #[arg(short, long)]
         output: Option<String>,
+
+        /// Skip precomputed layout (ForceAtlas2 x,y coordinates)
+        #[arg(long)]
+        no_layout: bool,
     },
 
     /// Search memories by semantic similarity
@@ -1647,8 +1651,11 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Graph { format, output } => {
-            let gs = load_graph(&pkb_root, &db_path);
+        Commands::Graph { format, output, no_layout } => {
+            let mut gs = load_graph(&pkb_root, &db_path);
+            if no_layout {
+                gs.strip_layout();
+            }
 
             match format.to_lowercase().as_str() {
                 "all" => {
