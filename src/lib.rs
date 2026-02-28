@@ -4,6 +4,7 @@ pub mod distance;
 pub mod document_crud;
 pub mod embeddings;
 pub mod graph;
+pub mod layout;
 pub mod graph_display;
 pub mod graph_store;
 pub mod mcp_server;
