@@ -30,6 +30,9 @@ pub struct DocumentEntry {
     /// Document ID (from frontmatter)
     #[serde(default)]
     pub id: Option<String>,
+    /// Confidence level (0.0 - 1.0)
+    #[serde(default)]
+    pub confidence: Option<f64>,
     /// Content hash (blake3, hex-encoded) — used for staleness detection
     #[serde(default)]
     pub content_hash: Option<String>,
@@ -54,6 +57,7 @@ pub struct SearchResult {
     pub status: Option<String>,
     pub tags: Vec<String>,
     pub project: Option<String>,
+    pub confidence: Option<f64>,
 }
 
 /// Persistent vector store
@@ -149,12 +153,13 @@ impl VectorStore {
         }
     }
 
-    /// Extract id and project from frontmatter
-    fn extract_frontmatter_fields(doc: &PkbDocument) -> (Option<String>, Option<String>) {
+    /// Extract id, project, and confidence from frontmatter
+    fn extract_frontmatter_fields(doc: &PkbDocument) -> (Option<String>, Option<String>, Option<f64>) {
         let fm = doc.frontmatter.as_ref();
         let id = fm.and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
         let project = fm.and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
-        (id, project)
+        let confidence = fm.and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
+        (id, project, confidence)
     }
 
     /// Insert or update a document
@@ -169,7 +174,7 @@ impl VectorStore {
         let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
         let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
 
-        let (id, project) = Self::extract_frontmatter_fields(doc);
+        let (id, project, confidence) = Self::extract_frontmatter_fields(doc);
 
         let entry = DocumentEntry {
             path: doc.path.clone(),
@@ -179,6 +184,7 @@ impl VectorStore {
             tags: doc.tags.clone(),
             project,
             id,
+            confidence,
             content_hash: Some(doc.content_hash.clone()),
             chunk_embeddings,
             chunk_texts: chunks,
@@ -197,7 +203,7 @@ impl VectorStore {
         chunk_embeddings: Vec<Vec<f32>>,
     ) {
         let path_str = doc.path.to_string_lossy().to_string();
-        let (id, project) = Self::extract_frontmatter_fields(doc);
+        let (id, project, confidence) = Self::extract_frontmatter_fields(doc);
         let body_chunks =
             embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
         let entry = DocumentEntry {
@@ -208,6 +214,7 @@ impl VectorStore {
             tags: doc.tags.clone(),
             project,
             id,
+            confidence,
             content_hash: Some(doc.content_hash.clone()),
             chunk_embeddings,
             chunk_texts: chunks,
@@ -296,6 +303,7 @@ impl VectorStore {
                     status: entry.status.clone(),
                     tags: entry.tags.clone(),
                     project: entry.project.clone(),
+                    confidence: entry.confidence,
                 });
             }
         }
@@ -363,6 +371,7 @@ impl VectorStore {
                 status: entry.status.clone(),
                 tags: entry.tags.clone(),
                 project: entry.project.clone(),
+                confidence: entry.confidence,
             });
         }
 
@@ -397,6 +406,7 @@ mod tests {
         tags: &[&str],
         project: Option<&str>,
         id: Option<&str>,
+        confidence: Option<f64>,
         embedding: Vec<f32>,
     ) -> DocumentEntry {
         DocumentEntry {
@@ -407,9 +417,10 @@ mod tests {
             tags: tags.iter().map(|s| s.to_string()).collect(),
             project: project.map(String::from),
             id: id.map(String::from),
+            confidence,
             content_hash: Some("test_hash_123".to_string()),
             chunk_embeddings: vec![embedding],
-            chunk_texts: vec![format!("chunk text for {title}")],
+            chunk_texts: vec![format!("body of {title}")],
             body_chunks: vec![format!("body of {title}")],
         }
     }
@@ -426,6 +437,7 @@ mod tests {
                 &["bugfix", "urgent"],
                 Some("mem"),
                 Some("task-abc"),
+                None,
                 vec![1.0, 0.0, 0.0],
             ),
         );
@@ -439,6 +451,7 @@ mod tests {
                 &["pattern", "urgent"],
                 None,
                 Some("mem-001"),
+                None,
                 vec![0.0, 1.0, 0.0],
             ),
         );
@@ -452,6 +465,7 @@ mod tests {
                 &["research"],
                 Some("mem"),
                 Some("note-xyz"),
+                None,
                 vec![0.0, 0.0, 1.0],
             ),
         );
@@ -648,6 +662,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
             vec![1.0, 0.0, 0.0],
         );
         // Simulate old format by removing content_hash
@@ -712,6 +727,6 @@ mod tests {
         let store = build_test_store();
         let root = Path::new("/pkb");
         let results = store.search(&[1.0, 0.0, 0.0], 1, root);
-        assert!(results[0].snippet.contains("chunk text for"));
+        assert!(results[0].snippet.contains("body of"));
     }
 }

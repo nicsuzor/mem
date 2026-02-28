@@ -55,6 +55,8 @@ pub struct DocumentFields {
     pub complexity: Option<String>,
     pub source: Option<String>,
     pub due: Option<String>,
+    pub confidence: Option<f64>,
+    pub supersedes: Option<String>,
     /// Override subdirectory placement (e.g. "notes", "projects")
     pub dir: Option<String>,
 }
@@ -85,6 +87,8 @@ pub struct MemoryFields {
     pub memory_type: Option<String>,
     /// Source context (e.g. session ID)
     pub source: Option<String>,
+    pub confidence: Option<f64>,
+    pub supersedes: Option<String>,
 }
 
 /// Create a new document file with YAML frontmatter.
@@ -102,6 +106,12 @@ pub struct MemoryFields {
 /// - `goal` → `goals/`
 /// - Everything else → `notes/`
 pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
+    if let Some(c) = fields.confidence {
+        if !(0.0..=1.0).contains(&c) {
+            anyhow::bail!("confidence must be between 0.0 and 1.0, got {}", c);
+        }
+    }
+
     let type_prefix = match fields.doc_type.as_str() {
         "task" | "bug" | "epic" | "feature" => "task",
         "project" => "proj",
@@ -212,6 +222,14 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     if let Some(ref source) = fields.source {
         fm.push_str(&format!("source: \"{}\"\n", source.replace('"', "\\\"")));
+    }
+
+    if let Some(c) = fields.confidence {
+        fm.push_str(&format!("confidence: {}\n", c));
+    }
+
+    if let Some(ref s) = fields.supersedes {
+        fm.push_str(&format!("supersedes: \"{}\"\n", s.replace('"', "\\\"")));
     }
 
     if let Some(ref due) = fields.due {
@@ -331,6 +349,12 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 /// Returns the path to the created file. Creates the `memories/` subdirectory
 /// if it doesn't exist.
 pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
+    if let Some(c) = fields.confidence {
+        if !(0.0..=1.0).contains(&c) {
+            anyhow::bail!("confidence must be between 0.0 and 1.0, got {}", c);
+        }
+    }
+
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: use as-is for both frontmatter and filename
@@ -377,6 +401,14 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
 
     if let Some(ref source) = fields.source {
         fm.push_str(&format!("source: \"{}\"\n", source.replace('"', "\\\"")));
+    }
+
+    if let Some(c) = fields.confidence {
+        fm.push_str(&format!("confidence: {}\n", c));
+    }
+
+    if let Some(ref s) = fields.supersedes {
+        fm.push_str(&format!("supersedes: \"{}\"\n", s.replace('"', "\\\"")));
     }
 
     fm.push_str(&format!("created: {}\n", chrono::Utc::now().to_rfc3339()));

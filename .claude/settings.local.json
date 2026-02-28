@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export PATH=\"/opt/homebrew/bin:$PATH\")",
+      "Bash(gh pr list --repo nicsuzor/mem --state open --json number,title,author,headRefName,additions,deletions,reviewDecision,mergeable,statusCheckRollup)",
+      "Bash(gh pr view 29 --repo nicsuzor/mem --json body,commits,files)",
+      "Bash(gh pr view 28 --repo nicsuzor/mem --json body,commits,files)",
+      "Bash(gh pr diff 29 --repo nicsuzor/mem)",
+      "Bash(gh pr view 25 --repo nicsuzor/mem --json body,commits,files)",
+      "Bash(gh pr view 26 --repo nicsuzor/mem --json body,commits,files)",
+      "Bash(gh pr diff 26 --repo nicsuzor/mem)",
+      "Bash(gh pr diff 25 --repo nicsuzor/mem)",
+      "Bash(gh pr view 23 --repo nicsuzor/mem --json body,commits,files)",
+      "Bash(gh pr view 22 --repo nicsuzor/mem --json body,commits,files)",
+      "Bash(gh pr view 24 --repo nicsuzor/mem --json body,commits,files)",
+      "Bash(gh pr diff 28 --repo nicsuzor/mem)",
+      "Bash(gh pr diff 23 --repo nicsuzor/mem)",
+      "Bash(gh pr diff 22 --repo nicsuzor/mem)",
+      "Bash(gh pr view 21 --repo nicsuzor/mem --json body,commits,files)",
+      "Bash(gh pr diff 24 --repo nicsuzor/mem)",
+      "Bash(gh pr view 27 --repo nicsuzor/mem --json body,commits,files)",
+      "Bash(gh pr diff 21 --repo nicsuzor/mem)",
+      "Bash(gh pr diff 27 --repo nicsuzor/mem)",
+      "Bash(gh pr view 22 --repo nicsuzor/mem --json state,mergeStateStatus,mergeable)",
+      "Bash(gh pr checks 24 --repo nicsuzor/mem)",
+      "Bash(git fetch origin pull/22/head:pr-22)",
+      "Bash(gh pr diff 27 --repo nicsuzor/mem -- src/tui/views/detail.rs)",
+      "Bash(gh run view 22433774625 --repo nicsuzor/mem --log)"
+    ]
+  }
+}

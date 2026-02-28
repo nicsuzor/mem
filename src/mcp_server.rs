@@ -468,6 +468,12 @@ impl PkbSearchServer {
         if let Some(ref due) = node.due {
             output.push_str(&format!("**Due:** {due}\n"));
         }
+        if let Some(ref source) = node.source {
+            output.push_str(&format!("**Source:** {source}\n"));
+        }
+        if let Some(conf) = node.confidence {
+            output.push_str(&format!("**Confidence:** {conf}\n"));
+        }
         if !node.tags.is_empty() {
             output.push_str(&format!("**Tags:** {}\n", node.tags.join(", ")));
         }
@@ -486,6 +492,11 @@ impl PkbSearchServer {
                 let label = graph.get_node(b).map(|n| n.label.as_str()).unwrap_or("?");
                 output.push_str(&format!("- `{b}` — {label}\n"));
             }
+        }
+        if let Some(ref s) = node.supersedes {
+            output.push_str("\n### Supersedes\n");
+            let label = graph.get_node(s).map(|n| n.label.as_str()).unwrap_or("?");
+            output.push_str(&format!("- `{s}` — {label}\n"));
         }
         if !node.children.is_empty() {
             output.push_str("\n### Children\n");
@@ -513,9 +524,14 @@ impl PkbSearchServer {
                 let entries = &backlinks[ntype];
                 output.push_str(&format!("\n**{ntype}** ({} links)\n", entries.len()));
                 for (source_node, edge_type) in entries {
+                    let supersedes_note = if **edge_type == crate::graph::EdgeType::Supersedes {
+                        " [SUPERSEDES THIS]"
+                    } else {
+                        ""
+                    };
                     output.push_str(&format!(
-                        "- `{}` [{:?}] {}\n",
-                        source_node.id, edge_type, source_node.label
+                        "- `{}` [{:?}]{} {}\n",
+                        source_node.id, edge_type, supersedes_note, source_node.label
                     ));
                 }
             }
@@ -909,6 +925,11 @@ impl PkbSearchServer {
                 .get("source")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            confidence: args.get("confidence").and_then(|v| v.as_f64()),
+            supersedes: args
+                .get("supersedes")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         };
 
         let path =
@@ -1003,6 +1024,11 @@ impl PkbSearchServer {
                 .and_then(|v| v.as_str())
                 .map(String::from),
             due: args.get("due").and_then(|v| v.as_str()).map(String::from),
+            confidence: args.get("confidence").and_then(|v| v.as_f64()),
+            supersedes: args
+                .get("supersedes")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             dir: args.get("dir").and_then(|v| v.as_str()).map(String::from),
         };
 
@@ -1223,14 +1249,18 @@ impl PkbSearchServer {
         let store = self.store.read();
         let results = store.search(&query_embedding, limit * 3, &self.pkb_root);
 
-        let memory_types = ["memory", "note", "insight", "observation"];
-        let mut output = String::new();
-        let mut count = 0;
+        let graph = self.graph.read();
 
-        for r in &results {
-            if count >= limit {
-                break;
-            }
+        // Build path -> node index
+        let path_map: std::collections::HashMap<String, &crate::graph::GraphNode> = graph
+            .nodes()
+            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n))
+            .collect();
+
+        let memory_types = ["memory", "note", "insight", "observation"];
+        let mut scored_results = Vec::new();
+
+        for r in results {
             let is_memory = r
                 .doc_type
                 .as_deref()
@@ -1249,11 +1279,54 @@ impl PkbSearchServer {
                 }
             }
 
+            let path_str = r.path.to_string_lossy();
+            let confidence = path_map
+                .get(&*path_str)
+                .and_then(|n| n.confidence)
+                .unwrap_or(1.0);
+
+            // Adjust score by confidence (tie-breaker)
+            let combined_score = r.score + (confidence as f32 * 0.0001);
+            scored_results.push((r, combined_score, confidence));
+        }
+
+        // Re-sort by combined score
+        scored_results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut output = String::new();
+        let mut count = 0;
+
+        for (r, _score, confidence) in scored_results {
+            if count >= limit {
+                break;
+            }
+
             count += 1;
             output.push_str(&format!(
-                "### {}. {} (score: {:.3})\n",
-                count, r.title, r.score
+                "### {}. {} (score: {:.3}, confidence: {:.2})\n",
+                count, r.title, r.score, confidence
             ));
+
+            // Check if superseded
+            let path_str = r.path.to_string_lossy();
+            if let Some(node) = path_map.get(&*path_str) {
+                let incoming = graph.get_incoming_edges(&node.id);
+                let superseders: Vec<_> = incoming
+                    .iter()
+                    .filter(|e| e.edge_type == crate::graph::EdgeType::Supersedes)
+                    .collect();
+                for edge in &superseders {
+                    let superseder_label = graph
+                        .get_node(&edge.source)
+                        .map(|n| n.label.as_str())
+                        .unwrap_or("?");
+                    output.push_str(&format!(
+                        "⚠️ **SUPERSEDED BY:** `{}` ({})\n",
+                        edge.source, superseder_label
+                    ));
+                }
+            }
+
             output.push_str(&format!("**Path:** `{}`\n", r.path.display()));
             if !r.tags.is_empty() {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
@@ -2113,7 +2186,9 @@ impl ServerHandler for PkbSearchServer {
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags for the memory" },
                         "body": { "type": "string", "description": "Markdown body content" },
                         "memory_type": { "type": "string", "description": "Subtype: memory (default), note, insight, observation" },
-                        "source": { "type": "string", "description": "Source context (e.g. session ID)" }
+                        "source": { "type": "string", "description": "Source context (e.g. session ID)" },
+                        "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
+                        "supersedes": { "type": "string", "description": "ID of memory this one replaces" }
                     },
                     "required": ["title"]
                 }))
@@ -2139,6 +2214,8 @@ impl ServerHandler for PkbSearchServer {
                         "complexity": { "type": "string" },
                         "source": { "type": "string", "description": "Source context" },
                         "due": { "type": "string", "description": "Due date" },
+                        "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
+                        "supersedes": { "type": "string", "description": "ID of document this one replaces" },
                         "dir": { "type": "string", "description": "Override subdirectory placement" }
                     },
                     "required": ["title", "type"]

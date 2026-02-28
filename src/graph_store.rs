@@ -703,6 +703,7 @@ impl GraphStore {
                 EdgeType::SoftDependsOn => "style=dashed, color=\"#6c757d\", penwidth=1.5",
                 EdgeType::Parent => "style=solid, color=\"#0d6efd\", penwidth=3",
                 EdgeType::Link => "style=dotted, color=\"#adb5bd\", penwidth=1",
+                EdgeType::Supersedes => "style=dashed, color=\"#fd7e14\", penwidth=2, label=\"supersedes\"",
             };
             dot.push_str(&format!(
                 "    \"{}\" -> \"{}\" [{}];\n",
@@ -884,6 +885,19 @@ fn build_node_edges(
         }
     }
 
+    // supersedes -> Supersedes edge (this -> old memory)
+    if let Some(ref old_id_ref) = n.supersedes {
+        if let Some(target_id) = graph::resolve_ref(old_id_ref, id_map, path_to_id) {
+            if n.id != target_id {
+                edges.push(Edge {
+                    source: n.id.clone(),
+                    target: target_id,
+                    edge_type: EdgeType::Supersedes,
+                });
+            }
+        }
+    }
+
     edges
 }
 
@@ -926,7 +940,7 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
                     children_updates.push((idx, edge.source.clone()));
                 }
             }
-            EdgeType::Link => {}
+            EdgeType::Link | EdgeType::Supersedes => {}
         }
     }
 

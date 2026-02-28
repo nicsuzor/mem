@@ -39,7 +39,7 @@ fn edge_weight(edge_type: &EdgeType) -> (f64, f64) {
         EdgeType::Parent => (1.0, 40.0),
         EdgeType::DependsOn => (0.15, 200.0),
         EdgeType::SoftDependsOn => (0.08, 250.0),
-        EdgeType::Link => (0.02, 300.0),
+        EdgeType::Link | EdgeType::Supersedes => (0.02, 300.0),
     }
 }
 
