@@ -1,0 +1,8 @@
+# Speed up incremental debug builds.
+# Release profile is unchanged (still uses LTO for distribution).
+#
+# Note: mold dropped macOS/Mach-O support. The default Apple linker (ld-prime)
+# is already fast on arm64. No linker override needed on macOS.
+# On Linux, uncomment to use mold:
+# [target.x86_64-unknown-linux-gnu]
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]

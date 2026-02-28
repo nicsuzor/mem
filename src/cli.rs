@@ -27,6 +27,10 @@ struct Cli {
     #[arg(long, global = true, default_value_t = default_db_path())]
     db_path: String,
 
+    /// Path to layout.toml for graph layout parameters
+    #[arg(long, global = true)]
+    layout_config: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -418,6 +422,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let pkb_root = PathBuf::from(&cli.pkb_root);
     let db_path = PathBuf::from(&cli.db_path);
+
+    if let Some(ref lc) = cli.layout_config {
+        mem::layout::set_config_path(PathBuf::from(lc));
+    }
 
     // Only load embedder + vector store for commands that need them
     let needs_embedder = matches!(
