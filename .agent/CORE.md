@@ -82,6 +82,46 @@ make release    # bump patch, build both, install, tag, push
 
 Requires: Rust >= 1.88, zig 0.13 for cross-compile.
 
+## UX Testing / TUI Capture
+
+The TUI uses Ratatui + crossterm (alternate screen, raw mode) so it requires a real terminal. Use tmux to capture rendered output for evaluation:
+
+### Helper script (preferred)
+```bash
+./scripts/tui-capture.sh start     # cargo build --release + launch in tmux (120x40)
+./scripts/tui-capture.sh capture   # grab current screen with ANSI codes
+./scripts/tui-capture.sh key f     # send key + capture (f=Focus, g=Graph, t=Tree, d=Dashboard)
+./scripts/tui-capture.sh restart   # rebuild + relaunch after code changes
+./scripts/tui-capture.sh stop      # kill tmux session
+```
+
+### Manual approach
+```bash
+# Launch with stderr capture for crash debugging
+tmux new-session -d -s aops-tui -x 120 -y 40 \
+  './target/release/aops tui 2>/tmp/tui-stderr.log'
+sleep 2  # wait for graph load
+
+# Capture current screen
+tmux capture-pane -t aops-tui -p -e
+
+# Send keys and capture result
+tmux send-keys -t aops-tui '1' && sleep 0.5 && tmux capture-pane -t aops-tui -p -e
+
+# Cleanup
+tmux kill-server
+```
+
+### Tips
+- Always `sleep 0.3-0.5` after `send-keys` before capturing — rendering is async
+- If the tmux session dies unexpectedly, check `/tmp/tui-stderr.log` for panics
+- View keys: `f` Focus, `g` Graph, `t` Epic Tree, `d` Dashboard
+- Overlay keys: `?` Help, `/` Search, `q` Quick capture, `Enter` Detail
+- Filter keys: `1`/`2`/`3` priority filter, `C` show completed, `T` type filter
+
+### String safety (Rust)
+Always use `str.floor_char_boundary(n)` before byte-slicing strings for display truncation. Direct `&str[..n]` panics on multi-byte UTF-8 characters (arrows, emoji, CJK). Available since Rust 1.80.
+
 ## Consolidation History (v0.1.5)
 
 22 tools consolidated to 18:
