@@ -21,6 +21,65 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(format!(" {} ", view.label()), style));
     }
 
+    // Active filter/mode indicators
+    if app.reparent_mode {
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(Span::styled(
+            " REPARENT ",
+            Style::default().fg(Color::Black).bg(Color::Yellow).bold(),
+        ));
+        if let Some(ref nid) = app.reparent_node_id {
+            let label = app
+                .graph
+                .as_ref()
+                .and_then(|gs| gs.get_node(nid))
+                .map(|n| {
+                    if n.label.len() > 20 {
+                        let end = n.label.floor_char_boundary(20);
+                        format!("{}...", &n.label[..end])
+                    } else {
+                        n.label.clone()
+                    }
+                })
+                .unwrap_or_default();
+            spans.push(Span::styled(
+                format!(" {label} "),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+    }
+
+    if let Some(pri) = app.priority_filter {
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(Span::styled(
+            format!(" P{pri} "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(match pri {
+                    0 | 1 => Color::Red,
+                    2 => Color::White,
+                    _ => Color::DarkGray,
+                })
+                .bold(),
+        ));
+    }
+
+    if app.show_completed {
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(Span::styled(
+            " +done ",
+            Style::default().fg(Color::Black).bg(Color::Green),
+        ));
+    }
+
+    if let Some(ref tf) = app.type_filter {
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(Span::styled(
+            format!(" {tf} "),
+            Style::default().fg(Color::Black).bg(Color::Cyan),
+        ));
+    }
+
     // Stats on the right
     let stats = format!(
         "  {} tasks │ {} ready │ {} blocked │ {} projects",

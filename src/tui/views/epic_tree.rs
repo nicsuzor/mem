@@ -135,19 +135,37 @@ fn render_row(row: &TreeRow, selected: bool, width: usize) -> ListItem<'static> 
             ));
         }
 
+        // Status badge for non-active states
+        match row.status.as_deref() {
+            Some("blocked") => {
+                spans.push(Span::styled("⊘ ", Style::default().fg(Color::Red)));
+            }
+            Some("waiting") => {
+                spans.push(Span::styled("◷ ", Style::default().fg(Color::Yellow)));
+            }
+            _ => {}
+        }
+
         // Label
-        let label_style = match pri {
-            0 | 1 => Style::default().fg(Color::Red).bold(),
-            2 => Style::default().fg(Color::White),
-            _ => Style::default().fg(Color::DarkGray),
+        let label_style = match row.status.as_deref() {
+            Some("blocked") => Style::default().fg(Color::Red),
+            Some("waiting") => Style::default().fg(Color::Yellow),
+            _ => match pri {
+                0 | 1 => Style::default().fg(Color::Red).bold(),
+                2 => Style::default().fg(Color::White),
+                _ => Style::default().fg(Color::DarkGray),
+            },
         };
 
-        // Truncate label to fit
+        // Truncate label to fit (char-boundary safe)
         let prefix_len = spans.iter().map(|s| s.content.len()).sum::<usize>();
         let right_width = 20; // space for staleness + id
         let available = width.saturating_sub(prefix_len + right_width);
         let label = if row.label.len() > available {
-            format!("{}…", &row.label[..available.saturating_sub(1)])
+            let truncate_at = available.saturating_sub(1);
+            // Find a valid char boundary
+            let safe_end = row.label.floor_char_boundary(truncate_at);
+            format!("{}…", &row.label[..safe_end])
         } else {
             row.label.clone()
         };
@@ -171,7 +189,8 @@ fn render_row(row: &TreeRow, selected: bool, width: usize) -> ListItem<'static> 
 
         if let Some(ref tid) = row.task_id {
             let short = if tid.len() > 12 {
-                format!("{}…", &tid[..12])
+                let end = tid.floor_char_boundary(12);
+                format!("{}…", &tid[..end])
             } else {
                 tid.clone()
             };
@@ -186,9 +205,25 @@ fn render_row(row: &TreeRow, selected: bool, width: usize) -> ListItem<'static> 
             if padding > 0 {
                 spans.push(Span::raw(" ".repeat(padding)));
             }
+            // Use staleness color for the age portion if present
+            let right_color = if let Some(ref created) = row.created {
+                if let Some(days) = days_since(created) {
+                    if days > 30 {
+                        Color::Red
+                    } else if days > 14 {
+                        Color::Yellow
+                    } else {
+                        Color::DarkGray
+                    }
+                } else {
+                    Color::DarkGray
+                }
+            } else {
+                Color::DarkGray
+            };
             spans.push(Span::styled(
                 right_text,
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(right_color),
             ));
         }
     }

@@ -208,11 +208,7 @@ impl App {
     }
 
     pub fn load_graph(&mut self) {
-        let graph_path = self.db_path.with_extension("graph.json");
-        let gs = match GraphStore::load(&graph_path) {
-            Ok(gs) => gs,
-            Err(_) => GraphStore::build_from_directory(&self.pkb_root),
-        };
+        let gs = GraphStore::build_from_directory(&self.pkb_root);
 
         // Compute stats
         let ready = gs.ready_tasks();

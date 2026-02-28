@@ -56,11 +56,26 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 fn render_keybindings(frame: &mut Frame, app: &App, area: Rect) {
+    if app.reparent_mode {
+        let bar = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "REPARENT: ",
+                Style::default().fg(Color::Yellow).bold(),
+            ),
+            Span::styled(
+                "Navigate to new parent, press Enter to confirm │ Esc to cancel",
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+        frame.render_widget(bar, area);
+        return;
+    }
+
     let keys = match app.current_view {
-        View::EpicTree => "↑↓ navigate │ ←→ expand/collapse │ Enter detail │ Space toggle │ 1-3 filter │ / search │ Tab views │ ? help │ q quit",
-        View::Focus => "↑↓ navigate │ Enter detail │ / search │ Tab views │ ? help │ q quit",
-        View::Graph => "↑↓ navigate │ ←→ expand/collapse │ Enter detail │ / search │ Tab views │ ? help │ q quit",
-        View::Dashboard => "/ search │ Tab views │ ? help │ q quit",
+        View::EpicTree => "↑↓ navigate │ ←→ expand/collapse │ Enter detail │ s status │ p priority │ / search │ ? help",
+        View::Focus => "↑↓ navigate │ Enter detail │ s status │ / search │ Tab views │ ? help",
+        View::Graph => "↑↓ navigate │ ←→ expand/collapse │ Enter detail │ / search │ Tab views │ ? help",
+        View::Dashboard => "/ search │ Tab views │ ? help",
     };
 
     let bar = Paragraph::new(keys).style(Style::default().fg(Color::DarkGray));

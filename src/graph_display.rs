@@ -222,7 +222,8 @@ mod tests {
             status: Some(status.to_string()),
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
-            mtime: 1000,
+            modified: None,
+            content_hash: String::new(),
         }
     }
 

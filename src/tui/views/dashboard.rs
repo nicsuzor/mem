@@ -14,15 +14,31 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
 
+    // Compute dynamic heights based on content
+    let by_project = gs.by_project();
+    let proj_count = by_project.len().min(8);
+    let (untested, confirmed, invalidated) = app.assumption_counts;
+    let total_assumptions = untested + confirmed + invalidated;
+    let assumption_height = if total_assumptions > 0 {
+        4 + app.untested_assumptions.len().min(3) as u16
+    } else {
+        0
+    };
+    let synergy_height = if app.synergies.is_empty() {
+        0
+    } else {
+        3 + app.synergies.len().min(5) as u16
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // header
-            Constraint::Length(8), // health stats
-            Constraint::Length(8), // by project
-            Constraint::Length(8), // assumptions
-            Constraint::Length(8), // synergies
-            Constraint::Min(1),    // rest
+            Constraint::Length(2),                       // header
+            Constraint::Length(7),                       // health stats
+            Constraint::Length(3 + proj_count as u16),   // by project
+            Constraint::Length(assumption_height),       // assumptions
+            Constraint::Length(synergy_height),          // synergies
+            Constraint::Min(1),                          // rest
         ])
         .split(area);
 

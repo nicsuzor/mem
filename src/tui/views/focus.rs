@@ -169,22 +169,20 @@ fn render_focus_item(
         spans.push(Span::raw("    "));
     }
 
-    // Priority badge
+    // Priority badge (always shown)
     let exposure = if node.stakeholder_exposure { "!" } else { "" };
-    if pri <= 1 || is_now {
+    spans.push(Span::styled(
+        format!("P{pri}{exposure} "),
+        Style::default().fg(pri_color).bold(),
+    ));
+
+    // Type icon
+    let icon = infer_type_icon(&node.label);
+    if !icon.is_empty() {
         spans.push(Span::styled(
-            format!("P{pri}{exposure} "),
-            Style::default().fg(pri_color).bold(),
+            format!("{icon} "),
+            Style::default().fg(Color::Gray),
         ));
-    } else {
-        // Type icon for NEXT items
-        let icon = infer_type_icon(&node.label);
-        if !icon.is_empty() {
-            spans.push(Span::styled(
-                format!("{icon}  "),
-                Style::default().fg(Color::Gray),
-            ));
-        }
     }
 
     // Label

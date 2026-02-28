@@ -52,7 +52,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Title bar
     let tid = node.task_id.as_deref().unwrap_or(&node.id);
     let short_id = if tid.len() > 20 {
-        format!("{}…", &tid[..20])
+        let end = tid.floor_char_boundary(20);
+        format!("{}…", &tid[..end])
     } else {
         tid.to_string()
     };
@@ -249,6 +250,47 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(a.text.clone(), Style::default().fg(Color::White)),
                 Span::styled(format!("  [{}]", a.status), Style::default().fg(color)),
             ]));
+        }
+    }
+
+    // Body
+    if !node.body.is_empty() {
+        left_lines.push(Line::from(""));
+        left_lines.push(Line::from(Span::styled(
+            "  DESCRIPTION",
+            Style::default().fg(Color::Yellow).bold(),
+        )));
+        left_lines.push(Line::from(Span::styled(
+            "  ─────",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        // Simple word wrap and line splitting for the body
+        let wrap_width = panels[0].width.saturating_sub(6) as usize;
+        for line in node.body.lines() {
+            if line.trim().is_empty() {
+                left_lines.push(Line::from(""));
+                continue;
+            }
+
+            let mut current_line = String::from("  ");
+            for word in line.split_whitespace() {
+                if current_line.len() + word.len() > wrap_width {
+                    left_lines.push(Line::from(Span::styled(
+                        current_line.clone(),
+                        Style::default().fg(Color::White),
+                    )));
+                    current_line = String::from("  ");
+                }
+                current_line.push_str(word);
+                current_line.push(' ');
+            }
+            if current_line.len() > 2 {
+                left_lines.push(Line::from(Span::styled(
+                    current_line,
+                    Style::default().fg(Color::White),
+                )));
+            }
         }
     }
 
