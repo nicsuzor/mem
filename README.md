@@ -139,6 +139,7 @@ All frontmatter fields are optional. Files without frontmatter are indexed by fi
 | `aops orphans` | Disconnected nodes with no edges |
 | `aops metrics [id]` | PageRank, betweenness, degree centrality |
 | `aops graph [--format json\|graphml\|dot] [--output path]` | Export the knowledge graph |
+| `aops graph --layout-config path/to/layout.toml` | Use custom layout parameters |
 
 ## MCP Tools
 
@@ -173,6 +174,58 @@ MCP Client <--stdio--> pkb (MCP server)
                      +-----+------+
                      | PKB Files  |  markdown + YAML frontmatter
                      +------------+
+```
+
+## Graph Layout Configuration
+
+The knowledge graph uses a [ForceAtlas2](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0098679) force-directed layout algorithm. All parameters can be tuned at runtime via a `layout.toml` file — no recompilation needed.
+
+**Search order:** `--layout-config` CLI flag > `./layout.toml` in cwd > `layout.toml` next to the executable.
+
+If no file is found, built-in defaults are used.
+
+```toml
+# layout.toml — edit and re-run `aops graph` to see changes
+
+[force]
+k_repulsion = 100.0       # Repulsion coefficient (higher = nodes push apart more)
+k_gravity = 1.0           # Gravity toward center (higher = tighter cluster)
+iterations = 200          # Number of simulation steps
+tolerance = 1.0           # Adaptive speed tolerance (higher = faster but less stable)
+viewport = 1000.0         # Output coordinate range
+project_clustering = 0.5  # Strength of same-project attraction (0 = off)
+max_displacement = 10.0   # Per-node per-iteration movement cap
+
+# Edge attraction by type: [strength, ideal_distance]
+[edges]
+parent = [1.0, 40.0]
+depends_on = [0.15, 200.0]
+soft_depends_on = [0.08, 250.0]
+link = [0.02, 300.0]
+
+# Node repulsion charge multiplier by type
+[charges]
+goal = 3.0
+project = 2.5
+epic = 2.0
+subproject = 1.8
+learn = 1.2
+default = 1.0
+```
+
+### Development workflow
+
+For fast iteration on layout parameters, use debug builds:
+
+```bash
+# Edit layout.toml, then:
+cargo run -- graph -f json -o graph.json    # ~4s incremental rebuild
+
+# Or skip recompilation entirely with a pre-built binary:
+aops graph -f json -o graph.json            # instant, reads layout.toml
+
+# Use a custom config path:
+aops --layout-config ~/experiments/tight.toml graph -f json
 ```
 
 ## Environment Variables
