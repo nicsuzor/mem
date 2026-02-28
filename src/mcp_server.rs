@@ -72,10 +72,6 @@ impl PkbSearchServer {
     /// Rebuild the graph store (e.g. after CRUD operations) and persist to disk
     fn rebuild_graph(&self) {
         let new_graph = GraphStore::build_from_directory(&self.pkb_root);
-        let graph_path = self.db_path.with_extension("graph.json");
-        if let Err(e) = new_graph.save(&graph_path) {
-            tracing::error!("Failed to save graph: {e}");
-        }
         *self.graph.write() = new_graph;
     }
 

@@ -5,18 +5,6 @@ use mem::graph_store::{self, GraphStore};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Sender, Receiver};
-use std::thread;
-
-/// Background worker task
-pub enum BackgroundTask {
-    NoOp,
-}
-
-/// Background worker result
-pub enum BackgroundResult {
-    NoOpDone,
-}
 
 /// Which field is active in the capture modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +62,6 @@ pub struct TreeRow {
 /// Main application state.
 pub struct App {
     pub pkb_root: PathBuf,
-    pub db_path: PathBuf,
     pub graph: Option<GraphStore>,
 
     // View state
@@ -133,9 +120,6 @@ pub struct App {
     pub blocked_count: usize,
     pub project_count: usize,
     pub assumption_counts: (usize, usize, usize), // (untested, confirmed, invalidated)
-    // Worker channels
-    pub task_tx: Sender<BackgroundTask>,
-    pub result_rx: Receiver<BackgroundResult>,
 }
 
 /// A search result for the fuzzy search overlay.
@@ -148,26 +132,9 @@ pub struct SearchHit {
 }
 
 impl App {
-    pub fn new(pkb_root: &Path, db_path: &Path) -> Self {
-        let (task_tx, task_rx) = channel();
-        let (result_tx, result_rx) = channel();
-
-        // Spawn worker thread
-        let _pkb_root_clone = pkb_root.to_path_buf();
-        let _db_path_clone = db_path.to_path_buf();
-        thread::spawn(move || {
-             while let Ok(task) = task_rx.recv() {
-                 match task {
-                     BackgroundTask::NoOp => {
-                         let _ = result_tx.send(BackgroundResult::NoOpDone);
-                     }
-                 }
-             }
-        });
-
+    pub fn new(pkb_root: &Path, _db_path: &Path) -> Self {
         Self {
             pkb_root: pkb_root.to_path_buf(),
-            db_path: db_path.to_path_buf(),
             graph: None,
             current_view: View::EpicTree,
             selected_index: 0,
@@ -202,8 +169,6 @@ impl App {
             blocked_count: 0,
             project_count: 0,
             assumption_counts: (0, 0, 0),
-            task_tx,
-            result_rx,
         }
     }
 
@@ -929,20 +894,8 @@ impl App {
         self.reparent_mode = false;
         self.reparent_node_id = None;
     }
-    pub fn dispatch_worker(&self, task: BackgroundTask) {
-        if let Err(e) = self.task_tx.send(task) {
-            eprintln!("Failed to dispatch worker task: {}", e);
-        }
-    }
-
     pub fn poll_worker(&mut self) {
-        while let Ok(result) = self.result_rx.try_recv() {
-            match result {
-                BackgroundResult::NoOpDone => {
-                    // Handle result
-                }
-            }
-        }
+        // Placeholder for future background task polling
     }
 }
 

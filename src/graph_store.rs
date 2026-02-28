@@ -727,48 +727,6 @@ impl GraphStore {
         dot
     }
 
-    // -----------------------------------------------------------------------
-    // Persistence (optional — graph rebuilds in ~300ms)
-    // -----------------------------------------------------------------------
-
-    pub fn save(&self, path: &Path) -> Result<()> {
-        let data = SavedGraph {
-            nodes: self.nodes.values().cloned().collect(),
-            edges: self.edges.clone(),
-        };
-        let bytes = serde_json::to_vec(&data)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &bytes)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
-    }
-
-    pub fn load(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)?;
-        let data: SavedGraph = serde_json::from_slice(&bytes)?;
-        let node_map: HashMap<String, GraphNode> =
-            data.nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
-        let (ready, blocked, roots, by_project) = classify_tasks(&node_map);
-        let resolution_map = build_resolution_map(&node_map);
-        Ok(GraphStore {
-            nodes: node_map,
-            edges: data.edges,
-            ready,
-            blocked,
-            roots,
-            by_project,
-            resolution_map,
-        })
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct SavedGraph {
-    nodes: Vec<GraphNode>,
-    edges: Vec<Edge>,
 }
 
 // ===========================================================================

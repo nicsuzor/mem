@@ -15,7 +15,7 @@ use std::sync::Arc;
 #[derive(Parser)]
 #[command(
     name = "aops",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_GIT_HASH"), ")"),
     about = "AcademicOps — semantic search and task management for your knowledge base"
 )]
 struct Cli {
@@ -397,16 +397,9 @@ fn load_store(db_path: &PathBuf, dim: usize) -> Result<Arc<RwLock<vectordb::Vect
     )))
 }
 
-/// Load cached graph from disk (written by MCP server), falling back to directory scan.
-fn load_graph(pkb_root: &std::path::Path, db_path: &std::path::Path) -> graph_store::GraphStore {
-    let graph_path = db_path.with_extension("graph.json");
-    match graph_store::GraphStore::load(&graph_path) {
-        Ok(gs) => gs,
-        Err(e) => {
-            tracing::debug!("Graph cache load failed ({}): {e}", graph_path.display());
-            graph_store::GraphStore::build_from_directory(pkb_root)
-        }
-    }
+/// Build the knowledge graph from the PKB directory.
+fn load_graph(pkb_root: &std::path::Path, _db_path: &std::path::Path) -> graph_store::GraphStore {
+    graph_store::GraphStore::build_from_directory(pkb_root)
 }
 
 fn main() -> Result<()> {
@@ -577,13 +570,6 @@ fn main() -> Result<()> {
             let store = store.as_ref().unwrap();
             let (indexed, removed, total) = index_pkb(&pkb_root, &db_path, store, embedder, force);
             store.read().save(&db_path)?;
-
-            // Also rebuild and save graph cache
-            let gs = graph_store::GraphStore::build_from_directory(&pkb_root);
-            let graph_path = db_path.with_extension("graph.json");
-            if let Err(e) = gs.save(&graph_path) {
-                eprintln!("Warning: failed to save graph cache: {e}");
-            }
 
             println!("✓ {total} documents ({indexed} indexed, {removed} removed)");
         }
@@ -1229,8 +1215,6 @@ fn main() -> Result<()> {
                     println!("Created \x1b[1m{id}\x1b[0m: {title_display}");
                     println!("  \x1b[2m{}\x1b[0m", path.display());
 
-                    // Rebuild graph cache so the task is immediately usable
-                    rebuild_graph_cache(&pkb_root, &db_path);
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -1281,7 +1265,6 @@ fn main() -> Result<()> {
                     println!("Created \x1b[1m{id}\x1b[0m: {title_display}");
                     println!("  \x1b[2m{}\x1b[0m", path.display());
 
-                    rebuild_graph_cache(&pkb_root, &db_path);
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -1920,9 +1903,7 @@ fn main() -> Result<()> {
                                 let _ = w.save(&db_path);
                             }
 
-                            // Rebuild graph cache
-                            rebuild_graph_cache(&pkb_root, &db_path);
-                        }
+                                }
                         Err(e) => {
                             eprintln!("Error: {e}");
                             std::process::exit(1);
@@ -2177,14 +2158,6 @@ fn extract_id_from_path(path: &std::path::Path) -> String {
         .unwrap_or_else(|| stem.to_string())
 }
 
-/// Rebuild and save the graph cache so newly created tasks are immediately visible.
-fn rebuild_graph_cache(pkb_root: &std::path::Path, db_path: &std::path::Path) {
-    let gs = graph_store::GraphStore::build_from_directory(pkb_root);
-    let graph_path = db_path.with_extension("graph.json");
-    if let Err(e) = gs.save(&graph_path) {
-        eprintln!("Warning: failed to save graph cache: {e}");
-    }
-}
 
 fn score_to_bar(score: f32) -> String {
     let normalized = ((score + 1.0) / 2.0).clamp(0.0, 1.0);

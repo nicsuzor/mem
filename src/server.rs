@@ -84,11 +84,9 @@ async fn main() -> Result<()> {
         store_read.save(&db_path)?;
     }
 
-    // Build graph store and persist for CLI consumption
+    // Build graph store
     eprintln!("   Building knowledge graph...");
     let graph_store = graph_store::GraphStore::build_from_directory(&pkb_root);
-    let graph_path = db_path.with_extension("graph.json");
-    let _ = graph_store.save(&graph_path);
     let graph = Arc::new(RwLock::new(graph_store));
     eprintln!(
         "   {} nodes, {} edges",
