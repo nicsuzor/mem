@@ -2068,41 +2068,32 @@ fn index_pkb(
         return (0, removed, total);
     }
 
-    let style = ProgressStyle::with_template(
-        "  {bar:30.cyan/dim} {pos}/{len} [{elapsed}<{eta}] {per_sec} {msg}",
-    )
-    .unwrap()
-    .progress_chars("━╸─");
-
-    // Phase 1: Parse all files in parallel with per-file progress
-    let pb = ProgressBar::new(to_process.len() as u64);
-    pb.set_style(style.clone());
-    pb.set_message("parsing");
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
-
+    // Parse all files in parallel (fast — no progress bar needed)
     let parsed: Vec<_> = to_process
         .par_iter()
         .filter_map(|path| {
-            let result = pkb::parse_file_relative(path, pkb_root).map(|doc| {
+            pkb::parse_file_relative(path, pkb_root).map(|doc| {
                 let text = doc.embedding_text();
                 let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
                 (doc, chunks)
-            });
-            pb.inc(1);
-            result
+            })
         })
         .collect();
-
-    pb.finish_with_message("parsed");
 
     let total_chunks: usize = parsed.iter().map(|(_, c)| c.len()).sum();
     eprintln!("  {} chunks across {} docs", total_chunks, parsed.len());
 
-    // Phase 2: Embed and store — batches of 200 docs with progressive saves.
+    // Embed and store — batches of 200 docs with progressive saves.
     // 200 docs × ~3 chunks = ~600 chunks / 32 per sub-batch = ~19 sub-batches,
     // enough to saturate all ONNX sessions across available cores.
     let pb = ProgressBar::new(parsed.len() as u64);
-    pb.set_style(style);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "  {bar:30.cyan/dim} {pos}/{len} [{elapsed}<{eta}] {msg}",
+        )
+        .unwrap()
+        .progress_chars("━╸─"),
+    );
     pb.set_message("embedding");
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
