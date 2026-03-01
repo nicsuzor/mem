@@ -314,6 +314,10 @@ enum Commands {
         /// Skip precomputed layout (ForceAtlas2 x,y coordinates)
         #[arg(long)]
         no_layout: bool,
+
+        /// Primary layout algorithm: forceatlas2, treemap, circle_pack, arc
+        #[arg(long, default_value = "forceatlas2")]
+        layout: String,
     },
 
     /// Search memories by semantic similarity
@@ -1642,10 +1646,12 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Graph { format, output, no_layout } => {
+        Commands::Graph { format, output, no_layout, layout } => {
             let mut gs = load_graph(&pkb_root, &db_path);
             if no_layout {
                 gs.strip_layout();
+            } else if layout != "forceatlas2" {
+                gs.promote_layout(&layout);
             }
 
             match format.to_lowercase().as_str() {

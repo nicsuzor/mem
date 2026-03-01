@@ -27,3 +27,10 @@ epic = 2.0
 subproject = 1.8
 learn = 1.2
 default = 1.0
+
+# Node dimensions for rectangle-aware layouts
+[nodes]
+char_width = 8.0       # pixels per label character
+min_width = 60.0       # minimum node width
+max_width = 200.0      # maximum node width
+height = 30.0          # fixed node height
