@@ -19,8 +19,8 @@ build:
 	$(CARGO) build --release
 
 .PHONY: install
-install: build
-	$(CARGO) install --path . --bin aops --bin pkb
+install:
+	cargo binstall --git https://github.com/nicsuzor/mem mem
 
 # ── Apple Silicon cross-build ────────────────────────────────────────
 # Requires: zig 0.13, cargo-zigbuild, macOS sysroot with framework stubs
@@ -166,7 +166,7 @@ sizes:
 help:
 	@echo "Targets:"
 	@echo "  build          Release build for current host"
-	@echo "  install        Build and install binaries to CARGO_HOME/bin"
+	@echo "  install        Install release binaries via cargo-binstall"
 	@echo "  apple          Cross-compile for Apple Silicon (aarch64-apple-darwin)"
 	@echo "  release        Bump patch, commit, tag, push (CI builds + publishes)"
 	@echo "  release-minor  Bump minor, commit, tag, push (CI builds + publishes)"
