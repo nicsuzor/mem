@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use ort::session::Session;
 use parking_lot::Mutex;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 pub const EMBEDDING_DIM: usize = 1024;
@@ -310,13 +311,10 @@ fn get_onnx_runtime_path() -> Option<PathBuf> {
 /// Threads per ONNX inference session.
 const THREADS_PER_SESSION: usize = 2;
 
-/// Max parallel ONNX sessions, computed from available cores.
+/// Max parallel ONNX sessions for CPU mode, computed from available cores.
 /// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
-/// GPU mode uses exactly 1 session — the GPU itself parallelizes internally.
-fn max_sessions() -> usize {
-    if gpu_available() {
-        return 1;
-    }
+/// GPU mode uses exactly 1 session (hardcoded in the GPU path) — the GPU parallelizes internally.
+fn max_sessions_cpu() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -332,7 +330,8 @@ struct SessionPool {
     /// Whether the model expects token_type_ids as input (BERT: yes, XLM-RoBERTa: no).
     uses_token_type_ids: bool,
     /// True if the session is running on GPU (CUDA EP registered successfully).
-    gpu_mode: bool,
+    /// AtomicBool allows post-construction downgrade to CPU after warm-up probe.
+    gpu_mode: AtomicBool,
 }
 
 impl SessionPool {
@@ -407,26 +406,165 @@ impl SessionPool {
             }))
             .map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
 
-        Ok(Self {
+        let pool = Self {
             sessions: parking_lot::RwLock::new(vec![Arc::new(Mutex::new(session))]),
             model_path: config.model_path.clone(),
             tokenizer,
             uses_token_type_ids,
-            gpu_mode: using_gpu,
-        })
+            gpu_mode: AtomicBool::new(using_gpu),
+        };
+
+        // Verify GPU is actually accelerating, not just silently running on CPU.
+        // This happens before the pool is returned, so no concurrency concerns.
+        if using_gpu && !pool.verify_gpu_execution() {
+            pool.downgrade_to_cpu()?;
+        }
+
+        Ok(pool)
+    }
+
+    /// Maximum wall-clock time (ms) for the GPU warm-up probe.
+    /// Real GPU inference on 4 short texts completes in <100ms.
+    /// CPU single-session takes 2-10s. 1500ms is a safe threshold.
+    const GPU_PROBE_THRESHOLD_MS: u128 = 1500;
+
+    /// Run a small timed inference to verify the GPU is actually executing operators.
+    /// ONNX Runtime can "register" CUDA EP but silently run everything on CPU.
+    /// Returns true if inference is fast enough to indicate real GPU execution.
+    fn verify_gpu_execution(&self) -> bool {
+        let probe_texts = [
+            "The quick brown fox jumps over the lazy dog.",
+            "Semantic search uses dense vector representations.",
+            "GPU acceleration improves inference throughput.",
+            "This is a warm-up probe for execution provider verification.",
+        ];
+
+        let batch_size = probe_texts.len();
+        let max_length = 64; // Short sequences for the probe
+
+        let encodings = match self.tokenizer.encode_batch(probe_texts.to_vec(), true) {
+            Ok(enc) => enc,
+            Err(e) => {
+                tracing::warn!("GPU probe: tokenization failed ({e}), assuming no GPU");
+                return false;
+            }
+        };
+
+        let total_len = batch_size * max_length;
+        let mut input_ids_data = vec![0i64; total_len];
+        let mut attention_data = vec![0i64; total_len];
+
+        for (batch_idx, encoding) in encodings.iter().enumerate() {
+            let offset = batch_idx * max_length;
+            for (i, &token) in encoding.get_ids().iter().take(max_length).enumerate() {
+                input_ids_data[offset + i] = token as i64;
+            }
+            for (i, &mask) in encoding
+                .get_attention_mask()
+                .iter()
+                .take(max_length)
+                .enumerate()
+            {
+                attention_data[offset + i] = mask as i64;
+            }
+        }
+
+        let shape = [batch_size, max_length];
+
+        use ort::value::TensorRef;
+        let input_ids_val = match TensorRef::from_array_view((shape, input_ids_data.as_slice())) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("GPU probe: tensor creation failed ({e}), assuming no GPU");
+                return false;
+            }
+        };
+        let attention_val = match TensorRef::from_array_view((shape, attention_data.as_slice())) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("GPU probe: tensor creation failed ({e}), assuming no GPU");
+                return false;
+            }
+        };
+
+        let session_arc = self.acquire_session();
+        let mut session = session_arc.lock();
+
+        let start = std::time::Instant::now();
+        let result = if self.uses_token_type_ids {
+            let token_type_data = vec![0i64; total_len];
+            let token_types_val =
+                match TensorRef::from_array_view((shape, token_type_data.as_slice())) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            "GPU probe: tensor creation failed ({e}), assuming no GPU"
+                        );
+                        return false;
+                    }
+                };
+            session.run(ort::inputs![input_ids_val, attention_val, token_types_val])
+        } else {
+            session.run(ort::inputs![input_ids_val, attention_val])
+        };
+        let elapsed_ms = start.elapsed().as_millis();
+
+        if result.is_err() {
+            tracing::warn!("GPU probe: inference failed ({:?}), assuming no GPU", result.err());
+            return false;
+        }
+
+        let is_fast = elapsed_ms < Self::GPU_PROBE_THRESHOLD_MS;
+        if is_fast {
+            tracing::info!("GPU probe: {elapsed_ms}ms — GPU is working");
+        } else {
+            tracing::warn!(
+                "GPU probe: {elapsed_ms}ms (threshold {threshold}ms) — CUDA registered but not accelerating",
+                threshold = Self::GPU_PROBE_THRESHOLD_MS
+            );
+        }
+        is_fast
+    }
+
+    /// Replace the CUDA session with a CPU session and flip gpu_mode to false.
+    /// Called when the warm-up probe detects that CUDA isn't actually accelerating.
+    fn downgrade_to_cpu(&self) -> Result<()> {
+        use ort::session::builder::GraphOptimizationLevel;
+
+        tracing::warn!("Downgrading from CUDA to CPU parallel mode");
+        eprintln!("  GPU not accelerating — switching to CPU parallel mode");
+
+        let cpu_session = Session::builder()
+            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+            .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
+            .and_then(|b| b.commit_from_file(&self.model_path))
+            .with_context(|| {
+                format!(
+                    "Failed to create CPU fallback session from {:?}",
+                    self.model_path
+                )
+            })?;
+
+        let mut sessions = self.sessions.write();
+        sessions.clear();
+        sessions.push(Arc::new(Mutex::new(cpu_session)));
+
+        self.gpu_mode.store(false, Ordering::Relaxed);
+        tracing::info!("Now using CPU parallel mode (up to {} sessions)", max_sessions_cpu());
+        Ok(())
     }
 
     /// Grow pool to `count` sessions (no-op if already large enough or in GPU mode).
     /// Called before parallel batch encoding.
     fn ensure_sessions(&self, count: usize) -> Result<()> {
         // GPU mode: single session, GPU parallelizes internally
-        if self.gpu_mode {
+        if self.gpu_mode.load(Ordering::Relaxed) {
             return Ok(());
         }
 
         use ort::session::builder::GraphOptimizationLevel;
 
-        let max_sess = max_sessions();
+        let max_sess = max_sessions_cpu();
         let current = self.sessions.read().len();
         let needed = count.min(max_sess);
         if current >= needed {
@@ -515,7 +653,7 @@ impl Embedder {
             config.tokenizer_path = models_dir.join("tokenizer.json");
         }
 
-        let max_sess = max_sessions();
+        let max_sess = max_sessions_cpu();
         if gpu_available() {
             tracing::info!(
                 "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, GPU/CUDA mode, batch size {})",
@@ -580,14 +718,14 @@ impl Embedder {
         }
 
         let pool = self.ensure_pool()?;
-        let max_batch = if pool.gpu_mode {
+        let max_batch = if pool.gpu_mode.load(Ordering::Relaxed) {
             Self::MAX_BATCH_GPU
         } else {
             Self::MAX_BATCH_CPU
         };
 
         // GPU mode: single session, sequential large batches (GPU parallelizes internally)
-        if pool.gpu_mode {
+        if pool.gpu_mode.load(Ordering::Relaxed) {
             if texts.len() <= max_batch {
                 return self.encode_single_batch(texts, pool);
             }
