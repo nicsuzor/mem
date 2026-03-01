@@ -233,22 +233,15 @@ pub fn compute_layout(nodes: &mut [GraphNode], edges: &[Edge]) {
     if n == 1 {
         nodes[0].x = Some(500.0);
         nodes[0].y = Some(500.0);
-        nodes[0].layouts.insert(
-            "forceatlas2".into(),
-            LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: None },
-        );
-        nodes[0].layouts.insert(
-            "treemap".into(),
-            LayoutPoint { x: 500.0, y: 500.0, w: Some(1000.0), h: Some(1000.0), r: None },
-        );
-        nodes[0].layouts.insert(
-            "circle_pack".into(),
-            LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: Some(500.0) },
-        );
-        nodes[0].layouts.insert(
-            "arc".into(),
-            LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: None },
-        );
+        let layouts_to_add = [
+            ("forceatlas2", LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: None }),
+            ("treemap", LayoutPoint { x: 500.0, y: 500.0, w: Some(1000.0), h: Some(1000.0), r: None }),
+            ("circle_pack", LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: Some(500.0) }),
+            ("arc", LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: None }),
+        ];
+        for (name, point) in layouts_to_add {
+            nodes[0].layouts.insert(name.into(), point);
+        }
         return;
     }
 
@@ -273,16 +266,6 @@ pub fn compute_layout(nodes: &mut [GraphNode], edges: &[Edge]) {
 
     // 4. Arc diagram
     compute_arc(nodes, &cfg);
-}
-
-/// Copy a named layout's coordinates to the primary `x`/`y` fields.
-pub fn promote_layout(nodes: &mut [GraphNode], layout_name: &str) {
-    for node in nodes.iter_mut() {
-        if let Some(lp) = node.layouts.get(layout_name) {
-            node.x = Some(lp.x);
-            node.y = Some(lp.y);
-        }
-    }
 }
 
 // ── Rectangle gap helper ────────────────────────────────────────────────
@@ -718,7 +701,7 @@ fn compute_treemap(
         // Recurse for remaining items
         if best_row_len < items.len() {
             squarify(
-                &mut items[best_row_len..].to_vec(),
+                &mut items[best_row_len..],
                 rem_x, rem_y, rem_w, rem_h,
                 rects, children_of, weight,
             );
@@ -825,7 +808,7 @@ fn compute_circle_pack(
         }
 
         // Sort children by radius descending for better packing
-        let mut sorted_kids: Vec<usize> = kids.clone();
+        let mut sorted_kids = kids;
         sorted_kids.sort_by(|&a, &b| radius[b].partial_cmp(&radius[a]).unwrap());
 
         // Place children using a simple greedy algorithm
