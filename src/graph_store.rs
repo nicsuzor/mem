@@ -608,6 +608,17 @@ impl GraphStore {
         for node in self.nodes.values_mut() {
             node.x = None;
             node.y = None;
+            node.layouts.clear();
+        }
+    }
+
+    /// Copy a named layout's coordinates to the primary `x`/`y` fields.
+    pub fn promote_layout(&mut self, layout_name: &str) {
+        for node in self.nodes.values_mut() {
+            if let Some(lp) = node.layouts.get(layout_name) {
+                node.x = Some(lp.x);
+                node.y = Some(lp.y);
+            }
         }
     }
 

@@ -12,6 +12,25 @@ use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[derive(ValueEnum, Clone, Debug)]
+enum LayoutAlgorithm {
+    Forceatlas2,
+    Treemap,
+    CirclePack,
+    Arc,
+}
+
+impl std::fmt::Display for LayoutAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LayoutAlgorithm::Forceatlas2 => write!(f, "forceatlas2"),
+            LayoutAlgorithm::Treemap => write!(f, "treemap"),
+            LayoutAlgorithm::CirclePack => write!(f, "circle_pack"),
+            LayoutAlgorithm::Arc => write!(f, "arc"),
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "aops",
@@ -314,6 +333,10 @@ enum Commands {
         /// Skip precomputed layout (ForceAtlas2 x,y coordinates)
         #[arg(long)]
         no_layout: bool,
+
+        /// Primary layout algorithm
+        #[arg(long, value_enum, default_value_t = LayoutAlgorithm::Forceatlas2)]
+        layout: LayoutAlgorithm,
     },
 
     /// Search memories by semantic similarity
@@ -1642,10 +1665,12 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Graph { format, output, no_layout } => {
+        Commands::Graph { format, output, no_layout, layout } => {
             let mut gs = load_graph(&pkb_root, &db_path);
             if no_layout {
                 gs.strip_layout();
+            } else if !matches!(layout, LayoutAlgorithm::Forceatlas2) {
+                gs.promote_layout(&layout.to_string());
             }
 
             match format.to_lowercase().as_str() {

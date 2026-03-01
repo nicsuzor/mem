@@ -139,6 +139,22 @@ pub struct GraphNode {
     /// Precomputed layout Y coordinate (force-directed graph layout)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y: Option<f64>,
+    /// Named layout coordinates (treemap, circle_pack, arc, etc.)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub layouts: HashMap<String, LayoutPoint>,
+}
+
+/// A point in a named layout coordinate system.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayoutPoint {
+    pub x: f64,
+    pub y: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub w: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r: Option<f64>,
 }
 
 /// An assumption attached to a planning node.
@@ -458,6 +474,7 @@ impl GraphNode {
             assumptions,
             x: None,
             y: None,
+            layouts: HashMap::new(),
         }
     }
 }
