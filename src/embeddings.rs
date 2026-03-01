@@ -617,7 +617,7 @@ impl Embedder {
                     if completed % 10 == 0 || completed == total_batches {
                         let pct = (completed * 100) / total_batches;
                         let chunks_done = (completed * max_batch).min(total_texts);
-                        eprintln!("  Embedded {chunks_done}/{total_texts} chunks ({pct}%)");
+                        tracing::debug!("Embedded {chunks_done}/{total_texts} chunks ({pct}%)");
                     }
                     r
                 })
