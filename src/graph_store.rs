@@ -18,6 +18,16 @@ use std::path::Path;
 // Output graph (for JSON serialization)
 // ===========================================================================
 
+/// Rendering hints for a named layout (consumed by D3/renderer).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LayoutMeta {
+    /// How edges should be drawn: "manhattan", "arc", "hidden", "straight"
+    pub edge_style: String,
+    /// For arc layout: "alternate" draws arcs above/below the line
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc_direction: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct OutputGraph {
     pub nodes: Vec<GraphNode>,
@@ -30,6 +40,8 @@ pub struct OutputGraph {
     pub by_project: HashMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roots: Vec<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub layout_metadata: HashMap<String, LayoutMeta>,
 }
 
 // ===========================================================================
@@ -593,6 +605,25 @@ impl GraphStore {
     pub fn to_output_graph(&self) -> OutputGraph {
         let mut nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
         nodes.sort_by(|a, b| a.label.cmp(&b.label));
+
+        let mut layout_metadata = HashMap::new();
+        layout_metadata.insert(
+            "forceatlas2".into(),
+            LayoutMeta { edge_style: "manhattan".into(), arc_direction: None },
+        );
+        layout_metadata.insert(
+            "treemap".into(),
+            LayoutMeta { edge_style: "hidden".into(), arc_direction: None },
+        );
+        layout_metadata.insert(
+            "circle_pack".into(),
+            LayoutMeta { edge_style: "hidden".into(), arc_direction: None },
+        );
+        layout_metadata.insert(
+            "arc".into(),
+            LayoutMeta { edge_style: "arc".into(), arc_direction: Some("alternate".into()) },
+        );
+
         OutputGraph {
             nodes,
             edges: self.edges.clone(),
@@ -600,6 +631,7 @@ impl GraphStore {
             blocked: self.blocked.clone(),
             by_project: self.by_project.clone(),
             roots: self.roots.clone(),
+            layout_metadata,
         }
     }
 

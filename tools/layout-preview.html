@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PKB Layout Preview</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; overflow: hidden; }
+
+  #toolbar { padding: 8px 16px; background: #16213e; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #toolbar button {
+    padding: 4px 12px; border: 1px solid #555; border-radius: 4px;
+    background: #0f3460; color: #eee; cursor: pointer; font-size: 13px;
+  }
+  #toolbar button.active { background: #e94560; border-color: #e94560; }
+  #toolbar button:hover { background: #533483; }
+  .separator { width: 1px; height: 24px; background: #444; }
+
+  #filters { padding: 4px 16px; background: #111a30; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #filters label {
+    font-size: 12px; cursor: pointer; padding: 2px 8px; border-radius: 3px;
+    border: 1px solid transparent; user-select: none; display: flex; align-items: center; gap: 4px;
+  }
+  #filters label:hover { border-color: #555; }
+  #filters label input { display: none; }
+  #filters label .swatch {
+    display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  }
+  #filters label.off { opacity: 0.35; text-decoration: line-through; }
+  #filters .filter-group { display: flex; gap: 4px; align-items: center; }
+  #filters .filter-label { font-size: 11px; color: #888; margin-right: 2px; }
+
+  #stats { margin-left: auto; font-size: 12px; color: #888; white-space: nowrap; }
+  #zoom-info { font-size: 12px; color: #888; margin-left: 8px; }
+
+  svg { display: block; width: 100%; height: calc(100vh - 68px); }
+  .node-el { cursor: pointer; }
+  .node-el:hover { stroke: #fff; stroke-width: 2; }
+  .edge-line { stroke-opacity: 0.12; }
+  .node-label {
+    font-size: 10px; fill: #ccc; pointer-events: none;
+    text-anchor: middle; dominant-baseline: central;
+  }
+
+  .tooltip {
+    position: absolute; background: #16213e; border: 1px solid #555;
+    padding: 8px 12px; border-radius: 4px; font-size: 12px;
+    pointer-events: none; display: none; z-index: 10; max-width: 350px;
+    line-height: 1.4;
+  }
+  .tooltip b { color: #e9a045; }
+
+  #legend {
+    position: absolute; bottom: 12px; right: 12px; background: #16213ecc;
+    border: 1px solid #444; border-radius: 6px; padding: 8px 12px; font-size: 11px;
+  }
+  #legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  #legend .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+  #help-overlay {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    background: #16213ef0; border: 1px solid #555; border-radius: 8px;
+    padding: 20px 28px; font-size: 13px; line-height: 1.6; max-width: 500px;
+    display: none; z-index: 20;
+  }
+  #help-overlay h3 { color: #e9a045; margin-bottom: 8px; }
+  #help-overlay kbd { background: #333; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <button data-layout="forceatlas2" class="active">ForceAtlas2</button>
+  <button data-layout="treemap">Treemap</button>
+  <button data-layout="circle_pack">Circle Pack</button>
+  <button data-layout="arc">Arc</button>
+  <div class="separator"></div>
+  <button id="btn-reset">Reset Zoom</button>
+  <button id="btn-labels">Labels</button>
+  <button id="btn-help">?</button>
+  <span id="zoom-info"></span>
+  <span id="stats"></span>
+</div>
+
+<div id="filters"></div>
+
+<svg id="viz"></svg>
+<div class="tooltip" id="tooltip"></div>
+
+<div id="legend"></div>
+
+<div id="help-overlay">
+  <h3>Keyboard Shortcuts</h3>
+  <kbd>Scroll</kbd> Zoom in/out<br>
+  <kbd>Click + Drag</kbd> Pan<br>
+  <kbd>Double-click</kbd> Zoom to point<br>
+  <kbd>R</kbd> Reset zoom<br>
+  <kbd>L</kbd> Toggle labels<br>
+  <kbd>1-4</kbd> Switch layouts<br>
+  <kbd>?</kbd> Toggle this help<br>
+  <br>
+  <h3>Filter Toggles</h3>
+  Click a type/status to hide/show those nodes.<br>
+  Filters apply to all layouts.
+</div>
+
+<script>
+const TYPE_COLORS = {
+  goal: '#e94560', project: '#0f3460', subproject: '#533483',
+  epic: '#e9a045', task: '#45e980', action: '#45c9e9',
+  bug: '#e94545', note: '#888', knowledge: '#a0a0e0',
+  memory: '#c9a0e0', learn: '#e0e0a0', feature: '#59a14f',
+  milestone: '#edc948', contact: '#9c755f',
+};
+const STATUS_COLORS = {
+  active: '#45e980', in_progress: '#45c9e9', ready: '#4ecdc4',
+  blocked: '#e94545', done: '#666', cancelled: '#444',
+};
+
+let data, currentLayout = 'forceatlas2';
+let showLabels = false;
+let typeFilters = {};   // type -> boolean (true = visible)
+let statusFilters = {};
+
+// Zoom/pan state
+let viewTransform = { x: 0, y: 0, k: 1 };
+let isPanning = false, panStart = { x: 0, y: 0 }, panStartTransform = { x: 0, y: 0 };
+
+async function init() {
+  try {
+    const resp = await fetch('graph.json');
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('stats').textContent =
+      'Error: place graph.json in same directory and serve via HTTP';
+    return;
+  }
+
+  // Discover types and statuses
+  const types = [...new Set(data.nodes.map(n => n.node_type).filter(Boolean))].sort();
+  const statuses = [...new Set(data.nodes.map(n => n.status).filter(Boolean))].sort();
+  types.forEach(t => { typeFilters[t] = true; });
+  statuses.forEach(s => { statusFilters[s] = true; });
+
+  buildFilterBar(types, statuses);
+  buildLegend(types);
+  setupLayoutButtons();
+  setupZoomPan();
+  setupKeyboard();
+
+  render();
+}
+
+function buildFilterBar(types, statuses) {
+  const bar = document.getElementById('filters');
+  let html = '<span class="filter-label">Type:</span><div class="filter-group">';
+  types.forEach(t => {
+    const color = TYPE_COLORS[t] || '#666';
+    const count = data.nodes.filter(n => n.node_type === t).length;
+    html += `<label data-filter="type" data-value="${t}">
+      <input type="checkbox" checked><span class="swatch" style="background:${color}"></span>${t} (${count})
+    </label>`;
+  });
+  html += '</div><div class="separator"></div><span class="filter-label">Status:</span><div class="filter-group">';
+  statuses.forEach(s => {
+    const color = STATUS_COLORS[s] || '#666';
+    const count = data.nodes.filter(n => n.status === s).length;
+    html += `<label data-filter="status" data-value="${s}">
+      <input type="checkbox" checked><span class="swatch" style="background:${color}"></span>${s} (${count})
+    </label>`;
+  });
+  html += '</div>';
+  bar.innerHTML = html;
+
+  bar.querySelectorAll('label').forEach(lbl => {
+    lbl.addEventListener('click', e => {
+      e.preventDefault();
+      const kind = lbl.dataset.filter;
+      const val = lbl.dataset.value;
+      if (kind === 'type') typeFilters[val] = !typeFilters[val];
+      else statusFilters[val] = !statusFilters[val];
+      lbl.classList.toggle('off');
+      render();
+    });
+  });
+}
+
+function buildLegend(types) {
+  const legend = document.getElementById('legend');
+  let html = '';
+  types.slice(0, 12).forEach(t => {
+    html += `<div class="row"><div class="dot" style="background:${TYPE_COLORS[t]||'#666'}"></div>${t}</div>`;
+  });
+  legend.innerHTML = html;
+}
+
+function setupLayoutButtons() {
+  document.querySelectorAll('#toolbar button[data-layout]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelector('#toolbar button.active').classList.remove('active');
+      btn.classList.add('active');
+      currentLayout = btn.dataset.layout;
+      resetZoom();
+      render();
+    });
+  });
+  document.getElementById('btn-reset').addEventListener('click', () => { resetZoom(); render(); });
+  document.getElementById('btn-labels').addEventListener('click', () => {
+    showLabels = !showLabels;
+    document.getElementById('btn-labels').classList.toggle('active', showLabels);
+    render();
+  });
+  document.getElementById('btn-help').addEventListener('click', () => {
+    const h = document.getElementById('help-overlay');
+    h.style.display = h.style.display === 'block' ? 'none' : 'block';
+  });
+}
+
+function resetZoom() { viewTransform = { x: 0, y: 0, k: 1 }; }
+
+function setupZoomPan() {
+  const svg = document.getElementById('viz');
+
+  svg.addEventListener('wheel', e => {
+    e.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    const newK = Math.max(0.1, Math.min(50, viewTransform.k * delta));
+    // Zoom toward mouse position
+    viewTransform.x = mx - (mx - viewTransform.x) * (newK / viewTransform.k);
+    viewTransform.y = my - (my - viewTransform.y) * (newK / viewTransform.k);
+    viewTransform.k = newK;
+    render();
+  }, { passive: false });
+
+  svg.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    isPanning = true;
+    panStart = { x: e.clientX, y: e.clientY };
+    panStartTransform = { x: viewTransform.x, y: viewTransform.y };
+    svg.style.cursor = 'grabbing';
+  });
+  window.addEventListener('mousemove', e => {
+    if (!isPanning) return;
+    viewTransform.x = panStartTransform.x + (e.clientX - panStart.x);
+    viewTransform.y = panStartTransform.y + (e.clientY - panStart.y);
+    render();
+  });
+  window.addEventListener('mouseup', () => {
+    isPanning = false;
+    document.getElementById('viz').style.cursor = 'grab';
+  });
+
+  svg.addEventListener('dblclick', e => {
+    e.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const newK = Math.min(50, viewTransform.k * 2);
+    viewTransform.x = mx - (mx - viewTransform.x) * (newK / viewTransform.k);
+    viewTransform.y = my - (my - viewTransform.y) * (newK / viewTransform.k);
+    viewTransform.k = newK;
+    render();
+  });
+
+  svg.style.cursor = 'grab';
+}
+
+function setupKeyboard() {
+  window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    switch (e.key) {
+      case 'r': resetZoom(); render(); break;
+      case 'l': showLabels = !showLabels; document.getElementById('btn-labels').classList.toggle('active', showLabels); render(); break;
+      case '1': switchLayout('forceatlas2'); break;
+      case '2': switchLayout('treemap'); break;
+      case '3': switchLayout('circle_pack'); break;
+      case '4': switchLayout('arc'); break;
+      case '?': document.getElementById('btn-help').click(); break;
+    }
+  });
+}
+
+function switchLayout(layout) {
+  document.querySelector('#toolbar button.active').classList.remove('active');
+  document.querySelector(`#toolbar button[data-layout="${layout}"]`).classList.add('active');
+  currentLayout = layout;
+  resetZoom();
+  render();
+}
+
+function getCoords(node) {
+  const lp = node.layouts?.[currentLayout];
+  if (lp) return lp;
+  if (currentLayout === 'forceatlas2') return { x: node.x || 500, y: node.y || 500 };
+  return { x: 500, y: 500 };
+}
+
+function nodeColor(node) {
+  return TYPE_COLORS[node.node_type] || '#666';
+}
+
+function isVisible(node) {
+  if (node.node_type && !typeFilters[node.node_type]) return false;
+  if (node.status && !statusFilters[node.status]) return false;
+  return true;
+}
+
+function render() {
+  const svg = document.getElementById('viz');
+  const W = svg.clientWidth, H = svg.clientHeight;
+  const margin = 40;
+
+  // Gather coords for visible nodes with layout data
+  const coords = data.nodes.map(n => getCoords(n));
+  const visibleIndices = [];
+  data.nodes.forEach((n, i) => {
+    const hasLayout = !!n.layouts?.[currentLayout];
+    if (!hasLayout && (currentLayout === 'treemap' || currentLayout === 'arc')) return;
+    if (!isVisible(n)) return;
+    visibleIndices.push(i);
+  });
+
+  // Compute bounds from visible nodes only
+  const vxs = visibleIndices.map(i => coords[i].x);
+  const vys = visibleIndices.map(i => coords[i].y);
+  const xMin = Math.min(...vxs), xMax = Math.max(...vxs);
+  const yMin = Math.min(...vys), yMax = Math.max(...vys);
+  const xRange = (xMax - xMin) || 1, yRange = (yMax - yMin) || 1;
+
+  const baseScale = Math.min((W - 2*margin) / xRange, (H - 2*margin) / yRange);
+  const ox = margin + ((W - 2*margin) - xRange * baseScale) / 2;
+  const oy = margin + ((H - 2*margin) - yRange * baseScale) / 2;
+
+  // Apply zoom transform
+  const { x: tx, y: ty, k } = viewTransform;
+  const sx = x => (ox + (x - xMin) * baseScale) * k + tx;
+  const sy = y => (oy + (y - yMin) * baseScale) * k + ty;
+  const effectiveScale = baseScale * k;
+
+  // Node index for edges
+  const nodeIdx = {};
+  data.nodes.forEach((n, i) => { nodeIdx[n.id] = i; });
+  const visibleSet = new Set(visibleIndices);
+
+  // Layout metadata
+  const meta = data.layout_metadata?.[currentLayout] || {};
+  const edgeStyle = meta.edge_style || 'straight';
+
+  let html = '';
+
+  // Draw edges
+  if (edgeStyle !== 'hidden') {
+    data.edges.forEach(e => {
+      const si = nodeIdx[e.source], ti = nodeIdx[e.target];
+      if (si === undefined || ti === undefined) return;
+      if (!visibleSet.has(si) || !visibleSet.has(ti)) return;
+      const s = coords[si], t = coords[ti];
+      const x1 = sx(s.x), y1 = sy(s.y), x2 = sx(t.x), y2 = sy(t.y);
+
+      if (edgeStyle === 'arc') {
+        const dx = x2 - x1;
+        const arcH = Math.abs(dx) * 0.4;
+        const side = (si % 2 === 0) ? -1 : 1;
+        const midX = (x1 + x2) / 2;
+        const midY = (y1 + y2) / 2 + side * arcH;
+        html += `<path d="M${x1},${y1} Q${midX},${midY} ${x2},${y2}"
+          fill="none" stroke="#456" class="edge-line"/>`;
+      } else {
+        html += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+          stroke="#456" class="edge-line"/>`;
+      }
+    });
+  }
+
+  // Sort for z-order
+  const sorted = [...visibleIndices];
+  if (currentLayout === 'treemap') {
+    sorted.sort((a, b) => {
+      const areaA = (coords[a].w || 0) * (coords[a].h || 0);
+      const areaB = (coords[b].w || 0) * (coords[b].h || 0);
+      return areaB - areaA;
+    });
+  } else if (currentLayout === 'circle_pack') {
+    sorted.sort((a, b) => (coords[b].r || 0) - (coords[a].r || 0));
+  }
+
+  // Draw nodes
+  sorted.forEach(i => {
+    const n = data.nodes[i];
+    const c = coords[i];
+    const px = sx(c.x), py = sy(c.y);
+    const color = nodeColor(n);
+
+    if (currentLayout === 'treemap' && c.w && c.h) {
+      const rw = c.w * effectiveScale, rh = c.h * effectiveScale;
+      html += `<rect x="${px - rw/2}" y="${py - rh/2}" width="${rw}" height="${rh}"
+        fill="${color}" fill-opacity="0.6" stroke="#333" stroke-width="0.5"
+        class="node-el" data-idx="${i}"/>`;
+    } else if (currentLayout === 'circle_pack' && c.r) {
+      const r = Math.max(c.r * effectiveScale, 2);
+      html += `<circle cx="${px}" cy="${py}" r="${r}"
+        fill="${color}" fill-opacity="0.5" stroke="${color}"
+        class="node-el" data-idx="${i}"/>`;
+    } else {
+      const r = Math.max(2, (n.downstream_weight || 1) * 0.5 + 2);
+      html += `<circle cx="${px}" cy="${py}" r="${r}"
+        fill="${color}" fill-opacity="0.8"
+        class="node-el" data-idx="${i}"/>`;
+    }
+
+    // Labels at sufficient zoom
+    if (showLabels && k > 2) {
+      const label = (n.label || '').substring(0, 30);
+      if (label) {
+        html += `<text x="${px}" y="${py - 8}" class="node-label"
+          style="font-size:${Math.min(10, 10/k*2)}px">${escapeHtml(label)}</text>`;
+      }
+    }
+  });
+
+  svg.innerHTML = html;
+
+  // Stats
+  const visCount = visibleIndices.length;
+  document.getElementById('stats').textContent =
+    `${visCount}/${data.nodes.length} nodes | ${data.edges.length} edges`;
+  document.getElementById('zoom-info').textContent =
+    k !== 1 ? `${(k*100).toFixed(0)}%` : '';
+
+  // Tooltip
+  setupTooltip(coords);
+}
+
+function setupTooltip(coords) {
+  const svg = document.getElementById('viz');
+  const tooltip = document.getElementById('tooltip');
+
+  // Remove old listeners by replacing svg event handlers
+  svg.onmousemove = e => {
+    const el = e.target.closest('[data-idx]');
+    if (!el) { tooltip.style.display = 'none'; return; }
+    const idx = +el.dataset.idx;
+    const n = data.nodes[idx];
+    const c = coords[idx];
+
+    let info = `<b>${escapeHtml(n.label || n.id)}</b><br>`;
+    info += `type: ${n.node_type || '-'} | status: ${n.status || '-'}<br>`;
+    info += `project: ${n.project || '-'}<br>`;
+    if (n.downstream_weight) info += `downstream weight: ${n.downstream_weight}<br>`;
+    if (c.w) info += `size: ${c.w.toFixed(0)} x ${c.h?.toFixed(0)}<br>`;
+    if (c.r) info += `radius: ${c.r.toFixed(1)}<br>`;
+
+    tooltip.innerHTML = info;
+    tooltip.style.display = 'block';
+    const tx = Math.min(e.clientX + 14, window.innerWidth - 360);
+    tooltip.style.left = tx + 'px';
+    tooltip.style.top = (e.clientY + 14) + 'px';
+  };
+  svg.onmouseleave = () => { tooltip.style.display = 'none'; };
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+init();
+</script>
+</body>
+</html>

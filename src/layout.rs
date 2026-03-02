@@ -422,12 +422,14 @@ fn compute_forceatlas2(
             fy[i] -= force * dy / dist;
         }
 
-        // Project clustering: gentle attraction toward project centroid
+        // Project clustering: attraction toward project centroid
+        // Scaled by sqrt(project_size) so larger projects form tighter groups
         if cfg.force.project_clustering > 0.0 {
             for (_proj, members) in &project_nodes {
                 if members.len() < 2 {
                     continue;
                 }
+                let proj_scale = (members.len() as f64).sqrt();
                 let pcx: f64 =
                     members.iter().map(|&i| x[i]).sum::<f64>() / members.len() as f64;
                 let pcy: f64 =
@@ -436,8 +438,7 @@ fn compute_forceatlas2(
                     let dx = x[i] - pcx;
                     let dy = y[i] - pcy;
                     let dist = (dx * dx + dy * dy).sqrt().max(0.1);
-                    let force =
-                        cfg.force.project_clustering * (degree[i] as f64 + 1.0);
+                    let force = cfg.force.project_clustering * proj_scale;
                     fx[i] -= force * dx / dist;
                     fy[i] -= force * dy / dist;
                 }
@@ -505,6 +506,16 @@ fn compute_forceatlas2(
 
 // ── Treemap (squarified) ────────────────────────────────────────────────
 
+/// Whether a node type should appear in the treemap (task-relevant types only).
+fn is_treemap_type(node_type: Option<&str>) -> bool {
+    matches!(
+        node_type,
+        Some("task") | Some("project") | Some("epic") | Some("goal")
+            | Some("bug") | Some("action") | Some("subproject") | Some("feature")
+            | Some("learn") | Some("milestone")
+    )
+}
+
 fn compute_treemap(
     nodes: &mut [GraphNode],
     edges: &[Edge],
@@ -513,7 +524,10 @@ fn compute_treemap(
 ) {
     let n = nodes.len();
 
-    // Build parent-child tree from Parent edges
+    // Filter to task-relevant types for a cleaner, less dense treemap
+    let included: Vec<bool> = nodes.iter().map(|n| is_treemap_type(n.node_type.as_deref())).collect();
+
+    // Build parent-child tree from Parent edges (only among included nodes)
     let mut children_of: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut has_parent = vec![false; n];
     for edge in edges {
@@ -522,18 +536,23 @@ fn compute_treemap(
                 id_to_idx.get(edge.source.as_str()),
                 id_to_idx.get(edge.target.as_str()),
             ) {
-                children_of.entry(parent_idx).or_default().push(child_idx);
-                has_parent[child_idx] = true;
+                if included[child_idx] && included[parent_idx] {
+                    children_of.entry(parent_idx).or_default().push(child_idx);
+                    has_parent[child_idx] = true;
+                }
             }
         }
     }
 
-    // Find roots (nodes without parents)
-    let roots: Vec<usize> = (0..n).filter(|&i| !has_parent[i]).collect();
+    // Find roots among included nodes
+    let roots: Vec<usize> = (0..n).filter(|&i| included[i] && !has_parent[i]).collect();
 
-    // Compute subtree weight for each node
+    // Compute subtree weight for each node (only included nodes)
     let mut weight = vec![0.0f64; n];
     for i in 0..n {
+        if !included[i] {
+            continue;
+        }
         weight[i] = if nodes[i].downstream_weight > 0.0 {
             nodes[i].downstream_weight
         } else {
@@ -718,8 +737,11 @@ fn compute_treemap(
         &mut rects, &children_of, &weight,
     );
 
-    // Store results
+    // Store results (only for included nodes — no min-rect clamping to avoid overlaps)
     for i in 0..n {
+        if !included[i] {
+            continue;
+        }
         let (rx, ry, rw, rh) = rects[i];
         // If node wasn't placed (not reachable from roots), give it a default
         let (rx, ry, rw, rh) = if rw == 0.0 && rh == 0.0 {
@@ -742,6 +764,88 @@ fn compute_treemap(
 
 // ── Circle packing ──────────────────────────────────────────────────────
 
+/// Pack circles with given radii into a compact 2D arrangement.
+/// Returns (x, y) positions for each circle (centered around origin).
+fn pack_circles(radii: &[f64]) -> Vec<(f64, f64)> {
+    let n = radii.len();
+    if n == 0 {
+        return vec![];
+    }
+    if n == 1 {
+        return vec![(0.0, 0.0)];
+    }
+
+    let mut pos = vec![(0.0f64, 0.0f64); n];
+
+    // Sort indices by radius descending for better packing
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| radii[b].partial_cmp(&radii[a]).unwrap());
+
+    // Place first two along x-axis
+    let d01 = radii[order[0]] + radii[order[1]];
+    pos[order[0]] = (-d01 / 2.0, 0.0);
+    pos[order[1]] = (d01 / 2.0, 0.0);
+
+    // Place remaining circles tangent to existing pairs
+    for ki in 2..n {
+        let k = order[ki];
+        let rk = radii[k];
+
+        let mut best_pos: Option<(f64, f64)> = None;
+        let mut best_dist = f64::INFINITY;
+
+        // Only search recent circles for tangent pairs (O(n*K^2) vs O(n^3))
+        let search_start = if ki > 15 { ki - 15 } else { 0 };
+        for ai in search_start..ki {
+            for bi in (ai + 1)..ki {
+                let a = order[ai];
+                let b = order[bi];
+                if let Some((cx, cy)) = tangent_circle(
+                    pos[a].0, pos[a].1, radii[a],
+                    pos[b].0, pos[b].1, radii[b],
+                    rk,
+                ) {
+                    // Check no overlap with all placed circles
+                    let overlaps = order[..ki].iter().any(|&other| {
+                        let dx = cx - pos[other].0;
+                        let dy = cy - pos[other].1;
+                        let min_d = rk + radii[other];
+                        dx * dx + dy * dy < (min_d - 0.01) * (min_d - 0.01)
+                    });
+                    if !overlaps {
+                        let dist = cx * cx + cy * cy;
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_pos = Some((cx, cy));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: place at angle on the outer boundary
+        pos[k] = best_pos.unwrap_or_else(|| {
+            let angle = ki as f64 * std::f64::consts::TAU / n as f64;
+            let outer_r = order[..ki]
+                .iter()
+                .map(|&j| (pos[j].0.powi(2) + pos[j].1.powi(2)).sqrt() + radii[j])
+                .fold(0.0f64, f64::max);
+            ((outer_r + rk) * angle.cos(), (outer_r + rk) * angle.sin())
+        });
+    }
+
+    pos
+}
+
+/// Compute the minimum enclosing radius for a set of positioned circles.
+fn enclosing_radius(positions: &[(f64, f64)], radii: &[f64]) -> f64 {
+    positions
+        .iter()
+        .zip(radii.iter())
+        .map(|((x, y), r)| (x * x + y * y).sqrt() + r)
+        .fold(0.0f64, f64::max)
+}
+
 fn compute_circle_pack(
     nodes: &mut [GraphNode],
     edges: &[Edge],
@@ -750,221 +854,153 @@ fn compute_circle_pack(
 ) {
     let n = nodes.len();
     let viewport = cfg.force.viewport;
+    let min_radius_pre = 3.0; // minimum radius before normalization
 
-    // Build parent-child tree from Parent edges
-    let mut children_of: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut has_parent = vec![false; n];
+    // Build parent mapping from Parent edges
+    let mut parent_of: Vec<Option<usize>> = vec![None; n];
     for edge in edges {
         if edge.edge_type == EdgeType::Parent {
             if let (Some(&child_idx), Some(&parent_idx)) = (
                 id_to_idx.get(edge.source.as_str()),
                 id_to_idx.get(edge.target.as_str()),
             ) {
-                children_of.entry(parent_idx).or_default().push(child_idx);
-                has_parent[child_idx] = true;
+                parent_of[child_idx] = Some(parent_idx);
             }
         }
     }
 
-    let roots: Vec<usize> = (0..n).filter(|&i| !has_parent[i]).collect();
-
-    // Compute weight
-    let mut weight = vec![0.0f64; n];
+    // Find root ancestor for each node (iterative to avoid stack overflow)
+    let mut root_of = vec![0usize; n];
     for i in 0..n {
-        weight[i] = if nodes[i].downstream_weight > 0.0 {
+        let mut current = i;
+        while let Some(p) = parent_of[current] {
+            current = p;
+        }
+        root_of[i] = current;
+    }
+
+    let roots: Vec<usize> = (0..n).filter(|&i| parent_of[i].is_none()).collect();
+
+    // Flatten to 2 levels: root → all descendants as direct children
+    let mut root_children: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        if parent_of[i].is_some() {
+            root_children.entry(root_of[i]).or_default().push(i);
+        }
+    }
+
+    // Compute leaf radii using log-scale with minimum (avoids sub-pixel circles)
+    let scale = 12.0;
+    let mut leaf_radius = vec![0.0f64; n];
+    for i in 0..n {
+        let w = if nodes[i].downstream_weight > 0.0 {
             nodes[i].downstream_weight
         } else {
             1.0
         };
+        leaf_radius[i] = ((w + 1.0).ln() * scale).max(min_radius_pre);
     }
 
-    // Bottom-up: compute radii
-    let scale = 15.0; // base scale factor
-    let mut radius = vec![0.0f64; n];
-    let mut rel_x = vec![0.0f64; n]; // relative position within parent
-    let mut rel_y = vec![0.0f64; n];
+    // Pack children within each root, compute root enclosing radii
+    let mut child_positions: HashMap<usize, Vec<(usize, f64, f64)>> = HashMap::new();
+    let mut root_radius = vec![0.0f64; n];
 
-    fn pack_node(
-        idx: usize,
-        children_of: &HashMap<usize, Vec<usize>>,
-        weight: &[f64],
-        radius: &mut [f64],
-        rel_x: &mut [f64],
-        rel_y: &mut [f64],
-        scale: f64,
-    ) {
-        let kids = match children_of.get(&idx) {
-            Some(k) if !k.is_empty() => k.clone(),
+    for &root in &roots {
+        let kids = match root_children.get(&root) {
+            Some(k) if !k.is_empty() => k,
             _ => {
-                // Leaf: radius from weight
-                radius[idx] = weight[idx].sqrt() * scale;
-                return;
+                root_radius[root] = leaf_radius[root];
+                continue;
             }
         };
 
-        // Recursively pack children first
-        for &kid in &kids {
-            pack_node(kid, children_of, weight, radius, rel_x, rel_y, scale);
-        }
+        let child_radii: Vec<f64> = kids.iter().map(|&k| leaf_radius[k]).collect();
+        let positions = pack_circles(&child_radii);
+        let enc_r = enclosing_radius(&positions, &child_radii) * 1.1; // 10% padding
+        root_radius[root] = enc_r.max(leaf_radius[root]);
 
-        // Sort children by radius descending for better packing
-        let mut sorted_kids = kids;
-        sorted_kids.sort_by(|&a, &b| radius[b].partial_cmp(&radius[a]).unwrap());
-
-        // Place children using a simple greedy algorithm
-        if sorted_kids.len() == 1 {
-            let k = sorted_kids[0];
-            rel_x[k] = 0.0;
-            rel_y[k] = 0.0;
-            radius[idx] = radius[k] * 1.15; // padding
-        } else {
-            // Place first two along x-axis
-            let k0 = sorted_kids[0];
-            let k1 = sorted_kids[1];
-            let d01 = radius[k0] + radius[k1];
-            rel_x[k0] = -d01 / 2.0;
-            rel_y[k0] = 0.0;
-            rel_x[k1] = d01 / 2.0;
-            rel_y[k1] = 0.0;
-
-            // Place remaining children tangent to two existing circles
-            for ki in 2..sorted_kids.len() {
-                let k = sorted_kids[ki];
-                let rk = radius[k];
-
-                // Find best position: try tangent to each pair, pick closest to origin
-                let mut best_x = 0.0f64;
-                let mut best_y = 0.0f64;
-                let mut best_dist = f64::INFINITY;
-
-                for ai in 0..ki {
-                    for bi in (ai + 1)..ki {
-                        let a = sorted_kids[ai];
-                        let b = sorted_kids[bi];
-                        // Place circle tangent to circles a and b
-                        if let Some((cx, cy)) = tangent_circle(
-                            rel_x[a], rel_y[a], radius[a],
-                            rel_x[b], rel_y[b], radius[b],
-                            rk,
-                        ) {
-                            // Check no overlap with existing circles
-                            let overlaps = sorted_kids[..ki].iter().any(|&other| {
-                                let dx = cx - rel_x[other];
-                                let dy = cy - rel_y[other];
-                                let min_dist = rk + radius[other];
-                                dx * dx + dy * dy < (min_dist - 0.01) * (min_dist - 0.01)
-                            });
-                            if !overlaps {
-                                let dist = cx * cx + cy * cy;
-                                if dist < best_dist {
-                                    best_dist = dist;
-                                    best_x = cx;
-                                    best_y = cy;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Fallback: place at angle around the group
-                if best_dist == f64::INFINITY {
-                    let angle = ki as f64 * std::f64::consts::TAU / sorted_kids.len() as f64;
-                    let outer_r = sorted_kids[..ki]
-                        .iter()
-                        .map(|&j| {
-                            (rel_x[j] * rel_x[j] + rel_y[j] * rel_y[j]).sqrt() + radius[j]
-                        })
-                        .fold(0.0f64, f64::max);
-                    best_x = (outer_r + rk) * angle.cos();
-                    best_y = (outer_r + rk) * angle.sin();
-                }
-
-                rel_x[k] = best_x;
-                rel_y[k] = best_y;
-            }
-
-            // Compute enclosing radius
-            let mut max_extent = 0.0f64;
-            for &k in &sorted_kids {
-                let ext = (rel_x[k] * rel_x[k] + rel_y[k] * rel_y[k]).sqrt() + radius[k];
-                max_extent = max_extent.max(ext);
-            }
-            radius[idx] = max_extent * 1.1; // 10% padding
-        }
+        let cp: Vec<(usize, f64, f64)> = kids
+            .iter()
+            .enumerate()
+            .map(|(j, &kid)| (kid, positions[j].0, positions[j].1))
+            .collect();
+        child_positions.insert(root, cp);
     }
 
-    for &root in &roots {
-        pack_node(root, &children_of, &weight, &mut radius, &mut rel_x, &mut rel_y, scale);
-    }
+    // Pack roots in 2D (not a row!) for better viewport utilization
+    let root_radii: Vec<f64> = roots.iter().map(|&r| root_radius[r]).collect();
+    let root_pos = pack_circles(&root_radii);
 
-    // Assign absolute positions: top-down pass
+    // Convert to absolute positions
     let mut abs_x = vec![0.0f64; n];
     let mut abs_y = vec![0.0f64; n];
+    let mut final_radius = vec![0.0f64; n];
     let mut placed = vec![false; n];
 
-    // Place roots in a row
-    let total_root_width: f64 = roots.iter().map(|&r| radius[r] * 2.0).sum::<f64>()
-        + (roots.len().saturating_sub(1)) as f64 * 20.0;
-    let mut cursor_x = -total_root_width / 2.0;
-    for &root in &roots {
-        abs_x[root] = cursor_x + radius[root];
-        abs_y[root] = 0.0;
+    for (ri, &root) in roots.iter().enumerate() {
+        abs_x[root] = root_pos[ri].0;
+        abs_y[root] = root_pos[ri].1;
+        final_radius[root] = root_radius[root];
         placed[root] = true;
-        cursor_x += radius[root] * 2.0 + 20.0;
-    }
 
-    fn place_children(
-        idx: usize,
-        children_of: &HashMap<usize, Vec<usize>>,
-        abs_x: &mut [f64],
-        abs_y: &mut [f64],
-        rel_x: &[f64],
-        rel_y: &[f64],
-        placed: &mut [bool],
-    ) {
-        if let Some(kids) = children_of.get(&idx) {
-            for &k in kids {
-                if !placed[k] {
-                    abs_x[k] = abs_x[idx] + rel_x[k];
-                    abs_y[k] = abs_y[idx] + rel_y[k];
-                    placed[k] = true;
-                    place_children(k, children_of, abs_x, abs_y, rel_x, rel_y, placed);
-                }
+        if let Some(children) = child_positions.get(&root) {
+            for &(kid, rx, ry) in children {
+                abs_x[kid] = abs_x[root] + rx;
+                abs_y[kid] = abs_y[root] + ry;
+                final_radius[kid] = leaf_radius[kid];
+                placed[kid] = true;
             }
         }
     }
 
-    for &root in &roots {
-        place_children(root, &children_of, &mut abs_x, &mut abs_y, &rel_x, &rel_y, &mut placed);
-    }
-
-    // Place any orphan nodes
-    let mut orphan_cursor = cursor_x + 40.0;
+    // Place any orphan nodes not reachable from roots
+    let orphan_x = abs_x
+        .iter()
+        .zip(final_radius.iter())
+        .filter(|(_, r)| **r > 0.0)
+        .map(|(x, r)| x + r)
+        .fold(0.0f64, f64::max)
+        + 40.0;
+    let mut orphan_cursor = orphan_x;
     for i in 0..n {
         if !placed[i] {
             abs_x[i] = orphan_cursor;
             abs_y[i] = 0.0;
-            radius[i] = scale;
+            final_radius[i] = min_radius_pre;
             placed[i] = true;
-            orphan_cursor += scale * 2.0 + 10.0;
+            orphan_cursor += min_radius_pre * 2.0 + 10.0;
         }
     }
 
-    // Normalize to viewport
-    let x_min = abs_x.iter().zip(radius.iter()).map(|(x, r)| x - r).fold(f64::INFINITY, f64::min);
-    let x_max = abs_x.iter().zip(radius.iter()).map(|(x, r)| x + r).fold(f64::NEG_INFINITY, f64::max);
-    let y_min = abs_y.iter().zip(radius.iter()).map(|(y, r)| y - r).fold(f64::INFINITY, f64::min);
-    let y_max = abs_y.iter().zip(radius.iter()).map(|(y, r)| y + r).fold(f64::NEG_INFINITY, f64::max);
+    // Normalize to viewport (uniform scaling to preserve circular shapes)
+    let x_min = (0..n)
+        .map(|i| abs_x[i] - final_radius[i])
+        .fold(f64::INFINITY, f64::min);
+    let x_max = (0..n)
+        .map(|i| abs_x[i] + final_radius[i])
+        .fold(f64::NEG_INFINITY, f64::max);
+    let y_min = (0..n)
+        .map(|i| abs_y[i] - final_radius[i])
+        .fold(f64::INFINITY, f64::min);
+    let y_max = (0..n)
+        .map(|i| abs_y[i] + final_radius[i])
+        .fold(f64::NEG_INFINITY, f64::max);
 
     let x_range = (x_max - x_min).max(1.0);
     let y_range = (y_max - y_min).max(1.0);
-    let scale_factor = viewport * 0.9 / x_range.max(y_range);
     let margin = viewport * 0.05;
+    let usable = viewport - 2.0 * margin;
 
+    // Uniform scale to fit, then center on both axes
+    let scale_factor = usable / x_range.max(y_range);
+    let x_offset = margin + (usable - x_range * scale_factor) / 2.0;
+    let y_offset = margin + (usable - y_range * scale_factor) / 2.0;
+
+    let min_radius_post = 2.0; // minimum visible radius after normalization
     for i in 0..n {
-        let nx = margin + (abs_x[i] - x_min) * scale_factor;
-        let ny = margin + (abs_y[i] - y_min) * scale_factor;
-        let nr = radius[i] * scale_factor;
+        let nx = x_offset + (abs_x[i] - x_min) * scale_factor;
+        let ny = y_offset + (abs_y[i] - y_min) * scale_factor;
+        let nr = (final_radius[i] * scale_factor).max(min_radius_post);
         nodes[i].layouts.insert(
             "circle_pack".into(),
             LayoutPoint { x: nx, y: ny, w: None, h: None, r: Some(nr) },
@@ -1019,14 +1055,45 @@ fn tangent_circle(
 fn compute_arc(nodes: &mut [GraphNode], cfg: &LayoutFile) {
     let n = nodes.len();
     let viewport = cfg.force.viewport;
+    let max_arc_nodes = 200;
 
-    // Build sort key: (project, depth, priority, label)
-    let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| {
+    // Filter to active task-like nodes — arc is unreadable beyond ~200 nodes
+    let mut candidates: Vec<usize> = (0..n)
+        .filter(|&i| {
+            let active = matches!(
+                nodes[i].status.as_deref(),
+                Some("active") | Some("in_progress") | Some("ready") | Some("blocked")
+            );
+            let task_like = matches!(
+                nodes[i].node_type.as_deref(),
+                Some("task") | Some("project") | Some("epic") | Some("goal")
+                    | Some("bug") | Some("action") | Some("subproject") | Some("feature")
+            );
+            active && task_like
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return;
+    }
+
+    // Take top N by downstream_weight (most important tasks first)
+    candidates.sort_by(|&a, &b| {
+        nodes[b]
+            .downstream_weight
+            .partial_cmp(&nodes[a].downstream_weight)
+            .unwrap()
+    });
+    candidates.truncate(max_arc_nodes);
+
+    // Sort selected nodes for layout: project -> depth -> priority -> label
+    candidates.sort_by(|&a, &b| {
         let proj_a = nodes[a].project.as_deref().unwrap_or("");
         let proj_b = nodes[b].project.as_deref().unwrap_or("");
         proj_a
-            .cmp(proj_b)
+            .is_empty()
+            .cmp(&proj_b.is_empty()) // empty projects sort last
+            .then_with(|| proj_a.cmp(proj_b))
             .then_with(|| nodes[a].depth.cmp(&nodes[b].depth))
             .then_with(|| {
                 nodes[a]
@@ -1037,19 +1104,303 @@ fn compute_arc(nodes: &mut [GraphNode], cfg: &LayoutFile) {
             .then_with(|| nodes[a].label.cmp(&nodes[b].label))
     });
 
+    let m = candidates.len();
     let margin = viewport * 0.05;
     let usable = viewport - 2.0 * margin;
     let y_center = viewport / 2.0;
+    let band = viewport * 0.04; // 40 units per band in 1000 viewport
 
-    for (pos, &idx) in indices.iter().enumerate() {
-        let x = if n > 1 {
-            margin + pos as f64 * usable / (n - 1) as f64
+    for (pos, &idx) in candidates.iter().enumerate() {
+        let x = if m > 1 {
+            margin + pos as f64 * usable / (m - 1) as f64
         } else {
             viewport / 2.0
         };
+
+        // Y-banding by node type: different types at different y levels
+        let y_offset = match nodes[idx].node_type.as_deref() {
+            Some("goal") => -2.0 * band,
+            Some("project") | Some("subproject") => -band,
+            Some("epic") => 0.0,
+            Some("task") | Some("action") | Some("bug") => band,
+            _ => 2.0 * band,
+        };
+
         nodes[idx].layouts.insert(
             "arc".into(),
-            LayoutPoint { x, y: y_center, w: None, h: None, r: None },
+            LayoutPoint { x, y: y_center + y_offset, w: None, h: None, r: None },
         );
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    /// Create a minimal GraphNode for layout testing.
+    fn make_node(id: &str, node_type: &str, project: Option<&str>, dw: f64) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            path: PathBuf::from(format!("tasks/{id}.md")),
+            label: id.to_string(),
+            node_type: Some(node_type.to_string()),
+            project: project.map(|s| s.to_string()),
+            downstream_weight: dw,
+            layouts: HashMap::new(),
+            // defaults for everything else
+            tags: vec![],
+            status: Some("active".into()),
+            priority: None,
+            order: 0,
+            parent: None,
+            depends_on: vec![],
+            soft_depends_on: vec![],
+            blocks: vec![],
+            soft_blocks: vec![],
+            children: vec![],
+            due: None,
+            created: None,
+            modified: None,
+            assignee: None,
+            complexity: None,
+            source: None,
+            confidence: None,
+            supersedes: None,
+            depth: 0,
+            word_count: 0,
+            leaf: true,
+            raw_links: vec![],
+            permalinks: vec![],
+            task_id: None,
+            pagerank: 0.0,
+            betweenness: 0.0,
+            indegree: 0,
+            outdegree: 0,
+            backlink_count: 0,
+            stakeholder_exposure: false,
+            assumptions: vec![],
+            x: None,
+            y: None,
+        }
+    }
+
+    /// Build a test graph with ~100 nodes across 5 projects, each with a
+    /// project root and child tasks, plus some orphan nodes.
+    fn build_test_graph() -> (Vec<GraphNode>, Vec<Edge>) {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+
+        for p in 0..5 {
+            let proj = format!("proj-{p}");
+            let root_id = format!("proj-{p}-root");
+            nodes.push(make_node(&root_id, "project", Some(&proj), 20.0));
+
+            for t in 0..15 {
+                let task_id = format!("proj-{p}-task-{t}");
+                let mut node = make_node(&task_id, "task", Some(&proj), 1.0 + t as f64);
+                node.parent = Some(root_id.clone());
+                nodes.push(node);
+                edges.push(Edge {
+                    source: task_id,
+                    target: root_id.clone(),
+                    edge_type: EdgeType::Parent,
+                });
+            }
+        }
+
+        // Add some goals and epics for arc banding variety
+        nodes.push(make_node("goal-1", "goal", None, 50.0));
+        nodes.push(make_node("epic-1", "epic", Some("proj-0"), 10.0));
+
+        // Add orphan nodes (no parent, no project)
+        for i in 0..5 {
+            nodes.push(make_node(&format!("orphan-{i}"), "note", None, 1.0));
+        }
+
+        (nodes, edges)
+    }
+
+    #[test]
+    fn test_circle_pack_fills_viewport() {
+        let (mut nodes, edges) = build_test_graph();
+        compute_layout(&mut nodes, &edges);
+
+        let ys: Vec<f64> = nodes
+            .iter()
+            .filter_map(|n| n.layouts.get("circle_pack").map(|lp| lp.y))
+            .collect();
+        let y_min = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+        let y_max = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let y_range = y_max - y_min;
+
+        // Must use more than 20% of the viewport on y-axis (was ~10% before fix)
+        assert!(
+            y_range > 200.0,
+            "circle_pack y range too narrow: {y_range:.1} (need > 200)"
+        );
+    }
+
+    #[test]
+    fn test_circle_pack_minimum_radius() {
+        let (mut nodes, edges) = build_test_graph();
+        compute_layout(&mut nodes, &edges);
+
+        let radii: Vec<f64> = nodes
+            .iter()
+            .filter_map(|n| n.layouts.get("circle_pack").and_then(|lp| lp.r))
+            .collect();
+        let min_r = radii.iter().cloned().fold(f64::INFINITY, f64::min);
+
+        // Minimum post-normalization radius should be >= 2.0 (visible)
+        assert!(
+            min_r >= 1.5,
+            "circle_pack minimum radius too small: {min_r:.3} (need >= 1.5)"
+        );
+    }
+
+    #[test]
+    fn test_arc_has_multiple_y_bands() {
+        let (mut nodes, edges) = build_test_graph();
+        compute_layout(&mut nodes, &edges);
+
+        let ys: Vec<f64> = nodes
+            .iter()
+            .filter_map(|n| n.layouts.get("arc").map(|lp| lp.y))
+            .collect();
+
+        // Quantize to detect distinct bands (round to nearest integer)
+        let unique_bands: HashSet<i32> = ys.iter().map(|y| *y as i32).collect();
+        assert!(
+            unique_bands.len() > 1,
+            "arc layout should have multiple y bands, got {} unique values",
+            unique_bands.len()
+        );
+    }
+
+    #[test]
+    fn test_arc_y_range() {
+        let (mut nodes, edges) = build_test_graph();
+        compute_layout(&mut nodes, &edges);
+
+        let ys: Vec<f64> = nodes
+            .iter()
+            .filter_map(|n| n.layouts.get("arc").map(|lp| lp.y))
+            .collect();
+        let y_min = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+        let y_max = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+        // Y range should be > 0 (not all on same line)
+        assert!(
+            y_max - y_min > 50.0,
+            "arc y range should be > 50, got {:.1}",
+            y_max - y_min
+        );
+    }
+
+    #[test]
+    fn test_treemap_only_task_types() {
+        let (mut nodes, edges) = build_test_graph();
+        compute_layout(&mut nodes, &edges);
+
+        // Task-like nodes should have treemap layout
+        let treemap_count = nodes
+            .iter()
+            .filter(|n| n.layouts.contains_key("treemap"))
+            .count();
+        assert!(treemap_count > 0, "no treemap layouts assigned");
+
+        // Non-task nodes (type "note") should NOT have treemap layout
+        for node in &nodes {
+            if node.node_type.as_deref() == Some("note") {
+                assert!(
+                    !node.layouts.contains_key("treemap"),
+                    "note {} should not have treemap layout",
+                    node.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_arc_filters_to_active_tasks() {
+        let (mut nodes, edges) = build_test_graph();
+        compute_layout(&mut nodes, &edges);
+
+        // Arc should only include active task-like nodes
+        let arc_count = nodes
+            .iter()
+            .filter(|n| n.layouts.contains_key("arc"))
+            .count();
+        // All our test task nodes are active, so they should be included
+        assert!(arc_count > 0, "no arc layouts assigned");
+        assert!(
+            arc_count <= 200,
+            "arc should cap at 200 nodes, got {arc_count}"
+        );
+    }
+
+    #[test]
+    fn test_all_layouts_within_viewport() {
+        let (mut nodes, edges) = build_test_graph();
+        compute_layout(&mut nodes, &edges);
+
+        // Only check nodes that actually have the layout (filtered layouts skip some nodes)
+        for layout_name in &["forceatlas2", "treemap", "circle_pack", "arc"] {
+            for node in &nodes {
+                if let Some(lp) = node.layouts.get(*layout_name) {
+                    assert!(
+                        lp.x >= 0.0 && lp.x <= 1000.0,
+                        "{layout_name} x out of range for {}: {:.1}",
+                        node.id,
+                        lp.x
+                    );
+                    assert!(
+                        lp.y >= 0.0 && lp.y <= 1000.0,
+                        "{layout_name} y out of range for {}: {:.1}",
+                        node.id,
+                        lp.y
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_pack_circles_basic() {
+        let radii = vec![10.0, 8.0, 6.0, 4.0];
+        let positions = pack_circles(&radii);
+
+        assert_eq!(positions.len(), 4);
+
+        // No overlaps
+        for i in 0..positions.len() {
+            for j in (i + 1)..positions.len() {
+                let dx = positions[i].0 - positions[j].0;
+                let dy = positions[i].1 - positions[j].1;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let min_dist = radii[i] + radii[j] - 0.1; // small tolerance
+                assert!(
+                    dist >= min_dist,
+                    "circles {i} and {j} overlap: dist={dist:.2}, min={min_dist:.2}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_pack_circles_single() {
+        let positions = pack_circles(&[5.0]);
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0], (0.0, 0.0));
+    }
+
+    #[test]
+    fn test_pack_circles_empty() {
+        let positions = pack_circles(&[]);
+        assert!(positions.is_empty());
     }
 }
