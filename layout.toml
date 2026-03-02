@@ -2,7 +2,7 @@
 # Edit these values and re-run `aops graph` — no recompilation needed.
 
 [force]
-k_repulsion = 100.0       # Repulsion coefficient (higher = nodes push apart more)
+k_repulsion = 200.0       # Repulsion coefficient (higher = nodes push apart more)
 k_gravity = 1.0           # Gravity toward center (higher = tighter cluster)
 iterations = 200          # Number of simulation steps
 tolerance = 1.0           # Adaptive speed tolerance (higher = faster but less stable)
