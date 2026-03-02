@@ -377,7 +377,7 @@ fn compute_forceatlas2(
             .collect();
         sorted_projects.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 
-        let num_projects = sorted_projects.len().max(1);
+        let _num_projects = sorted_projects.len().max(1);
         let circle_r = 300.0; // radius of project centroid circle
         let golden_angle = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
 
