@@ -141,11 +141,14 @@ impl GraphStore {
         layout::compute_layout(&mut nodes, &edges);
 
         // 9. Build node map and classify tasks
-        let node_map: HashMap<String, GraphNode> =
+        let mut node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
         let (ready, blocked, roots, by_project) = classify_tasks(&node_map);
 
-        // 8. Build resolution map for flexible node lookup
+        // 10. Compute reachable set (upstream BFS from active leaves)
+        compute_reachable(&mut node_map, &edges);
+
+        // 11. Build resolution map for flexible node lookup
         let resolution_map = build_resolution_map(&node_map);
 
         GraphStore {
@@ -1239,6 +1242,119 @@ fn classify_tasks(
     (ready, blocked, roots, by_project)
 }
 
+/// Mark nodes reachable from active leaf tasks via upstream BFS.
+///
+/// Algorithm (matches Python `filter_reachable` in `scripts/task_graph.py`):
+/// 1. Identify leaves: unfinished actionable-type nodes with explicit status
+///    and no unfinished children.
+/// 2. BFS upstream through parent, depends_on, soft_depends_on edges
+///    (ignoring link/wikilink to prevent false positives).
+/// 3. Set `reachable = true` on all visited nodes.
+fn compute_reachable(nodes: &mut HashMap<String, GraphNode>, edges: &[Edge]) {
+    let done_statuses: HashSet<&str> = ["done", "cancelled", "completed"].into_iter().collect();
+
+    let unfinished_ids: HashSet<&str> = nodes
+        .iter()
+        .filter(|(_, n)| {
+            !n.status
+                .as_deref()
+                .map(|s| done_statuses.contains(s))
+                .unwrap_or(false)
+        })
+        .map(|(id, _)| id.as_str())
+        .collect();
+
+    // Build children mapping
+    let mut children_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (id, node) in nodes.iter() {
+        // From node.parent (child → parent)
+        if let Some(ref parent) = node.parent {
+            if nodes.contains_key(parent.as_str()) {
+                children_of.entry(parent.as_str()).or_default().push(id.as_str());
+            }
+        }
+        // From node.children (parent → child)
+        for child_id in &node.children {
+            if nodes.contains_key(child_id.as_str()) {
+                children_of
+                    .entry(id.as_str())
+                    .or_default()
+                    .push(child_id.as_str());
+            }
+        }
+    }
+
+    // Identify leaves: unfinished, actionable type, explicit status,
+    // no unfinished children
+    let mut leaf_ids: HashSet<&str> = HashSet::new();
+    for (id, node) in nodes.iter() {
+        if !unfinished_ids.contains(id.as_str()) {
+            continue;
+        }
+        // Must have explicit status
+        if node.status.is_none() {
+            continue;
+        }
+        // Must be an actionable type
+        let is_actionable = node
+            .node_type
+            .as_deref()
+            .map(|t| ACTIONABLE_TYPES.contains(&t))
+            .unwrap_or(false);
+        if !is_actionable {
+            continue;
+        }
+        // No unfinished children
+        let has_unfinished_child = children_of
+            .get(id.as_str())
+            .map(|kids| kids.iter().any(|c| unfinished_ids.contains(c)))
+            .unwrap_or(false);
+        if !has_unfinished_child {
+            leaf_ids.insert(id.as_str());
+        }
+    }
+
+    // Build upstream adjacency from edges (parent, depends_on, soft_depends_on only)
+    let mut upstream_of: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for edge in edges {
+        match edge.edge_type {
+            EdgeType::Parent | EdgeType::DependsOn | EdgeType::SoftDependsOn => {
+                if nodes.contains_key(edge.target.as_str()) {
+                    upstream_of
+                        .entry(edge.source.as_str())
+                        .or_default()
+                        .insert(edge.target.as_str());
+                }
+            }
+            _ => {} // Ignore Link, Supersedes
+        }
+    }
+
+    // Collect owned IDs for BFS to avoid borrowing nodes during mutation
+    let upstream_owned: HashMap<String, Vec<String>> = upstream_of
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.into_iter().map(|s| s.to_string()).collect()))
+        .collect();
+
+    // BFS upstream from leaves
+    let mut reachable: HashSet<String> = leaf_ids.into_iter().map(|s| s.to_string()).collect();
+    let mut frontier: VecDeque<String> = reachable.iter().cloned().collect();
+    while let Some(nid) = frontier.pop_front() {
+        if let Some(upstreams) = upstream_owned.get(&nid) {
+            for upstream_id in upstreams {
+                if reachable.insert(upstream_id.clone()) {
+                    frontier.push_back(upstream_id.clone());
+                }
+            }
+        }
+    }
+
+    // Mark reachable on nodes
+    for (id, node) in nodes.iter_mut() {
+        node.reachable = reachable.contains(id);
+    }
+}
+
 /// Build a resolution map for flexible node lookup.
 ///
 /// Maps multiple lowercase keys to canonical node IDs:
@@ -1504,5 +1620,71 @@ mod tests {
         // task-a should be blocked (depends on task-b which isn't done)
         let task_a_id = graph.resolve("task-a").unwrap().id.clone();
         assert!(blocked.iter().any(|n| n.id == task_a_id));
+    }
+
+    // ── reachable ──
+
+    #[test]
+    fn test_reachable_marks_leaves_and_ancestors() {
+        let graph = build_test_graph();
+        // Test graph: epic-1 (parent of task-a, task-b)
+        //   task-b is a leaf (active, no deps, no unfinished children)
+        //   task-a depends on task-b, so task-a is blocked but still unfinished
+        //   task-c depends on task-a, no parent
+        //   All are active task-type nodes → all are reachable seeds or upstream
+
+        let task_b = graph.resolve("task-b").unwrap();
+        assert!(task_b.reachable, "task-b should be reachable (leaf)");
+
+        let task_a = graph.resolve("task-a").unwrap();
+        assert!(task_a.reachable, "task-a should be reachable (leaf with unmet dep)");
+
+        let epic_1 = graph.resolve("epic-1").unwrap();
+        assert!(epic_1.reachable, "epic-1 should be reachable (parent of leaves)");
+
+        let task_c = graph.resolve("task-c").unwrap();
+        assert!(task_c.reachable, "task-c should be reachable (leaf with dep)");
+    }
+
+    #[test]
+    fn test_reachable_excludes_done_orphans() {
+        // A completed node with no active descendants should NOT be reachable
+        let docs = vec![
+            make_doc("tasks/done-task.md", "Done Task", "task", "done", "done-task", None, &[]),
+            make_doc("tasks/active-task.md", "Active Task", "task", "active", "active-task", None, &[]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let done = graph.resolve("done-task").unwrap();
+        assert!(!done.reachable, "completed orphan should not be reachable");
+
+        let active = graph.resolve("active-task").unwrap();
+        assert!(active.reachable, "active leaf should be reachable");
+    }
+
+    #[test]
+    fn test_reachable_includes_done_ancestor() {
+        // A completed node that is parent of an active leaf SHOULD be reachable
+        let docs = vec![
+            make_doc("tasks/done-parent.md", "Done Parent", "project", "done", "done-parent", None, &[]),
+            make_doc("tasks/active-child.md", "Active Child", "task", "active", "active-child", Some("done-parent"), &[]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let parent = graph.resolve("done-parent").unwrap();
+        assert!(parent.reachable, "done parent of active leaf should be reachable");
+    }
+
+    #[test]
+    fn test_reachable_excludes_notes() {
+        // Notes without status should not seed BFS
+        let docs = vec![
+            make_doc("notes/my-note.md", "My Note", "note", "", "my-note", None, &[]),
+            make_doc("tasks/my-task.md", "My Task", "task", "active", "my-task", None, &[]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let note = graph.resolve("my-note").unwrap();
+        assert!(!note.reachable, "note without status should not be reachable");
     }
 }

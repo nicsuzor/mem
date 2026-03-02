@@ -1182,6 +1182,7 @@ mod tests {
             outdegree: 0,
             backlink_count: 0,
             stakeholder_exposure: false,
+            reachable: false,
             assumptions: vec![],
             x: None,
             y: None,
