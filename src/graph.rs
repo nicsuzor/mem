@@ -131,6 +131,11 @@ pub struct GraphNode {
     pub backlink_count: i32,
     #[serde(default, skip_serializing_if = "is_false")]
     pub stakeholder_exposure: bool,
+    /// True if this node is reachable from an active leaf task via upstream BFS
+    /// (parent, depends_on, soft_depends_on edges). Used by renderers to show
+    /// only the planning-relevant subgraph.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reachable: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assumptions: Vec<Assumption>,
     /// Precomputed layout X coordinate (force-directed graph layout)
@@ -471,6 +476,7 @@ impl GraphNode {
             outdegree: 0,
             backlink_count: 0,
             stakeholder_exposure: false,
+            reachable: false,
             assumptions,
             x: None,
             y: None,
