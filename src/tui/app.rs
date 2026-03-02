@@ -721,6 +721,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn open_capture(&mut self) {
         self.show_capture = true;
         self.capture_title.clear();
@@ -730,6 +731,7 @@ impl App {
     }
 
     /// Create a new task markdown file from capture fields and reload graph.
+    #[allow(dead_code)]
     pub fn submit_capture(&mut self) -> bool {
         let title = self.capture_title.trim().to_string();
         if title.is_empty() {
@@ -788,6 +790,7 @@ impl App {
         true
     }
 
+    #[allow(dead_code)]
     pub fn change_priority(&mut self, delta: i32) {
         let node_id = match self.current_view {
             View::EpicTree | View::Graph => self
@@ -806,6 +809,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_status(&mut self, id: &str, status: &str) {
         if let Some(node) = self.get_node(id) {
             let path = &node.path;
@@ -820,6 +824,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_priority(&mut self, id: &str, priority: i32) {
         if let Some(node) = self.get_node(id) {
             let path = &node.path;
@@ -834,6 +839,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_parent(&mut self, child_id: &str, parent_id: Option<&str>) {
         if let Some(node) = self.get_node(child_id) {
             let path = &node.path;
@@ -855,6 +861,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn enter_reparent_mode(&mut self) {
         let node_id = match self.current_view {
             View::EpicTree | View::Graph => self
@@ -871,6 +878,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn confirm_reparent(&mut self) {
         if !self.reparent_mode {
             return;
