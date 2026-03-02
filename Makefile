@@ -55,11 +55,22 @@ release-major: bump-major release-tag
 release-tag:
 	@$(CARGO) generate-lockfile
 	@NEW_VER=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
+		BRANCH="release/v$$NEW_VER" && \
+		git checkout -b "$$BRANCH" && \
 		git add Cargo.toml Cargo.lock && \
 		git commit -m "release: v$$NEW_VER" && \
-		git tag -a "v$$NEW_VER" -m "Release v$$NEW_VER" && \
-		git push && git push --tags && \
+		git push -u origin "$$BRANCH" && \
+		gh pr create --title "release: v$$NEW_VER" --body "Version bump to v$$NEW_VER" && \
+		gh pr merge --auto --squash && \
 		echo "" && \
+		echo "PR created with auto-merge for v$$NEW_VER. After merge, run: make release-finalize"
+
+.PHONY: release-finalize
+release-finalize:
+	@git checkout main && git pull && \
+		NEW_VER=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
+		git tag -a "v$$NEW_VER" -m "Release v$$NEW_VER" && \
+		git push --tags && \
 		echo "Tagged v$$NEW_VER — CI will build and publish the release."
 
 # ── Version bumping ───────────────────────────────────────────────
@@ -168,9 +179,10 @@ help:
 	@echo "  build          Release build for current host"
 	@echo "  install        Install release binaries via cargo-binstall"
 	@echo "  apple          Cross-compile for Apple Silicon (aarch64-apple-darwin)"
-	@echo "  release        Bump patch, commit, tag, push (CI builds + publishes)"
-	@echo "  release-minor  Bump minor, commit, tag, push (CI builds + publishes)"
-	@echo "  release-major  Bump major, commit, tag, push (CI builds + publishes)"
+	@echo "  release        Bump patch, open release PR"
+	@echo "  release-minor  Bump minor, open release PR"
+	@echo "  release-major  Bump major, open release PR"
+	@echo "  release-finalize  Tag merged release commit + push tag (triggers CI)"
 	@echo "  bump-patch     Bump patch version in Cargo.toml (no build)"
 	@echo "  bump-minor     Bump minor version in Cargo.toml (no build)"
 	@echo "  version        Print current version"
