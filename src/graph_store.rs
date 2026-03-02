@@ -137,16 +137,20 @@ impl GraphStore {
         // 7. Compute downstream metrics (BFS through blocks/soft_blocks)
         compute_downstream_metrics(&mut nodes);
 
-        // 8. Compute force-directed layout (ForceAtlas2)
-        layout::compute_layout(&mut nodes, &edges);
+        // 8. Compute reachable set (upstream BFS from active leaves)
+        //    Done before layout so FA2 can run on reachable-only subgraph.
+        let reachable_set = find_reachable_set(&nodes, &edges);
+        for node in &mut nodes {
+            node.reachable = reachable_set.contains(&node.id);
+        }
 
-        // 9. Build node map and classify tasks
-        let mut node_map: HashMap<String, GraphNode> =
+        // 9. Compute layouts (FA2 on reachable-only, treemap/circle/arc on all)
+        layout::compute_layout(&mut nodes, &edges, &reachable_set);
+
+        // 10. Build node map and classify tasks
+        let node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
         let (ready, blocked, roots, by_project) = classify_tasks(&node_map);
-
-        // 10. Compute reachable set (upstream BFS from active leaves)
-        compute_reachable(&mut node_map, &edges);
 
         // 11. Build resolution map for flexible node lookup
         let resolution_map = build_resolution_map(&node_map);
@@ -1250,34 +1254,44 @@ fn classify_tasks(
 /// 2. BFS upstream through parent, depends_on, soft_depends_on edges
 ///    (ignoring link/wikilink to prevent false positives).
 /// 3. Set `reachable = true` on all visited nodes.
-fn compute_reachable(nodes: &mut HashMap<String, GraphNode>, edges: &[Edge]) {
+/// Compute the reachable set: BFS upstream from active leaf tasks.
+///
+/// Works on a node slice (used before layout in the build pipeline).
+/// Returns the set of reachable node IDs so the caller can both mark nodes
+/// and pass the set to layout algorithms.
+fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
     let done_statuses: HashSet<&str> = ["done", "cancelled", "completed"].into_iter().collect();
+
+    let all_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
 
     let unfinished_ids: HashSet<&str> = nodes
         .iter()
-        .filter(|(_, n)| {
+        .filter(|n| {
             !n.status
                 .as_deref()
                 .map(|s| done_statuses.contains(s))
                 .unwrap_or(false)
         })
-        .map(|(id, _)| id.as_str())
+        .map(|n| n.id.as_str())
         .collect();
 
     // Build children mapping
     let mut children_of: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (id, node) in nodes.iter() {
+    for node in nodes {
         // From node.parent (child → parent)
         if let Some(ref parent) = node.parent {
-            if nodes.contains_key(parent.as_str()) {
-                children_of.entry(parent.as_str()).or_default().push(id.as_str());
+            if all_ids.contains(parent.as_str()) {
+                children_of
+                    .entry(parent.as_str())
+                    .or_default()
+                    .push(node.id.as_str());
             }
         }
         // From node.children (parent → child)
         for child_id in &node.children {
-            if nodes.contains_key(child_id.as_str()) {
+            if all_ids.contains(child_id.as_str()) {
                 children_of
-                    .entry(id.as_str())
+                    .entry(node.id.as_str())
                     .or_default()
                     .push(child_id.as_str());
             }
@@ -1286,16 +1300,14 @@ fn compute_reachable(nodes: &mut HashMap<String, GraphNode>, edges: &[Edge]) {
 
     // Identify leaves: unfinished, actionable type, explicit status,
     // no unfinished children
-    let mut leaf_ids: HashSet<&str> = HashSet::new();
-    for (id, node) in nodes.iter() {
-        if !unfinished_ids.contains(id.as_str()) {
+    let mut leaf_ids: Vec<&str> = Vec::new();
+    for node in nodes {
+        if !unfinished_ids.contains(node.id.as_str()) {
             continue;
         }
-        // Must have explicit status
         if node.status.is_none() {
             continue;
         }
-        // Must be an actionable type
         let is_actionable = node
             .node_type
             .as_deref()
@@ -1304,55 +1316,45 @@ fn compute_reachable(nodes: &mut HashMap<String, GraphNode>, edges: &[Edge]) {
         if !is_actionable {
             continue;
         }
-        // No unfinished children
         let has_unfinished_child = children_of
-            .get(id.as_str())
+            .get(node.id.as_str())
             .map(|kids| kids.iter().any(|c| unfinished_ids.contains(c)))
             .unwrap_or(false);
         if !has_unfinished_child {
-            leaf_ids.insert(id.as_str());
+            leaf_ids.push(node.id.as_str());
         }
     }
 
     // Build upstream adjacency from edges (parent, depends_on, soft_depends_on only)
-    let mut upstream_of: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut upstream_of: HashMap<&str, Vec<&str>> = HashMap::new();
     for edge in edges {
         match edge.edge_type {
             EdgeType::Parent | EdgeType::DependsOn | EdgeType::SoftDependsOn => {
-                if nodes.contains_key(edge.target.as_str()) {
+                if all_ids.contains(edge.target.as_str()) {
                     upstream_of
                         .entry(edge.source.as_str())
                         .or_default()
-                        .insert(edge.target.as_str());
+                        .push(edge.target.as_str());
                 }
             }
-            _ => {} // Ignore Link, Supersedes
+            _ => {}
         }
     }
-
-    // Collect owned IDs for BFS to avoid borrowing nodes during mutation
-    let upstream_owned: HashMap<String, Vec<String>> = upstream_of
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.into_iter().map(|s| s.to_string()).collect()))
-        .collect();
 
     // BFS upstream from leaves
     let mut reachable: HashSet<String> = leaf_ids.into_iter().map(|s| s.to_string()).collect();
     let mut frontier: VecDeque<String> = reachable.iter().cloned().collect();
     while let Some(nid) = frontier.pop_front() {
-        if let Some(upstreams) = upstream_owned.get(&nid) {
-            for upstream_id in upstreams {
-                if reachable.insert(upstream_id.clone()) {
-                    frontier.push_back(upstream_id.clone());
+        if let Some(upstreams) = upstream_of.get(nid.as_str()) {
+            for &upstream_id in upstreams {
+                if reachable.insert(upstream_id.to_string()) {
+                    frontier.push_back(upstream_id.to_string());
                 }
             }
         }
     }
 
-    // Mark reachable on nodes
-    for (id, node) in nodes.iter_mut() {
-        node.reachable = reachable.contains(id);
-    }
+    reachable
 }
 
 /// Build a resolution map for flexible node lookup.

@@ -10,7 +10,7 @@
 
 use crate::graph::{Edge, EdgeType, GraphNode, LayoutPoint};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -225,7 +225,7 @@ fn compute_node_dims(nodes: &[GraphNode], cfg: &NodeConfig) -> Vec<(f64, f64)> {
 /// - Treemap → `layouts["treemap"]` (with `w`, `h`)
 /// - Circle packing → `layouts["circle_pack"]` (with `r`)
 /// - Arc diagram → `layouts["arc"]`
-pub fn compute_layout(nodes: &mut [GraphNode], edges: &[Edge]) {
+pub fn compute_layout(nodes: &mut [GraphNode], edges: &[Edge], reachable: &HashSet<String>) {
     let n = nodes.len();
     if n == 0 {
         return;
@@ -255,16 +255,16 @@ pub fn compute_layout(nodes: &mut [GraphNode], edges: &[Edge]) {
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
-    // 1. ForceAtlas2 with rectangle-aware repulsion (primary x/y)
-    compute_forceatlas2(nodes, edges, &cfg, &dims, &id_to_idx);
+    // 1. ForceAtlas2 on reachable-only subgraph for tighter clustering
+    compute_forceatlas2(nodes, edges, &cfg, &dims, &id_to_idx, reachable);
 
-    // 2. Treemap
+    // 2. Treemap (all nodes, own type filter)
     compute_treemap(nodes, edges, &cfg, &id_to_idx);
 
-    // 3. Circle packing
+    // 3. Circle packing (all nodes)
     compute_circle_pack(nodes, edges, &cfg, &id_to_idx);
 
-    // 4. Arc diagram
+    // 4. Arc diagram (all nodes, own active filter)
     compute_arc(nodes, &cfg);
 }
 
@@ -294,94 +294,151 @@ fn compute_forceatlas2(
     cfg: &LayoutFile,
     dims: &[(f64, f64)],
     id_to_idx: &HashMap<String, usize>,
+    reachable: &HashSet<String>,
 ) {
-    let n = nodes.len();
+    // Build reachable-only subgraph indices.
+    // sub_indices: indices into the full `nodes` array for reachable nodes only.
+    // sub_map: full index → sub-array index for O(1) lookup.
+    let sub_indices: Vec<usize> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| reachable.contains(&n.id))
+        .map(|(i, _)| i)
+        .collect();
+    let rn = sub_indices.len();
+    if rn == 0 {
+        return;
+    }
 
-    // Precompute half-widths and half-heights for rectangle repulsion
-    let half_w: Vec<f64> = dims.iter().map(|(w, _)| w / 2.0).collect();
-    let half_h: Vec<f64> = dims.iter().map(|(_, h)| h / 2.0).collect();
+    let sub_map: HashMap<usize, usize> = sub_indices
+        .iter()
+        .enumerate()
+        .map(|(si, &fi)| (fi, si))
+        .collect();
 
-    // Precompute degree and charge
-    let mut degree = vec![0u32; n];
+    // Precompute half-widths and half-heights for rectangle repulsion (sub-array)
+    let half_w: Vec<f64> = sub_indices.iter().map(|&fi| dims[fi].0 / 2.0).collect();
+    let half_h: Vec<f64> = sub_indices.iter().map(|&fi| dims[fi].1 / 2.0).collect();
+
+    // Precompute degree (within reachable subgraph only)
+    let mut degree = vec![0u32; rn];
     for edge in edges {
-        if let Some(&si) = id_to_idx.get(edge.source.as_str()) {
+        if let (Some(&si), Some(&ti)) = (
+            id_to_idx.get(edge.source.as_str()).and_then(|fi| sub_map.get(fi)),
+            id_to_idx.get(edge.target.as_str()).and_then(|fi| sub_map.get(fi)),
+        ) {
             degree[si] += 1;
-        }
-        if let Some(&ti) = id_to_idx.get(edge.target.as_str()) {
             degree[ti] += 1;
         }
     }
 
-    let charge: Vec<f64> = nodes
+    let charge: Vec<f64> = sub_indices
         .iter()
-        .map(|n| node_charge(n.node_type.as_deref(), &cfg.charges))
+        .map(|&fi| node_charge(nodes[fi].node_type.as_deref(), &cfg.charges))
         .collect();
 
-    // Resolve edge indices once
+    // Resolve edge indices within the sub-array
     let resolved_edges: Vec<(usize, usize, f64)> = edges
         .iter()
         .filter_map(|e| {
-            let si = *id_to_idx.get(e.source.as_str())?;
-            let ti = *id_to_idx.get(e.target.as_str())?;
+            let fi_s = *id_to_idx.get(e.source.as_str())?;
+            let fi_t = *id_to_idx.get(e.target.as_str())?;
+            let si = *sub_map.get(&fi_s)?;
+            let ti = *sub_map.get(&fi_t)?;
             if si == ti {
                 return None;
             }
-            let (strength, _ideal_dist) = edge_weight(&e.edge_type, &cfg.edges);
+            let (strength, _) = edge_weight(&e.edge_type, &cfg.edges);
             Some((si, ti, strength))
         })
         .collect();
 
-    // Initialize positions deterministically using golden-angle spiral
-    let mut x = vec![0.0f64; n];
-    let mut y = vec![0.0f64; n];
-    let golden_angle = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
-    for i in 0..n {
-        let r = (i as f64 + 0.5).sqrt() / (n as f64).sqrt() * 400.0;
-        let theta = i as f64 * golden_angle;
-        x[i] = 500.0 + r * theta.cos();
-        y[i] = 500.0 + r * theta.sin();
-    }
-
-    // Project clustering: compute project centroids for additional gravity
+    // Group reachable nodes by project
     let project_nodes: HashMap<&str, Vec<usize>> = {
         let mut map: HashMap<&str, Vec<usize>> = HashMap::new();
-        for (i, node) in nodes.iter().enumerate() {
-            if let Some(ref proj) = node.project {
-                map.entry(proj.as_str()).or_default().push(i);
+        for (si, &fi) in sub_indices.iter().enumerate() {
+            if let Some(ref proj) = nodes[fi].project {
+                map.entry(proj.as_str()).or_default().push(si);
             }
         }
         map
     };
 
+    // Initialize positions: project clusters arranged in a circle (warm start).
+    // Each project gets a sector of the circle. Nodes within a project are
+    // placed near their project's centroid with a small spread. Nodes without
+    // a project go to the center. This gives FA2 a head start on clustering.
+    let mut x = vec![500.0f64; rn];
+    let mut y = vec![500.0f64; rn];
+    {
+        // Sort projects by size (largest first) for deterministic layout
+        let mut sorted_projects: Vec<(&str, &Vec<usize>)> = project_nodes.iter()
+            .map(|(&k, v)| (k, v))
+            .collect();
+        sorted_projects.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+        let num_projects = sorted_projects.len().max(1);
+        let circle_r = 300.0; // radius of project centroid circle
+        let golden_angle = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+
+        for (pi, (_proj, members)) in sorted_projects.iter().enumerate() {
+            // Place project centroid on a circle using golden angle for good spacing
+            let theta = pi as f64 * golden_angle;
+            let pcx = 500.0 + circle_r * theta.cos();
+            let pcy = 500.0 + circle_r * theta.sin();
+
+            // Spread members around centroid (smaller spread for larger projects)
+            let spread = 30.0 + (members.len() as f64).sqrt() * 10.0;
+            let member_golden = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+            for (mi, &si) in members.iter().enumerate() {
+                let mr = (mi as f64 + 0.5).sqrt() / (members.len() as f64).sqrt() * spread;
+                let mt = mi as f64 * member_golden;
+                x[si] = pcx + mr * mt.cos();
+                y[si] = pcy + mr * mt.sin();
+            }
+        }
+
+        // Nodes without a project: golden-angle spiral at center
+        let no_project: Vec<usize> = (0..rn)
+            .filter(|si| {
+                let fi = sub_indices[*si];
+                nodes[fi].project.is_none()
+            })
+            .collect();
+        for (i, &si) in no_project.iter().enumerate() {
+            let r = (i as f64 + 0.5).sqrt() / (no_project.len().max(1) as f64).sqrt() * 50.0;
+            let theta = i as f64 * golden_angle;
+            x[si] = 500.0 + r * theta.cos();
+            y[si] = 500.0 + r * theta.sin();
+        }
+    }
+
     // ForceAtlas2 iteration
-    let mut prev_fx = vec![0.0f64; n];
-    let mut prev_fy = vec![0.0f64; n];
+    let mut prev_fx = vec![0.0f64; rn];
+    let mut prev_fy = vec![0.0f64; rn];
     let mut global_speed = 1.0f64;
 
     for _iter in 0..cfg.force.iterations {
-        let mut fx = vec![0.0f64; n];
-        let mut fy = vec![0.0f64; n];
+        let mut fx = vec![0.0f64; rn];
+        let mut fy = vec![0.0f64; rn];
 
-        // Repulsive forces (all pairs, O(n^2)) — rectangle-aware
-        for i in 0..n {
-            for j in (i + 1)..n {
+        // Repulsive forces (reachable pairs only, O(rn^2)) — rectangle-aware
+        for i in 0..rn {
+            for j in (i + 1)..rn {
                 let dx = x[j] - x[i];
                 let dy = y[j] - y[i];
                 let center_dist = (dx * dx + dy * dy).sqrt().max(0.1);
 
-                // Use rectangle gap instead of center distance for force magnitude
                 let gap = rect_gap(
                     x[i], y[i], half_w[i], half_h[i],
                     x[j], y[j], half_w[j], half_h[j],
                 ).max(0.1);
 
-                // ForceAtlas2: degree-scaled repulsion
                 let deg_i = degree[i] as f64 + 1.0;
                 let deg_j = degree[j] as f64 + 1.0;
                 let force =
                     cfg.force.k_repulsion * charge[i] * charge[j] * deg_i * deg_j / gap;
 
-                // Direction still uses center-to-center vector
                 let force_x = force * dx / center_dist;
                 let force_y = force * dy / center_dist;
 
@@ -392,13 +449,12 @@ fn compute_forceatlas2(
             }
         }
 
-        // Attractive forces (edges only)
+        // Attractive forces (reachable edges only)
         for &(si, ti, strength) in &resolved_edges {
             let dx = x[ti] - x[si];
             let dy = y[ti] - y[si];
             let dist = (dx * dx + dy * dy).sqrt().max(0.1);
 
-            // ForceAtlas2: linear attraction
             let force = dist * strength;
             let force_x = force * dx / dist;
             let force_y = force * dy / dist;
@@ -410,9 +466,9 @@ fn compute_forceatlas2(
         }
 
         // Gravity (toward center)
-        let cx = x.iter().sum::<f64>() / n as f64;
-        let cy = y.iter().sum::<f64>() / n as f64;
-        for i in 0..n {
+        let cx = x.iter().sum::<f64>() / rn as f64;
+        let cy = y.iter().sum::<f64>() / rn as f64;
+        for i in 0..rn {
             let dx = x[i] - cx;
             let dy = y[i] - cy;
             let dist = (dx * dx + dy * dy).sqrt().max(0.1);
@@ -422,18 +478,22 @@ fn compute_forceatlas2(
             fy[i] -= force * dy / dist;
         }
 
-        // Project clustering: attraction toward project centroid
-        // Scaled by sqrt(project_size) so larger projects form tighter groups
+        // Project clustering: attraction toward project centroid + inter-project repulsion
         if cfg.force.project_clustering > 0.0 {
-            for (_proj, members) in &project_nodes {
+            // Compute centroids for all projects
+            let mut centroids: Vec<(&str, f64, f64, Vec<usize>)> = Vec::new();
+            for (proj, members) in &project_nodes {
                 if members.len() < 2 {
                     continue;
                 }
+                let pcx = members.iter().map(|&i| x[i]).sum::<f64>() / members.len() as f64;
+                let pcy = members.iter().map(|&i| y[i]).sum::<f64>() / members.len() as f64;
+                centroids.push((proj, pcx, pcy, members.clone()));
+            }
+
+            // Intra-project attraction: pull members toward their centroid
+            for (_, pcx, pcy, ref members) in &centroids {
                 let proj_scale = (members.len() as f64).sqrt();
-                let pcx: f64 =
-                    members.iter().map(|&i| x[i]).sum::<f64>() / members.len() as f64;
-                let pcy: f64 =
-                    members.iter().map(|&i| y[i]).sum::<f64>() / members.len() as f64;
                 for &i in members {
                     let dx = x[i] - pcx;
                     let dy = y[i] - pcy;
@@ -443,12 +503,39 @@ fn compute_forceatlas2(
                     fy[i] -= force * dy / dist;
                 }
             }
+
+            // Inter-project repulsion: push project centroids apart.
+            // Force is proportional to product of project sizes, inversely to distance.
+            // Distributed evenly to all members of each project.
+            let pc = centroids.len();
+            for a in 0..pc {
+                for b in (a + 1)..pc {
+                    let dx = centroids[b].1 - centroids[a].1;
+                    let dy = centroids[b].2 - centroids[a].2;
+                    let dist = (dx * dx + dy * dy).sqrt().max(1.0);
+                    let size_a = centroids[a].3.len() as f64;
+                    let size_b = centroids[b].3.len() as f64;
+                    // Strong repulsion scaled by project sizes
+                    let force = cfg.force.project_clustering * size_a.sqrt() * size_b.sqrt() * 10.0 / dist;
+                    let fdx = force * dx / dist;
+                    let fdy = force * dy / dist;
+                    // Distribute force to members
+                    for &i in &centroids[a].3 {
+                        fx[i] -= fdx / size_a;
+                        fy[i] -= fdy / size_a;
+                    }
+                    for &i in &centroids[b].3 {
+                        fx[i] += fdx / size_b;
+                        fy[i] += fdy / size_b;
+                    }
+                }
+            }
         }
 
         // Adaptive speed (ForceAtlas2 swing/traction)
         let mut swing = 0.0f64;
         let mut traction = 0.0f64;
-        for i in 0..n {
+        for i in 0..rn {
             let dfx = fx[i] - prev_fx[i];
             let dfy = fy[i] - prev_fy[i];
             swing += (dfx * dfx + dfy * dfy).sqrt();
@@ -465,7 +552,7 @@ fn compute_forceatlas2(
         }
 
         // Apply forces with per-node speed limit
-        for i in 0..n {
+        for i in 0..rn {
             let force_mag = (fx[i] * fx[i] + fy[i] * fy[i]).sqrt().max(0.001);
             let node_swing =
                 ((fx[i] - prev_fx[i]).powi(2) + (fy[i] - prev_fy[i]).powi(2)).sqrt();
@@ -492,12 +579,13 @@ fn compute_forceatlas2(
     let margin = cfg.force.viewport * 0.05;
     let usable = cfg.force.viewport - 2.0 * margin;
 
-    for i in 0..n {
-        let nx = margin + (x[i] - x_min) / x_range * usable;
-        let ny = margin + (y[i] - y_min) / y_range * usable;
-        nodes[i].x = Some(nx);
-        nodes[i].y = Some(ny);
-        nodes[i].layouts.insert(
+    // Write back to reachable nodes only (non-reachable get no FA2 coords)
+    for (si, &fi) in sub_indices.iter().enumerate() {
+        let nx = margin + (x[si] - x_min) / x_range * usable;
+        let ny = margin + (y[si] - y_min) / y_range * usable;
+        nodes[fi].x = Some(nx);
+        nodes[fi].y = Some(ny);
+        nodes[fi].layouts.insert(
             "forceatlas2".into(),
             LayoutPoint { x: nx, y: ny, w: None, h: None, r: None },
         );
@@ -1191,7 +1279,8 @@ mod tests {
 
     /// Build a test graph with ~100 nodes across 5 projects, each with a
     /// project root and child tasks, plus some orphan nodes.
-    fn build_test_graph() -> (Vec<GraphNode>, Vec<Edge>) {
+    /// Returns (nodes, edges, reachable_set) where all nodes are reachable.
+    fn build_test_graph() -> (Vec<GraphNode>, Vec<Edge>, HashSet<String>) {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
 
@@ -1222,13 +1311,16 @@ mod tests {
             nodes.push(make_node(&format!("orphan-{i}"), "note", None, 1.0));
         }
 
-        (nodes, edges)
+        // All nodes reachable for tests
+        let reachable: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+
+        (nodes, edges, reachable)
     }
 
     #[test]
     fn test_circle_pack_fills_viewport() {
-        let (mut nodes, edges) = build_test_graph();
-        compute_layout(&mut nodes, &edges);
+        let (mut nodes, edges, reachable) = build_test_graph();
+        compute_layout(&mut nodes, &edges, &reachable);
 
         let ys: Vec<f64> = nodes
             .iter()
@@ -1247,8 +1339,8 @@ mod tests {
 
     #[test]
     fn test_circle_pack_minimum_radius() {
-        let (mut nodes, edges) = build_test_graph();
-        compute_layout(&mut nodes, &edges);
+        let (mut nodes, edges, reachable) = build_test_graph();
+        compute_layout(&mut nodes, &edges, &reachable);
 
         let radii: Vec<f64> = nodes
             .iter()
@@ -1265,8 +1357,8 @@ mod tests {
 
     #[test]
     fn test_arc_has_multiple_y_bands() {
-        let (mut nodes, edges) = build_test_graph();
-        compute_layout(&mut nodes, &edges);
+        let (mut nodes, edges, reachable) = build_test_graph();
+        compute_layout(&mut nodes, &edges, &reachable);
 
         let ys: Vec<f64> = nodes
             .iter()
@@ -1284,8 +1376,8 @@ mod tests {
 
     #[test]
     fn test_arc_y_range() {
-        let (mut nodes, edges) = build_test_graph();
-        compute_layout(&mut nodes, &edges);
+        let (mut nodes, edges, reachable) = build_test_graph();
+        compute_layout(&mut nodes, &edges, &reachable);
 
         let ys: Vec<f64> = nodes
             .iter()
@@ -1304,8 +1396,8 @@ mod tests {
 
     #[test]
     fn test_treemap_only_task_types() {
-        let (mut nodes, edges) = build_test_graph();
-        compute_layout(&mut nodes, &edges);
+        let (mut nodes, edges, reachable) = build_test_graph();
+        compute_layout(&mut nodes, &edges, &reachable);
 
         // Task-like nodes should have treemap layout
         let treemap_count = nodes
@@ -1328,8 +1420,8 @@ mod tests {
 
     #[test]
     fn test_arc_filters_to_active_tasks() {
-        let (mut nodes, edges) = build_test_graph();
-        compute_layout(&mut nodes, &edges);
+        let (mut nodes, edges, reachable) = build_test_graph();
+        compute_layout(&mut nodes, &edges, &reachable);
 
         // Arc should only include active task-like nodes
         let arc_count = nodes
@@ -1346,8 +1438,8 @@ mod tests {
 
     #[test]
     fn test_all_layouts_within_viewport() {
-        let (mut nodes, edges) = build_test_graph();
-        compute_layout(&mut nodes, &edges);
+        let (mut nodes, edges, reachable) = build_test_graph();
+        compute_layout(&mut nodes, &edges, &reachable);
 
         // Only check nodes that actually have the layout (filtered layouts skip some nodes)
         for layout_name in &["forceatlas2", "treemap", "circle_pack", "arc"] {

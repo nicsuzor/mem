@@ -292,8 +292,8 @@ function switchLayout(layout) {
 function getCoords(node) {
   const lp = node.layouts?.[currentLayout];
   if (lp) return lp;
-  if (currentLayout === 'forceatlas2') return { x: node.x || 500, y: node.y || 500 };
-  return { x: 500, y: 500 };
+  if (currentLayout === 'forceatlas2' && node.x != null) return { x: node.x, y: node.y };
+  return null;
 }
 
 function nodeColor(node) {
@@ -315,8 +315,7 @@ function render() {
   const coords = data.nodes.map(n => getCoords(n));
   const visibleIndices = [];
   data.nodes.forEach((n, i) => {
-    const hasLayout = !!n.layouts?.[currentLayout];
-    if (!hasLayout && (currentLayout === 'treemap' || currentLayout === 'arc')) return;
+    if (!getCoords(n)) return;
     if (!isVisible(n)) return;
     visibleIndices.push(i);
   });
