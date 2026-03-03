@@ -3,6 +3,7 @@
 //! Shows top focus picks with NOW/NEXT sections, enables annotations,
 //! and an "orphan tasks" note at the bottom.
 
+use mem::graph;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
@@ -83,7 +84,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .iter()
             .filter(|n| {
                 n.node_type.as_deref() == Some("task")
-                    && !matches!(n.status.as_deref(), Some("done") | Some("dead"))
+                    && !graph::is_completed(n.status.as_deref())
             })
             .collect();
         if !task_orphans.is_empty() {

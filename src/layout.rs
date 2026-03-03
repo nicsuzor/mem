@@ -221,7 +221,8 @@ fn compute_node_dims(nodes: &[GraphNode], cfg: &NodeConfig) -> Vec<(f64, f64)> {
 
 /// Compute all layout algorithms and assign coordinates to each node.
 ///
-/// - ForceAtlas2 (rectangle-aware) → primary `x, y` + `layouts["forceatlas2"]`
+/// - ForceAtlas2 all nodes → primary `x, y` + `layouts["forceatlas2"]`
+/// - ForceAtlas2 reachable only → `layouts["forceatlas2_focus"]`
 /// - Treemap → `layouts["treemap"]` (with `w`, `h`)
 /// - Circle packing → `layouts["circle_pack"]` (with `r`)
 /// - Arc diagram → `layouts["arc"]`
@@ -233,11 +234,13 @@ pub fn compute_layout(nodes: &mut [GraphNode], edges: &[Edge], reachable: &HashS
     if n == 1 {
         nodes[0].x = Some(500.0);
         nodes[0].y = Some(500.0);
+        let center = LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: None };
         let layouts_to_add = [
-            ("forceatlas2", LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: None }),
+            ("forceatlas2", center.clone()),
+            ("forceatlas2_focus", center.clone()),
             ("treemap", LayoutPoint { x: 500.0, y: 500.0, w: Some(1000.0), h: Some(1000.0), r: None }),
             ("circle_pack", LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: Some(500.0) }),
-            ("arc", LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: None }),
+            ("arc", center.clone()),
         ];
         for (name, point) in layouts_to_add {
             nodes[0].layouts.insert(name.into(), point);
@@ -255,8 +258,12 @@ pub fn compute_layout(nodes: &mut [GraphNode], edges: &[Edge], reachable: &HashS
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
-    // 1. ForceAtlas2 on reachable-only subgraph for tighter clustering
-    compute_forceatlas2(nodes, edges, &cfg, &dims, &id_to_idx, reachable);
+    // 1a. ForceAtlas2 on ALL nodes (primary layout)
+    let all_ids: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    compute_forceatlas2(nodes, edges, &cfg, &dims, &id_to_idx, &all_ids, "forceatlas2", true);
+
+    // 1b. ForceAtlas2 on reachable-only subgraph (focused view)
+    compute_forceatlas2(nodes, edges, &cfg, &dims, &id_to_idx, reachable, "forceatlas2_focus", false);
 
     // 2. Treemap (all nodes, own type filter)
     compute_treemap(nodes, edges, &cfg, &id_to_idx);
@@ -294,15 +301,17 @@ fn compute_forceatlas2(
     cfg: &LayoutFile,
     dims: &[(f64, f64)],
     id_to_idx: &HashMap<String, usize>,
-    reachable: &HashSet<String>,
+    filter: &HashSet<String>,
+    layout_name: &str,
+    set_primary: bool,
 ) {
-    // Build reachable-only subgraph indices.
-    // sub_indices: indices into the full `nodes` array for reachable nodes only.
+    // Build filtered subgraph indices.
+    // sub_indices: indices into the full `nodes` array for filtered nodes only.
     // sub_map: full index → sub-array index for O(1) lookup.
     let sub_indices: Vec<usize> = nodes
         .iter()
         .enumerate()
-        .filter(|(_, n)| reachable.contains(&n.id))
+        .filter(|(_, n)| filter.contains(&n.id))
         .map(|(i, _)| i)
         .collect();
     let rn = sub_indices.len();
@@ -579,14 +588,16 @@ fn compute_forceatlas2(
     let margin = cfg.force.viewport * 0.05;
     let usable = cfg.force.viewport - 2.0 * margin;
 
-    // Write back to reachable nodes only (non-reachable get no FA2 coords)
+    // Write back to filtered nodes only
     for (si, &fi) in sub_indices.iter().enumerate() {
         let nx = margin + (x[si] - x_min) / x_range * usable;
         let ny = margin + (y[si] - y_min) / y_range * usable;
-        nodes[fi].x = Some(nx);
-        nodes[fi].y = Some(ny);
+        if set_primary {
+            nodes[fi].x = Some(nx);
+            nodes[fi].y = Some(ny);
+        }
         nodes[fi].layouts.insert(
-            "forceatlas2".into(),
+            layout_name.into(),
             LayoutPoint { x: nx, y: ny, w: None, h: None, r: None },
         );
     }
@@ -1442,7 +1453,7 @@ mod tests {
         compute_layout(&mut nodes, &edges, &reachable);
 
         // Only check nodes that actually have the layout (filtered layouts skip some nodes)
-        for layout_name in &["forceatlas2", "treemap", "circle_pack", "arc"] {
+        for layout_name in &["forceatlas2", "forceatlas2_focus", "treemap", "circle_pack", "arc"] {
             for node in &nodes {
                 if let Some(lp) = node.layouts.get(*layout_name) {
                     assert!(
@@ -1495,5 +1506,56 @@ mod tests {
     fn test_pack_circles_empty() {
         let positions = pack_circles(&[]);
         assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn test_forceatlas2_focus_partial_reachability() {
+        let (mut nodes, edges, _all_reachable) = build_test_graph();
+
+        // Only mark half the nodes as reachable
+        let reachable: HashSet<String> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .map(|(_, n)| n.id.clone())
+            .collect();
+        let total = nodes.len();
+        assert!(reachable.len() < total);
+
+        compute_layout(&mut nodes, &edges, &reachable);
+
+        // forceatlas2 should be present on ALL nodes (full graph)
+        let fa2_count = nodes.iter().filter(|n| n.layouts.contains_key("forceatlas2")).count();
+        assert_eq!(
+            fa2_count, total,
+            "forceatlas2 should be on all {total} nodes, got {fa2_count}"
+        );
+
+        // All nodes should have primary x/y set (from full-graph FA2)
+        let xy_count = nodes.iter().filter(|n| n.x.is_some() && n.y.is_some()).count();
+        assert_eq!(
+            xy_count, total,
+            "all {total} nodes should have primary x/y, got {xy_count}"
+        );
+
+        // forceatlas2_focus should only be present on reachable nodes
+        let focus_count = nodes.iter().filter(|n| n.layouts.contains_key("forceatlas2_focus")).count();
+        assert_eq!(
+            focus_count,
+            reachable.len(),
+            "forceatlas2_focus should be on {} reachable nodes, got {focus_count}",
+            reachable.len()
+        );
+
+        // Verify non-reachable nodes do NOT have forceatlas2_focus
+        for node in &nodes {
+            if !reachable.contains(&node.id) {
+                assert!(
+                    !node.layouts.contains_key("forceatlas2_focus"),
+                    "non-reachable node {} should not have forceatlas2_focus",
+                    node.id
+                );
+            }
+        }
     }
 }

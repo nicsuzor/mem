@@ -4,6 +4,7 @@
 //! Provides 18 tools for search, documents, tasks, and knowledge graph.
 
 use crate::embeddings::Embedder;
+use crate::graph::is_completed;
 use crate::graph_store::GraphStore;
 use crate::vectordb::VectorStore;
 use parking_lot::RwLock;
@@ -1758,8 +1759,7 @@ impl PkbSearchServer {
                 for child_id in &node.children {
                     if let Some(child) = graph.get_node(child_id) {
                         *total += 1;
-                        let is_done = child.status.as_deref() == Some("done")
-                            || child.status.as_deref() == Some("cancelled");
+                        let is_done = is_completed(child.status.as_deref());
                         if is_done {
                             *done += 1;
                         }

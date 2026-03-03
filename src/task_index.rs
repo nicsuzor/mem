@@ -3,7 +3,7 @@
 //! Produces a JSON index with task metadata, relationships, and
 //! pre-computed ready/blocked task lists.
 
-use crate::graph::deduplicate_vec;
+use crate::graph::{self, deduplicate_vec};
 use crate::graph_store::GraphStore;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -211,10 +211,9 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
     let roots = store.roots().to_vec();
 
     // Ready and blocked lists (already computed by GraphStore, but with index entries)
-    let completed: HashSet<&str> = ["done", "cancelled"].into_iter().collect();
     let completed_ids: HashSet<String> = entries
         .iter()
-        .filter(|(_, e)| completed.contains(e.status.as_str()))
+        .filter(|(_, e)| graph::is_completed(Some(e.status.as_str())))
         .map(|(id, _)| id.clone())
         .collect();
 
@@ -222,7 +221,7 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
     let mut blocked: Vec<String> = Vec::new();
 
     for (tid, entry) in &entries {
-        if completed.contains(entry.status.as_str()) {
+        if graph::is_completed(Some(entry.status.as_str())) {
             continue;
         }
         let unmet: Vec<&String> = entry

@@ -619,6 +619,10 @@ impl GraphStore {
             LayoutMeta { edge_style: "manhattan".into(), arc_direction: None },
         );
         layout_metadata.insert(
+            "forceatlas2_focus".into(),
+            LayoutMeta { edge_style: "manhattan".into(), arc_direction: None },
+        );
+        layout_metadata.insert(
             "treemap".into(),
             LayoutMeta { edge_style: "hidden".into(), arc_direction: None },
         );
@@ -748,18 +752,94 @@ impl GraphStore {
     }
 
     pub fn output_dot(&self) -> String {
+        self.output_dot_inner(None)
+    }
+
+    /// Produce DOT with pinned positions from a named layout.
+    ///
+    /// Use with `neato -n -Tsvg` to render with Graphviz spline routing
+    /// while preserving our precomputed node positions.
+    pub fn output_dot_with_layout(&self, layout_name: &str) -> String {
+        self.output_dot_inner(Some(layout_name))
+    }
+
+    /// List available layout names from the output graph.
+    pub fn layout_names(&self) -> Vec<String> {
         let graph = self.to_output_graph();
-        let mut dot = String::from(
-            "digraph G {\n    rankdir=TB;\n    node [shape=box, style=filled, fillcolor=\"#e9ecef\"];\n\n",
-        );
+        graph.layout_metadata.keys().cloned().collect()
+    }
+
+    fn output_dot_inner(&self, layout: Option<&str>) -> String {
+        let graph = self.to_output_graph();
+
+        // Map our edge_style to Graphviz splines mode
+        let splines = match layout {
+            Some(name) => match graph.layout_metadata.get(name).map(|m| m.edge_style.as_str()) {
+                Some("manhattan") => "ortho",
+                Some("arc") => "curved",
+                Some("hidden") => "false",
+                _ => "spline",
+            },
+            None => "spline",
+        };
+
+        // When using pinned positions, use neato layout engine
+        let header = if layout.is_some() {
+            format!(
+                "digraph G {{\n    layout=neato;\n    splines={splines};\n    overlap=false;\n    node [shape=box, style=filled, fontsize=10];\n\n"
+            )
+        } else {
+            String::from(
+                "digraph G {\n    rankdir=TB;\n    node [shape=box, style=filled];\n\n",
+            )
+        };
+        let mut dot = header;
+
+        // Track which nodes are included (for edge filtering)
+        let mut included_ids: HashSet<&str> = HashSet::new();
 
         for node in &graph.nodes {
             let label = node.label.replace('"', "\\\"");
-            dot.push_str(&format!("    \"{}\" [label=\"{}\"];\n", node.id, label));
+            let color = node_type_color(node.node_type.as_deref());
+
+            // Get position from named layout, or fall back to primary x/y
+            let pos = layout.and_then(|name| {
+                node.layouts.get(name).map(|lp| (lp.x, lp.y))
+            }).or_else(|| {
+                if layout.is_some() {
+                    None
+                } else {
+                    node.x.zip(node.y)
+                }
+            });
+
+            if let Some((px, py)) = pos {
+                // Graphviz y-axis is bottom-up; our viewport is top-down (0-1000)
+                let gy = 1000.0 - py;
+                dot.push_str(&format!(
+                    "    \"{}\" [label=\"{}\", fillcolor=\"{}\", pos=\"{:.1},{:.1}!\"];\n",
+                    node.id, label, color, px, gy
+                ));
+                included_ids.insert(&node.id);
+            } else if layout.is_none() {
+                // No layout specified — include all nodes without positions
+                dot.push_str(&format!(
+                    "    \"{}\" [label=\"{}\", fillcolor=\"{}\"];\n",
+                    node.id, label, color
+                ));
+                included_ids.insert(&node.id);
+            }
+            // else: layout specified but node not in it — skip entirely
         }
         dot.push('\n');
 
         for edge in &graph.edges {
+            // Only include edges where both endpoints are present
+            if !included_ids.contains(edge.source.as_str())
+                || !included_ids.contains(edge.target.as_str())
+            {
+                continue;
+            }
             let style = match edge.edge_type {
                 EdgeType::DependsOn => "style=bold, color=\"#dc3545\", penwidth=2",
                 EdgeType::SoftDependsOn => "style=dashed, color=\"#6c757d\", penwidth=1.5",
@@ -777,6 +857,27 @@ impl GraphStore {
         dot
     }
 
+}
+
+/// Map node type to a hex fill color (matches layout-preview.html palette).
+fn node_type_color(node_type: Option<&str>) -> &'static str {
+    match node_type {
+        Some("goal") => "#e94560",
+        Some("project") => "#0f3460",
+        Some("subproject") => "#533483",
+        Some("epic") => "#e9a045",
+        Some("task") => "#45e980",
+        Some("action") => "#45c9e9",
+        Some("bug") => "#e94545",
+        Some("note") => "#888888",
+        Some("knowledge") => "#a0a0e0",
+        Some("memory") => "#c9a0e0",
+        Some("learn") => "#e0e0a0",
+        Some("feature") => "#59a14f",
+        Some("milestone") => "#edc948",
+        Some("contact") => "#9c755f",
+        _ => "#e9ecef",
+    }
 }
 
 // ===========================================================================
@@ -1031,7 +1132,7 @@ fn compute_centrality_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
 /// Compute downstream_weight and stakeholder_exposure via BFS through
 /// blocks/soft_blocks. Mirrors the logic from fast-indexer main.rs.
 fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
-    let excluded: HashSet<&str> = ["done", "cancelled"].into_iter().collect();
+    let excluded: HashSet<&str> = graph::COMPLETED_STATUSES.iter().copied().collect();
 
     let id_to_idx: HashMap<String, usize> = nodes
         .iter()
@@ -1161,16 +1262,9 @@ fn classify_tasks(
     Vec<String>,
     HashMap<String, Vec<String>>,
 ) {
-    let completed: HashSet<&str> = ["done", "cancelled"].into_iter().collect();
-
     let completed_ids: HashSet<String> = nodes
         .iter()
-        .filter(|(_, n)| {
-            n.status
-                .as_deref()
-                .map(|s| completed.contains(s))
-                .unwrap_or(false)
-        })
+        .filter(|(_, n)| graph::is_completed(n.status.as_deref()))
         .map(|(id, _)| id.clone())
         .collect();
 
@@ -1184,7 +1278,7 @@ fn classify_tasks(
         }
 
         let status = node.status.as_deref().unwrap_or("active");
-        if completed.contains(status) {
+        if graph::is_completed(Some(status)) {
             continue;
         }
 
@@ -1260,18 +1354,11 @@ fn classify_tasks(
 /// Returns the set of reachable node IDs so the caller can both mark nodes
 /// and pass the set to layout algorithms.
 fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
-    let done_statuses: HashSet<&str> = ["done", "cancelled", "completed"].into_iter().collect();
-
     let all_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
 
     let unfinished_ids: HashSet<&str> = nodes
         .iter()
-        .filter(|n| {
-            !n.status
-                .as_deref()
-                .map(|s| done_statuses.contains(s))
-                .unwrap_or(false)
-        })
+        .filter(|n| !graph::is_completed(n.status.as_deref()))
         .map(|n| n.id.as_str())
         .collect();
 
