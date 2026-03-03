@@ -200,10 +200,45 @@ pub fn resolve_status_alias(status: &str) -> &str {
         "inbox" | "todo" | "open" => "active",
         "in-progress" => "in_progress",
         "in_review" | "in-review" => "review",
-        "complete" | "completed" | "closed" => "done",
+        "complete" | "completed" | "closed" | "archived" => "done",
+        "dead" => "cancelled",
         other => other,
     }
 }
+
+// ── Canonical status and type values ────────────────────────────────────
+
+/// All recognized canonical status values (post-alias resolution).
+///
+/// - **active**: default / open / ready to work on
+/// - **in_progress**: currently being worked on
+/// - **blocked**: waiting on dependencies
+/// - **review**: in review / awaiting feedback
+/// - **paused**: intentionally deferred
+/// - **someday**: low priority / maybe later
+/// - **done**: completed successfully
+/// - **cancelled**: abandoned / no longer relevant
+pub const VALID_STATUSES: &[&str] = &[
+    "active", "in_progress", "blocked", "review",
+    "paused", "someday",
+    "done", "cancelled",
+];
+
+/// Statuses that indicate a task is finished (no longer active).
+pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled"];
+
+/// Returns true if the status represents a completed/finished state.
+pub fn is_completed(status: Option<&str>) -> bool {
+    matches!(status, Some("done") | Some("cancelled"))
+}
+
+/// All recognized canonical node type values.
+pub const VALID_NODE_TYPES: &[&str] = &[
+    "goal", "project", "subproject", "epic",
+    "task", "action", "bug", "feature",
+    "milestone", "learn",
+    "note", "knowledge", "memory", "contact",
+];
 
 /// Parse a string array from a JSON frontmatter value.
 pub fn parse_string_array(fm: &serde_json::Value, key: &str) -> Vec<String> {

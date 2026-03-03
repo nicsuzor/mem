@@ -1126,7 +1126,7 @@ fn compute_centrality_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
 /// Compute downstream_weight and stakeholder_exposure via BFS through
 /// blocks/soft_blocks. Mirrors the logic from fast-indexer main.rs.
 fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
-    let excluded: HashSet<&str> = ["done", "cancelled"].into_iter().collect();
+    let excluded: HashSet<&str> = graph::COMPLETED_STATUSES.iter().copied().collect();
 
     let id_to_idx: HashMap<String, usize> = nodes
         .iter()
@@ -1256,16 +1256,9 @@ fn classify_tasks(
     Vec<String>,
     HashMap<String, Vec<String>>,
 ) {
-    let completed: HashSet<&str> = ["done", "cancelled"].into_iter().collect();
-
     let completed_ids: HashSet<String> = nodes
         .iter()
-        .filter(|(_, n)| {
-            n.status
-                .as_deref()
-                .map(|s| completed.contains(s))
-                .unwrap_or(false)
-        })
+        .filter(|(_, n)| graph::is_completed(n.status.as_deref()))
         .map(|(id, _)| id.clone())
         .collect();
 
@@ -1279,7 +1272,7 @@ fn classify_tasks(
         }
 
         let status = node.status.as_deref().unwrap_or("active");
-        if completed.contains(status) {
+        if graph::is_completed(Some(status)) {
             continue;
         }
 
@@ -1355,18 +1348,11 @@ fn classify_tasks(
 /// Returns the set of reachable node IDs so the caller can both mark nodes
 /// and pass the set to layout algorithms.
 fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
-    let done_statuses: HashSet<&str> = ["done", "cancelled", "completed"].into_iter().collect();
-
     let all_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
 
     let unfinished_ids: HashSet<&str> = nodes
         .iter()
-        .filter(|n| {
-            !n.status
-                .as_deref()
-                .map(|s| done_statuses.contains(s))
-                .unwrap_or(false)
-        })
+        .filter(|n| !graph::is_completed(n.status.as_deref()))
         .map(|n| n.id.as_str())
         .collect();
 

@@ -1,6 +1,6 @@
 //! Application state for the Planning Web TUI.
 
-use mem::graph::GraphNode;
+use mem::graph::{self, GraphNode};
 use mem::graph_store::{self, GraphStore};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -224,7 +224,7 @@ impl App {
         // Detect cross-project synergies (nodes from different projects sharing tags)
         let active_nodes: Vec<&GraphNode> = gs
             .nodes()
-            .filter(|n| !matches!(n.status.as_deref(), Some("done") | Some("dead")))
+            .filter(|n| !graph::is_completed(n.status.as_deref()))
             .filter(|n| !n.tags.is_empty() && n.project.is_some())
             .collect();
         let mut synergy_pairs: Vec<(String, String, usize)> = Vec::new();
@@ -306,10 +306,7 @@ impl App {
             .filter(|n| {
                 // Filter completed
                 if !self.show_completed {
-                    if matches!(
-                        n.status.as_deref(),
-                        Some("done") | Some("cancelled") | Some("dead")
-                    ) {
+                    if graph::is_completed(n.status.as_deref()) {
                         return false;
                     }
                 }
@@ -661,13 +658,8 @@ impl App {
         let mut hits: Vec<SearchHit> = gs
             .nodes()
             .filter(|n| {
-                if !self.show_completed {
-                    if matches!(
-                        n.status.as_deref(),
-                        Some("done") | Some("dead") | Some("cancelled")
-                    ) {
-                        return false;
-                    }
+                if !self.show_completed && graph::is_completed(n.status.as_deref()) {
+                    return false;
                 }
                 true
             })
