@@ -72,13 +72,16 @@ After any CRUD operation, `rebuild_graph()` is called to rebuild the full `Graph
 ### Status filters in list_tasks
 `status="ready"` uses `graph.ready_tasks()` (leaf tasks with no unmet deps, not done/cancelled, not learn type). `status="blocked"` uses `graph.blocked_tasks()` (tasks with unmet deps or explicitly blocked status). Other status values use case-insensitive string match on frontmatter status.
 
-## Build
+## Build & Install
 
 ```bash
-make            # native Linux x86_64
+cargo install --path .    # install both binaries (aops + pkb) to ~/.cargo/bin
+make            # native Linux x86_64 (release build only, no install)
 make apple      # cross-compile to aarch64-apple-darwin (requires zig 0.13 + cargo-zigbuild)
 make release    # bump patch, build both, install, tag, push
 ```
+
+**Local install**: Always use `cargo install --path .` — never manually copy binaries to /usr/local/bin.
 
 Requires: Rust >= 1.88, zig 0.13 for cross-compile.
 
