@@ -681,18 +681,28 @@ impl GraphStore {
                 node.w = lp.w;
                 node.h = lp.h;
                 node.r = lp.r;
-            } else if layout_name != "forceatlas2" && layout_name != "forceatlas2_focus" {
+            } else if layout_name == "forceatlas2_focus" {
+                // Focus FA2: only reachable nodes have layout entries;
+                // clear coords for non-placed nodes so they get dropped below
+                node.x = None;
+                node.y = None;
+            } else if layout_name != "forceatlas2" {
                 // Non-FA2 layouts: no entry means no coords for this node
                 node.x = None;
                 node.y = None;
             }
-            // FA2 layouts already have x/y set as primary coords by compute_layout
+            // FA2 (full) already has x/y set as primary coords by compute_layout
             node.layouts.clear();
         }
 
         let mut edges = self.edges.clone();
 
-        // Filter to reachable nodes only
+        // Drop nodes that weren't placed by this layout
+        nodes.retain(|n| n.x.is_some() && n.y.is_some());
+        let placed_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        edges.retain(|e| placed_ids.contains(e.source.as_str()) && placed_ids.contains(e.target.as_str()));
+
+        // Further filter to reachable nodes only
         if filter_reachable {
             let reachable_ids: HashSet<String> = nodes
                 .iter()
@@ -703,7 +713,11 @@ impl GraphStore {
             edges.retain(|e| reachable_ids.contains(&e.source) && reachable_ids.contains(&e.target));
         }
 
-        let filter_label = if filter_reachable { "focus" } else { "full" };
+        let filter_label = if filter_reachable || layout_name == "forceatlas2_focus" {
+            "focus"
+        } else {
+            "full"
+        };
 
         let mut layout_metadata = HashMap::new();
         layout_metadata.insert(layout_name.into(), Self::layout_meta(layout_name));
