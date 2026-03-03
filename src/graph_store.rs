@@ -62,6 +62,8 @@ pub struct GraphStore {
     by_project: HashMap<String, Vec<String>>,
     /// Lowercase (id | filename stem | title | permalink) → canonical node ID
     resolution_map: HashMap<String, String>,
+    /// Retained from build so layouts can be computed on demand via `compute_layouts()`.
+    reachable_set: HashSet<String>,
 }
 
 /// Document types considered actionable work items in task trees and dashboards.
@@ -144,8 +146,7 @@ impl GraphStore {
             node.reachable = reachable_set.contains(&node.id);
         }
 
-        // 9. Compute layouts (FA2 on reachable-only, treemap/circle/arc on all)
-        layout::compute_layout(&mut nodes, &edges, &reachable_set);
+        // 9. (Layouts computed on demand via compute_layouts(), not during build)
 
         // 10. Build node map and classify tasks
         let node_map: HashMap<String, GraphNode> =
@@ -163,6 +164,7 @@ impl GraphStore {
             roots,
             by_project,
             resolution_map,
+            reachable_set,
         }
     }
 
@@ -174,6 +176,21 @@ impl GraphStore {
             .filter_map(|p| crate::pkb::parse_file_relative(p, root))
             .collect();
         Self::build(&docs, root)
+    }
+
+    /// Compute all layout algorithms (ForceAtlas2, treemap, circle pack, arc).
+    /// This is expensive (~30s for large graphs) and only needed for graph export.
+    /// Call explicitly before `output_json()`, `output_dot()`, etc.
+    pub fn compute_layouts(&mut self) {
+        let mut owned_nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
+        layout::compute_layout(&mut owned_nodes, &self.edges, &self.reachable_set);
+        for node in owned_nodes {
+            if let Some(existing) = self.nodes.get_mut(&node.id) {
+                existing.x = node.x;
+                existing.y = node.y;
+                existing.layouts = node.layouts;
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

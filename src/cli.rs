@@ -1667,6 +1667,9 @@ fn main() -> Result<()> {
 
         Commands::Graph { format, output, no_layout, layout } => {
             let mut gs = load_graph(&pkb_root, &db_path);
+            if !no_layout {
+                gs.compute_layouts();
+            }
             if no_layout {
                 gs.strip_layout();
             } else if !matches!(layout, LayoutAlgorithm::Forceatlas2) {
