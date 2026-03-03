@@ -97,6 +97,30 @@ Any markdown is fine.
 
 All frontmatter fields are optional. Files without frontmatter are indexed by filename and content.
 
+### Status values
+
+| Status | Meaning |
+|--------|---------|
+| `active` | Open, ready to work on (default) |
+| `in_progress` | Currently being worked on |
+| `blocked` | Waiting on dependencies |
+| `review` | In review / awaiting feedback |
+| `paused` | Intentionally deferred |
+| `someday` | Low priority / maybe later |
+| `done` | Completed successfully |
+| `cancelled` | Abandoned / no longer relevant |
+
+**Aliases** (automatically normalized): `inbox`, `todo`, `open` → `active`; `in-progress` → `in_progress`; `in_review`, `in-review` → `review`; `complete`, `completed`, `closed`, `archived` → `done`; `dead` → `cancelled`.
+
+### Node types
+
+| Category | Types |
+|----------|-------|
+| **Actionable** | `goal`, `project`, `subproject`, `epic`, `task`, `action`, `bug`, `feature`, `milestone`, `learn` |
+| **Reference** | `note`, `knowledge`, `memory`, `contact` |
+
+Actionable types are used for task management (ready/blocked analysis, dependency graphs, focus picks). Reference types appear in search and the knowledge graph but are excluded from task workflows.
+
 ## CLI Commands
 
 ### Search & Index
