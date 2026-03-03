@@ -28,6 +28,15 @@ pub struct LayoutMeta {
     pub arc_direction: Option<String>,
 }
 
+/// (internal_name, file_suffix, produce_focus_variant)
+pub const LAYOUT_SPECS: &[(&str, &str, bool)] = &[
+    ("forceatlas2", "fa2", false),
+    ("forceatlas2_focus", "fa2-focus", false),
+    ("treemap", "tree", true),
+    ("circle_pack", "circle", true),
+    ("arc", "arc", false),
+];
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct OutputGraph {
     pub nodes: Vec<GraphNode>,
@@ -42,6 +51,10 @@ pub struct OutputGraph {
     pub roots: Vec<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub layout_metadata: HashMap<String, LayoutMeta>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
 }
 
 // ===========================================================================
@@ -625,70 +638,147 @@ impl GraphStore {
     // Output formats
     // -----------------------------------------------------------------------
 
-    /// Build an `OutputGraph` suitable for JSON/GraphML/DOT export.
-    pub fn to_output_graph(&self) -> OutputGraph {
+    /// Metadata for a layout name.
+    fn layout_meta(name: &str) -> LayoutMeta {
+        match name {
+            "forceatlas2" | "forceatlas2_focus" => LayoutMeta {
+                edge_style: "manhattan".into(),
+                arc_direction: None,
+            },
+            "treemap" => LayoutMeta {
+                edge_style: "hidden".into(),
+                arc_direction: None,
+            },
+            "circle_pack" => LayoutMeta {
+                edge_style: "hidden".into(),
+                arc_direction: None,
+            },
+            "arc" => LayoutMeta {
+                edge_style: "arc".into(),
+                arc_direction: Some("alternate".into()),
+            },
+            _ => LayoutMeta {
+                edge_style: "straight".into(),
+                arc_direction: None,
+            },
+        }
+    }
+
+    /// Produce a single-layout `OutputGraph`.
+    ///
+    /// Promotes the named layout coords to `x/y/w/h/r`, clears the `layouts`
+    /// HashMap on each node. If `filter_reachable`, removes non-reachable nodes
+    /// and edges referencing them.
+    pub fn to_single_layout_graph(&self, layout_name: &str, filter_reachable: bool) -> OutputGraph {
         let mut nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
         nodes.sort_by(|a, b| a.label.cmp(&b.label));
 
+        // Promote layout coords to primary x/y/w/h/r
+        for node in &mut nodes {
+            if let Some(lp) = node.layouts.get(layout_name) {
+                node.x = Some(lp.x);
+                node.y = Some(lp.y);
+                node.w = lp.w;
+                node.h = lp.h;
+                node.r = lp.r;
+            } else if layout_name != "forceatlas2" && layout_name != "forceatlas2_focus" {
+                // Non-FA2 layouts: no entry means no coords for this node
+                node.x = None;
+                node.y = None;
+            }
+            // FA2 layouts already have x/y set as primary coords by compute_layout
+            node.layouts.clear();
+        }
+
+        let mut edges = self.edges.clone();
+
+        // Filter to reachable nodes only
+        if filter_reachable {
+            let reachable_ids: HashSet<String> = nodes
+                .iter()
+                .filter(|n| n.reachable)
+                .map(|n| n.id.clone())
+                .collect();
+            nodes.retain(|n| n.reachable);
+            edges.retain(|e| reachable_ids.contains(&e.source) && reachable_ids.contains(&e.target));
+        }
+
+        let filter_label = if filter_reachable { "focus" } else { "full" };
+
         let mut layout_metadata = HashMap::new();
-        layout_metadata.insert(
-            "forceatlas2".into(),
-            LayoutMeta { edge_style: "manhattan".into(), arc_direction: None },
-        );
-        layout_metadata.insert(
-            "forceatlas2_focus".into(),
-            LayoutMeta { edge_style: "manhattan".into(), arc_direction: None },
-        );
-        layout_metadata.insert(
-            "treemap".into(),
-            LayoutMeta { edge_style: "hidden".into(), arc_direction: None },
-        );
-        layout_metadata.insert(
-            "circle_pack".into(),
-            LayoutMeta { edge_style: "hidden".into(), arc_direction: None },
-        );
-        layout_metadata.insert(
-            "arc".into(),
-            LayoutMeta { edge_style: "arc".into(), arc_direction: Some("alternate".into()) },
-        );
+        layout_metadata.insert(layout_name.into(), Self::layout_meta(layout_name));
 
         OutputGraph {
+            nodes,
+            edges,
+            ready: self.ready.clone(),
+            blocked: self.blocked.clone(),
+            by_project: self.by_project.clone(),
+            roots: self.roots.clone(),
+            layout_metadata,
+            layout_name: Some(layout_name.into()),
+            filter: Some(filter_label.into()),
+        }
+    }
+
+    /// Output JSON for a single layout.
+    pub fn output_json_for_layout(&self, layout_name: &str, filter_reachable: bool) -> Result<String> {
+        let graph = self.to_single_layout_graph(layout_name, filter_reachable);
+        Ok(serde_json::to_string_pretty(&graph)?)
+    }
+
+    /// Produce all per-layout files. Returns list of written file paths.
+    pub fn output_all_files(&self, base: &str) -> Result<Vec<String>> {
+        let mut written = Vec::new();
+
+        for &(name, suffix, produce_focus) in LAYOUT_SPECS {
+            // Full variant (JSON + DOT)
+            let json_path = format!("{base}-{suffix}.json");
+            let json = self.output_json_for_layout(name, false)?;
+            std::fs::write(&json_path, json)?;
+            written.push(json_path);
+
+            let dot_path = format!("{base}-{suffix}.dot");
+            let dot = self.output_dot_for_layout(name, false);
+            std::fs::write(&dot_path, dot)?;
+            written.push(dot_path);
+
+            // Focus variant (filtered to reachable)
+            if produce_focus {
+                let json_focus_path = format!("{base}-{suffix}-focus.json");
+                let json_focus = self.output_json_for_layout(name, true)?;
+                std::fs::write(&json_focus_path, json_focus)?;
+                written.push(json_focus_path);
+
+                let dot_focus_path = format!("{base}-{suffix}-focus.dot");
+                let dot_focus = self.output_dot_for_layout(name, true);
+                std::fs::write(&dot_focus_path, dot_focus)?;
+                written.push(dot_focus_path);
+            }
+        }
+
+        // GraphML (full graph, no layout coords)
+        let graphml_path = format!("{base}.graphml");
+        std::fs::write(&graphml_path, self.output_graphml())?;
+        written.push(graphml_path);
+
+        Ok(written)
+    }
+
+    pub fn output_graphml(&self) -> String {
+        let mut nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
+        nodes.sort_by(|a, b| a.label.cmp(&b.label));
+        let graph = OutputGraph {
             nodes,
             edges: self.edges.clone(),
             ready: self.ready.clone(),
             blocked: self.blocked.clone(),
             by_project: self.by_project.clone(),
             roots: self.roots.clone(),
-            layout_metadata,
-        }
-    }
-
-    /// Remove precomputed layout coordinates from all nodes.
-    pub fn strip_layout(&mut self) {
-        for node in self.nodes.values_mut() {
-            node.x = None;
-            node.y = None;
-            node.layouts.clear();
-        }
-    }
-
-    /// Copy a named layout's coordinates to the primary `x`/`y` fields.
-    pub fn promote_layout(&mut self, layout_name: &str) {
-        for node in self.nodes.values_mut() {
-            if let Some(lp) = node.layouts.get(layout_name) {
-                node.x = Some(lp.x);
-                node.y = Some(lp.y);
-            }
-        }
-    }
-
-    pub fn output_json(&self) -> Result<String> {
-        let graph = self.to_output_graph();
-        Ok(serde_json::to_string_pretty(&graph)?)
-    }
-
-    pub fn output_graphml(&self) -> String {
-        let graph = self.to_output_graph();
+            layout_metadata: HashMap::new(),
+            layout_name: None,
+            filter: None,
+        };
         let mut xml = String::from(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns"
@@ -768,90 +858,40 @@ impl GraphStore {
         xml
     }
 
-    pub fn output_dot(&self) -> String {
-        self.output_dot_inner(None)
-    }
+    /// Produce DOT for a single layout.
+    pub fn output_dot_for_layout(&self, layout_name: &str, filter_reachable: bool) -> String {
+        let graph = self.to_single_layout_graph(layout_name, filter_reachable);
 
-    /// Produce DOT with pinned positions from a named layout.
-    ///
-    /// Use with `neato -n -Tsvg` to render with Graphviz spline routing
-    /// while preserving our precomputed node positions.
-    pub fn output_dot_with_layout(&self, layout_name: &str) -> String {
-        self.output_dot_inner(Some(layout_name))
-    }
-
-    /// List available layout names from the output graph.
-    pub fn layout_names(&self) -> Vec<String> {
-        let graph = self.to_output_graph();
-        graph.layout_metadata.keys().cloned().collect()
-    }
-
-    fn output_dot_inner(&self, layout: Option<&str>) -> String {
-        let graph = self.to_output_graph();
-
-        // Map our edge_style to Graphviz splines mode
-        let splines = match layout {
-            Some(name) => match graph.layout_metadata.get(name).map(|m| m.edge_style.as_str()) {
-                Some("manhattan") => "ortho",
-                Some("arc") => "curved",
-                Some("hidden") => "false",
-                _ => "spline",
-            },
-            None => "spline",
+        let meta = graph.layout_metadata.get(layout_name);
+        let splines = match meta.map(|m| m.edge_style.as_str()) {
+            Some("manhattan") => "ortho",
+            Some("arc") => "curved",
+            Some("hidden") => "false",
+            _ => "spline",
         };
 
-        // When using pinned positions, use neato layout engine
-        let header = if layout.is_some() {
-            format!(
-                "digraph G {{\n    layout=neato;\n    splines={splines};\n    overlap=false;\n    node [shape=box, style=filled, fontsize=10];\n\n"
-            )
-        } else {
-            String::from(
-                "digraph G {\n    rankdir=TB;\n    node [shape=box, style=filled];\n\n",
-            )
-        };
-        let mut dot = header;
+        let mut dot = format!(
+            "digraph G {{\n    layout=neato;\n    splines={splines};\n    overlap=false;\n    node [shape=box, style=filled, fontsize=10];\n\n"
+        );
 
-        // Track which nodes are included (for edge filtering)
         let mut included_ids: HashSet<&str> = HashSet::new();
 
         for node in &graph.nodes {
             let label = node.label.replace('"', "\\\"");
             let color = node_type_color(node.node_type.as_deref());
 
-            // Get position from named layout, or fall back to primary x/y
-            let pos = layout.and_then(|name| {
-                node.layouts.get(name).map(|lp| (lp.x, lp.y))
-            }).or_else(|| {
-                if layout.is_some() {
-                    None
-                } else {
-                    node.x.zip(node.y)
-                }
-            });
-
-            if let Some((px, py)) = pos {
-                // Graphviz y-axis is bottom-up; our viewport is top-down (0-1000)
+            if let (Some(px), Some(py)) = (node.x, node.y) {
                 let gy = 1000.0 - py;
                 dot.push_str(&format!(
                     "    \"{}\" [label=\"{}\", fillcolor=\"{}\", pos=\"{:.1},{:.1}!\"];\n",
                     node.id, label, color, px, gy
                 ));
                 included_ids.insert(&node.id);
-            } else if layout.is_none() {
-                // No layout specified — include all nodes without positions
-                dot.push_str(&format!(
-                    "    \"{}\" [label=\"{}\", fillcolor=\"{}\"];\n",
-                    node.id, label, color
-                ));
-                included_ids.insert(&node.id);
             }
-            // else: layout specified but node not in it — skip entirely
         }
         dot.push('\n');
 
         for edge in &graph.edges {
-            // Only include edges where both endpoints are present
             if !included_ids.contains(edge.source.as_str())
                 || !included_ids.contains(edge.target.as_str())
             {
@@ -872,6 +912,11 @@ impl GraphStore {
 
         dot.push_str("}\n");
         dot
+    }
+
+    /// List available layout names.
+    pub fn layout_names(&self) -> Vec<String> {
+        LAYOUT_SPECS.iter().map(|&(name, _, _)| name.to_string()).collect()
     }
 
 }

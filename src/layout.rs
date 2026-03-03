@@ -1285,6 +1285,9 @@ mod tests {
             assumptions: vec![],
             x: None,
             y: None,
+            w: None,
+            h: None,
+            r: None,
         }
     }
 

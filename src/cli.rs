@@ -323,20 +323,20 @@ enum Commands {
     /// Export knowledge graph
     Graph {
         /// Output format: json, graphml, dot, mcp-index, all
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "all")]
         format: String,
 
-        /// Output file (default: stdout; for 'all' format, used as base name)
+        /// Output file base name (for 'all' format) or path (for single format)
         #[arg(short, long)]
         output: Option<String>,
 
-        /// Skip precomputed layout (ForceAtlas2 x,y coordinates)
+        /// Layout to use for single-format export (e.g. forceatlas2, treemap, circle_pack, arc)
         #[arg(long)]
-        no_layout: bool,
+        layout: Option<LayoutAlgorithm>,
 
-        /// Primary layout algorithm
-        #[arg(long, value_enum, default_value_t = LayoutAlgorithm::Forceatlas2)]
-        layout: LayoutAlgorithm,
+        /// Filter to reachable (focus) nodes only
+        #[arg(long)]
+        focus: bool,
     },
 
     /// Search memories by semantic similarity
@@ -1665,15 +1665,12 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Graph { format, output, no_layout, layout } => {
+        Commands::Graph { format, output, layout, focus } => {
             let mut gs = load_graph(&pkb_root, &db_path);
-            if !no_layout {
+            // Only compute layouts for formats that need them
+            let needs_layout = matches!(format.to_lowercase().as_str(), "all" | "json" | "dot");
+            if needs_layout {
                 gs.compute_layouts();
-            }
-            if no_layout {
-                gs.strip_layout();
-            } else if !matches!(layout, LayoutAlgorithm::Forceatlas2) {
-                gs.promote_layout(&layout.to_string());
             }
 
             match format.to_lowercase().as_str() {
@@ -1684,31 +1681,15 @@ fn main() -> Result<()> {
                         .trim_end_matches(".graphml")
                         .trim_end_matches(".dot");
 
-                    let json_path = format!("{base}.json");
-                    std::fs::write(&json_path, gs.output_json()?)?;
-                    println!("  Saved {json_path}");
-
-                    let graphml_path = format!("{base}.graphml");
-                    std::fs::write(&graphml_path, gs.output_graphml())?;
-                    println!("  Saved {graphml_path}");
-
-                    let dot_path = format!("{base}.dot");
-                    std::fs::write(&dot_path, gs.output_dot())?;
-                    println!("  Saved {dot_path}");
-
-                    // Per-layout DOT files with embedded positions
-                    let layout_names = gs.layout_names();
-                    for name in &layout_names {
-                        let path = format!("{base}-{name}.dot");
-                        std::fs::write(&path, gs.output_dot_with_layout(name))?;
+                    let written = gs.output_all_files(base)?;
+                    for path in &written {
                         println!("  Saved {path}");
                     }
-
                     println!(
-                        "Graph: {} nodes, {} edges ({} formats)",
+                        "Graph: {} nodes, {} edges ({} files)",
                         gs.node_count(),
                         gs.edge_count(),
-                        3 + layout_names.len(),
+                        written.len(),
                     );
                 }
                 "mcp-index" => {
@@ -1729,13 +1710,12 @@ fn main() -> Result<()> {
                         None => print!("{json}"),
                     }
                 }
-                _ => {
-                    let content = match format.as_str() {
-                        "graphml" => gs.output_graphml(),
-                        "dot" => gs.output_dot_with_layout(&layout.to_string()),
-                        _ => gs.output_json()?,
-                    };
-
+                "json" => {
+                    let layout_name = layout
+                        .as_ref()
+                        .map(|l| l.to_string())
+                        .unwrap_or_else(|| "forceatlas2".to_string());
+                    let content = gs.output_json_for_layout(&layout_name, focus)?;
                     match output {
                         Some(path) => {
                             std::fs::write(&path, &content)?;
@@ -1748,6 +1728,44 @@ fn main() -> Result<()> {
                         }
                         None => print!("{content}"),
                     }
+                }
+                "dot" => {
+                    let layout_name = layout
+                        .as_ref()
+                        .map(|l| l.to_string())
+                        .unwrap_or_else(|| "forceatlas2".to_string());
+                    let content = gs.output_dot_for_layout(&layout_name, focus);
+                    match output {
+                        Some(path) => {
+                            std::fs::write(&path, &content)?;
+                            println!(
+                                "Graph: {} nodes, {} edges -> {}",
+                                gs.node_count(),
+                                gs.edge_count(),
+                                path
+                            );
+                        }
+                        None => print!("{content}"),
+                    }
+                }
+                "graphml" => {
+                    let content = gs.output_graphml();
+                    match output {
+                        Some(path) => {
+                            std::fs::write(&path, &content)?;
+                            println!(
+                                "Graph: {} nodes, {} edges -> {}",
+                                gs.node_count(),
+                                gs.edge_count(),
+                                path
+                            );
+                        }
+                        None => print!("{content}"),
+                    }
+                }
+                other => {
+                    eprintln!("Unknown format: {other}. Use: all, json, dot, graphml, mcp-index");
+                    std::process::exit(1);
                 }
             }
         }
