@@ -1693,10 +1693,19 @@ fn main() -> Result<()> {
                     std::fs::write(&dot_path, gs.output_dot())?;
                     println!("  Saved {dot_path}");
 
+                    // Per-layout DOT files with embedded positions
+                    let layout_names = gs.layout_names();
+                    for name in &layout_names {
+                        let path = format!("{base}-{name}.dot");
+                        std::fs::write(&path, gs.output_dot_with_layout(name))?;
+                        println!("  Saved {path}");
+                    }
+
                     println!(
-                        "Graph: {} nodes, {} edges (3 formats)",
+                        "Graph: {} nodes, {} edges ({} formats)",
                         gs.node_count(),
                         gs.edge_count(),
+                        3 + layout_names.len(),
                     );
                 }
                 "mcp-index" => {
@@ -1720,7 +1729,7 @@ fn main() -> Result<()> {
                 _ => {
                     let content = match format.as_str() {
                         "graphml" => gs.output_graphml(),
-                        "dot" => gs.output_dot(),
+                        "dot" => gs.output_dot_with_layout(&layout.to_string()),
                         _ => gs.output_json()?,
                     };
 

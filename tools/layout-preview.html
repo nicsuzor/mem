@@ -71,6 +71,7 @@
 
 <div id="toolbar">
   <button data-layout="forceatlas2" class="active">ForceAtlas2</button>
+  <button data-layout="forceatlas2_focus">Focus</button>
   <button data-layout="treemap">Treemap</button>
   <button data-layout="circle_pack">Circle Pack</button>
   <button data-layout="arc">Arc</button>
@@ -96,7 +97,7 @@
   <kbd>Double-click</kbd> Zoom to point<br>
   <kbd>R</kbd> Reset zoom<br>
   <kbd>L</kbd> Toggle labels<br>
-  <kbd>1-4</kbd> Switch layouts<br>
+  <kbd>1-5</kbd> Switch layouts<br>
   <kbd>?</kbd> Toggle this help<br>
   <br>
   <h3>Filter Toggles</h3>
@@ -273,9 +274,10 @@ function setupKeyboard() {
       case 'r': resetZoom(); render(); break;
       case 'l': showLabels = !showLabels; document.getElementById('btn-labels').classList.toggle('active', showLabels); render(); break;
       case '1': switchLayout('forceatlas2'); break;
-      case '2': switchLayout('treemap'); break;
-      case '3': switchLayout('circle_pack'); break;
-      case '4': switchLayout('arc'); break;
+      case '2': switchLayout('forceatlas2_focus'); break;
+      case '3': switchLayout('treemap'); break;
+      case '4': switchLayout('circle_pack'); break;
+      case '5': switchLayout('arc'); break;
       case '?': document.getElementById('btn-help').click(); break;
     }
   });
