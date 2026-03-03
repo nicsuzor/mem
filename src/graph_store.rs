@@ -182,15 +182,15 @@ impl GraphStore {
     /// This is expensive (~30s for large graphs) and only needed for graph export.
     /// Call explicitly before `output_json()`, `output_dot()`, etc.
     pub fn compute_layouts(&mut self) {
-        let mut owned_nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
-        layout::compute_layout(&mut owned_nodes, &self.edges, &self.reachable_set);
-        for node in owned_nodes {
-            if let Some(existing) = self.nodes.get_mut(&node.id) {
-                existing.x = node.x;
-                existing.y = node.y;
-                existing.layouts = node.layouts;
-            }
-        }
+        // Temporarily move nodes out of the HashMap to get a mutable Vec.
+        // This is required by `layout::compute_layout` and avoids cloning all nodes,
+        // which is expensive for large graphs.
+        let mut nodes_vec: Vec<GraphNode> = std::mem::take(&mut self.nodes).into_values().collect();
+
+        layout::compute_layout(&mut nodes_vec, &self.edges, &self.reachable_set);
+
+        // Rebuild the HashMap from the modified nodes.
+        self.nodes = nodes_vec.into_iter().map(|n| (n.id.clone(), n)).collect();
     }
 
     // -----------------------------------------------------------------------
