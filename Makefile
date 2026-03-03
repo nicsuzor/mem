@@ -36,31 +36,35 @@ apple: $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd
 	@file $(MACOS_DIR)/aops
 
 # ── Release ────────────────────────────────────────────────────────
-# Bump version, commit, tag, push. CI builds and publishes binaries.
+# Two-step release (main branch requires PRs):
 #
-#   make release          # bump patch: 0.1.0 → 0.1.1
-#   make release-minor    # bump minor: 0.1.0 → 0.2.0
-#   make release-major    # bump major: 0.1.0 → 1.0.0
+#   1. On PR branch:  make bump         # bump patch, commit, push branch
+#      (or:           make bump-minor)
+#   2. Merge PR on GitHub
+#   3. On main:       make tag          # pull, tag, push tag → CI builds
+#
 
-.PHONY: release
-release: bump-patch release-tag
+.PHONY: bump
+bump: bump-patch bump-commit
 
-.PHONY: release-minor
-release-minor: bump-minor release-tag
-
-.PHONY: release-major
-release-major: bump-major release-tag
-
-.PHONY: release-tag
-release-tag:
+.PHONY: bump-commit
+bump-commit:
 	@$(CARGO) generate-lockfile
 	@NEW_VER=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
 		git add Cargo.toml Cargo.lock && \
 		git commit -m "release: v$$NEW_VER" && \
-		git tag -a "v$$NEW_VER" -m "Release v$$NEW_VER" && \
-		git push && git push --tags && \
+		git push && \
 		echo "" && \
-		echo "Tagged v$$NEW_VER — CI will build and publish the release."
+		echo "Committed v$$NEW_VER — merge PR, then run: make tag"
+
+.PHONY: tag
+tag:
+	@git pull
+	@VER=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
+		git tag -a "v$$VER" -m "Release v$$VER" && \
+		git push origin "v$$VER" && \
+		echo "" && \
+		echo "Tagged v$$VER — CI will build and publish the release."
 
 # ── Version bumping ───────────────────────────────────────────────
 
@@ -168,11 +172,10 @@ help:
 	@echo "  build          Release build for current host"
 	@echo "  install        Install release binaries via cargo-binstall"
 	@echo "  apple          Cross-compile for Apple Silicon (aarch64-apple-darwin)"
-	@echo "  release        Bump patch, commit, tag, push (CI builds + publishes)"
-	@echo "  release-minor  Bump minor, commit, tag, push (CI builds + publishes)"
-	@echo "  release-major  Bump major, commit, tag, push (CI builds + publishes)"
-	@echo "  bump-patch     Bump patch version in Cargo.toml (no build)"
-	@echo "  bump-minor     Bump minor version in Cargo.toml (no build)"
+	@echo "  bump           Bump patch, commit, push branch (step 1: on PR branch)"
+	@echo "  bump-minor     Bump minor version in Cargo.toml (no commit)"
+	@echo "  bump-patch     Bump patch version in Cargo.toml (no commit)"
+	@echo "  tag            Pull main, tag, push tag → CI release (step 2: after merge)"
 	@echo "  version        Print current version"
 	@echo "  setup-cross    Install rustup target + cargo-zigbuild + zig instructions"
 	@echo "  check          Type-check without building"
