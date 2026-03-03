@@ -1666,7 +1666,12 @@ fn main() -> Result<()> {
         }
 
         Commands::Graph { format, output, layout, focus } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let mut gs = load_graph(&pkb_root, &db_path);
+            // Only compute layouts for formats that need them
+            let needs_layout = matches!(format.to_lowercase().as_str(), "all" | "json" | "dot");
+            if needs_layout {
+                gs.compute_layouts();
+            }
 
             match format.to_lowercase().as_str() {
                 "all" => {
