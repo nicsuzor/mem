@@ -240,7 +240,7 @@ pub fn compute_layout(nodes: &mut [GraphNode], edges: &[Edge], reachable: &HashS
             ("forceatlas2_focus", center.clone()),
             ("treemap", LayoutPoint { x: 500.0, y: 500.0, w: Some(1000.0), h: Some(1000.0), r: None }),
             ("circle_pack", LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: Some(500.0) }),
-            ("arc", LayoutPoint { x: 500.0, y: 500.0, w: None, h: None, r: None }),
+            ("arc", center.clone()),
         ];
         for (name, point) in layouts_to_add {
             nodes[0].layouts.insert(name.into(), point);
