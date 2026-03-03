@@ -795,6 +795,9 @@ impl GraphStore {
         };
         let mut dot = header;
 
+        // Track which nodes are included (for edge filtering)
+        let mut included_ids: HashSet<&str> = HashSet::new();
+
         for node in &graph.nodes {
             let label = node.label.replace('"', "\\\"");
             let color = node_type_color(node.node_type.as_deref());
@@ -804,7 +807,6 @@ impl GraphStore {
                 node.layouts.get(name).map(|lp| (lp.x, lp.y))
             }).or_else(|| {
                 if layout.is_some() {
-                    // Layout requested but node doesn't have it — skip position
                     None
                 } else {
                     node.x.zip(node.y)
@@ -818,22 +820,26 @@ impl GraphStore {
                     "    \"{}\" [label=\"{}\", fillcolor=\"{}\", pos=\"{:.1},{:.1}!\"];\n",
                     node.id, label, color, px, gy
                 ));
-            } else if layout.is_some() {
-                // Node not in this layout — still include but unpinned
-                dot.push_str(&format!(
-                    "    \"{}\" [label=\"{}\", fillcolor=\"{}\", style=\"filled,dashed\"];\n",
-                    node.id, label, color
-                ));
-            } else {
+                included_ids.insert(&node.id);
+            } else if layout.is_none() {
+                // No layout specified — include all nodes without positions
                 dot.push_str(&format!(
                     "    \"{}\" [label=\"{}\", fillcolor=\"{}\"];\n",
                     node.id, label, color
                 ));
+                included_ids.insert(&node.id);
             }
+            // else: layout specified but node not in it — skip entirely
         }
         dot.push('\n');
 
         for edge in &graph.edges {
+            // Only include edges where both endpoints are present
+            if !included_ids.contains(edge.source.as_str())
+                || !included_ids.contains(edge.target.as_str())
+            {
+                continue;
+            }
             let style = match edge.edge_type {
                 EdgeType::DependsOn => "style=bold, color=\"#dc3545\", penwidth=2",
                 EdgeType::SoftDependsOn => "style=dashed, color=\"#6c757d\", penwidth=1.5",
