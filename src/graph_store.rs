@@ -62,6 +62,8 @@ pub struct GraphStore {
     by_project: HashMap<String, Vec<String>>,
     /// Lowercase (id | filename stem | title | permalink) → canonical node ID
     resolution_map: HashMap<String, String>,
+    /// Retained from build so layouts can be computed on demand via `compute_layouts()`.
+    reachable_set: HashSet<String>,
 }
 
 /// Document types considered actionable work items in task trees and dashboards.
@@ -144,8 +146,7 @@ impl GraphStore {
             node.reachable = reachable_set.contains(&node.id);
         }
 
-        // 9. Compute layouts (FA2 on reachable-only, treemap/circle/arc on all)
-        layout::compute_layout(&mut nodes, &edges, &reachable_set);
+        // 9. (Layouts computed on demand via compute_layouts(), not during build)
 
         // 10. Build node map and classify tasks
         let node_map: HashMap<String, GraphNode> =
@@ -163,6 +164,7 @@ impl GraphStore {
             roots,
             by_project,
             resolution_map,
+            reachable_set,
         }
     }
 
@@ -174,6 +176,21 @@ impl GraphStore {
             .filter_map(|p| crate::pkb::parse_file_relative(p, root))
             .collect();
         Self::build(&docs, root)
+    }
+
+    /// Compute all layout algorithms (ForceAtlas2, treemap, circle pack, arc).
+    /// This is expensive (~30s for large graphs) and only needed for graph export.
+    /// Call explicitly before `output_json()`, `output_dot()`, etc.
+    pub fn compute_layouts(&mut self) {
+        // Temporarily move nodes out of the HashMap to get a mutable Vec.
+        // This is required by `layout::compute_layout` and avoids cloning all nodes,
+        // which is expensive for large graphs.
+        let mut nodes_vec: Vec<GraphNode> = std::mem::take(&mut self.nodes).into_values().collect();
+
+        layout::compute_layout(&mut nodes_vec, &self.edges, &self.reachable_set);
+
+        // Rebuild the HashMap from the modified nodes.
+        self.nodes = nodes_vec.into_iter().map(|n| (n.id.clone(), n)).collect();
     }
 
     // -----------------------------------------------------------------------
