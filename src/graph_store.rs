@@ -790,7 +790,7 @@ impl GraphStore {
             )
         } else {
             String::from(
-                "digraph G {\n    rankdir=TB;\n    node [shape=box, style=filled, fillcolor=\"#e9ecef\"];\n\n",
+                "digraph G {\n    rankdir=TB;\n    node [shape=box, style=filled];\n\n",
             )
         };
         let mut dot = header;
