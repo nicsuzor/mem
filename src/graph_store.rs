@@ -627,8 +627,35 @@ impl GraphStore {
 
     /// Build an `OutputGraph` suitable for JSON/GraphML/DOT export.
     pub fn to_output_graph(&self) -> OutputGraph {
-        let mut nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
+        self.to_output_graph_inner(false)
+    }
+
+    pub fn to_output_graph_filtered(&self) -> OutputGraph {
+        self.to_output_graph_inner(true)
+    }
+
+    fn to_output_graph_inner(&self, reachable_only: bool) -> OutputGraph {
+        let mut nodes: Vec<GraphNode> = if reachable_only {
+            self.nodes
+                .values()
+                .filter(|n| n.reachable)
+                .cloned()
+                .collect()
+        } else {
+            self.nodes.values().cloned().collect()
+        };
         nodes.sort_by(|a, b| a.label.cmp(&b.label));
+
+        let reachable_ids: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+        let edges: Vec<Edge> = if reachable_only {
+            self.edges
+                .iter()
+                .filter(|e| reachable_ids.contains(&e.source) && reachable_ids.contains(&e.target))
+                .cloned()
+                .collect()
+        } else {
+            self.edges.clone()
+        };
 
         let mut layout_metadata = HashMap::new();
         layout_metadata.insert(
@@ -654,7 +681,7 @@ impl GraphStore {
 
         OutputGraph {
             nodes,
-            edges: self.edges.clone(),
+            edges,
             ready: self.ready.clone(),
             blocked: self.blocked.clone(),
             by_project: self.by_project.clone(),
@@ -683,7 +710,12 @@ impl GraphStore {
     }
 
     pub fn output_json(&self) -> Result<String> {
-        let graph = self.to_output_graph();
+        let graph = self.to_output_graph_inner(false);
+        Ok(serde_json::to_string_pretty(&graph)?)
+    }
+
+    pub fn output_json_filtered(&self) -> Result<String> {
+        let graph = self.to_output_graph_inner(true);
         Ok(serde_json::to_string_pretty(&graph)?)
     }
 
@@ -769,7 +801,7 @@ impl GraphStore {
     }
 
     pub fn output_dot(&self) -> String {
-        self.output_dot_inner(None)
+        self.output_dot_inner(None, false)
     }
 
     /// Produce DOT with pinned positions from a named layout.
@@ -777,7 +809,11 @@ impl GraphStore {
     /// Use with `neato -n -Tsvg` to render with Graphviz spline routing
     /// while preserving our precomputed node positions.
     pub fn output_dot_with_layout(&self, layout_name: &str) -> String {
-        self.output_dot_inner(Some(layout_name))
+        self.output_dot_inner(Some(layout_name), false)
+    }
+
+    pub fn output_dot_with_layout_filtered(&self, layout_name: &str) -> String {
+        self.output_dot_inner(Some(layout_name), true)
     }
 
     /// List available layout names from the output graph.
@@ -786,8 +822,8 @@ impl GraphStore {
         graph.layout_metadata.keys().cloned().collect()
     }
 
-    fn output_dot_inner(&self, layout: Option<&str>) -> String {
-        let graph = self.to_output_graph();
+    fn output_dot_inner(&self, layout: Option<&str>, reachable_only: bool) -> String {
+        let graph = self.to_output_graph_inner(reachable_only);
 
         // Map our edge_style to Graphviz splines mode
         let splines = match layout {

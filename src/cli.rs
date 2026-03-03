@@ -1696,12 +1696,24 @@ fn main() -> Result<()> {
                     std::fs::write(&dot_path, gs.output_dot())?;
                     println!("  Saved {dot_path}");
 
-                    // Per-layout DOT files with embedded positions
+                    // Per-layout DOT and JSON files (both full and focus)
                     let layout_names = gs.layout_names();
                     for name in &layout_names {
-                        let path = format!("{base}-{name}.dot");
-                        std::fs::write(&path, gs.output_dot_with_layout(name))?;
-                        println!("  Saved {path}");
+                        // Full version
+                        let dot_path = format!("{base}-{name}.dot");
+                        std::fs::write(&dot_path, gs.output_dot_with_layout(name))?;
+                        
+                        let json_path = format!("{base}-{name}.json");
+                        std::fs::write(&json_path, gs.output_json()?)?;
+
+                        // Focus version (filtered to reachable)
+                        let focus_dot_path = format!("{base}-{name}-focus.dot");
+                        std::fs::write(&focus_dot_path, gs.output_dot_with_layout_filtered(name))?;
+
+                        let focus_json_path = format!("{base}-{name}-focus.json");
+                        std::fs::write(&focus_json_path, gs.output_json_filtered()?)?;
+                        
+                        println!("  Saved {name} (full+focus)");
                     }
 
                     println!(
