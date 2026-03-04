@@ -36,64 +36,13 @@ apple: $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd
 	@file $(MACOS_DIR)/aops
 
 # ── Release ────────────────────────────────────────────────────────
-# Two-step release (main branch requires PRs):
+# Automated via release-plz (see .github/workflows/release-plz.yml):
 #
-#   1. On PR branch:  make bump         # bump patch, commit, push branch
-#      (or:           make bump-minor)
-#   2. Merge PR on GitHub
-#   3. On main:       make tag          # pull, tag, push tag → CI builds
+#   1. Use conventional commits (feat:, fix:, perf:, etc.)
+#   2. Merge PR to main
+#   3. release-plz opens a Release PR (version bump + CHANGELOG)
+#   4. Merge the Release PR → CI builds + publishes automatically
 #
-
-.PHONY: bump
-bump: bump-patch bump-commit
-
-.PHONY: bump-commit
-bump-commit:
-	@$(CARGO) generate-lockfile
-	@NEW_VER=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
-		git add Cargo.toml Cargo.lock && \
-		git commit -m "release: v$$NEW_VER" && \
-		git push && \
-		echo "" && \
-		echo "Committed v$$NEW_VER — merge PR, then run: make tag"
-
-.PHONY: tag
-tag:
-	@git pull
-	@VER=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
-		git tag -a "v$$VER" -m "Release v$$VER" && \
-		git push origin "v$$VER" && \
-		echo "" && \
-		echo "Tagged v$$VER — CI will build and publish the release."
-
-# ── Version bumping ───────────────────────────────────────────────
-
-.PHONY: bump-patch
-bump-patch:
-	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	MAJOR=$$(echo $$OLD | cut -d. -f1); \
-	MINOR=$$(echo $$OLD | cut -d. -f2); \
-	PATCH=$$(echo $$OLD | cut -d. -f3); \
-	NEW="$$MAJOR.$$MINOR.$$((PATCH + 1))"; \
-	sed "s/^version = \"$$OLD\"/version = \"$$NEW\"/" Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml; \
-	echo "Version: $$OLD → $$NEW"
-
-.PHONY: bump-minor
-bump-minor:
-	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	MAJOR=$$(echo $$OLD | cut -d. -f1); \
-	MINOR=$$(echo $$OLD | cut -d. -f2); \
-	NEW="$$MAJOR.$$((MINOR + 1)).0"; \
-	sed "s/^version = \"$$OLD\"/version = \"$$NEW\"/" Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml; \
-	echo "Version: $$OLD → $$NEW"
-
-.PHONY: bump-major
-bump-major:
-	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	MAJOR=$$(echo $$OLD | cut -d. -f1); \
-	NEW="$$((MAJOR + 1)).0.0"; \
-	sed "s/^version = \"$$OLD\"/version = \"$$NEW\"/" Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml; \
-	echo "Version: $$OLD → $$NEW"
 
 .PHONY: version
 version:
@@ -172,16 +121,15 @@ help:
 	@echo "  build          Release build for current host"
 	@echo "  install        Install release binaries via cargo-binstall"
 	@echo "  apple          Cross-compile for Apple Silicon (aarch64-apple-darwin)"
-	@echo "  bump           Bump patch, commit, push branch (step 1: on PR branch)"
-	@echo "  bump-minor     Bump minor version in Cargo.toml (no commit)"
-	@echo "  bump-patch     Bump patch version in Cargo.toml (no commit)"
-	@echo "  tag            Pull main, tag, push tag → CI release (step 2: after merge)"
 	@echo "  version        Print current version"
 	@echo "  setup-cross    Install rustup target + cargo-zigbuild + zig instructions"
 	@echo "  check          Type-check without building"
 	@echo "  test           Run tests"
 	@echo "  clean          Remove target/"
 	@echo "  sizes          Show binary sizes"
+	@echo ""
+	@echo "Releases are automated via release-plz. Just merge PRs to main"
+	@echo "using conventional commits (feat:, fix:, perf:, etc.)."
 	@echo ""
 	@echo "Prerequisites for cross-compile:"
 	@echo "  1. make setup-cross"

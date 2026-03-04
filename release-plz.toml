@@ -1,0 +1,13 @@
+[workspace]
+# Don't publish to crates.io — we distribute via cargo-binstall from GitHub Releases
+publish = false
+
+# Tag format matching existing v0.2.x convention
+git_tag_name = "v{{ version }}"
+
+# Create GitHub Releases automatically
+git_release_enable = true
+git_release_draft = false
+
+# Generate CHANGELOG.md from conventional commits
+changelog_update = true
