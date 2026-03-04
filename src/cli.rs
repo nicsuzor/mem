@@ -436,7 +436,7 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let pkb_root = PathBuf::from(&cli.pkb_root);
+    let pkb_root = PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root));
     let db_path = PathBuf::from(&cli.db_path);
 
     if let Some(ref lc) = cli.layout_config {
