@@ -143,6 +143,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     // Determine subdirectory
     let subdir = fields
         .dir
+        .map(|d| expand_env_vars(&d))
         .unwrap_or_else(|| match fields.doc_type.as_str() {
             "task" | "bug" | "epic" | "feature" => "tasks".to_string(),
             "project" => "projects".to_string(),
@@ -575,6 +576,73 @@ fn generate_id(prefix: &str, title: &str) -> String {
     format!("{}-{}", prefix, &hash[..8])
 }
 
+/// Expand environment variables in a string.
+///
+/// Handles `${VAR}` and `$VAR` patterns. Unresolved variables are left as-is.
+/// Also expands `~` at the start to the user's home directory.
+pub fn expand_env_vars(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    // Handle ~ at start
+    if chars.peek() == Some(&'~') {
+        chars.next();
+        if chars.peek().is_none() || chars.peek() == Some(&'/') {
+            if let Some(home) = dirs::home_dir() {
+                result.push_str(&home.to_string_lossy());
+            } else {
+                result.push('~');
+            }
+        } else {
+            result.push('~');
+        }
+    }
+
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            if chars.peek() == Some(&'{') {
+                chars.next(); // consume '{'
+                let var_name: String = chars.by_ref().take_while(|&ch| ch != '}').collect();
+                if !var_name.is_empty() {
+                    match std::env::var(&var_name) {
+                        Ok(val) => result.push_str(&val),
+                        Err(_) => {
+                            result.push_str("${");
+                            result.push_str(&var_name);
+                            result.push('}');
+                        }
+                    }
+                }
+            } else {
+                let mut var_name = String::new();
+                while let Some(&ch) = chars.peek() {
+                    if ch.is_alphanumeric() || ch == '_' {
+                        var_name.push(ch);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if !var_name.is_empty() {
+                    match std::env::var(&var_name) {
+                        Ok(val) => result.push_str(&val),
+                        Err(_) => {
+                            result.push('$');
+                            result.push_str(&var_name);
+                        }
+                    }
+                } else {
+                    result.push('$');
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
 /// Convert a title to a URL-safe slug.
 fn slugify(title: &str) -> String {
     title
@@ -592,4 +660,80 @@ fn slugify(title: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_env_vars_braced_syntax() {
+        std::env::set_var("_TEST_EXPAND_A", "/test/path");
+        assert_eq!(expand_env_vars("${_TEST_EXPAND_A}/sub"), "/test/path/sub");
+        std::env::remove_var("_TEST_EXPAND_A");
+    }
+
+    #[test]
+    fn expand_env_vars_unbraced_syntax() {
+        std::env::set_var("_TEST_EXPAND_B", "/other");
+        assert_eq!(expand_env_vars("$_TEST_EXPAND_B/sub"), "/other/sub");
+        std::env::remove_var("_TEST_EXPAND_B");
+    }
+
+    #[test]
+    fn expand_env_vars_unresolved_kept() {
+        assert_eq!(
+            expand_env_vars("${_NONEXISTENT_VAR_XYZ}/path"),
+            "${_NONEXISTENT_VAR_XYZ}/path"
+        );
+        assert_eq!(
+            expand_env_vars("$_NONEXISTENT_VAR_XYZ/path"),
+            "$_NONEXISTENT_VAR_XYZ/path"
+        );
+    }
+
+    #[test]
+    fn expand_env_vars_no_vars() {
+        assert_eq!(expand_env_vars("plain/path"), "plain/path");
+        assert_eq!(expand_env_vars(""), "");
+    }
+
+    #[test]
+    fn expand_env_vars_tilde() {
+        let expanded = expand_env_vars("~/documents");
+        assert!(!expanded.starts_with('~'), "tilde should be expanded");
+        assert!(expanded.ends_with("/documents"));
+    }
+
+    #[test]
+    fn expand_env_vars_dollar_sign_alone() {
+        assert_eq!(expand_env_vars("price is $"), "price is $");
+    }
+
+    #[test]
+    fn expand_env_vars_multiple() {
+        std::env::set_var("_TEST_EXPAND_C", "aaa");
+        std::env::set_var("_TEST_EXPAND_D", "bbb");
+        assert_eq!(
+            expand_env_vars("${_TEST_EXPAND_C}/${_TEST_EXPAND_D}"),
+            "aaa/bbb"
+        );
+        std::env::remove_var("_TEST_EXPAND_C");
+        std::env::remove_var("_TEST_EXPAND_D");
+    }
+
+    #[test]
+    fn slugify_basic() {
+        assert_eq!(slugify("Hello World"), "hello-world");
+        assert_eq!(slugify("foo--bar"), "foo-bar");
+        assert_eq!(slugify("  spaces  "), "spaces");
+    }
+
+    #[test]
+    fn generate_id_deterministic() {
+        let id1 = generate_id("task", "test title");
+        let id2 = generate_id("task", "test title");
+        assert_eq!(id1, id2);
+        assert!(id1.starts_with("task-"));
+    }
 }
