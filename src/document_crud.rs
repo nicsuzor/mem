@@ -133,7 +133,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         None => {
             // Use project as prefix when available, otherwise type-based prefix
             let prefix = fields.project.as_deref().unwrap_or(type_prefix);
-            let id = generate_id(prefix, &fields.title);
+            let id = generate_id(prefix);
             let slug = slugify(&fields.title);
             let filename = format!("{}-{}.md", id, slug);
             (id, filename)
@@ -264,7 +264,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         None => {
             // Use project as prefix when available, otherwise "task"
             let prefix = fields.project.as_deref().unwrap_or("task");
-            let id = generate_id(prefix, &fields.title);
+            let id = generate_id(prefix);
             let slug = slugify(&fields.title);
             let filename = format!("{}-{}.md", id, slug);
             (id, filename)
@@ -362,7 +362,7 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
             (explicit_id, filename)
         }
         None => {
-            let id = generate_id("mem", &fields.title);
+            let id = generate_id("mem");
             let slug = slugify(&fields.title);
             let filename = format!("{}-{}.md", id, slug);
             (id, filename)
@@ -569,10 +569,9 @@ pub fn delete_document(path: &Path) -> Result<PathBuf> {
     Ok(abs_path)
 }
 
-/// Generate a document ID from prefix and title (e.g., "task-a1b2c3d4", "mem-d4e5f6a7").
-fn generate_id(prefix: &str, title: &str) -> String {
-    let hash = format!("{:x}", md5::compute(title.as_bytes()));
-    format!("{}-{}", prefix, &hash[..8])
+/// Generate a new random document ID: `{prefix}-{8 random hex chars}`.
+fn generate_id(prefix: &str) -> String {
+    crate::graph::create_id(prefix)
 }
 
 /// Convert a title to a URL-safe slug.

@@ -95,6 +95,9 @@ pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{
 [package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
 pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{ version }-x86_64-linux.tar.gz"
 
+[dev-dependencies]
+tempfile = "3"
+
 # Fast incremental debug builds (the default `cargo run` profile)
 [profile.dev]
 opt-level = 0
