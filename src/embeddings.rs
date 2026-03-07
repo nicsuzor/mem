@@ -316,13 +316,14 @@ const THREADS_PER_SESSION: usize = 2;
 /// Max parallel ONNX sessions for CPU mode, computed from available cores.
 /// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
 /// GPU mode uses exactly 1 session (hardcoded in the GPU path) — the GPU parallelizes internally.
+///
+/// BGE-M3 FP32 loads ~2.1GB per session, so we cap at 6 sessions (~12GB RAM max)
+/// to avoid OOM on machines with many cores.
 fn max_sessions_cpu() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    // Use all cores: e.g. 48 cores / 4 threads = 12 sessions
-    // Clamp to at least 2 and at most 24 (avoid excessive memory with large models)
-    (cores / THREADS_PER_SESSION).clamp(2, 24)
+    (cores / THREADS_PER_SESSION).clamp(2, 6)
 }
 
 struct SessionPool {
