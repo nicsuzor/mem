@@ -197,10 +197,26 @@ fn is_zero_i32(v: &i32) -> bool {
 // Parsing helpers
 // ===========================================================================
 
-/// Compute a stable ID from a file path (MD5 of path without extension).
-pub fn compute_id(path: &Path) -> String {
-    let key = path.with_extension("").to_string_lossy().to_string();
-    format!("{:x}", md5::compute(key.as_bytes()))
+/// Generate a new random ID with the given prefix: `{prefix}-{8 random hex chars}`.
+///
+/// Used when creating new documents. For reading existing documents without an
+/// explicit `id` field, use the filename stem as the fallback ID instead.
+pub fn create_id(prefix: &str) -> String {
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let random: u32 = rng.random();
+    format!("{}-{:08x}", prefix, random)
+}
+
+/// Derive a fallback ID from a file path (filename stem, no extension).
+///
+/// Used only when reading documents that lack an explicit `id` in frontmatter.
+/// This is stable across re-indexes (same file = same ID) but changes if the
+/// file is renamed. Prefer explicit `id` fields — the linter flags missing IDs.
+pub fn fallback_id(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
 }
 
 /// Normalize status values for backwards compatibility.
@@ -209,7 +225,7 @@ pub fn resolve_status_alias(status: &str) -> &str {
         "inbox" | "todo" | "open" => "active",
         "in-progress" => "in_progress",
         "in_review" | "in-review" => "review",
-        "complete" | "completed" | "closed" | "archived" => "done",
+        "complete" | "completed" | "closed" | "archived" | "resolved" => "done",
         "dead" => "cancelled",
         other => other,
     }
@@ -345,7 +361,7 @@ impl GraphNode {
         let task_id = fm
             .as_ref()
             .and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
-        let id = task_id.clone().unwrap_or_else(|| compute_id(&doc.path));
+        let id = task_id.clone().unwrap_or_else(|| fallback_id(&doc.path));
 
         let node_type = fm
             .as_ref()

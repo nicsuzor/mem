@@ -1319,6 +1319,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tar",
+ "tempfile",
  "terminal_size",
  "thiserror 2.0.18",
  "tokenizers",
