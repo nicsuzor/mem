@@ -75,7 +75,7 @@ mod tests {
             doc_type: None,
             status: None,
             body: body_content.clone(), // Body is small
-            content_hash: "test_hash".to_string(),
+            content_hash: Some("test_hash".to_string()),
             frontmatter: None,
         };
 

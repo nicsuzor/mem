@@ -127,26 +127,48 @@ pub fn index_pkb(
         docs_to_index.len()
     );
 
-    let chunk_refs: Vec<&str> = all_chunks.iter().map(|s| s.as_str()).collect();
-    let all_embeddings = match embedder.encode_batch(&chunk_refs) {
-        Ok(embs) => embs,
-        Err(e) => {
-            tracing::error!("Batch embedding failed: {e}");
-            let total = store.read().len();
-            return (0, removed, total);
-        }
-    };
+    // Process in batches of 20 docs with incremental saves for recoverability
+    let batch_size = 20;
+    let mut indexed = 0;
+    let total_docs = docs_to_index.len();
 
-    let indexed = docs_to_index.len();
-    {
-        let mut store = store.write();
-        for &(doc_idx, chunk_start, chunk_count) in &chunk_map {
-            let doc = &docs_to_index[doc_idx];
-            let embeddings = all_embeddings[chunk_start..chunk_start + chunk_count].to_vec();
-            let chunks = all_chunks[chunk_start..chunk_start + chunk_count].to_vec();
-            store.insert_precomputed(doc, chunks, embeddings);
-            tracing::debug!("Indexed: {}", doc.title);
+    for batch_start_idx in (0..chunk_map.len()).step_by(batch_size) {
+        let batch_end_idx = (batch_start_idx + batch_size).min(chunk_map.len());
+        let batch_entries = &chunk_map[batch_start_idx..batch_end_idx];
+
+        // Collect chunks for this batch
+        let first_chunk = batch_entries.first().map(|e| e.1).unwrap_or(0);
+        let last_entry = batch_entries.last().unwrap();
+        let last_chunk_end = last_entry.1 + last_entry.2;
+        let batch_chunks: Vec<&str> = all_chunks[first_chunk..last_chunk_end]
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+
+        match embedder.encode_batch(&batch_chunks) {
+            Ok(batch_embeddings) => {
+                let mut s = store.write();
+                for &(doc_idx, chunk_start, chunk_count) in batch_entries {
+                    let doc = &docs_to_index[doc_idx];
+                    let local_start = chunk_start - first_chunk;
+                    let embeddings =
+                        batch_embeddings[local_start..local_start + chunk_count].to_vec();
+                    let chunks = all_chunks[chunk_start..chunk_start + chunk_count].to_vec();
+                    s.insert_precomputed(doc, chunks, embeddings);
+                    indexed += 1;
+                }
+            }
+            Err(e) => {
+                tracing::error!("Batch embedding failed: {e}");
+            }
         }
+
+        // Incremental save after each batch
+        if let Err(e) = store.read().save(_db_path) {
+            tracing::error!("Incremental save failed: {e}");
+        }
+
+        tracing::info!("Progress: {indexed}/{total_docs} documents embedded");
     }
 
     let total = store.read().len();

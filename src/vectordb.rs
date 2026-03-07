@@ -142,13 +142,10 @@ impl VectorStore {
     /// Check if a document needs re-indexing based on content hash
     pub fn needs_update(&self, path: &str, content_hash: &str) -> bool {
         match self.documents.get(path) {
-            Some(entry) => {
-                // If entry has no hash (old format), needs update
-                match &entry.content_hash {
-                    Some(stored_hash) => stored_hash != content_hash,
-                    None => true,
-                }
-            }
+            Some(entry) => match &entry.content_hash {
+                Some(stored) if !stored.is_empty() => stored != content_hash,
+                _ => true, // None or empty → always needs update
+            },
             None => true,
         }
     }
@@ -651,8 +648,8 @@ mod tests {
     }
 
     #[test]
-    fn test_needs_update_migration_old_format() {
-        // Test migration: old format documents without content_hash should need update
+    fn test_needs_update_missing_hash() {
+        // Documents with None content_hash (old format) should always need update
         let mut store = VectorStore::new(3);
         let mut entry = make_entry(
             "tasks/old-task.md",
@@ -665,11 +662,30 @@ mod tests {
             None,
             vec![1.0, 0.0, 0.0],
         );
-        // Simulate old format by removing content_hash
         entry.content_hash = None;
         store.documents.insert("tasks/old-task.md".to_string(), entry);
 
-        // Document with no hash should always need update
+        assert!(store.needs_update("tasks/old-task.md", "any_hash"));
+    }
+
+    #[test]
+    fn test_needs_update_empty_hash() {
+        // Documents with empty content_hash should also need update
+        let mut store = VectorStore::new(3);
+        let mut entry = make_entry(
+            "tasks/old-task.md",
+            "Old Task",
+            Some("task"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            vec![1.0, 0.0, 0.0],
+        );
+        entry.content_hash = Some(String::new());
+        store.documents.insert("tasks/old-task.md".to_string(), entry);
+
         assert!(store.needs_update("tasks/old-task.md", "any_hash"));
     }
 

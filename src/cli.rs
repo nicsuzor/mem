@@ -2287,9 +2287,8 @@ fn index_pkb(
     let total_chunks: usize = parsed.iter().map(|(_, c)| c.len()).sum();
     eprintln!("  {} chunks across {} docs", total_chunks, parsed.len());
 
-    // Embed and store — batches of 200 docs with progressive saves.
-    // 200 docs × ~3 chunks = ~600 chunks / 32 per sub-batch = ~19 sub-batches,
-    // enough to saturate all ONNX sessions across available cores.
+    // Embed and store — batches of 20 docs with progressive saves.
+    // Smaller batches give more granular progress and better recoverability.
     let pb = ProgressBar::new(parsed.len() as u64);
     pb.set_style(
         ProgressStyle::with_template(
@@ -2303,7 +2302,7 @@ fn index_pkb(
 
     let mut indexed = 0;
 
-    for batch in parsed.chunks(200) {
+    for batch in parsed.chunks(20) {
         // Collect all chunks from this batch
         let mut all_chunks: Vec<&str> = Vec::new();
         let mut chunk_counts: Vec<usize> = Vec::new();

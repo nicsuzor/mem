@@ -900,7 +900,17 @@ fn init_ort_path(offline: bool) -> std::result::Result<PathBuf, String> {
 // TEXT CHUNKING
 // =============================================================================
 
+/// Chunking strategy for embedding text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChunkStrategy {
+    /// Fixed-size character windows with overlap (legacy).
+    FixedSize,
+    /// Markdown-aware semantic chunking at paragraph/list/code boundaries.
+    Semantic,
+}
+
 pub struct ChunkConfig {
+    pub strategy: ChunkStrategy,
     pub chunk_size: usize,
     pub overlap: usize,
     pub min_chunk_size: usize,
@@ -909,6 +919,19 @@ pub struct ChunkConfig {
 impl Default for ChunkConfig {
     fn default() -> Self {
         Self {
+            strategy: ChunkStrategy::Semantic,
+            chunk_size: 1500,
+            overlap: 0,
+            min_chunk_size: 100,
+        }
+    }
+}
+
+impl ChunkConfig {
+    /// Legacy fixed-size config for backward compatibility.
+    pub fn fixed_size() -> Self {
+        Self {
+            strategy: ChunkStrategy::FixedSize,
             chunk_size: 2000,
             overlap: 500,
             min_chunk_size: 300,
@@ -917,6 +940,228 @@ impl Default for ChunkConfig {
 }
 
 pub fn chunk_text(text: &str, config: &ChunkConfig) -> Vec<String> {
+    match config.strategy {
+        ChunkStrategy::Semantic => chunk_markdown(text, config),
+        ChunkStrategy::FixedSize => chunk_fixed_size(text, config),
+    }
+}
+
+/// Markdown-aware semantic chunker.
+///
+/// Splits text at natural markdown boundaries (blank lines), classifies blocks,
+/// tracks heading context, merges small blocks, and sub-splits oversized ones.
+pub fn chunk_markdown(text: &str, config: &ChunkConfig) -> Vec<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return vec![];
+    }
+    if text.len() <= config.chunk_size {
+        return vec![text.to_string()];
+    }
+
+    // Split into raw blocks on blank lines
+    let raw_blocks = split_on_blank_lines(text);
+
+    // Track heading context and build semantic chunks
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current_heading: Option<String> = None;
+    let mut pending: Option<String> = None; // accumulator for merging small blocks
+
+    for block in &raw_blocks {
+        let block = block.trim();
+        if block.is_empty() {
+            continue;
+        }
+
+        // Detect headings — update context but don't emit as standalone chunks
+        if block.starts_with('#') {
+            // Flush pending before switching heading context
+            if let Some(p) = pending.take() {
+                chunks.push(p);
+            }
+            // Extract heading text (strip # prefix)
+            let heading_text = block.trim_start_matches('#').trim();
+            current_heading = Some(heading_text.to_string());
+            continue;
+        }
+
+        // Build chunk with heading context prepended
+        let chunk_text = if let Some(ref heading) = current_heading {
+            format!("{heading}\n\n{block}")
+        } else {
+            block.to_string()
+        };
+
+        // If oversized, sub-split at sentence boundaries
+        if chunk_text.len() > config.chunk_size {
+            if let Some(p) = pending.take() {
+                chunks.push(p);
+            }
+            let sub_chunks = split_oversized(&chunk_text, config);
+            chunks.extend(sub_chunks);
+            continue;
+        }
+
+        // Try to merge with pending if both are small
+        if let Some(ref mut p) = pending {
+            if p.len() + chunk_text.len() + 2 <= config.chunk_size {
+                p.push_str("\n\n");
+                p.push_str(&chunk_text);
+                continue;
+            }
+            // Pending is big enough — flush it
+            chunks.push(p.clone());
+        }
+
+        // Start new pending
+        if chunk_text.len() < config.min_chunk_size {
+            pending = Some(chunk_text);
+        } else {
+            pending = None;
+            chunks.push(chunk_text);
+        }
+    }
+
+    // Flush any remaining pending
+    if let Some(p) = pending {
+        if !p.is_empty() {
+            // Merge into last chunk if both are small
+            if let Some(last) = chunks.last_mut() {
+                if last.len() + p.len() + 2 <= config.chunk_size {
+                    last.push_str("\n\n");
+                    last.push_str(&p);
+                } else {
+                    chunks.push(p);
+                }
+            } else {
+                chunks.push(p);
+            }
+        }
+    }
+
+    if chunks.is_empty() {
+        vec![text.to_string()]
+    } else {
+        chunks
+    }
+}
+
+/// Split text into blocks separated by blank lines, preserving code fences
+/// and list blocks as single units.
+fn split_on_blank_lines(text: &str) -> Vec<String> {
+    let mut blocks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_code_fence = false;
+
+    for line in text.lines() {
+        // Track code fences
+        if line.trim_start().starts_with("```") {
+            in_code_fence = !in_code_fence;
+            current.push_str(line);
+            current.push('\n');
+            continue;
+        }
+
+        if in_code_fence {
+            current.push_str(line);
+            current.push('\n');
+            continue;
+        }
+
+        if line.trim().is_empty() {
+            if !current.trim().is_empty() {
+                blocks.push(current.trim().to_string());
+            }
+            current.clear();
+        } else {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+
+    if !current.trim().is_empty() {
+        blocks.push(current.trim().to_string());
+    }
+
+    blocks
+}
+
+/// Sub-split an oversized block at sentence boundaries.
+fn split_oversized(text: &str, config: &ChunkConfig) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+
+    // Split into sentences first, then reassemble into chunks
+    let sentences = split_sentences(text);
+
+    for sentence in &sentences {
+        if current.len() + sentence.len() + 1 > config.chunk_size && !current.is_empty() {
+            chunks.push(current.trim().to_string());
+            current.clear();
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(sentence.trim());
+    }
+
+    if !current.trim().is_empty() {
+        if current.len() < config.min_chunk_size {
+            if let Some(last) = chunks.last_mut() {
+                last.push(' ');
+                last.push_str(current.trim());
+            } else {
+                chunks.push(current.trim().to_string());
+            }
+        } else {
+            chunks.push(current.trim().to_string());
+        }
+    }
+
+    chunks
+}
+
+/// Split text into sentences at `. `, `! `, `? ` boundaries.
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences = Vec::new();
+    let mut current = String::new();
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        current.push(chars[i]);
+        if (chars[i] == '.' || chars[i] == '!' || chars[i] == '?')
+            && i + 1 < chars.len()
+            && chars[i + 1].is_whitespace()
+            && current.len() > 10
+        {
+            sentences.push(current.trim().to_string());
+            current.clear();
+        }
+        i += 1;
+    }
+    if !current.trim().is_empty() {
+        sentences.push(current.trim().to_string());
+    }
+    sentences
+}
+
+/// Find a sentence break position within text, at least `min_pos` chars in.
+fn find_sentence_break_in(text: &str, min_pos: usize) -> Option<usize> {
+    let mut last_boundary = None;
+    for (i, c) in text.char_indices() {
+        if (c == '.' || c == '!' || c == '?') && i >= min_pos {
+            let after = i + c.len_utf8();
+            if after >= text.len() || text[after..].starts_with(char::is_whitespace) {
+                last_boundary = Some(after);
+            }
+        }
+    }
+    last_boundary
+}
+
+/// Legacy fixed-size chunker with overlap.
+fn chunk_fixed_size(text: &str, config: &ChunkConfig) -> Vec<String> {
     let text = text.trim();
     if text.len() <= config.chunk_size {
         return vec![text.to_string()];
@@ -933,8 +1178,8 @@ pub fn chunk_text(text: &str, config: &ChunkConfig) -> Vec<String> {
         }
 
         if end < text.len() {
-            if let Some(break_pos) = find_sentence_break(text, start, end) {
-                end = break_pos;
+            if let Some(break_pos) = find_sentence_break_in(&text[start..end], 100) {
+                end = start + break_pos;
             }
         }
 
@@ -954,11 +1199,10 @@ pub fn chunk_text(text: &str, config: &ChunkConfig) -> Vec<String> {
             break;
         }
 
-        // Ensure forward progress: new start must be past old start
         let prev_start = start;
         start = end.saturating_sub(config.overlap);
         if start <= prev_start {
-            start = end; // no overlap if it would go backward
+            start = end;
         }
         while start < text.len() && !text.is_char_boundary(start) {
             start += 1;
@@ -966,22 +1210,6 @@ pub fn chunk_text(text: &str, config: &ChunkConfig) -> Vec<String> {
     }
 
     chunks
-}
-
-fn find_sentence_break(text: &str, start: usize, ideal_end: usize) -> Option<usize> {
-    let chunk = &text[start..ideal_end];
-
-    let mut last_boundary = None;
-    for (i, c) in chunk.char_indices() {
-        if (c == '.' || c == '!' || c == '?') && i >= 100 {
-            let after = i + c.len_utf8();
-            if after >= chunk.len() || chunk[after..].starts_with(char::is_whitespace) {
-                last_boundary = Some(start + after);
-            }
-        }
-    }
-
-    last_boundary
 }
 
 #[cfg(test)]
@@ -1042,5 +1270,116 @@ mod tests {
             sim_relevant > 0.3,
             "Relevant doc similarity too low: {sim_relevant:.4}"
         );
+    }
+
+    // ── Semantic chunking tests ──
+
+    #[test]
+    fn chunk_markdown_mixed_content() {
+        // Build content large enough to exceed 1500 chars so chunking kicks in
+        let intro = (0..20).map(|i| format!("Introduction sentence {i} with enough words to make this paragraph substantial and meaningful.")).collect::<Vec<_>>().join(" ");
+        let methods = (0..15).map(|i| format!("- Step {i}: perform the analysis procedure carefully")).collect::<Vec<_>>().join("\n");
+        let results = (0..20).map(|i| format!("Result finding {i} shows statistical significance in the data analysis.")).collect::<Vec<_>>().join(" ");
+
+        let md = format!("# Introduction\n\n{intro}\n\n## Methods\n\n{methods}\n\n## Results\n\n```python\ndef analyze():\n    return 42\n```\n\n{results}");
+
+        let config = ChunkConfig::default();
+        let chunks = chunk_markdown(&md, &config);
+
+        // Should produce multiple chunks, each a semantic unit
+        assert!(chunks.len() >= 3, "Expected at least 3 chunks, got {} (total len={})", chunks.len(), md.len());
+
+        // First chunks should have heading context
+        assert!(chunks[0].contains("Introduction"), "First chunk should have heading context");
+
+        // Code block should be preserved as a unit
+        let code_chunk = chunks.iter().find(|c| c.contains("def analyze")).unwrap();
+        assert!(code_chunk.contains("return 42"), "Code block should stay together");
+    }
+
+    #[test]
+    fn chunk_markdown_merges_small_blocks() {
+        let md = "\
+# Section
+
+Short.
+
+Also short.
+
+Yet another short line.";
+
+        let config = ChunkConfig::default();
+        let chunks = chunk_markdown(md, &config);
+
+        // Short paragraphs under min_chunk_size should be merged
+        assert_eq!(chunks.len(), 1, "Small blocks should merge into one chunk");
+        assert!(chunks[0].contains("Short."));
+        assert!(chunks[0].contains("Also short."));
+    }
+
+    #[test]
+    fn chunk_markdown_splits_oversized() {
+        // Create a paragraph that exceeds max chunk size
+        let long_para = (0..200).map(|i| format!("Sentence number {i} with some extra words to pad it out.")).collect::<Vec<_>>().join(" ");
+        let md = format!("# Big Section\n\n{long_para}");
+
+        let config = ChunkConfig::default();
+        let chunks = chunk_markdown(&md, &config);
+
+        assert!(chunks.len() > 1, "Oversized block should be sub-split");
+        for chunk in &chunks {
+            // Each chunk should be within bounds (with some tolerance for heading context)
+            assert!(chunk.len() <= config.chunk_size + 200,
+                "Chunk too large: {} chars", chunk.len());
+        }
+    }
+
+    #[test]
+    fn chunk_markdown_preserves_code_fences() {
+        let md = "\
+# Code Example
+
+Some intro text here that gives context.
+
+```rust
+fn main() {
+    // This is inside a code fence
+    println!(\"hello\");
+
+    // Blank lines inside should NOT split the block
+    let x = 42;
+}
+```
+
+After the code.";
+
+        let config = ChunkConfig::default();
+        let chunks = chunk_markdown(md, &config);
+
+        let code_chunk = chunks.iter().find(|c| c.contains("println")).unwrap();
+        assert!(code_chunk.contains("let x = 42"), "Code fence should not be split on blank lines");
+    }
+
+    #[test]
+    fn chunk_markdown_short_text_single_chunk() {
+        let md = "Just a short document with no headings.";
+        let config = ChunkConfig::default();
+        let chunks = chunk_markdown(md, &config);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], md);
+    }
+
+    #[test]
+    fn chunk_strategy_default_is_semantic() {
+        let config = ChunkConfig::default();
+        assert_eq!(config.strategy, ChunkStrategy::Semantic);
+    }
+
+    #[test]
+    fn chunk_text_dispatches_to_fixed_size() {
+        let long_text = "a".repeat(3000);
+        let config = ChunkConfig::fixed_size();
+        let chunks = chunk_text(&long_text, &config);
+        assert!(chunks.len() > 1, "Fixed-size should split long text");
     }
 }

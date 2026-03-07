@@ -25,6 +25,7 @@ struct Cli {
     /// Path to the persistent vector database file
     #[arg(long, default_value_t = default_db_path())]
     db_path: String,
+
 }
 
 fn default_pkb_root() -> String {
