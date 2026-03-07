@@ -28,23 +28,27 @@ pub fn check_index_staleness(
 ) -> usize {
     let files = pkb::scan_directory(pkb_root);
     let store = store.read();
+    files
+        .iter()
+        .filter(|file_path| {
+            let (path_str, content_hash) = rel_path_and_hash(pkb_root, file_path);
+            store.needs_update(&path_str, &content_hash)
+        })
+        .count()
+}
 
-    let mut stale = 0;
-    for file_path in &files {
-        let rel_path = file_path.strip_prefix(pkb_root).unwrap_or(file_path);
-        let path_str = rel_path.to_string_lossy().to_string();
-
-        let content_hash = std::fs::read(file_path)
-            .ok()
-            .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
-            .unwrap_or_default();
-
-        if store.needs_update(&path_str, &content_hash) {
-            stale += 1;
-        }
-    }
-
-    stale
+/// Compute relative path string and blake3 content hash for a file.
+fn rel_path_and_hash(
+    pkb_root: &std::path::Path,
+    file_path: &std::path::Path,
+) -> (String, String) {
+    let rel_path = file_path.strip_prefix(pkb_root).unwrap_or(file_path);
+    let path_str = rel_path.to_string_lossy().to_string();
+    let content_hash = std::fs::read(file_path)
+        .ok()
+        .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+        .unwrap_or_default();
+    (path_str, content_hash)
 }
 
 /// Index PKB files into the vector store. Returns (indexed, removed, total).
@@ -86,14 +90,7 @@ pub fn index_pkb(
     let mut chunk_map: Vec<(usize, usize, usize)> = Vec::new();
 
     for file_path in &files {
-        let rel_path = file_path.strip_prefix(pkb_root).unwrap_or(file_path);
-        let path_str = rel_path.to_string_lossy().to_string();
-
-        // Compute content hash for change detection
-        let content_hash = std::fs::read(file_path)
-            .ok()
-            .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
-            .unwrap_or_default();
+        let (path_str, content_hash) = rel_path_and_hash(pkb_root, file_path);
 
         let needs_update = force_all || {
             let store = store.read();
