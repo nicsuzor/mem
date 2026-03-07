@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.23](https://github.com/nicsuzor/mem/compare/v0.2.22...v0.2.23) - 2026-03-07
+
+### Added
+
+- add search evaluation harness with golden queries
+
+### Fixed
+
+- remove incorrect BGE v1/v1.5 query prefix from BGE-M3 search
+- harden eval module with div-by-zero guard, idiomatic Rust, and unit tests
+
 ## [0.2.22](https://github.com/nicsuzor/mem/compare/v0.2.21...v0.2.22) - 2026-03-07
 
 ### Added
