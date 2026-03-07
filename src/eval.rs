@@ -3,6 +3,8 @@
 //! Provides golden query test cases and metrics for comparing search quality
 //! across different chunking strategies and configurations.
 
+use std::fmt::Write;
+
 use crate::{embeddings, vectordb};
 
 /// A golden query with expected results for evaluation.
@@ -90,7 +92,7 @@ pub fn evaluate(
                 if rel_path.contains(expected) {
                     hits_found += 1;
                     let rank_1 = rank + 1;
-                    if best_hit_rank.is_none() || rank_1 < best_hit_rank.unwrap() {
+                    if best_hit_rank.map_or(true, |prev| rank_1 < prev) {
                         best_hit_rank = Some(rank_1);
                     }
                     break;
@@ -134,23 +136,30 @@ pub fn evaluate(
         });
     }
 
-    let n = query_results.len() as f32;
-    let mrr = query_results.iter().map(|r| r.reciprocal_rank).sum::<f32>() / n;
-    let recall_at_k = query_results
-        .iter()
-        .map(|r| r.hits_found as f32 / r.hits_expected.max(1) as f32)
-        .sum::<f32>()
-        / n;
-    let precision = query_results
-        .iter()
-        .filter(|r| r.best_hit_rank.is_some())
-        .count() as f32
-        / n;
-    let avg_top_score = query_results.iter().map(|r| r.top_score).sum::<f32>() / n;
-    let avg_snippet_len = query_results.iter().map(|r| r.avg_snippet_len).sum::<f32>() / n;
+    let n = query_results.len();
+    let (mrr, recall_at_k, precision, avg_top_score, avg_snippet_len) = if n == 0 {
+        (0.0, 0.0, 0.0, 0.0, 0.0)
+    } else {
+        let nf = n as f32;
+        (
+            query_results.iter().map(|r| r.reciprocal_rank).sum::<f32>() / nf,
+            query_results
+                .iter()
+                .map(|r| r.hits_found as f32 / r.hits_expected.max(1) as f32)
+                .sum::<f32>()
+                / nf,
+            query_results
+                .iter()
+                .filter(|r| r.best_hit_rank.is_some())
+                .count() as f32
+                / nf,
+            query_results.iter().map(|r| r.top_score).sum::<f32>() / nf,
+            query_results.iter().map(|r| r.avg_snippet_len).sum::<f32>() / nf,
+        )
+    };
 
     EvalSummary {
-        total_queries: query_results.len(),
+        total_queries: n,
         mrr,
         recall_at_k,
         precision,
@@ -163,28 +172,29 @@ pub fn evaluate(
 /// Format evaluation summary as a human-readable report.
 pub fn format_report(summary: &EvalSummary, label: &str) -> String {
     let mut out = String::new();
-    out.push_str(&format!("=== Search Evaluation: {label} ===\n"));
-    out.push_str(&format!("Queries:        {}\n", summary.total_queries));
-    out.push_str(&format!("MRR:            {:.3}\n", summary.mrr));
-    out.push_str(&format!("Recall@k:       {:.3}\n", summary.recall_at_k));
-    out.push_str(&format!("Precision:      {:.3}\n", summary.precision));
-    out.push_str(&format!("Avg top score:  {:.4}\n", summary.avg_top_score));
-    out.push_str(&format!("Avg snippet:    {:.0} chars\n", summary.avg_snippet_len));
-    out.push_str("\nPer-query breakdown:\n");
+    let _ = writeln!(out, "=== Search Evaluation: {label} ===");
+    let _ = writeln!(out, "Queries:        {}", summary.total_queries);
+    let _ = writeln!(out, "MRR:            {:.3}", summary.mrr);
+    let _ = writeln!(out, "Recall@k:       {:.3}", summary.recall_at_k);
+    let _ = writeln!(out, "Precision:      {:.3}", summary.precision);
+    let _ = writeln!(out, "Avg top score:  {:.4}", summary.avg_top_score);
+    let _ = writeln!(out, "Avg snippet:    {:.0} chars", summary.avg_snippet_len);
+    let _ = writeln!(out, "\nPer-query breakdown:");
 
     for qr in &summary.query_results {
         let rank_str = qr
             .best_hit_rank
             .map(|r| format!("#{r}"))
             .unwrap_or_else(|| "MISS".to_string());
-        out.push_str(&format!(
-            "  [{rank_str}] \"{query}\" — score={score:.4} hits={hits}/{expected} fp={fp}\n",
+        let _ = writeln!(
+            out,
+            "  [{rank_str}] \"{query}\" — score={score:.4} hits={hits}/{expected} fp={fp}",
             query = qr.query,
             score = qr.top_score,
             hits = qr.hits_found,
             expected = qr.hits_expected,
             fp = qr.false_positives,
-        ));
+        );
     }
 
     out
@@ -193,51 +203,167 @@ pub fn format_report(summary: &EvalSummary, label: &str) -> String {
 /// Compare two evaluation runs and produce a diff report.
 pub fn format_comparison(baseline: &EvalSummary, experiment: &EvalSummary) -> String {
     let mut out = String::new();
-    out.push_str("=== A/B Comparison ===\n");
-    out.push_str(&format!(
-        "MRR:       {:.3} → {:.3} ({:+.3})\n",
-        baseline.mrr,
-        experiment.mrr,
-        experiment.mrr - baseline.mrr
-    ));
-    out.push_str(&format!(
-        "Recall@k:  {:.3} → {:.3} ({:+.3})\n",
-        baseline.recall_at_k,
-        experiment.recall_at_k,
-        experiment.recall_at_k - baseline.recall_at_k
-    ));
-    out.push_str(&format!(
-        "Precision: {:.3} → {:.3} ({:+.3})\n",
-        baseline.precision,
-        experiment.precision,
-        experiment.precision - baseline.precision
-    ));
-    out.push_str(&format!(
-        "Avg score: {:.4} → {:.4} ({:+.4})\n",
-        baseline.avg_top_score,
-        experiment.avg_top_score,
+    let _ = writeln!(out, "=== A/B Comparison ===");
+    let _ = writeln!(
+        out,
+        "MRR:       {:.3} → {:.3} ({:+.3})",
+        baseline.mrr, experiment.mrr, experiment.mrr - baseline.mrr
+    );
+    let _ = writeln!(
+        out,
+        "Recall@k:  {:.3} → {:.3} ({:+.3})",
+        baseline.recall_at_k, experiment.recall_at_k, experiment.recall_at_k - baseline.recall_at_k
+    );
+    let _ = writeln!(
+        out,
+        "Precision: {:.3} → {:.3} ({:+.3})",
+        baseline.precision, experiment.precision, experiment.precision - baseline.precision
+    );
+    let _ = writeln!(
+        out,
+        "Avg score: {:.4} → {:.4} ({:+.4})",
+        baseline.avg_top_score, experiment.avg_top_score,
         experiment.avg_top_score - baseline.avg_top_score
-    ));
+    );
 
-    // Per-query regressions/improvements
-    out.push_str("\nPer-query changes:\n");
+    fn rank_label(r: Option<usize>) -> String {
+        r.map(|r| format!("#{r}")).unwrap_or_else(|| "MISS".to_string())
+    }
+
+    let _ = writeln!(out, "\nPer-query changes:");
     for (b, e) in baseline.query_results.iter().zip(&experiment.query_results) {
-        let b_rank = b.best_hit_rank.unwrap_or(999);
-        let e_rank = e.best_hit_rank.unwrap_or(999);
-        if b_rank != e_rank {
-            let icon = if e_rank < b_rank { "↑" } else { "↓" };
-            out.push_str(&format!(
-                "  {icon} \"{}\" — rank {} → {}\n",
+        if b.best_hit_rank != e.best_hit_rank {
+            let improved = e.best_hit_rank.unwrap_or(usize::MAX) < b.best_hit_rank.unwrap_or(usize::MAX);
+            let icon = if improved { "↑" } else { "↓" };
+            let _ = writeln!(
+                out,
+                "  {icon} \"{}\" — rank {} → {}",
                 e.query,
-                b.best_hit_rank
-                    .map(|r| format!("#{r}"))
-                    .unwrap_or("MISS".into()),
-                e.best_hit_rank
-                    .map(|r| format!("#{r}"))
-                    .unwrap_or("MISS".into()),
-            ));
+                rank_label(b.best_hit_rank),
+                rank_label(e.best_hit_rank),
+            );
         }
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_query_result(rank: Option<usize>, hits_found: usize, hits_expected: usize) -> QueryResult {
+        QueryResult {
+            query: format!("test query (rank={rank:?})"),
+            best_hit_rank: rank,
+            hits_found,
+            hits_expected,
+            false_positives: 0,
+            top_score: 0.9,
+            avg_snippet_len: 100.0,
+            reciprocal_rank: rank.map(|r| 1.0 / r as f32).unwrap_or(0.0),
+        }
+    }
+
+    fn make_summary(results: Vec<QueryResult>) -> EvalSummary {
+        let n = results.len();
+        if n == 0 {
+            return EvalSummary {
+                total_queries: 0,
+                mrr: 0.0,
+                recall_at_k: 0.0,
+                precision: 0.0,
+                avg_top_score: 0.0,
+                avg_snippet_len: 0.0,
+                query_results: vec![],
+            };
+        }
+        let nf = n as f32;
+        EvalSummary {
+            total_queries: n,
+            mrr: results.iter().map(|r| r.reciprocal_rank).sum::<f32>() / nf,
+            recall_at_k: results
+                .iter()
+                .map(|r| r.hits_found as f32 / r.hits_expected.max(1) as f32)
+                .sum::<f32>()
+                / nf,
+            precision: results.iter().filter(|r| r.best_hit_rank.is_some()).count() as f32 / nf,
+            avg_top_score: 0.9,
+            avg_snippet_len: 100.0,
+            query_results: results,
+        }
+    }
+
+    #[test]
+    fn format_report_contains_metrics() {
+        let summary = make_summary(vec![
+            make_query_result(Some(1), 1, 1),
+            make_query_result(Some(3), 1, 1),
+        ]);
+        let report = format_report(&summary, "test");
+        assert!(report.contains("=== Search Evaluation: test ==="));
+        assert!(report.contains("MRR:"));
+        assert!(report.contains("Recall@k:"));
+        assert!(report.contains("Precision:"));
+        assert!(report.contains("[#1]"));
+        assert!(report.contains("[#3]"));
+    }
+
+    #[test]
+    fn format_report_shows_miss() {
+        let summary = make_summary(vec![make_query_result(None, 0, 1)]);
+        let report = format_report(&summary, "test");
+        assert!(report.contains("[MISS]"));
+    }
+
+    #[test]
+    fn format_comparison_shows_improvement_and_regression() {
+        let baseline = make_summary(vec![
+            make_query_result(Some(5), 1, 1),
+            make_query_result(Some(1), 1, 1),
+        ]);
+        let experiment = make_summary(vec![
+            make_query_result(Some(1), 1, 1),
+            make_query_result(Some(3), 1, 1),
+        ]);
+        let report = format_comparison(&baseline, &experiment);
+        assert!(report.contains("A/B Comparison"));
+        assert!(report.contains("↑"), "should show improvement");
+        assert!(report.contains("↓"), "should show regression");
+    }
+
+    #[test]
+    fn format_comparison_unchanged_ranks() {
+        let a = make_summary(vec![make_query_result(Some(1), 1, 1)]);
+        let b = make_summary(vec![make_query_result(Some(1), 1, 1)]);
+        let report = format_comparison(&a, &b);
+        assert!(!report.contains("↑"));
+        assert!(!report.contains("↓"));
+    }
+
+    #[test]
+    fn empty_summary_no_panic() {
+        let summary = make_summary(vec![]);
+        let report = format_report(&summary, "empty");
+        assert!(report.contains("Queries:        0"));
+    }
+
+    #[test]
+    fn perfect_mrr_when_all_rank_one() {
+        let summary = make_summary(vec![
+            make_query_result(Some(1), 1, 1),
+            make_query_result(Some(1), 1, 1),
+        ]);
+        assert!((summary.mrr - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn zero_mrr_when_all_miss() {
+        let summary = make_summary(vec![
+            make_query_result(None, 0, 1),
+            make_query_result(None, 0, 1),
+        ]);
+        assert!((summary.mrr - 0.0).abs() < f32::EPSILON);
+        assert!((summary.precision - 0.0).abs() < f32::EPSILON);
+    }
 }
