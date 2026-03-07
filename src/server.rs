@@ -72,16 +72,24 @@ async fn main() -> Result<()> {
         embedder.dimension(),
     )?));
 
-    // Index PKB files
-    eprintln!("   Indexing PKB files...");
-    let (indexed, removed, total) =
-        mem::index_pkb(&pkb_root, &db_path, &store, &embedder, cli.reindex);
-    eprintln!("   ✓ {total} documents indexed ({indexed} new/updated, {removed} removed)");
-
-    // Save after initial indexing
-    {
+    // Check index freshness (or force reindex if requested)
+    if cli.reindex {
+        eprintln!("   Reindexing PKB files (--reindex)...");
+        let (indexed, removed, total) =
+            mem::index_pkb(&pkb_root, &db_path, &store, &embedder, true);
+        eprintln!("   ✓ {total} documents indexed ({indexed} new/updated, {removed} removed)");
         let store_read = store.read();
         store_read.save(&db_path)?;
+    } else {
+        eprintln!("   Checking index freshness...");
+        let stale_count = mem::check_index_staleness(&pkb_root, &store);
+        if stale_count > 0 {
+            eprintln!("   ✗ Index is stale: {stale_count} document(s) need re-indexing.");
+            eprintln!("   Run `aops reindex` (or `pkb --reindex`) before starting the server.");
+            std::process::exit(1);
+        }
+        let total = store.read().len();
+        eprintln!("   ✓ Index is fresh ({total} documents)");
     }
 
     // Build graph store

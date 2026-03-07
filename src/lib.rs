@@ -18,6 +18,35 @@ use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Check whether the vector store index is stale.
+///
+/// Returns the number of documents that need re-indexing (new or modified).
+/// Returns 0 if the index is fully up to date.
+pub fn check_index_staleness(
+    pkb_root: &std::path::Path,
+    store: &Arc<RwLock<vectordb::VectorStore>>,
+) -> usize {
+    let files = pkb::scan_directory(pkb_root);
+    let store = store.read();
+
+    let mut stale = 0;
+    for file_path in &files {
+        let rel_path = file_path.strip_prefix(pkb_root).unwrap_or(file_path);
+        let path_str = rel_path.to_string_lossy().to_string();
+
+        let content_hash = std::fs::read(file_path)
+            .ok()
+            .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+            .unwrap_or_default();
+
+        if store.needs_update(&path_str, &content_hash) {
+            stale += 1;
+        }
+    }
+
+    stale
+}
+
 /// Index PKB files into the vector store. Returns (indexed, removed, total).
 ///
 /// Uses batch-parallel embedding: all chunks from all new/modified documents are
