@@ -2249,6 +2249,59 @@ fn main() -> Result<()> {
                     expected_misses: vec![],
                     max_rank: 3,
                 },
+                // Entity queries
+                eval::GoldenQuery {
+                    query: "Nicolas Suzor research interests",
+                    expected_hits: vec!["Nic Suzor"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                eval::GoldenQuery {
+                    query: "Oversight Board Suzor",
+                    expected_hits: vec!["osb-edcb04e8"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                // Technical exact-match queries
+                eval::GoldenQuery {
+                    query: "BGE-M3 embedding model ONNX quantization",
+                    expected_hits: vec!["task-cbc9ee38"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                eval::GoldenQuery {
+                    query: "ratatui crossterm event loop",
+                    expected_hits: vec!["aops-tui-epic-c9be7f5e"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                // Conceptual/semantic bridge queries
+                eval::GoldenQuery {
+                    query: "fail-fast philosophy",
+                    expected_hits: vec!["aops-f2c06247"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                eval::GoldenQuery {
+                    query: "how documents reference each other wikilinks",
+                    expected_hits: vec!["aops-tui-phase2-d29538f9"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                // Workflow queries
+                eval::GoldenQuery {
+                    query: "daily note template structure briefing",
+                    expected_hits: vec!["academicOps-d1d56ab6"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                // Archive noise detection
+                eval::GoldenQuery {
+                    query: "how do agents handle errors",
+                    expected_hits: vec!["aops-f2c06247"],
+                    expected_misses: vec!["MADUGALLA", "Dectection of Interpretive"],
+                    max_rank: 5,
+                },
             ];
 
             let summary = eval::evaluate(&store_read, embedder, &queries, &pkb_root, top_k);
