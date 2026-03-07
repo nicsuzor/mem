@@ -2087,7 +2087,8 @@ fn main() -> Result<()> {
         }
 
         Commands::RenameId { old, new } => {
-            let (files, refs) = lint::rename_id(&pkb_root, &old, &new);
+            let (files, refs) = lint::rename_id(&pkb_root, &old, &new)
+                .map_err(|e| anyhow::anyhow!(e))?;
             println!("Renamed '{}' → '{}': {} files modified, {} references updated", old, new, files, refs);
         }
 
@@ -2110,25 +2111,7 @@ fn main() -> Result<()> {
                     .iter()
                     .map(|f| lint::lint_file(f, fix, known_ids.as_ref()))
                     .collect();
-                let mut summary = lint::LintSummary {
-                    files_checked: results.len(),
-                    ..Default::default()
-                };
-                for r in &results {
-                    if !r.diagnostics.is_empty() {
-                        summary.files_with_issues += 1;
-                    }
-                    if r.fixed_content.is_some() {
-                        summary.files_fixed += 1;
-                    }
-                    for d in &r.diagnostics {
-                        match d.severity {
-                            lint::Severity::Error => summary.errors += 1,
-                            lint::Severity::Warning => summary.warnings += 1,
-                            lint::Severity::Style => summary.style += 1,
-                        }
-                    }
-                }
+                let summary = lint::LintSummary::from_results(&results);
                 (results, summary)
             };
 

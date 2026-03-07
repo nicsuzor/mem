@@ -78,6 +78,32 @@ pub struct LintSummary {
     pub style: usize,
 }
 
+impl LintSummary {
+    /// Build summary from a slice of file results.
+    pub fn from_results(results: &[FileResult]) -> Self {
+        let mut summary = LintSummary {
+            files_checked: results.len(),
+            ..Default::default()
+        };
+        for r in results {
+            if !r.diagnostics.is_empty() {
+                summary.files_with_issues += 1;
+            }
+            if r.fixed_content.is_some() {
+                summary.files_fixed += 1;
+            }
+            for d in &r.diagnostics {
+                match d.severity {
+                    Severity::Error => summary.errors += 1,
+                    Severity::Warning => summary.warnings += 1,
+                    Severity::Style => summary.style += 1,
+                }
+            }
+        }
+        summary
+    }
+}
+
 // ── Known frontmatter keys ───────────────────────────────────────────────
 
 const KNOWN_KEYS: &[&str] = &[
@@ -257,10 +283,10 @@ fn fallback_parse_frontmatter(content: &str) -> Option<serde_json::Value> {
             in_array = false;
         }
 
-        // key: value — split on FIRST `: ` only
-        if let Some(colon_pos) = line.find(": ") {
-            let key = line[..colon_pos].trim().to_string();
-            let val = line[colon_pos + 2..].trim().to_string();
+        // key: value — split on FIRST `:` (with optional space)
+        if let Some((key_part, val_part)) = line.split_once(':') {
+            let key = key_part.trim().to_string();
+            let val = val_part.trim().to_string();
 
             // Inline array: [a, b, c]
             if val.starts_with('[') && val.ends_with(']') {
@@ -284,9 +310,6 @@ fn fallback_parse_frontmatter(content: &str) -> Option<serde_json::Value> {
                 }
             }
             current_key = Some(key);
-        } else if let Some(stripped) = line.strip_suffix(':') {
-            // key with no value (start of block sequence)
-            current_key = Some(stripped.trim().to_string());
         }
     }
 
@@ -466,7 +489,7 @@ fn check_frontmatter(
 
     // id format check (should match prefix-hex pattern)
     if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
-        let id_re = regex::Regex::new(r"^[a-z]+-[a-f0-9]{4,}$").unwrap();
+        let id_re = regex::Regex::new(r"^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}$").unwrap();
         if !id_re.is_match(id) && !id.is_empty() {
             diags.push(Diagnostic {
                 severity: Severity::Style,
@@ -755,6 +778,33 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path) 
         }
     }
 
+    // Fix 8: Remove trailing whitespace in body (preserve double-space line breaks)
+    if content.starts_with("---\n") {
+        if let Some(end) = result[3..].find("\n---") {
+            let fm_end = end + 3 + 4; // past the \n---
+            let body = &result[fm_end..];
+            let fixed_body: String = body
+                .lines()
+                .map(|line| {
+                    let trimmed = line.trim_end();
+                    let trailing = &line[trimmed.len()..];
+                    if trailing == "  " {
+                        line // preserve intentional double-space line break
+                    } else {
+                        trimmed
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            result = format!("{}{}", &result[..fm_end], fixed_body);
+        }
+    }
+
+    // Fix 9: Collapse more than 2 consecutive blank lines in body
+    while result.contains("\n\n\n\n") {
+        result = result.replace("\n\n\n\n", "\n\n\n");
+    }
+
     result
 }
 
@@ -805,26 +855,7 @@ pub fn lint_directory(
         .map(|p| lint_file(p, fix, known_ids.as_ref()))
         .collect();
 
-    let mut summary = LintSummary {
-        files_checked: results.len(),
-        ..Default::default()
-    };
-
-    for r in &results {
-        if !r.diagnostics.is_empty() {
-            summary.files_with_issues += 1;
-        }
-        if r.fixed_content.is_some() {
-            summary.files_fixed += 1;
-        }
-        for d in &r.diagnostics {
-            match d.severity {
-                Severity::Error => summary.errors += 1,
-                Severity::Warning => summary.warnings += 1,
-                Severity::Style => summary.style += 1,
-            }
-        }
-    }
+    let summary = LintSummary::from_results(&results);
 
     (results, summary)
 }
@@ -834,7 +865,23 @@ pub fn lint_directory(
 /// wikilinks in all markdown files.
 ///
 /// Returns (files_modified, references_updated).
-pub fn rename_id(pkb_root: &Path, old_id: &str, new_id: &str) -> (usize, usize) {
+/// Validate that an ID matches the expected format (alphanumeric + hyphens, no path traversal).
+fn is_valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.contains('\n')
+        && !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains("..")
+        && id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
+pub fn rename_id(pkb_root: &Path, old_id: &str, new_id: &str) -> Result<(usize, usize), String> {
+    if !is_valid_id(old_id) {
+        return Err(format!("Invalid old_id '{}': must be alphanumeric/hyphens only", old_id));
+    }
+    if !is_valid_id(new_id) {
+        return Err(format!("Invalid new_id '{}': must be alphanumeric/hyphens only", new_id));
+    }
     let files = pkb::scan_directory(pkb_root);
     let reference_fields = ["parent", "depends_on", "soft_depends_on", "blocks", "soft_blocks", "supersedes"];
     let mut files_modified = 0;
@@ -918,7 +965,7 @@ pub fn rename_id(pkb_root: &Path, old_id: &str, new_id: &str) -> (usize, usize) 
         }
     }
 
-    (files_modified, refs_updated)
+    Ok((files_modified, refs_updated))
 }
 
 /// Write fixed files back to disk. Returns number of files written.
@@ -957,7 +1004,7 @@ mod tests {
     #[test]
     fn valid_task_no_warnings() {
         let diags = lint_str(
-            "---\nid: test-abc123\ntitle: Test task\ntype: task\nstatus: active\npriority: 2\ntags:\n- foo\n---\n\nBody content.\n",
+            "---\nid: test-abc12345\ntitle: Test task\ntype: task\nstatus: active\npriority: 2\ntags:\n- foo\n---\n\nBody content.\n",
         );
         // Should only have key-order style issues at most
         assert!(
@@ -1006,8 +1053,8 @@ mod tests {
 
     #[test]
     fn fixes_task_id_to_id() {
-        let fixed = fix_str("---\ntask_id: ns-abc123\ntitle: Test\ntype: task\nstatus: done\n---\n\nBody.\n");
-        assert!(fixed.contains("id: ns-abc123"), "task_id should become id, got: {}", fixed);
+        let fixed = fix_str("---\ntask_id: ns-abc12345\ntitle: Test\ntype: task\nstatus: done\n---\n\nBody.\n");
+        assert!(fixed.contains("id: ns-abc12345"), "task_id should become id, got: {}", fixed);
         assert!(!fixed.contains("task_id:"), "task_id key should be removed");
     }
 
@@ -1021,7 +1068,7 @@ mod tests {
     fn colon_in_value_fallback_parse() {
         // Values with colons (e.g. `title: Foo: Bar`) fail in serde_yaml
         // but should still be handled by our fallback parser
-        let diags = lint_str("---\nid: test-123\ntitle: Dashboard: UP NEXT\ntype: task\nstatus: active\n---\n\nBody.\n");
+        let diags = lint_str("---\nid: test-a1b2c3d4\ntitle: Dashboard: UP NEXT\ntype: task\nstatus: active\n---\n\nBody.\n");
         // Should NOT get fm-invalid or fm-parse-error — fallback handles it
         assert!(
             !diags.iter().any(|d| d.rule == "fm-invalid" || d.rule == "fm-parse-error"),

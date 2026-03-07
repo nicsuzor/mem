@@ -126,9 +126,10 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
-            // Explicit ID: use as-is for both frontmatter and filename
-            let filename = format!("{}.md", explicit_id);
-            (explicit_id, filename)
+            // Explicit ID: sanitize to prevent path traversal
+            let safe_id = sanitize_prefix(&explicit_id);
+            let filename = format!("{}.md", safe_id);
+            (safe_id, filename)
         }
         None => {
             // Use project as prefix when available, otherwise type-based prefix
@@ -257,9 +258,10 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
-            // Explicit ID: use as-is for both frontmatter and filename
-            let filename = format!("{}.md", explicit_id);
-            (explicit_id, filename)
+            // Explicit ID: sanitize to prevent path traversal
+            let safe_id = sanitize_prefix(&explicit_id);
+            let filename = format!("{}.md", safe_id);
+            (safe_id, filename)
         }
         None => {
             // Use project as prefix when available, otherwise "task"
@@ -571,7 +573,28 @@ pub fn delete_document(path: &Path) -> Result<PathBuf> {
 
 /// Generate a new random document ID: `{prefix}-{8 random hex chars}`.
 fn generate_id(prefix: &str) -> String {
-    crate::graph::create_id(prefix)
+    crate::graph::create_id(&sanitize_prefix(prefix))
+}
+
+/// Sanitize a prefix string to prevent path traversal and invalid IDs.
+/// Strips path separators, `..`, and non-alphanumeric/hyphen characters.
+fn sanitize_prefix(prefix: &str) -> String {
+    let sanitized: String = prefix
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .collect::<String>()
+        .to_lowercase();
+    // Collapse consecutive hyphens and trim leading/trailing hyphens
+    let collapsed: String = sanitized
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if collapsed.is_empty() {
+        "doc".to_string()
+    } else {
+        collapsed
+    }
 }
 
 /// Convert a title to a URL-safe slug.
