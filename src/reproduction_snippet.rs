@@ -51,7 +51,7 @@ mod tests {
             tags: vec![],
             project: None,
             id: None,
-            content_hash: Some("test_hash".to_string()),
+            content_hash: "test_hash".to_string(),
             chunk_embeddings,
             chunk_texts,
             body_chunks,

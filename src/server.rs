@@ -23,9 +23,6 @@ struct Cli {
     #[arg(long, default_value_t = default_db_path())]
     db_path: String,
 
-    /// Force full reindex on startup
-    #[arg(long, default_value_t = false)]
-    reindex: bool,
 }
 
 fn default_pkb_root() -> String {
@@ -71,18 +68,6 @@ async fn main() -> Result<()> {
         &db_path,
         embedder.dimension(),
     )?));
-
-    // Index PKB files
-    eprintln!("   Indexing PKB files...");
-    let (indexed, removed, total) =
-        mem::index_pkb(&pkb_root, &db_path, &store, &embedder, cli.reindex);
-    eprintln!("   ✓ {total} documents indexed ({indexed} new/updated, {removed} removed)");
-
-    // Save after initial indexing
-    {
-        let store_read = store.read();
-        store_read.save(&db_path)?;
-    }
 
     // Build graph store
     eprintln!("   Building knowledge graph...");

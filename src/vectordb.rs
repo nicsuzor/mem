@@ -35,7 +35,7 @@ pub struct DocumentEntry {
     pub confidence: Option<f64>,
     /// Content hash (blake3, hex-encoded) — used for staleness detection
     #[serde(default)]
-    pub content_hash: Option<String>,
+    pub content_hash: String,
     /// Embedding vectors for each chunk of the document
     pub chunk_embeddings: Vec<Vec<f32>>,
     /// The text chunks that were embedded (for returning snippets)
@@ -142,13 +142,7 @@ impl VectorStore {
     /// Check if a document needs re-indexing based on content hash
     pub fn needs_update(&self, path: &str, content_hash: &str) -> bool {
         match self.documents.get(path) {
-            Some(entry) => {
-                // If entry has no hash (old format), needs update
-                match &entry.content_hash {
-                    Some(stored_hash) => stored_hash != content_hash,
-                    None => true,
-                }
-            }
+            Some(entry) => entry.content_hash != content_hash,
             None => true,
         }
     }
@@ -185,7 +179,7 @@ impl VectorStore {
             project,
             id,
             confidence,
-            content_hash: Some(doc.content_hash.clone()),
+            content_hash: doc.content_hash.clone(),
             chunk_embeddings,
             chunk_texts: chunks,
             body_chunks,
@@ -215,7 +209,7 @@ impl VectorStore {
             project,
             id,
             confidence,
-            content_hash: Some(doc.content_hash.clone()),
+            content_hash: doc.content_hash.clone(),
             chunk_embeddings,
             chunk_texts: chunks,
             body_chunks,
@@ -418,7 +412,7 @@ mod tests {
             project: project.map(String::from),
             id: id.map(String::from),
             confidence,
-            content_hash: Some("test_hash_123".to_string()),
+            content_hash: "test_hash_123".to_string(),
             chunk_embeddings: vec![embedding],
             chunk_texts: vec![format!("body of {title}")],
             body_chunks: vec![format!("body of {title}")],
@@ -651,10 +645,10 @@ mod tests {
     }
 
     #[test]
-    fn test_needs_update_migration_old_format() {
-        // Test migration: old format documents without content_hash should need update
+    fn test_needs_update_empty_hash() {
+        // Documents with empty content_hash (e.g. deserialized from old format) should need update
         let mut store = VectorStore::new(3);
-        let mut entry = make_entry(
+        let entry = make_entry(
             "tasks/old-task.md",
             "Old Task",
             Some("task"),
@@ -665,11 +659,9 @@ mod tests {
             None,
             vec![1.0, 0.0, 0.0],
         );
-        // Simulate old format by removing content_hash
-        entry.content_hash = None;
         store.documents.insert("tasks/old-task.md".to_string(), entry);
 
-        // Document with no hash should always need update
+        // Document with empty hash should need update (won't match any real hash)
         assert!(store.needs_update("tasks/old-task.md", "any_hash"));
     }
 
