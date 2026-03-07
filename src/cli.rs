@@ -4,7 +4,7 @@
 
 mod tui;
 
-use mem::{document_crud, embeddings, graph, graph_display, graph_store, lint, metrics, pkb, task_index, vectordb};
+use mem::{document_crud, embeddings, eval, graph, graph_display, graph_store, lint, metrics, pkb, task_index, vectordb};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -428,6 +428,13 @@ enum Commands {
 
     /// Launch the interactive planning TUI
     Tui,
+
+    /// Run search evaluation with golden queries
+    Eval {
+        /// Number of results per query (default: 10)
+        #[arg(short = 'k', long, default_value_t = 10)]
+        top_k: usize,
+    },
 }
 
 fn default_pkb_root() -> String {
@@ -482,6 +489,7 @@ fn main() -> Result<()> {
             | Commands::Reindex { .. }
             | Commands::Status
             | Commands::Recall { .. }
+            | Commands::Eval { .. }
     );
 
     // Some commands need the store but not the embedder
@@ -2202,6 +2210,49 @@ fn main() -> Result<()> {
             if summary.errors > 0 {
                 std::process::exit(1);
             }
+        }
+
+        Commands::Eval { top_k } => {
+            let embedder = embedder.as_ref().unwrap();
+            let store = store.as_ref().unwrap();
+            let store_read = store.read();
+
+            // Golden queries — representative searches that LLMs commonly make
+            let queries = vec![
+                eval::GoldenQuery {
+                    query: "semantic chunking paragraph-level embedding",
+                    expected_hits: vec!["mem-d1435767"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                eval::GoldenQuery {
+                    query: "PKB search evaluation metrics quality",
+                    expected_hits: vec!["mem-958bc6b2"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                eval::GoldenQuery {
+                    query: "reindex startup performance timeout",
+                    expected_hits: vec!["aops-1caa3b2f"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                eval::GoldenQuery {
+                    query: "TUI keyboard shortcut keybinding",
+                    expected_hits: vec!["mem-a54c550f"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                eval::GoldenQuery {
+                    query: "claim task atomic locking concurrency",
+                    expected_hits: vec!["mem-7cbb684e"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+            ];
+
+            let summary = eval::evaluate(&store_read, embedder, &queries, &pkb_root, top_k);
+            print!("{}", eval::format_report(&summary, "current index"));
         }
 
         Commands::Tui => {

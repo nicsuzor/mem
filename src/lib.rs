@@ -3,6 +3,7 @@
 pub mod distance;
 pub mod document_crud;
 pub mod embeddings;
+pub mod eval;
 pub mod graph;
 pub mod layout;
 pub mod graph_display;
