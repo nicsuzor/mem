@@ -674,59 +674,59 @@ fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
 
 /// Apply fixes surgically — line-level edits only, preserving key order and formatting.
 fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path) -> String {
-    let fm = match fm_data {
-        Some(serde_json::Value::Object(fm)) => fm,
-        _ => return content.to_string(),
-    };
-
     let mut result = content.to_string();
 
-    // Fix 1: Migrate task_id → id (in-place line replacement)
-    if fm.contains_key("task_id") && !fm.contains_key("id") {
-        result = regex::Regex::new(r"(?m)^task_id:")
-            .unwrap()
-            .replace(&result, "id:")
-            .to_string();
-    }
+    // ── Frontmatter fixes (only when we have a valid frontmatter object) ──
+    if let Some(serde_json::Value::Object(fm)) = fm_data {
+        // Fix 1: Migrate task_id → id (in-place line replacement)
+        if fm.contains_key("task_id") && !fm.contains_key("id") {
+            result = regex::Regex::new(r"(?m)^task_id:")
+                .unwrap()
+                .replace(&result, "id:")
+                .to_string();
+        }
 
-    // Fix 2: Generate missing ID for actionable types
-    let has_id = fm.contains_key("id") || fm.contains_key("task_id");
-    if !has_id {
-        let is_actionable = fm
-            .get("type")
-            .and_then(|v| v.as_str())
-            .map(|t| graph_store::ACTIONABLE_TYPES.contains(&t))
-            .unwrap_or(false);
-        if is_actionable {
-            let id = generate_missing_id(path, fm);
-            // Insert `id: xxx` right after the opening `---\n`
-            if result.starts_with("---\n") {
-                result = format!("---\nid: {}\n{}", id, &result[4..]);
+        // Fix 2: Generate missing ID for actionable types
+        let has_id = fm.contains_key("id") || fm.contains_key("task_id");
+        if !has_id {
+            let is_actionable = fm
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(|t| graph_store::ACTIONABLE_TYPES.contains(&t))
+                .unwrap_or(false);
+            if is_actionable {
+                let id = generate_missing_id(path, fm);
+                // Insert `id: xxx` right after the opening `---\n`
+                if result.starts_with("---\n") {
+                    result = format!("---\nid: {}\n{}", id, &result[4..]);
+                }
             }
         }
-    }
 
-    // Fix 3: Fix status aliases in-place
-    if let Some(status) = fm.get("status").and_then(|v| v.as_str()) {
-        let canonical = graph::resolve_status_alias(status);
-        if canonical != status {
-            let pattern = format!("status: {}", status);
-            let replacement = format!("status: {}", canonical);
-            result = result.replacen(&pattern, &replacement, 1);
-        }
-    }
-
-    // Fix 4: Fix "p1"/"P2" style priorities → integer
-    if let Some(s) = fm.get("priority").and_then(|v| v.as_str()) {
-        let stripped = s.strip_prefix('p').or_else(|| s.strip_prefix('P'));
-        if let Some(num_str) = stripped {
-            if let Ok(n) = num_str.parse::<i64>() {
-                let pattern = format!("priority: {}", s);
-                let replacement = format!("priority: {}", n);
+        // Fix 3: Fix status aliases in-place
+        if let Some(status) = fm.get("status").and_then(|v| v.as_str()) {
+            let canonical = graph::resolve_status_alias(status);
+            if canonical != status {
+                let pattern = format!("status: {}", status);
+                let replacement = format!("status: {}", canonical);
                 result = result.replacen(&pattern, &replacement, 1);
             }
         }
+
+        // Fix 4: Fix "p1"/"P2" style priorities → integer
+        if let Some(s) = fm.get("priority").and_then(|v| v.as_str()) {
+            let stripped = s.strip_prefix('p').or_else(|| s.strip_prefix('P'));
+            if let Some(num_str) = stripped {
+                if let Ok(n) = num_str.parse::<i64>() {
+                    let pattern = format!("priority: {}", s);
+                    let replacement = format!("priority: {}", n);
+                    result = result.replacen(&pattern, &replacement, 1);
+                }
+            }
+        }
     }
+
+    // ── Frontmatter structural fixes (need --- delimiters but not parsed data) ──
 
     // Fix 5: Remove blank line after opening ---
     if result.starts_with("---\n\n") {
@@ -778,31 +778,41 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path) 
         }
     }
 
-    // Fix 8: Remove trailing whitespace in body (preserve double-space line breaks)
-    if content.starts_with("---\n") {
-        if let Some(end) = result[3..].find("\n---") {
-            let fm_end = end + 3 + 4; // past the \n---
-            let body = &result[fm_end..];
-            let fixed_body: String = body
-                .lines()
-                .map(|line| {
-                    let trimmed = line.trim_end();
-                    let trailing = &line[trimmed.len()..];
-                    if trailing == "  " {
-                        line // preserve intentional double-space line break
-                    } else {
-                        trimmed
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            result = format!("{}{}", &result[..fm_end], fixed_body);
-        }
+    // ── Body fixes (always apply, regardless of frontmatter) ──
+
+    // Fix 8: Remove trailing whitespace (preserve double-space line breaks)
+    // Determine where the body starts
+    let body_start = if result.starts_with("---\n") {
+        result[3..].find("\n---").map(|end| end + 3 + 4) // past the \n---
+    } else {
+        Some(0) // no frontmatter — entire file is body
+    };
+    if let Some(bs) = body_start {
+        let body = &result[bs..];
+        let fixed_body: String = body
+            .lines()
+            .map(|line| {
+                let trimmed = line.trim_end();
+                let trailing = &line[trimmed.len()..];
+                if trailing == "  " && !trimmed.is_empty() {
+                    line // preserve intentional double-space line break
+                } else {
+                    trimmed
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        result = format!("{}{}", &result[..bs], fixed_body);
     }
 
     // Fix 9: Collapse more than 2 consecutive blank lines in body
     while result.contains("\n\n\n\n") {
         result = result.replace("\n\n\n\n", "\n\n\n");
+    }
+
+    // Fix 10: Ensure file ends with a newline
+    if !result.ends_with('\n') {
+        result.push('\n');
     }
 
     result
