@@ -16,7 +16,9 @@ const MODEL_REPO: &str = "BAAI/bge-m3";
 
 /// Instruction prefix for query encoding (asymmetric retrieval).
 /// Documents are embedded without prefix.
-const QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
+/// BGE-M3 does NOT need an instruction prefix (unlike BGE v1/v1.5).
+/// See: https://huggingface.co/BAAI/bge-m3
+const QUERY_PREFIX: &str = "";
 
 /// Thread-safe guard for ORT_DYLIB_PATH initialization.
 static ORT_PATH_INIT: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
