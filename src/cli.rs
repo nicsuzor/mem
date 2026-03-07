@@ -4,7 +4,7 @@
 
 mod tui;
 
-use mem::{document_crud, embeddings, graph, graph_display, graph_store, metrics, pkb, task_index, vectordb};
+use mem::{document_crud, embeddings, graph, graph_display, graph_store, lint, metrics, pkb, task_index, vectordb};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -393,6 +393,37 @@ enum Commands {
         /// Show as tree
         #[arg(long)]
         tree: bool,
+    },
+
+    /// Rename an ID across the entire PKB (updates all references)
+    RenameId {
+        /// The old ID to find
+        old: String,
+
+        /// The new ID to replace it with
+        new: String,
+    },
+
+    /// Lint and format PKB files (frontmatter validation, markdown hygiene, reference checks)
+    Lint {
+        /// Specific files to lint (omit to lint entire PKB)
+        files: Vec<PathBuf>,
+
+        /// Auto-fix fixable issues in place
+        #[arg(long)]
+        fix: bool,
+
+        /// Check cross-references (parent, depends_on) — slower, requires full scan
+        #[arg(long)]
+        refs: bool,
+
+        /// Only show errors (suppress warnings and style)
+        #[arg(long)]
+        errors_only: bool,
+
+        /// Output format: text (default), json
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 
     /// Launch the interactive planning TUI
@@ -2053,6 +2084,124 @@ fn main() -> Result<()> {
                 println!("{indent}{blocked_id} [{status}] {label}");
             }
             println!();
+        }
+
+        Commands::RenameId { old, new } => {
+            let (files, refs) = lint::rename_id(&pkb_root, &old, &new)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!("Renamed '{}' → '{}': {} files modified, {} references updated", old, new, files, refs);
+        }
+
+        Commands::Lint {
+            files,
+            fix,
+            refs,
+            errors_only,
+            format,
+        } => {
+            let start = std::time::Instant::now();
+
+            let (results, summary) = if files.is_empty() {
+                // Lint entire PKB
+                lint::lint_directory(&pkb_root, fix, refs)
+            } else {
+                // Lint specific files
+                let known_ids = None; // single-file mode skips ref checks
+                let results: Vec<lint::FileResult> = files
+                    .iter()
+                    .map(|f| lint::lint_file(f, fix, known_ids.as_ref()))
+                    .collect();
+                let summary = lint::LintSummary::from_results(&results);
+                (results, summary)
+            };
+
+            // Write fixes
+            if fix {
+                let written = lint::write_fixes(&results);
+                if written > 0 {
+                    eprintln!("Fixed {} files", written);
+                }
+            }
+
+            let elapsed = start.elapsed();
+
+            if format == "json" {
+                // JSON output for tooling integration
+                let json_results: Vec<serde_json::Value> = results
+                    .iter()
+                    .filter(|r| !r.diagnostics.is_empty())
+                    .map(|r| {
+                        serde_json::json!({
+                            "file": r.path.display().to_string(),
+                            "diagnostics": r.diagnostics.iter()
+                                .filter(|d| !errors_only || d.severity == lint::Severity::Error)
+                                .map(|d| serde_json::json!({
+                                    "severity": d.severity.to_string(),
+                                    "rule": d.rule,
+                                    "message": d.message,
+                                    "line": d.line,
+                                    "fixable": d.fixable,
+                                }))
+                                .collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&json_results)?);
+            } else {
+                // Human-readable text output
+                for r in &results {
+                    let diags: Vec<&lint::Diagnostic> = r
+                        .diagnostics
+                        .iter()
+                        .filter(|d| !errors_only || d.severity == lint::Severity::Error)
+                        .collect();
+                    if diags.is_empty() {
+                        continue;
+                    }
+
+                    let rel_path = r
+                        .path
+                        .strip_prefix(&pkb_root)
+                        .unwrap_or(&r.path);
+                    println!("\x1b[1m{}\x1b[0m", rel_path.display());
+                    for d in &diags {
+                        let color = match d.severity {
+                            lint::Severity::Error => "\x1b[31m",   // red
+                            lint::Severity::Warning => "\x1b[33m", // yellow
+                            lint::Severity::Style => "\x1b[36m",   // cyan
+                        };
+                        let fix_mark = if d.fixable { " [fixable]" } else { "" };
+                        if let Some(line) = d.line {
+                            println!(
+                                "  {}{}:{}\x1b[0m {} {}{fix_mark}",
+                                color, d.severity, line, d.rule, d.message
+                            );
+                        } else {
+                            println!(
+                                "  {}{}\x1b[0m {} {}{fix_mark}",
+                                color, d.severity, d.rule, d.message
+                            );
+                        }
+                    }
+                    println!();
+                }
+
+                // Summary line
+                eprintln!(
+                    "Checked {} files in {:.1}s — {} errors, {} warnings, {} style ({} files with issues)",
+                    summary.files_checked,
+                    elapsed.as_secs_f64(),
+                    summary.errors,
+                    summary.warnings,
+                    summary.style,
+                    summary.files_with_issues,
+                );
+            }
+
+            // Exit with non-zero if there are errors
+            if summary.errors > 0 {
+                std::process::exit(1);
+            }
         }
 
         Commands::Tui => {

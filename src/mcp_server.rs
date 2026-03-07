@@ -159,29 +159,6 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    fn handle_reindex(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-        let (indexed, removed, total) = crate::index_pkb(
-            &self.pkb_root,
-            &self.db_path,
-            &self.store,
-            &self.embedder,
-            force,
-        );
-
-        // Save vector store
-        if let Err(e) = self.store.read().save(&self.db_path) {
-            tracing::error!("Failed to save vector store: {e}");
-        }
-
-        // Rebuild graph
-        self.rebuild_graph();
-
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Reindex complete: {indexed} indexed, {removed} removed, {total} total documents."
-        ))]))
-    }
-
     // =========================================================================
     // GRAPH/TASK TOOLS (7)
     // =========================================================================
@@ -2033,7 +2010,6 @@ impl ServerHandler for PkbSearchServer {
             "search" => self.handle_pkb_search(&args),
             "get_document" => self.handle_get_document(&args),
             "list_documents" => self.handle_list_documents(&args),
-            "reindex" => self.handle_reindex(&args),
             "task_search" => self.handle_task_search(&args),
             "get_network_metrics" => self.handle_get_network_metrics(&args),
             "create_task" => self.handle_create_task(&args),
@@ -2109,17 +2085,6 @@ impl ServerHandler for PkbSearchServer {
                         "project": { "type": "string", "description": "Filter by project" },
                         "limit": { "type": "integer", "description": "Max results (default: all)" },
                         "offset": { "type": "integer", "description": "Skip first N results (default: 0)" }
-                    }
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "reindex",
-                "Re-scan and re-index. Rebuilds vector store and knowledge graph. Incremental by default (mtime-based); set force=true to re-embed all files.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "force": { "type": "boolean", "description": "Force full re-index of all files (default: false, incremental mtime-based)" }
                     }
                 }))
                 .unwrap(),
@@ -2465,7 +2430,7 @@ impl ServerHandler for PkbSearchServer {
             },
             instructions: Some(
                 "PKB Search — semantic search + task graph over personal knowledge base. \
-                 25 tools: search, get_document, list_documents, reindex, \
+                 24 tools: search, get_document, list_documents, \
                  task_search, get_network_metrics, create_task, create_memory, \
                  create, append, delete, complete_task, list_tasks, \
                  get_task, update_task, retrieve_memory, search_by_tag, \
