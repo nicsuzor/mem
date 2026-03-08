@@ -1965,6 +1965,94 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    fn handle_bulk_reparent(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let pattern = args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: pattern (directory path or glob)"),
+                data: None,
+            })?;
+
+        let parent_id = args
+            .get("parent_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: parent_id"),
+                data: None,
+            })?;
+
+        // Verify the parent exists in the graph
+        {
+            let graph = self.graph.read();
+            if graph.resolve(parent_id).is_none() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Parent not found in graph: {}. Create it first or check the ID.",
+                        parent_id
+                    )),
+                    data: None,
+                });
+            }
+        }
+
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let results =
+            crate::document_crud::bulk_reparent(&self.pkb_root, pattern, parent_id, dry_run)
+                .map_err(|e| McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from(format!("bulk_reparent failed: {e}")),
+                    data: None,
+                })?;
+
+        let mut updated = 0usize;
+        let mut skipped_self = 0usize;
+        let mut skipped_already = 0usize;
+        let mut details = Vec::new();
+
+        for r in &results {
+            match r {
+                crate::document_crud::ReparentResult::Updated(p) => {
+                    updated += 1;
+                    details.push(format!("  updated: {}", p.display()));
+                }
+                crate::document_crud::ReparentResult::SkippedSelf(p) => {
+                    skipped_self += 1;
+                    details.push(format!("  skipped (is parent): {}", p.display()));
+                }
+                crate::document_crud::ReparentResult::SkippedAlreadyParented(p) => {
+                    skipped_already += 1;
+                    details.push(format!("  skipped (already parented): {}", p.display()));
+                }
+            }
+        }
+
+        // Rebuild graph after bulk update (unless dry run)
+        if !dry_run && updated > 0 {
+            self.rebuild_graph();
+        }
+
+        let mode = if dry_run { "DRY RUN" } else { "APPLIED" };
+        let summary = format!(
+            "bulk_reparent [{}]: {} updated, {} skipped (self), {} skipped (already parented), {} total files\n{}",
+            mode,
+            updated,
+            skipped_self,
+            skipped_already,
+            results.len(),
+            details.join("\n")
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(summary)]))
+    }
+
     fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         // Accept either `path` or `id` — resolve id via graph if path not given
         let path = if let Some(path_str) = args.get("path").and_then(|v| v.as_str()) {
@@ -2043,6 +2131,7 @@ impl ServerHandler for PkbSearchServer {
             "list_tasks" => self.handle_list_tasks(&args),
             "get_task" => self.handle_get_task(&args),
             "update_task" => self.handle_update_task(&args),
+            "bulk_reparent" => self.handle_bulk_reparent(&args),
             "retrieve_memory" => self.handle_retrieve_memory(&args),
             "search_by_tag" => self.handle_search_by_tag(&args),
             "list_memories" => self.handle_list_memories(&args),
@@ -2286,6 +2375,20 @@ impl ServerHandler for PkbSearchServer {
                 .unwrap(),
             ),
             Tool::new(
+                "bulk_reparent",
+                "Bulk reparent: set parent field on all .md files matching a directory or glob pattern. Dry run by default — set dry_run=false to apply. Skips files that ARE the parent (by permalink/id) and files already parented correctly.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Directory path or glob pattern (e.g. 'archive/', 'tasks/*.md'). Relative to PKB root." },
+                        "parent_id": { "type": "string", "description": "Parent ID to set on matching files" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: true). Set to false to apply.", "default": true }
+                    },
+                    "required": ["pattern", "parent_id"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
                 "retrieve_memory",
                 "Semantic search filtered to memory-type documents. Returns full content since memories are typically short.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -2454,10 +2557,10 @@ impl ServerHandler for PkbSearchServer {
             instructions: Some({
                 let mut instructions = String::from(
                     "PKB Search — semantic search + task graph over personal knowledge base. \
-                     24 tools: search, get_document, list_documents, \
+                     25 tools: search, get_document, list_documents, \
                      task_search, get_network_metrics, create_task, create_memory, \
                      create, append, delete, complete_task, list_tasks, \
-                     get_task, update_task, retrieve_memory, search_by_tag, \
+                     get_task, update_task, bulk_reparent, retrieve_memory, search_by_tag, \
                      list_memories, delete_memory, decompose_task, \
                      get_dependency_tree, get_task_children, \
                      pkb_context, pkb_trace, pkb_orphans.",

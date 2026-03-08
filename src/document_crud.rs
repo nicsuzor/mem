@@ -597,6 +597,134 @@ fn sanitize_prefix(prefix: &str) -> String {
     }
 }
 
+/// Result of a bulk reparent operation on a single file.
+#[derive(Debug)]
+pub enum ReparentResult {
+    /// File was updated (or would be updated in dry-run mode).
+    Updated(PathBuf),
+    /// File was skipped because its permalink matches the parent_id.
+    SkippedSelf(PathBuf),
+    /// File was skipped because it already has the correct parent.
+    SkippedAlreadyParented(PathBuf),
+}
+
+/// Bulk reparent: set `parent` field in YAML frontmatter for all .md files
+/// matching a directory path or glob pattern.
+///
+/// - `pattern`: directory path or glob pattern (e.g. "archive/" or "tasks/*.md")
+/// - `parent_id`: the parent ID to set
+/// - `dry_run`: if true, don't write changes, just report what would change
+///
+/// Returns a list of results for each file processed.
+pub fn bulk_reparent(
+    root: &Path,
+    pattern: &str,
+    parent_id: &str,
+    dry_run: bool,
+) -> Result<Vec<ReparentResult>> {
+    use gray_matter::engine::YAML;
+    use gray_matter::Matter;
+
+    // Resolve the pattern to a list of .md files
+    let resolved = resolve_path_or_glob(root, pattern);
+    if resolved.is_empty() {
+        anyhow::bail!("No .md files found matching pattern: {}", pattern);
+    }
+
+    let matter = Matter::<YAML>::new();
+    let mut results = Vec::new();
+
+    for path in &resolved {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read: {}", path.display()))?;
+
+        let parsed = matter.parse(&content);
+
+        let fm: serde_json::Map<String, serde_json::Value> = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+
+        // Skip if this file IS the parent (by permalink or id match)
+        let file_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let file_permalink = fm.get("permalink").and_then(|v| v.as_str()).unwrap_or("");
+        if file_id == parent_id || file_permalink == parent_id {
+            results.push(ReparentResult::SkippedSelf(path.clone()));
+            continue;
+        }
+
+        // Skip if already has the correct parent
+        if let Some(existing_parent) = fm.get("parent").and_then(|v| v.as_str()) {
+            if existing_parent == parent_id {
+                results.push(ReparentResult::SkippedAlreadyParented(path.clone()));
+                continue;
+            }
+        }
+
+        if !dry_run {
+            let mut updates = HashMap::new();
+            updates.insert(
+                "parent".to_string(),
+                serde_json::Value::String(parent_id.to_string()),
+            );
+            update_document(path, updates)
+                .with_context(|| format!("Failed to update: {}", path.display()))?;
+        }
+
+        results.push(ReparentResult::Updated(path.clone()));
+    }
+
+    Ok(results)
+}
+
+/// Resolve a pattern to a list of .md files.
+///
+/// If `pattern` is a directory (absolute or relative to root), returns all .md
+/// files in that directory (non-recursive). If it contains glob characters
+/// (`*`, `?`, `[`), uses glob matching relative to root. Otherwise treats it
+/// as a directory path.
+fn resolve_path_or_glob(root: &Path, pattern: &str) -> Vec<PathBuf> {
+    let path = if Path::new(pattern).is_absolute() {
+        PathBuf::from(pattern)
+    } else {
+        root.join(pattern)
+    };
+
+    // If it's a directory, list .md files in it (non-recursive)
+    if path.is_dir() {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&path)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        files.sort();
+        return files;
+    }
+
+    // Try glob pattern
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        let glob_pattern = if Path::new(pattern).is_absolute() {
+            pattern.to_string()
+        } else {
+            format!("{}/{}", root.display(), pattern)
+        };
+        if let Ok(paths) = glob::glob(&glob_pattern) {
+            let mut files: Vec<PathBuf> = paths
+                .filter_map(|p| p.ok())
+                .filter(|p| p.extension().is_some_and(|ext| ext == "md"))
+                .collect();
+            files.sort();
+            return files;
+        }
+    }
+
+    Vec::new()
+}
+
 /// Convert a title to a URL-safe slug.
 fn slugify(title: &str) -> String {
     title
@@ -614,4 +742,103 @@ fn slugify(title: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn write_md(dir: &Path, name: &str, frontmatter: &str) {
+        let path = dir.join(name);
+        fs::write(&path, format!("---\n{}---\n\n# Body\n", frontmatter)).unwrap();
+    }
+
+    #[test]
+    fn test_bulk_reparent_dry_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let subdir = root.join("archive");
+        fs::create_dir_all(&subdir).unwrap();
+
+        write_md(&subdir, "a.md", "id: a-123\ntitle: A\n");
+        write_md(&subdir, "b.md", "id: b-456\ntitle: B\n");
+
+        let results = bulk_reparent(root, "archive", "parent-001", true).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0], ReparentResult::Updated(_)));
+        assert!(matches!(results[1], ReparentResult::Updated(_)));
+
+        // Dry run: files should NOT be modified
+        let content = fs::read_to_string(subdir.join("a.md")).unwrap();
+        assert!(!content.contains("parent: parent-001"));
+    }
+
+    #[test]
+    fn test_bulk_reparent_apply() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let subdir = root.join("tasks");
+        fs::create_dir_all(&subdir).unwrap();
+
+        write_md(&subdir, "t1.md", "id: t1\ntitle: Task1\n");
+        write_md(&subdir, "t2.md", "id: t2\ntitle: Task2\nparent: old-parent\n");
+
+        let results = bulk_reparent(root, "tasks", "new-parent", false).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0], ReparentResult::Updated(_)));
+        assert!(matches!(results[1], ReparentResult::Updated(_)));
+
+        // Applied: files should have parent field
+        let content = fs::read_to_string(subdir.join("t1.md")).unwrap();
+        assert!(content.contains("parent: new-parent"));
+        let content2 = fs::read_to_string(subdir.join("t2.md")).unwrap();
+        assert!(content2.contains("parent: new-parent"));
+        assert!(!content2.contains("old-parent"));
+    }
+
+    #[test]
+    fn test_bulk_reparent_skips_self() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let subdir = root.join("docs");
+        fs::create_dir_all(&subdir).unwrap();
+
+        write_md(&subdir, "parent.md", "id: epic-001\npermalink: epic-001\ntitle: Epic\n");
+        write_md(&subdir, "child.md", "id: child-001\ntitle: Child\n");
+
+        let results = bulk_reparent(root, "docs", "epic-001", true).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let self_skip = results.iter().any(|r| matches!(r, ReparentResult::SkippedSelf(_)));
+        let updated = results.iter().any(|r| matches!(r, ReparentResult::Updated(_)));
+        assert!(self_skip, "Should skip the parent file itself");
+        assert!(updated, "Should update the child file");
+    }
+
+    #[test]
+    fn test_bulk_reparent_skips_already_parented() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let subdir = root.join("notes");
+        fs::create_dir_all(&subdir).unwrap();
+
+        write_md(&subdir, "already.md", "id: n1\ntitle: Note\nparent: target-parent\n");
+        write_md(&subdir, "new.md", "id: n2\ntitle: New Note\n");
+
+        let results = bulk_reparent(root, "notes", "target-parent", true).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let already = results.iter().any(|r| matches!(r, ReparentResult::SkippedAlreadyParented(_)));
+        let updated = results.iter().any(|r| matches!(r, ReparentResult::Updated(_)));
+        assert!(already, "Should skip already-parented file");
+        assert!(updated, "Should update the unparented file");
+    }
+
+    #[test]
+    fn test_bulk_reparent_no_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = bulk_reparent(tmp.path(), "nonexistent", "parent-id", true);
+        assert!(result.is_err());
+    }
 }
