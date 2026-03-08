@@ -26,6 +26,7 @@ pub struct PkbSearchServer {
     pkb_root: PathBuf,
     db_path: PathBuf,
     graph: Arc<RwLock<GraphStore>>,
+    stale_count: usize,
 }
 
 impl PkbSearchServer {
@@ -42,7 +43,13 @@ impl PkbSearchServer {
             pkb_root,
             db_path,
             graph,
+            stale_count: 0,
         }
+    }
+
+    pub fn with_stale_count(mut self, count: usize) -> Self {
+        self.stale_count = count;
+        self
     }
 
     fn resolve_path(&self, path_str: &str) -> PathBuf {
@@ -2428,17 +2435,27 @@ impl ServerHandler for PkbSearchServer {
                 name: "pkb".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
             },
-            instructions: Some(
-                "PKB Search — semantic search + task graph over personal knowledge base. \
-                 24 tools: search, get_document, list_documents, \
-                 task_search, get_network_metrics, create_task, create_memory, \
-                 create, append, delete, complete_task, list_tasks, \
-                 get_task, update_task, retrieve_memory, search_by_tag, \
-                 list_memories, delete_memory, decompose_task, \
-                 get_dependency_tree, get_task_children, \
-                 pkb_context, pkb_trace, pkb_orphans."
-                    .to_string(),
-            ),
+            instructions: Some({
+                let mut instructions = String::from(
+                    "PKB Search — semantic search + task graph over personal knowledge base. \
+                     24 tools: search, get_document, list_documents, \
+                     task_search, get_network_metrics, create_task, create_memory, \
+                     create, append, delete, complete_task, list_tasks, \
+                     get_task, update_task, retrieve_memory, search_by_tag, \
+                     list_memories, delete_memory, decompose_task, \
+                     get_dependency_tree, get_task_children, \
+                     pkb_context, pkb_trace, pkb_orphans.",
+                );
+                if self.stale_count > 0 {
+                    instructions.push_str(&format!(
+                        " WARNING: Index is stale — {} document(s) need re-indexing. \
+                         Search results may be incomplete or outdated. \
+                         Run `aops reindex` to update.",
+                        self.stale_count
+                    ));
+                }
+                instructions
+            }),
         }
     }
 }
