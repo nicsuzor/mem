@@ -547,6 +547,10 @@ impl PkbSearchServer {
 
         let boost_id = args.get("boost_id").and_then(|v| v.as_str());
         let project = args.get("project").and_then(|v| v.as_str());
+        let detail = args
+            .get("detail")
+            .and_then(|v| v.as_str())
+            .unwrap_or("chunk");
 
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -642,8 +646,19 @@ impl PkbSearchServer {
             if !r.tags.is_empty() {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
             }
-            if !r.snippet.is_empty() {
-                output.push_str(&format!("\n> {}\n", r.snippet.replace('\n', "\n> ")));
+            let extract: std::borrow::Cow<'_, str> = match detail {
+                "snippet" => std::borrow::Cow::Borrowed(&r.snippet),
+                "full" => {
+                    // Read full document from disk
+                    match std::fs::read_to_string(&r.path) {
+                        Ok(content) => std::borrow::Cow::Owned(content),
+                        Err(_) => std::borrow::Cow::Borrowed(&r.chunk_text),
+                    }
+                }
+                _ => std::borrow::Cow::Borrowed(&r.chunk_text), // "chunk" (default)
+            };
+            if !extract.is_empty() {
+                output.push_str(&format!("\n> {}\n", extract.replace('\n', "\n> ")));
             }
             output.push('\n');
         }
@@ -2062,7 +2077,8 @@ impl ServerHandler for PkbSearchServer {
                         "query": { "type": "string", "description": "Natural language search query" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
                         "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
-                        "project": { "type": "string", "description": "Filter by project" }
+                        "project": { "type": "string", "description": "Filter by project" },
+                        "detail": { "type": "string", "description": "Result detail level: 'snippet' (300 chars), 'chunk' (full matching chunk, default), 'full' (entire document)", "enum": ["snippet", "chunk", "full"], "default": "chunk" }
                     },
                     "required": ["query"]
                 }))
