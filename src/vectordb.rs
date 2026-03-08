@@ -51,7 +51,10 @@ pub struct SearchResult {
     pub path: PathBuf,
     pub title: String,
     pub score: f32,
+    /// Short extract (300 chars) for quick scanning
     pub snippet: String,
+    /// Full text of the best-matching chunk
+    pub chunk_text: String,
     pub id: Option<String>,
     pub doc_type: Option<String>,
     pub status: Option<String>,
@@ -265,24 +268,28 @@ impl VectorStore {
             }
 
             if best_score > f32::NEG_INFINITY {
-                // Use chunk_texts for snippet to ensure alignment with embedding index
-                let snippet_source = &entry.chunk_texts;
-                let best_snippet = if best_chunk_idx < snippet_source.len() {
-                    let text = &snippet_source[best_chunk_idx];
-                    let mut trunc = 300.min(text.len());
-                    while trunc > 0 && !text.is_char_boundary(trunc) {
-                        trunc -= 1;
-                    }
-                    text[..trunc].to_string()
-                } else if !snippet_source.is_empty() {
-                    let text = &snippet_source[0];
-                    let mut trunc = 300.min(text.len());
-                    while trunc > 0 && !text.is_char_boundary(trunc) {
-                        trunc -= 1;
-                    }
-                    text[..trunc].to_string()
+                // Prefer body_chunks (no frontmatter metadata) for display;
+                // fall back to chunk_texts if body_chunks unavailable
+                let display_source = if !entry.body_chunks.is_empty() {
+                    &entry.body_chunks
+                } else {
+                    &entry.chunk_texts
+                };
+
+                let full_chunk = if best_chunk_idx < display_source.len() {
+                    display_source[best_chunk_idx].clone()
+                } else if !display_source.is_empty() {
+                    display_source[0].clone()
                 } else {
                     String::new()
+                };
+
+                let snippet = {
+                    let mut trunc = 300.min(full_chunk.len());
+                    while trunc > 0 && !full_chunk.is_char_boundary(trunc) {
+                        trunc -= 1;
+                    }
+                    full_chunk[..trunc].to_string()
                 };
 
                 let abs_path = if entry.path.is_absolute() {
@@ -294,7 +301,8 @@ impl VectorStore {
                     path: abs_path,
                     title: entry.title.clone(),
                     score: best_score,
-                    snippet: best_snippet,
+                    snippet,
+                    chunk_text: full_chunk,
                     id: entry.id.clone(),
                     doc_type: entry.doc_type.clone(),
                     status: entry.status.clone(),
@@ -363,6 +371,7 @@ impl VectorStore {
                 title: entry.title.clone(),
                 score: 0.0,
                 snippet: String::new(),
+                chunk_text: String::new(),
                 id: entry.id.clone(),
                 doc_type: entry.doc_type.clone(),
                 status: entry.status.clone(),
