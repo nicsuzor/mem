@@ -126,8 +126,10 @@ const KNOWN_KEYS: &[&str] = &[
     "source",
     "confidence",
     "supersedes",
+    "superseded_by",
     "permalink",
     "aliases",
+    "alias",
     "order",
     "depth",
     "leaf",
@@ -141,9 +143,79 @@ const KNOWN_KEYS: &[&str] = &[
     "classification",
     "metadata",
     "progress",
+    // Mobile capture / triage workflow keys
+    "processed",
+    "processed_date",
+    "triage_action",
+    "triage_ref",
+    // Content metadata keys
+    "topic",
+    "generated_by",
+    "extracted",
+    "body",
+    "epic",
+    "summary",
+    "notes",
+    "description",
+    // Email-sourced task keys
+    "email_date",
+    "email_from",
+    "email_subject",
+    // Workflow / decomposition keys
+    "step",
+    "total_steps",
+    "end_goal",
+    "updated",
+    "duration_minutes",
+    "scheduled",
+    "deadline",
+    "version",
+    // Academic / publication keys
+    "author",
+    "authors",
+    "reviewer",
+    "venue",
+    "manuscript",
+    "publication",
+    "journal",
 ];
 
+// ── Type alias resolution ────────────────────────────────────────────────
+
+/// Map unknown type values to the nearest canonical type.
+fn resolve_type_alias(t: &str) -> &'static str {
+    match t {
+        "article" | "reading-guide" | "talk" => "reference",
+        "observation" | "insight" | "exploration" => "note",
+        "session-log" => "session-log", // already valid now
+        "review" | "review-notes" | "peer-review" => "review",
+        "daily" => "daily",
+        "case" => "case",
+        "index" => "index",
+        "spec" | "design" => "spec",
+        "audit" | "audit-report" => "audit-report",
+        "reference" => "reference",
+        "instructions" | "role" | "agent" | "bundle" => "document",
+        _ => "document",
+    }
+}
+
 // ── Core lint + fix engine ───────────────────────────────────────────────
+
+/// Extract a prefix from a non-conforming ID for generating a new one.
+/// e.g. "osb" → "osb", "explorations-np-003" → "explorations", "ip-australia" → "ip"
+fn extract_id_prefix(id: &str) -> String {
+    // Take the first segment (before the first hyphen), unless it's very short
+    let parts: Vec<&str> = id.split('-').collect();
+    if parts.len() >= 2 && parts[0].len() >= 2 {
+        // Use first segment, or first two if both are alpha
+        if parts[1].chars().all(|c| c.is_alphabetic()) && parts.len() >= 3 {
+            return format!("{}-{}", parts[0], parts[1]);
+        }
+        return parts[0].to_string();
+    }
+    id.to_string()
+}
 
 /// Extract an ID prefix from a filename stem if it matches `prefix-hexhash-slug` pattern.
 /// Returns the `prefix-hexhash` portion, or None.
@@ -383,16 +455,16 @@ fn check_frontmatter(
     // Required: type
     if let Some(t) = fm.get("type").and_then(|v| v.as_str()) {
         if !VALID_NODE_TYPES.contains(&t) {
+            let mapped = resolve_type_alias(t);
             diags.push(Diagnostic {
                 severity: Severity::Style,
                 rule: "fm-unknown-type",
                 message: format!(
-                    "Unknown type '{}' (expected one of: {})",
-                    t,
-                    VALID_NODE_TYPES.join(", ")
+                    "Unknown type '{}' → will fix to '{}'",
+                    t, mapped
                 ),
                 line: None,
-                fixable: false,
+                fixable: true,
             });
         }
     } else if fm.get("type").is_some() {
@@ -422,12 +494,11 @@ fn check_frontmatter(
                 severity: Severity::Warning,
                 rule: "fm-unknown-status",
                 message: format!(
-                    "Unknown status '{}' (expected one of: {})",
+                    "Unknown status '{}' → will fix to 'active'",
                     raw_status,
-                    VALID_STATUSES.join(", ")
                 ),
                 line: None,
-                fixable: false,
+                fixable: true,
             });
         }
     } else if fm.get("status").is_some() {
@@ -499,7 +570,7 @@ fn check_frontmatter(
                     id
                 ),
                 line: None,
-                fixable: false,
+                fixable: true,
             });
         }
     }
@@ -724,6 +795,32 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path) 
                 }
             }
         }
+
+        // Fix 5a: Fix unknown type → canonical type
+        if let Some(t) = fm.get("type").and_then(|v| v.as_str()) {
+            if !VALID_NODE_TYPES.contains(&t) {
+                let mapped = resolve_type_alias(t);
+                if mapped != t {
+                    let pattern = format!("type: {}", t);
+                    let replacement = format!("type: {}", mapped);
+                    result = result.replacen(&pattern, &replacement, 1);
+                }
+            }
+        }
+
+        // Fix 5b: Fix unknown status → canonical (via alias or fallback to active)
+        if let Some(raw_status) = fm.get("status").and_then(|v| v.as_str()) {
+            let canonical = graph::resolve_status_alias(raw_status);
+            if !VALID_STATUSES.contains(&canonical) {
+                // Status is truly unknown even after alias resolution — default to active
+                let pattern = format!("status: {}", raw_status);
+                let replacement = "status: active".to_string();
+                result = result.replacen(&pattern, &replacement, 1);
+            }
+        }
+
+        // Note: fm-id-format fix is handled at directory level via rename_id
+        // (requires cross-file reference updates)
     }
 
     // ── Frontmatter structural fixes (need --- delimiters but not parsed data) ──
@@ -860,12 +957,56 @@ pub fn lint_directory(
         None
     };
 
+    // Pre-fix pass: collect ID renames needed (old_id → new_id) before per-file fixes
+    let id_renames: Vec<(String, String)> = if fix {
+        let id_re = regex::Regex::new(r"^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}$").unwrap();
+        files
+            .par_iter()
+            .filter_map(|p| {
+                let content = std::fs::read_to_string(p).ok()?;
+                let matter = Matter::<YAML>::new();
+                let parsed = matter.parse(&content);
+                let fm = parsed.data.as_ref()
+                    .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
+                let id = fm.get("id")?.as_str()?;
+                if !id.is_empty() && !id_re.is_match(id) {
+                    let prefix = extract_id_prefix(id);
+                    let new_id = crate::graph::create_id(&prefix);
+                    Some((id.to_string(), new_id))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let results: Vec<FileResult> = files
         .par_iter()
         .map(|p| lint_file(p, fix, known_ids.as_ref()))
         .collect();
 
     let summary = LintSummary::from_results(&results);
+
+    // Post-fix pass: apply cross-file ID renames via rename_id
+    if fix && !id_renames.is_empty() {
+        // First write per-file fixes (type, status, etc.)
+        write_fixes(&results);
+
+        // Then rename each non-conforming ID across all files
+        for (old_id, new_id) in &id_renames {
+            let _ = rename_id(pkb_root, old_id, new_id);
+        }
+
+        // Return fresh results after renames
+        let results: Vec<FileResult> = files
+            .par_iter()
+            .map(|p| lint_file(p, false, known_ids.as_ref()))
+            .collect();
+        let summary = LintSummary::from_results(&results);
+        return (results, summary);
+    }
 
     (results, summary)
 }
@@ -1072,6 +1213,60 @@ mod tests {
     fn detects_task_missing_id() {
         let diags = lint_str("---\ntitle: Test\ntype: task\nstatus: active\n---\n\nBody.\n");
         assert!(diags.iter().any(|d| d.rule == "task-no-id"));
+    }
+
+    #[test]
+    fn fixes_unknown_type() {
+        let fixed = fix_str("---\ntitle: Test\ntype: article\nstatus: active\n---\n\nBody.\n");
+        assert!(fixed.contains("type: reference"), "article should become reference, got: {}", fixed);
+    }
+
+    #[test]
+    fn fixes_unknown_type_to_document() {
+        let fixed = fix_str("---\ntitle: Test\ntype: bundle\nstatus: active\n---\n\nBody.\n");
+        assert!(fixed.contains("type: document"), "bundle should become document, got: {}", fixed);
+    }
+
+    #[test]
+    fn fixes_unknown_status_to_active() {
+        let fixed = fix_str("---\ntitle: Test\ntype: note\nstatus: merge_ready\n---\n\nBody.\n");
+        // merge_ready → review (via alias), which is valid, so should become review
+        assert!(fixed.contains("status: review"), "merge_ready should become review, got: {}", fixed);
+    }
+
+    #[test]
+    fn fixes_truly_unknown_status() {
+        let fixed = fix_str("---\ntitle: Test\ntype: note\nstatus: banana\n---\n\nBody.\n");
+        assert!(fixed.contains("status: active"), "unknown status should become active, got: {}", fixed);
+    }
+
+    #[test]
+    fn id_format_flagged_as_fixable() {
+        let diags = lint_str("---\nid: osb\ntitle: Test\ntype: note\n---\n\nBody.\n");
+        let id_diag = diags.iter().find(|d| d.rule == "fm-id-format");
+        assert!(id_diag.is_some(), "Should detect bad ID format");
+        assert!(id_diag.unwrap().fixable, "fm-id-format should be fixable");
+    }
+
+    #[test]
+    fn alias_key_is_known() {
+        let diags = lint_str("---\ntitle: Test\ntype: note\nalias: foo\n---\n\nBody.\n");
+        assert!(!diags.iter().any(|d| d.rule == "fm-unknown-key"), "alias should be a known key");
+    }
+
+    #[test]
+    fn triage_keys_are_known() {
+        let diags = lint_str("---\ntitle: Test\ntype: note\nprocessed: true\nprocessed_date: 2026-01-01\ntriage_action: create-task\ntriage_ref: test-12345678\n---\n\nBody.\n");
+        assert!(!diags.iter().any(|d| d.rule == "fm-unknown-key"),
+            "triage keys should be known, got: {:?}",
+            diags.iter().filter(|d| d.rule == "fm-unknown-key").map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn extract_id_prefix_simple() {
+        assert_eq!(extract_id_prefix("osb"), "osb");
+        assert_eq!(extract_id_prefix("explorations-np-003"), "explorations-np");
+        assert_eq!(extract_id_prefix("ip-australia"), "ip"); // "australia" is alpha → takes first+second, but len check splits
     }
 
     #[test]

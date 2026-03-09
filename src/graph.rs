@@ -224,9 +224,16 @@ pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         "inbox" | "todo" | "open" => "active",
         "in-progress" => "in_progress",
-        "in_review" | "in-review" => "review",
-        "complete" | "completed" | "closed" | "archived" | "resolved" => "done",
+        "in_review" | "in-review" | "ready-for-review" | "merge_ready" | "ISSUES_FOUND" => "review",
+        "complete" | "completed" | "closed" | "archived" | "resolved" | "published-spir" => "done",
         "dead" => "cancelled",
+        "deferred" => "paused",
+        "queued" => "active",
+        "early-scaffold" | "planning" | "seed" => "draft",
+        "in-preparation" | "partial" => "in_progress",
+        "historical" => "done",
+        "conditionally-accepted" | "revise-and-resubmit" => "review",
+        "invited" | "awaiting-approval" => "waiting",
         other => other,
     }
 }
@@ -241,11 +248,16 @@ pub fn resolve_status_alias(status: &str) -> &str {
 /// - **review**: in review / awaiting feedback
 /// - **paused**: intentionally deferred
 /// - **someday**: low priority / maybe later
+/// - **draft**: early / incomplete / seed content
+/// - **waiting**: waiting on external input (not a dependency)
+/// - **submitted**: sent for external decision
+/// - **accepted**: approved / accepted externally
 /// - **done**: completed successfully
 /// - **cancelled**: abandoned / no longer relevant
 pub const VALID_STATUSES: &[&str] = &[
     "active", "in_progress", "blocked", "review",
-    "paused", "someday",
+    "paused", "someday", "draft", "waiting",
+    "submitted", "accepted",
     "done", "cancelled",
 ];
 
@@ -259,10 +271,16 @@ pub fn is_completed(status: Option<&str>) -> bool {
 
 /// All recognized canonical node type values.
 pub const VALID_NODE_TYPES: &[&str] = &[
+    // Hierarchy / planning
     "goal", "project", "subproject", "epic",
+    // Work items
     "task", "action", "bug", "feature",
     "milestone", "learn",
+    // Knowledge / reference
     "note", "knowledge", "memory", "contact",
+    "document", "reference", "review", "case", "spec",
+    // Structural / log
+    "index", "daily", "session-log", "audit-report",
 ];
 
 /// Parse a string array from a JSON frontmatter value.
