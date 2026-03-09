@@ -1,7 +1,7 @@
 # Spec: Batch Task Graph Operations
 
-**Status:** Draft
-**Date:** 2026-03-04
+**Status:** Draft (revised)
+**Date:** 2026-03-04 (revised 2026-03-09)
 **Author:** nic (via Claude)
 **Repo:** nicsuzor/mem
 **Surfaces:** CLI (`aops`), MCP (`pkb`), TUI
@@ -62,6 +62,8 @@ All batch operations accept a target set defined by filters. Filters are composa
 | Orphan | `--orphan` | `orphan: true` | No parent and no project |
 | Text | `--title-contains "PhD inquiry"` | `title_contains: "PhD inquiry"` | Substring match on title |
 | Complexity | `--complexity mechanical` | `complexity: "mechanical"` | Match complexity tag |
+| Directory | `--directory tasks/inbox` | `directory: "tasks/inbox"` | File path contains directory (useful for targeting inbox vs project dirs) |
+| Weight | `--weight-gte 5` | `weight_gte: 5` | Downstream weight >= N (structurally important nodes) |
 
 ### CLI Composition
 
@@ -207,6 +209,9 @@ aops batch update --project osb --unset assignee
 | `--remove-tag foo` | `"_remove_tags": ["foo"]` | Remove from tags array |
 | `--add-dep id` | `"_add_depends_on": ["id"]` | Append to depends_on |
 | `--remove-dep id` | `"_remove_depends_on": ["id"]` | Remove from depends_on |
+| `--superseded-by id` | `"superseded_by": "id"` | Mark as superseded + set status to done |
+
+Common pattern: manually deduplicating without full merge semantics — set `status: done` and `superseded_by: <canonical-id>` in one operation.
 
 **Response:** Same shape as `batch_reparent` — list of tasks with action taken.
 
@@ -260,7 +265,9 @@ Multi-select → `a` (archive) → optional reason → confirm.
 
 ### 4. `batch_reclassify`
 
-Change the `type` field and move the file to the correct subdirectory. Critical for fixing memories filed as tasks and vice versa.
+Change the `type` field and move the file to the correct subdirectory. Useful for fixing memories filed as tasks and vice versa.
+
+> **Note:** This is lower priority than it appears. The more common problem is knowledge items (type: memory/insight) being indexed alongside tasks in views and queries. The primary fix for that is improving the indexer's type filtering, not reclassification. This operation is still valuable for cases where files genuinely need to move directories (e.g., promoting tasks to epics).
 
 **Parameters:**
 
@@ -413,6 +420,33 @@ aops batch merge --canonical hdr-c127ad6d \
 
 **TUI:**
 From duplicates view → select cluster → pick canonical → `m` (merge) → confirm.
+
+
+### 6b. `batch_deduplicate` (convenience)
+
+Combines `find_duplicates` → interactive review → `batch_merge` in one flow. This is the practical workflow users actually follow.
+
+**CLI:**
+```bash
+# Find and interactively resolve duplicates
+aops deduplicate --project hdr
+
+# Auto-merge high-confidence duplicates (>0.95 similarity)
+aops deduplicate --project hdr --auto --threshold 0.95
+```
+
+**Behavior:**
+
+1. Run `find_duplicates` with the provided filters
+2. Present clusters for review (CLI: interactive prompt; TUI: dedicated view)
+3. For each cluster, user confirms canonical task or skips
+4. Run `batch_merge` on confirmed clusters
+5. Single graph rebuild at end
+
+In `--auto` mode, skip interactive review for clusters above the threshold and auto-select the canonical candidate (oldest, most connected).
+
+**TUI:**
+Accessible from duplicate finder view as "Resolve all" action.
 
 
 ### 7. `batch_create_epics`
@@ -610,6 +644,8 @@ pub struct FilterSet {
     pub orphan: Option<bool>,
     pub title_contains: Option<String>,
     pub complexity: Option<String>,
+    pub directory: Option<String>,
+    pub weight_gte: Option<u32>,
 }
 
 impl FilterSet {
@@ -701,6 +737,7 @@ Add 8 new tools to `PkbSearchServer`:
 | `batch_archive` | Batch Operations |
 | `batch_reclassify` | Batch Operations |
 | `batch_merge` | Batch Operations |
+| `batch_deduplicate` | Batch Operations |
 | `batch_create_epics` | Batch Operations |
 | `find_duplicates` | Analysis |
 | `graph_stats` | Analysis |
@@ -780,15 +817,16 @@ A dedicated view (`g` from main) showing the health metrics from `graph_stats`, 
 
 7. `find_duplicates` — analysis tool
 8. `batch_merge` — act on duplicate findings
-9. `batch_create_epics` — primary structuring tool
-10. `batch_reclassify` — type corrections and file moves
+9. `batch_deduplicate` — convenience flow combining find + review + merge
+10. `batch_create_epics` — primary structuring tool
+11. `batch_reclassify` — type corrections and file moves (lower priority; indexer type filtering is the primary fix for misclassified items appearing in views)
 
 ### Phase 3: TUI Integration
 
-11. Multi-select mode in tree view
-12. Batch action bar
-13. Duplicate finder view
-14. Graph stats dashboard
+12. Multi-select mode in tree view
+13. Batch action bar
+14. Duplicate finder view
+15. Graph stats dashboard
 
 ---
 
@@ -816,14 +854,37 @@ A dedicated view (`g` from main) showing the health metrics from `graph_stats`, 
 
 ---
 
-## Open Questions
+## Design Decisions (resolved)
 
-1. **Should `batch_archive` move files to an `archive/` subdirectory, or just set `status: archived`?** Currently archived tasks stay in `tasks/` directory. Moving them would reduce clutter but complicates path references.
+1. **`batch_archive` — status field only, don't move files.** File moves break path references and make git history harder to follow. The indexer already filters by status. Archived tasks stay in their current directory.
 
-2. **Should `batch_reparent` cascade project field?** If you reparent a task to an epic that belongs to project X, should the task's project field also update? Proposed: yes by default, with `--no-cascade` to opt out.
+2. **`batch_reparent` cascades project field by default.** When reparenting a task under an epic that belongs to project X, the task's `project` field also updates. Opt out with `--no-cascade` / `update_project: false`. This prevents tasks from appearing as "ungrouped" when they have a parent but no project.
 
-3. **Transaction rollback?** The spec says "atomic per-file, best-effort per-batch." Should we support full rollback (git stash pattern) if any file in the batch fails? Proposed: not in v1; failures are reported and the user can fix manually.
+3. **No transaction rollback in v1.** The per-file atomic pattern (write to temp, rename) is sufficient. Git gives you rollback for free (`git checkout -- .`). Failures are reported in the response.
 
-4. **Graph rebuild strategy?** Currently `build_from_directory()` is a full rescan. For batch operations modifying known files, could we do incremental graph updates instead? Proposed: defer to later optimization; full rebuild is ~2s which is acceptable for batch ops.
+4. **Full graph rebuild in v1.** `build_from_directory()` at ~2s is acceptable for batch ops. Incremental graph updates are a future optimization.
 
-5. **Filter by downstream weight?** Tasks with high `downstream_weight` are structurally important. Worth adding `--weight-gte` filter? Proposed: yes, add in Phase 1.
+5. **`--weight-gte` included in Phase 1.** Useful for finding structurally important nodes during grooming sessions.
+
+---
+
+## Autocommit Integration
+
+Batch operations interact with the `autocommit_state.py` PostToolUse hook. Since batch MCP tools use `batch_*` prefixes, they won't match the current suffix patterns in `get_modified_repos()`.
+
+**Decision:** The batch ops module owns the commit. Since it already performs a single graph rebuild at the end, it produces a single commit with a descriptive message:
+
+```
+tasks: batch reparent 12 tasks under epic-xyz
+tasks: batch archive 23 stale framework tasks
+tasks: batch merge 3 duplicates into hdr-c127ad6d
+```
+
+This is cleaner than having the autocommit hook try to infer what changed. The `BatchContext::commit()` method handles:
+1. Write all files
+2. Re-embed modified documents
+3. Rebuild graph
+4. Git add + commit with descriptive message
+5. Return `BatchSummary`
+
+The autocommit hook should be updated to skip batch tool calls (they handle their own commits).
