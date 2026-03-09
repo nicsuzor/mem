@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.29](https://github.com/nicsuzor/mem/compare/v0.2.28...v0.2.29) - 2026-03-09
+
+### Added
+
+- expand linter schema and add autofixes for type, status, and ID format
+
+### Other
+
+- address review feedback on batch graph operations
+- batch graph operations for task graph restructuring
+
 ## [0.2.28](https://github.com/nicsuzor/mem/compare/v0.2.27...v0.2.28) - 2026-03-08
 
 ### Added
