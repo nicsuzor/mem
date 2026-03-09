@@ -446,6 +446,29 @@ enum Commands {
         #[arg(short, long)]
         project: Option<String>,
     },
+
+    /// Find potential duplicate tasks
+    Duplicates {
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Detection mode: title, semantic, or both
+        #[arg(long, default_value = "title")]
+        mode: String,
+
+        /// Title similarity threshold (0.0-1.0, default: 0.7)
+        #[arg(long, default_value_t = 0.7)]
+        title_threshold: f64,
+
+        /// Semantic similarity threshold (0.0-1.0, default: 0.85)
+        #[arg(long, default_value_t = 0.85)]
+        semantic_threshold: f64,
+
+        /// Maximum clusters to show
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -515,6 +538,54 @@ enum BatchCommands {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
+
+        #[command(flatten)]
+        filters: BatchFilterArgs,
+    },
+
+    /// Merge duplicate tasks into a canonical task
+    Merge {
+        /// ID of the canonical task to keep
+        #[arg(long)]
+        canonical: String,
+
+        /// IDs of tasks to merge into canonical (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        merge: Vec<String>,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Create epic containers and reparent tasks under them
+    CreateEpics {
+        /// Load epic definitions from YAML file
+        #[arg(long)]
+        from: String,
+
+        /// Parent for all new epics
+        #[arg(long)]
+        parent: Option<String>,
+
+        /// Project for all new epics
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Change document type and move to correct directory
+    Reclassify {
+        /// New document type (task, memory, note, knowledge, project, epic, goal)
+        #[arg(long)]
+        new_type: String,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
 
         #[command(flatten)]
         filters: BatchFilterArgs,
@@ -647,7 +718,10 @@ fn main() -> Result<()> {
     // Some commands need the store but not the embedder
     let needs_store_only = matches!(
         cli.command,
-        Commands::Tags { .. } | Commands::Memories { .. } | Commands::Forget { .. }
+        Commands::Tags { .. }
+            | Commands::Memories { .. }
+            | Commands::Forget { .. }
+            | Commands::Duplicates { .. }
     );
 
     let (embedder, store) = if needs_embedder {
@@ -2476,6 +2550,62 @@ fn main() -> Result<()> {
             let stats = mem::batch_ops::stats::graph_stats(&graph, project.as_deref());
             print!("{}", stats.display());
         }
+
+        Commands::Duplicates {
+            project,
+            mode,
+            title_threshold,
+            semantic_threshold,
+            limit,
+        } => {
+            let graph = load_graph(&pkb_root, &db_path);
+            let store = load_store(&db_path, embeddings::EMBEDDING_DIM)?;
+
+            let mut filters = mem::batch_ops::filters::FilterSet::default();
+            filters.project = project;
+
+            let dup_mode = mem::batch_ops::duplicates::DuplicateMode::from_str(&mode);
+            let report = mem::batch_ops::duplicates::find_duplicates(
+                &graph,
+                &store.read(),
+                &filters,
+                dup_mode,
+                title_threshold,
+                semantic_threshold,
+            );
+
+            if report.clusters.is_empty() {
+                println!("No duplicates found.");
+            } else {
+                println!(
+                    "Found {} duplicate clusters ({} total duplicates)\n",
+                    report.total_clusters, report.total_duplicates
+                );
+                for (i, cluster) in report.clusters.iter().take(limit).enumerate() {
+                    println!(
+                        "Cluster {} (confidence: {:.2}, title: {:.2}, semantic: {:.2}):",
+                        i + 1,
+                        cluster.confidence,
+                        cluster.similarity_scores.title,
+                        cluster.similarity_scores.semantic,
+                    );
+                    for task in &cluster.tasks {
+                        let marker = if task.id == cluster.canonical {
+                            "★"
+                        } else {
+                            " "
+                        };
+                        let project = task
+                            .project
+                            .as_deref()
+                            .map(|p| format!(" [{p}]"))
+                            .unwrap_or_default();
+                        println!("  {marker} {:<24} {}{}", task.id, task.title, project);
+                    }
+                    println!();
+                }
+            }
+        }
     }
 
     Ok(())
@@ -2627,6 +2757,74 @@ fn handle_batch_command(
                 &filter_set,
                 reason.as_deref(),
                 dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::Merge {
+            canonical,
+            merge,
+            dry_run,
+        } => {
+            if merge.is_empty() {
+                eprintln!("Error: at least one --merge ID is required");
+                std::process::exit(1);
+            }
+            let summary = mem::batch_ops::duplicates::batch_merge(
+                graph, pkb_root, &canonical, &merge, dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::CreateEpics {
+            from,
+            parent,
+            project,
+            dry_run,
+        } => {
+            let content = std::fs::read_to_string(&from)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error reading {from}: {e}");
+                    std::process::exit(1);
+                });
+
+            #[derive(serde::Deserialize)]
+            struct EpicsFile {
+                #[serde(default)]
+                parent: Option<String>,
+                #[serde(default)]
+                project: Option<String>,
+                epics: Vec<mem::batch_ops::epics::EpicDef>,
+            }
+
+            let file: EpicsFile = serde_yaml::from_str(&content)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error parsing YAML: {e}");
+                    std::process::exit(1);
+                });
+
+            // CLI args override file-level defaults
+            let parent = parent.as_deref().or(file.parent.as_deref());
+            let project = project.as_deref().or(file.project.as_deref());
+
+            let summary = mem::batch_ops::epics::batch_create_epics(
+                graph, pkb_root, parent, project, &file.epics, dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::Reclassify {
+            new_type,
+            dry_run,
+            filters,
+        } => {
+            let filter_set = to_filter_set(&filters);
+            if filter_set.is_empty() {
+                eprintln!("Error: at least one filter is required for batch reclassify");
+                std::process::exit(1);
+            }
+            let summary = mem::batch_ops::reclassify::batch_reclassify(
+                graph, pkb_root, &filter_set, &new_type, dry_run,
             );
             print!("{}", summary.display());
         }

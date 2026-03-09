@@ -385,6 +385,16 @@ impl VectorStore {
         results
     }
 
+    /// Iterate over all document entries (for pairwise comparison in duplicate detection).
+    pub fn documents(&self) -> impl Iterator<Item = (&String, &DocumentEntry)> {
+        self.documents.iter()
+    }
+
+    /// Get a document entry by its relative path key.
+    pub fn get_entry(&self, path: &str) -> Option<&DocumentEntry> {
+        self.documents.get(path)
+    }
+
     /// List all tags across all documents with their occurrence counts.
     pub fn list_all_tags(&self) -> HashMap<String, usize> {
         let mut tags: HashMap<String, usize> = HashMap::new();
