@@ -103,6 +103,29 @@ enum Commands {
         force: bool,
     },
 
+    /// Benchmark reindex: process a few stale docs with tunable parallelism
+    BenchReindex {
+        /// Number of stale documents to process (default 4)
+        #[arg(short = 'n', long, default_value_t = 4)]
+        count: usize,
+
+        /// Max ONNX sessions (default: auto from CPU count)
+        #[arg(short, long)]
+        sessions: Option<usize>,
+
+        /// Threads per ONNX session (default: 2)
+        #[arg(short, long)]
+        threads: Option<usize>,
+
+        /// Chunks per sub-batch (default: 32)
+        #[arg(short, long)]
+        batch_size: Option<usize>,
+
+        /// Force re-embed even if docs are up-to-date (picks random docs)
+        #[arg(short, long)]
+        force: bool,
+    },
+
     /// Show index status
     Status,
 
@@ -487,6 +510,7 @@ fn main() -> Result<()> {
         Commands::Search { .. }
             | Commands::Add { .. }
             | Commands::Reindex { .. }
+            | Commands::BenchReindex { .. }
             | Commands::Status
             | Commands::Recall { .. }
             | Commands::Eval { .. }
@@ -499,7 +523,16 @@ fn main() -> Result<()> {
     );
 
     let (embedder, store) = if needs_embedder {
-        let e = Arc::new(embeddings::Embedder::new()?);
+        let mut e = embeddings::Embedder::new()?;
+        // Apply parallelism overrides for bench-reindex
+        if let Commands::BenchReindex { sessions, threads, batch_size, .. } = &cli.command {
+            e = e.with_overrides(
+                sessions.unwrap_or(0),
+                threads.unwrap_or(0),
+                batch_size.unwrap_or(0),
+            );
+        }
+        let e = Arc::new(e);
         let s = load_store(&db_path, e.dimension())?;
         (Some(e), Some(s))
     } else if needs_store_only {
@@ -636,6 +669,18 @@ fn main() -> Result<()> {
             store.read().save(&db_path)?;
 
             println!("✓ {total} documents ({indexed} indexed, {removed} removed)");
+        }
+
+        Commands::BenchReindex {
+            count,
+            sessions: _,
+            threads: _,
+            batch_size: _,
+            force,
+        } => {
+            let embedder = embedder.as_ref().unwrap();
+            let store = store.as_ref().unwrap();
+            bench_reindex(&pkb_root, &db_path, store, embedder, count, force)?;
         }
 
         Commands::Status => {
@@ -2448,6 +2493,155 @@ fn index_pkb(
 
     let total = store.read().len();
     (indexed, removed, total)
+}
+
+/// Benchmark reindex: process a small number of stale (or random) docs with timing stats.
+fn bench_reindex(
+    pkb_root: &std::path::Path,
+    db_path: &std::path::Path,
+    store: &Arc<RwLock<vectordb::VectorStore>>,
+    embedder: &embeddings::Embedder,
+    count: usize,
+    force: bool,
+) -> anyhow::Result<()> {
+    use std::time::Instant;
+
+    let (eff_sessions, eff_threads, eff_batch) = embedder.effective_config();
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
+
+    println!("bench-reindex config:");
+    println!("  cpu cores:    {cores}");
+    println!("  sessions:     {eff_sessions}");
+    println!("  threads/sess: {eff_threads}");
+    println!("  batch size:   {eff_batch}");
+    println!("  docs to run:  {count}");
+    println!();
+
+    let files = pkb::scan_directory(pkb_root);
+
+    // Select documents to process
+    let to_process: Vec<_> = if force {
+        // Force mode: pick first N files (deterministic for reproducibility)
+        files.into_iter().take(count).collect()
+    } else {
+        // Normal mode: find stale files
+        files
+            .into_iter()
+            .filter(|file_path| {
+                let path_str = file_path
+                    .strip_prefix(pkb_root)
+                    .unwrap_or(file_path)
+                    .to_string_lossy()
+                    .to_string();
+                let content_hash = std::fs::read(file_path)
+                    .ok()
+                    .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+                    .unwrap_or_default();
+                let s = store.read();
+                s.needs_update(&path_str, &content_hash)
+            })
+            .take(count)
+            .collect()
+    };
+
+    if to_process.is_empty() {
+        println!("No stale documents found. Use --force to benchmark with up-to-date docs.");
+        return Ok(());
+    }
+
+    println!("Selected {} documents:", to_process.len());
+
+    // Parse
+    let parse_start = Instant::now();
+    let parsed: Vec<_> = to_process
+        .iter()
+        .filter_map(|path| {
+            pkb::parse_file_relative(path, pkb_root).map(|doc| {
+                let text = doc.embedding_text();
+                let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
+                (doc, chunks)
+            })
+        })
+        .collect();
+    let parse_elapsed = parse_start.elapsed();
+
+    let total_chunks: usize = parsed.iter().map(|(_, c)| c.len()).sum();
+    for (doc, chunks) in &parsed {
+        let rel = doc
+            .path
+            .strip_prefix(pkb_root)
+            .unwrap_or(&doc.path);
+        println!("  {} ({} chunks)", rel.display(), chunks.len());
+    }
+    println!();
+    println!("parse:   {:>8.1}ms  ({} docs, {} chunks)", parse_elapsed.as_secs_f64() * 1000.0, parsed.len(), total_chunks);
+
+    // Embed all chunks in a single batch (mirrors real reindex behavior)
+    let mut all_chunks: Vec<&str> = Vec::new();
+    let mut chunk_counts: Vec<usize> = Vec::new();
+    for (_doc, chunks) in &parsed {
+        chunk_counts.push(chunks.len());
+        for chunk in chunks {
+            all_chunks.push(chunk.as_str());
+        }
+    }
+
+    // Warmup: force session scaling + one inference to eliminate cold-start from timing
+    let warmup_start = Instant::now();
+    embedder.encode("warmup sentence for benchmarking")?;
+    let warmup_elapsed = warmup_start.elapsed();
+    println!("warmup:  {:>8.1}ms  (session init + 1 inference)", warmup_elapsed.as_secs_f64() * 1000.0);
+
+    let embed_start = Instant::now();
+    let all_embeddings = embedder.encode_batch(&all_chunks)?;
+    let embed_elapsed = embed_start.elapsed();
+
+    // Store results
+    let store_start = Instant::now();
+    let mut emb_offset = 0;
+    {
+        let mut s = store.write();
+        for (i, (doc, chunks)) in parsed.iter().enumerate() {
+            let c = chunk_counts[i];
+            let doc_embeddings = all_embeddings[emb_offset..emb_offset + c].to_vec();
+            emb_offset += c;
+            s.insert_precomputed(doc, chunks.clone(), doc_embeddings);
+        }
+    }
+    store.read().save(db_path)?;
+    let store_elapsed = store_start.elapsed();
+
+    let total_elapsed = parse_elapsed + embed_elapsed + store_elapsed;
+
+    // Stats
+    let embed_ms = embed_elapsed.as_secs_f64() * 1000.0;
+    let total_ms = total_elapsed.as_secs_f64() * 1000.0;
+    let docs_per_sec = if total_elapsed.as_secs_f64() > 0.0 {
+        parsed.len() as f64 / total_elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+    let chunks_per_sec = if embed_elapsed.as_secs_f64() > 0.0 {
+        total_chunks as f64 / embed_elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+    let ms_per_chunk = if total_chunks > 0 {
+        embed_ms / total_chunks as f64
+    } else {
+        0.0
+    };
+
+    println!("embed:   {:>8.1}ms  ({} chunks)", embed_ms, total_chunks);
+    println!("store:   {:>8.1}ms", store_elapsed.as_secs_f64() * 1000.0);
+    println!("total:   {:>8.1}ms", total_ms);
+    println!();
+    println!("throughput:");
+    println!("  {:.1} docs/s", docs_per_sec);
+    println!("  {:.1} chunks/s", chunks_per_sec);
+    println!("  {:.1} ms/chunk", ms_per_chunk);
+
+    Ok(())
 }
 
 /// Reconstruct an absolute path from a (possibly relative) node path.
