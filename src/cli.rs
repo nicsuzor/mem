@@ -557,13 +557,15 @@ fn main() -> Result<()> {
                     println!("     \x1b[2m{}\x1b[0m", result.path.display());
                 }
 
-                if !result.snippet.is_empty() {
+                if !result.snippet.is_empty() || !result.chunk_text.is_empty() {
                     let snippet = if full {
-                        result.snippet.clone()
+                        result.chunk_text.clone()
                     } else {
                         truncate_snippet(&result.snippet, 120)
                     };
-                    println!("     {snippet}");
+                    if !snippet.is_empty() {
+                        println!("     {snippet}");
+                    }
                 }
                 println!();
             }
