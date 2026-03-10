@@ -311,19 +311,20 @@ fn get_onnx_runtime_path() -> Option<PathBuf> {
 // =============================================================================
 
 /// Threads per ONNX inference session.
-const THREADS_PER_SESSION: usize = 2;
+const THREADS_PER_SESSION: usize = 8;
 
 /// Max parallel ONNX sessions for CPU mode, computed from available cores.
 /// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
 /// GPU mode uses exactly 1 session (hardcoded in the GPU path) — the GPU parallelizes internally.
 ///
-/// BGE-M3 FP32 loads ~2.1GB per session, so we cap at 6 sessions (~12GB RAM max)
-/// to avoid OOM on machines with many cores.
+/// BGE-M3 FP32 loads ~2.1GB per session, so we cap at 2 sessions (~4GB RAM max).
+/// Fewer sessions with more threads per session reduces memory-bandwidth contention
+/// from multiple model copies competing for cache/DRAM.
 fn max_sessions_cpu() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    (cores / THREADS_PER_SESSION).clamp(2, 6)
+    (cores / THREADS_PER_SESSION).clamp(1, 2)
 }
 
 struct SessionPool {
@@ -335,15 +336,20 @@ struct SessionPool {
     /// True if the session is running on GPU (CUDA EP registered successfully).
     /// AtomicBool allows post-construction downgrade to CPU after warm-up probe.
     gpu_mode: AtomicBool,
+    /// Override max sessions (0 = use default)
+    override_max_sessions: usize,
+    /// Override threads per session (0 = use default)
+    override_threads: usize,
 }
 
 impl SessionPool {
     /// Create pool with a single session (fast startup for search).
     /// Additional sessions are added lazily via `ensure_sessions()`.
     /// Tries CUDA execution provider first if GPU is available, falls back to CPU.
-    fn new(config: &EmbeddingConfig) -> Result<Self> {
+    fn new(config: &EmbeddingConfig, override_max_sessions: usize, override_threads: usize) -> Result<Self> {
         use ort::session::builder::GraphOptimizationLevel;
 
+        let threads = if override_threads > 0 { override_threads } else { THREADS_PER_SESSION };
         let want_gpu = gpu_available();
         let mut using_gpu = false;
 
@@ -364,7 +370,7 @@ impl SessionPool {
                     eprintln!("  CUDA EP failed ({e}), falling back to CPU");
                     Session::builder()
                         .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
-                        .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
+                        .and_then(|b| b.with_intra_threads(threads))
                         .and_then(|b| b.commit_from_file(&config.model_path))
                         .with_context(|| {
                             format!("Failed to load ONNX model from {:?}", config.model_path)
@@ -374,7 +380,7 @@ impl SessionPool {
         } else {
             Session::builder()
                 .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
-                .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
+                .and_then(|b| b.with_intra_threads(threads))
                 .and_then(|b| b.commit_from_file(&config.model_path))
                 .with_context(|| {
                     format!("Failed to load ONNX model from {:?}", config.model_path)
@@ -415,6 +421,8 @@ impl SessionPool {
             tokenizer,
             uses_token_type_ids,
             gpu_mode: AtomicBool::new(using_gpu),
+            override_max_sessions,
+            override_threads,
         };
 
         // Verify GPU is actually accelerating, not just silently running on CPU.
@@ -567,7 +575,12 @@ impl SessionPool {
 
         use ort::session::builder::GraphOptimizationLevel;
 
-        let max_sess = max_sessions_cpu();
+        let max_sess = if self.override_max_sessions > 0 {
+            self.override_max_sessions
+        } else {
+            max_sessions_cpu()
+        };
+        let threads = if self.override_threads > 0 { self.override_threads } else { THREADS_PER_SESSION };
         let current = self.sessions.read().len();
         let needed = count.min(max_sess);
         if current >= needed {
@@ -575,7 +588,7 @@ impl SessionPool {
         }
 
         let to_add = needed - current;
-        eprintln!("  Scaling to {needed} ONNX sessions ({THREADS_PER_SESSION} threads each)...");
+        eprintln!("  Scaling to {needed} ONNX sessions ({threads} threads each)...");
 
         let model_path = &self.model_path;
         let new_sessions: Vec<_> = std::thread::scope(|s| {
@@ -584,7 +597,7 @@ impl SessionPool {
                     s.spawn(|| {
                         Session::builder()
                             .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
-                            .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
+                            .and_then(|b| b.with_intra_threads(threads))
                             .and_then(|b| b.commit_from_file(model_path))
                     })
                 })
@@ -623,6 +636,12 @@ impl SessionPool {
 pub struct Embedder {
     config: EmbeddingConfig,
     pool: OnceLock<std::result::Result<Arc<SessionPool>, String>>,
+    /// Override max ONNX sessions (0 = use default from CPU core count)
+    override_max_sessions: usize,
+    /// Override threads per ONNX session (0 = use default THREADS_PER_SESSION)
+    override_threads: usize,
+    /// Override chunks per sub-batch (0 = use default MAX_BATCH_CPU/GPU)
+    override_batch_size: usize,
 }
 
 impl Embedder {
@@ -670,7 +689,40 @@ impl Embedder {
         Ok(Self {
             config,
             pool: OnceLock::new(),
+            override_max_sessions: 0,
+            override_threads: 0,
+            override_batch_size: 0,
         })
+    }
+
+    /// Set parallelism overrides for benchmarking. Zero values use defaults.
+    pub fn with_overrides(mut self, sessions: usize, threads: usize, batch_size: usize) -> Self {
+        self.override_max_sessions = sessions;
+        self.override_threads = threads;
+        self.override_batch_size = batch_size;
+        self
+    }
+
+    /// Return the effective config for display (sessions, threads, batch_size).
+    pub fn effective_config(&self) -> (usize, usize, usize) {
+        let sessions = if self.override_max_sessions > 0 {
+            self.override_max_sessions
+        } else {
+            max_sessions_cpu()
+        };
+        let threads = if self.override_threads > 0 {
+            self.override_threads
+        } else {
+            THREADS_PER_SESSION
+        };
+        let batch_size = if self.override_batch_size > 0 {
+            self.override_batch_size
+        } else if gpu_available() {
+            Self::MAX_BATCH_GPU
+        } else {
+            Self::MAX_BATCH_CPU
+        };
+        (sessions, threads, batch_size)
     }
 
     pub fn dimension(&self) -> usize {
@@ -690,7 +742,7 @@ impl Embedder {
 
     fn ensure_pool(&self) -> Result<&Arc<SessionPool>> {
         let result = self.pool.get_or_init(|| {
-            SessionPool::new(&self.config)
+            SessionPool::new(&self.config, self.override_max_sessions, self.override_threads)
                 .map(Arc::new)
                 .map_err(|e| e.to_string())
         });
@@ -721,7 +773,9 @@ impl Embedder {
         }
 
         let pool = self.ensure_pool()?;
-        let max_batch = if pool.gpu_mode.load(Ordering::Relaxed) {
+        let max_batch = if self.override_batch_size > 0 {
+            self.override_batch_size
+        } else if pool.gpu_mode.load(Ordering::Relaxed) {
             Self::MAX_BATCH_GPU
         } else {
             Self::MAX_BATCH_CPU
