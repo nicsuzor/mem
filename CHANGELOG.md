@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.30](https://github.com/nicsuzor/mem/compare/v0.2.29...v0.2.30) - 2026-03-10
+
+### Added
+
+- add bench-reindex command and tune embedding parallelism defaults
+
+### Fixed
+
+- address PR review — single lock for stale check, GPU-aware batch size display
+
+### Other
+
+- Merge pull request #80 from nicsuzor/crew/alexis_21
+- Merge pull request #76 from nicsuzor/feat/search-detail-level
+
 ## [0.2.29](https://github.com/nicsuzor/mem/compare/v0.2.28...v0.2.29) - 2026-03-09
 
 ### Added
