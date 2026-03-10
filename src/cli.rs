@@ -2524,24 +2524,29 @@ fn bench_reindex(
         // Force mode: pick first N files (deterministic for reproducibility)
         files.into_iter().take(count).collect()
     } else {
-        // Normal mode: find stale files
-        files
-            .into_iter()
-            .filter(|file_path| {
+        // Normal mode: find stale files (single lock for all checks)
+        {
+            let s = store.read();
+            let mut stale = Vec::with_capacity(count);
+            for file_path in files {
+                if stale.len() >= count {
+                    break;
+                }
                 let path_str = file_path
                     .strip_prefix(pkb_root)
-                    .unwrap_or(file_path)
+                    .unwrap_or(&file_path)
                     .to_string_lossy()
                     .to_string();
-                let content_hash = std::fs::read(file_path)
+                let content_hash = std::fs::read(&file_path)
                     .ok()
                     .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
                     .unwrap_or_default();
-                let s = store.read();
-                s.needs_update(&path_str, &content_hash)
-            })
-            .take(count)
-            .collect()
+                if s.needs_update(&path_str, &content_hash) {
+                    stale.push(file_path);
+                }
+            }
+            stale
+        }
     };
 
     if to_process.is_empty() {

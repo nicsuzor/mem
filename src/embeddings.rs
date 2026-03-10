@@ -717,6 +717,8 @@ impl Embedder {
         };
         let batch_size = if self.override_batch_size > 0 {
             self.override_batch_size
+        } else if gpu_available() {
+            Self::MAX_BATCH_GPU
         } else {
             Self::MAX_BATCH_CPU
         };
