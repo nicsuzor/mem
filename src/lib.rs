@@ -1,5 +1,6 @@
 //! Shared library for pkb (MCP server) and aops (CLI) binaries.
 
+pub mod batch_ops;
 pub mod distance;
 pub mod document_crud;
 pub mod embeddings;

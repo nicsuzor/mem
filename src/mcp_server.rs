@@ -2107,6 +2107,228 @@ impl PkbSearchServer {
             path.display()
         ))]))
     }
+
+    // =========================================================================
+    // BATCH OPERATIONS
+    // =========================================================================
+
+    fn handle_batch_update(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let filters = crate::batch_ops::filters::parse_filter_set(args);
+        let updates = args.get("updates").cloned().unwrap_or(JsonValue::Object(serde_json::Map::new()));
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if filters.is_empty() && updates.as_object().map(|m| m.is_empty()).unwrap_or(true) {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("At least one filter and one update field required"),
+                data: None,
+            });
+        }
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::update::batch_update(&graph, &self.pkb_root, &filters, &updates, dry_run);
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_batch_reparent(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let new_parent = args
+            .get("new_parent")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("new_parent is required"),
+                data: None,
+            })?
+            .to_string();
+
+        let filters = crate::batch_ops::filters::parse_filter_set(args);
+        let update_project = args.get("update_project").and_then(|v| v.as_bool()).unwrap_or(true);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::reparent::batch_reparent(
+            &graph, &self.pkb_root, &filters, &new_parent, update_project, dry_run,
+        );
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_batch_archive(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let filters = crate::batch_ops::filters::parse_filter_set(args);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true); // default true!
+        let reason = args.get("reason").and_then(|v| v.as_str());
+
+        if filters.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("At least one filter is required for batch archive"),
+                data: None,
+            });
+        }
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::update::batch_archive(
+            &graph, &self.pkb_root, &filters, reason, dry_run,
+        );
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_graph_stats(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let project = args.get("project").and_then(|v| v.as_str());
+
+        let graph = self.graph.read();
+        let stats = crate::batch_ops::stats::graph_stats(&graph, project);
+        drop(graph);
+
+        let json = serde_json::to_string_pretty(&stats).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_find_duplicates(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let filters = crate::batch_ops::filters::parse_filter_set(args);
+        let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("both");
+        let mode = crate::batch_ops::duplicates::DuplicateMode::from_str(mode_str);
+        let title_threshold = args.get("title_threshold").and_then(|v| v.as_f64()).unwrap_or(0.7);
+        let semantic_threshold = args.get("similarity_threshold").and_then(|v| v.as_f64()).unwrap_or(0.85);
+
+        let graph = self.graph.read();
+        let store = self.store.read();
+        let report = crate::batch_ops::duplicates::find_duplicates(
+            &graph, &store, &filters, mode, title_threshold, semantic_threshold,
+        );
+        drop(graph);
+        drop(store);
+
+        let json = serde_json::to_string_pretty(&report).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_batch_merge(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let canonical = args
+            .get("canonical")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("canonical is required"),
+                data: None,
+            })?
+            .to_string();
+
+        let merge_ids: Vec<String> = args
+            .get("merge_ids")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if merge_ids.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("merge_ids must contain at least one ID"),
+                data: None,
+            });
+        }
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::duplicates::batch_merge(
+            &graph, &self.pkb_root, &canonical, &merge_ids, dry_run,
+        );
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_batch_create_epics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let parent = args.get("parent").and_then(|v| v.as_str());
+        let project = args.get("project").and_then(|v| v.as_str());
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let epics: Vec<crate::batch_ops::epics::EpicDef> = args
+            .get("epics")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        if epics.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("epics array is required and must not be empty"),
+                data: None,
+            });
+        }
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::epics::batch_create_epics(
+            &graph, &self.pkb_root, parent, project, &epics, dry_run,
+        );
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_batch_reclassify(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let filters = crate::batch_ops::filters::parse_filter_set(args);
+        let new_type = args
+            .get("new_type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("new_type is required"),
+                data: None,
+            })?;
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if filters.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("At least one filter is required"),
+                data: None,
+            });
+        }
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::reclassify::batch_reclassify(
+            &graph, &self.pkb_root, &filters, new_type, dry_run,
+        );
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
 }
 
 impl ServerHandler for PkbSearchServer {
@@ -2142,6 +2364,14 @@ impl ServerHandler for PkbSearchServer {
             "pkb_context" => self.handle_pkb_context(&args),
             "pkb_trace" => self.handle_pkb_trace(&args),
             "pkb_orphans" => self.handle_pkb_orphans(&args),
+            "batch_update" => self.handle_batch_update(&args),
+            "batch_reparent" => self.handle_batch_reparent(&args),
+            "batch_archive" => self.handle_batch_archive(&args),
+            "graph_stats" => self.handle_graph_stats(&args),
+            "find_duplicates" => self.handle_find_duplicates(&args),
+            "batch_merge" => self.handle_batch_merge(&args),
+            "batch_create_epics" => self.handle_batch_create_epics(&args),
+            "batch_reclassify" => self.handle_batch_reclassify(&args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {}", request.name)),
@@ -2535,6 +2765,170 @@ impl ServerHandler for PkbSearchServer {
                         "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Omit for all types." },
                         "project": { "type": "string", "description": "Filter by project" }
                     }
+                }))
+                .unwrap(),
+            ),
+            // ── Batch Operations ──────────────────────────────────────────
+            Tool::new(
+                "batch_update",
+                "Update frontmatter fields across multiple tasks in one operation. Supports filtered selection (by project, priority, tags, age, etc.) or explicit ID lists. Use _add_tags/_remove_tags for array manipulation. Set dry_run=true to preview changes.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs (flexible resolution)" },
+                        "project": { "type": "string", "description": "Filter by project" },
+                        "parent": { "type": "string", "description": "Filter: direct children of parent" },
+                        "subtree": { "type": "string", "description": "Filter: all descendants of node" },
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "priority": { "type": "integer", "description": "Filter by exact priority" },
+                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
+                        "type": { "type": "string", "description": "Filter by document type" },
+                        "older_than_days": { "type": "integer", "description": "Filter: created > N days ago" },
+                        "stale_days": { "type": "integer", "description": "Filter: not modified in N days" },
+                        "orphan": { "type": "boolean", "description": "Filter: no parent and no project" },
+                        "title_contains": { "type": "string", "description": "Filter: title substring (case-insensitive)" },
+                        "directory": { "type": "string", "description": "Filter: file path contains directory" },
+                        "weight_gte": { "type": "integer", "description": "Filter: downstream weight >= N" },
+                        "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["updates"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "batch_reparent",
+                "Move multiple tasks to a new parent in one operation. Use when restructuring the task graph — grouping flat tasks into epics, or reorganizing tasks between projects. Cascades parent's project field by default.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
+                        "project": { "type": "string", "description": "Filter by project" },
+                        "parent": { "type": "string", "description": "Filter: direct children of parent" },
+                        "subtree": { "type": "string", "description": "Filter: all descendants of node" },
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "priority": { "type": "integer", "description": "Filter by exact priority" },
+                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
+                        "title_contains": { "type": "string", "description": "Filter: title substring" },
+                        "new_parent": { "type": "string", "description": "ID of new parent (flexible resolution)" },
+                        "update_project": { "type": "boolean", "description": "Cascade parent's project field (default: true)" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["new_parent"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "batch_archive",
+                "Archive multiple tasks (set status=done). Dry-run by default for safety — set dry_run=false to execute. Warns about in_progress tasks and those with active children.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
+                        "project": { "type": "string", "description": "Filter by project" },
+                        "parent": { "type": "string", "description": "Filter: direct children of parent" },
+                        "subtree": { "type": "string", "description": "Filter: all descendants of node" },
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "priority": { "type": "integer", "description": "Filter by exact priority" },
+                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
+                        "older_than_days": { "type": "integer", "description": "Filter: created > N days ago" },
+                        "stale_days": { "type": "integer", "description": "Filter: not modified in N days" },
+                        "title_contains": { "type": "string", "description": "Filter: title substring" },
+                        "reason": { "type": "string", "description": "Archive reason (appended to task body)" },
+                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
+                    }
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "graph_stats",
+                "Report on graph health: status/priority/type distributions, orphan count, stale tasks, disconnected epics, and more. Read-only, no mutations.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "project": { "type": "string", "description": "Scope to a specific project" }
+                    }
+                }))
+                .unwrap(),
+            ),
+            // ── Phase 2: Deduplication & Restructuring ────────────────────
+            Tool::new(
+                "find_duplicates",
+                "Detect potential duplicate tasks using title similarity and/or semantic embedding similarity. Returns clusters with suggested canonical task. Read-only.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "project": { "type": "string", "description": "Filter by project" },
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "mode": { "type": "string", "description": "Detection mode: title, semantic, or both (default: both)" },
+                        "title_threshold": { "type": "number", "description": "Title similarity threshold 0-1 (default: 0.7)" },
+                        "similarity_threshold": { "type": "number", "description": "Semantic similarity threshold 0-1 (default: 0.85)" }
+                    }
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "batch_merge",
+                "Merge duplicate tasks into a canonical task. Archives merged tasks with superseded_by, unions tags/deps, reparents children, updates backlinks.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "canonical": { "type": "string", "description": "ID of the task to keep" },
+                        "merge_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of duplicates to merge into canonical" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["canonical", "merge_ids"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "batch_create_epics",
+                "Create multiple epic containers and reparent existing tasks under them. Primary tool for structuring a flat task list into organized groups.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "parent": { "type": "string", "description": "Parent for all new epics" },
+                        "project": { "type": "string", "description": "Project field for all new epics" },
+                        "epics": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": { "type": "string" },
+                                    "id": { "type": "string" },
+                                    "priority": { "type": "integer" },
+                                    "task_ids": { "type": "array", "items": { "type": "string" } },
+                                    "depends_on": { "type": "array", "items": { "type": "string" } },
+                                    "body": { "type": "string" }
+                                },
+                                "required": ["title", "task_ids"]
+                            },
+                            "description": "Array of epic definitions with title and task_ids to reparent"
+                        },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["epics"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "batch_reclassify",
+                "Change the type field of matching tasks and move files to the correct subdirectory. Use for fixing memories filed as tasks and vice versa.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
+                        "project": { "type": "string", "description": "Filter by project" },
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "type": { "type": "string", "description": "Filter by current type" },
+                        "title_contains": { "type": "string", "description": "Filter by title substring" },
+                        "new_type": { "type": "string", "description": "New document type (task, memory, note, knowledge, project, epic, goal)" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["new_type"]
                 }))
                 .unwrap(),
             ),

@@ -435,6 +435,229 @@ enum Commands {
         #[arg(short = 'k', long, default_value_t = 10)]
         top_k: usize,
     },
+
+    /// Batch operations on the task graph
+    #[command(subcommand)]
+    Batch(BatchCommands),
+
+    /// Show graph health statistics
+    GraphStats {
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+
+    /// Find potential duplicate tasks
+    Duplicates {
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Detection mode: title, semantic, or both
+        #[arg(long, default_value = "title")]
+        mode: String,
+
+        /// Title similarity threshold (0.0-1.0, default: 0.7)
+        #[arg(long, default_value_t = 0.7)]
+        title_threshold: f64,
+
+        /// Semantic similarity threshold (0.0-1.0, default: 0.85)
+        #[arg(long, default_value_t = 0.85)]
+        semantic_threshold: f64,
+
+        /// Maximum clusters to show
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum BatchCommands {
+    /// Update frontmatter fields across multiple tasks
+    Update {
+        /// Set a field: key=value (repeatable)
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        set_fields: Option<Vec<String>>,
+
+        /// Remove a field (repeatable)
+        #[arg(long = "unset", value_name = "KEY")]
+        unset_fields: Option<Vec<String>>,
+
+        /// Add a tag (repeatable)
+        #[arg(long = "add-tag", value_name = "TAG")]
+        add_tags: Option<Vec<String>>,
+
+        /// Remove a tag (repeatable)
+        #[arg(long = "remove-tag", value_name = "TAG")]
+        remove_tags: Option<Vec<String>>,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+
+        #[command(flatten)]
+        filters: BatchFilterArgs,
+    },
+
+    /// Move multiple tasks to a new parent
+    Reparent {
+        /// ID of new parent (flexible resolution)
+        #[arg(long)]
+        new_parent: String,
+
+        /// Don't cascade parent's project field
+        #[arg(long)]
+        no_cascade: bool,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+
+        #[command(flatten)]
+        filters: BatchFilterArgs,
+    },
+
+    /// Archive tasks (set status to done). Dry-run by default.
+    Archive {
+        /// Actually execute (archive is dry-run by default)
+        #[arg(long)]
+        execute: bool,
+
+        /// Archive reason (appended to task body)
+        #[arg(long)]
+        reason: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+
+        #[command(flatten)]
+        filters: BatchFilterArgs,
+    },
+
+    /// Merge duplicate tasks into a canonical task
+    Merge {
+        /// ID of the canonical task to keep
+        #[arg(long)]
+        canonical: String,
+
+        /// IDs of tasks to merge into canonical (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        merge: Vec<String>,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Create epic containers and reparent tasks under them
+    CreateEpics {
+        /// Load epic definitions from YAML file
+        #[arg(long)]
+        from: String,
+
+        /// Parent for all new epics
+        #[arg(long)]
+        parent: Option<String>,
+
+        /// Project for all new epics
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Change document type and move to correct directory
+    Reclassify {
+        /// New document type (task, memory, note, knowledge, project, epic, goal)
+        #[arg(long)]
+        new_type: String,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+
+        #[command(flatten)]
+        filters: BatchFilterArgs,
+    },
+}
+
+/// Shared filter arguments for batch commands.
+#[derive(clap::Args, Debug, Clone)]
+struct BatchFilterArgs {
+    /// Explicit task IDs (comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    ids: Option<Vec<String>>,
+
+    /// Filter by project
+    #[arg(long)]
+    project: Option<String>,
+
+    /// Filter by parent (direct children)
+    #[arg(long)]
+    parent: Option<String>,
+
+    /// Filter by subtree (all descendants)
+    #[arg(long)]
+    subtree: Option<String>,
+
+    /// Filter by status
+    #[arg(long)]
+    status: Option<String>,
+
+    /// Filter by exact priority
+    #[arg(long)]
+    priority: Option<i32>,
+
+    /// Filter by minimum priority (>=)
+    #[arg(long)]
+    priority_gte: Option<i32>,
+
+    /// Filter by tags (must have ALL, comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    tags: Option<Vec<String>>,
+
+    /// Filter by document type
+    #[arg(long = "type")]
+    doc_type: Option<String>,
+
+    /// Filter by age: older than N days (format: "90d")
+    #[arg(long)]
+    older_than: Option<String>,
+
+    /// Filter by staleness: not modified in N days (format: "60d")
+    #[arg(long)]
+    stale: Option<String>,
+
+    /// Filter orphan tasks (no parent, no project)
+    #[arg(long)]
+    orphan: bool,
+
+    /// Filter by title substring (case-insensitive)
+    #[arg(long)]
+    title_contains: Option<String>,
+
+    /// Filter by complexity
+    #[arg(long)]
+    complexity: Option<String>,
+
+    /// Filter by directory path
+    #[arg(long)]
+    directory: Option<String>,
+
+    /// Filter by minimum downstream weight
+    #[arg(long)]
+    weight_gte: Option<u32>,
 }
 
 fn default_pkb_root() -> String {
@@ -495,7 +718,10 @@ fn main() -> Result<()> {
     // Some commands need the store but not the embedder
     let needs_store_only = matches!(
         cli.command,
-        Commands::Tags { .. } | Commands::Memories { .. } | Commands::Forget { .. }
+        Commands::Tags { .. }
+            | Commands::Memories { .. }
+            | Commands::Forget { .. }
+            | Commands::Duplicates { .. }
     );
 
     let (embedder, store) = if needs_embedder {
@@ -2312,6 +2538,295 @@ fn main() -> Result<()> {
 
         Commands::Tui => {
             tui::run(&pkb_root, &db_path)?;
+        }
+
+        Commands::Batch(batch_cmd) => {
+            let graph = load_graph(&pkb_root, &db_path);
+            handle_batch_command(batch_cmd, &graph, &pkb_root)?;
+        }
+
+        Commands::GraphStats { project } => {
+            let graph = load_graph(&pkb_root, &db_path);
+            let stats = mem::batch_ops::stats::graph_stats(&graph, project.as_deref());
+            print!("{}", stats.display());
+        }
+
+        Commands::Duplicates {
+            project,
+            mode,
+            title_threshold,
+            semantic_threshold,
+            limit,
+        } => {
+            let graph = load_graph(&pkb_root, &db_path);
+            let store = load_store(&db_path, embeddings::EMBEDDING_DIM)?;
+
+            let mut filters = mem::batch_ops::filters::FilterSet::default();
+            filters.project = project;
+
+            let dup_mode = mem::batch_ops::duplicates::DuplicateMode::from_str(&mode);
+            let report = mem::batch_ops::duplicates::find_duplicates(
+                &graph,
+                &store.read(),
+                &filters,
+                dup_mode,
+                title_threshold,
+                semantic_threshold,
+            );
+
+            if report.clusters.is_empty() {
+                println!("No duplicates found.");
+            } else {
+                println!(
+                    "Found {} duplicate clusters ({} total duplicates)\n",
+                    report.total_clusters, report.total_duplicates
+                );
+                for (i, cluster) in report.clusters.iter().take(limit).enumerate() {
+                    println!(
+                        "Cluster {} (confidence: {:.2}, title: {:.2}, semantic: {:.2}):",
+                        i + 1,
+                        cluster.confidence,
+                        cluster.similarity_scores.title,
+                        cluster.similarity_scores.semantic,
+                    );
+                    for task in &cluster.tasks {
+                        let marker = if task.id == cluster.canonical {
+                            "★"
+                        } else {
+                            " "
+                        };
+                        let project = task
+                            .project
+                            .as_deref()
+                            .map(|p| format!(" [{p}]"))
+                            .unwrap_or_default();
+                        println!("  {marker} {:<24} {}{}", task.id, task.title, project);
+                    }
+                    println!();
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert CLI filter args to a FilterSet.
+fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
+    mem::batch_ops::filters::FilterSet {
+        ids: args.ids.clone(),
+        project: args.project.clone(),
+        parent: args.parent.clone(),
+        subtree: args.subtree.clone(),
+        status: args.status.clone(),
+        priority: args.priority,
+        priority_gte: args.priority_gte,
+        tags: args.tags.clone(),
+        doc_type: args.doc_type.clone(),
+        older_than_days: args.older_than.as_ref().and_then(parse_duration_days),
+        stale_days: args.stale.as_ref().and_then(parse_duration_days),
+        orphan: if args.orphan { Some(true) } else { None },
+        title_contains: args.title_contains.clone(),
+        complexity: args.complexity.clone(),
+        directory: args.directory.clone(),
+        weight_gte: args.weight_gte,
+    }
+}
+
+/// Parse duration like "90d" into days.
+fn parse_duration_days(s: &String) -> Option<u64> {
+    let s = s.trim();
+    if s.ends_with('d') {
+        s[..s.len() - 1].parse().ok()
+    } else {
+        s.parse().ok()
+    }
+}
+
+/// Handle batch subcommands.
+fn handle_batch_command(
+    cmd: BatchCommands,
+    graph: &graph_store::GraphStore,
+    pkb_root: &std::path::Path,
+) -> Result<()> {
+    match cmd {
+        BatchCommands::Update {
+            set_fields,
+            unset_fields,
+            add_tags,
+            remove_tags,
+            dry_run,
+            yes: _,
+            filters,
+        } => {
+            let filter_set = to_filter_set(&filters);
+            if filter_set.is_empty() {
+                eprintln!("Error: at least one filter is required for batch update");
+                std::process::exit(1);
+            }
+
+            // Build updates JSON
+            let mut updates = serde_json::Map::new();
+            if let Some(set_fields) = set_fields {
+                for field in set_fields {
+                    if let Some((key, value)) = field.split_once('=') {
+                        // Try to parse as number or bool, fall back to string
+                        let json_val = if let Ok(n) = value.parse::<i64>() {
+                            serde_json::Value::Number(n.into())
+                        } else if value == "true" {
+                            serde_json::Value::Bool(true)
+                        } else if value == "false" {
+                            serde_json::Value::Bool(false)
+                        } else {
+                            serde_json::Value::String(value.to_string())
+                        };
+                        updates.insert(key.to_string(), json_val);
+                    } else {
+                        eprintln!("Warning: ignoring malformed --set: {field}");
+                    }
+                }
+            }
+            if let Some(unset_fields) = unset_fields {
+                for field in unset_fields {
+                    updates.insert(field, serde_json::Value::Null);
+                }
+            }
+            if let Some(tags) = add_tags {
+                updates.insert(
+                    "_add_tags".to_string(),
+                    serde_json::Value::Array(tags.into_iter().map(serde_json::Value::String).collect()),
+                );
+            }
+            if let Some(tags) = remove_tags {
+                updates.insert(
+                    "_remove_tags".to_string(),
+                    serde_json::Value::Array(tags.into_iter().map(serde_json::Value::String).collect()),
+                );
+            }
+
+            if updates.is_empty() {
+                eprintln!("Error: no updates specified (use --set, --unset, --add-tag, or --remove-tag)");
+                std::process::exit(1);
+            }
+
+            let updates_val = serde_json::Value::Object(updates);
+            let summary = mem::batch_ops::update::batch_update(graph, pkb_root, &filter_set, &updates_val, dry_run);
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::Reparent {
+            new_parent,
+            no_cascade,
+            dry_run,
+            yes: _,
+            filters,
+        } => {
+            let filter_set = to_filter_set(&filters);
+            if filter_set.is_empty() {
+                eprintln!("Error: at least one filter is required for batch reparent");
+                std::process::exit(1);
+            }
+
+            let summary = mem::batch_ops::reparent::batch_reparent(
+                graph,
+                pkb_root,
+                &filter_set,
+                &new_parent,
+                !no_cascade,
+                dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::Archive {
+            execute,
+            reason,
+            yes: _,
+            filters,
+        } => {
+            let filter_set = to_filter_set(&filters);
+            if filter_set.is_empty() {
+                eprintln!("Error: at least one filter is required for batch archive");
+                std::process::exit(1);
+            }
+
+            let dry_run = !execute;
+            let summary = mem::batch_ops::update::batch_archive(
+                graph,
+                pkb_root,
+                &filter_set,
+                reason.as_deref(),
+                dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::Merge {
+            canonical,
+            merge,
+            dry_run,
+        } => {
+            if merge.is_empty() {
+                eprintln!("Error: at least one --merge ID is required");
+                std::process::exit(1);
+            }
+            let summary = mem::batch_ops::duplicates::batch_merge(
+                graph, pkb_root, &canonical, &merge, dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::CreateEpics {
+            from,
+            parent,
+            project,
+            dry_run,
+        } => {
+            let content = std::fs::read_to_string(&from)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error reading {from}: {e}");
+                    std::process::exit(1);
+                });
+
+            #[derive(serde::Deserialize)]
+            struct EpicsFile {
+                #[serde(default)]
+                parent: Option<String>,
+                #[serde(default)]
+                project: Option<String>,
+                epics: Vec<mem::batch_ops::epics::EpicDef>,
+            }
+
+            let file: EpicsFile = serde_yaml::from_str(&content)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error parsing YAML: {e}");
+                    std::process::exit(1);
+                });
+
+            // CLI args override file-level defaults
+            let parent = parent.as_deref().or(file.parent.as_deref());
+            let project = project.as_deref().or(file.project.as_deref());
+
+            let summary = mem::batch_ops::epics::batch_create_epics(
+                graph, pkb_root, parent, project, &file.epics, dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::Reclassify {
+            new_type,
+            dry_run,
+            filters,
+        } => {
+            let filter_set = to_filter_set(&filters);
+            if filter_set.is_empty() {
+                eprintln!("Error: at least one filter is required for batch reclassify");
+                std::process::exit(1);
+            }
+            let summary = mem::batch_ops::reclassify::batch_reclassify(
+                graph, pkb_root, &filter_set, &new_type, dry_run,
+            );
+            print!("{}", summary.display());
         }
     }
 
