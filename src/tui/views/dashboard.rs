@@ -227,7 +227,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let mut bottom_lines: Vec<Line> = Vec::new();
     if !orphans.is_empty() {
         bottom_lines.push(Line::from(vec![Span::styled(
-            format!("  ○ {} orphan nodes (unlinked)", orphans.len()),
+            format!("  ○ {} orphan nodes (no valid parent)", orphans.len()),
             Style::default().fg(Color::Yellow),
         )]));
     }

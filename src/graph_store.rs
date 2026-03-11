@@ -563,17 +563,17 @@ impl GraphStore {
     // Analysis tools
     // -----------------------------------------------------------------------
 
-    /// Find orphan nodes (nodes with zero edges — no incoming or outgoing).
+    /// Find orphan nodes (nodes with no valid parent).
+    ///
+    /// A node is an orphan if its `parent` field is either absent or references
+    /// an ID that doesn't exist in the graph.
     pub fn orphans(&self) -> Vec<&GraphNode> {
-        // Build set of all node IDs that appear in any edge
-        let mut connected: HashSet<&str> = HashSet::new();
-        for edge in &self.edges {
-            connected.insert(&edge.source);
-            connected.insert(&edge.target);
-        }
         self.nodes
             .values()
-            .filter(|n| !connected.contains(n.id.as_str()))
+            .filter(|n| match &n.parent {
+                None => true,
+                Some(pid) => !self.nodes.contains_key(pid.as_str()),
+            })
             .collect()
     }
 

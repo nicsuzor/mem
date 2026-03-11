@@ -332,7 +332,7 @@ enum Commands {
         max_paths: usize,
     },
 
-    /// Find disconnected (orphan) nodes with no edges
+    /// Find orphan nodes with no valid parent
     Orphans {
         /// Filter by node type (e.g. task, project, note)
         #[arg(short = 'T', long = "type")]
@@ -1959,7 +1959,7 @@ fn main() -> Result<()> {
 
             println!();
             println!(
-                "  \x1b[1m{} orphan nodes{type_desc}\x1b[0m (no incoming or outgoing edges)\n",
+                "  \x1b[1m{} orphan nodes{type_desc}\x1b[0m (no valid parent)\n",
                 orphans.len()
             );
 

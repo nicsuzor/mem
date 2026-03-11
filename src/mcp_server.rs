@@ -766,7 +766,7 @@ impl PkbSearchServer {
 
         if orphans.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
-                "No orphan nodes found. All nodes have at least one connection.",
+                "No orphan nodes found. All nodes have a valid parent.",
             )]));
         }
 
@@ -783,7 +783,7 @@ impl PkbSearchServer {
             .unwrap_or_default();
 
         let mut output = format!(
-            "**{total} orphan nodes{type_desc}** (showing {showing})\n\nThese nodes have no edges — no incoming or outgoing connections.\n\n"
+            "**{total} orphan nodes{type_desc}** (showing {showing})\n\nThese nodes have no valid parent.\n\n"
         );
 
         for node in orphans.iter().take(max) {
@@ -2757,7 +2757,7 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "pkb_orphans",
-                "Find disconnected nodes with zero edges (no incoming or outgoing connections). Filter by node type or project.",
+                "Find orphan nodes with no valid parent (parent is absent or references a non-existent node). Filter by node type or project.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
