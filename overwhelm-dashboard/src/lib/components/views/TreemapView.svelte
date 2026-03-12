@@ -7,13 +7,13 @@
     import { routeTreemapEdges } from "../shared/EdgeRenderer";
     import type { GraphEdge } from "../../data/prepareGraphData";
 
-    let { containerGroup } = $props<{ containerGroup: SVGGElement | null }>();
+    let { containerGroup, width = 2000, height = 1000 } = $props<{ containerGroup: SVGGElement | null; width?: number; height?: number }>();
 
     let nodesLayer: SVGGElement;
     let edgesLayer: SVGGElement;
 
-    const canvasW = 2000;
-    const canvasH = 1200;
+    const canvasW = 3000;
+    const canvasH = $derived(canvasW * (height && width ? height / width : 0.5));
 
     $effect(() => {
         if (containerGroup && $graphData && nodesLayer) {
@@ -135,17 +135,17 @@
             return;
         }
 
-        root.sum(d => d.value || 1).sort((a, b) => (b.value || 0) - (a.value || 0));
+        root.sum(d => {
+            if (d.children?.length) return 0;
+            return Math.max(2, d.dw || 1);
+        }).sort((a, b) => (b.value || 0) - (a.value || 0));
 
-        // Revert to Squarify to preserve the 2D "map" spatial identity.
-        // We use a high ratio (e.g. 5.0) to strongly bias towards W > H 
-        // without mathematically breaking the algorithm into a 1D list.
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
             .paddingInner(3)
             .paddingOuter(4)
             .paddingTop(22)
-            .tile(d3.treemapSquarify.ratio(5.0))
+            .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
 
         treemap(root);

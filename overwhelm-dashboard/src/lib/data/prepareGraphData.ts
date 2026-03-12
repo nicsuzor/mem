@@ -191,7 +191,7 @@ export function prepareGraphData(
     const d3Nodes: GraphNode[] = [];
     for (const node of rawNodes) {
         const nid = node.id;
-        const nodeType = node.node_type || "task";
+        const nodeType = node.node_type || "";
         const status = (node.status || "inbox").toLowerCase();
         const priority = typeof node.priority === 'number' ? node.priority : 2;
         const dw = node.downstream_weight || 0;
@@ -203,7 +203,6 @@ export function prepareGraphData(
         // Strip redundant type prefixes (e.g. "Epic: ...", "Project: ...")
         label = label.replace(/^(Epic|Project|Task|Goal|Note|Memory):\s*/i, '');
         const fullTitle = label;
-        if (label.length > 60) label = label.substring(0, 57) + "...";
 
         // Skip file-system recency extraction as we are in browser JS.
         // Must rely on node.modified if passed in.

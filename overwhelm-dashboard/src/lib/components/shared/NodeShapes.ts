@@ -12,8 +12,9 @@ function escapeHtml(str: string): string {
 
 function statusOpacity(d: GraphNode) {
     if (['done', 'completed', 'cancelled'].includes(d.status)) return 0.15;
-    if (d.status === 'active') return 0.9;
-    return 0.35; // The baseline "Void" state
+    if (['active', 'inbox', 'todo', 'in_progress', 'review'].includes(d.status)) return 0.9;
+    if (['waiting', 'decomposing', 'dormant'].includes(d.status)) return 0.5;
+    return 0.35;
 }
 
 export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, undefined>, d: GraphNode, isSelected = false) {
@@ -240,7 +241,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // Only attempt to render text if we have enough space. Small nodes collapse to solid colored boxes.
     // Address tall-node symptom: Do not attempt to render text in narrow vertical slices
-    if (w > 15 && h > 10 && (w >= h * 0.7)) {
+    if (w > 15 && h > 10 && (w >= h * 0.35 || w > 40)) {
         const label = escapeHtml(d.label || '');
         const pad = 6;
 
