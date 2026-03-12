@@ -14,6 +14,8 @@
 
     let description = $state("");
     let loadingBody = $state(false);
+    let updating = $state(false);
+    let updateError = $state<string | null>(null);
 
     // Fetch body on-demand
     $effect(() => {
@@ -72,9 +74,26 @@
             return { ...gd, nodes };
         });
 
-        console.log(`[AGENT ACTION REQUIRED] Update task ${taskId} with:`, updates);
-        // In a real app, this would be an API call.
-        // As an agent, I will perform the mcp__pkb__update_task call after this file edit.
+        // Persist via aops CLI
+        if (updates.status) {
+            updating = true;
+            updateError = null;
+            try {
+                const res = await fetch('/api/task/status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: taskId, status: updates.status })
+                });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    updateError = data.error ?? `HTTP ${res.status}`;
+                }
+            } catch (e: any) {
+                updateError = e.message ?? 'Network error';
+            } finally {
+                updating = false;
+            }
+        }
     }
 
     function setStatus(status: string) {
@@ -174,14 +193,16 @@
 
                 <div class="flex gap-2 mt-1">
                     <button
-                        class="flex-1 py-1.5 border border-primary {task.status === 'done' ? 'bg-primary text-background' : 'bg-primary/5 text-primary'} hover:bg-primary hover:text-background font-bold text-[10px] transition-all rounded-sm uppercase tracking-widest"
+                        class="flex-1 py-1.5 border border-primary {task.status === 'done' ? 'bg-primary text-background' : 'bg-primary/5 text-primary'} hover:bg-primary hover:text-background font-bold text-[10px] transition-all rounded-sm uppercase tracking-widest disabled:opacity-50"
                         onclick={() => setStatus('done')}
+                        disabled={updating}
                     >
                         {task.status === 'done' ? 'FINISHED' : 'COMPLETE'}
                     </button>
                     <button
-                        class="px-2 py-1.5 border border-primary/40 {task.status === 'ready' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm"
+                        class="px-2 py-1.5 border border-primary/40 {task.status === 'ready' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
                         onclick={() => setStatus('ready')}
+                        disabled={updating}
                     >
                         READY
                     </button>
@@ -191,6 +212,11 @@
                         <span class="material-symbols-outlined text-xs">delete</span>
                     </button>
                 </div>
+                {#if updating}
+                    <p class="text-[9px] text-primary/50 mt-1 font-mono">saving…</p>
+                {:else if updateError}
+                    <p class="text-[9px] text-destructive mt-1 font-mono">{updateError}</p>
+                {/if}
             </div>
         </div>
 
