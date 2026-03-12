@@ -699,6 +699,10 @@ impl GraphStore {
 
         // Drop nodes that weren't placed by this layout
         nodes.retain(|n| n.x.is_some() && n.y.is_some());
+
+        // Drop non-task documents: only include nodes with explicit frontmatter ID
+        // TODO: Add a separate full-PKB export for knowledge graph views
+        nodes.retain(|n| n.task_id.is_some());
         let placed_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
         edges.retain(|e| placed_ids.contains(e.source.as_str()) && placed_ids.contains(e.target.as_str()));
 

@@ -117,6 +117,9 @@ pub struct GraphNode {
     pub permalinks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// Computed status group: "active", "blocked", or "completed"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_group: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub downstream_weight: f64,
     #[serde(default, skip_serializing_if = "is_zero_f64")]
@@ -264,10 +267,32 @@ pub const VALID_STATUSES: &[&str] = &[
 /// Statuses that indicate a task is finished (no longer active).
 pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled"];
 
+/// Statuses that represent active/open work items.
+pub const ACTIVE_STATUSES: &[&str] = &[
+    "active", "in_progress", "review", "waiting",
+    "draft", "submitted", "accepted",
+    "paused", "someday",
+];
+
+/// Statuses that represent blocked work.
+pub const BLOCKED_STATUSES: &[&str] = &["blocked"];
+
 /// Returns true if the status represents a completed/finished state.
 pub fn is_completed(status: Option<&str>) -> bool {
     matches!(status, Some("done") | Some("cancelled"))
 }
+
+/// Returns the status group ("active", "blocked", or "completed") for a given status.
+pub fn status_group(status: Option<&str>) -> &'static str {
+    match status {
+        Some(s) if COMPLETED_STATUSES.contains(&s) => "completed",
+        Some(s) if BLOCKED_STATUSES.contains(&s) => "blocked",
+        _ => "active",
+    }
+}
+
+/// Node types that represent actionable work items (shown in dashboards).
+pub const TASK_TYPES: &[&str] = &["task", "goal", "project", "epic"];
 
 /// All recognized canonical node type values.
 pub const VALID_NODE_TYPES: &[&str] = &[
@@ -517,6 +542,8 @@ impl GraphNode {
             })
             .unwrap_or_default();
 
+        let sg = status.as_deref().map(|s| status_group(Some(s)).to_string());
+
         GraphNode {
             id,
             path: doc.path.clone(),
@@ -546,6 +573,7 @@ impl GraphNode {
             leaf,
             raw_links,
             permalinks,
+            status_group: sg,
             task_id,
             downstream_weight: 0.0,
             pagerank: 0.0,
