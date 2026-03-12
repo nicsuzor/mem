@@ -255,13 +255,13 @@
             .data(data.links)
             .join("path")
             .attr("fill", "none")
-            .attr("stroke", (d: any) => d.type === 'depends_on' ? 'var(--color-destructive)' : d.type === 'ref' ? 'var(--color-primary)' : 'rgba(255,255,255,0.2)')
-            .attr("stroke-width", (d: any) => d.type === 'depends_on' ? 2.5 : d.type === 'ref' ? 1.5 : 1)
-            .attr("stroke-dasharray", (d: any) => d.type === 'ref' ? '4,4' : null)
+            .attr("stroke", (d: any) => d.color)
+            .attr("stroke-width", (d: any) => d.width)
+            .attr("stroke-dasharray", (d: any) => d.dash)
             .attr("marker-end", "url(#ar)")
             .attr("stroke-linecap", "round")
             .attr("stroke-linejoin", "round")
-            .attr("opacity", (d: any) => d.type === 'depends_on' ? 0.8 : d.type === 'ref' ? 0.5 : 0.2)
+            .attr("opacity", (d: any) => d.type === 'depends_on' ? 0.8 : d.type === 'parent' ? 0.9 : 0.5)
             .attr("class", "force-edge");
 
         if ($viewSettings.viewMode === "SFDP") {

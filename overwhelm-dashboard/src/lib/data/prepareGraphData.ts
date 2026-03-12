@@ -308,7 +308,7 @@ export function prepareGraphData(
     const d3Links: GraphEdge[] = [];
     for (const edge of validEdges) {
         let etype = edge.type || classifyEdge(edge.source, edge.target, nodeById);
-        if (['soft_depends_on', 'link', 'wikilink'].includes(etype)) {
+        if (['link', 'wikilink'].includes(etype)) {
             etype = 'ref';
         }
 
@@ -319,21 +319,24 @@ export function prepareGraphData(
         let dash: string;
 
         if (etype === 'parent') {
-            color = "#f2aa0d"; // Amber for containment/parent
-            width = 3.0;
+            color = "#facc15"; // Yellow for containment/parent
+            width = 3.5;
             dash = "";
         } else if (etype === 'depends_on') {
-            color = "#FF2A6D"; // Neon Red/Pink for dependencies
-            width = 2.5;
+            color = "#ef4444"; // Red for hard dependencies
+            width = 3.0;
             dash = "";
             const tw = targetWeight.get(edge.target) || 0;
             if (tw > 0 && maxWeight > 0) {
                 const critRatio = Math.min(Math.log1p(tw) / Math.log1p(maxWeight), 1.0);
                 if (critRatio > 0.5) {
-                    width = 2.0 + critRatio * 2.0;
-                    color = "#ff4d85"; // Lighter pink/red
+                    width = 2.5 + critRatio * 1.5;
                 }
             }
+        } else if (etype === 'soft_depends_on') {
+            color = "#3b82f6"; // Blue for soft dependencies
+            width = 2.0;
+            dash = "4,4";
         } else {
             color = "#a3a3a3"; // Lighter grey for references
             width = 1.5;

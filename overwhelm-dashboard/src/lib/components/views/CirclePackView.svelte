@@ -75,56 +75,17 @@
 
         const pack = d3.pack<any>().size([2000, 2000]).padding(10);
 
-        // Pass 1: Determine sizes
         pack(root);
 
-        // Pass 2: Rollup
         const nodesToRollup = new Set<string>();
-        root.descendants().forEach(d => {
-            if (d.children && d.children.length > 0 && d.depth > 0) {
-                // If the smallest child's radius is too small for text
-                const minChildR = Math.min(...d.children.map(c => c.r));
-                if (minChildR < $viewSettings.circleRollupThreshold || d.r < ($viewSettings.circleRollupThreshold * 2.5)) {
-                    nodesToRollup.add(d.data.id);
-                }
-            }
-        });
-
-        // Child lookup map for raw data
-        const childrenMap = new Map<string, any[]>();
-        root.descendants().forEach(d => {
-            if (d.children) {
-                childrenMap.set(d.data.id, d.children.map(c => c.data));
-            }
-        });
-
-        const prunedRoot = d3.hierarchy(root.data, d => {
-            if (nodesToRollup.has(d.id)) return null;
-            return childrenMap.get(d.id);
-        });
-
-        prunedRoot.sum(computeSum).sort((a, b) => {
-            const pa = a.data.priority ?? 5;
-            const pb = b.data.priority ?? 5;
-            if (pa !== pb) return pa - pb;
-            const statusOrder: Record<string, number> = { "active": 0, "blocked": 1, "waiting": 2, "review": 3, "done": 4, "completed": 4, "cancelled": 5 };
-            const sa = statusOrder[a.data.status] ?? 10;
-            const sb = statusOrder[b.data.status] ?? 10;
-            if (sa !== sb) return sa - sb;
-            return (b.value || 0) - (a.value || 0);
-        });
-
-        pack(prunedRoot);
-
-        const leavesAndParents = prunedRoot
-            .descendants()
-            .filter((d) => d.data.id !== rootId && d.value! > 0);
+        // Rollup logic removed to show all nodes again as per user request
 
         const layoutMap = new Map();
-        leavesAndParents.forEach((d: any) => {
+        root.descendants().forEach((d: any) => {
+            if (d.data.id === rootId) return;
             layoutMap.set(d.data.id, {
-                x: d.x,
-                y: d.y,
+                x: d.x - 1000, // center at 0
+                y: d.y - 1000,
                 r: d.r,
                 depth: d.depth,
                 isLeaf: !d.children,
@@ -135,8 +96,7 @@
         nodes.forEach((n) => {
             const l = layoutMap.get(n.id);
             if (l) {
-                n.x = l.x - 1000; // center at 0
-                n.y = l.y - 1000;
+                n.x = l.x; n.y = l.y;
                 n.depth = l.depth;
                 n._lr = l.r;
                 n._isLeaf = l.isLeaf;

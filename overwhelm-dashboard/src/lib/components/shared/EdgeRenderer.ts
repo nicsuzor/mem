@@ -56,8 +56,17 @@ export function routeForceEdges(linkSelection: Selection<any, any, any, any>) {
         const sx = d.source.x, sy = d.source.y;
         const tx = d.target.x, ty = d.target.y;
         if (sx == null || tx == null) return null;
+
+        if (d.type === 'parent') {
+            const my = (sy + ty) / 2;
+            return `M${sx},${sy} L${sx},${my} L${tx},${my} L${tx},${ty}`;
+        }
         return `M${sx},${sy} L${tx},${ty}`;
-    }).attr("opacity", (d: any) => d.type === "ref" ? 0.4 : 0.7);
+    })
+    .attr("stroke", (d: any) => d.color)
+    .attr("stroke-width", (d: any) => d.width)
+    .attr("stroke-dasharray", (d: any) => d.dash)
+    .attr("opacity", (d: any) => d.type === "ref" ? 0.35 : 0.85);
 }
 
 export function routeSfdpEdges(linkSelection: Selection<any, any, any, any>) {
@@ -70,5 +79,9 @@ export function routeSfdpEdges(linkSelection: Selection<any, any, any, any>) {
         // Manhattan routing (orthogonal steps)
         const my = (sy + ty) / 2;
         return `M${sx},${sy} L${sx},${my} L${tx},${my} L${tx},${ty}`;
-    }).attr("opacity", (d: any) => d.type === "ref" ? 0.3 : 0.6);
+    })
+    .attr("stroke", (d: any) => d.color)
+    .attr("stroke-width", (d: any) => d.width)
+    .attr("stroke-dasharray", (d: any) => d.dash)
+    .attr("opacity", (d: any) => d.type === "ref" ? 0.35 : 0.85);
 }

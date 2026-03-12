@@ -68,7 +68,7 @@
             // Apply requested defaults for specific views
             if ($viewSettings.viewMode === "SFDP") {
                 filters.update(f => ({ ...f, showActive: true, showBlocked: true, showCompleted: false, showOrphans: true, showDependencies: true }));
-                viewSettings.update(s => ({ ...s, topNLeaves: 9999 })); // Show ALL
+                viewSettings.update(s => ({ ...s, topNLeaves: 9999, gravity: 1.0, chargeStrength: 1.5 })); // Show ALL, high gravity
             } else if ($viewSettings.viewMode === "Force Atlas 2") {
                 filters.update(f => ({ ...f, showActive: true, showBlocked: false, showCompleted: false, showOrphans: false }));
                 viewSettings.update(s => ({ ...s, topNLeaves: 40 })); // Priority only (smaller N)
