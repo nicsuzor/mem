@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.33](https://github.com/nicsuzor/mem/compare/v0.2.32...v0.2.33) - 2026-03-12
+
+### Other
+
+- update treemap
+
 ## [0.2.32](https://github.com/nicsuzor/mem/compare/v0.2.31...v0.2.32) - 2026-03-11
 
 ### Added
