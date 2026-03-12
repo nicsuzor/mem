@@ -122,6 +122,26 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     // Base color logic: Project-based Hue
     const hue = projectHue(d.project || d.id);
 
+    if (d._isOverflow) {
+        g.append("rect")
+            .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
+            .attr("rx", 4)
+            .attr("fill", "rgba(0,0,0,0.4)")
+            .attr("stroke", "rgba(255,255,255,0.15)").attr("stroke-width", 1)
+            .attr("stroke-dasharray", "4,4")
+            .style("transition", "all 0.2s ease");
+            
+        if (w > 40 && h > 15) {
+            g.append("text")
+                .attr("x", 0).attr("y", 0)
+                .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+                .attr("font-size", "10px").attr("font-weight", "bold").attr("font-family", "monospace")
+                .attr("fill", "rgba(255,255,255,0.5)")
+                .text(d.label || '[...]');
+        }
+        return; // Skip the rest of the drawing logic for overflow nodes
+    }
+
     // Priority-based spectral colors for leaves (optional override or accent)
     const spectralHues = [
         "#ef4444", // 0 Critical (Red)
@@ -219,13 +239,14 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     }
 
     // Only attempt to render text if we have enough space. Small nodes collapse to solid colored boxes.
-    if (w > 35 && h > 25) {
+    // Address tall-node symptom: Do not attempt to render text in narrow vertical slices
+    if (w > 15 && h > 10 && (w >= h * 0.7)) {
         const label = escapeHtml(d.label || '');
         const pad = 6;
 
         if (isParent) {
             // Parent nodes: Draw label in the header bar
-            if (w > 40) {
+            if (w > 40 && h > 20) {
                 g.append("foreignObject")
                     .attr("x", -w / 2 + pad).attr("y", -h / 2 + 2)
                     .attr("width", Math.max(0, w - pad * 2)).attr("height", 24)
@@ -244,7 +265,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             }
         } else {
             // Leaf nodes: Draw title
-            const fs = Math.max(8, Math.min(13, Math.min(w, h) * 0.28));
+            const fs = Math.max(7, Math.min(13, Math.min(w, h) * 0.28));
             const linesAvailable = Math.max(1, Math.floor((h - pad * 2) / (fs * 1.2)));
 
             const isBlocked = d.status === "blocked";
@@ -262,13 +283,14 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .html(`
                     ${isBlocked && h > 40 ? `<div style="display: flex; justify-content: flex-end; margin-bottom: 2px;"><span class="material-symbols-outlined" style="font-size: ${fs + 2}px; color: #fff; background: var(--color-destructive); border-radius: 50%;">warning</span></div>` : ''}
-                    <div style="font-size: ${fs}px; font-weight: 500; color: ${textColor}; line-height: 1.2; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${linesAvailable}; -webkit-box-orient: vertical; letter-spacing: -0.01em;">
+                    <div style="font-size: ${fs}px; font-weight: 500; color: ${textColor}; line-height: 1.1; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${linesAvailable}; -webkit-box-orient: vertical; letter-spacing: -0.01em;">
                         ${label}
                     </div>
                 `);
         }
     }
 }
+
 export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, undefined>, d: any, isSelected = false) {
     const r = Math.max(d._lr || d.w / 2 || 5, 2);
     const isParent = !d.isLeaf;
@@ -283,28 +305,59 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         g.classed("selected-node", false);
     }
 
+    // Color logic similar to Treemap
+    const hue = projectHue(d.project || d.id);
+    const spectralHues = [
+        "#ef4444", // 0 Critical
+        "#f97316", // 1 High
+        "#f59e0b", // 2 Med
+        "#06b6d4", // 3 Low
+        "#8b5cf6", // 4 Backlog
+    ];
+
+    let cellColor: string;
+    if (isParent) {
+        cellColor = `hsl(${hue}, 40%, 25%)`;
+    } else {
+        if (d.priority !== undefined && d.priority >= 0 && d.priority <= 2 && d.status !== 'done') {
+            cellColor = spectralHues[d.priority];
+        } else {
+            cellColor = `hsl(${hue}, 35%, ${d.status === 'active' ? '35%' : '15%'})`;
+        }
+    }
+
     if (isParent) {
         // Parent containment circle
         g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
-            .attr("fill", "rgba(255,255,255,0.03)")
-            .attr("stroke", isSelected ? "#fff" : "rgba(242, 170, 13, 0.2)")
-            .attr("stroke-width", isSelected ? 4 : 1)
-            .attr("stroke-dasharray", "4,2");
+            .attr("fill", cellColor).attr("fill-opacity", 0.1)
+            .attr("stroke", isSelected ? "#fff" : `hsl(${hue}, 50%, 45%)`)
+            .attr("stroke-width", isSelected ? 3 : 1)
+            .attr("stroke-dasharray", isSelected ? "none" : "3,2");
 
         // Parent label at top
-        if (r > 20) {
-            g.append("text").attr("class", "node-text")
-                .attr("x", 0).attr("y", -r + 12)
-                .attr("text-anchor", "middle")
-                .attr("font-size", "9px").attr("font-weight", "bold")
-                .attr("fill", "rgba(242, 170, 13, 0.6)").attr("text-transform", "uppercase")
-                .text((d.label || '').substring(0, 30));
+        if (r > 30) {
+            const fs = Math.max(8, Math.min(14, r * 0.1));
+            g.append("foreignObject")
+                .attr("x", -r * 0.7).attr("y", -r + pad(r))
+                .attr("width", r * 1.4).attr("height", fs * 2.5)
+                .style("pointer-events", "none")
+                .append("xhtml:div")
+                .style("display", "flex")
+                .style("justify-content", "center")
+                .style("width", "100%")
+                .style("pointer-events", "none")
+                .html(`
+                    <div style="font-size: ${fs}px; font-weight: 800; color: hsl(${hue}, 70%, 75%); text-transform: uppercase; letter-spacing: 0.1em; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 0 5px rgba(0,0,0,0.5);">
+                        ${escapeHtml(d.label || '')}
+                    </div>
+                `);
         }
     } else {
         // Leaf task circle
         g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
-            .attr("fill", d.fill).attr("fill-opacity", opacity)
-            .attr("stroke", isSelected ? "#fff" : d.borderColor).attr("stroke-width", isSelected ? 4 : 1);
+            .attr("fill", cellColor).attr("fill-opacity", opacity)
+            .attr("stroke", isSelected ? "#fff" : cellColor)
+            .attr("stroke-width", isSelected ? 4 : 1);
 
         if (d.status === "blocked" && d.dw >= 2) {
             g.insert("circle", ":first-child")
@@ -313,17 +366,35 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 .attr("class", "danger-pulse");
         }
 
-        if (r > 8) {
-            const label = (d.label || '').substring(0, 24);
-            const fs = Math.max(5, Math.min(12, r * 0.4));
-            g.append("text").attr("class", "node-text")
-                .attr("x", 0).attr("y", 0)
-                .attr("text-anchor", "middle").attr("dominant-baseline", "central")
-                .attr("font-size", fs + "px").attr("fill", d.textColor || "#fff").attr("opacity", 0.9)
-                .text(label.length > 20 ? label.substring(0, 18) + '...' : label);
+        if (r > 12) {
+            const fs = Math.max(6, Math.min(12, r * 0.35));
+            const innerW = r * 1.5;
+            const innerH = r * 1.5;
+
+            g.append("foreignObject")
+                .attr("x", -innerW / 2).attr("y", -innerH / 2)
+                .attr("width", innerW).attr("height", innerH)
+                .style("pointer-events", "none")
+                .append("xhtml:div")
+                .style("display", "flex")
+                .style("align-items", "center")
+                .style("justify-content", "center")
+                .style("width", "100%")
+                .style("height", "100%")
+                .style("pointer-events", "none")
+                .html(`
+                    <div style="font-size: ${fs}px; font-weight: 600; color: #fff; line-height: 1; text-align: center; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; padding: 4px;">
+                        ${escapeHtml(d.label || '')}
+                    </div>
+                `);
         }
     }
-}
+    }
+
+    function pad(r: number) {
+    return Math.min(20, r * 0.15);
+    }
+
 
 export function buildArcNode(g: d3.Selection<SVGGElement, any, null, undefined>, d: any, isSelected = false) {
     const r = Math.max(4, (d.dw || 1) * 0.5 + 3);

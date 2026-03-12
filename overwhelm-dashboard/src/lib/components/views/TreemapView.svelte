@@ -1,151 +1,157 @@
 <script lang="ts">
     import * as d3 from "d3";
-    import { onMount } from "svelte";
     import { graphData } from "../../stores/graph";
     import { filters } from "../../stores/filters";
     import { toggleSelection, selection } from "../../stores/selection";
     import { buildTreemapNode } from "../shared/NodeShapes";
     import { routeTreemapEdges } from "../shared/EdgeRenderer";
+    import type { GraphEdge } from "../../data/prepareGraphData";
 
-    export let containerGroup: SVGGElement;
-    export let width = 2000;
-    export let height = 1000;
+    let { containerGroup } = $props<{ containerGroup: SVGGElement | null }>();
 
     let nodesLayer: SVGGElement;
     let edgesLayer: SVGGElement;
 
-    let layoutComputed = false;
-    let lastGraphData: any = null;
+    const canvasW = 2000;
+    const canvasH = 1200;
 
-    $: {
-        if (containerGroup && $graphData && nodesLayer && edgesLayer && $selection && width && height) {
-            const dataChanged = $graphData !== lastGraphData;
-            if (dataChanged) {
-                computeTreemapLayout();
-                lastGraphData = $graphData;
-                layoutComputed = true;
-            }
-            if (layoutComputed) {
-                renderTreemapNodes();
-            }
+    $effect(() => {
+        if (containerGroup && $graphData && nodesLayer) {
+            updateLayoutAndRender();
         }
-    }
+    });
 
-    let activeSynthNodes: any[] = [];
-
-    function computeTreemapLayout() {
-        if (!$graphData) return;
-
+    function updateLayoutAndRender() {
         const data = $graphData;
+        if (!data) return;
         const nodes = data.nodes;
 
-        const rootId = "__root__";
+        const virtualRootId = "__treemap_root__";
         const nodeIdSet = new Set(nodes.map(n => n.id));
-        const treemapNodes = [
-            { id: rootId, parent: "", type: "root", label: "ROOT" },
-            ...nodes.map((n) => ({
+        const projectRootId = $filters.projectFilter;
+        
+        let stratifyNodes;
+        let rootId;
+
+        if (projectRootId && nodeIdSet.has(projectRootId)) {
+            rootId = projectRootId;
+            stratifyNodes = nodes.map(n => ({
                 ...n,
-                parent: (n.parent && nodeIdSet.has(n.parent)) ? n.parent : rootId,
-            })),
-        ];
+                parent: (n.parent && nodeIdSet.has(n.parent) && n.id !== rootId) ? n.parent : (n.id === rootId ? "" : "__ignore__")
+            })).filter(n => n.parent !== "__ignore__");
+        } else {
+            rootId = virtualRootId;
+            stratifyNodes = [
+                { id: rootId, parent: "", type: "root" },
+                ...nodes.map((n) => ({
+                    ...n,
+                    parent: (n.parent && nodeIdSet.has(n.parent)) ? n.parent : rootId,
+                })),
+            ];
+        }
 
         let root;
         try {
+            // Pre-stratification Rollup Strategy:
+            // For any parent node, if it has more than MAX_NODES_PER_PARENT children,
+            // we group the lowest priority ones into a synthetic overflow node.
+            const MAX_NODES_PER_PARENT = 10;
+            
+            const parentMap = new Map<string, any[]>();
+            stratifyNodes.forEach(n => {
+                if (!parentMap.has(n.parent)) parentMap.set(n.parent, []);
+                parentMap.get(n.parent)!.push(n);
+            });
+
+            const rolledUpNodes: any[] = [];
+            const syntheticNodes: any[] = [];
+            
+            // To safely prune, if we prune a node, we must also discard its descendants.
+            // We'll track discarded IDs to filter them out later.
+            const discardedIds = new Set<string>();
+            
+            parentMap.forEach((children, parentId) => {
+                if (children.length > MAX_NODES_PER_PARENT) {
+                    children.sort((a, b) => {
+                        const pa = a.priority ?? 5;
+                        const pb = b.priority ?? 5;
+                        if (pa !== pb) return pa - pb;
+                        return (b.value || 0) - (a.value || 0);
+                    });
+
+                    const keep = children.slice(0, MAX_NODES_PER_PARENT - 1);
+                    const rollup = children.slice(MAX_NODES_PER_PARENT - 1);
+                    
+                    rolledUpNodes.push(...keep);
+                    
+                    if (rollup.length > 0) {
+                        const synthId = `__rollup_${parentId}__`;
+                        syntheticNodes.push({
+                            id: synthId,
+                            parent: parentId,
+                            label: `+ ${rollup.length} more tasks...`,
+                            status: 'active',
+                            priority: 4,
+                            type: 'synthetic',
+                            value: rollup.reduce((sum, n) => sum + (n.value || 1), 0),
+                            _isOverflow: true
+                        });
+                        
+                        rollup.forEach(r => discardedIds.add(r.id));
+                    }
+                } else {
+                    rolledUpNodes.push(...children);
+                }
+            });
+
+            const rootItem = stratifyNodes.find(n => !n.parent);
+            if (rootItem && !rolledUpNodes.find(n => n.id === rootItem.id)) {
+                rolledUpNodes.push(rootItem);
+            }
+
+            // We must now recursively remove any node whose ancestor was discarded
+            let filteredNodes = [...rolledUpNodes, ...syntheticNodes];
+            let changed = true;
+            while (changed) {
+                changed = false;
+                const newFiltered = [];
+                for (const n of filteredNodes) {
+                    if (discardedIds.has(n.parent)) {
+                        discardedIds.add(n.id);
+                        changed = true;
+                    } else {
+                        newFiltered.push(n);
+                    }
+                }
+                filteredNodes = newFiltered;
+            }
+
             root = d3
                 .stratify<any>()
                 .id((d) => d.id)
-                .parentId((d) => d.parent)(treemapNodes);
+                .parentId((d) => d.parent)(filteredNodes);
         } catch (e) {
-            console.warn("Stratify failed for Treemap", e);
+            console.error("Stratify failed for Treemap", e);
             return;
         }
 
-        const computeSum = (d: any) => {
-            if (d.children?.length) return 0;
-            if (["done", "completed", "cancelled"].includes(d.status)) return 0.1;
-            return Math.max(2, d.dw || 1);
-        };
+        root.sum(d => d.value || 1).sort((a, b) => (b.value || 0) - (a.value || 0));
 
-        root.sum(computeSum).sort((a, b) => (a.data.priority ?? 5) - (b.data.priority ?? 5));
-
-        const canvasW = 3000;
-        const aspect = (height && width) ? height / width : 0.5;
-        const canvasH = canvasW * aspect;
-
+        // Revert to Squarify to preserve the 2D "map" spatial identity.
+        // We use a high ratio (e.g. 5.0) to strongly bias towards W > H 
+        // without mathematically breaking the algorithm into a 1D list.
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
             .paddingInner(12)
             .paddingOuter(14)
             .paddingTop(36)
-            .tile(d3.treemapSquarify.ratio(1.3))
+            .tile(d3.treemapSquarify.ratio(5.0))
             .round(true);
 
         treemap(root);
 
-        const MIN_TASK_AREA = 12000; // More aggressive rollup threshold
-        const partialDisplayMap = new Map<string, any[]>();
-        const synthNodes: any[] = [];
-        const hNodeMap = new Map<string, d3.HierarchyNode<any>>();
-
-        root.descendants().forEach(d => hNodeMap.set(d.data.id, d));
-
-        root.descendants().forEach(d => {
-            if (d.children && d.children.length > 0 && d.depth > 0) {
-                const w = d.x1 - d.x0;
-                const h = d.y1 - d.y0;
-                const area = w * h;
-                const capacity = Math.max(0, Math.floor(area / MIN_TASK_AREA));
-
-                const sortedChildren = [...d.children].sort((a, b) => {
-                    const pa = a.data.priority ?? 5;
-                    const pb = b.data.priority ?? 5;
-                    if (pa !== pb) return pa - pb;
-                    return (b.value || 0) - (a.value || 0);
-                });
-
-                if (capacity <= 1 || (h > w * 1.4)) {
-                    partialDisplayMap.set(d.data.id, []);
-                } else if (d.children.length > capacity) {
-                    const displayCount = Math.max(1, capacity - 1);
-                    const toDisplay = sortedChildren.slice(0, displayCount).map(c => ({...c.data, _weight: 1.0}));
-                    const overflowNode = {
-                        id: d.data.id + "__overflow__",
-                        label: "[...]",
-                        status: "active",
-                        priority: 9,
-                        project: d.data.project,
-                        _weight: 1.0,
-                        _isOverflow: true
-                    };
-                    toDisplay.push(overflowNode);
-                    synthNodes.push(overflowNode);
-                    partialDisplayMap.set(d.data.id, toDisplay);
-                } else {
-                    partialDisplayMap.set(d.data.id, d.children.map(c => ({...c.data, _weight: 1.0})));
-                }
-            }
-        });
-
-        // RE-LAYOUT with pruned tree
-        const prunedRoot = d3.hierarchy(root.data, d => {
-            if (partialDisplayMap.has(d.id)) return partialDisplayMap.get(d.id);
-            const hNode = hNodeMap.get(d.id);
-            return hNode && hNode.children ? hNode.children.map(c => c.data) : null;
-        });
-
-        prunedRoot.sum(d => d._weight || (d.children ? 0 : 1)).sort((a, b) => {
-            if (a.data._isOverflow) return 1;
-            if (b.data._isOverflow) return -1;
-            const pa = a.data.priority ?? 5;
-            const pb = b.data.priority ?? 5;
-            if (pa !== pb) return pa - pb;
-            return (b.value || 0) - (a.value || 0);
-        });
-
-        treemap(prunedRoot);
-
         const layoutMap = new Map();
-        prunedRoot.descendants().forEach((d: any) => {
+        root.descendants().forEach((d: any) => {
             if (d.data.id === rootId) return;
             layoutMap.set(d.data.id, {
                 x: d.x0 + (d.x1 - d.x0) / 2,
@@ -154,7 +160,6 @@
                 h: d.y1 - d.y0,
                 depth: d.depth,
                 isLeaf: !d.children || d.children.length === 0,
-                d3Node: d,
             });
         });
 
@@ -164,30 +169,12 @@
                 n.x = l.x; n.y = l.y; n.w = l.w; n.h = l.h;
                 n.depth = l.depth;
                 n._isLeaf = l.isLeaf;
-                n._isOverflow = false;
             } else {
                 n.x = -9999; n.y = -9999;
             }
         });
 
-        activeSynthNodes = [];
-        synthNodes.forEach(s => {
-            const l = layoutMap.get(s.id);
-            if (l) {
-                s.x = l.x; s.y = l.y; s.w = l.w; s.h = l.h;
-                s.depth = l.depth;
-                s._isLeaf = true;
-                s._isOverflow = true;
-                activeSynthNodes.push(s);
-            }
-        });
-    }
-
-    function renderTreemapNodes() {
-        const data = $graphData;
-        if (!data) return;
-
-        const visibleNodes = [...data.nodes, ...activeSynthNodes]
+        const visibleNodes = [...nodes]
             .filter(n => (n.x || 0) > -9000)
             .sort((a, b) => (a.depth || 0) - (b.depth || 0));
 
@@ -198,14 +185,12 @@
             .join("g")
             .attr("class", "node")
             .attr("transform", (d) => `translate(${d.x},${d.y})`)
-            .style("cursor", (d) => d._isOverflow ? "default" : "pointer")
+            .style("cursor", "pointer")
             .on("click", (e, d) => {
-                if (d._isOverflow) return;
                 e.stopPropagation();
                 toggleSelection(d.id);
             })
             .on("mouseenter", (e, d) => {
-                if (d._isOverflow) return;
                 selection.update(s => ({ ...s, hoveredNodeId: d.id }));
             })
             .on("mouseleave", () => {
@@ -219,25 +204,20 @@
             const g = d3.select(this);
             const isSelected = d.id === activeNodeId;
             const isHovered = d.id === hoveredNodeId;
-
-            const lastSelected = d._lastSelected;
-            if (g.selectAll("*").empty() || lastSelected !== isSelected) {
-                g.selectAll("*").remove();
-                const tempD = { ...d, _lw: d.w, _lh: d.h, isLeaf: d._isLeaf };
-                buildTreemapNode(g as any, tempD, isSelected);
-                d._lastSelected = isSelected;
-            }
-
-            g.classed("hovered-node", isHovered);
+            g.selectAll("*").remove();
+            buildTreemapNode(g, d, isSelected || isHovered);
         });
 
-        const eEls = d3
-            .select(edgesLayer)
-            .selectAll("path")
-            .data(data.links)
-            .join("path");
-
-        routeTreemapEdges(eEls);
+        if (!$filters.showDependencies) {
+            d3.select(edgesLayer).selectAll("path").remove();
+        } else {
+            const eEls = d3
+                .select(edgesLayer)
+                .selectAll("path")
+                .data(data.links)
+                .join("path");
+            routeTreemapEdges(eEls);
+        }
     }
 </script>
 
