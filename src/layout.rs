@@ -699,19 +699,27 @@ fn compute_treemap(
         if items.is_empty() {
             return;
         }
+
+        // Sort by weight descending
+        items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let total: f64 = items.iter().map(|(_, w)| w).sum();
+        if total <= 0.0 {
+            return;
+        }
+
         if items.len() == 1 {
             let (idx, _) = items[0];
             rects[idx] = (rect_x, rect_y, rect_w, rect_h);
             // Recurse into children
             if let Some(kids) = children_of.get(&idx) {
-                let padding = rect_w.min(rect_h) * 0.05;
+                let padding = rect_w.min(rect_h) * 0.02; // Reduced from 0.05
                 let inner_x = rect_x + padding;
                 let inner_y = rect_y + padding;
                 let inner_w = (rect_w - 2.0 * padding).max(1.0);
                 let inner_h = (rect_h - 2.0 * padding).max(1.0);
                 let mut child_items: Vec<(usize, f64)> =
                     kids.iter().map(|&k| (k, weight[k])).collect();
-                child_items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
                 squarify(
                     &mut child_items,
                     inner_x, inner_y, inner_w, inner_h,
@@ -721,45 +729,28 @@ fn compute_treemap(
             return;
         }
 
-        // Sort by weight descending
-        items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-        let total: f64 = items.iter().map(|(_, w)| w).sum();
-        if total <= 0.0 {
-            return;
-        }
-
         // Lay out along shorter side
+        let side = rect_w.min(rect_h);
         let vertical = rect_w >= rect_h;
 
         // Find best row: greedily add items while aspect ratio improves
-        let side = if vertical { rect_h } else { rect_w };
         let mut best_row_len = 1;
         let mut best_worst_ratio = f64::INFINITY;
 
         for row_len in 1..=items.len() {
             let row_sum: f64 = items[..row_len].iter().map(|(_, w)| w).sum();
-            let row_frac = row_sum / total;
-            let row_extent = if vertical {
-                rect_w * row_frac
-            } else {
-                rect_h * row_frac
-            };
+            
+            // Standard squarified treemap aspect ratio check
+            // Based on Bruls et al. (2000)
+            let w_max = items[..row_len].iter().map(|(_, w)| *w).fold(0.0, f64::max);
+            let w_min = items[..row_len].iter().map(|(_, w)| *w).fold(f64::INFINITY, f64::min);
+            
+            let s2 = side * side;
+            let sum2 = row_sum * row_sum;
+            let ratio = ((s2 * w_max) / sum2).max(sum2 / (s2 * w_min));
 
-            // Compute worst aspect ratio in this row
-            let mut worst = 0.0f64;
-            for &(_, w) in &items[..row_len] {
-                let item_extent = side * (w / row_sum);
-                let ratio = if row_extent > item_extent {
-                    row_extent / item_extent
-                } else {
-                    item_extent / row_extent
-                };
-                worst = worst.max(ratio);
-            }
-
-            if worst <= best_worst_ratio {
-                best_worst_ratio = worst;
+            if ratio <= best_worst_ratio {
+                best_worst_ratio = ratio;
                 best_row_len = row_len;
             } else {
                 break;
@@ -800,14 +791,13 @@ fn compute_treemap(
 
             // Recurse into children within this cell
             if let Some(kids) = children_of.get(&idx) {
-                let padding = iw.min(ih) * 0.05;
+                let padding = iw.min(ih) * 0.02; // Reduced from 0.05
                 let inner_x = ix + padding;
                 let inner_y = iy + padding;
                 let inner_w = (iw - 2.0 * padding).max(1.0);
                 let inner_h = (ih - 2.0 * padding).max(1.0);
                 let mut child_items: Vec<(usize, f64)> =
                     kids.iter().map(|&k| (k, weight[k])).collect();
-                child_items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
                 squarify(
                     &mut child_items,
                     inner_x, inner_y, inner_w, inner_h,
