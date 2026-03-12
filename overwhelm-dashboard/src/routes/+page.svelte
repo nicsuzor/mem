@@ -98,12 +98,13 @@
             $viewSettings.viewMode === "Force Atlas 2" ||
             $viewSettings.viewMode === "SFDP";
 
-        // Filter out non-task items like contact, person, organization
-        fNodes = fNodes.filter(n => !["contact", "person", "organization"].includes(n.type));
+        // Only include real task types with explicit ID and status
+        const TASK_TYPES = new Set(["task", "goal", "project", "epic"]);
+        fNodes = fNodes.filter(n => TASK_TYPES.has(n.type) && n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "" && n.status !== "inbox");
 
         if (!$filters.showActive) {
             fNodes = fNodes.filter(
-                (n) => !["active", "inbox", "todo", "in_progress", "review"].includes(n.status),
+                (n) => !["active", "inbox", "todo", "in_progress", "review", "waiting", "decomposing", "dormant"].includes(n.status),
             );
         }
         if (!$filters.showBlocked) {
