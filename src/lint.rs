@@ -624,33 +624,42 @@ fn check_frontmatter(
         }
     }
 
-    // Task-specific: tasks should have id, status, type
-    let is_task_type = fm
-        .get("type")
-        .and_then(|v| v.as_str())
-        .map(|t| graph_store::ACTIONABLE_TYPES.contains(&t))
-        .unwrap_or(false);
-    if is_task_type {
-        if !fm.contains_key("id") {
-            if fm.contains_key("task_id") {
-                diags.push(Diagnostic {
-                    severity: Severity::Style,
-                    rule: "task-legacy-id",
-                    message: "Task uses legacy 'task_id' instead of 'id'".into(),
-                    line: None,
-                    fixable: true,
-                });
-            } else {
-                // task-no-id is fixable: we'll extract from filename or generate
-                diags.push(Diagnostic {
-                    severity: Severity::Error,
-                    rule: "task-no-id",
-                    message: "Task is missing 'id' field".into(),
-                    line: None,
-                    fixable: true,
-                });
-            }
+    // All documents should have an explicit id
+    if !fm.contains_key("id") {
+        if fm.contains_key("task_id") {
+            diags.push(Diagnostic {
+                severity: Severity::Style,
+                rule: "task-legacy-id",
+                message: "Document uses legacy 'task_id' instead of 'id'".into(),
+                line: None,
+                fixable: true,
+            });
+        } else {
+            diags.push(Diagnostic {
+                severity: Severity::Error,
+                rule: "task-no-id",
+                message: "Document is missing 'id' field".into(),
+                line: None,
+                fixable: true,
+            });
         }
+    }
+
+    // All documents should have a type
+    if !fm.contains_key("type") {
+        diags.push(Diagnostic {
+            severity: Severity::Warning,
+            rule: "doc-no-type",
+            message: "Document is missing 'type' field".into(),
+            line: None,
+            fixable: false,
+        });
+    }
+
+    // Task-type-specific checks
+    let node_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let is_task_type = graph::TASK_TYPES.contains(&node_type);
+    if is_task_type {
         if !fm.contains_key("status") {
             diags.push(Diagnostic {
                 severity: Severity::Warning,
@@ -660,10 +669,21 @@ fn check_frontmatter(
                 fixable: false,
             });
         }
+        // Tasks must have a parent (goals and projects are root-level)
+        if node_type == "task" || node_type == "epic" {
+            if !fm.contains_key("parent") {
+                diags.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule: "task-no-parent",
+                    message: format!("Type '{}' should have a parent node", node_type),
+                    line: None,
+                    fixable: false,
+                });
+            }
+        }
     }
 }
 
-use crate::graph_store;
 
 fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
     let lines: Vec<&str> = content.lines().collect();
@@ -757,20 +777,13 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path) 
                 .to_string();
         }
 
-        // Fix 2: Generate missing ID for actionable types
+        // Fix 2: Generate missing ID for all documents
         let has_id = fm.contains_key("id") || fm.contains_key("task_id");
         if !has_id {
-            let is_actionable = fm
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(|t| graph_store::ACTIONABLE_TYPES.contains(&t))
-                .unwrap_or(false);
-            if is_actionable {
-                let id = generate_missing_id(path, fm);
-                // Insert `id: xxx` right after the opening `---\n`
-                if result.starts_with("---\n") {
-                    result = format!("---\nid: {}\n{}", id, &result[4..]);
-                }
+            let id = generate_missing_id(path, fm);
+            // Insert `id: xxx` right after the opening `---\n`
+            if result.starts_with("---\n") {
+                result = format!("---\nid: {}\n{}", id, &result[4..]);
             }
         }
 
@@ -1155,7 +1168,7 @@ mod tests {
     #[test]
     fn valid_task_no_warnings() {
         let diags = lint_str(
-            "---\nid: test-abc12345\ntitle: Test task\ntype: task\nstatus: active\npriority: 2\ntags:\n- foo\n---\n\nBody content.\n",
+            "---\nid: test-abc12345\ntitle: Test task\ntype: task\nstatus: active\npriority: 2\nparent: proj-00000000\ntags:\n- foo\n---\n\nBody content.\n",
         );
         // Should only have key-order style issues at most
         assert!(

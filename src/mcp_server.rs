@@ -365,17 +365,18 @@ impl PkbSearchServer {
             body: args.get("body").and_then(|v| v.as_str()).map(String::from),
         };
 
-        // Hierarchy validation: warn if task type should have a parent
-        let mut warnings = Vec::new();
+        // Hierarchy validation: tasks must have a parent
         if fields.parent.is_none() {
-            // create_task always creates type "task", which should have a parent
-            warnings.push(
-                "Hierarchy warning: Task type 'task' should have a parent. \
-                 Only goal, learn, and project types can be root-level. \
-                 Consider assigning a parent to maintain graph hierarchy."
-                    .to_string(),
-            );
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Missing required parameter: parent. Tasks must have a parent node. \
+                     Only goal, learn, and project types can be root-level.",
+                ),
+                data: None,
+            });
         }
+        let warnings: Vec<String> = Vec::new();
 
         let path =
             crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
