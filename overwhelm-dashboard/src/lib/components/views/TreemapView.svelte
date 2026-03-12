@@ -55,7 +55,7 @@
             // Pre-stratification Rollup Strategy:
             // For any parent node, if it has more than MAX_NODES_PER_PARENT children,
             // we group the lowest priority ones into a synthetic overflow node.
-            const MAX_NODES_PER_PARENT = 10;
+            const MAX_NODES_PER_PARENT = 12;
             
             const parentMap = new Map<string, any[]>();
             stratifyNodes.forEach(n => {
@@ -142,9 +142,9 @@
         // without mathematically breaking the algorithm into a 1D list.
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
-            .paddingInner(12)
-            .paddingOuter(14)
-            .paddingTop(36)
+            .paddingInner(3)
+            .paddingOuter(4)
+            .paddingTop(22)
             .tile(d3.treemapSquarify.ratio(5.0))
             .round(true);
 
