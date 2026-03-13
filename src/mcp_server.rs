@@ -83,6 +83,25 @@ impl PkbSearchServer {
         *self.graph.write() = new_graph;
     }
 
+    /// Save the vector store to disk with an exclusive lock.
+    fn save_store(&self) {
+        match VectorStore::acquire_lock(&self.db_path) {
+            Ok(mut lock) => match lock.write() {
+                Ok(_guard) => {
+                    if let Err(e) = self.store.read().save(&self.db_path) {
+                        tracing::error!("Failed to save vector store: {e}");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to acquire write lock for save: {e}");
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to open lock file for save: {e}");
+            }
+        }
+    }
+
     // =========================================================================
     // SEARCH & DOCUMENT TOOLS
     // =========================================================================
@@ -387,7 +406,7 @@ impl PkbSearchServer {
         // Index the new file (with relative path for portable storage)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
         // Rebuild graph
@@ -938,7 +957,7 @@ impl PkbSearchServer {
         // Index the new file
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
         self.rebuild_graph();
@@ -1053,7 +1072,7 @@ impl PkbSearchServer {
         // Index the new file
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
         self.rebuild_graph();
@@ -1113,7 +1132,7 @@ impl PkbSearchServer {
         // Re-index the updated file
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
         self.rebuild_graph();
@@ -1157,7 +1176,7 @@ impl PkbSearchServer {
 
         // Remove from vector store
         self.store.write().remove(&rel_path);
-        let _ = self.store.read().save(&self.db_path);
+        self.save_store();
 
         // Rebuild graph
         self.rebuild_graph();
@@ -1205,7 +1224,7 @@ impl PkbSearchServer {
         // Re-index
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
         self.rebuild_graph();
@@ -1636,7 +1655,7 @@ impl PkbSearchServer {
             created.push((id_str, path.display().to_string()));
         }
 
-        let _ = self.store.read().save(&self.db_path);
+        self.save_store();
         self.rebuild_graph();
 
         let mut output = format!(
@@ -2096,7 +2115,7 @@ impl PkbSearchServer {
         // Re-index the updated file (with relative path for portable storage)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
         // Rebuild graph

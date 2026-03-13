@@ -723,6 +723,26 @@ fn main() -> Result<()> {
     let pkb_root = PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root));
     let db_path = PathBuf::from(&cli.db_path);
 
+    // Exclusive lock for index updates
+    let needs_exclusive_lock = matches!(
+        cli.command,
+        Commands::Reindex { .. }
+            | Commands::BenchReindex { .. }
+            | Commands::Add { .. }
+            | Commands::Forget { .. }
+    );
+
+    let mut _index_lock = if needs_exclusive_lock {
+        Some(vectordb::VectorStore::acquire_lock(&db_path)?)
+    } else {
+        None
+    };
+    let _lock_guard = if let Some(ref mut l) = _index_lock {
+        Some(l.write()?)
+    } else {
+        None
+    };
+
     if let Some(ref lc) = cli.layout_config {
         mem::layout::set_config_path(PathBuf::from(lc));
     }

@@ -7,8 +7,10 @@ use crate::distance;
 use crate::embeddings;
 use crate::pkb::PkbDocument;
 use anyhow::Result;
+use fd_lock::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 /// A stored document entry with its embeddings
@@ -78,6 +80,22 @@ impl VectorStore {
             documents: HashMap::new(),
             dimension,
         }
+    }
+
+    /// Acquire an exclusive lock on the index to prevent concurrent updates.
+    /// The lock is held until the returned lock itself is dropped.
+    pub fn acquire_lock(path: &Path) -> Result<RwLock<File>> {
+        let lock_path = path.with_extension("lock");
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)?;
+
+        Ok(RwLock::new(file))
     }
 
     /// Load from disk, or create new if file doesn't exist.
@@ -763,5 +781,63 @@ mod tests {
         let root = Path::new("/pkb");
         let results = store.search(&[1.0, 0.0, 0.0], 1, root);
         assert!(results[0].snippet.contains("body of"));
+    }
+
+    #[test]
+    fn test_race_condition_resolved_with_locking() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("pkb_vectors.bin");
+        let dimension = 3;
+
+        // Simulate Process A
+        {
+            let mut lock_a = VectorStore::acquire_lock(&db_path).unwrap();
+            let _guard_a = lock_a.write().unwrap();
+
+            let mut sa = VectorStore::load_or_create(&db_path, dimension).unwrap();
+            let doc_a = crate::pkb::PkbDocument {
+                path: PathBuf::from("doc_a.md"),
+                title: "Doc A".to_string(),
+                body: "Body A".to_string(),
+                doc_type: None,
+                status: None,
+                modified: None,
+                tags: vec![],
+                frontmatter: None,
+                content_hash: "hash_a".to_string(),
+            };
+            sa.insert_precomputed(&doc_a, vec!["A".to_string()], vec![vec![1.0, 0.0, 0.0]]);
+            sa.save(&db_path).unwrap();
+        } // Lock A released
+
+        // Simulate Process B
+        {
+            let mut lock_b = VectorStore::acquire_lock(&db_path).unwrap();
+            let _guard_b = lock_b.write().unwrap();
+
+            let mut sb = VectorStore::load_or_create(&db_path, dimension).unwrap();
+            let doc_b = crate::pkb::PkbDocument {
+                path: PathBuf::from("doc_b.md"),
+                title: "Doc B".to_string(),
+                body: "Body B".to_string(),
+                doc_type: None,
+                status: None,
+                modified: None,
+                tags: vec![],
+                frontmatter: None,
+                content_hash: "hash_b".to_string(),
+            };
+            sb.insert_precomputed(&doc_b, vec!["B".to_string()], vec![vec![0.0, 1.0, 0.0]]);
+            sb.save(&db_path).unwrap();
+        } // Lock B released
+
+        // Reload and check
+        let final_store = VectorStore::load_or_create(&db_path, dimension).unwrap();
+        let has_a = final_store.get_entry("doc_a.md").is_some();
+        let has_b = final_store.get_entry("doc_b.md").is_some();
+
+        assert!(has_a, "Doc A should be present");
+        assert!(has_b, "Doc B should be present");
     }
 }

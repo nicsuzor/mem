@@ -16,6 +16,11 @@ pub mod pkb;
 pub mod task_index;
 pub mod vectordb;
 
+#[cfg(test)]
+mod reproduction;
+#[cfg(test)]
+mod reproduction_snippet;
+
 use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::sync::Arc;
