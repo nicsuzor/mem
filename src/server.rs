@@ -112,6 +112,8 @@ async fn main() -> Result<()> {
 
     // Save on shutdown
     eprintln!("   Saving vector store...");
+    let mut lock = vectordb::VectorStore::acquire_lock(&db_path)?;
+    let _guard = lock.write()?; // Acquire exclusive lock
     let store_read = store.read();
     store_read.save(&db_path)?;
     eprintln!("   ✓ Shutdown complete");

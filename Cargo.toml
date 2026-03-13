@@ -71,6 +71,9 @@ terminal_size = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Cross-process file locking
+fd-lock = "4"
+
 # Model download
 ureq = { version = "2", features = ["json"] }
 flate2 = "1"
