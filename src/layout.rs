@@ -1265,6 +1265,7 @@ mod tests {
             raw_links: vec![],
             permalinks: vec![],
             task_id: None,
+            status_group: Some("active".into()),
             pagerank: 0.0,
             betweenness: 0.0,
             indegree: 0,
