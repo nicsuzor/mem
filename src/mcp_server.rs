@@ -12,6 +12,7 @@ use rmcp::model::*;
 use rmcp::{Error as McpError, ServerHandler};
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1548,7 +1549,7 @@ impl PkbSearchServer {
             });
         }
 
-        {
+        let project_prefix = {
             let graph = self.graph.read();
             match graph.resolve(parent_id) {
                 None => {
@@ -1568,8 +1569,35 @@ impl PkbSearchServer {
                             data: None,
                         });
                     }
+                    node.project.clone().unwrap_or_else(|| "task".to_string())
                 }
             }
+        };
+
+        // First pass: assign IDs to all subtasks and build title map for cross-references
+        let mut subtask_ids: Vec<String> = Vec::with_capacity(subtasks.len());
+        let mut title_to_id: HashMap<String, String> = HashMap::new();
+        for subtask in subtasks {
+            let title = subtask.get("title").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Each subtask must have a 'title'"),
+                data: None,
+            })?;
+
+            let id = subtask
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(crate::document_crud::sanitize_prefix)
+                .unwrap_or_else(|| {
+                    let prefix = subtask
+                        .get("project")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&project_prefix);
+                    crate::graph::create_id(prefix)
+                });
+
+            subtask_ids.push(id.clone());
+            title_to_id.insert(title.to_lowercase(), id);
         }
 
         let mut created: Vec<(String, String)> = Vec::new();
@@ -1577,19 +1605,39 @@ impl PkbSearchServer {
             regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex")
         });
 
-        for subtask in subtasks {
-            let title = subtask
-                .get("title")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from("Each subtask must have a 'title'"),
-                    data: None,
-                })?;
+        // Second pass: create tasks with resolved dependencies
+        for (i, subtask) in subtasks.iter().enumerate() {
+            let title = subtask.get("title").and_then(|v| v.as_str()).unwrap(); // validated in first pass
+
+            let mut depends_on: Vec<String> = subtask
+                .get("depends_on")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Resolve sibling cross-references
+            for dep in depends_on.iter_mut() {
+                // 1. Positional references: $1, $2, etc. (1-indexed)
+                if dep.starts_with('$') {
+                    if let Ok(idx) = dep[1..].parse::<usize>() {
+                        if idx > 0 && idx <= subtask_ids.len() {
+                            *dep = subtask_ids[idx - 1].clone();
+                        }
+                    }
+                }
+                // 2. Title references (exact case-insensitive match on sibling title)
+                else if let Some(sid) = title_to_id.get(&dep.to_lowercase()) {
+                    *dep = sid.clone();
+                }
+            }
 
             let fields = crate::document_crud::TaskFields {
                 title: title.to_string(),
-                id: subtask.get("id").and_then(|v| v.as_str()).map(String::from),
+                id: Some(subtask_ids[i].clone()),
                 parent: Some(parent_id.to_string()),
                 priority: subtask
                     .get("priority")
@@ -1608,15 +1656,7 @@ impl PkbSearchServer {
                             .collect()
                     })
                     .unwrap_or_default(),
-                depends_on: subtask
-                    .get("depends_on")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                depends_on,
                 assignee: subtask
                     .get("assignee")
                     .and_then(|v| v.as_str())
@@ -2693,7 +2733,7 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "decompose_task",
-                "Batch creation of subtasks under a parent task. More efficient than calling create_task N times (single graph rebuild).",
+                "Batch creation of subtasks under a parent task. Supports sibling cross-references in 'depends_on' using '$1', '$2', etc. (1-indexed position) or by exact sibling title.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
