@@ -559,9 +559,13 @@ fn check_frontmatter(
     }
 
     // id format check (should match prefix-hex pattern)
+    // Prefix may contain uppercase letters (e.g. "academicOps-b5d43955" is valid)
+    // Goals and projects use special canonical IDs (e.g. "my-project") — skip format check.
+    let node_type_for_id = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let is_root_node = matches!(node_type_for_id, "goal" | "project");
     if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
-        let id_re = regex::Regex::new(r"^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}$").unwrap();
-        if !id_re.is_match(id) && !id.is_empty() {
+        let id_re = regex::Regex::new(r"^[a-zA-Z][a-zA-Z0-9-]*-[a-f0-9]{8}$").unwrap();
+        if !is_root_node && !id_re.is_match(id) && !id.is_empty() {
             diags.push(Diagnostic {
                 severity: Severity::Style,
                 rule: "fm-id-format",
@@ -971,8 +975,10 @@ pub fn lint_directory(
     };
 
     // Pre-fix pass: collect ID renames needed (old_id → new_id) before per-file fixes
+    // Only IDs that genuinely don't match the prefix-hexhash pattern are renamed.
+    // Prefix may contain uppercase letters (e.g. "academicOps-b5d43955").
     let id_renames: Vec<(String, String)> = if fix {
-        let id_re = regex::Regex::new(r"^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}$").unwrap();
+        let id_re = regex::Regex::new(r"^[a-zA-Z][a-zA-Z0-9-]*-[a-f0-9]{8}$").unwrap();
         files
             .par_iter()
             .filter_map(|p| {
@@ -982,7 +988,9 @@ pub fn lint_directory(
                 let fm = parsed.data.as_ref()
                     .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
                 let id = fm.get("id")?.as_str()?;
-                if !id.is_empty() && !id_re.is_match(id) {
+                // Goals and projects use special canonical IDs — never auto-rename them.
+                let node_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if !id.is_empty() && !id_re.is_match(id) && !matches!(node_type, "goal" | "project") {
                     let prefix = extract_id_prefix(id);
                     let new_id = crate::graph::create_id(&prefix);
                     Some((id.to_string(), new_id))
@@ -1259,6 +1267,26 @@ mod tests {
         let id_diag = diags.iter().find(|d| d.rule == "fm-id-format");
         assert!(id_diag.is_some(), "Should detect bad ID format");
         assert!(id_diag.unwrap().fixable, "fm-id-format should be fixable");
+    }
+
+    #[test]
+    fn camel_case_prefix_id_is_valid() {
+        // "academicOps-b5d43955" has a camelCase prefix — must NOT trigger fm-id-format.
+        // Reassigning a valid existing ID would silently break all cross-references.
+        let diags = lint_str("---\nid: academicOps-b5d43955\ntitle: Test\ntype: task\n---\n\nBody.\n");
+        let id_diag = diags.iter().find(|d| d.rule == "fm-id-format");
+        assert!(id_diag.is_none(), "academicOps-b5d43955 is a valid ID and must not trigger fm-id-format");
+    }
+
+    #[test]
+    fn goal_and_project_ids_exempt_from_format_check() {
+        // Goals and projects use canonical human-readable IDs — must NOT trigger fm-id-format.
+        for node_type in &["goal", "project"] {
+            let content = format!("---\nid: my-{}\ntitle: Test\ntype: {}\n---\n\nBody.\n", node_type, node_type);
+            let diags = lint_str(&content);
+            let id_diag = diags.iter().find(|d| d.rule == "fm-id-format");
+            assert!(id_diag.is_none(), "type:{} with non-hex ID must not trigger fm-id-format", node_type);
+        }
     }
 
     #[test]
