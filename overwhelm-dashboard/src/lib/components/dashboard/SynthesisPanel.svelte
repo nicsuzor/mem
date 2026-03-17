@@ -20,11 +20,16 @@
     <div class="flex flex-col gap-4 font-mono">
         <div class="flex justify-between items-baseline border-b border-primary/30 pb-2 mb-2">
             <h3 class="text-xs font-bold tracking-[0.2em] text-primary/80">SYNTHESIS & INSIGHTS</h3>
-            {#if synthesis?._age_minutes !== undefined}
-                <span class="text-[10px] text-primary/60"
-                    >{Math.round(synthesis._age_minutes)}m ago</span
-                >
-            {/if}
+            <div class="flex items-center gap-2">
+                {#if synthesis?._age_minutes !== undefined && synthesis._age_minutes > 60}
+                    <span class="text-[10px] font-bold tracking-widest bg-red-900/50 text-red-400 border border-red-500/50 px-2 py-0.5 animate-pulse">STALE</span>
+                {/if}
+                {#if synthesis?._age_minutes !== undefined}
+                    <span class="text-[10px] text-primary/60"
+                        >{synthesis._age_minutes < 60 ? Math.round(synthesis._age_minutes) + 'm ago' : Math.round(synthesis._age_minutes / 60) + 'h ago'}</span
+                    >
+                {/if}
+            </div>
         </div>
 
         {#if hasStory}
@@ -41,10 +46,18 @@
         {#if hasSynthesis}
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {#if synthesis.alignment}
+                    {@const align = synthesis.alignment}
+                    {@const alignStatus = typeof align === 'string' ? align : (align.status || align.assessment || 'unknown')}
+                    {@const alignNote = typeof align === 'object' ? (align.note || align.assessment || '') : ''}
                     <div class="bg-black/50 border border-primary/30 p-4 hover:border-primary transition-colors">
                         <div class="text-[10px] font-bold tracking-widest text-primary/60 mb-2">ALIGNMENT</div>
-                        <div class="text-sm text-primary/90">
-                            {typeof synthesis.alignment === 'string' ? synthesis.alignment : (synthesis.alignment.assessment || JSON.stringify(synthesis.alignment))}
+                        <div class="flex items-center gap-2">
+                            <span class="text-[10px] font-bold px-2 py-0.5 border {alignStatus === 'on_track' ? 'bg-green-900/30 text-green-400 border-green-500/40' : alignStatus === 'drifting' ? 'bg-yellow-900/30 text-yellow-400 border-yellow-500/40' : 'bg-primary/10 text-primary/70 border-primary/30'}">
+                                {alignStatus.toUpperCase().replace('_', ' ')}
+                            </span>
+                            {#if alignNote}
+                                <span class="text-xs text-primary/70">{alignNote}</span>
+                            {/if}
                         </div>
                     </div>
                 {/if}

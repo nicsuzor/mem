@@ -47,10 +47,6 @@
 	</div>
 
 	<div class="flex items-center gap-6">
-		<button class="flex items-center gap-2 px-3 py-1 bg-primary/10 border border-primary/20 hover:bg-primary/30 transition-colors hidden sm:flex cursor-pointer" onclick={() => $viewSettings.showSidebar = !$viewSettings.showSidebar}>
-			<span class="material-symbols-outlined text-sm">{$viewSettings.showSidebar ? 'right_panel_close' : 'right_panel_open'}</span>
-			<span class="text-xs font-mono font-bold tracking-wider text-primary">SIDEBAR</span>
-		</button>
 	</div>
 </header>
 

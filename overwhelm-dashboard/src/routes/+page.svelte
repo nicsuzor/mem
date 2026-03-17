@@ -251,8 +251,14 @@
         <section class="{$viewSettings.showSidebar ? 'col-span-9' : 'col-span-12'} flex flex-col h-full bg-background overflow-hidden transition-all">
             <ThreadedTasksView />
         </section>
+    {:else if $viewSettings.mainTab === "Dashboard"}
+        <!-- DASHBOARD: Full width, no graph underneath -->
+        <section class="col-span-12 bg-background overflow-y-auto custom-scrollbar">
+            <DashboardView {data} />
+        </section>
+
     {:else}
-        <!-- MAIN CONTENT: Graph or Dashboard -->
+        <!-- GRAPH VIEW: Graph + Right Panel -->
         <section class="{$viewSettings.showSidebar ? 'col-span-6' : 'col-span-9'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all">
             <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
 
@@ -289,7 +295,7 @@
             {/if}
 
             <!-- The Graph Area -->
-            <div class="flex-1 relative z-0 h-full" class:blur-md={$viewSettings.mainTab === "Dashboard"} class:scale-105={$viewSettings.mainTab === "Dashboard"} style="transition: filter 0.5s ease, transform 0.5s ease;">
+            <div class="flex-1 relative z-0 h-full">
                 <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
                     {#if containerGroup}
                         {#if activeLayout === "treemap" || activeLayout === "tree"}
@@ -314,13 +320,6 @@
 
             <!-- Graph Configuration Overlay -->
             <ViewConfigOverlay />
-
-            <!-- Overlay Dashboard -->
-            {#if $viewSettings.mainTab === "Dashboard"}
-                <div class="absolute inset-0 z-50 bg-background/90 backdrop-blur-lg overflow-y-auto custom-scrollbar">
-                    <DashboardView {data} />
-                </div>
-            {/if}
         </section>
 
         <!-- RIGHT SIDEBAR: Details / Editor -->
