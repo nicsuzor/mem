@@ -11,6 +11,12 @@ use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+static ID_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+
+fn get_id_regex() -> &'static regex::Regex {
+    ID_RE.get_or_init(|| regex::Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9-]*-[a-f0-9]{8}$").unwrap())
+}
+
 // ── Diagnostic types ─────────────────────────────────────────────────────
 
 /// Severity level for lint diagnostics.
@@ -564,7 +570,7 @@ fn check_frontmatter(
     let node_type_for_id = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let is_root_node = matches!(node_type_for_id, "goal" | "project");
     if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
-        let id_re = regex::Regex::new(r"^[a-zA-Z][a-zA-Z0-9-]*-[a-f0-9]{8}$").unwrap();
+        let id_re = get_id_regex();
         if !is_root_node && !id_re.is_match(id) && !id.is_empty() {
             diags.push(Diagnostic {
                 severity: Severity::Style,
@@ -978,7 +984,7 @@ pub fn lint_directory(
     // Only IDs that genuinely don't match the prefix-hexhash pattern are renamed.
     // Prefix may contain uppercase letters (e.g. "academicOps-b5d43955").
     let id_renames: Vec<(String, String)> = if fix {
-        let id_re = regex::Regex::new(r"^[a-zA-Z][a-zA-Z0-9-]*-[a-f0-9]{8}$").unwrap();
+        let id_re = get_id_regex();
         files
             .par_iter()
             .filter_map(|p| {
@@ -1276,6 +1282,13 @@ mod tests {
         let diags = lint_str("---\nid: academicOps-b5d43955\ntitle: Test\ntype: task\n---\n\nBody.\n");
         let id_diag = diags.iter().find(|d| d.rule == "fm-id-format");
         assert!(id_diag.is_none(), "academicOps-b5d43955 is a valid ID and must not trigger fm-id-format");
+    }
+
+    #[test]
+    fn id_starting_with_digit_is_valid() {
+        let diags = lint_str("---\nid: 123abc-b5d43955\ntitle: Test\ntype: task\n---\n\nBody.\n");
+        let id_diag = diags.iter().find(|d| d.rule == "fm-id-format");
+        assert!(id_diag.is_none(), "IDs starting with a digit must not trigger fm-id-format");
     }
 
     #[test]
