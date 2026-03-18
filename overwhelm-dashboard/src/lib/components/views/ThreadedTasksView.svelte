@@ -31,6 +31,33 @@
         }
     }
 
+    async function toggleTaskStatus(task: any, isChecked: boolean) {
+        const newStatus = isChecked ? 'done' : 'ready';
+        
+        // Optimistic update
+        graphData.update(gd => {
+            if (!gd) return gd;
+            const nodes = gd.nodes.map(n => {
+                if (n.id === task.id) {
+                    return { ...n, status: newStatus };
+                }
+                return n;
+            });
+            return { ...gd, nodes };
+        });
+
+        // Persist
+        try {
+            await fetch('/api/task/status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: task.id, status: newStatus })
+            });
+        } catch (e) {
+            console.error("Failed to update task status", e);
+        }
+    }
+
     $: tasks = $graphData ? $graphData.nodes.filter(n => {
         const matchesType = n.type === 'task';
         const matchesProject = $filters.project === 'ALL' || n.project === $filters.project;

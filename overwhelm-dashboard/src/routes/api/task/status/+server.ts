@@ -6,7 +6,7 @@ import type { RequestHandler } from './$types';
 
 const execFileAsync = promisify(execFile);
 
-const AOPS_BIN   = env.AOPS_BIN   || '/opt/debian/lib/cargo/bin/aops';
+const AOPS_BIN   = env.AOPS_BIN   || 'aops';
 const AOPS_BRAIN = env.AOPS_BRAIN || env.ACA_DATA || '';
 
 export const POST: RequestHandler = async ({ request }) => {
