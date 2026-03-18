@@ -244,15 +244,14 @@
         </aside>
     {/if}
 
-    {#if $viewSettings.mainTab === "Threaded Tasks"}
-        <!-- THREADED TASKS & EDITOR OVERRIDE -->
-        <section class="{$viewSettings.showSidebar ? 'col-span-9' : 'col-span-12'} flex flex-col h-full bg-background overflow-hidden transition-all">
-            <ThreadedTasksView />
-        </section>
-    {:else}
-        <!-- MAIN CONTENT: Graph or Dashboard -->
-        <section class="{$viewSettings.showSidebar ? 'col-span-6' : 'col-span-9'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all">
-            <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
+    <!-- THREADED TASKS & EDITOR OVERRIDE -->
+    <section class="{$viewSettings.showSidebar ? 'col-span-9' : 'col-span-12'} flex flex-col h-full bg-background overflow-hidden transition-all" class:hidden={$viewSettings.mainTab !== "Threaded Tasks"}>
+        <ThreadedTasksView />
+    </section>
+
+    <!-- MAIN CONTENT: Graph or Dashboard -->
+    <section class="{$viewSettings.showSidebar ? 'col-span-6' : 'col-span-9'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
+        <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
 
             <!-- Sub-Navigation for Graph Modes (Easy Access) -->
             {#if $viewSettings.mainTab === "Task Graph"}
@@ -314,18 +313,15 @@
             <ViewConfigOverlay />
 
             <!-- Overlay Dashboard -->
-            {#if $viewSettings.mainTab === "Dashboard"}
-                <div class="absolute inset-0 z-50 bg-background/90 backdrop-blur-lg overflow-y-auto custom-scrollbar">
-                    <DashboardView {data} />
-                </div>
-            {/if}
-        </section>
+            <div class="absolute inset-0 z-50 bg-background/90 backdrop-blur-lg overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab !== "Dashboard"}>
+                <DashboardView {data} />
+            </div>
+    </section>
 
-        <!-- RIGHT SIDEBAR: Details / Editor -->
-        <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar">
-            <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
-        </aside>
-    {/if}
+    <!-- RIGHT SIDEBAR: Details / Editor -->
+    <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
+        <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
+    </aside>
 {/if}
 
 <style>
