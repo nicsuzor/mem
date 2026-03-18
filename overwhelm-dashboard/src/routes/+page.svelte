@@ -69,9 +69,8 @@
             if ($viewSettings.viewMode === "SFDP") {
                 filters.update(f => ({ ...f, showActive: true, showBlocked: true, showCompleted: false, showOrphans: true, showDependencies: true }));
                 viewSettings.update(s => ({ ...s, topNLeaves: 9999, gravity: 1.0, chargeStrength: 1.5 })); // Show ALL, high gravity
-            } else if ($viewSettings.viewMode === "Force Atlas 2") {
-                filters.update(f => ({ ...f, showActive: true, showBlocked: false, showCompleted: false, showOrphans: false }));
-                viewSettings.update(s => ({ ...s, topNLeaves: 40 })); // Priority only (smaller N)
+            } else if ($viewSettings.viewMode === "Circle Pack") {
+                filters.update(f => ({ ...f, showCompleted: true }));
             }
         }
     }
@@ -95,7 +94,6 @@
         let fNodes = [...prepared.nodes];
         let fLinks = [...prepared.links];
         const isForce =
-            $viewSettings.viewMode === "Force Atlas 2" ||
             $viewSettings.viewMode === "SFDP";
 
         // Only include real task types with explicit ID and status
@@ -246,20 +244,19 @@
         </aside>
     {/if}
 
-    {#if $viewSettings.mainTab === "Threaded Tasks"}
-        <!-- THREADED TASKS & EDITOR OVERRIDE -->
-        <section class="{$viewSettings.showSidebar ? 'col-span-9' : 'col-span-12'} flex flex-col h-full bg-background overflow-hidden transition-all">
-            <ThreadedTasksView />
-        </section>
-    {:else}
-        <!-- MAIN CONTENT: Graph or Dashboard -->
-        <section class="{$viewSettings.showSidebar ? 'col-span-6' : 'col-span-9'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all">
-            <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
+    <!-- THREADED TASKS & EDITOR OVERRIDE -->
+    <section class="{$viewSettings.showSidebar ? 'col-span-9' : 'col-span-12'} flex flex-col h-full bg-background overflow-hidden transition-all" class:hidden={$viewSettings.mainTab !== "Threaded Tasks"}>
+        <ThreadedTasksView />
+    </section>
+
+    <!-- MAIN CONTENT: Graph or Dashboard -->
+    <section class="{$viewSettings.showSidebar ? 'col-span-6' : 'col-span-9'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
+        <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
 
             <!-- Sub-Navigation for Graph Modes (Easy Access) -->
             {#if $viewSettings.mainTab === "Task Graph"}
                 <div class="absolute top-4 right-4 z-20 flex items-center gap-0 bg-black/90 backdrop-blur-lg border border-primary/40 p-0.5 shadow-[0_0_30px_rgba(0,0,0,0.8)]">
-                    {#each ["Treemap", "Circle Pack", "Force Atlas 2", "SFDP", "Arc Diagram"] as mode}
+                    {#each ["Treemap", "Circle Pack", "SFDP", "Arc Diagram"] as mode}
                         <button
                             class="px-4 py-2 text-[10px] font-black uppercase tracking-widest transition-all cursor-pointer border border-transparent
                             {$viewSettings.viewMode === mode ? 'bg-primary text-black border-primary' : 'text-primary/50 hover:text-primary hover:bg-primary/5'}"
@@ -300,7 +297,7 @@
                             />
                         {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
                             <CirclePackView {containerGroup} />
-                        {:else if activeLayout === "force" || activeLayout === "fa2" || activeLayout === "sfdp"}
+                        {:else if activeLayout === "force" || activeLayout === "sfdp"}
                             <ForceView {containerGroup} />
                         {:else if activeLayout === "arc"}
                             <ArcView {containerGroup} />
@@ -316,18 +313,15 @@
             <ViewConfigOverlay />
 
             <!-- Overlay Dashboard -->
-            {#if $viewSettings.mainTab === "Dashboard"}
-                <div class="absolute inset-0 z-50 bg-background/90 backdrop-blur-lg overflow-y-auto custom-scrollbar">
-                    <DashboardView {data} />
-                </div>
-            {/if}
-        </section>
+            <div class="absolute inset-0 z-50 bg-background/90 backdrop-blur-lg overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab !== "Dashboard"}>
+                <DashboardView {data} />
+            </div>
+    </section>
 
-        <!-- RIGHT SIDEBAR: Details / Editor -->
-        <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar">
-            <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
-        </aside>
-    {/if}
+    <!-- RIGHT SIDEBAR: Details / Editor -->
+    <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
+        <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
+    </aside>
 {/if}
 
 <style>

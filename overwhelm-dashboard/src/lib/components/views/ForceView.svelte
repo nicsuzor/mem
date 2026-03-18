@@ -212,16 +212,14 @@
         }
 
         const data = $graphData;
-        // Map initial precomputed FA2 layout
+        // Map initial precomputed SFDP layout
         data.nodes.forEach((d) => {
             d.x =
-                d.layouts?.forceatlas2?.x ||
-                d.layouts?.fa2?.x ||
+                d.layouts?.sfdp?.x ||
                 d.x ||
                 Math.random() * 500;
             d.y =
-                d.layouts?.forceatlas2?.y ||
-                d.layouts?.fa2?.y ||
+                d.layouts?.sfdp?.y ||
                 d.y ||
                 Math.random() * 500;
         });

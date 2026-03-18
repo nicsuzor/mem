@@ -364,8 +364,7 @@ export function prepareGraphData(
 
     const hasLayout = rawNodes.some(n =>
         n.x !== undefined ||
-        n.layouts?.forceatlas2 ||
-        n.layouts?.fa2
+        n.layouts?.sfdp
     );
 
     const availableLayouts = new Set<string>();
