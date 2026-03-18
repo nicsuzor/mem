@@ -12,7 +12,7 @@ use rmcp::model::*;
 use rmcp::{Error as McpError, ServerHandler};
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1577,12 +1577,25 @@ impl PkbSearchServer {
         // First pass: assign IDs to all subtasks and build title map for cross-references
         let mut subtask_ids: Vec<String> = Vec::with_capacity(subtasks.len());
         let mut title_to_id: HashMap<String, String> = HashMap::new();
+        let mut seen_ids: HashSet<String> = HashSet::new();
         for subtask in subtasks {
             let title = subtask.get("title").and_then(|v| v.as_str()).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Each subtask must have a 'title'"),
                 data: None,
             })?;
+
+            let title_lower = title.to_lowercase();
+            if title_to_id.contains_key(&title_lower) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Duplicate subtask title: '{}'. Sibling titles must be unique for cross-referencing.",
+                        title
+                    )),
+                    data: None,
+                });
+            }
 
             let id = subtask
                 .get("id")
@@ -1596,8 +1609,19 @@ impl PkbSearchServer {
                     crate::graph::create_id(prefix)
                 });
 
+            if !seen_ids.insert(id.clone()) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Duplicate subtask ID: '{}'. Subtask IDs must be unique within a batch.",
+                        id
+                    )),
+                    data: None,
+                });
+            }
+
             subtask_ids.push(id.clone());
-            title_to_id.insert(title.to_lowercase(), id);
+            title_to_id.insert(title_lower, id);
         }
 
         let mut created: Vec<(String, String)> = Vec::new();
