@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import os from 'node:os';
 import { env } from '$env/dynamic/private';
 
-const ACA_DATA = env.ACA_DATA || '';
+const AOPS_SESSIONS = env.AOPS_SESSIONS || env.ACA_DATA || '';
 
 async function readJson(path: string): Promise<any | null> {
     try {
@@ -15,8 +15,8 @@ async function readJson(path: string): Promise<any | null> {
 }
 
 async function loadSynthesis(): Promise<any | null> {
-    if (!ACA_DATA) return null;
-    const path = join(ACA_DATA, 'dashboard', 'synthesis.json');
+    if (!AOPS_SESSIONS) return null;
+    const path = join(AOPS_SESSIONS, 'dashboard', 'synthesis.json');
     const data = await readJson(path);
     if (!data) return null;
 

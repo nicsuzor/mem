@@ -4,7 +4,7 @@ import { json } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import type { RequestHandler } from './$types';
 
-const AOPS_BRAIN = env.AOPS_BRAIN || env.ACA_DATA || '';
+const AOPS_BRAIN = env.AOPS_BRAIN || env.AOPS_SESSIONS || env.ACA_DATA || '';
 
 /** GET /api/task?path=tasks/some-task.md — fetch task markdown body */
 export const GET: RequestHandler = async ({ url }) => {

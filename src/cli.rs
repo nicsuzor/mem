@@ -684,18 +684,22 @@ struct BatchFilterArgs {
 }
 
 fn default_pkb_root() -> String {
-    std::env::var("ACA_DATA").unwrap_or_else(|_| ".".to_string())
+    std::env::var("AOPS_SESSIONS")
+        .or_else(|_| std::env::var("ACA_DATA"))
+        .unwrap_or_else(|_| ".".to_string())
 }
 
 fn default_db_path() -> String {
-    std::env::var("ACA_DATA")
-        .map(|d| {
-            PathBuf::from(d)
+    let root = std::env::var("AOPS_SESSIONS")
+        .or_else(|_| std::env::var("ACA_DATA"));
+    
+    match root {
+        Ok(d) => PathBuf::from(d)
                 .join("pkb_vectors.bin")
                 .to_string_lossy()
-                .to_string()
-        })
-        .unwrap_or_else(|_| "pkb_vectors.bin".to_string())
+                .to_string(),
+        Err(_) => "pkb_vectors.bin".to_string()
+    }
 }
 
 fn load_store(db_path: &PathBuf, dim: usize) -> Result<Arc<RwLock<vectordb::VectorStore>>> {

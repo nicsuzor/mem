@@ -4,9 +4,9 @@
 
 ## Pipeline Flow
 
-1. **`/dump` skill** → writes per-session summary to `$ACA_DATA/dashboard/sessions/{hash}.summary.json` via `aops-core/lib/session_summary.py`
+1. **`/dump` skill** → writes per-session summary to `$AOPS_SESSIONS/dashboard/sessions/{hash}.summary.json` via `aops-core/lib/session_summary.py`
 2. **Cross-machine aggregation** → script does mechanical merge of session summaries from all machines; `/daily` does interpretive synthesis
-3. **`/daily` (or script)** → writes `$ACA_DATA/dashboard/synthesis.json` with keys: narrative, accomplishments, alignment, context, waiting_on, skill_insights, suggestion
+3. **`/daily` (or script)** → writes `$AOPS_SESSIONS/dashboard/synthesis.json` with keys: narrative, accomplishments, alignment, context, waiting_on, skill_insights, suggestion
 4. **Dashboard reads** → `synthesis.json` + session summaries + live session state
 
 ## Data Sources
@@ -15,13 +15,13 @@
 | ------------------ | ------------------------------------ |
 | Current Activity   | `sessions/status/*.json` (last 1h)   |
 | Where You Left Off | Session state files (last 24h)       |
-| LLM Synthesis      | `$ACA_DATA/dashboard/synthesis.json` |
+| LLM Synthesis      | `$AOPS_SESSIONS/dashboard/synthesis.json` |
 | Daily Story        | Session transcripts                  |
 
 ## Key Files
 
 - `aops-core/lib/session_summary.py` — `SessionSummary` TypedDict, `save_session_summary()`, `synthesize_session()`
-- `$ACA_DATA/dashboard/synthesis.json` — aggregated synthesis output
+- `$AOPS_SESSIONS/dashboard/synthesis.json` — aggregated synthesis output
 
 ## SvelteKit Migration
 

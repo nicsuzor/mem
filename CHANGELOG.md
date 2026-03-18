@@ -150,7 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fold fast-indexer into aops CLI, delete separate binary
 - generalize task_crud.rs to document_crud.rs for memory support
 - lazy ONNX session pool — 3x faster search startup
-- simplify default paths, require ACA_DATA
+- simplify default paths, require AOPS_SESSIONS
 - increase chunk size
 - 3x faster reindex with dynamic padding, rayon parallelism, progressive saves
 - parallel
@@ -294,7 +294,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fold fast-indexer into aops CLI, delete separate binary
 - generalize task_crud.rs to document_crud.rs for memory support
 - lazy ONNX session pool — 3x faster search startup
-- simplify default paths, require ACA_DATA
+- simplify default paths, require AOPS_SESSIONS
 - increase chunk size
 - 3x faster reindex with dynamic padding, rayon parallelism, progressive saves
 - parallel
@@ -469,7 +469,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fold fast-indexer into aops CLI, delete separate binary
 - generalize task_crud.rs to document_crud.rs for memory support
 - lazy ONNX session pool — 3x faster search startup
-- simplify default paths, require ACA_DATA
+- simplify default paths, require AOPS_SESSIONS
 - increase chunk size
 - 3x faster reindex with dynamic padding, rayon parallelism, progressive saves
 - parallel
@@ -621,7 +621,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fold fast-indexer into aops CLI, delete separate binary
 - generalize task_crud.rs to document_crud.rs for memory support
 - lazy ONNX session pool — 3x faster search startup
-- simplify default paths, require ACA_DATA
+- simplify default paths, require AOPS_SESSIONS
 - increase chunk size
 - 3x faster reindex with dynamic padding, rayon parallelism, progressive saves
 - parallel
@@ -774,7 +774,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fold fast-indexer into aops CLI, delete separate binary
 - generalize task_crud.rs to document_crud.rs for memory support
 - lazy ONNX session pool — 3x faster search startup
-- simplify default paths, require ACA_DATA
+- simplify default paths, require AOPS_SESSIONS
 - increase chunk size
 - 3x faster reindex with dynamic padding, rayon parallelism, progressive saves
 - parallel
@@ -925,7 +925,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fold fast-indexer into aops CLI, delete separate binary
 - generalize task_crud.rs to document_crud.rs for memory support
 - lazy ONNX session pool — 3x faster search startup
-- simplify default paths, require ACA_DATA
+- simplify default paths, require AOPS_SESSIONS
 - increase chunk size
 - 3x faster reindex with dynamic padding, rayon parallelism, progressive saves
 - parallel
