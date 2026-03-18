@@ -4,6 +4,10 @@
     export let projectData: any = {};
 
     $: hasData = projectProjects && projectProjects.length > 0;
+
+    function dedup(items: any[]): any[] {
+        return items.filter((acc, i, arr) => arr.findIndex(a => a.description === acc.description) === i);
+    }
 </script>
 
 {#if hasData}
@@ -79,16 +83,19 @@
                             <!-- Completed Column -->
                             <div class="flex flex-col gap-2">
                                 <h4 class="text-[10px] font-bold tracking-widest text-primary/60 mb-1">RECENTLY COMPLETED</h4>
-                                {#each accomplishments as acc}
+                                {#each dedup(accomplishments).slice(0, 3) as acc}
                                     <div class="flex items-start gap-2 p-2 border border-primary/10 bg-black/30 hover:border-primary/30 transition-colors">
                                         <span class="material-symbols-outlined text-[14px] text-green-500">check</span>
-                                        <span class="text-xs text-primary/70">{acc.description}</span>
+                                        <span class="text-xs text-primary/70 line-clamp-2">{acc.description}</span>
                                     </div>
                                 {:else}
                                     <div class="text-xs text-primary/40 italic">
                                         Nothing recently completed.
                                     </div>
                                 {/each}
+                                {#if dedup(accomplishments).length > 3}
+                                    <div class="text-xs text-primary/40 italic pl-2">+ {dedup(accomplishments).length - 3} more</div>
+                                {/if}
                             </div>
                         </div>
                     </div>

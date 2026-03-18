@@ -48,11 +48,9 @@
 
     <div class="grid grid-cols-12 gap-6 flex-1 min-h-0">
         <div class="col-span-8 flex flex-col gap-6 overflow-y-auto custom-scrollbar pr-2">
-            {#if hasLeftOff}
             <div class="border border-primary/30 bg-surface p-4">
                 <WhereYouLeftOff leftOff={{ active: leftOffActive, paused: leftOffPaused }} />
             </div>
-            {/if}
 
             <div class="border border-primary/30 bg-surface p-4">
                 <ProjectDashboard
