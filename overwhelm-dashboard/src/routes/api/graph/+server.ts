@@ -6,13 +6,13 @@ import type { RequestHandler } from './$types';
 
 const AOPS_SESSIONS = env.AOPS_SESSIONS;
 
-/** GET /api/graph?layout=fa2 — serve graph JSON from $AOPS_SESSIONS */
+/** GET /api/graph?layout=sfdp — serve graph JSON from $AOPS_SESSIONS */
 export const GET: RequestHandler = async ({ url }) => {
     if (!AOPS_SESSIONS) {
         return json({ error: 'AOPS_SESSIONS environment variable is not set' }, { status: 503 });
     }
 
-    const rawLayout = url.searchParams.get('layout') || 'fa2';
+    const rawLayout = url.searchParams.get('layout') || 'sfdp';
     // Sanitize: only allow alphanumeric, hyphens, underscores to prevent path traversal
     const layout = rawLayout.replace(/[^a-zA-Z0-9_-]/g, '');
 
