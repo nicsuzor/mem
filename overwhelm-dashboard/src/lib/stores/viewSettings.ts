@@ -3,7 +3,7 @@ import { writable } from 'svelte/store';
 export const viewSettings = writable({
     showSidebar: false, // controls sidebar visibility
     mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph'
-    viewMode: 'Treemap',  // "Treemap", "Circle Pack", "Force Atlas 2", "SFDP", "Arc Diagram"
+    viewMode: 'Treemap',  // "Treemap", "Circle Pack", "SFDP", "Arc Diagram"
     topNLeaves: 80,
     liveSimulation: false,
     chargeStrength: 1.0,
@@ -22,7 +22,6 @@ export const getLayoutFromViewSettings = ($settings: any) => {
             return 'treemap';
         case 'Circle Pack':
             return 'circle_pack';
-        case 'Force Atlas 2':
         case 'SFDP':
             return 'force';
         case 'Arc Diagram':
@@ -39,13 +38,11 @@ export const getGraphLayoutKey = ($settings: any): string => {
             return 'tree';
         case 'Circle Pack':
             return 'circle';
-        case 'Force Atlas 2':
-            return 'fa2';
         case 'SFDP':
             return 'sfdp';
         case 'Arc Diagram':
             return 'arc';
         default:
-            return 'fa2';
+            return 'sfdp';
     }
 }

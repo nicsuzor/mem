@@ -4,7 +4,6 @@
   import { graphData } from "../stores/graph";
 
   $: isForce =
-    $viewSettings.viewMode === "Force Atlas 2" ||
     $viewSettings.viewMode === "SFDP";
 
   $: availableProjects = $graphData
