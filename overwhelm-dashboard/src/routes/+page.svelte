@@ -330,6 +330,7 @@
         <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
     </aside>
 {/if}
+{/if}
 
 <style>
     :global(body) {
