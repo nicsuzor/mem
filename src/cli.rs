@@ -444,6 +444,25 @@ enum Commands {
         new: String,
     },
 
+    /// Merge source nodes into a canonical node, reparenting all their children
+    ///
+    /// Redirects all references (parent, depends_on, blocks, wikilinks, etc.) from
+    /// each source ID to the canonical ID, then archives the source nodes
+    /// (status=done, superseded_by=canonical). Unlike rename-id, the source file
+    /// is preserved as an archived record.
+    MergeNode {
+        /// ID of the canonical node to merge into (must already exist)
+        canonical_id: String,
+
+        /// One or more source node IDs to merge and archive
+        #[arg(long = "source", required = true)]
+        source_ids: Vec<String>,
+
+        /// Preview changes without writing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Lint and format PKB files (frontmatter validation, markdown hygiene, reference checks)
     Lint {
         /// Specific files to lint (omit to lint entire PKB)
@@ -2450,6 +2469,27 @@ fn main() -> Result<()> {
             let (files, refs) = lint::rename_id(&pkb_root, &old, &new)
                 .map_err(|e| anyhow::anyhow!(e))?;
             println!("Renamed '{}' → '{}': {} files modified, {} references updated", old, new, files, refs);
+        }
+
+        Commands::MergeNode { canonical_id, source_ids, dry_run } => {
+            let summary = document_crud::merge_node(&pkb_root, &source_ids, &canonical_id, dry_run)?;
+            if dry_run {
+                println!(
+                    "Dry run — merge '{}' → '{}':",
+                    source_ids.join(", "), canonical_id
+                );
+                println!("  {} files would be updated", summary.files_updated);
+                println!("  {} references would be redirected", summary.refs_redirected);
+                println!("  {} node(s) would be archived", summary.nodes_archived);
+            } else {
+                println!(
+                    "Merged '{}' → '{}':",
+                    source_ids.join(", "), canonical_id
+                );
+                println!("  {} files updated", summary.files_updated);
+                println!("  {} references redirected", summary.refs_redirected);
+                println!("  {} node(s) archived", summary.nodes_archived);
+            }
         }
 
         Commands::Lint {

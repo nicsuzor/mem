@@ -158,7 +158,7 @@ const KNOWN_KEYS: &[&str] = &[
     "topic",
     "generated_by",
     "extracted",
-    "body",
+    "body",     // kept here so fm-unknown-key doesn't fire; fm-prohibited-body handles it
     "epic",
     "summary",
     "notes",
@@ -585,6 +585,17 @@ fn check_frontmatter(
         }
     }
 
+    // Prohibited: body — content must live in the markdown body section, not frontmatter
+    if fm.contains_key("body") {
+        diags.push(Diagnostic {
+            severity: Severity::Error,
+            rule: "fm-prohibited-body",
+            message: "'body' is a prohibited frontmatter key — content belongs in the markdown body (run with --fix to auto-migrate)".into(),
+            line: None,
+            fixable: true,
+        });
+    }
+
     // Unknown keys
     let known: HashSet<&str> = KNOWN_KEYS.iter().copied().collect();
     for key in fm.keys() {
@@ -629,6 +640,21 @@ fn check_frontmatter(
                             });
                         }
                     }
+                }
+            }
+        }
+
+        // Single-value reference fields: supersedes, superseded_by
+        for key in &["supersedes", "superseded_by"] {
+            if let Some(ref_id) = fm.get(*key).and_then(|v| v.as_str()) {
+                if !known_ids.contains(ref_id) {
+                    diags.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule: "ref-broken-dep",
+                        message: format!("{} reference '{}' not found in PKB", key, ref_id),
+                        line: None,
+                        fixable: false,
+                    });
                 }
             }
         }
@@ -773,6 +799,39 @@ fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
 
 // ── Auto-fix engine ──────────────────────────────────────────────────────
 
+/// Remove the `body:` key and its (potentially multi-line) block-scalar value from a
+/// frontmatter string (the text between the two `---` delimiters, without those delimiters).
+fn remove_body_key_from_frontmatter(fm_text: &str) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    let mut in_body = false;
+    let mut is_block = false;
+
+    for line in fm_text.lines() {
+        if in_body {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                // Indented continuation of block scalar — drop.
+                continue;
+            } else if line.is_empty() && is_block {
+                // Blank line within a block scalar — drop.
+                continue;
+            } else {
+                // Non-indented, non-empty line: the body block is over.
+                in_body = false;
+                is_block = false;
+                lines.push(line);
+            }
+        } else if line.starts_with("body:") {
+            in_body = true;
+            let after = line["body:".len()..].trim();
+            is_block = after.starts_with('|') || after.starts_with('>');
+        } else {
+            lines.push(line);
+        }
+    }
+
+    lines.join("\n")
+}
+
 /// Apply fixes surgically — line-level edits only, preserving key order and formatting.
 fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path) -> String {
     let mut result = content.to_string();
@@ -844,6 +903,45 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path) 
 
         // Note: fm-id-format fix is handled at directory level via rename_id
         // (requires cross-file reference updates)
+
+        // Fix 6: Migrate 'body' frontmatter key → append its value to the markdown body
+        if fm.contains_key("body") {
+            if let Some(body_text) = fm.get("body").and_then(|v| v.as_str()) {
+                let body_text = body_text.to_string();
+
+                // Step 1: Remove the body: block from the frontmatter section.
+                if result.starts_with("---\n") {
+                    if let Some(fm_end_rel) = result[3..].find("\n---") {
+                        let fm_end = fm_end_rel + 3;
+                        let fm_section = result[4..fm_end].to_string();
+                        let new_fm = remove_body_key_from_frontmatter(&fm_section);
+                        let new_fm_str = if new_fm.trim().is_empty() {
+                            String::new()
+                        } else if new_fm.ends_with('\n') {
+                            new_fm
+                        } else {
+                            format!("{}\n", new_fm)
+                        };
+                        result = format!("---\n{}---{}", new_fm_str, &result[fm_end + 4..]);
+                    }
+                }
+
+                // Step 2: Append body_text to the markdown section if not already present.
+                if let Some(fm_end_rel) = result[3..].find("\n---") {
+                    let md_start = fm_end_rel + 3 + 5; // past \n---\n
+                    if !result[md_start..].contains(body_text.trim()) {
+                        if !result.ends_with('\n') {
+                            result.push('\n');
+                        }
+                        if !result.ends_with("\n\n") {
+                            result.push('\n');
+                        }
+                        result.push_str(body_text.trim());
+                        result.push('\n');
+                    }
+                }
+            }
+        }
     }
 
     // ── Frontmatter structural fixes (need --- delimiters but not parsed data) ──
@@ -959,7 +1057,7 @@ pub fn lint_directory(
                 let parsed = matter.parse(&content);
                 parsed.data.as_ref().and_then(|d| {
                     let fm: serde_json::Value = d.deserialize().ok()?;
-                    // Collect: id, filename stem, permalink
+                    // Collect: id, filename stem, permalink, and all alias values
                     let mut ids = Vec::new();
                     if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
                         ids.push(id.to_string());
@@ -969,6 +1067,18 @@ pub fn lint_directory(
                     }
                     if let Some(pl) = fm.get("permalink").and_then(|v| v.as_str()) {
                         ids.push(pl.to_string());
+                    }
+                    // Collect alias / aliases — other documents may reference by these names
+                    for key in &["alias", "aliases"] {
+                        if let Some(arr) = fm.get(*key).and_then(|v| v.as_array()) {
+                            for item in arr {
+                                if let Some(s) = item.as_str() {
+                                    ids.push(s.to_string());
+                                }
+                            }
+                        } else if let Some(s) = fm.get(*key).and_then(|v| v.as_str()) {
+                            ids.push(s.to_string());
+                        }
                     }
                     Some(ids)
                 })
@@ -1334,5 +1444,64 @@ mod tests {
             "Should not get fm-invalid with fallback parser, got: {:?}",
             diags.iter().map(|d| d.rule).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn detects_body_in_frontmatter() {
+        let diags = lint_str("---\nid: test-a1b2c3d4\ntitle: Test\ntype: task\nstatus: active\nbody: some content\n---\n\nExisting body.\n");
+        assert!(
+            diags.iter().any(|d| d.rule == "fm-prohibited-body"),
+            "Should detect body as frontmatter key, got: {:?}",
+            diags.iter().map(|d| d.rule).collect::<Vec<_>>()
+        );
+        let diag = diags.iter().find(|d| d.rule == "fm-prohibited-body").unwrap();
+        assert_eq!(diag.severity, Severity::Error);
+        assert!(diag.fixable);
+    }
+
+    #[test]
+    fn fixes_body_in_frontmatter_simple() {
+        let input = "---\nid: test-a1b2c3d4\ntitle: Test\ntype: task\nstatus: active\nbody: migrated content\n---\n\nExisting body.\n";
+        let fixed = fix_str(input);
+        assert!(!fixed.contains("body: migrated content"), "body key should be removed from frontmatter, got:\n{}", fixed);
+        assert!(fixed.contains("migrated content"), "body value should appear in markdown body, got:\n{}", fixed);
+        // Existing body content should be preserved
+        assert!(fixed.contains("Existing body."), "existing body should be preserved, got:\n{}", fixed);
+    }
+
+    #[test]
+    fn fixes_body_in_frontmatter_block_scalar() {
+        let input = "---\nid: test-a1b2c3d4\ntitle: Test\ntype: task\nstatus: active\nbody: |-\n  # Section\n\n  Some detailed content.\n\n  More content here.\ncomplexity: multi-step\n---\n\nShort existing body.\n";
+        let fixed = fix_str(input);
+        // body: key removed
+        assert!(!fixed.contains("body: |-"), "body: block key should be removed, got:\n{}", fixed);
+        // content preserved
+        assert!(fixed.contains("# Section"), "body content should be in markdown, got:\n{}", fixed);
+        assert!(fixed.contains("More content here."), "all body content preserved, got:\n{}", fixed);
+        // other frontmatter preserved
+        assert!(fixed.contains("complexity: multi-step"), "other frontmatter keys preserved, got:\n{}", fixed);
+        // existing markdown body preserved
+        assert!(fixed.contains("Short existing body."), "existing body preserved, got:\n{}", fixed);
+    }
+
+    #[test]
+    fn fixes_body_not_duplicated_when_already_present() {
+        // If the markdown body already contains the full body value, don't append
+        let input = "---\nid: test-a1b2c3d4\ntitle: Test\ntype: task\nstatus: active\nbody: exact content\n---\n\nexact content\n";
+        let fixed = fix_str(input);
+        assert!(!fixed.contains("body: exact content"), "body key removed");
+        // Should not double the content
+        let count = fixed.matches("exact content").count();
+        assert_eq!(count, 1, "content should appear exactly once, got:\n{}", fixed);
+    }
+
+    #[test]
+    fn body_key_is_prohibited_not_merely_unknown() {
+        // body: should be flagged as prohibited (Error) rather than merely unknown (Style)
+        let diags = lint_str("---\nid: test-a1b2c3d4\ntitle: Test\ntype: note\nbody: foo\n---\n\nBody.\n");
+        assert!(diags.iter().any(|d| d.rule == "fm-prohibited-body"), "should get fm-prohibited-body");
+        // Should NOT get fm-unknown-key for body — it's a known key with its own rule
+        assert!(!diags.iter().any(|d| d.rule == "fm-unknown-key" && d.message.contains("'body'")),
+            "should not get fm-unknown-key for body");
     }
 }

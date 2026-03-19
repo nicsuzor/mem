@@ -331,6 +331,21 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
 /// Returns the path to the created file. The filename is derived from the
 /// task ID and title (slugified).
 pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
+    // parent is required — tasks must be linked to an existing node
+    if fields.parent.as_deref().map(str::is_empty).unwrap_or(true) {
+        anyhow::bail!(
+            "parent is required: tasks must be linked to a parent node \
+             (goal, epic, or project). Only top-level types (goal, project, learn) \
+             can be root-level."
+        );
+    }
+    // project is required — tasks must belong to a named project
+    if fields.project.as_deref().map(str::is_empty).unwrap_or(true) {
+        anyhow::bail!(
+            "project is required: specify which project this task belongs to"
+        );
+    }
+
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: sanitize to prevent path traversal
@@ -1055,4 +1070,181 @@ mod tests {
         assert!(id1.starts_with("task-"));
         assert!(id2.starts_with("task-"));
     }
+}
+
+// ── Merge node ────────────────────────────────────────────────────────────
+
+/// Summary of a `merge_node` operation.
+#[derive(Debug)]
+pub struct MergeNodeSummary {
+    /// Number of files in which at least one reference was updated.
+    pub files_updated: usize,
+    /// Total number of individual references redirected.
+    pub refs_redirected: usize,
+    /// Number of source nodes archived (status=done, superseded_by=canonical).
+    pub nodes_archived: usize,
+    pub dry_run: bool,
+}
+
+/// Merge one or more source nodes into a canonical node.
+///
+/// For each source ID this function:
+/// 1. Scans every PKB file and rewrites all references to the source ID
+///    (`parent`, `depends_on`, `soft_depends_on`, `blocks`, `soft_blocks`,
+///    `supersedes`, and wikilinks) to point to `canonical_id` instead — but
+///    leaves the source file's own `id:` field untouched.
+/// 2. Archives the source node by setting `status: done` and
+///    `superseded_by: <canonical_id>` in its frontmatter.
+///
+/// Unlike `rename_id` (which changes the node's own ID), this operation
+/// preserves the source node as an archived record.
+pub fn merge_node(
+    pkb_root: &Path,
+    source_ids: &[String],
+    canonical_id: &str,
+    dry_run: bool,
+) -> Result<MergeNodeSummary> {
+    use gray_matter::engine::YAML;
+    use gray_matter::Matter;
+    use std::collections::HashSet;
+
+    if source_ids.is_empty() {
+        anyhow::bail!("source_ids must not be empty");
+    }
+
+    let source_set: HashSet<&str> = source_ids.iter().map(|s| s.as_str()).collect();
+    let ref_fields = [
+        "parent",
+        "depends_on",
+        "soft_depends_on",
+        "blocks",
+        "soft_blocks",
+        "supersedes",
+    ];
+
+    let files = crate::pkb::scan_directory(pkb_root);
+    let mut files_updated = 0usize;
+    let mut refs_redirected = 0usize;
+    // Track each source ID → its file path for archiving
+    let mut source_paths: HashMap<String, PathBuf> = HashMap::new();
+
+    for file_path in &files {
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let matter = Matter::<YAML>::new();
+        let parsed = matter.parse(&content);
+        let fm_data = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok());
+        let fm = match fm_data.as_ref().and_then(|v| v.as_object()) {
+            Some(m) => m,
+            None => continue,
+        };
+
+        // Track source file paths for later archiving
+        if let Some(file_id) = fm.get("id").and_then(|v| v.as_str()) {
+            if source_set.contains(file_id) {
+                source_paths.insert(file_id.to_string(), file_path.clone());
+                // Don't update reference fields in source files —
+                // they'll be archived separately.
+                continue;
+            }
+        }
+
+        let mut modified = false;
+        let mut new_content = content.clone();
+
+        // Redirect frontmatter reference fields
+        for field in &ref_fields {
+            if let Some(val) = fm.get(*field) {
+                match val {
+                    serde_json::Value::String(s) if source_set.contains(s.as_str()) => {
+                        let old_line = format!("{}: {}", field, s);
+                        let new_line = format!("{}: {}", field, canonical_id);
+                        if new_content.contains(&old_line) {
+                            new_content = new_content.replace(&old_line, &new_line);
+                            modified = true;
+                            refs_redirected += 1;
+                        }
+                    }
+                    serde_json::Value::Array(arr) => {
+                        for item in arr {
+                            if let Some(ref_id) = item.as_str() {
+                                if source_set.contains(ref_id) {
+                                    let old_item = format!("- {}", ref_id);
+                                    let new_item = format!("- {}", canonical_id);
+                                    if new_content.contains(&old_item) {
+                                        new_content =
+                                            new_content.replacen(&old_item, &new_item, 1);
+                                        modified = true;
+                                        refs_redirected += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Redirect wikilinks
+        for source_id in source_ids {
+            let wiki_plain = format!("[[{}]]", source_id);
+            let wiki_plain_new = format!("[[{}]]", canonical_id);
+            if new_content.contains(&wiki_plain) {
+                new_content = new_content.replace(&wiki_plain, &wiki_plain_new);
+                modified = true;
+                refs_redirected += 1;
+            }
+            let wiki_alias = format!("[[{}|", source_id);
+            let wiki_alias_new = format!("[[{}|", canonical_id);
+            if new_content.contains(&wiki_alias) {
+                new_content = new_content.replace(&wiki_alias, &wiki_alias_new);
+                modified = true;
+                refs_redirected += 1;
+            }
+        }
+
+        if modified {
+            if !dry_run {
+                let _ = std::fs::write(file_path, &new_content);
+            }
+            files_updated += 1;
+        }
+    }
+
+    // Archive source nodes
+    let mut nodes_archived = 0usize;
+    for (src_id, src_path) in &source_paths {
+        if !dry_run {
+            let mut updates = HashMap::new();
+            updates.insert(
+                "status".to_string(),
+                serde_json::Value::String("done".to_string()),
+            );
+            updates.insert(
+                "superseded_by".to_string(),
+                serde_json::Value::String(canonical_id.to_string()),
+            );
+            if let Err(e) = update_document(src_path, updates) {
+                eprintln!("Warning: failed to archive {}: {}", src_id, e);
+            } else {
+                nodes_archived += 1;
+            }
+        } else {
+            nodes_archived += 1;
+        }
+    }
+
+    Ok(MergeNodeSummary {
+        files_updated,
+        refs_redirected,
+        nodes_archived,
+        dry_run,
+    })
 }
