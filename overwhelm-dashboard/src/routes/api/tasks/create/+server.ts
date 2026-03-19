@@ -20,9 +20,14 @@ export const POST: RequestHandler = async ({ request }) => {
         return json({ error: 'Failed to create task — PKB unavailable' }, { status: 503 });
     }
 
-    // Extract task ID from response text: pattern like `some-task-abc123ef`
-    const match = result.match(/`([a-z][a-z0-9-]+-[a-f0-9]{8})`/);
-    const id = match?.[1] ?? null;
+    // Extract task ID from response path: `/.../tasks/<id>-<slug>.md`
+    // ID ends at the 8-char hex suffix: e.g. "task-13b5a079" from "task-13b5a079-qa-test-..."
+    const pathMatch = result.match(/`[^`]*\/([^`/]+)\.md`/);
+    let id: string | null = null;
+    if (pathMatch) {
+        const idMatch = pathMatch[1].match(/^(.+?-[a-f0-9]{8})(?:-|$)/);
+        id = idMatch?.[1] ?? null;
+    }
 
     return json({ ok: true, id, message: result.trim() });
 };
