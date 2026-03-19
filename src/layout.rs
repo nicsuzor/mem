@@ -293,6 +293,214 @@ fn rect_gap(
     }
 }
 
+// ── Barnes-Hut quadtree for O(n log n) repulsion ────────────────────────
+
+/// Use Barnes-Hut approximation for graphs with more than this many nodes.
+const BH_THRESHOLD: usize = 500;
+/// Barnes-Hut opening angle — higher = faster but less accurate. 1.0 is a good trade-off.
+const BH_THETA: f64 = 1.0;
+
+struct QuadTree {
+    // Flat arena: each node stores its data inline
+    nodes: Vec<QTNode>,
+}
+
+struct QTNode {
+    // Bounding box center and half-size
+    cx: f64,
+    cy: f64,
+    half: f64,
+    // Center of mass and total mass for this cell
+    com_x: f64,
+    com_y: f64,
+    total_mass: f64,
+    // If a leaf with a single particle
+    particle: Option<usize>,
+    // Children indices (0 = empty)
+    children: [u32; 4], // NW, NE, SW, SE
+}
+
+impl QuadTree {
+    fn build(x: &[f64], y: &[f64], mass: &[f64]) -> Self {
+        let n = x.len();
+        if n == 0 {
+            return Self { nodes: vec![] };
+        }
+
+        // Compute bounding box
+        let mut x_min = f64::INFINITY;
+        let mut x_max = f64::NEG_INFINITY;
+        let mut y_min = f64::INFINITY;
+        let mut y_max = f64::NEG_INFINITY;
+        for i in 0..n {
+            x_min = x_min.min(x[i]);
+            x_max = x_max.max(x[i]);
+            y_min = y_min.min(y[i]);
+            y_max = y_max.max(y[i]);
+        }
+        let range = (x_max - x_min).max(y_max - y_min).max(1.0);
+        let cx = (x_min + x_max) / 2.0;
+        let cy = (y_min + y_max) / 2.0;
+        let half = range / 2.0 + 1.0;
+
+        let mut tree = Self {
+            nodes: Vec::with_capacity(n * 2),
+        };
+        tree.nodes.push(QTNode {
+            cx, cy, half,
+            com_x: 0.0, com_y: 0.0, total_mass: 0.0,
+            particle: None,
+            children: [0; 4],
+        });
+
+        for i in 0..n {
+            tree.insert(0, i, x[i], y[i], mass[i]);
+        }
+        tree
+    }
+
+    fn insert(&mut self, node_idx: usize, particle: usize, px: f64, py: f64, pmass: f64) {
+        // Update center of mass
+        let total = self.nodes[node_idx].total_mass + pmass;
+        if total > 0.0 {
+            self.nodes[node_idx].com_x =
+                (self.nodes[node_idx].com_x * self.nodes[node_idx].total_mass + px * pmass) / total;
+            self.nodes[node_idx].com_y =
+                (self.nodes[node_idx].com_y * self.nodes[node_idx].total_mass + py * pmass) / total;
+        }
+        self.nodes[node_idx].total_mass = total;
+
+        let is_empty = self.nodes[node_idx].total_mass == pmass
+            && self.nodes[node_idx].children == [0; 4]
+            && self.nodes[node_idx].particle.is_none();
+
+        if is_empty {
+            // Empty cell — just store the particle
+            self.nodes[node_idx].particle = Some(particle);
+            return;
+        }
+
+        // If this is a leaf with an existing particle, push it down first
+        if let Some(existing) = self.nodes[node_idx].particle.take() {
+            let ecx = self.nodes[node_idx].com_x;
+            let ecy = self.nodes[node_idx].com_y;
+            // Use approximate position from old com (before we updated it) —
+            // actually we need the original position. Recompute:
+            let old_total = total - pmass;
+            let ex = if old_total > 0.0 {
+                (self.nodes[node_idx].com_x * total - px * pmass) / old_total
+            } else {
+                ecx
+            };
+            let ey = if old_total > 0.0 {
+                (self.nodes[node_idx].com_y * total - py * pmass) / old_total
+            } else {
+                ecy
+            };
+            self.push_to_child(node_idx, existing, ex, ey, old_total);
+        }
+
+        // Push the new particle to appropriate child
+        self.push_to_child(node_idx, particle, px, py, pmass);
+    }
+
+    fn push_to_child(&mut self, node_idx: usize, particle: usize, px: f64, py: f64, pmass: f64) {
+        let cx = self.nodes[node_idx].cx;
+        let cy = self.nodes[node_idx].cy;
+        let child_half = self.nodes[node_idx].half / 2.0;
+
+        // Determine quadrant: 0=NW, 1=NE, 2=SW, 3=SE
+        let q = if px < cx {
+            if py < cy { 0 } else { 2 }
+        } else {
+            if py < cy { 1 } else { 3 }
+        };
+
+        let child_cx = if q % 2 == 0 { cx - child_half } else { cx + child_half };
+        let child_cy = if q < 2 { cy - child_half } else { cy + child_half };
+
+        if self.nodes[node_idx].children[q] == 0 {
+            // Create new child node
+            let child_idx = self.nodes.len();
+            self.nodes.push(QTNode {
+                cx: child_cx,
+                cy: child_cy,
+                half: child_half,
+                com_x: 0.0, com_y: 0.0, total_mass: 0.0,
+                particle: None,
+                children: [0; 4],
+            });
+            self.nodes[node_idx].children[q] = child_idx as u32;
+        }
+
+        let child_idx = self.nodes[node_idx].children[q] as usize;
+
+        // Guard against infinite recursion when particles have identical positions
+        if child_half < 1e-10 {
+            // Just accumulate mass, don't subdivide further
+            self.nodes[child_idx].total_mass += pmass;
+            self.nodes[child_idx].com_x = px;
+            self.nodes[child_idx].com_y = py;
+            return;
+        }
+
+        self.insert(child_idx, particle, px, py, pmass);
+    }
+
+    /// Compute repulsive force on particle `idx` at position (px, py) with given strength.
+    /// Returns (fx, fy) — force components pushing AWAY from other masses.
+    fn force_on(&self, idx: usize, px: f64, py: f64, strength: f64) -> (f64, f64) {
+        if self.nodes.is_empty() {
+            return (0.0, 0.0);
+        }
+        let (mut fx, mut fy) = (0.0, 0.0);
+        self.force_recurse(0, idx, px, py, strength, &mut fx, &mut fy);
+        (fx, fy)
+    }
+
+    fn force_recurse(
+        &self, node_idx: usize, idx: usize,
+        px: f64, py: f64, strength: f64,
+        fx: &mut f64, fy: &mut f64,
+    ) {
+        let node = &self.nodes[node_idx];
+        if node.total_mass == 0.0 {
+            return;
+        }
+
+        let dx = px - node.com_x;
+        let dy = py - node.com_y;
+        let dist_sq = dx * dx + dy * dy;
+        let dist = dist_sq.sqrt().max(0.1);
+
+        // If leaf with single particle
+        if let Some(p) = node.particle {
+            if p != idx {
+                let force = strength * node.total_mass / dist;
+                *fx += force * dx / dist;
+                *fy += force * dy / dist;
+            }
+            return;
+        }
+
+        // Barnes-Hut criterion: if cell is far enough away, use approximation
+        let cell_size = node.half * 2.0;
+        if cell_size / dist < BH_THETA {
+            let force = strength * node.total_mass / dist;
+            *fx += force * dx / dist;
+            *fy += force * dy / dist;
+            return;
+        }
+
+        // Otherwise recurse into children
+        for &child in &node.children {
+            if child != 0 {
+                self.force_recurse(child as usize, idx, px, py, strength, fx, fy);
+            }
+        }
+    }
+}
+
 // ── ForceAtlas2 (rectangle-aware) ───────────────────────────────────────
 
 fn compute_forceatlas2(
@@ -431,30 +639,45 @@ fn compute_forceatlas2(
         let mut fx = vec![0.0f64; rn];
         let mut fy = vec![0.0f64; rn];
 
-        // Repulsive forces (reachable pairs only, O(rn^2)) — rectangle-aware
-        for i in 0..rn {
-            for j in (i + 1)..rn {
-                let dx = x[j] - x[i];
-                let dy = y[j] - y[i];
-                let center_dist = (dx * dx + dy * dy).sqrt().max(0.1);
+        // Repulsive forces — Barnes-Hut O(n log n) for large graphs, O(n^2) for small
+        if rn > BH_THRESHOLD {
+            // Build quadtree with mass = charge * (degree + 1)
+            let masses: Vec<f64> = (0..rn).map(|i| charge[i] * (degree[i] as f64 + 1.0)).collect();
+            let tree = QuadTree::build(&x, &y, &masses);
+            for i in 0..rn {
+                let (frx, fry) = tree.force_on(
+                    i, x[i], y[i],
+                    cfg.force.k_repulsion * charge[i] * (degree[i] as f64 + 1.0),
+                );
+                fx[i] += frx;
+                fy[i] += fry;
+            }
+        } else {
+            // Exact O(n^2) rectangle-aware repulsion for small graphs
+            for i in 0..rn {
+                for j in (i + 1)..rn {
+                    let dx = x[j] - x[i];
+                    let dy = y[j] - y[i];
+                    let center_dist = (dx * dx + dy * dy).sqrt().max(0.1);
 
-                let gap = rect_gap(
-                    x[i], y[i], half_w[i], half_h[i],
-                    x[j], y[j], half_w[j], half_h[j],
-                ).max(0.1);
+                    let gap = rect_gap(
+                        x[i], y[i], half_w[i], half_h[i],
+                        x[j], y[j], half_w[j], half_h[j],
+                    ).max(0.1);
 
-                let deg_i = degree[i] as f64 + 1.0;
-                let deg_j = degree[j] as f64 + 1.0;
-                let force =
-                    cfg.force.k_repulsion * charge[i] * charge[j] * deg_i * deg_j / gap;
+                    let deg_i = degree[i] as f64 + 1.0;
+                    let deg_j = degree[j] as f64 + 1.0;
+                    let force =
+                        cfg.force.k_repulsion * charge[i] * charge[j] * deg_i * deg_j / gap;
 
-                let force_x = force * dx / center_dist;
-                let force_y = force * dy / center_dist;
+                    let force_x = force * dx / center_dist;
+                    let force_y = force * dy / center_dist;
 
-                fx[i] -= force_x;
-                fy[i] -= force_y;
-                fx[j] += force_x;
-                fy[j] += force_y;
+                    fx[i] -= force_x;
+                    fy[i] -= force_y;
+                    fx[j] += force_x;
+                    fy[j] += force_y;
+                }
             }
         }
 
@@ -560,7 +783,8 @@ fn compute_forceatlas2(
             global_speed = global_speed.max(0.01);
         }
 
-        // Apply forces with per-node speed limit
+        // Apply forces with per-node speed limit, track total displacement
+        let mut total_disp = 0.0f64;
         for i in 0..rn {
             let force_mag = (fx[i] * fx[i] + fy[i] * fy[i]).sqrt().max(0.001);
             let node_swing =
@@ -571,10 +795,16 @@ fn compute_forceatlas2(
 
             x[i] += fx[i] / force_mag * capped;
             y[i] += fy[i] / force_mag * capped;
+            total_disp += capped;
         }
 
         prev_fx = fx;
         prev_fy = fy;
+
+        // Early convergence: stop when average displacement per node is negligible
+        if _iter > 10 && total_disp / rn as f64 <= 0.01 {
+            break;
+        }
     }
 
     // Normalize coordinates to viewport range (0..viewport)

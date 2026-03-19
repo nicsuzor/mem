@@ -360,6 +360,10 @@ enum Commands {
         /// Filter to reachable (focus) nodes only
         #[arg(long)]
         focus: bool,
+
+        /// Skip layout computation (export graph structure only)
+        #[arg(long)]
+        no_layout: bool,
     },
 
     /// Search memories by semantic similarity
@@ -2001,10 +2005,10 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Graph { format, output, layout, focus } => {
+        Commands::Graph { format, output, layout, focus, no_layout } => {
             let mut gs = load_graph(&pkb_root, &db_path);
-            // Only compute layouts for formats that need them
-            let needs_layout = matches!(format.to_lowercase().as_str(), "all" | "json" | "dot");
+            // Only compute layouts for formats that need them (unless --no-layout)
+            let needs_layout = !no_layout && matches!(format.to_lowercase().as_str(), "all" | "json" | "dot");
             if needs_layout {
                 gs.compute_layouts();
             }
