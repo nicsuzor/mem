@@ -688,14 +688,12 @@ struct BatchFilterArgs {
 }
 
 fn default_pkb_root() -> String {
-    std::env::var("AOPS_SESSIONS")
-        .or_else(|_| std::env::var("ACA_DATA"))
+    std::env::var("ACA_DATA")
         .unwrap_or_else(|_| ".".to_string())
 }
 
 fn default_db_path() -> String {
-    let root = std::env::var("AOPS_SESSIONS")
-        .or_else(|_| std::env::var("ACA_DATA"));
+    let root = std::env::var("ACA_DATA");
     
     match root {
         Ok(d) => PathBuf::from(d)
