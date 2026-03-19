@@ -29,20 +29,21 @@ struct Cli {
 }
 
 fn default_pkb_root() -> String {
-    std::env::var("ACA_DATA")
-        .unwrap_or_else(|_| ".".to_string())
+    std::env::var("ACA_DATA").unwrap_or_else(|_| {
+        eprintln!("error: ACA_DATA environment variable is not set");
+        std::process::exit(1);
+    })
 }
 
 fn default_db_path() -> String {
-    let root = std::env::var("ACA_DATA");
-    
-    match root {
-        Ok(d) => PathBuf::from(d)
-                .join("pkb_vectors.bin")
-                .to_string_lossy()
-                .to_string(),
-        Err(_) => "pkb_vectors.bin".to_string()
-    }
+    let root = std::env::var("ACA_DATA").unwrap_or_else(|_| {
+        eprintln!("error: ACA_DATA environment variable is not set");
+        std::process::exit(1);
+    });
+    PathBuf::from(root)
+        .join("pkb_vectors.bin")
+        .to_string_lossy()
+        .to_string()
 }
 
 #[tokio::main]
