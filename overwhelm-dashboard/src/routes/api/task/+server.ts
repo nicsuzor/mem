@@ -4,12 +4,12 @@ import { json } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import type { RequestHandler } from './$types';
 
-const AOPS_BRAIN = env.AOPS_BRAIN || env.AOPS_SESSIONS || env.ACA_DATA || '';
+const ACA_DATA = env.ACA_DATA || '';
 
 /** GET /api/task?path=tasks/some-task.md — fetch task markdown body */
 export const GET: RequestHandler = async ({ url }) => {
-    if (!AOPS_BRAIN) {
-        return json({ error: 'AOPS_BRAIN environment variable is not set' }, { status: 503 });
+    if (!ACA_DATA) {
+        return json({ error: 'ACA_DATA environment variable is not set' }, { status: 503 });
     }
 
     const path = url.searchParams.get('path');
@@ -17,12 +17,12 @@ export const GET: RequestHandler = async ({ url }) => {
         return json({ error: 'Missing path parameter' }, { status: 400 });
     }
 
-    // Sanitize: only allow relative paths within AOPS_BRAIN
+    // Sanitize: only allow relative paths within ACA_DATA
     if (path.includes('..') || path.startsWith('/')) {
         return json({ error: 'Invalid path' }, { status: 400 });
     }
 
-    const filepath = join(AOPS_BRAIN, path);
+    const filepath = join(ACA_DATA, path);
 
     try {
         const text = await readFile(filepath, 'utf-8');

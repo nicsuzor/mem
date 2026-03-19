@@ -6,8 +6,8 @@ import type { RequestHandler } from './$types';
 
 const execFileAsync = promisify(execFile);
 
-const AOPS_BIN   = env.AOPS_BIN   || 'aops';
-const AOPS_BRAIN = env.AOPS_BRAIN || env.AOPS_SESSIONS || env.ACA_DATA || '';
+const AOPS_BIN = env.AOPS_BIN || 'aops';
+const ACA_DATA = env.ACA_DATA || '';
 
 export const POST: RequestHandler = async ({ request }) => {
     const body = await request.json().catch(() => null);
@@ -21,7 +21,11 @@ export const POST: RequestHandler = async ({ request }) => {
         return json({ error: 'Invalid id or status' }, { status: 400 });
     }
 
-    const rootArgs = AOPS_BRAIN ? ['--pkb-root', AOPS_BRAIN] : [];
+    if (!ACA_DATA) {
+        return json({ error: 'ACA_DATA environment variable is not set' }, { status: 503 });
+    }
+
+    const rootArgs = ['--pkb-root', ACA_DATA];
 
     const args: string[] =
         status === 'done'

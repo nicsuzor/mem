@@ -45,7 +45,7 @@ cargo binstall mem
 ### 1. Set your PKB directory
 
 ```bash
-export AOPS_SESSIONS=~/brain  # or wherever your markdown files live
+export ACA_DATA=~/brain  # or wherever your markdown files live
 ```
 
 ### 2. Index your files
@@ -256,7 +256,7 @@ aops --layout-config ~/experiments/tight.toml graph -f json
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AOPS_SESSIONS` | `~/brain` | PKB root directory |
+| `ACA_DATA` | `~/brain` | PKB root directory |
 | `RUST_LOG` | `info` | Log level filter |
 | `AOPS_OFFLINE` | `false` | Disable model/runtime auto-download |
 | `AOPS_MODEL_PATH` | (auto) | Override model directory path |

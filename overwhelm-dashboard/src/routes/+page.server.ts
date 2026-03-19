@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import os from 'node:os';
 import { env } from '$env/dynamic/private';
 
-const AOPS_SESSIONS = env.AOPS_SESSIONS || env.ACA_DATA || '';
+const AOPS_SESSIONS = env.AOPS_SESSIONS || '';
 
 async function readJson(path: string): Promise<any | null> {
     try {
