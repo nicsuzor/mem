@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.34](https://github.com/nicsuzor/mem/compare/v0.2.33...v0.2.34) - 2026-03-19
+
+### Other
+
+- Merge pull request #101 from nicsuzor/feat/manual-release
+
 ## [0.2.33](https://github.com/nicsuzor/mem/compare/v0.2.32...v0.2.33) - 2026-03-12
 
 ### Other
