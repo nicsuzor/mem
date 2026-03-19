@@ -395,6 +395,35 @@ impl PkbSearchServer {
                 data: None,
             });
         }
+
+        // project is required
+        if fields.project.is_none() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Missing required parameter: project. Specify which project this task belongs to.",
+                ),
+                data: None,
+            });
+        }
+
+        // Validate parent exists in the PKB graph
+        {
+            let graph = self.graph.read();
+            if let Some(ref parent_id) = fields.parent {
+                if graph.resolve(parent_id).is_none() {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Parent '{}' not found in PKB. Create the parent node first or verify the ID.",
+                            parent_id
+                        )),
+                        data: None,
+                    });
+                }
+            }
+        }
+
         let warnings: Vec<String> = Vec::new();
 
         let path =
@@ -2213,6 +2242,56 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    fn handle_merge_node(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let canonical_id = args
+            .get("canonical_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("canonical_id is required"),
+                data: None,
+            })?
+            .to_string();
+
+        let source_ids: Vec<String> = args
+            .get("source_ids")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        if source_ids.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("source_ids must contain at least one ID"),
+                data: None,
+            });
+        }
+
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let summary =
+            crate::document_crud::merge_node(&self.pkb_root, &source_ids, &canonical_id, dry_run)
+                .map_err(|e| McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from(format!("merge_node failed: {e}")),
+                    data: None,
+                })?;
+
+        if !dry_run && summary.nodes_archived > 0 {
+            self.rebuild_graph();
+        }
+
+        let msg = format!(
+            "merge_node{}: {} files updated, {} references redirected, {} node(s) archived{}",
+            if dry_run { " (dry run)" } else { "" },
+            summary.files_updated,
+            summary.refs_redirected,
+            summary.nodes_archived,
+            if dry_run { " — no changes written" } else { "" },
+        );
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
     fn handle_graph_stats(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let project = args.get("project").and_then(|v| v.as_str());
 
@@ -2390,6 +2469,7 @@ impl ServerHandler for PkbSearchServer {
             "graph_stats" => self.handle_graph_stats(&args),
             "find_duplicates" => self.handle_find_duplicates(&args),
             "batch_merge" => self.handle_batch_merge(&args),
+            "merge_node" => self.handle_merge_node(&args),
             "batch_create_epics" => self.handle_batch_create_epics(&args),
             "batch_reclassify" => self.handle_batch_reclassify(&args),
             _ => Err(McpError {
@@ -2901,6 +2981,20 @@ impl ServerHandler for PkbSearchServer {
                         "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
                     },
                     "required": ["canonical", "merge_ids"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "merge_node",
+                "Merge source nodes into a canonical node. Redirects all references (parent, depends_on, blocks, wikilinks, etc.) from each source ID to the canonical ID across the entire PKB, then archives each source node (status=done, superseded_by=canonical). Unlike batch_merge, preserves source node files as archived records and performs complete reference updates including wikilinks.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "canonical_id": { "type": "string", "description": "ID of the node to merge into (must already exist)" },
+                        "source_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of nodes to merge into canonical and archive" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["canonical_id", "source_ids"]
                 }))
                 .unwrap(),
             ),

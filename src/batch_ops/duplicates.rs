@@ -204,6 +204,12 @@ pub fn batch_merge(
             if other.depends_on.contains(&node.id) {
                 backlinks_to_update.push((other.id.clone(), "depends_on".to_string()));
             }
+            if other.soft_depends_on.contains(&node.id) {
+                backlinks_to_update.push((other.id.clone(), "soft_depends_on".to_string()));
+            }
+            if other.soft_blocks.contains(&node.id) {
+                backlinks_to_update.push((other.id.clone(), "soft_blocks".to_string()));
+            }
         }
 
         if dry_run {
@@ -358,6 +364,44 @@ pub fn batch_merge(
                         "depends_on".to_string(),
                         serde_json::Value::Array(
                             new_deps.into_iter().map(serde_json::Value::String).collect(),
+                        ),
+                    );
+                }
+                "soft_depends_on" => {
+                    let new_deps: Vec<String> = node
+                        .soft_depends_on
+                        .iter()
+                        .map(|d| {
+                            if merge_ids.contains(d) {
+                                canonical_id.clone()
+                            } else {
+                                d.clone()
+                            }
+                        })
+                        .collect();
+                    updates.insert(
+                        "soft_depends_on".to_string(),
+                        serde_json::Value::Array(
+                            new_deps.into_iter().map(serde_json::Value::String).collect(),
+                        ),
+                    );
+                }
+                "soft_blocks" => {
+                    let new_blocks: Vec<String> = node
+                        .soft_blocks
+                        .iter()
+                        .map(|d| {
+                            if merge_ids.contains(d) {
+                                canonical_id.clone()
+                            } else {
+                                d.clone()
+                            }
+                        })
+                        .collect();
+                    updates.insert(
+                        "soft_blocks".to_string(),
+                        serde_json::Value::Array(
+                            new_blocks.into_iter().map(serde_json::Value::String).collect(),
                         ),
                     );
                 }
