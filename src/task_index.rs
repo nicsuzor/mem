@@ -121,10 +121,12 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
 
     for tid in &task_ids {
         if let Some(entry) = entries.get(tid) {
-            // parent -> children symmetry
-            if let Some(ref parent_id) = entry.parent {
-                if entries.contains_key(parent_id) {
-                    child_updates.push((parent_id.clone(), tid.clone()));
+            // parent -> children symmetry (exclude subtasks — they travel with parent separately)
+            if entry.task_type != "subtask" {
+                if let Some(ref parent_id) = entry.parent {
+                    if entries.contains_key(parent_id) {
+                        child_updates.push((parent_id.clone(), tid.clone()));
+                    }
                 }
             }
             // children -> parent symmetry

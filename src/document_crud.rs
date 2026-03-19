@@ -252,6 +252,80 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Fields for creating a new sub-task.
+#[derive(Debug, Clone, Default)]
+pub struct SubtaskFields {
+    pub parent_id: String,
+    pub title: String,
+    pub body: Option<String>,
+}
+
+/// Create a new sub-task file with YAML frontmatter.
+///
+/// Sub-tasks use dot-notation IDs: `{parent_id}.{n}` where n is the next
+/// available integer (1-based). The file is written to the same tasks/
+/// directory as the parent.
+///
+/// Returns the path to the created file.
+pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
+    if fields.parent_id.is_empty() {
+        anyhow::bail!("parent_id cannot be empty");
+    }
+
+    let tasks_dir = root.join("tasks");
+    let dir = if tasks_dir.is_dir() {
+        tasks_dir
+    } else {
+        root.to_path_buf()
+    };
+
+    // Find next available subtask number by scanning existing files
+    let prefix = format!("{}.", fields.parent_id);
+    let next_n = std::fs::read_dir(&dir)
+        .with_context(|| format!("Failed to read directory: {}", dir.display()))?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let stem = name.strip_suffix(".md")?;
+            let suffix = stem.strip_prefix(&prefix)?;
+            suffix.parse::<u32>().ok()
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+
+    let id = format!("{}.{}", fields.parent_id, next_n);
+    let filename = format!("{}.md", id);
+    let path = dir.join(&filename);
+
+    if path.exists() {
+        anyhow::bail!("Sub-task file already exists: {}", path.display());
+    }
+
+    let mut fm = String::from("---\n");
+    fm.push_str(&format!("id: {}\n", id));
+    fm.push_str(&format!(
+        "title: \"{}\"\n",
+        fields.title.replace('"', "\\\"")
+    ));
+    fm.push_str("type: subtask\n");
+    fm.push_str("status: active\n");
+    fm.push_str(&format!("parent: {}\n", fields.parent_id));
+    fm.push_str("---\n\n");
+
+    let body = fields
+        .body
+        .unwrap_or_else(|| format!("# {}\n", fields.title));
+    fm.push_str(&body);
+    fm.push('\n');
+
+    std::fs::write(&path, &fm)
+        .with_context(|| format!("Failed to write sub-task file: {}", path.display()))?;
+
+    Ok(path)
+}
+
 /// Create a new task file with YAML frontmatter.
 ///
 /// Returns the path to the created file. The filename is derived from the

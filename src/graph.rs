@@ -86,6 +86,10 @@ pub struct GraphNode {
     pub soft_blocks: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<String>,
+    /// Sub-tasks (type=subtask) — travel with the parent and render as checkboxes.
+    /// Computed from edges; not stored in frontmatter.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub subtasks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -559,6 +563,7 @@ impl GraphNode {
             blocks,
             soft_blocks,
             children,
+            subtasks: Vec::new(),
             project,
             due,
             created,
