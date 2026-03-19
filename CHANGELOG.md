@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.36](https://github.com/nicsuzor/mem/compare/v0.2.35...v0.2.36) - 2026-03-19
+
+### Added
+
+- exclude subtasks from list_tasks and task_search by default
+- add sub-task format with dot-notation IDs
+
+### Other
+
+- Merge pull request #108 from nicsuzor/crew/crew_36
+- Update src/cli.rs
+- Merge branch 'main' into crew/crew_34
+- update ACA_DATA
+
 ## [0.2.35](https://github.com/nicsuzor/mem/compare/v0.2.34...v0.2.35) - 2026-03-19
 
 ### Added
