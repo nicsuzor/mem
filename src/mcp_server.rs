@@ -202,6 +202,10 @@ impl PkbSearchServer {
 
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
         let project = args.get("project").and_then(|v| v.as_str());
+        let include_subtasks = args
+            .get("include_subtasks")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -234,9 +238,13 @@ impl PkbSearchServer {
             }
             let is_task = r.doc_type.as_deref() == Some("task")
                 || r.doc_type.as_deref() == Some("project")
-                || r.doc_type.as_deref() == Some("goal");
+                || r.doc_type.as_deref() == Some("goal")
+                || r.doc_type.as_deref() == Some("subtask");
 
             if !is_task {
+                continue;
+            }
+            if !include_subtasks && r.doc_type.as_deref() == Some("subtask") {
                 continue;
             }
 
@@ -2005,6 +2013,10 @@ impl PkbSearchServer {
             .map(|v| v as i32);
         let assignee = args.get("assignee").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+        let include_subtasks = args
+            .get("include_subtasks")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let graph = self.graph.read();
 
@@ -2065,6 +2077,10 @@ impl PkbSearchServer {
                     .map(|ag| ag.eq_ignore_ascii_case(a))
                     .unwrap_or(false)
             });
+        }
+
+        if !include_subtasks {
+            tasks.retain(|t| t.node_type.as_deref() != Some("subtask"));
         }
 
         if tasks.is_empty() {
@@ -2633,7 +2649,8 @@ impl ServerHandler for PkbSearchServer {
                     "properties": {
                         "query": { "type": "string", "description": "Query to search tasks" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "project": { "type": "string", "description": "Filter by project" }
+                        "project": { "type": "string", "description": "Filter by project" },
+                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." }
                     },
                     "required": ["query"]
                 }))
@@ -2781,7 +2798,8 @@ impl ServerHandler for PkbSearchServer {
                         "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, done, etc." },
                         "priority": { "type": "integer", "description": "Filter by exact priority (0-4)" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
-                        "limit": { "type": "integer", "description": "Max results (default: 50)" }
+                        "limit": { "type": "integer", "description": "Max results (default: 50)" },
+                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." }
                     }
                 }))
                 .unwrap(),
