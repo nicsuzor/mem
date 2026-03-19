@@ -34,10 +34,15 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         status: node.status.clone(),
     };
 
-    // Walk parent chain
+    // Walk parent chain (with cycle detection)
     let mut parents = Vec::new();
     let mut parent_id = node.parent.as_deref();
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(node_id.to_string());
     while let Some(pid) = parent_id {
+        if !visited.insert(pid.to_string()) {
+            break; // cycle detected
+        }
         if let Some(parent) = gs.get_node(pid) {
             parents.push(ContextNode {
                 label: parent.label.clone(),

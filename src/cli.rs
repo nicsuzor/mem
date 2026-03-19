@@ -1383,10 +1383,15 @@ fn main() -> Result<()> {
                         println!("    {line}");
                     }
 
-                    // --- Parent Chain ---
+                    // --- Parent Chain (with cycle detection) ---
                     let mut parents = Vec::new();
                     let mut curr = node.parent.as_deref();
+                    let mut visited = std::collections::HashSet::new();
+                    visited.insert(node.id.clone());
                     while let Some(pid) = curr {
+                        if !visited.insert(pid.to_string()) {
+                            break; // cycle detected
+                        }
                         if let Some(p) = gs.get_node(pid) {
                             parents.push(format!("{} ({})", p.label, pid));
                             curr = p.parent.as_deref();
