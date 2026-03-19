@@ -1,0 +1,24 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag (e.g. v0.1.12 or v0.2.0-rc.1)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as pre-release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    uses: ./.github/workflows/build-release.yml
+    with:
+      tag: ${{ inputs.tag }}
+      prerelease: ${{ inputs.prerelease }}
