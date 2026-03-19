@@ -107,14 +107,6 @@ export const load = async () => {
     ]);
 
     const activeSessions = sessions.filter(s => s.is_active);
-    const recentActive = sessions.filter(s => {
-        const mins = (Date.now() - s.last_modified) / 60000;
-        return mins < 240; // last 4h
-    });
-    const paused = sessions.filter(s => {
-        const mins = (Date.now() - s.last_modified) / 60000;
-        return mins >= 240 && mins < 1440; // 4-24h
-    });
 
     // Build project-level data from synthesis
     const projectProjects: string[] = synthesis?.sessions?.by_project
@@ -141,15 +133,13 @@ export const load = async () => {
                 started_at: s.started_at,
             })),
             needs_you: [],
-            left_off: {
-                active: recentActive,
-                paused,
-            },
             synthesis: synthesis ? {
                 alignment: synthesis.alignment,
                 recent_context: synthesis.context?.recent_threads?.join(', ') || '',
                 blockers: synthesis.waiting_on?.length ? synthesis.waiting_on : null,
                 _age_minutes: synthesis._age_minutes,
+                sessions: synthesis.sessions,
+                narrative: synthesis.narrative,
             } : null,
             daily_story: synthesis?.narrative ? { story: synthesis.narrative } : null,
             project_projects: projectProjects,
