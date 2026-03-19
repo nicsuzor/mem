@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.35](https://github.com/nicsuzor/mem/compare/v0.2.34...v0.2.35) - 2026-03-19
+
+### Added
+
+- *(dashboard)* MCP client integration for overwhelm dashboard ([#104](https://github.com/nicsuzor/mem/pull/104))
+
 ## [0.2.34](https://github.com/nicsuzor/mem/compare/v0.2.33...v0.2.34) - 2026-03-19
 
 ### Other
