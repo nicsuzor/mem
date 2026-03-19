@@ -918,7 +918,7 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path) 
 
                 // Step 2: Append body_text to the markdown section if not already present.
                 if let Some(fm_end_rel) = result[3..].find("\n---") {
-                    let md_start = fm_end_rel + 3 + 4; // past \n---\n
+                    let md_start = fm_end_rel + 3 + 5; // past \n---\n
                     if !result[md_start..].contains(body_text.trim()) {
                         if !result.ends_with('\n') {
                             result.push('\n');
