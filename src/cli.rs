@@ -1618,9 +1618,10 @@ fn main() -> Result<()> {
             match document_crud::create_subtask(&pkb_root, fields) {
                 Ok(path) => {
                     let id = path
+                    let id = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| path.display().to_string());
                     println!("Created sub-task \x1b[1m{id}\x1b[0m");
                     println!("  \x1b[2m{}\x1b[0m", path.display());
                 }
