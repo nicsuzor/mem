@@ -642,6 +642,8 @@ pub struct Embedder {
     override_threads: usize,
     /// Override chunks per sub-batch (0 = use default MAX_BATCH_CPU/GPU)
     override_batch_size: usize,
+    /// If true, return dummy zero vectors (used for testing without model files).
+    is_dummy: bool,
 }
 
 impl Embedder {
@@ -692,7 +694,24 @@ impl Embedder {
             override_max_sessions: 0,
             override_threads: 0,
             override_batch_size: 0,
+            is_dummy: false,
         })
+    }
+
+    /// Create a dummy embedder that returns zero vectors (for testing).
+    pub fn new_dummy() -> Self {
+        Self {
+            config: EmbeddingConfig {
+                model_path: PathBuf::new(),
+                tokenizer_path: PathBuf::new(),
+                max_length: 512,
+            },
+            pool: OnceLock::new(),
+            override_max_sessions: 0,
+            override_threads: 0,
+            override_batch_size: 0,
+            is_dummy: true,
+        }
     }
 
     /// Set parallelism overrides for benchmarking. Zero values use defaults.
@@ -770,6 +789,10 @@ impl Embedder {
     pub fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(vec![]);
+        }
+
+        if self.is_dummy {
+            return Ok(vec![vec![0.0; EMBEDDING_DIM]; texts.len()]);
         }
 
         let pool = self.ensure_pool()?;
