@@ -216,6 +216,19 @@ enum Commands {
         body: Option<String>,
     },
 
+    /// Create a sub-task attached to a parent task (dot-notation ID, e.g. proj-deadbeef.1)
+    Subtask {
+        /// Parent task ID
+        parent_id: String,
+
+        /// Sub-task title
+        title: Vec<String>,
+
+        /// Body text / description
+        #[arg(short, long)]
+        body: Option<String>,
+    },
+
     /// Create a new document (note, knowledge, memory, or any type)
     Remember {
         /// Document title
@@ -1577,6 +1590,39 @@ fn main() -> Result<()> {
                     println!("Created \x1b[1m{id}\x1b[0m: {title_display}");
                     println!("  \x1b[2m{}\x1b[0m", path.display());
 
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Subtask {
+            parent_id,
+            title,
+            body,
+        } => {
+            let title_str = title.join(" ");
+            if title_str.is_empty() {
+                eprintln!("Error: title cannot be empty");
+                std::process::exit(1);
+            }
+
+            let fields = document_crud::SubtaskFields {
+                parent_id,
+                title: title_str,
+                body,
+            };
+
+            match document_crud::create_subtask(&pkb_root, fields) {
+                Ok(path) => {
+                    let id = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    println!("Created sub-task \x1b[1m{id}\x1b[0m");
+                    println!("  \x1b[2m{}\x1b[0m", path.display());
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");

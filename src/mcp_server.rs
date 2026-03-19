@@ -425,6 +425,65 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
+    fn handle_create_subtask(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let parent_id = args
+            .get("parent_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: parent_id"),
+                data: None,
+            })?;
+        let title = args
+            .get("title")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: title"),
+                data: None,
+            })?;
+
+        // Validate parent exists
+        {
+            let graph = self.graph.read();
+            if graph.resolve(parent_id).is_none() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!("Parent task not found: {parent_id}")),
+                    data: None,
+                });
+            }
+        }
+
+        let fields = crate::document_crud::SubtaskFields {
+            parent_id: parent_id.to_string(),
+            title: title.to_string(),
+            body: args.get("body").and_then(|v| v.as_str()).map(String::from),
+        };
+
+        let path =
+            crate::document_crud::create_subtask(&self.pkb_root, fields).map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to create sub-task: {e}")),
+                data: None,
+            })?;
+
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            let _ = self.store.write().upsert(&doc, &self.embedder);
+            self.save_store();
+        }
+        self.rebuild_graph();
+
+        let id = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Sub-task created: `{id}` at `{}`",
+            path.display()
+        ))]))
+    }
+
     // =========================================================================
     // KNOWLEDGE GRAPH TOOLS (4)
     // =========================================================================
@@ -891,6 +950,55 @@ impl PkbSearchServer {
             node.children.iter().map(|c| resolve_ref(c)).collect();
         let parent = node.parent.as_ref().map(|p| resolve_ref(p));
 
+        // Build subtask list and inject a checklist section into the body
+        let subtask_nodes: Vec<serde_json::Value> = node
+            .subtasks
+            .iter()
+            .map(|sid| {
+                if let Some(n) = graph.get_node(sid) {
+                    serde_json::json!({
+                        "id": sid,
+                        "title": n.label,
+                        "status": n.status,
+                    })
+                } else {
+                    serde_json::json!({ "id": sid })
+                }
+            })
+            .collect();
+
+        // Sort subtasks by numeric suffix so they appear in order
+        let mut subtask_nodes_sorted = subtask_nodes;
+        subtask_nodes_sorted.sort_by(|a, b| {
+            let parse_n = |v: &serde_json::Value| -> u32 {
+                v.get("id")
+                    .and_then(|id| id.as_str())
+                    .and_then(|id| id.rsplit('.').next())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0)
+            };
+            parse_n(a).cmp(&parse_n(b))
+        });
+
+        let body = if !subtask_nodes_sorted.is_empty() {
+            let mut checklist = String::from("\n\n## Subtasks\n\n");
+            for st in &subtask_nodes_sorted {
+                let done = crate::graph::is_completed(
+                    st.get("status").and_then(|s| s.as_str()),
+                );
+                let check = if done { "x" } else { " " };
+                let title = st
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("<untitled>");
+                let id = st.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                checklist.push_str(&format!("- [{check}] **{id}**: {title}\n"));
+            }
+            format!("{body}{checklist}")
+        } else {
+            body
+        };
+
         let result = serde_json::json!({
             "frontmatter": frontmatter,
             "body": body,
@@ -898,6 +1006,7 @@ impl PkbSearchServer {
             "depends_on": depends_on,
             "blocks": blocks,
             "children": children,
+            "subtasks": subtask_nodes_sorted,
             "parent": parent,
             "downstream_weight": node.downstream_weight,
             "stakeholder_exposure": node.stakeholder_exposure,
@@ -2429,6 +2538,7 @@ impl ServerHandler for PkbSearchServer {
             "task_search" => self.handle_task_search(&args),
             "get_network_metrics" => self.handle_get_network_metrics(&args),
             "create_task" => self.handle_create_task(&args),
+            "create_subtask" => self.handle_create_subtask(&args),
             "create_memory" => self.handle_create_memory(&args),
             "create" => self.handle_create_document(&args),
             "append" => self.handle_append_to_document(&args),
@@ -2563,6 +2673,20 @@ impl ServerHandler for PkbSearchServer {
                 .unwrap(),
             ),
             Tool::new(
+                "create_subtask",
+                "Create a numbered sub-task attached to a parent task. Sub-tasks use dot-notation IDs (e.g. proj-deadbeef.1) and appear as a markdown checkbox checklist when the parent is retrieved via get_task. They can also be addressed individually. Use for checklist-style completion tracking within a task.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "parent_id": { "type": "string", "description": "ID of the parent task (e.g. proj-deadbeef)" },
+                        "title": { "type": "string", "description": "Sub-task title" },
+                        "body": { "type": "string", "description": "Optional markdown body" }
+                    },
+                    "required": ["parent_id", "title"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
                 "create_memory",
                 "Create a new memory/note markdown file with YAML frontmatter. Stored in memories/ directory.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -2664,7 +2788,7 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "get_task",
-                "Retrieve a task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, parent with titles/statuses, downstream_weight, stakeholder_exposure).",
+                "Retrieve a task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, subtasks, parent with titles/statuses, downstream_weight, stakeholder_exposure). Sub-tasks (type=subtask) are injected as a markdown checkbox checklist in the body and listed in the 'subtasks' field.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {

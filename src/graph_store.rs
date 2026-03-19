@@ -1117,10 +1117,18 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
+    // Pre-build a set of subtask IDs (type == "subtask") for O(1) lookup
+    let subtask_ids: HashSet<String> = nodes
+        .iter()
+        .filter(|n| n.node_type.as_deref() == Some("subtask"))
+        .map(|n| n.id.clone())
+        .collect();
+
     // Collect updates to avoid borrow issues
     let mut block_updates: Vec<(usize, String)> = Vec::new(); // (target_idx, source_id)
     let mut soft_block_updates: Vec<(usize, String)> = Vec::new();
     let mut children_updates: Vec<(usize, String)> = Vec::new();
+    let mut subtask_updates: Vec<(usize, String)> = Vec::new();
 
     for edge in edges {
         match edge.edge_type {
@@ -1136,9 +1144,13 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
                 }
             }
             EdgeType::Parent => {
-                // source is child of target -> target.children += source
+                // source is child of target; route to subtasks or children
                 if let Some(&idx) = id_to_idx.get(&edge.target) {
-                    children_updates.push((idx, edge.source.clone()));
+                    if subtask_ids.contains(edge.source.as_str()) {
+                        subtask_updates.push((idx, edge.source.clone()));
+                    } else {
+                        children_updates.push((idx, edge.source.clone()));
+                    }
                 }
             }
             EdgeType::Link | EdgeType::Supersedes => {}
@@ -1160,12 +1172,18 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
             nodes[idx].children.push(child_id);
         }
     }
+    for (idx, subtask_id) in subtask_updates {
+        if !nodes[idx].subtasks.contains(&subtask_id) {
+            nodes[idx].subtasks.push(subtask_id);
+        }
+    }
 
-    // Deduplicate and update leaf status
+    // Deduplicate and update leaf status (subtasks do not affect leaf status)
     for node in nodes.iter_mut() {
         deduplicate_vec(&mut node.blocks);
         deduplicate_vec(&mut node.soft_blocks);
         deduplicate_vec(&mut node.children);
+        deduplicate_vec(&mut node.subtasks);
         deduplicate_vec(&mut node.depends_on);
         deduplicate_vec(&mut node.soft_depends_on);
         node.leaf = node.children.is_empty();
@@ -1855,5 +1873,73 @@ mod tests {
 
         let note = graph.resolve("my-note").unwrap();
         assert!(!note.reachable, "note without status should not be reachable");
+    }
+
+    // ── subtask relationships ──
+
+    #[test]
+    fn test_subtasks_separate_from_children() {
+        // A parent task with both a regular child and a subtask:
+        // - the subtask must appear in parent.subtasks, NOT in parent.children
+        // - parent.leaf must remain true (subtasks don't affect leaf status)
+        let docs = vec![
+            make_doc("tasks/parent.md", "Parent Task", "task", "active", "parent-abc", None, &[]),
+            make_doc(
+                "tasks/parent-abc.1.md",
+                "Subtask One",
+                "subtask",
+                "active",
+                "parent-abc.1",
+                Some("parent-abc"),
+                &[],
+            ),
+            make_doc(
+                "tasks/child.md",
+                "Child Task",
+                "task",
+                "active",
+                "child-xyz",
+                Some("parent-abc"),
+                &[],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let parent = graph.resolve("parent-abc").expect("parent not found");
+        let subtask = graph.resolve("parent-abc.1").expect("subtask not found");
+
+        // Subtask must be in parent.subtasks, not parent.children
+        assert!(
+            parent.subtasks.contains(&subtask.id),
+            "parent.subtasks should contain the subtask"
+        );
+        assert!(
+            !parent.children.contains(&subtask.id),
+            "parent.children must not contain the subtask"
+        );
+
+        // Regular child must be in parent.children
+        let child = graph.resolve("child-xyz").expect("child not found");
+        assert!(
+            parent.children.contains(&child.id),
+            "parent.children should contain the regular child"
+        );
+
+        // Parent with only subtasks (no regular children) should remain a leaf
+        let docs_subtask_only = vec![
+            make_doc("tasks/parent2.md", "Parent 2", "task", "active", "parent-def", None, &[]),
+            make_doc(
+                "tasks/parent-def.1.md",
+                "Only Subtask",
+                "subtask",
+                "active",
+                "parent-def.1",
+                Some("parent-def"),
+                &[],
+            ),
+        ];
+        let graph2 = GraphStore::build(&docs_subtask_only, Path::new("/tmp/test-pkb"));
+        let parent2 = graph2.resolve("parent-def").expect("parent2 not found");
+        assert!(parent2.leaf, "parent with only subtasks should still be a leaf");
     }
 }
