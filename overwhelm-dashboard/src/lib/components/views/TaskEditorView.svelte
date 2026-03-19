@@ -19,17 +19,17 @@
 
     // Fetch body on-demand
     $effect(() => {
-        if (task?.path) {
-            fetchBody(task.path);
+        if (taskId) {
+            fetchBody(taskId);
         } else {
             description = "";
         }
     });
 
-    async function fetchBody(path: string) {
+    async function fetchBody(id: string) {
         loadingBody = true;
         try {
-            const res = await fetch(`/api/task?path=${encodeURIComponent(path)}`);
+            const res = await fetch(`/api/task?id=${encodeURIComponent(id)}`);
             if (res.ok) {
                 const data = await res.json();
                 description = data.body || "";
