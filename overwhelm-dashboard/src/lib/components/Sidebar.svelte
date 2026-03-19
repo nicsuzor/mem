@@ -2,6 +2,7 @@
   import { filters } from "../stores/filters";
   import { viewSettings } from "../stores/viewSettings";
   import { graphData } from "../stores/graph";
+  import SearchBar from "./shared/SearchBar.svelte";
 
   $: isForce =
     $viewSettings.viewMode === "SFDP";
@@ -14,11 +15,12 @@
 </script>
 
 <div class="flex flex-col h-full bg-background font-mono text-primary/80">
-  <div class="p-3 border-b border-primary/30 bg-surface/50 backdrop-blur-sm">
+  <div class="p-3 border-b border-primary/30 bg-surface/50 backdrop-blur-sm space-y-2">
     <div class="flex items-center justify-between">
       <h2 class="text-xs font-bold tracking-[0.2em] text-primary">SYSTEM CONTROL</h2>
       <span class="text-[10px] font-mono opacity-60 animate-pulse">ACTIVE</span>
     </div>
+    <SearchBar />
   </div>
 
   <div class="flex-1 overflow-y-auto p-4 space-y-6 grid-bg custom-scrollbar">

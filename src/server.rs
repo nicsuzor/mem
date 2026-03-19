@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "pkb", version, about = "PKB semantic search MCP server")]
+#[command(name = "pkb", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_GIT_HASH"), ")"), about = "PKB semantic search MCP server")]
 struct Cli {
     /// Path to the PKB root directory containing markdown files
     #[arg(default_value_t = default_pkb_root())]

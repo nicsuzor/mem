@@ -1,15 +1,30 @@
 <script lang="ts">
     let captureText = "";
     let isSubmitting = false;
+    let lastCreatedId: string | null = null;
+    let errorMsg: string | null = null;
 
     async function handleCapture() {
         if (!captureText.trim()) return;
         isSubmitting = true;
+        lastCreatedId = null;
+        errorMsg = null;
 
         try {
-            await new Promise((r) => setTimeout(r, 600)); // Simulate network request
-            captureText = ""; // Clear input on success
-            alert("Quick Note Captured!"); // Placeholder alert
+            const res = await fetch('/api/tasks/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: captureText.trim(), priority: 2 }),
+            });
+            const data = await res.json();
+            if (res.ok && data.ok) {
+                lastCreatedId = data.id;
+                captureText = "";
+            } else {
+                errorMsg = data.error ?? 'Failed to capture';
+            }
+        } catch (e: any) {
+            errorMsg = e.message ?? 'Network error';
         } finally {
             isSubmitting = false;
         }
@@ -42,4 +57,13 @@
             {/if}
         </button>
     </form>
+
+    {#if lastCreatedId}
+        <p class="text-[10px] font-mono text-primary/60">
+            CAPTURED: <span class="text-primary">{lastCreatedId}</span>
+        </p>
+    {/if}
+    {#if errorMsg}
+        <p class="text-[10px] font-mono text-destructive">{errorMsg}</p>
+    {/if}
 </div>

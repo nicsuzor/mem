@@ -1,43 +1,18 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { json } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
+import { getPkbTask } from '$lib/server/pkb';
 import type { RequestHandler } from './$types';
 
-const ACA_DATA = env.ACA_DATA || '';
-
-/** GET /api/task?path=tasks/some-task.md — fetch task markdown body */
+/** GET /api/task?id=<task-id> — fetch structured task data via MCP */
 export const GET: RequestHandler = async ({ url }) => {
-    if (!ACA_DATA) {
-        return json({ error: 'ACA_DATA environment variable is not set' }, { status: 503 });
+    const id = url.searchParams.get('id');
+    if (!id) {
+        return json({ error: 'Missing id parameter' }, { status: 400 });
     }
 
-    const path = url.searchParams.get('path');
-    if (!path) {
-        return json({ error: 'Missing path parameter' }, { status: 400 });
+    const task = await getPkbTask(id);
+    if (task === null) {
+        return json({ error: 'Task not found or PKB unavailable' }, { status: 503 });
     }
 
-    // Sanitize: only allow relative paths within ACA_DATA
-    if (path.includes('..') || path.startsWith('/')) {
-        return json({ error: 'Invalid path' }, { status: 400 });
-    }
-
-    const filepath = join(ACA_DATA, path);
-
-    try {
-        const text = await readFile(filepath, 'utf-8');
-
-        // Extract body (strip frontmatter)
-        let body = text;
-        if (text.startsWith('---')) {
-            const end = text.indexOf('\n---', 3);
-            if (end !== -1) {
-                body = text.substring(end + 4).trim();
-            }
-        }
-
-        return json({ body });
-    } catch (e: any) {
-        return json({ error: `Task file not found: ${path}` }, { status: 404 });
-    }
+    return json(task);
 };

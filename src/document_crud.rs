@@ -579,7 +579,7 @@ fn generate_id(prefix: &str) -> String {
 
 /// Sanitize a prefix string to prevent path traversal and invalid IDs.
 /// Strips path separators, `..`, and non-alphanumeric/hyphen characters.
-fn sanitize_prefix(prefix: &str) -> String {
+pub fn sanitize_prefix(prefix: &str) -> String {
     let sanitized: String = prefix
         .chars()
         .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
