@@ -2000,7 +2000,8 @@ fn main() -> Result<()> {
 
             match format.to_lowercase().as_str() {
                 "all" => {
-                    let base = output.as_deref().unwrap_or("graph");
+                    let sessions_default = std::env::var("AOPS_SESSIONS").ok().map(|s| format!("{s}/graph"));
+                    let base = output.as_deref().unwrap_or_else(|| sessions_default.as_deref().unwrap_or("graph"));
                     let base = base
                         .trim_end_matches(".json")
                         .trim_end_matches(".graphml")

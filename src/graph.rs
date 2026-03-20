@@ -98,6 +98,9 @@ pub struct GraphNode {
     pub modified: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Computed: label of nearest ancestor with node_type == "project"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -563,6 +566,7 @@ impl GraphNode {
             created,
             modified: doc.modified.clone(),
             assignee,
+            project: None, // computed post-build from parent chain
             complexity,
             source,
             confidence,

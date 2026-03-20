@@ -1378,6 +1378,7 @@ mod tests {
             created: None,
             modified: None,
             assignee: None,
+            project: None,
             complexity: None,
             source: None,
             confidence: None,

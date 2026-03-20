@@ -149,21 +149,24 @@ impl GraphStore {
         // 7. Compute downstream metrics (BFS through blocks/soft_blocks)
         compute_downstream_metrics(&mut nodes);
 
-        // 8. Compute reachable set (upstream BFS from active leaves)
+        // 8. Compute project field (nearest ancestor with node_type == "project")
+        compute_project_field(&mut nodes);
+
+        // 9. Compute reachable set (upstream BFS from active leaves)
         //    Done before layout so FA2 can run on reachable-only subgraph.
         let reachable_set = find_reachable_set(&nodes, &edges);
         for node in &mut nodes {
             node.reachable = reachable_set.contains(&node.id);
         }
 
-        // 9. (Layouts computed on demand via compute_layouts(), not during build)
+        // 10. (Layouts computed on demand via compute_layouts(), not during build)
 
-        // 10. Build node map and classify tasks
+        // 11. Build node map and classify tasks
         let node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
         let (ready, blocked, roots) = classify_tasks(&node_map);
 
-        // 11. Build resolution map for flexible node lookup
+        // 12. Build resolution map for flexible node lookup
         let resolution_map = build_resolution_map(&node_map);
 
         GraphStore {
@@ -1200,6 +1203,47 @@ fn compute_centrality_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
         }
         if let Some(&bt) = betweenness.get(&node.id) {
             node.betweenness = bt;
+        }
+    }
+}
+
+/// Compute the `project` field for each node by walking up the parent chain
+/// to find the nearest ancestor with `node_type == "project"`.
+fn compute_project_field(nodes: &mut [GraphNode]) {
+    // Build id -> (parent, node_type, label) lookup
+    let info: HashMap<String, (Option<String>, Option<String>, String)> = nodes
+        .iter()
+        .map(|n| {
+            (
+                n.id.clone(),
+                (n.parent.clone(), n.node_type.clone(), n.label.clone()),
+            )
+        })
+        .collect();
+
+    for node in nodes.iter_mut() {
+        // If this node IS a project, its own project is its own label
+        if node.node_type.as_deref() == Some("project") {
+            node.project = Some(node.label.clone());
+            continue;
+        }
+        // Walk up parent chain
+        let mut current = node.parent.clone();
+        let mut depth = 0;
+        while let Some(ref pid) = current {
+            if depth > 50 {
+                break; // cycle guard
+            }
+            if let Some((parent, ntype, label)) = info.get(pid) {
+                if ntype.as_deref() == Some("project") {
+                    node.project = Some(label.clone());
+                    break;
+                }
+                current = parent.clone();
+            } else {
+                break;
+            }
+            depth += 1;
         }
     }
 }
