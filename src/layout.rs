@@ -1481,6 +1481,7 @@ mod tests {
             blocks: vec![],
             soft_blocks: vec![],
             children: vec![],
+            subtasks: vec![],
             due: None,
             created: None,
             modified: None,
