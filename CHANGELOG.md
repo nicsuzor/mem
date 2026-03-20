@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.37](https://github.com/nicsuzor/mem/compare/v0.2.36...v0.2.37) - 2026-03-20
+
+### Added
+
+- *(pkb)* enforce parent/project on task creation, add merge-node command
+- *(lint)* prohibit body as frontmatter key, auto-migrate to markdown body
+
+### Fixed
+
+- add missing subtasks field to test helper GraphNode initializer
+- remove duplicate line causing build failure in cli.rs
+- dashboard reads synthesis.json from wrong path
+
+### Other
+
+- replace project field
+- remove project from header
+- synth
+- change install script
+- Merge pull request #111 from nicsuzor/crew/crew_37
+- Update src/lint.rs
+
 ## [0.2.36](https://github.com/nicsuzor/mem/compare/v0.2.35...v0.2.36) - 2026-03-19
 
 ### Added
