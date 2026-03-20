@@ -1642,7 +1642,6 @@ fn main() -> Result<()> {
             match document_crud::create_subtask(&pkb_root, fields) {
                 Ok(path) => {
                     let id = path
-                    let id = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| path.display().to_string());
