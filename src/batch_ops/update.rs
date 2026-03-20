@@ -250,7 +250,6 @@ fn build_effective_updates(
         let is_noop = match key.as_str() {
             "status" => node.status.as_deref() == value.as_str(),
             "priority" => node.priority == value.as_i64().map(|v| v as i32),
-            "project" => node.project.as_deref() == value.as_str(),
             "assignee" => node.assignee.as_deref() == value.as_str(),
             "complexity" => node.complexity.as_deref() == value.as_str(),
             "parent" => node.parent.as_deref() == value.as_str(),

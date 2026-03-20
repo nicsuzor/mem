@@ -982,7 +982,7 @@ fn main() -> Result<()> {
 
         Commands::Tasks {
             filter,
-            project,
+            project: _,
             flat,
             sort,
         } => {
@@ -994,17 +994,8 @@ fn main() -> Result<()> {
                 TaskFilter::Ready => gs.ready_tasks(),
             };
 
-            // Filter by project
-            let mut tasks: Vec<&graph::GraphNode> = if let Some(ref proj) = project {
-                tasks
-                    .into_iter()
-                    .filter(|t| t.project.as_deref() == Some(proj))
-                    .collect()
-            } else {
-                tasks
-            };
-
             // Apply --sort if specified
+            let mut tasks: Vec<&graph::GraphNode> = tasks;
             if let Some(ref sort_key) = sort {
                 match sort_key.as_str() {
                     "weight" => {
@@ -1089,7 +1080,7 @@ fn main() -> Result<()> {
                 );
             } else {
                 // ── Tree view (default) ──
-                use std::collections::{HashMap, HashSet};
+                use std::collections::HashSet;
                 let width = term_width();
 
                 // Build set of visible task IDs for filtering
@@ -1128,23 +1119,6 @@ fn main() -> Result<()> {
                     visible.insert(cid.as_str());
                 }
 
-                // Group by project
-                let mut by_proj: HashMap<&str, Vec<&graph::GraphNode>> = HashMap::new();
-                for task in &tasks {
-                    let proj = task.project.as_deref().unwrap_or("_no_project");
-                    by_proj.entry(proj).or_default().push(task);
-                }
-
-                let mut proj_names: Vec<&str> = by_proj.keys().copied().collect();
-                proj_names.sort_by(|a, b| {
-                    if *a == "_no_project" {
-                        std::cmp::Ordering::Greater
-                    } else if *b == "_no_project" {
-                        std::cmp::Ordering::Less
-                    } else {
-                        a.cmp(b)
-                    }
-                });
 
                 // Sort siblings — context nodes first, then tasks by priority/weight
                 fn sort_siblings(nodes: &mut [&graph::GraphNode], context_ids: &HashSet<String>) {
@@ -1240,7 +1214,7 @@ fn main() -> Result<()> {
                 print_dashboard(&tasks, &filter);
 
                 // ── Focus picks (only for default ready view) ──
-                if matches!(filter, TaskFilter::Ready) && project.is_none() {
+                if matches!(filter, TaskFilter::Ready) {
                     let picks = select_focus_picks(&tasks, 5);
                     if !picks.is_empty() {
                         println!();
@@ -1263,88 +1237,42 @@ fn main() -> Result<()> {
                     }
                 }
 
-                // ── Project trees ──
-                let mut total = 0;
+                // ── Task tree ──
+                let total = tasks.len();
                 println!();
-                for (pi, proj_name) in proj_names.iter().enumerate() {
-                    let proj_tasks = by_proj.get(proj_name).unwrap();
-                    let count = proj_tasks.len();
-                    total += count;
 
-                    let proj_task_ids: HashSet<&str> =
-                        proj_tasks.iter().map(|t| t.id.as_str()).collect();
+                let mut roots: Vec<&graph::GraphNode> = visible
+                    .iter()
+                    .filter_map(|id| gs.get_node(id))
+                    .filter(|n| match &n.parent {
+                        None => true,
+                        Some(pid) => !visible.contains(pid.as_str()),
+                    })
+                    .collect();
+                sort_siblings(&mut roots, &context_ids);
 
-                    let proj_context: HashSet<&str> = context_ids
-                        .iter()
-                        .filter(|cid| {
-                            gs.get_node(cid)
-                                .map(|n| n.project.as_deref() == proj_tasks[0].project.as_deref())
-                                .unwrap_or(false)
-                        })
-                        .map(|s| s.as_str())
-                        .collect();
-
-                    let proj_visible: HashSet<&str> = proj_task_ids
-                        .iter()
-                        .chain(proj_context.iter())
-                        .copied()
-                        .collect();
-
-                    let mut roots: Vec<&graph::GraphNode> = proj_visible
-                        .iter()
-                        .filter_map(|id| gs.get_node(id))
-                        .filter(|n| match &n.parent {
-                            None => true,
-                            Some(pid) => !proj_visible.contains(pid.as_str()),
-                        })
-                        .collect();
-                    sort_siblings(&mut roots, &context_ids);
-
-                    // Project header
-                    let display_name = if *proj_name == "_no_project" {
-                        "ungrouped"
-                    } else {
-                        proj_name
-                    };
-                    println!(
-                        "  {}{}{} {}({} {}){}",
-                        colors::BOLD_CYAN,
-                        display_name,
-                        colors::RESET,
-                        colors::DIM,
-                        count,
-                        filter,
-                        colors::RESET
+                let mut lines: Vec<String> = Vec::new();
+                for (i, root) in roots.iter().enumerate() {
+                    let is_last = i == roots.len() - 1;
+                    render_tree(
+                        &gs,
+                        root,
+                        &visible,
+                        &context_ids,
+                        "",
+                        is_last,
+                        &mut lines,
+                        width,
                     );
-
-                    let mut lines: Vec<String> = Vec::new();
-                    for (i, root) in roots.iter().enumerate() {
-                        let is_last = i == roots.len() - 1;
-                        render_tree(
-                            &gs,
-                            root,
-                            &proj_visible,
-                            &context_ids,
-                            "",
-                            is_last,
-                            &mut lines,
-                            width,
-                        );
-                    }
-                    for line in &lines {
-                        println!("{line}");
-                    }
-
-                    if pi < proj_names.len() - 1 {
-                        println!();
-                    }
+                }
+                for line in &lines {
+                    println!("{line}");
                 }
                 println!(
-                    "\n  {}{} {} tasks across {} projects{}",
+                    "\n  {}{} {} tasks{}",
                     colors::DIM,
                     total,
                     filter,
-                    proj_names.len(),
                     colors::RESET
                 );
             }
@@ -1391,9 +1319,6 @@ fn main() -> Result<()> {
                     }
                     if let Some(p) = node.priority {
                         println!("  Priority: {p}");
-                    }
-                    if let Some(ref proj) = node.project {
-                        println!("  Project:  {proj}");
                     }
                     if let Some(ref due) = node.due {
                         println!("  Due:      {due}");
@@ -1577,7 +1502,7 @@ fn main() -> Result<()> {
             title,
             parent,
             priority,
-            project,
+            project: _,
             tags,
             depends_on,
             assignee,
@@ -1594,7 +1519,6 @@ fn main() -> Result<()> {
                 title: title_str,
                 parent,
                 priority,
-                project,
                 tags: tags.unwrap_or_default(),
                 depends_on: depends_on.unwrap_or_default(),
                 assignee,
@@ -1662,7 +1586,7 @@ fn main() -> Result<()> {
             status,
             priority,
             parent,
-            project,
+            project: _,
             source,
             body,
             dir,
@@ -1680,7 +1604,6 @@ fn main() -> Result<()> {
                 status,
                 priority,
                 parent,
-                project,
                 source,
                 body,
                 dir,
@@ -1852,7 +1775,7 @@ fn main() -> Result<()> {
                     }
 
                     if updates.is_empty() {
-                        eprintln!("No updates specified. Use --status, --priority, --project, --assignee, or --tags.");
+                        eprintln!("No updates specified. Use --status, --priority, --assignee, or --tags.");
                         std::process::exit(1);
                     }
 
@@ -1888,9 +1811,6 @@ fn main() -> Result<()> {
                     }
                     if let Some(p) = node.priority {
                         println!("  Priority: {p}");
-                    }
-                    if let Some(ref proj) = node.project {
-                        println!("  Project:  {proj}");
                     }
                     if let Some(ref due) = node.due {
                         println!("  Due:      {due}");
@@ -2025,7 +1945,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Orphans { node_type, project } => {
+        Commands::Orphans { node_type, project: _ } => {
             let gs = load_graph(&pkb_root, &db_path);
             let mut orphans = gs.orphans();
 
@@ -2036,10 +1956,6 @@ fn main() -> Result<()> {
                         .map(|nt| nt.eq_ignore_ascii_case(t))
                         .unwrap_or(false)
                 });
-            }
-
-            if let Some(ref proj) = project {
-                orphans.retain(|n| n.project.as_deref() == Some(proj.as_str()));
             }
 
             if orphans.is_empty() {
@@ -2289,7 +2205,7 @@ fn main() -> Result<()> {
                 Some(ref tags_list) => {
                     // Search for documents with these tags
                     let s = store.read();
-                    let all = s.list_documents(None, doc_type.as_deref(), None, None, &pkb_root);
+                    let all = s.list_documents(None, doc_type.as_deref(), None, &pkb_root);
                     let matching: Vec<_> = all
                         .into_iter()
                         .filter(|r| {
@@ -2386,7 +2302,7 @@ fn main() -> Result<()> {
             let memory_types = ["memory", "note", "insight", "observation"];
 
             let s = store.read();
-            let all = s.list_documents(None, None, None, None, &pkb_root);
+            let all = s.list_documents(None, None, None, &pkb_root);
             let mut memories: Vec<_> = all
                 .into_iter()
                 .filter(|r| {
@@ -2508,7 +2424,7 @@ fn main() -> Result<()> {
                 let known_ids = None; // single-file mode skips ref checks
                 let results: Vec<lint::FileResult> = files
                     .iter()
-                    .map(|f| lint::lint_file(f, fix, known_ids.as_ref()))
+                    .map(|f| lint::lint_file(f, fix, known_ids.as_ref(), None))
                     .collect();
                 let summary = lint::LintSummary::from_results(&results);
                 (results, summary)
@@ -2708,14 +2624,14 @@ fn main() -> Result<()> {
             handle_batch_command(batch_cmd, &graph, &pkb_root)?;
         }
 
-        Commands::GraphStats { project } => {
+        Commands::GraphStats { project: _ } => {
             let graph = load_graph(&pkb_root, &db_path);
-            let stats = mem::batch_ops::stats::graph_stats(&graph, project.as_deref());
+            let stats = mem::batch_ops::stats::graph_stats(&graph);
             print!("{}", stats.display());
         }
 
         Commands::Duplicates {
-            project,
+            project: _,
             mode,
             title_threshold,
             semantic_threshold,
@@ -2724,8 +2640,7 @@ fn main() -> Result<()> {
             let graph = load_graph(&pkb_root, &db_path);
             let store = load_store(&db_path, embeddings::EMBEDDING_DIM)?;
 
-            let mut filters = mem::batch_ops::filters::FilterSet::default();
-            filters.project = project;
+            let filters = mem::batch_ops::filters::FilterSet::default();
 
             let dup_mode = mem::batch_ops::duplicates::DuplicateMode::from_str(&mode);
             let report = mem::batch_ops::duplicates::find_duplicates(
@@ -2758,12 +2673,7 @@ fn main() -> Result<()> {
                         } else {
                             " "
                         };
-                        let project = task
-                            .project
-                            .as_deref()
-                            .map(|p| format!(" [{p}]"))
-                            .unwrap_or_default();
-                        println!("  {marker} {:<24} {}{}", task.id, task.title, project);
+                        println!("  {marker} {:<24} {}", task.id, task.title);
                     }
                     println!();
                 }
@@ -2778,7 +2688,6 @@ fn main() -> Result<()> {
 fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
     mem::batch_ops::filters::FilterSet {
         ids: args.ids.clone(),
-        project: args.project.clone(),
         parent: args.parent.clone(),
         subtree: args.subtree.clone(),
         status: args.status.clone(),
@@ -2879,7 +2788,7 @@ fn handle_batch_command(
 
         BatchCommands::Reparent {
             new_parent,
-            no_cascade,
+            no_cascade: _,
             dry_run,
             yes: _,
             filters,
@@ -2895,7 +2804,6 @@ fn handle_batch_command(
                 pkb_root,
                 &filter_set,
                 &new_parent,
-                !no_cascade,
                 dry_run,
             );
             print!("{}", summary.display());
@@ -2942,7 +2850,7 @@ fn handle_batch_command(
         BatchCommands::CreateEpics {
             from,
             parent,
-            project,
+            project: _,
             dry_run,
         } => {
             let content = std::fs::read_to_string(&from)
@@ -2955,8 +2863,6 @@ fn handle_batch_command(
             struct EpicsFile {
                 #[serde(default)]
                 parent: Option<String>,
-                #[serde(default)]
-                project: Option<String>,
                 epics: Vec<mem::batch_ops::epics::EpicDef>,
             }
 
@@ -2968,10 +2874,9 @@ fn handle_batch_command(
 
             // CLI args override file-level defaults
             let parent = parent.as_deref().or(file.parent.as_deref());
-            let project = project.as_deref().or(file.project.as_deref());
 
             let summary = mem::batch_ops::epics::batch_create_epics(
-                graph, pkb_root, parent, project, &file.epics, dry_run,
+                graph, pkb_root, parent, &file.epics, dry_run,
             );
             print!("{}", summary.display());
         }

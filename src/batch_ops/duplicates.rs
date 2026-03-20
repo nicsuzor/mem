@@ -26,7 +26,6 @@ pub struct DuplicateCluster {
 pub struct DuplicateEntry {
     pub id: String,
     pub title: String,
-    pub project: Option<String>,
     pub created: Option<String>,
 }
 
@@ -562,7 +561,6 @@ fn build_clusters(
                 .map(|&idx| DuplicateEntry {
                     id: nodes[idx].id.clone(),
                     title: nodes[idx].label.clone(),
-                    project: nodes[idx].project.clone(),
                     created: nodes[idx].created.clone(),
                 })
                 .collect();

@@ -15,8 +15,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     // Compute dynamic heights based on content
-    let by_project = gs.by_project();
-    let proj_count = by_project.len().min(8);
+    let proj_count = 0;
     let (untested, confirmed, invalidated) = app.assumption_counts;
     let total_assumptions = untested + confirmed + invalidated;
     let assumption_height = if total_assumptions > 0 {
@@ -109,31 +108,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let health = Paragraph::new(health_lines);
     frame.render_widget(health, chunks[1]);
 
-    // By project
-    let by_project = gs.by_project();
-    let mut proj_lines = vec![
-        Line::from(Span::styled(
-            "  BY PROJECT",
-            Style::default().fg(Color::Yellow).bold(),
-        )),
-        Line::from(Span::styled(
-            "  ─────",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ];
-    let mut proj_list: Vec<(&String, &Vec<String>)> = by_project.iter().collect();
-    proj_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
-    for (proj, ids) in proj_list.iter().take(8) {
-        proj_lines.push(Line::from(vec![
-            Span::styled(format!("  ◈ {}", proj), Style::default().fg(Color::Cyan)),
-            Span::styled(
-                format!("  ({})", ids.len()),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
-    }
-    let projects = Paragraph::new(proj_lines);
-    frame.render_widget(projects, chunks[2]);
+    // (project section removed)
+    frame.render_widget(Paragraph::new(""), chunks[2]);
 
     // Assumptions health
     let (untested, confirmed, invalidated) = app.assumption_counts;

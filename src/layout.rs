@@ -570,60 +570,13 @@ fn compute_forceatlas2(
         })
         .collect();
 
-    // Group reachable nodes by project
-    let project_nodes: HashMap<&str, Vec<usize>> = {
-        let mut map: HashMap<&str, Vec<usize>> = HashMap::new();
-        for (si, &fi) in sub_indices.iter().enumerate() {
-            if let Some(ref proj) = nodes[fi].project {
-                map.entry(proj.as_str()).or_default().push(si);
-            }
-        }
-        map
-    };
-
-    // Initialize positions: project clusters arranged in a circle (warm start).
-    // Each project gets a sector of the circle. Nodes within a project are
-    // placed near their project's centroid with a small spread. Nodes without
-    // a project go to the center. This gives FA2 a head start on clustering.
+    // Initialize positions: golden-angle spiral (warm start for FA2).
     let mut x = vec![500.0f64; rn];
     let mut y = vec![500.0f64; rn];
     {
-        // Sort projects by size (largest first) for deterministic layout
-        let mut sorted_projects: Vec<(&str, &Vec<usize>)> = project_nodes.iter()
-            .map(|(&k, v)| (k, v))
-            .collect();
-        sorted_projects.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
-
-        let _num_projects = sorted_projects.len().max(1);
-        let circle_r = 300.0; // radius of project centroid circle
         let golden_angle = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
-
-        for (pi, (_proj, members)) in sorted_projects.iter().enumerate() {
-            // Place project centroid on a circle using golden angle for good spacing
-            let theta = pi as f64 * golden_angle;
-            let pcx = 500.0 + circle_r * theta.cos();
-            let pcy = 500.0 + circle_r * theta.sin();
-
-            // Spread members around centroid (smaller spread for larger projects)
-            let spread = 30.0 + (members.len() as f64).sqrt() * 10.0;
-            let member_golden = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
-            for (mi, &si) in members.iter().enumerate() {
-                let mr = (mi as f64 + 0.5).sqrt() / (members.len() as f64).sqrt() * spread;
-                let mt = mi as f64 * member_golden;
-                x[si] = pcx + mr * mt.cos();
-                y[si] = pcy + mr * mt.sin();
-            }
-        }
-
-        // Nodes without a project: golden-angle spiral at center
-        let no_project: Vec<usize> = (0..rn)
-            .filter(|si| {
-                let fi = sub_indices[*si];
-                nodes[fi].project.is_none()
-            })
-            .collect();
-        for (i, &si) in no_project.iter().enumerate() {
-            let r = (i as f64 + 0.5).sqrt() / (no_project.len().max(1) as f64).sqrt() * 50.0;
+        for (i, si) in (0..rn).enumerate() {
+            let r = (i as f64 + 0.5).sqrt() / (rn.max(1) as f64).sqrt() * 300.0;
             let theta = i as f64 * golden_angle;
             x[si] = 500.0 + r * theta.cos();
             y[si] = 500.0 + r * theta.sin();
@@ -708,60 +661,6 @@ fn compute_forceatlas2(
             let force = cfg.force.k_gravity * deg;
             fx[i] -= force * dx / dist;
             fy[i] -= force * dy / dist;
-        }
-
-        // Project clustering: attraction toward project centroid + inter-project repulsion
-        if cfg.force.project_clustering > 0.0 {
-            // Compute centroids for all projects
-            let mut centroids: Vec<(&str, f64, f64, Vec<usize>)> = Vec::new();
-            for (proj, members) in &project_nodes {
-                if members.len() < 2 {
-                    continue;
-                }
-                let pcx = members.iter().map(|&i| x[i]).sum::<f64>() / members.len() as f64;
-                let pcy = members.iter().map(|&i| y[i]).sum::<f64>() / members.len() as f64;
-                centroids.push((proj, pcx, pcy, members.clone()));
-            }
-
-            // Intra-project attraction: pull members toward their centroid
-            for (_, pcx, pcy, ref members) in &centroids {
-                let proj_scale = (members.len() as f64).sqrt();
-                for &i in members {
-                    let dx = x[i] - pcx;
-                    let dy = y[i] - pcy;
-                    let dist = (dx * dx + dy * dy).sqrt().max(0.1);
-                    let force = cfg.force.project_clustering * proj_scale;
-                    fx[i] -= force * dx / dist;
-                    fy[i] -= force * dy / dist;
-                }
-            }
-
-            // Inter-project repulsion: push project centroids apart.
-            // Force is proportional to product of project sizes, inversely to distance.
-            // Distributed evenly to all members of each project.
-            let pc = centroids.len();
-            for a in 0..pc {
-                for b in (a + 1)..pc {
-                    let dx = centroids[b].1 - centroids[a].1;
-                    let dy = centroids[b].2 - centroids[a].2;
-                    let dist = (dx * dx + dy * dy).sqrt().max(1.0);
-                    let size_a = centroids[a].3.len() as f64;
-                    let size_b = centroids[b].3.len() as f64;
-                    // Strong repulsion scaled by project sizes
-                    let force = cfg.force.project_clustering * size_a.sqrt() * size_b.sqrt() * 10.0 / dist;
-                    let fdx = force * dx / dist;
-                    let fdy = force * dy / dist;
-                    // Distribute force to members
-                    for &i in &centroids[a].3 {
-                        fx[i] -= fdx / size_a;
-                        fy[i] -= fdy / size_a;
-                    }
-                    for &i in &centroids[b].3 {
-                        fx[i] += fdx / size_b;
-                        fy[i] += fdy / size_b;
-                    }
-                }
-            }
         }
 
         // Adaptive speed (ForceAtlas2 swing/traction)
@@ -1405,15 +1304,9 @@ fn compute_arc(nodes: &mut [GraphNode], cfg: &LayoutFile) {
     });
     candidates.truncate(max_arc_nodes);
 
-    // Sort selected nodes for layout: project -> depth -> priority -> label
+    // Sort selected nodes for layout: depth -> priority -> label
     candidates.sort_by(|&a, &b| {
-        let proj_a = nodes[a].project.as_deref().unwrap_or("");
-        let proj_b = nodes[b].project.as_deref().unwrap_or("");
-        proj_a
-            .is_empty()
-            .cmp(&proj_b.is_empty()) // empty projects sort last
-            .then_with(|| proj_a.cmp(proj_b))
-            .then_with(|| nodes[a].depth.cmp(&nodes[b].depth))
+        nodes[a].depth.cmp(&nodes[b].depth)
             .then_with(|| {
                 nodes[a]
                     .priority
@@ -1461,13 +1354,12 @@ mod tests {
     use std::path::PathBuf;
 
     /// Create a minimal GraphNode for layout testing.
-    fn make_node(id: &str, node_type: &str, project: Option<&str>, dw: f64) -> GraphNode {
+    fn make_node(id: &str, node_type: &str, _project: Option<&str>, dw: f64) -> GraphNode {
         GraphNode {
             id: id.to_string(),
             path: PathBuf::from(format!("tasks/{id}.md")),
             label: id.to_string(),
             node_type: Some(node_type.to_string()),
-            project: project.map(|s| s.to_string()),
             downstream_weight: dw,
             layouts: HashMap::new(),
             // defaults for everything else

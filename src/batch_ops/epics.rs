@@ -27,7 +27,6 @@ pub fn batch_create_epics(
     graph: &GraphStore,
     pkb_root: &Path,
     parent: Option<&str>,
-    project: Option<&str>,
     epics: &[EpicDef],
     dry_run: bool,
 ) -> BatchSummary {
@@ -91,7 +90,6 @@ pub fn batch_create_epics(
             id: epic_def.id.clone(),
             priority: epic_def.priority,
             parent: parent.map(String::from),
-            project: project.map(String::from),
             depends_on: epic_def.depends_on.clone(),
             body: epic_def.body.clone(),
             ..Default::default()
@@ -133,13 +131,6 @@ pub fn batch_create_epics(
                 "parent".to_string(),
                 serde_json::Value::String(epic_id.clone()),
             );
-            if let Some(proj) = project {
-                updates.insert(
-                    "project".to_string(),
-                    serde_json::Value::String(proj.to_string()),
-                );
-            }
-
             let node = graph.get_node(task_id);
             let abs_path = node.map(|n| {
                 if n.path.is_absolute() {

@@ -26,9 +26,6 @@ pub struct DocumentEntry {
     pub status: Option<String>,
     /// Tags
     pub tags: Vec<String>,
-    /// Project name (from frontmatter)
-    #[serde(default)]
-    pub project: Option<String>,
     /// Document ID (from frontmatter)
     #[serde(default)]
     pub id: Option<String>,
@@ -61,7 +58,6 @@ pub struct SearchResult {
     pub doc_type: Option<String>,
     pub status: Option<String>,
     pub tags: Vec<String>,
-    pub project: Option<String>,
     pub confidence: Option<f64>,
 }
 
@@ -171,13 +167,12 @@ impl VectorStore {
         }
     }
 
-    /// Extract id, project, and confidence from frontmatter
-    fn extract_frontmatter_fields(doc: &PkbDocument) -> (Option<String>, Option<String>, Option<f64>) {
+    /// Extract id and confidence from frontmatter
+    fn extract_frontmatter_fields(doc: &PkbDocument) -> (Option<String>, Option<f64>) {
         let fm = doc.frontmatter.as_ref();
         let id = fm.and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
-        let project = fm.and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
         let confidence = fm.and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
-        (id, project, confidence)
+        (id, confidence)
     }
 
     /// Insert or update a document
@@ -192,7 +187,7 @@ impl VectorStore {
         let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
         let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
 
-        let (id, project, confidence) = Self::extract_frontmatter_fields(doc);
+        let (id, confidence) = Self::extract_frontmatter_fields(doc);
 
         let entry = DocumentEntry {
             path: doc.path.clone(),
@@ -200,7 +195,6 @@ impl VectorStore {
             doc_type: doc.doc_type.clone(),
             status: doc.status.clone(),
             tags: doc.tags.clone(),
-            project,
             id,
             confidence,
             content_hash: Some(doc.content_hash.clone()),
@@ -221,7 +215,7 @@ impl VectorStore {
         chunk_embeddings: Vec<Vec<f32>>,
     ) {
         let path_str = doc.path.to_string_lossy().to_string();
-        let (id, project, confidence) = Self::extract_frontmatter_fields(doc);
+        let (id, confidence) = Self::extract_frontmatter_fields(doc);
         let body_chunks =
             embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
         let entry = DocumentEntry {
@@ -230,7 +224,6 @@ impl VectorStore {
             doc_type: doc.doc_type.clone(),
             status: doc.status.clone(),
             tags: doc.tags.clone(),
-            project,
             id,
             confidence,
             content_hash: Some(doc.content_hash.clone()),
@@ -325,7 +318,6 @@ impl VectorStore {
                     doc_type: entry.doc_type.clone(),
                     status: entry.status.clone(),
                     tags: entry.tags.clone(),
-                    project: entry.project.clone(),
                     confidence: entry.confidence,
                 });
             }
@@ -348,7 +340,6 @@ impl VectorStore {
         tag_filter: Option<&str>,
         type_filter: Option<&str>,
         status_filter: Option<&str>,
-        project_filter: Option<&str>,
         pkb_root: &Path,
     ) -> Vec<SearchResult> {
         let mut results: Vec<SearchResult> = Vec::new();
@@ -372,12 +363,6 @@ impl VectorStore {
                     _ => continue,
                 }
             }
-            if let Some(proj) = project_filter {
-                match &entry.project {
-                    Some(p) if p.eq_ignore_ascii_case(proj) => {}
-                    _ => continue,
-                }
-            }
 
             let abs_path = if entry.path.is_absolute() {
                 entry.path.clone()
@@ -394,7 +379,6 @@ impl VectorStore {
                 doc_type: entry.doc_type.clone(),
                 status: entry.status.clone(),
                 tags: entry.tags.clone(),
-                project: entry.project.clone(),
                 confidence: entry.confidence,
             });
         }
@@ -438,7 +422,6 @@ mod tests {
         doc_type: Option<&str>,
         status: Option<&str>,
         tags: &[&str],
-        project: Option<&str>,
         id: Option<&str>,
         confidence: Option<f64>,
         embedding: Vec<f32>,
@@ -449,7 +432,6 @@ mod tests {
             doc_type: doc_type.map(String::from),
             status: status.map(String::from),
             tags: tags.iter().map(|s| s.to_string()).collect(),
-            project: project.map(String::from),
             id: id.map(String::from),
             confidence,
             content_hash: Some("test_hash_123".to_string()),
@@ -469,7 +451,6 @@ mod tests {
                 Some("task"),
                 Some("active"),
                 &["bugfix", "urgent"],
-                Some("mem"),
                 Some("task-abc"),
                 None,
                 vec![1.0, 0.0, 0.0],
@@ -483,7 +464,6 @@ mod tests {
                 Some("memory"),
                 None,
                 &["pattern", "urgent"],
-                None,
                 Some("mem-001"),
                 None,
                 vec![0.0, 1.0, 0.0],
@@ -497,7 +477,6 @@ mod tests {
                 Some("note"),
                 None,
                 &["research"],
-                Some("mem"),
                 Some("note-xyz"),
                 None,
                 vec![0.0, 0.0, 1.0],
@@ -532,7 +511,7 @@ mod tests {
     fn test_list_documents_no_filters() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(None, None, None, None, root);
+        let results = store.list_documents(None, None, None, root);
         assert_eq!(results.len(), 3);
     }
 
@@ -540,7 +519,7 @@ mod tests {
     fn test_list_documents_filter_by_tag() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(Some("urgent"), None, None, None, root);
+        let results = store.list_documents(Some("urgent"), None, None, root);
         assert_eq!(results.len(), 2);
     }
 
@@ -548,7 +527,7 @@ mod tests {
     fn test_list_documents_filter_by_type() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(None, Some("task"), None, None, root);
+        let results = store.list_documents(None, Some("task"), None, root);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Fix the bug");
     }
@@ -557,7 +536,7 @@ mod tests {
     fn test_list_documents_filter_by_type_case_insensitive() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(None, Some("TASK"), None, None, root);
+        let results = store.list_documents(None, Some("TASK"), None, root);
         assert_eq!(results.len(), 1);
     }
 
@@ -565,24 +544,16 @@ mod tests {
     fn test_list_documents_filter_by_status() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(None, None, Some("active"), None, root);
+        let results = store.list_documents(None, None, Some("active"), root);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Fix the bug");
-    }
-
-    #[test]
-    fn test_list_documents_filter_by_project() {
-        let store = build_test_store();
-        let root = Path::new("/pkb");
-        let results = store.list_documents(None, None, None, Some("mem"), root);
-        assert_eq!(results.len(), 2);
     }
 
     #[test]
     fn test_list_documents_combined_filters() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(Some("urgent"), Some("memory"), None, None, root);
+        let results = store.list_documents(Some("urgent"), Some("memory"), None, root);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Important insight");
     }
@@ -591,7 +562,7 @@ mod tests {
     fn test_list_documents_no_match() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(Some("nonexistent"), None, None, None, root);
+        let results = store.list_documents(Some("nonexistent"), None, None, root);
         assert!(results.is_empty());
     }
 
@@ -696,7 +667,6 @@ mod tests {
             &[],
             None,
             None,
-            None,
             vec![1.0, 0.0, 0.0],
         );
         entry.content_hash = None;
@@ -715,7 +685,6 @@ mod tests {
             Some("task"),
             None,
             &[],
-            None,
             None,
             None,
             vec![1.0, 0.0, 0.0],

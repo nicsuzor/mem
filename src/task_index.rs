@@ -29,8 +29,6 @@ pub struct McpIndexEntry {
     pub soft_blocks: Vec<String>,
     pub depth: i32,
     pub leaf: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
@@ -52,7 +50,6 @@ pub struct McpIndex {
     pub version: i32,
     pub generated: String,
     pub tasks: HashMap<String, McpIndexEntry>,
-    pub by_project: HashMap<String, Vec<String>>,
     pub roots: Vec<String>,
     pub ready: Vec<String>,
     pub blocked: Vec<String>,
@@ -95,7 +92,6 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
                 soft_blocks: node.soft_blocks.clone(),
                 depth: node.depth,
                 leaf: node.leaf,
-                project: node.project.clone(),
                 path: rel_path,
                 due: node.due.clone(),
                 tags: node.tags.clone(),
@@ -209,7 +205,6 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
     }
 
     // Build index metadata
-    let by_project = store.by_project().clone();
     let roots = store.roots().to_vec();
 
     // Ready and blocked lists (already computed by GraphStore, but with index entries)
@@ -257,7 +252,6 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
         version: 2,
         generated: Utc::now().to_rfc3339(),
         tasks: entries,
-        by_project,
         roots,
         ready,
         blocked,

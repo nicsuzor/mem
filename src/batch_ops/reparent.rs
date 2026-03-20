@@ -9,13 +9,11 @@ use std::path::Path;
 /// Execute a batch reparent operation.
 ///
 /// Moves all tasks matching `filters` under `new_parent_id`.
-/// If `update_project` is true (default), also propagates the parent's project field.
 pub fn batch_reparent(
     graph: &GraphStore,
     pkb_root: &Path,
     filters: &FilterSet,
     new_parent_id: &str,
-    update_project: bool,
     dry_run: bool,
 ) -> BatchSummary {
     let mut summary = BatchSummary::new("reparent", dry_run);
@@ -32,7 +30,6 @@ pub fn batch_reparent(
         }
     };
     let canonical_parent_id = new_parent.id.clone();
-    let parent_project = new_parent.project.clone();
 
     let matched_ids = filters.resolve(graph);
     summary.matched = matched_ids.len();
@@ -71,22 +68,16 @@ pub fn batch_reparent(
 
         // Skip if already under this parent (idempotent)
         if node.parent.as_deref() == Some(&canonical_parent_id) {
-            let needs_project_update = update_project
-                && parent_project.is_some()
-                && node.project != parent_project;
-
-            if !needs_project_update {
-                summary.skipped += 1;
-                summary.tasks.push(TaskAction {
-                    id: id.clone(),
-                    title: node.label.clone(),
-                    action: "skipped".to_string(),
-                    detail: Some(format!("already under {canonical_parent_id}")),
-                    old_value: None,
-                    new_value: None,
-                });
-                continue;
-            }
+            summary.skipped += 1;
+            summary.tasks.push(TaskAction {
+                id: id.clone(),
+                title: node.label.clone(),
+                action: "skipped".to_string(),
+                detail: Some(format!("already under {canonical_parent_id}")),
+                old_value: None,
+                new_value: None,
+            });
+            continue;
         }
 
         let old_parent = node.parent.clone();
@@ -110,16 +101,6 @@ pub fn batch_reparent(
             "parent".to_string(),
             serde_json::Value::String(canonical_parent_id.clone()),
         );
-
-        // Cascade project if requested
-        if update_project {
-            if let Some(ref project) = parent_project {
-                updates.insert(
-                    "project".to_string(),
-                    serde_json::Value::String(project.clone()),
-                );
-            }
-        }
 
         match ctx.update_task(id, updates) {
             Ok(()) => {

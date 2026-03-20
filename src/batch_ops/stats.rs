@@ -94,7 +94,7 @@ impl GraphStats {
 }
 
 /// Compute graph health statistics.
-pub fn graph_stats(graph: &GraphStore, project: Option<&str>) -> GraphStats {
+pub fn graph_stats(graph: &GraphStore) -> GraphStats {
     let now = chrono::Utc::now().date_naive();
     let stale_threshold = 60i64;
 
@@ -110,13 +110,6 @@ pub fn graph_stats(graph: &GraphStore, project: Option<&str>) -> GraphStats {
     let mut projects_without_goals = 0usize;
 
     for node in graph.nodes() {
-        // Project filter
-        if let Some(project) = project {
-            if node.project.as_deref() != Some(project) {
-                continue;
-            }
-        }
-
         let node_type = node.node_type.as_deref().unwrap_or("unknown");
 
         // Only count actionable types
@@ -153,8 +146,8 @@ pub fn graph_stats(graph: &GraphStore, project: Option<&str>) -> GraphStats {
             .entry(node_type.to_string())
             .or_insert(0) += 1;
 
-        // Orphan: no parent AND no project
-        if node.parent.is_none() && node.project.is_none() {
+        // Orphan: no parent
+        if node.parent.is_none() {
             orphan_count += 1;
         }
 

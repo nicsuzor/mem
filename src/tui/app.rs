@@ -45,7 +45,6 @@ pub struct TreeRow {
     pub priority: Option<i32>,
     pub status: Option<String>,
     pub node_type: Option<String>,
-    pub project: Option<String>,
     pub depth: usize,
     pub is_last_at_depth: Vec<bool>,
     pub is_context: bool,
@@ -182,7 +181,7 @@ impl App {
         self.ready_count = ready.len();
         self.blocked_count = blocked.len();
         self.total_tasks = all.len();
-        self.project_count = gs.by_project().len();
+        self.project_count = 0;
 
         // Compute focus picks with reasons
         let picks_with_reasons = select_focus_picks(&ready);
@@ -221,38 +220,8 @@ impl App {
         self.untested_assumptions = untested_list;
         self.assumption_counts = (untested, confirmed, invalidated);
 
-        // Detect cross-project synergies (nodes from different projects sharing tags)
-        let active_nodes: Vec<&GraphNode> = gs
-            .nodes()
-            .filter(|n| !graph::is_completed(n.status.as_deref()))
-            .filter(|n| !n.tags.is_empty() && n.project.is_some())
-            .collect();
-        let mut synergy_pairs: Vec<(String, String, usize)> = Vec::new();
-        for (i, a) in active_nodes.iter().enumerate() {
-            for b in active_nodes.iter().skip(i + 1) {
-                if a.project == b.project {
-                    continue;
-                }
-                let a_tags: HashSet<&str> = a.tags.iter().map(|t| t.as_str()).collect();
-                let shared = b
-                    .tags
-                    .iter()
-                    .filter(|t| a_tags.contains(t.as_str()))
-                    .count();
-                if shared >= 2 {
-                    synergy_pairs.push((a.label.clone(), b.label.clone(), shared));
-                }
-            }
-        }
-        synergy_pairs.sort_by(|a, b| b.2.cmp(&a.2));
-        synergy_pairs.truncate(5);
-        self.synergies = synergy_pairs;
-
-        // Collect project names for quick capture
-        let by_proj = gs.by_project();
-        let mut proj_names: Vec<String> = by_proj.keys().cloned().collect();
-        proj_names.sort();
-        self.project_names = proj_names;
+        self.synergies = Vec::new();
+        self.project_names = Vec::new();
 
         self.graph = Some(gs);
 
@@ -395,70 +364,32 @@ impl App {
             }
         }
 
-        // Group by project
-        let mut by_proj: HashMap<String, Vec<&GraphNode>> = HashMap::new();
-        for task in &tasks {
-            let proj = task.project.as_deref().unwrap_or("_no_project").to_string();
-            by_proj.entry(proj).or_default().push(task);
-        }
-
-        let mut proj_names: Vec<String> = by_proj.keys().cloned().collect();
-        proj_names.sort_by(|a, b| {
-            if a == "_no_project" {
-                std::cmp::Ordering::Greater
-            } else if b == "_no_project" {
-                std::cmp::Ordering::Less
-            } else {
-                a.cmp(b)
-            }
-        });
-
         let mut rows: Vec<TreeRow> = Vec::new();
 
-        for proj_name in &proj_names {
-            let proj_tasks = by_proj.get(proj_name).unwrap();
+        // Find roots: nodes whose parent is not in the visible set
+        let mut roots: Vec<&GraphNode> = visible
+            .iter()
+            .filter_map(|id| gs.get_node(id))
+            .filter(|n| match &n.parent {
+                None => true,
+                Some(pid) => !visible.contains(pid),
+            })
+            .collect();
 
-            let proj_context: HashSet<String> = context_ids
-                .iter()
-                .filter(|cid| {
-                    gs.get_node(cid)
-                        .map(|n| n.project.as_deref() == proj_tasks[0].project.as_deref())
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
+        sort_siblings(&mut roots, &context_ids);
 
-            let proj_visible: HashSet<String> = proj_tasks
-                .iter()
-                .map(|t| t.id.clone())
-                .chain(proj_context.iter().cloned())
-                .collect();
-
-            // Find roots: nodes whose parent is not in this project's visible set
-            let mut roots: Vec<&GraphNode> = proj_visible
-                .iter()
-                .filter_map(|id| gs.get_node(id))
-                .filter(|n| match &n.parent {
-                    None => true,
-                    Some(pid) => !proj_visible.contains(pid),
-                })
-                .collect();
-
-            sort_siblings(&mut roots, &context_ids);
-
-            // Flatten tree
-            for (i, root) in roots.iter().enumerate() {
-                let is_last = i == roots.len() - 1;
-                self.flatten_node(
-                    gs,
-                    root,
-                    &proj_visible,
-                    &context_ids,
-                    0,
-                    vec![is_last],
-                    &mut rows,
-                );
-            }
+        // Flatten tree
+        for (i, root) in roots.iter().enumerate() {
+            let is_last = i == roots.len() - 1;
+            self.flatten_node(
+                gs,
+                root,
+                &visible,
+                &context_ids,
+                0,
+                vec![is_last],
+                &mut rows,
+            );
         }
 
         // Apply priority filter
@@ -506,7 +437,6 @@ impl App {
             priority: node.priority,
             status: node.status.clone(),
             node_type: node.node_type.clone(),
-            project: node.project.clone(),
             depth,
             is_last_at_depth: is_last_at_depth.clone(),
             is_context,
@@ -730,7 +660,6 @@ impl App {
             return false;
         }
 
-        let project = self.project_names.get(self.capture_project_idx).cloned();
         let priority = self.capture_priority;
 
         // Generate a filename-safe slug
@@ -763,9 +692,6 @@ impl App {
             priority,
             today,
         );
-        if let Some(ref proj) = project {
-            frontmatter.push_str(&format!("project: {proj}\n"));
-        }
         frontmatter.push_str("---\n\n");
 
         // Write the file

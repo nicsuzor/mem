@@ -8,7 +8,7 @@ use crate::pkb;
 use gray_matter::engine::YAML;
 use gray_matter::Matter;
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 static ID_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -257,7 +257,7 @@ fn generate_missing_id(path: &Path, fm: &serde_json::Map<String, serde_json::Val
 }
 
 /// Lint a single file. If `fix` is true, also produce corrected content.
-pub fn lint_file(path: &Path, fix: bool, known_ids: Option<&HashSet<String>>) -> FileResult {
+pub fn lint_file(path: &Path, fix: bool, known_ids: Option<&HashSet<String>>, ancestor_map: Option<&AncestorMap>) -> FileResult {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -301,7 +301,7 @@ pub fn lint_file(path: &Path, fix: bool, known_ids: Option<&HashSet<String>>) ->
 
     // ── Frontmatter rules ────────────────────────────────────────────
 
-    check_frontmatter(&content, &fm_data, &mut diags, known_ids);
+    check_frontmatter(&content, &fm_data, &mut diags, known_ids, ancestor_map);
 
     // ── Markdown body rules ──────────────────────────────────────────
 
@@ -310,7 +310,7 @@ pub fn lint_file(path: &Path, fix: bool, known_ids: Option<&HashSet<String>>) ->
     // ── Build fixed content if requested ─────────────────────────────
 
     let fixed_content = if fix && diags.iter().any(|d| d.fixable) {
-        let fixed = apply_fixes(&content, &fm_data, path);
+        let fixed = apply_fixes(&content, &fm_data, path, ancestor_map);
         if fixed != content { Some(fixed) } else { None }
     } else {
         None
@@ -405,11 +405,41 @@ fn fallback_parse_frontmatter(content: &str) -> Option<serde_json::Value> {
     }
 }
 
+/// Map of document ID → (parent_id, doc_type) for ancestor lookups.
+/// Built during lint_directory pre-pass.
+pub type AncestorMap = HashMap<String, (Option<String>, Option<String>)>;
+
+/// Walk the parent chain to check if any ancestor's ID matches the given value.
+fn has_matching_ancestor(id: &str, project_value: &str, ancestor_map: &AncestorMap) -> bool {
+    let mut current = id.to_string();
+    let mut visited = HashSet::new();
+    for _ in 0..20 {
+        // max hops to avoid cycles
+        if !visited.insert(current.clone()) {
+            break;
+        }
+        let entry = match ancestor_map.get(&current) {
+            Some(e) => e,
+            None => break,
+        };
+        if let Some(ref parent_id) = entry.0 {
+            if parent_id == project_value {
+                return true;
+            }
+            current = parent_id.clone();
+        } else {
+            break;
+        }
+    }
+    false
+}
+
 fn check_frontmatter(
     content: &str,
     fm_data: &Option<serde_json::Value>,
     diags: &mut Vec<Diagnostic>,
     known_ids: Option<&HashSet<String>>,
+    ancestor_map: Option<&AncestorMap>,
 ) {
     // Check frontmatter exists
     if !content.starts_with("---") {
@@ -593,6 +623,27 @@ fn check_frontmatter(
             message: "'body' is a prohibited frontmatter key — content belongs in the markdown body (run with --fix to auto-migrate)".into(),
             line: None,
             fixable: true,
+        });
+    }
+
+    // Deprecated: project field
+    if let Some(project_val) = fm.get("project").and_then(|v| v.as_str()) {
+        let doc_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let has_parent = fm.contains_key("parent");
+        // Fixable if: no parent (orphan), or has ancestor matching project value
+        let fixable = if !has_parent {
+            true
+        } else if let Some(amap) = ancestor_map {
+            has_matching_ancestor(doc_id, project_val, amap)
+        } else {
+            false
+        };
+        diags.push(Diagnostic {
+            severity: Severity::Warning,
+            rule: "fm-deprecated-project",
+            message: "frontmatter contains deprecated 'project' field — project membership is derived from parent hierarchy".into(),
+            line: None,
+            fixable,
         });
     }
 
@@ -833,7 +884,7 @@ fn remove_body_key_from_frontmatter(fm_text: &str) -> String {
 }
 
 /// Apply fixes surgically — line-level edits only, preserving key order and formatting.
-fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path) -> String {
+fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, ancestor_map: Option<&AncestorMap>) -> String {
     let mut result = content.to_string();
 
     // ── Frontmatter fixes (only when we have a valid frontmatter object) ──
@@ -903,6 +954,23 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path) 
 
         // Note: fm-id-format fix is handled at directory level via rename_id
         // (requires cross-file reference updates)
+
+        // Fix 5c: Remove deprecated 'project' field from frontmatter
+        if let Some(project_val) = fm.get("project").and_then(|v| v.as_str()) {
+            let has_parent = fm.contains_key("parent");
+            let doc_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let can_fix = if !has_parent {
+                true
+            } else if let Some(amap) = ancestor_map {
+                has_matching_ancestor(doc_id, project_val, amap)
+            } else {
+                false
+            };
+            if can_fix {
+                let re = regex::Regex::new(r"(?m)^project:.*\n").unwrap();
+                result = re.replace(&result, "").to_string();
+            }
+        }
 
         // Fix 6: Migrate 'body' frontmatter key → append its value to the markdown body
         if fm.contains_key("body") {
@@ -1090,6 +1158,23 @@ pub fn lint_directory(
         None
     };
 
+    // Build ancestor map for deprecated-project autofix:
+    // Maps each document ID → (parent_id, doc_type)
+    let ancestor_map: AncestorMap = files
+        .par_iter()
+        .filter_map(|p| {
+            let content = std::fs::read_to_string(p).ok()?;
+            let matter = Matter::<YAML>::new();
+            let parsed = matter.parse(&content);
+            let fm = parsed.data.as_ref()
+                .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
+            let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
+            let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
+            let doc_type = fm.get("type").and_then(|v| v.as_str()).map(String::from);
+            Some((id, (parent, doc_type)))
+        })
+        .collect();
+
     // Pre-fix pass: collect ID renames needed (old_id → new_id) before per-file fixes
     // Only IDs that genuinely don't match the prefix-hexhash pattern are renamed.
     // Prefix may contain uppercase letters (e.g. "academicOps-b5d43955").
@@ -1121,7 +1206,7 @@ pub fn lint_directory(
 
     let results: Vec<FileResult> = files
         .par_iter()
-        .map(|p| lint_file(p, fix, known_ids.as_ref()))
+        .map(|p| lint_file(p, fix, known_ids.as_ref(), Some(&ancestor_map)))
         .collect();
 
     let summary = LintSummary::from_results(&results);
@@ -1139,7 +1224,7 @@ pub fn lint_directory(
         // Return fresh results after renames
         let results: Vec<FileResult> = files
             .par_iter()
-            .map(|p| lint_file(p, false, known_ids.as_ref()))
+            .map(|p| lint_file(p, false, known_ids.as_ref(), Some(&ancestor_map)))
             .collect();
         let summary = LintSummary::from_results(&results);
         return (results, summary);
@@ -1278,14 +1363,14 @@ mod tests {
     fn lint_str(content: &str) -> Vec<Diagnostic> {
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(content.as_bytes()).unwrap();
-        let result = lint_file(f.path(), false, None);
+        let result = lint_file(f.path(), false, None, None);
         result.diagnostics
     }
 
     fn fix_str(content: &str) -> String {
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(content.as_bytes()).unwrap();
-        let result = lint_file(f.path(), true, None);
+        let result = lint_file(f.path(), true, None, None);
         result.fixed_content.unwrap_or_else(|| content.to_string())
     }
 

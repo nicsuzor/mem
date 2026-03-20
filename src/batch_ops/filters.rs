@@ -16,8 +16,6 @@ use std::collections::HashSet;
 pub struct FilterSet {
     /// Explicit task IDs (flexible resolution)
     pub ids: Option<Vec<String>>,
-    /// Match project field
-    pub project: Option<String>,
     /// Direct children of parent
     pub parent: Option<String>,
     /// All descendants (recursive)
@@ -36,7 +34,7 @@ pub struct FilterSet {
     pub older_than_days: Option<u64>,
     /// Days since `modified`
     pub stale_days: Option<u64>,
-    /// No parent and no project
+    /// No parent
     pub orphan: Option<bool>,
     /// Substring match on title (case-insensitive)
     pub title_contains: Option<String>,
@@ -52,7 +50,6 @@ impl FilterSet {
     /// Returns true if no filters are set.
     pub fn is_empty(&self) -> bool {
         self.ids.is_none()
-            && self.project.is_none()
             && self.parent.is_none()
             && self.subtree.is_none()
             && self.status.is_none()
@@ -101,9 +98,6 @@ impl FilterSet {
         let mut parts = Vec::new();
         if let Some(ref ids) = self.ids {
             parts.push(format!("ids=[{}]", ids.join(", ")));
-        }
-        if let Some(ref p) = self.project {
-            parts.push(format!("project={p}"));
         }
         if let Some(ref p) = self.parent {
             parts.push(format!("parent={p}"));
@@ -162,13 +156,6 @@ impl FilterSet {
         subtree_ids: Option<&HashSet<String>>,
         now: NaiveDate,
     ) -> bool {
-        // Project filter
-        if let Some(ref project) = self.project {
-            if node.project.as_deref() != Some(project) {
-                return false;
-            }
-        }
-
         // Parent filter (direct children only)
         if let Some(ref parent_id) = self.parent {
             let parent_node = graph.resolve(parent_id);
@@ -240,7 +227,7 @@ impl FilterSet {
 
         // Orphan: no parent AND no project
         if self.orphan == Some(true) {
-            if node.parent.is_some() || node.project.is_some() {
+            if node.parent.is_some() {
                 return false;
             }
         }
@@ -289,7 +276,6 @@ pub fn parse_filter_set(args: &serde_json::Value) -> FilterSet {
                     .collect()
             })
         }),
-        project: args.get("project").and_then(|v| v.as_str().map(String::from)),
         parent: args.get("parent").and_then(|v| v.as_str().map(String::from)),
         subtree: args.get("subtree").and_then(|v| v.as_str().map(String::from)),
         status: args.get("status").and_then(|v| v.as_str().map(String::from)),
@@ -368,11 +354,10 @@ mod tests {
     #[test]
     fn test_filter_set_describe() {
         let f = FilterSet {
-            project: Some("aops".to_string()),
             priority_gte: Some(2),
             ..Default::default()
         };
-        assert_eq!(f.describe(), "project=aops, priority>=2");
+        assert_eq!(f.describe(), "priority>=2");
     }
 
     #[test]
@@ -393,13 +378,11 @@ mod tests {
     #[test]
     fn test_parse_filter_set() {
         let args = serde_json::json!({
-            "project": "aops",
             "priority_gte": 2,
             "tags": ["batch-ops", "spec-ready"],
             "title_contains": "Write spec"
         });
         let f = parse_filter_set(&args);
-        assert_eq!(f.project.as_deref(), Some("aops"));
         assert_eq!(f.priority_gte, Some(2));
         assert_eq!(f.tags.as_ref().map(|t| t.len()), Some(2));
         assert_eq!(f.title_contains.as_deref(), Some("Write spec"));

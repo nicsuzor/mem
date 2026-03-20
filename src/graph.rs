@@ -91,8 +91,6 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub subtasks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
@@ -428,9 +426,6 @@ impl GraphNode {
         let parent = fm
             .as_ref()
             .and_then(|f| f.get("parent").and_then(|v| v.as_str()).map(String::from));
-        let project = fm
-            .as_ref()
-            .and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
         let due = fm
             .as_ref()
             .and_then(|f| f.get("due").and_then(|v| v.as_str()).map(String::from));
@@ -564,7 +559,6 @@ impl GraphNode {
             soft_blocks,
             children,
             subtasks: Vec::new(),
-            project,
             due,
             created,
             modified: doc.modified.clone(),

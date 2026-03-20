@@ -144,7 +144,6 @@ impl PkbSearchServer {
         let tag = args.get("tag").and_then(|v| v.as_str());
         let doc_type = args.get("type").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
-        let project = args.get("project").and_then(|v| v.as_str());
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -152,7 +151,7 @@ impl PkbSearchServer {
         let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         let store = self.store.read();
-        let results = store.list_documents(tag, doc_type, status, project, &self.pkb_root);
+        let results = store.list_documents(tag, doc_type, status, &self.pkb_root);
         let total = results.len();
 
         if total == 0 {
@@ -201,7 +200,6 @@ impl PkbSearchServer {
             })?;
 
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-        let project = args.get("project").and_then(|v| v.as_str());
         let include_subtasks = args
             .get("include_subtasks")
             .and_then(|v| v.as_bool())
@@ -214,11 +212,7 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let fetch_limit = if project.is_some() {
-            limit * 10
-        } else {
-            limit * 3
-        };
+        let fetch_limit = limit * 3;
         let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         let graph = self.graph.read();
@@ -246,17 +240,6 @@ impl PkbSearchServer {
             }
             if !include_subtasks && r.doc_type.as_deref() == Some("subtask") {
                 continue;
-            }
-
-            if let Some(proj) = project {
-                if !r
-                    .project
-                    .as_deref()
-                    .map(|p| p.eq_ignore_ascii_case(proj))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
             }
 
             count += 1;
@@ -360,10 +343,6 @@ impl PkbSearchServer {
                 .get("priority")
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32),
-            project: args
-                .get("project")
-                .and_then(|v| v.as_str())
-                .map(String::from),
             tags: args
                 .get("tags")
                 .and_then(|v| v.as_array())
@@ -400,17 +379,6 @@ impl PkbSearchServer {
                 message: Cow::from(
                     "Missing required parameter: parent. Tasks must have a parent node. \
                      Only goal, learn, and project types can be root-level.",
-                ),
-                data: None,
-            });
-        }
-
-        // project is required
-        if fields.project.is_none() {
-            return Err(McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(
-                    "Missing required parameter: project. Specify which project this task belongs to.",
                 ),
                 data: None,
             });
@@ -560,9 +528,6 @@ impl PkbSearchServer {
         if let Some(p) = node.priority {
             output.push_str(&format!("**Priority:** {p}\n"));
         }
-        if let Some(ref proj) = node.project {
-            output.push_str(&format!("**Project:** {proj}\n"));
-        }
         if let Some(ref due) = node.due {
             output.push_str(&format!("**Due:** {due}\n"));
         }
@@ -663,7 +628,6 @@ impl PkbSearchServer {
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let boost_id = args.get("boost_id").and_then(|v| v.as_str());
-        let project = args.get("project").and_then(|v| v.as_str());
         let detail = args
             .get("detail")
             .and_then(|v| v.as_str())
@@ -676,11 +640,7 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let fetch_limit = if project.is_some() {
-            limit * 5
-        } else {
-            limit * 2
-        };
+        let fetch_limit = limit * 2;
         let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         // Build proximity boost map if boost_id provided
@@ -722,14 +682,6 @@ impl PkbSearchServer {
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        if let Some(proj) = project {
-            scored.retain(|(r, _)| {
-                r.project
-                    .as_deref()
-                    .map(|p| p.eq_ignore_ascii_case(proj))
-                    .unwrap_or(false)
-            });
-        }
         scored.truncate(limit);
 
         if scored.is_empty() {
@@ -861,8 +813,6 @@ impl PkbSearchServer {
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
             });
-        let project = args.get("project").and_then(|v| v.as_str());
-
         let graph = self.graph.read();
         let mut orphans = graph.orphans();
 
@@ -874,11 +824,6 @@ impl PkbSearchServer {
                     .map(|t| types.iter().any(|f| f.eq_ignore_ascii_case(t)))
                     .unwrap_or(false)
             });
-        }
-
-        // Filter by project if requested
-        if let Some(proj) = project {
-            orphans.retain(|n| n.project.as_deref() == Some(proj));
         }
 
         if orphans.is_empty() {
@@ -1170,10 +1115,6 @@ impl PkbSearchServer {
                         .collect()
                 })
                 .unwrap_or_default(),
-            project: args
-                .get("project")
-                .and_then(|v| v.as_str())
-                .map(String::from),
             assignee: args
                 .get("assignee")
                 .and_then(|v| v.as_str())
@@ -1546,7 +1487,7 @@ impl PkbSearchServer {
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
         let store = self.store.read();
-        let all = store.list_documents(None, type_filter, None, None, &self.pkb_root);
+        let all = store.list_documents(None, type_filter, None, &self.pkb_root);
 
         let mut matching: Vec<_> = all
             .into_iter()
@@ -1590,7 +1531,7 @@ impl PkbSearchServer {
         let store = self.store.read();
 
         let mut memories: Vec<_> = store
-            .list_documents(None, None, None, None, &self.pkb_root)
+            .list_documents(None, None, None, &self.pkb_root)
             .into_iter()
             .filter(|r| {
                 r.doc_type
@@ -1715,7 +1656,7 @@ impl PkbSearchServer {
                             data: None,
                         });
                     }
-                    node.project.clone().unwrap_or_else(|| "task".to_string())
+                    node.node_type.clone().unwrap_or_else(|| "task".to_string())
                 }
             }
         };
@@ -1748,11 +1689,7 @@ impl PkbSearchServer {
                 .and_then(|v| v.as_str())
                 .map(crate::document_crud::sanitize_prefix)
                 .unwrap_or_else(|| {
-                    let prefix = subtask
-                        .get("project")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&project_prefix);
-                    crate::graph::create_id(prefix)
+                    crate::graph::create_id(&project_prefix)
                 });
 
             if !seen_ids.insert(id.clone()) {
@@ -1813,10 +1750,6 @@ impl PkbSearchServer {
                     .get("priority")
                     .and_then(|v| v.as_i64())
                     .map(|v| v as i32),
-                project: subtask
-                    .get("project")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
                 tags: subtask
                     .get("tags")
                     .and_then(|v| v.as_array())
@@ -2034,7 +1967,6 @@ impl PkbSearchServer {
     }
 
     fn handle_list_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let project = args.get("project").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
         let priority = args
             .get("priority")
@@ -2088,14 +2020,6 @@ impl PkbSearchServer {
             all
         };
 
-        if let Some(proj) = project {
-            tasks.retain(|t| {
-                t.project
-                    .as_deref()
-                    .map(|p| p.eq_ignore_ascii_case(proj))
-                    .unwrap_or(false)
-            });
-        }
         if let Some(pri) = priority {
             tasks.retain(|t| t.priority == Some(pri));
         }
@@ -2387,12 +2311,11 @@ impl PkbSearchServer {
             .to_string();
 
         let filters = crate::batch_ops::filters::parse_filter_set(args);
-        let update_project = args.get("update_project").and_then(|v| v.as_bool()).unwrap_or(true);
         let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let graph = self.graph.read();
         let summary = crate::batch_ops::reparent::batch_reparent(
-            &graph, &self.pkb_root, &filters, &new_parent, update_project, dry_run,
+            &graph, &self.pkb_root, &filters, &new_parent, dry_run,
         );
         drop(graph);
 
@@ -2481,11 +2404,9 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
-    fn handle_graph_stats(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let project = args.get("project").and_then(|v| v.as_str());
-
+    fn handle_graph_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
         let graph = self.graph.read();
-        let stats = crate::batch_ops::stats::graph_stats(&graph, project);
+        let stats = crate::batch_ops::stats::graph_stats(&graph);
         drop(graph);
 
         let json = serde_json::to_string_pretty(&stats).unwrap_or_default();
@@ -2554,7 +2475,6 @@ impl PkbSearchServer {
 
     fn handle_batch_create_epics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let parent = args.get("parent").and_then(|v| v.as_str());
-        let project = args.get("project").and_then(|v| v.as_str());
         let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let epics: Vec<crate::batch_ops::epics::EpicDef> = args
@@ -2572,7 +2492,7 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let summary = crate::batch_ops::epics::batch_create_epics(
-            &graph, &self.pkb_root, parent, project, &epics, dry_run,
+            &graph, &self.pkb_root, parent, &epics, dry_run,
         );
         drop(graph);
 
@@ -2686,7 +2606,6 @@ impl ServerHandler for PkbSearchServer {
                         "query": { "type": "string", "description": "Natural language search query" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
                         "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
-                        "project": { "type": "string", "description": "Filter by project" },
                         "detail": { "type": "string", "description": "Result detail level: 'snippet' (300 chars), 'chunk' (full matching chunk, default), 'full' (entire document)", "enum": ["snippet", "chunk", "full"], "default": "chunk" }
                     },
                     "required": ["query"]
@@ -2714,7 +2633,6 @@ impl ServerHandler for PkbSearchServer {
                         "tag": { "type": "string", "description": "Filter by tag" },
                         "type": { "type": "string", "description": "Filter by type" },
                         "status": { "type": "string", "description": "Filter by status" },
-                        "project": { "type": "string", "description": "Filter by project" },
                         "limit": { "type": "integer", "description": "Max results (default: all)" },
                         "offset": { "type": "integer", "description": "Skip first N results (default: 0)" }
                     }
@@ -2729,7 +2647,6 @@ impl ServerHandler for PkbSearchServer {
                     "properties": {
                         "query": { "type": "string", "description": "Query to search tasks" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "project": { "type": "string", "description": "Filter by project" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." }
                     },
                     "required": ["query"]
@@ -2758,7 +2675,6 @@ impl ServerHandler for PkbSearchServer {
                         "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
                         "parent": { "type": "string", "description": "Parent task ID" },
                         "priority": { "type": "integer", "description": "0-4 (0=critical)" },
-                        "project": { "type": "string", "description": "Project name" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
@@ -2817,7 +2733,6 @@ impl ServerHandler for PkbSearchServer {
                         "priority": { "type": "integer", "description": "0-4 (0=critical)" },
                         "parent": { "type": "string", "description": "Parent document ID" },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
-                        "project": { "type": "string", "description": "Project name" },
                         "assignee": { "type": "string" },
                         "complexity": { "type": "string" },
                         "source": { "type": "string", "description": "Source context" },
@@ -2874,7 +2789,6 @@ impl ServerHandler for PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "project": { "type": "string", "description": "Filter by project" },
                         "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, done, etc." },
                         "priority": { "type": "integer", "description": "Filter by exact priority (0-4)" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
@@ -2996,8 +2910,7 @@ impl ServerHandler for PkbSearchServer {
                                     "tags": { "type": "array", "items": { "type": "string" } },
                                     "assignee": { "type": "string" },
                                     "complexity": { "type": "string" },
-                                    "body": { "type": "string" },
-                                    "project": { "type": "string" }
+                                    "body": { "type": "string" }
                                 },
                                 "required": ["title"]
                             },
@@ -3068,8 +2981,7 @@ impl ServerHandler for PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "limit": { "type": "integer", "description": "Max results (default: all). Set to 0 for unlimited." },
-                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Omit for all types." },
-                        "project": { "type": "string", "description": "Filter by project" }
+                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Omit for all types." }
                     }
                 }))
                 .unwrap(),
@@ -3082,7 +2994,6 @@ impl ServerHandler for PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs (flexible resolution)" },
-                        "project": { "type": "string", "description": "Filter by project" },
                         "parent": { "type": "string", "description": "Filter: direct children of parent" },
                         "subtree": { "type": "string", "description": "Filter: all descendants of node" },
                         "status": { "type": "string", "description": "Filter by status" },
@@ -3105,12 +3016,11 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "batch_reparent",
-                "Move multiple tasks to a new parent in one operation. Use when restructuring the task graph — grouping flat tasks into epics, or reorganizing tasks between projects. Cascades parent's project field by default.",
+                "Move multiple tasks to a new parent in one operation. Use when restructuring the task graph — grouping flat tasks into epics, or reorganizing tasks between projects.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
-                        "project": { "type": "string", "description": "Filter by project" },
                         "parent": { "type": "string", "description": "Filter: direct children of parent" },
                         "subtree": { "type": "string", "description": "Filter: all descendants of node" },
                         "status": { "type": "string", "description": "Filter by status" },
@@ -3119,7 +3029,6 @@ impl ServerHandler for PkbSearchServer {
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
                         "title_contains": { "type": "string", "description": "Filter: title substring" },
                         "new_parent": { "type": "string", "description": "ID of new parent (flexible resolution)" },
-                        "update_project": { "type": "boolean", "description": "Cascade parent's project field (default: true)" },
                         "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
                     },
                     "required": ["new_parent"]
@@ -3133,7 +3042,6 @@ impl ServerHandler for PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
-                        "project": { "type": "string", "description": "Filter by project" },
                         "parent": { "type": "string", "description": "Filter: direct children of parent" },
                         "subtree": { "type": "string", "description": "Filter: all descendants of node" },
                         "status": { "type": "string", "description": "Filter by status" },
@@ -3155,7 +3063,6 @@ impl ServerHandler for PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "project": { "type": "string", "description": "Scope to a specific project" }
                     }
                 }))
                 .unwrap(),
@@ -3167,7 +3074,6 @@ impl ServerHandler for PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "project": { "type": "string", "description": "Filter by project" },
                         "status": { "type": "string", "description": "Filter by status" },
                         "mode": { "type": "string", "description": "Detection mode: title, semantic, or both (default: both)" },
                         "title_threshold": { "type": "number", "description": "Title similarity threshold 0-1 (default: 0.7)" },
@@ -3211,7 +3117,6 @@ impl ServerHandler for PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "parent": { "type": "string", "description": "Parent for all new epics" },
-                        "project": { "type": "string", "description": "Project field for all new epics" },
                         "epics": {
                             "type": "array",
                             "items": {
@@ -3241,7 +3146,6 @@ impl ServerHandler for PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
-                        "project": { "type": "string", "description": "Filter by project" },
                         "status": { "type": "string", "description": "Filter by status" },
                         "type": { "type": "string", "description": "Filter by current type" },
                         "title_contains": { "type": "string", "description": "Filter by title substring" },

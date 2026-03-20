@@ -45,8 +45,6 @@ pub struct OutputGraph {
     pub ready: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked: Vec<String>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub by_project: HashMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roots: Vec<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -72,7 +70,6 @@ pub struct GraphStore {
     ready: Vec<String>,
     blocked: Vec<String>,
     roots: Vec<String>,
-    by_project: HashMap<String, Vec<String>>,
     /// Lowercase (id | filename stem | title | permalink) → canonical node ID
     resolution_map: HashMap<String, String>,
     /// Retained from build so layouts can be computed on demand via `compute_layouts()`.
@@ -164,7 +161,7 @@ impl GraphStore {
         // 10. Build node map and classify tasks
         let node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
-        let (ready, blocked, roots, by_project) = classify_tasks(&node_map);
+        let (ready, blocked, roots) = classify_tasks(&node_map);
 
         // 11. Build resolution map for flexible node lookup
         let resolution_map = build_resolution_map(&node_map);
@@ -175,7 +172,6 @@ impl GraphStore {
             ready,
             blocked,
             roots,
-            by_project,
             resolution_map,
             reachable_set,
         }
@@ -297,10 +293,6 @@ impl GraphStore {
 
     pub fn roots(&self) -> &[String] {
         &self.roots
-    }
-
-    pub fn by_project(&self) -> &HashMap<String, Vec<String>> {
-        &self.by_project
     }
 
     /// Get the dependency tree for a node (BFS through depends_on).
@@ -731,7 +723,6 @@ impl GraphStore {
             edges,
             ready: self.ready.clone(),
             blocked: self.blocked.clone(),
-            by_project: self.by_project.clone(),
             roots: self.roots.clone(),
             layout_metadata,
             layout_name: Some(layout_name.into()),
@@ -791,7 +782,6 @@ impl GraphStore {
             edges: self.edges.clone(),
             ready: self.ready.clone(),
             blocked: self.blocked.clone(),
-            by_project: self.by_project.clone(),
             roots: self.roots.clone(),
             layout_metadata: HashMap::new(),
             layout_name: None,
@@ -850,7 +840,7 @@ impl GraphStore {
             if let Some(p) = node.priority {
                 ns.push_str(&format!("      <data key=\"d5\">{}</data>\n", p));
             }
-            append(&mut ns, "d6", node.project.as_deref().unwrap_or(""));
+            append(&mut ns, "d6", "");
             append(&mut ns, "d7", node.assignee.as_deref().unwrap_or(""));
             append(&mut ns, "d8", node.complexity.as_deref().unwrap_or(""));
             append(&mut ns, "d9", &node.depends_on.join(","));
@@ -1068,19 +1058,6 @@ fn build_node_edges(
                     source: target_id,
                     target: n.id.clone(),
                     edge_type: EdgeType::SoftDependsOn,
-                });
-            }
-        }
-    }
-
-    // project -> Link edge (this -> project node)
-    if let Some(ref proj) = n.project {
-        if let Some(target_id) = graph::resolve_ref(proj, id_map, path_to_id) {
-            if n.id != target_id {
-                edges.push(Edge {
-                    source: n.id.clone(),
-                    target: target_id,
-                    edge_type: EdgeType::Link,
                 });
             }
         }
@@ -1351,15 +1328,10 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
     }
 }
 
-/// Classify tasks into ready/blocked lists, compute roots and by_project.
+/// Classify tasks into ready/blocked lists and compute roots.
 fn classify_tasks(
     nodes: &HashMap<String, GraphNode>,
-) -> (
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    HashMap<String, Vec<String>>,
-) {
+) -> (Vec<String>, Vec<String>, Vec<String>) {
     let completed_ids: HashSet<String> = nodes
         .iter()
         .filter(|(_, n)| graph::is_completed(n.status.as_deref()))
@@ -1423,19 +1395,7 @@ fn classify_tasks(
         .map(|(id, _)| id.clone())
         .collect();
 
-    // By project
-    let mut by_project: HashMap<String, Vec<String>> = HashMap::new();
-    for (id, node) in nodes {
-        if node.task_id.is_some() {
-            let proj = node
-                .project
-                .clone()
-                .unwrap_or_else(|| "_no_project".to_string());
-            by_project.entry(proj).or_default().push(id.clone());
-        }
-    }
-
-    (ready, blocked, roots, by_project)
+    (ready, blocked, roots)
 }
 
 /// Mark nodes reachable from active leaf tasks via upstream BFS.

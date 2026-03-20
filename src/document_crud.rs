@@ -50,7 +50,6 @@ pub struct DocumentFields {
     pub priority: Option<i32>,
     pub parent: Option<String>,
     pub depends_on: Vec<String>,
-    pub project: Option<String>,
     pub assignee: Option<String>,
     pub complexity: Option<String>,
     pub source: Option<String>,
@@ -68,7 +67,6 @@ pub struct TaskFields {
     pub id: Option<String>,
     pub parent: Option<String>,
     pub priority: Option<i32>,
-    pub project: Option<String>,
     pub tags: Vec<String>,
     pub depends_on: Vec<String>,
     pub assignee: Option<String>,
@@ -133,7 +131,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         }
         None => {
             // Use project as prefix when available, otherwise type-based prefix
-            let prefix = fields.project.as_deref().unwrap_or(type_prefix);
+            let prefix = type_prefix;
             let id = generate_id(prefix);
             let slug = slugify(&fields.title);
             let filename = format!("{}-{}.md", id, slug);
@@ -194,10 +192,6 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     if let Some(ref parent) = fields.parent {
         fm.push_str(&format!("parent: {}\n", parent));
-    }
-
-    if let Some(ref project) = fields.project {
-        fm.push_str(&format!("project: {}\n", project));
     }
 
     if !fields.tags.is_empty() {
@@ -339,13 +333,6 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
              can be root-level."
         );
     }
-    // project is required — tasks must belong to a named project
-    if fields.project.as_deref().map(str::is_empty).unwrap_or(true) {
-        anyhow::bail!(
-            "project is required: specify which project this task belongs to"
-        );
-    }
-
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: sanitize to prevent path traversal
@@ -355,7 +342,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         }
         None => {
             // Use project as prefix when available, otherwise "task"
-            let prefix = fields.project.as_deref().unwrap_or("task");
+            let prefix = "task";
             let id = generate_id(prefix);
             let slug = slugify(&fields.title);
             let filename = format!("{}-{}.md", id, slug);
@@ -394,10 +381,6 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     if let Some(ref parent) = fields.parent {
         fm.push_str(&format!("parent: {}\n", parent));
-    }
-
-    if let Some(ref project) = fields.project {
-        fm.push_str(&format!("project: {}\n", project));
     }
 
     if !fields.tags.is_empty() {
