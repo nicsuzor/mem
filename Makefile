@@ -20,7 +20,7 @@ build:
 
 .PHONY: install
 install:
-	cargo binstall --git https://github.com/nicsuzor/mem mem
+	curl -fsSL https://raw.githubusercontent.com/nicsuzor/mem/main/install.sh | sh
 
 # ── Apple Silicon cross-build ────────────────────────────────────────
 # Requires: zig 0.13, cargo-zigbuild, macOS sysroot with framework stubs
