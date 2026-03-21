@@ -101,6 +101,18 @@ enum Commands {
         /// Force reindex even if files unchanged
         #[arg(short, long)]
         force: bool,
+
+        /// Max ONNX sessions (default: auto from CPU count)
+        #[arg(short, long)]
+        sessions: Option<usize>,
+
+        /// Threads per ONNX session (default: 2)
+        #[arg(short, long)]
+        threads: Option<usize>,
+
+        /// Chunks per sub-batch (default: 32)
+        #[arg(short, long)]
+        batch_size: Option<usize>,
     },
 
     /// Benchmark reindex: process a few stale docs with tunable parallelism
@@ -815,13 +827,16 @@ fn main() -> Result<()> {
 
     let (embedder, store) = if needs_embedder {
         let mut e = embeddings::Embedder::new()?;
-        // Apply parallelism overrides for bench-reindex
-        if let Commands::BenchReindex { sessions, threads, batch_size, .. } = &cli.command {
-            e = e.with_overrides(
-                sessions.unwrap_or(0),
-                threads.unwrap_or(0),
-                batch_size.unwrap_or(0),
-            );
+        // Apply parallelism overrides for reindex/bench-reindex
+        let overrides = match &cli.command {
+            Commands::Reindex { sessions, threads, batch_size, .. }
+            | Commands::BenchReindex { sessions, threads, batch_size, .. } => {
+                Some((sessions.unwrap_or(0), threads.unwrap_or(0), batch_size.unwrap_or(0)))
+            }
+            _ => None,
+        };
+        if let Some((s, t, b)) = overrides {
+            e = e.with_overrides(s, t, b);
         }
         let e = Arc::new(e);
         let s = load_store(&db_path, e.dimension())?;
@@ -953,7 +968,7 @@ fn main() -> Result<()> {
             );
         }
 
-        Commands::Reindex { force } => {
+        Commands::Reindex { force, sessions: _, threads: _, batch_size: _ } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
             let (indexed, removed, total) = index_pkb(&pkb_root, &db_path, store, embedder, force);
