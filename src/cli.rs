@@ -777,7 +777,13 @@ fn main() -> Result<()> {
         None
     };
     let _lock_guard = if let Some(ref mut l) = _index_lock {
-        Some(l.write()?)
+        Some(l.try_write().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                anyhow::anyhow!("Index is locked by another process. Try again later.")
+            } else {
+                anyhow::anyhow!("Failed to acquire index lock: {e}")
+            }
+        })?)
     } else {
         None
     };
