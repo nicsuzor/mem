@@ -142,7 +142,7 @@
 
         root.sum(d => {
             if (d.children?.length) return 0;
-            return Math.max(MIN_NODE_WEIGHT, d.dw || MIN_NODE_WEIGHT);
+            return Math.max(MIN_NODE_WEIGHT, Math.sqrt(d.dw || MIN_NODE_WEIGHT));
         }).sort((a, b) => (b.value || 0) - (a.value || 0));
 
         const treemap = d3.treemap<any>()
