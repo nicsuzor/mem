@@ -23,6 +23,48 @@
         }
     });
 
+    function collapseSingleChildParents(nodes: any[], rootId: string): any[] {
+        const DONE_STATUSES = new Set(['done', 'completed', 'cancelled']);
+        let result = [...nodes];
+        let changed = true;
+        while (changed) {
+            changed = false;
+            const childrenOf = new Map<string, any[]>();
+            for (const n of result) {
+                if (n.parent) {
+                    if (!childrenOf.has(n.parent)) childrenOf.set(n.parent, []);
+                    childrenOf.get(n.parent)!.push(n);
+                }
+            }
+
+            for (const [parentId, children] of childrenOf) {
+                if (parentId === '' || parentId === rootId) continue;
+                const parent = result.find(n => n.id === parentId);
+                if (!parent) continue;
+
+                const activeChildren = children.filter(c => !DONE_STATUSES.has(c.status));
+                if (activeChildren.length !== 1) continue;
+
+                const child = activeChildren[0];
+                // Concatenate labels, cap at 2 segments
+                if (child.label && parent.label && !child.label.includes('›')) {
+                    child.label = parent.label + ' › ' + child.label;
+                }
+                // Inherit project color if child lacks one
+                if (!child.project && parent.project) child.project = parent.project;
+                // Reparent child to grandparent
+                child.parent = parent.parent;
+
+                // Remove parent + completed siblings (visual noise)
+                const removeIds = new Set([parentId, ...children.filter(c => c.id !== child.id).map(c => c.id)]);
+                result = result.filter(n => !removeIds.has(n.id));
+                changed = true;
+                break; // restart after mutation
+            }
+        }
+        return result;
+    }
+
     function updateLayoutAndRender() {
         const data = $graphData;
         if (!data) return;
@@ -51,6 +93,9 @@
                 })),
             ];
         }
+
+        // Collapse single-child intermediate parents to reduce wasted nesting
+        stratifyNodes = collapseSingleChildParents(stratifyNodes, rootId);
 
         let root;
         try {
@@ -138,9 +183,6 @@
         }
 
         const MIN_NODE_WEIGHT = 1;
-        const TREEMAP_PADDING_INNER = 3;
-        const TREEMAP_PADDING_OUTER = 3;
-        const TREEMAP_PADDING_TOP = 38;
 
         const weightMode = $viewSettings.treemapWeightMode || 'sqrt';
         root.sum(d => {
@@ -168,9 +210,11 @@
 
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
-            .paddingInner(TREEMAP_PADDING_INNER)
-            .paddingOuter(TREEMAP_PADDING_OUTER)
-            .paddingTop(TREEMAP_PADDING_TOP)
+            .paddingInner((node: any) => node.depth <= 1 ? 3 : 1)
+            .paddingBottom((node: any) => node.depth <= 1 ? 3 : 1)
+            .paddingLeft((node: any) => node.depth <= 1 ? 3 : 1)
+            .paddingRight((node: any) => node.depth <= 1 ? 3 : 1)
+            .paddingTop((node: any) => node.depth <= 1 ? 38 : 20)
             .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
 

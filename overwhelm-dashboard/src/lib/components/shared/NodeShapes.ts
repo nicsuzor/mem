@@ -203,8 +203,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         .style("transition", "all 0.2s ease");
 
     if (isParent && h > 20) {
-        // Parent Header Bar — must match TREEMAP_PADDING_TOP (34) so children sit below
-        const headerH = Math.min(34, h * 0.8);
+        // Parent Header Bar — depth-aware: full header at top level, compact at deeper levels
+        const headerH = Math.min(d.depth <= 1 ? 34 : 16, h * 0.8);
         g.append("rect")
             .attr("x", -w / 2).attr("y", -h / 2)
             .attr("width", w).attr("height", headerH)
@@ -252,8 +252,12 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         if (isParent) {
             // Parent nodes: Draw label in the header bar
             // Font size scales with node but never smaller than child leaf text
-            const parentFs = Math.max(8, Math.min(11, Math.min(w, h) * 0.09));
-            const headerTextH = Math.min(32, h * 0.7);
+            const parentFs = d.depth <= 1
+                ? Math.max(8, Math.min(11, Math.min(w, h) * 0.09))
+                : Math.max(6, Math.min(9, Math.min(w, h) * 0.09));
+            const headerTextH = d.depth <= 1
+                ? Math.min(32, h * 0.7)
+                : Math.min(14, h * 0.7);
             if (w > 20 && h > 12) {
                 g.append("foreignObject")
                     .attr("x", -w / 2 + pad).attr("y", -h / 2 + 2)
