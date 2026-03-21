@@ -1,7 +1,7 @@
 <script lang="ts">
 	import favicon from "$lib/assets/favicon.svg";
 	import "../app.css";
-	import { viewSettings } from "$lib/stores/viewSettings";
+	import { viewSettings, VIEW_MODES } from "$lib/stores/viewSettings";
 
 	let { children } = $props();
 </script>
@@ -31,12 +31,20 @@
 			>
 				DASHBOARD
 			</button>
-			<button
-				class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Task Graph' ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
-				onclick={() => $viewSettings.mainTab = 'Task Graph'}
-			>
-				TASK GRAPH
-			</button>
+
+			<span class="text-primary/20">|</span>
+
+			{#each VIEW_MODES as mode}
+				<button
+					class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Task Graph' && $viewSettings.viewMode === mode ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
+					onclick={() => { $viewSettings.mainTab = 'Task Graph'; $viewSettings.viewMode = mode; }}
+				>
+					{mode}
+				</button>
+			{/each}
+
+			<span class="text-primary/20">|</span>
+
 			<button
 				class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Threaded Tasks' ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
 				onclick={() => $viewSettings.mainTab = 'Threaded Tasks'}

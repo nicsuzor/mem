@@ -12,6 +12,14 @@
         { key: 'showCompleted', label: 'COMPLETED', statuses: ['done', 'completed', 'cancelled'], color: '#22c55e' },
     ] as const;
 
+    const priorityColors = [
+        { label: 'P0 CRITICAL', color: '#ef4444' },
+        { label: 'P1 HIGH', color: '#f97316' },
+        { label: 'P2 MEDIUM', color: '#f59e0b' },
+        { label: 'P3 LOW', color: '#06b6d4' },
+        { label: 'P4 BACKLOG', color: '#8b5cf6' },
+    ] as const;
+
     const edgeTypes = [
         { key: 'showDependencies', label: 'DEPENDENCIES', color: '#ef4444', dash: false },
         { key: 'showReferences', label: 'REFERENCES', color: '#a3a3a3', dash: true },
@@ -46,6 +54,17 @@
                     <div class="legend-box" style="background:{group.color}; opacity:{$filters[group.key] ? 1 : 0.2}"></div>
                     <span class="legend-label">{group.label}</span>
                 </button>
+            {/each}
+        </div>
+
+        <!-- Priority legend -->
+        <div class="legend-section">
+            <span class="legend-section-title">PRIORITY</span>
+            {#each priorityColors as p}
+                <div class="legend-item" style="cursor: default;">
+                    <div class="legend-box" style="background:{p.color};"></div>
+                    <span class="legend-label">{p.label}</span>
+                </div>
             {/each}
         </div>
 

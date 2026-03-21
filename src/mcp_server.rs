@@ -2442,6 +2442,34 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    fn handle_task_summary(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let graph = self.graph.read();
+        let ready = graph.ready_tasks();
+        let blocked = graph.blocked_tasks();
+
+        let mut by_priority: std::collections::HashMap<i32, usize> =
+            std::collections::HashMap::new();
+        for task in &ready {
+            let p = task.priority.unwrap_or(2);
+            *by_priority.entry(p).or_insert(0) += 1;
+        }
+
+        let summary = serde_json::json!({
+            "ready": ready.len(),
+            "blocked": blocked.len(),
+            "by_priority": {
+                "p0": by_priority.get(&0).copied().unwrap_or(0),
+                "p1": by_priority.get(&1).copied().unwrap_or(0),
+                "p2": by_priority.get(&2).copied().unwrap_or(0),
+                "p3": by_priority.get(&3).copied().unwrap_or(0),
+            }
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&summary).unwrap_or_default(),
+        )]))
+    }
+
     fn handle_find_duplicates(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("both");
@@ -2606,6 +2634,7 @@ impl ServerHandler for PkbSearchServer {
             "batch_reparent" => self.handle_batch_reparent(&args),
             "batch_archive" => self.handle_batch_archive(&args),
             "graph_stats" => self.handle_graph_stats(&args),
+            "task_summary" => self.handle_task_summary(&args),
             "find_duplicates" => self.handle_find_duplicates(&args),
             "batch_merge" => self.handle_batch_merge(&args),
             "merge_node" => self.handle_merge_node(&args),
@@ -3096,6 +3125,15 @@ impl ServerHandler for PkbSearchServer {
                 }))
                 .unwrap(),
             ),
+            Tool::new(
+                "task_summary",
+                "Returns pre-computed counts of ready and blocked tasks, plus a per-priority breakdown of ready tasks. 'ready' = leaf tasks with claimable types (task/bug/feature), active status, and all dependencies met. Use this instead of list_tasks for dashboard counts and priority bars.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }))
+                .unwrap(),
+            ),
             // ── Phase 2: Deduplication & Restructuring ────────────────────
             Tool::new(
                 "find_duplicates",
@@ -3204,13 +3242,13 @@ impl ServerHandler for PkbSearchServer {
             instructions: Some({
                 let mut instructions = String::from(
                     "PKB Search — semantic search + task graph over personal knowledge base. \
-                     25 tools: search, get_document, list_documents, \
+                     26 tools: search, get_document, list_documents, \
                      task_search, get_network_metrics, create_task, create_memory, \
                      create, append, delete, complete_task, list_tasks, \
                      get_task, update_task, bulk_reparent, retrieve_memory, search_by_tag, \
                      list_memories, delete_memory, decompose_task, \
                      get_dependency_tree, get_task_children, \
-                     pkb_context, pkb_trace, pkb_orphans.",
+                     pkb_context, pkb_trace, pkb_orphans, task_summary.",
                 );
                 if self.stale_count > 0 {
                     instructions.push_str(&format!(

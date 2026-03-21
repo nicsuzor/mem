@@ -260,21 +260,6 @@
     <section class="{$viewSettings.showSidebar ? 'col-span-6' : 'col-span-9'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
         <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
 
-            <!-- Sub-Navigation for Graph Modes (Easy Access) -->
-            {#if $viewSettings.mainTab === "Task Graph"}
-                <div class="absolute top-4 right-4 z-20 flex items-center gap-0 bg-black/90 backdrop-blur-lg border border-primary/40 p-0.5 shadow-[0_0_30px_rgba(0,0,0,0.8)]">
-                    {#each ["Treemap", "Circle Pack", "SFDP", "Arc Diagram"] as mode}
-                        <button
-                            class="px-4 py-2 text-[10px] font-black uppercase tracking-widest transition-all cursor-pointer border border-transparent
-                            {$viewSettings.viewMode === mode ? 'bg-primary text-black border-primary' : 'text-primary/50 hover:text-primary hover:bg-primary/5'}"
-                            onclick={() => $viewSettings.viewMode = mode}
-                        >
-                            {mode}
-                        </button>
-                    {/each}
-                </div>
-            {/if}
-
             <!-- Focus banner (Absolute Over Graph) -->
             {#if $selection.focusNodeId}
                 <div class="absolute top-4 left-4 z-20 flex items-center gap-3">

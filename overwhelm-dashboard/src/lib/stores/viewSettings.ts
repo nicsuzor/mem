@@ -1,5 +1,8 @@
 import { writable } from 'svelte/store';
 
+export const VIEW_MODES = ['Treemap', 'Circle Pack', 'SFDP', 'Arc Diagram'] as const;
+export type ViewMode = typeof VIEW_MODES[number];
+
 export const viewSettings = writable({
     showSidebar: false, // controls sidebar visibility
     mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph'
