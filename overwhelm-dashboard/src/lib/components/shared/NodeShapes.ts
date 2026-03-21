@@ -252,7 +252,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         if (isParent) {
             // Parent nodes: Draw label in the header bar
             // Font size scales with node but never smaller than child leaf text
-            const parentFs = Math.max(10, Math.min(14, Math.min(w, h) * 0.12));
+            const parentFs = Math.max(8, Math.min(11, Math.min(w, h) * 0.09));
             const headerTextH = Math.min(32, h * 0.7);
             if (w > 20 && h > 12) {
                 g.append("foreignObject")
