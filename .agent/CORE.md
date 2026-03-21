@@ -8,8 +8,7 @@ Semantic search + knowledge graph MCP server over a personal knowledge base (PKB
 
 ```
 src/
-  server.rs       — main() for pkb binary (MCP stdio transport)
-  cli.rs          — main() for aops CLI binary
+  cli.rs          — main() for pkb binary (CLI + MCP server via `pkb mcp`)
   mcp_server.rs   — MCP ServerHandler: 18 tools, dispatch, tool registrations
   graph_store.rs  — GraphStore: builds/queries knowledge graph from PKB docs
   graph.rs        — GraphNode, Edge, EdgeType, link resolution helpers
@@ -75,7 +74,7 @@ After any CRUD operation, `rebuild_graph()` is called to rebuild the full `Graph
 ## Build & Install
 
 ```bash
-cargo install --path .    # install both binaries (aops + pkb) to ~/.cargo/bin
+cargo install --path .    # install pkb binary to ~/.cargo/bin
 make            # native Linux x86_64 (release build only, no install)
 make apple      # cross-compile to aarch64-apple-darwin (requires zig 0.13 + cargo-zigbuild)
 make release    # bump patch, build both, install, tag, push
@@ -101,15 +100,15 @@ The TUI uses Ratatui + crossterm (alternate screen, raw mode) so it requires a r
 ### Manual approach
 ```bash
 # Launch with stderr capture for crash debugging
-tmux new-session -d -s aops-tui -x 120 -y 40 \
-  './target/release/aops tui 2>/tmp/tui-stderr.log'
+tmux new-session -d -s pkb-tui -x 120 -y 40 \
+  './target/release/pkb tui 2>/tmp/tui-stderr.log'
 sleep 2  # wait for graph load
 
 # Capture current screen
-tmux capture-pane -t aops-tui -p -e
+tmux capture-pane -t pkb-tui -p -e
 
 # Send keys and capture result
-tmux send-keys -t aops-tui '1' && sleep 0.5 && tmux capture-pane -t aops-tui -p -e
+tmux send-keys -t pkb-tui '1' && sleep 0.5 && tmux capture-pane -t pkb-tui -p -e
 
 # Cleanup
 tmux kill-server

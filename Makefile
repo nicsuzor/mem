@@ -1,4 +1,4 @@
-# mem — pkb, aops
+# mem — pkb
 # Cross-compile to Apple Silicon from Linux using cargo-zigbuild + zig 0.13
 
 CARGO        ?= cargo
@@ -6,7 +6,7 @@ TARGET_MACOS  = aarch64-apple-darwin
 TARGET_LINUX  = x86_64-unknown-linux-gnu
 RELEASE_DIR   = target/release
 MACOS_DIR     = target/$(TARGET_MACOS)/release
-BINS          = pkb aops
+BINS          = pkb
 VERSION       = $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
 # macOS SDK sysroot with framework stubs (needed for cross-compile)
@@ -33,7 +33,7 @@ apple: $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd
 	@echo "Binaries:"
 	@for b in $(BINS); do ls -lh $(MACOS_DIR)/$$b 2>/dev/null; done
 	@echo ""
-	@file $(MACOS_DIR)/aops
+	@file $(MACOS_DIR)/pkb
 
 # ── Release ────────────────────────────────────────────────────────
 # Automated via release-plz (see .github/workflows/release-plz.yml):
