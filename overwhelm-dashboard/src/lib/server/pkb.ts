@@ -54,12 +54,14 @@ export interface PkbTask {
 let client: Client | null = null;
 let initPromise: Promise<Client | null> | null = null;
 
-const PKB_ROOT = process.env.ACA_DATA || '/opt/nic/brain';
-
 async function connect(): Promise<Client | null> {
     const transport = new StdioClientTransport({
         command: 'pkb',
-        args: [PKB_ROOT],
+        args: ['mcp'],
+        env: {
+            ...process.env as Record<string, string>,
+            ACA_DATA: process.env.ACA_DATA || '/opt/nic/brain',
+        },
     });
 
     const c = new Client({ name: 'overwhelm-dashboard', version: '1.0.0' });

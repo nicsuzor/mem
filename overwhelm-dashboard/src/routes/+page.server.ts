@@ -4,6 +4,7 @@ import os from 'node:os';
 import { env } from '$env/dynamic/private';
 
 const AOPS_SESSIONS = env.AOPS_SESSIONS || '';
+const SUMMARIES_DIR = AOPS_SESSIONS ? join(AOPS_SESSIONS, 'summaries') : '';
 
 async function readJson(path: string): Promise<any | null> {
     try {
@@ -91,6 +92,127 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
     return results;
 }
 
+async function loadRecentSummaries(days = 3): Promise<any[]> {
+    if (!SUMMARIES_DIR) return [];
+
+    let files: string[];
+    try {
+        files = await readdir(SUMMARIES_DIR);
+    } catch {
+        return [];
+    }
+
+    // Build date prefixes for the last N days
+    const prefixes: string[] = [];
+    for (let i = 0; i < days; i++) {
+        const d = new Date(Date.now() - i * 86400000);
+        prefixes.push(d.toISOString().slice(0, 10).replace(/-/g, ''));
+    }
+
+    const jsonFiles = files
+        .filter(f => f.endsWith('.json') && prefixes.some(p => f.startsWith(p)))
+        .sort();
+
+    const summaries: any[] = [];
+    for (const f of jsonFiles) {
+        const data = await readJson(join(SUMMARIES_DIR, f));
+        if (data) {
+            data._filename = f;
+            summaries.push(data);
+        }
+    }
+    return summaries;
+}
+
+function buildPathData(summaries: any[]): any {
+    // Group summaries by project into threads
+    const byProject = new Map<string, any[]>();
+    for (const s of summaries) {
+        const proj = s.project || 'unknown';
+        if (!byProject.has(proj)) byProject.set(proj, []);
+        byProject.get(proj)!.push(s);
+    }
+
+    const threads: any[] = [];
+    const abandoned: any[] = [];
+
+    for (const [project, sessions] of byProject) {
+        for (const s of sessions) {
+            const events: any[] = [];
+
+            // Build events from timeline_events if available
+            for (const te of s.timeline_events || []) {
+                if (te.type === 'user_prompt') {
+                    // Trim hook context noise from descriptions
+                    let desc = te.description || '';
+                    const hookIdx = desc.indexOf('<hook_context>');
+                    if (hookIdx > 0) desc = desc.slice(0, hookIdx).trim();
+                    if (desc.length > 200) desc = desc.slice(0, 200) + '…';
+                    if (desc && desc !== 'Request cancelled.') {
+                        events.push({
+                            timestamp: te.timestamp,
+                            narrative: desc,
+                        });
+                    }
+                }
+            }
+
+            // Fall back to accomplishments as events if no timeline
+            if (events.length === 0) {
+                for (const acc of s.accomplishments || []) {
+                    events.push({
+                        timestamp: s.date,
+                        narrative: acc,
+                    });
+                }
+            }
+
+            // If still no events, use summary
+            if (events.length === 0 && s.summary) {
+                events.push({
+                    timestamp: s.date,
+                    narrative: s.summary,
+                });
+            }
+
+            if (events.length > 0) {
+                threads.push({
+                    project,
+                    session_id: s.session_id || '',
+                    initial_goal: s.summary || '',
+                    events,
+                });
+            }
+
+            // Detect abandoned work: sessions with friction or no outcome
+            if (s.outcome !== 'success' && s.friction_points?.length > 0) {
+                for (const fp of s.friction_points) {
+                    const sessionDate = s.date ? new Date(s.date) : null;
+                    const minutesAgo = sessionDate ? (Date.now() - sessionDate.getTime()) / 60000 : 0;
+                    abandoned.push({
+                        project,
+                        description: fp,
+                        time_ago: minutesAgo < 60
+                            ? `${Math.round(minutesAgo)}m ago`
+                            : minutesAgo < 1440
+                                ? `${Math.round(minutesAgo / 60)}h ago`
+                                : `${Math.round(minutesAgo / 1440)}d ago`,
+                    });
+                }
+            }
+        }
+    }
+
+    // Sort threads by most recent event
+    threads.sort((a, b) => {
+        const aTime = a.events[a.events.length - 1]?.timestamp || '';
+        const bTime = b.events[b.events.length - 1]?.timestamp || '';
+        return bTime.localeCompare(aTime);
+    });
+
+    return { threads, abandoned_work: abandoned };
+}
+
 function formatProjectName(folder: string): string {
     const parts = folder.replace(/^-/, '').split('-');
     // Derive skip list from environment instead of hardcoding usernames
@@ -101,9 +223,10 @@ function formatProjectName(folder: string): string {
 }
 
 export const load = async () => {
-    const [synthesis, sessions] = await Promise.all([
+    const [synthesis, sessions, summaries] = await Promise.all([
         loadSynthesis(),
         findActiveSessions(24),
+        loadRecentSummaries(3),
     ]);
 
     const activeSessions = sessions.filter(s => s.is_active);
@@ -144,7 +267,7 @@ export const load = async () => {
             daily_story: synthesis?.narrative ? { story: synthesis.narrative } : null,
             project_projects: projectProjects,
             project_data: projectData,
-            path: null,
+            path: buildPathData(summaries),
         },
     };
 };
