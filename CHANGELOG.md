@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/nicsuzor/mem/compare/v0.2.37...v0.3.0) - 2026-03-21
+
+### Added
+
+- [**breaking**] merge aops and pkb into single `pkb` binary
+- add -s/-t/-b parallelism options to `aops reindex`
+
+### Fixed
+
+- CLI reindex exits immediately if index is locked
+- incremental graph rebuild + non-blocking vector store locks
+
 ## [0.2.37](https://github.com/nicsuzor/mem/compare/v0.2.36...v0.2.37) - 2026-03-20
 
 ### Added
