@@ -203,8 +203,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         .style("transition", "all 0.2s ease");
 
     if (isParent && h > 20) {
-        // Parent Header Bar — sized for potential text wrapping
-        const headerH = Math.min(36, h * 0.8);
+        // Parent Header Bar — must match TREEMAP_PADDING_TOP (34) so children sit below
+        const headerH = Math.min(34, h * 0.8);
         g.append("rect")
             .attr("x", -w / 2).attr("y", -h / 2)
             .attr("width", w).attr("height", headerH)

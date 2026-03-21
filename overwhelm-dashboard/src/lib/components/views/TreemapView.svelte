@@ -138,7 +138,7 @@
         const MIN_NODE_WEIGHT = 1;
         const TREEMAP_PADDING_INNER = 3;
         const TREEMAP_PADDING_OUTER = 3;
-        const TREEMAP_PADDING_TOP = 18;
+        const TREEMAP_PADDING_TOP = 34;
 
         root.sum(d => {
             if (d.children?.length) return 0;
