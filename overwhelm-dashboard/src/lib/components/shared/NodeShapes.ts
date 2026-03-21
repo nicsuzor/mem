@@ -203,8 +203,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         .style("transition", "all 0.2s ease");
 
     if (isParent && h > 20) {
-        // Parent Header Bar
-        const headerH = Math.min(28, h * 0.8);
+        // Parent Header Bar — sized for potential text wrapping
+        const headerH = Math.min(36, h * 0.8);
         g.append("rect")
             .attr("x", -w / 2).attr("y", -h / 2)
             .attr("width", w).attr("height", headerH)
@@ -251,19 +251,22 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
         if (isParent) {
             // Parent nodes: Draw label in the header bar
+            // Font size scales with node but never smaller than child leaf text
+            const parentFs = Math.max(10, Math.min(14, Math.min(w, h) * 0.12));
+            const headerTextH = Math.min(32, h * 0.7);
             if (w > 20 && h > 12) {
                 g.append("foreignObject")
                     .attr("x", -w / 2 + pad).attr("y", -h / 2 + 2)
-                    .attr("width", Math.max(0, w - pad * 2)).attr("height", 14)
+                    .attr("width", Math.max(0, w - pad * 2)).attr("height", headerTextH)
                     .style("pointer-events", "none")
                     .append("xhtml:div")
                     .style("display", "flex")
-                    .style("align-items", "center")
+                    .style("align-items", "flex-start")
                     .style("width", "100%")
                     .style("height", "100%")
                     .style("pointer-events", "none")
                     .html(`
-                        <div style="font-size: 9px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.05em;">
+                        <div style="font-size: ${parentFs}px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.3;">
                             ${label}
                         </div>
                     `);
