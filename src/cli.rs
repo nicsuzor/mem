@@ -1,14 +1,15 @@
-//! PKB CLI — interactive search and task management for the PKB vector store
+//! PKB — semantic search, task management, and MCP server for your knowledge base
 //!
-//! Provides subcommands: search, add, reindex, status, tasks, task, deps, ...
+//! Provides subcommands: search, reindex, tasks, focus, mcp, ...
 
 mod tui;
 
-use mem::{document_crud, embeddings, eval, graph, graph_display, graph_store, lint, metrics, pkb, task_index, vectordb};
+use mem::{document_crud, embeddings, eval, graph, graph_display, graph_store, lint, mcp_server, metrics, pkb, task_index, vectordb};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use parking_lot::RwLock;
+use rmcp::ServiceExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -33,9 +34,9 @@ impl std::fmt::Display for LayoutAlgorithm {
 
 #[derive(Parser)]
 #[command(
-    name = "aops",
+    name = "pkb",
     version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_GIT_HASH"), ")"),
-    about = "AcademicOps — semantic search and task management for your knowledge base"
+    about = "PKB — semantic search, task management, and MCP server for your knowledge base"
 )]
 struct Cli {
     /// Path to the PKB root directory
@@ -518,6 +519,9 @@ enum Commands {
         project: Option<String>,
     },
 
+    /// Start the MCP server on stdio (for Claude, Cursor, etc.)
+    Mcp,
+
     /// Find potential duplicate tasks
     Duplicates {
         /// Filter by project
@@ -760,17 +764,21 @@ fn load_graph(pkb_root: &std::path::Path, _db_path: &std::path::Path) -> graph_s
     graph_store::GraphStore::build_from_directory(pkb_root)
 }
 
-fn main() -> Result<()> {
-    // Quiet logging for CLI mode — only warnings
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let is_mcp = matches!(cli.command, Commands::Mcp);
+
+    // MCP mode: info-level logging to stderr (stdout is protocol).
+    // CLI mode: only warnings.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(if is_mcp { "info" } else { "warn" })),
         )
         .with_writer(std::io::stderr)
         .init();
 
-    let cli = Cli::parse();
     let pkb_root = PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root));
     let db_path = PathBuf::from(&cli.db_path);
 
@@ -814,6 +822,7 @@ fn main() -> Result<()> {
             | Commands::Status
             | Commands::Recall { .. }
             | Commands::Eval { .. }
+            | Commands::Mcp
     );
 
     // Some commands need the store but not the embedder
@@ -911,7 +920,7 @@ fn main() -> Result<()> {
 
             // Navigation hint
             if !first_id.is_empty() {
-                println!("  \x1b[2mTip: aops task {first_id}  — show full details\x1b[0m");
+                println!("  \x1b[2mTip: pkb task {first_id}  — show full details\x1b[0m");
             }
         }
 
@@ -1421,7 +1430,7 @@ fn main() -> Result<()> {
                     // Navigation hints
                     let node_id = node.task_id.as_deref().unwrap_or(&node.id);
                     println!();
-                    println!("  \x1b[2mTip: aops context {node_id}  — show full knowledge neighbourhood\x1b[0m");
+                    println!("  \x1b[2mTip: pkb context {node_id}  — show full knowledge neighbourhood\x1b[0m");
                 }
                 None => {
                     eprintln!("Document not found: {id}");
@@ -2286,7 +2295,7 @@ fn main() -> Result<()> {
                             "Not a memory document: {id} (type: {})",
                             node.node_type.as_deref().unwrap_or("unknown")
                         );
-                        eprintln!("Use 'aops delete' for non-memory documents.");
+                        eprintln!("Use 'pkb delete' for non-memory documents.");
                         std::process::exit(1);
                     }
 
@@ -2700,6 +2709,54 @@ fn main() -> Result<()> {
                     println!();
                 }
             }
+        }
+
+        Commands::Mcp => {
+            let embedder = embedder.unwrap();
+            let store = store.unwrap();
+
+            eprintln!("🔍 PKB Search MCP Server starting...");
+            eprintln!("   PKB root: {}", pkb_root.display());
+            eprintln!("   DB path:  {}", db_path.display());
+
+            // Check index freshness
+            eprintln!("   Checking index freshness...");
+            let stale_count = mem::check_index_staleness(&pkb_root, &store);
+            let total = store.read().len();
+            if stale_count > 0 {
+                eprintln!("   ⚠ Index is stale: {stale_count} document(s) need re-indexing.");
+                eprintln!("   Run `pkb reindex` to update the search index.");
+            } else {
+                eprintln!("   ✓ Index is fresh ({total} documents)");
+            }
+
+            // Build graph store
+            eprintln!("   Building knowledge graph...");
+            let graph_store = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let graph = Arc::new(RwLock::new(graph_store));
+            eprintln!(
+                "   {} nodes, {} edges",
+                graph.read().node_count(),
+                graph.read().edge_count()
+            );
+
+            // Create and start MCP server
+            eprintln!("   Starting MCP server on stdio...");
+            let server = mcp_server::PkbSearchServer::new(
+                store,
+                embedder,
+                pkb_root.clone(),
+                db_path.clone(),
+                graph,
+            )
+            .with_stale_count(stale_count);
+
+            let service = server.serve(rmcp::transport::stdio()).await?;
+            eprintln!("   ✓ MCP server ready");
+
+            // Wait for client to disconnect
+            service.waiting().await?;
+            eprintln!("   ✓ Shutdown complete");
         }
     }
 

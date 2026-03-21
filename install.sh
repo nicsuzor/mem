@@ -38,8 +38,8 @@ fi
 
 # Check if already installed at this version
 CURRENT=""
-if command -v aops >/dev/null 2>&1; then
-  CURRENT="$(aops --version 2>/dev/null | awk '{print $NF}' || true)"
+if command -v pkb >/dev/null 2>&1; then
+  CURRENT="$(pkb --version 2>/dev/null | awk '{print $NF}' || true)"
 fi
 
 TARGET="${TAG#v}"
@@ -70,14 +70,13 @@ fi
 
 tar -xzf "${TMPDIR}/${ARCHIVE}" -C "${TMPDIR}"
 
-# Install binaries
+# Install binary
 if [ -w "${INSTALL_DIR}" ]; then
-  mv "${TMPDIR}/pkb" "${TMPDIR}/aops" "${INSTALL_DIR}/"
+  mv "${TMPDIR}/pkb" "${INSTALL_DIR}/"
 else
   echo "Need sudo to install to ${INSTALL_DIR}"
-  sudo mv "${TMPDIR}/pkb" "${TMPDIR}/aops" "${INSTALL_DIR}/"
+  sudo mv "${TMPDIR}/pkb" "${INSTALL_DIR}/"
 fi
 
-echo "Installed pkb and aops to ${INSTALL_DIR}"
-echo "  pkb  $(command -v pkb)"
-echo "  aops $(command -v aops)"
+echo "Installed pkb to ${INSTALL_DIR}"
+echo "  pkb $(command -v pkb)"

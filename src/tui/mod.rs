@@ -1,4 +1,4 @@
-//! The Planning Web TUI (`aops tui`)
+//! The Planning Web TUI (`pkb tui`)
 //!
 //! A graph-native terminal interface for academic planning built on the mem library.
 //! Makes the PKB graph the interface rather than a flat task list.

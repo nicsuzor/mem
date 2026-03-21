@@ -1,4 +1,4 @@
-//! Shared library for pkb (MCP server) and aops (CLI) binaries.
+//! Shared library for the pkb binary (CLI + MCP server).
 
 pub mod batch_ops;
 pub mod distance;

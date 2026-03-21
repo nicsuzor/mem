@@ -3216,7 +3216,7 @@ impl ServerHandler for PkbSearchServer {
                     instructions.push_str(&format!(
                         " WARNING: Index is stale — {} document(s) need re-indexing. \
                          Search results may be incomplete or outdated. \
-                         Run `aops reindex` to update.",
+                         Run `pkb reindex` to update.",
                         self.stale_count
                     ));
                 }

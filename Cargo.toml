@@ -13,10 +13,6 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "pkb"
-path = "src/server.rs"
-
-[[bin]]
-name = "aops"
 path = "src/cli.rs"
 
 

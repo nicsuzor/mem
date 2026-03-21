@@ -46,7 +46,7 @@ jobs:
         run: |
           TAG="${{ inputs.tag }}"
           ARCHIVE="mem-${TAG}-${{ matrix.artifact }}.tar.gz"
-          tar -czf "$ARCHIVE" -C target/release pkb aops
+          tar -czf "$ARCHIVE" -C target/release pkb
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
