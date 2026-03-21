@@ -93,7 +93,7 @@
             >
                 <option value="ALL">ALL</option>
                 {#each availableProjects as project}
-                    <option value={project}>{project.toUpperCase()}</option>
+                    <option value={project}>{(project || '').toUpperCase()}</option>
                 {/each}
             </select>
         </div>

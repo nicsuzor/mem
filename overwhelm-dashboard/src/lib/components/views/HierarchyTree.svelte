@@ -12,7 +12,7 @@
         let curr = task;
         const seen = new Set();
         while (curr && curr.parent && !seen.has(curr.parent)) {
-            const parent = $graphData?.nodes.find(n => n.id === curr.parent);
+            const parent = $graphData?.nodes.find(n => n.id === curr?.parent);
             if (!parent) break;
             list.unshift(parent);
             seen.add(curr.parent);

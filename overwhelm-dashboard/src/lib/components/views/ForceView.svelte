@@ -39,29 +39,37 @@
         }
     }
 
-    // Flashlight Hover Effect Logic
+    // Pre-built adjacency map for O(1) neighbor lookup during hover
+    let adjacencyMap = new Map<string, Set<string>>();
+    $: if ($graphData) {
+        const adj = new Map<string, Set<string>>();
+        $graphData.links.forEach((l: any) => {
+            const sid = l.source.id || l.source;
+            const tid = l.target.id || l.target;
+            if (!adj.has(sid)) adj.set(sid, new Set());
+            if (!adj.has(tid)) adj.set(tid, new Set());
+            adj.get(sid)!.add(tid);
+            adj.get(tid)!.add(sid);
+        });
+        adjacencyMap = adj;
+    }
+
+    // Flashlight Hover Effect Logic — uses pre-built adjacency for O(1) lookups
     $: if (nodesLayer && edgesLayer && $graphData) {
         const hoveredId = $selection.hoveredNodeId;
         const activeId = $selection.activeNodeId;
         const nEls = d3.select(nodesLayer).selectAll(".node");
         const eEls = d3.select(edgesLayer).selectAll("path");
 
-        // Update selection class
         nEls.classed("selected-node", (d: any) => d.id === activeId);
 
         if (hoveredId) {
             const neighbors = new Set<string>([hoveredId]);
-            $graphData.links.forEach((l: any) => {
-                const sid = l.source.id || l.source;
-                const tid = l.target.id || l.target;
-                if (sid === hoveredId) neighbors.add(tid);
-                if (tid === hoveredId) neighbors.add(sid);
-            });
+            const adj = adjacencyMap.get(hoveredId);
+            if (adj) adj.forEach(id => neighbors.add(id));
 
-            nEls.classed("dimmed", (d: any) => !neighbors.has(d.id)).classed(
-                "illuminated",
-                (d: any) => neighbors.has(d.id),
-            );
+            nEls.classed("dimmed", (d: any) => !neighbors.has(d.id))
+                .classed("illuminated", (d: any) => neighbors.has(d.id));
 
             eEls.classed("dimmed", (l: any) => {
                 const sid = l.source.id || l.source;
@@ -236,9 +244,10 @@
         nEls.each(function (d) {
             const g = d3.select(this) as any;
             const isSelected = d.id === activeId;
-
             const lastSelected = (d as any)._lastSelected;
-            if (g.selectAll("*").empty() || lastSelected !== isSelected) {
+            const isEmpty = g.selectAll("*").empty();
+            // Only rebuild DOM when selection state changes or node is new
+            if (isEmpty || lastSelected !== isSelected) {
                 g.selectAll("*").remove();
                 buildTaskCardNode(g, d, isSelected);
                 (d as any)._lastSelected = isSelected;

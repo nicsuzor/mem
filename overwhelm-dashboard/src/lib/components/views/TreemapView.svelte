@@ -28,10 +28,10 @@
 
         const virtualRootId = "__treemap_root__";
         const nodeIdSet = new Set(nodes.map(n => n.id));
-        const projectRootId = $filters.projectFilter;
-        
+        const projectRootId = ($filters as any).projectFilter as string | undefined;
+
         let stratifyNodes;
-        let rootId;
+        let rootId: string;
 
         if (projectRootId && nodeIdSet.has(projectRootId)) {
             rootId = projectRootId;
@@ -209,8 +209,14 @@
             const g = d3.select(this);
             const isSelected = d.id === activeNodeId;
             const isHovered = d.id === hoveredNodeId;
-            g.selectAll("*").remove();
-            buildTreemapNode(g, d, isSelected || isHovered);
+            const needsHighlight = isSelected || isHovered;
+            // Only rebuild DOM when selection state actually changes
+            const lastState = (d as any)._lastHighlight;
+            if (g.selectAll("*").empty() || lastState !== needsHighlight) {
+                g.selectAll("*").remove();
+                buildTreemapNode(g, d, needsHighlight);
+                (d as any)._lastHighlight = needsHighlight;
+            }
         });
 
         if (!$filters.showDependencies) {
