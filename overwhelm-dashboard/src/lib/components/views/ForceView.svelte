@@ -133,10 +133,10 @@
                     "M" + d.points.map((p: any) => p.join(",")).join("L") + "Z",
             )
             .attr("fill", (d) => projectColor(d.id))
-            .attr("fill-opacity", 0.05)
+            .attr("fill-opacity", 0.15)
             .attr("stroke", (d) => projectColor(d.id))
-            .attr("stroke-opacity", 0.22)
-            .attr("stroke-width", 1.5)
+            .attr("stroke-opacity", 0.45)
+            .attr("stroke-width", 2)
             .attr("stroke-dasharray", "5,3")
             .style("pointer-events", "none");
 
@@ -151,11 +151,11 @@
                 (d) => Number(d3.min(d.points, (p: any) => p[1]) || 0) - 5,
             )
             .attr("text-anchor", "middle")
-            .attr("font-size", "9px")
-            .attr("font-weight", "700")
+            .attr("font-size", "180px")
+            .attr("font-weight", "900")
             .attr("fill", (d) => projectColor(d.id))
-            .attr("opacity", 0.55)
-            .attr("letter-spacing", "0.5px")
+            .attr("opacity", 0.5)
+            .attr("letter-spacing", "12px")
             .style("pointer-events", "none")
             .style("user-select", "none")
             .text((d) =>

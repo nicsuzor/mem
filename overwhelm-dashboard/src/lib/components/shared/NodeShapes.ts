@@ -241,16 +241,16 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // Only attempt to render text if we have enough space. Small nodes collapse to solid colored boxes.
     // Address tall-node symptom: Do not attempt to render text in narrow vertical slices
-    if (w > 15 && h > 10 && (w >= h * 0.35 || w > 40)) {
+    if (w > 8 && h > 6 && (w >= h * 0.3 || w > 20)) {
         const label = escapeHtml(d.label || '');
         const pad = 6;
 
         if (isParent) {
             // Parent nodes: Draw label in the header bar
-            if (w > 40 && h > 20) {
+            if (w > 20 && h > 12) {
                 g.append("foreignObject")
                     .attr("x", -w / 2 + pad).attr("y", -h / 2 + 2)
-                    .attr("width", Math.max(0, w - pad * 2)).attr("height", 24)
+                    .attr("width", Math.max(0, w - pad * 2)).attr("height", 14)
                     .style("pointer-events", "none")
                     .append("xhtml:div")
                     .style("display", "flex")
@@ -259,14 +259,14 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                     .style("height", "100%")
                     .style("pointer-events", "none")
                     .html(`
-                        <div style="font-size: 11px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.05em;">
+                        <div style="font-size: 9px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.05em;">
                             ${label}
                         </div>
                     `);
             }
         } else {
             // Leaf nodes: Draw title
-            const fs = Math.max(7, Math.min(13, Math.min(w, h) * 0.28));
+            const fs = Math.max(5, Math.min(13, Math.min(w, h) * 0.28));
             const linesAvailable = Math.max(1, Math.floor((h - pad * 2) / (fs * 1.2)));
 
             const isBlocked = d.status === "blocked";
@@ -328,16 +328,17 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
     }
 
     if (isParent) {
-        // Parent containment circle
+        // Parent containment circle — border scaled to radius
+        const parentStroke = Math.max(0.5, Math.min(2, r * 0.01));
         g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
             .attr("fill", cellColor).attr("fill-opacity", 0.1)
             .attr("stroke", isSelected ? "#fff" : `hsl(${hue}, 50%, 45%)`)
-            .attr("stroke-width", isSelected ? 3 : 1)
+            .attr("stroke-width", isSelected ? Math.max(1, r * 0.01) : parentStroke)
             .attr("stroke-dasharray", isSelected ? "none" : "3,2");
 
         // Parent label at top
-        if (r > 30) {
-            const fs = Math.max(8, Math.min(14, r * 0.1));
+        if (r > 15) {
+            const fs = Math.max(6, Math.min(14, r * 0.12));
             g.append("foreignObject")
                 .attr("x", -r * 0.7).attr("y", -r + pad(r))
                 .attr("width", r * 1.4).attr("height", fs * 2.5)
@@ -354,40 +355,85 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 `);
         }
     } else {
-        // Leaf task circle
+        // Leaf task circle — border scaled to radius
+        const strokeW = Math.max(0.5, Math.min(3, r * 0.03));
         g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
             .attr("fill", cellColor).attr("fill-opacity", opacity)
             .attr("stroke", isSelected ? "#fff" : cellColor)
-            .attr("stroke-width", isSelected ? 4 : 1);
+            .attr("stroke-width", isSelected ? Math.max(1, r * 0.02) : strokeW);
 
         if (d.status === "blocked" && d.dw >= 2) {
+            const pulseGap = Math.max(1, r * 0.05);
             g.insert("circle", ":first-child")
-                .attr("cx", 0).attr("cy", 0).attr("r", r + 4)
+                .attr("cx", 0).attr("cy", 0).attr("r", r + pulseGap)
                 .attr("fill", "none").attr("stroke", "#ef4444")
                 .attr("class", "danger-pulse");
         }
 
-        if (r > 12) {
-            const fs = Math.max(6, Math.min(12, r * 0.35));
-            const innerW = r * 1.5;
-            const innerH = r * 1.5;
+        if (r > 6) {
+            const rawLabel = d.label || '';
+            const innerW = r * 1.3;
+            const innerH = r * 1.3;
 
-            g.append("foreignObject")
-                .attr("x", -innerW / 2).attr("y", -innerH / 2)
-                .attr("width", innerW).attr("height", innerH)
-                .style("pointer-events", "none")
-                .append("xhtml:div")
-                .style("display", "flex")
-                .style("align-items", "center")
-                .style("justify-content", "center")
-                .style("width", "100%")
-                .style("height", "100%")
-                .style("pointer-events", "none")
-                .html(`
-                    <div style="font-size: ${fs}px; font-weight: 600; color: #fff; line-height: 1; text-align: center; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; padding: 4px;">
-                        ${escapeHtml(d.label || '')}
-                    </div>
-                `);
+            const words = rawLabel.split(/\s+/).filter((w: string) => w);
+            if (words.length === 0) return;
+
+            // Wrap text into lines at a given font size
+            function wrapAtFs(fs: number): string[] {
+                const charW = fs * 0.52;
+                const maxChars = Math.max(1, Math.floor(innerW / charW));
+                const lines: string[] = [];
+                let cur = '';
+                for (const w of words) {
+                    const test = cur ? cur + ' ' + w : w;
+                    if (test.length <= maxChars) {
+                        cur = test;
+                    } else {
+                        if (cur) lines.push(cur);
+                        // Truncate long words to fit
+                        cur = w.length > maxChars ? w.substring(0, maxChars) : w;
+                    }
+                }
+                if (cur) lines.push(cur);
+                return lines;
+            }
+
+            // Find largest font size where wrapped text fits both W and H
+            let bestFs = 4;
+            let bestLines = wrapAtFs(4);
+            for (let tryFs = Math.min(r * 0.8, 60); tryFs >= 4; tryFs -= 0.5) {
+                const lines = wrapAtFs(tryFs);
+                const totalH = lines.length * tryFs * 1.15;
+                if (totalH <= innerH) {
+                    bestFs = tryFs;
+                    bestLines = lines;
+                    break;
+                }
+            }
+
+            // Limit lines to what fits vertically and truncate last line if needed
+            const maxLines = Math.max(1, Math.floor(innerH / (bestFs * 1.15)));
+            if (bestLines.length > maxLines) {
+                bestLines = bestLines.slice(0, maxLines);
+                bestLines[maxLines - 1] = bestLines[maxLines - 1].slice(0, -1) + '…';
+            }
+
+            const lineH = bestFs * 1.15;
+            const totalH = bestLines.length * lineH;
+            const startY = -totalH / 2 + bestFs * 0.35;
+
+            bestLines.forEach((line, i) => {
+                g.append("text")
+                    .attr("x", 0)
+                    .attr("y", startY + i * lineH)
+                    .attr("text-anchor", "middle")
+                    .attr("dominant-baseline", "central")
+                    .attr("font-size", bestFs + "px")
+                    .attr("font-weight", "600")
+                    .attr("fill", "#fff")
+                    .attr("pointer-events", "none")
+                    .text(line);
+            });
         }
     }
     }

@@ -57,9 +57,9 @@
 
         const computeSum = (d: any) => {
             if (d.children?.length) return 0;
-            if (["done", "completed", "cancelled"].includes(d.status)) return 0.1;
-            // Increase minimum weight for active tasks
-            return Math.max(2, d.dw || 1);
+            if (["done", "completed", "cancelled"].includes(d.status)) return 3;
+            // Ensure all active nodes get a meaningful minimum size
+            return Math.max(8, d.dw || 5);
         };
 
         root.sum(computeSum).sort((a, b) => {
@@ -73,7 +73,7 @@
             return (b.value || 0) - (a.value || 0);
         });
 
-        const pack = d3.pack<any>().size([2000, 2000]).padding(10);
+        const pack = d3.pack<any>().size([10000, 10000]).padding(4);
 
         pack(root);
 
@@ -84,8 +84,8 @@
         root.descendants().forEach((d: any) => {
             if (d.data.id === rootId) return;
             layoutMap.set(d.data.id, {
-                x: d.x - 1000, // center at 0
-                y: d.y - 1000,
+                x: d.x - 5000, // center at 0
+                y: d.y - 5000,
                 r: d.r,
                 depth: d.depth,
                 isLeaf: !d.children,

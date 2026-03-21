@@ -31,12 +31,20 @@
 			>
 				DASHBOARD
 			</button>
-			<button
-				class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Task Graph' ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
-				onclick={() => $viewSettings.mainTab = 'Task Graph'}
-			>
-				TASK GRAPH
-			</button>
+
+			<span class="text-primary/20">|</span>
+
+			{#each [["Treemap", "Treemap"], ["Circle Pack", "Circle Pack"], ["SFDP", "SFDP"], ["Arc Diagram", "Arc Diagram"]] as [mode, label]}
+				<button
+					class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Task Graph' && $viewSettings.viewMode === mode ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
+					onclick={() => { $viewSettings.mainTab = 'Task Graph'; $viewSettings.viewMode = mode; }}
+				>
+					{label}
+				</button>
+			{/each}
+
+			<span class="text-primary/20">|</span>
+
 			<button
 				class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Threaded Tasks' ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
 				onclick={() => $viewSettings.mainTab = 'Threaded Tasks'}
