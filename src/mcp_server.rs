@@ -119,7 +119,7 @@ impl PkbSearchServer {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    tracing::warn!("Vector store lock held by another process, skipping save");
+                    tracing::info!("Vector store lock held by another process — disk save deferred (in-memory index updated, source file written)");
                 }
                 Err(e) => {
                     tracing::error!("Failed to acquire write lock for save: {e}");

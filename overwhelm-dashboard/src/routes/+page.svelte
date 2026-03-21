@@ -75,11 +75,12 @@
         }
     }
 
+    // Debounce graph recomputes — filters/settings can fire multiple reactive updates
+    let recomputeTimer: ReturnType<typeof setTimeout> | null = null;
     $: if (rawGraph) {
-        // Only recompute if filters or settings change.
-        // Selection is handled separately to avoid full graph object replacement.
         const _deps = [$filters, $viewSettings];
-        recomputeGraph();
+        if (recomputeTimer) clearTimeout(recomputeTimer);
+        recomputeTimer = setTimeout(() => recomputeGraph(), 16);
     }
 
     $: if ($selection && $graphData) {
@@ -157,21 +158,34 @@
         const focusSet = $selection.focusNeighborSet;
         const layout = getLayoutFromViewSettings($viewSettings);
 
-        const parentMap = new Map();
-        nodes.forEach(n => {
-            if (n.parent) parentMap.set(n.id, n.parent);
-        });
+        // Pre-build maps once instead of iterating per-node
+        const parentMap = new Map<string, string>();
+        nodes.forEach(n => { if (n.parent) parentMap.set(n.id, n.parent); });
 
-        // Helper to get all ancestors
-        const getAncestors = (id: string) => {
-            const ancestors = new Set<string>();
-            let curr = parentMap.get(id);
-            while (curr) {
-                ancestors.add(curr);
-                curr = parentMap.get(curr);
+        // Pre-build adjacency set for the active node (O(E) once, not O(N*E))
+        const activeNeighbors = new Set<string>();
+        if (active) {
+            activeNeighbors.add(active);
+            links.forEach(l => {
+                const sid = typeof l.source === "object" ? l.source.id : l.source;
+                const tid = typeof l.target === "object" ? l.target.id : l.target;
+                if (sid === active) activeNeighbors.add(tid);
+                if (tid === active) activeNeighbors.add(sid);
+            });
+            // Add ancestors and descendants of active node
+            let curr = parentMap.get(active);
+            while (curr) { activeNeighbors.add(curr); curr = parentMap.get(curr); }
+            // Add descendants: nodes whose ancestor chain includes active
+            nodes.forEach(n => {
+                let c = parentMap.get(n.id);
+                while (c) { if (c === active) { activeNeighbors.add(n.id); break; } c = parentMap.get(c); }
+            });
+            // Sibling logic for force/arc layouts
+            const activeParent = parentMap.get(active);
+            if (activeParent && ["force", "arc"].includes(layout)) {
+                nodes.forEach(n => { if (n.parent === activeParent) activeNeighbors.add(n.id); });
             }
-            return ancestors;
-        };
+        }
 
         nodes.forEach((n) => {
             if (["done", "completed", "cancelled"].includes(n.status)) {
@@ -187,41 +201,18 @@
                 return;
             }
 
-            if (active) {
-                let isHighLighted = false;
-                if (n.id === active) isHighLighted = true;
-
-                // Is n a descendant of active?
-                if (getAncestors(n.id).has(active)) isHighLighted = true;
-
-                // Is n an ancestor of active?
-                if (getAncestors(active).has(n.id)) isHighLighted = true;
-
-                // Sibling logic for force/arc layouts
-                const isActiveParentNode = nodes.find((act) => act.id === active)?.parent;
-                if (isActiveParentNode && n.parent === isActiveParentNode && ["force", "arc"].includes(layout)) {
-                    isHighLighted = true;
-                }
-
-                links.forEach((l) => {
-                    const sid = typeof l.source === "object" ? l.source.id : l.source;
-                    const tid = typeof l.target === "object" ? l.target.id : l.target;
-                    // Highlight all connected nodes
-                    if (sid === active && n.id === tid) isHighLighted = true;
-                    if (tid === active && n.id === sid) isHighLighted = true;
-                });
-
-                if (!isHighLighted) n.opacity = 0.05; // Fade it deep
+            if (active && !activeNeighbors.has(n.id)) {
+                n.opacity = 0.05;
             }
         });
 
-        links.forEach((l) => {
-            if (isFocus && focusSet) {
+        if (isFocus && focusSet) {
+            links.forEach((l) => {
                 const sid = typeof l.source === "object" ? l.source.id : l.source;
                 const tid = typeof l.target === "object" ? l.target.id : l.target;
                 l.color = focusSet.has(sid) && focusSet.has(tid) ? l.color : "transparent";
-            }
-        });
+            });
+        }
     }
 
     $: activeLayout = getLayoutFromViewSettings($viewSettings);

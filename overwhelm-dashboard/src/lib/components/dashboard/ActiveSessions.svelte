@@ -1,6 +1,10 @@
 <script lang="ts">
     export let sessions: any[] = [];
+    export let pausedSessions: any[] = [];
+    export let staleSessions: any[] = [];
     export let needsYou: any[] = [];
+
+    let showPaused = false;
 
     function formatTimeAgo(isoString: string): string {
         if (!isoString) return "just started";
@@ -12,6 +16,15 @@
         const diffHrs = Math.floor(diffMins / 60);
         return `${diffHrs}h ago`;
     }
+
+    const BADGE_STYLES: Record<string, { label: string; class: string }> = {
+        running: { label: 'RUNNING', class: 'bg-primary text-black animate-pulse' },
+        needs_you: { label: 'NEEDS YOU', class: 'bg-red-500 text-white animate-pulse' },
+        errored: { label: 'ERRORED', class: 'bg-red-700 text-white' },
+        completed: { label: 'DONE', class: 'bg-green-700 text-white' },
+        paused: { label: 'PAUSED', class: 'bg-primary/30 text-primary/70' },
+        idle: { label: 'IDLE', class: 'bg-primary/20 text-primary/50' },
+    };
 </script>
 
 <div class="flex flex-col gap-4 font-mono w-full">
@@ -28,9 +41,10 @@
         {/if}
     </div>
 
+    <!-- Active Sessions (< 4h) — full cards -->
     <div class="flex flex-col gap-2">
-        {#each sessions.slice(0, 5) as session}
-            <div class="flex items-center gap-4 bg-primary/5 border-l-2 border-primary/50 p-2 hover:bg-primary/10 transition-colors cursor-default">
+        {#each sessions.slice(0, 8) as session}
+            <div class="flex items-center gap-4 bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} p-2 hover:bg-primary/10 transition-colors cursor-default">
                 <span class="text-[10px] text-primary/60 min-w-[55px]">{formatTimeAgo(session.started_at)}</span>
                 {#if session.project}
                     <span class="text-[10px] font-bold bg-primary/20 text-primary px-2 py-0.5 border border-primary/20">{session.project}</span>
@@ -38,10 +52,55 @@
                 <span class="text-xs text-primary/90 truncate flex-1" title={session.description}>
                     {session.description}
                 </span>
+                {#if session.status_badge}
+                    {@const badge = BADGE_STYLES[session.status_badge] || BADGE_STYLES.idle}
+                    <span class="text-[10px] font-bold px-1.5 py-0.5 {badge.class} shrink-0">{badge.label}</span>
+                {/if}
             </div>
         {/each}
         {#if sessions.length === 0}
-            <div class="text-xs text-primary/40 italic">No active agent sessions in the last hour.</div>
+            <div class="text-xs text-primary/40 italic">No active agent sessions in the last 4 hours.</div>
         {/if}
     </div>
+
+    <!-- Paused Sessions (4-24h) — collapsed, expandable -->
+    {#if pausedSessions.length > 0}
+        <button
+            class="flex items-center gap-2 text-[10px] font-bold tracking-widest text-primary/50 hover:text-primary transition-colors cursor-pointer border-t border-primary/10 pt-3"
+            on:click={() => showPaused = !showPaused}
+        >
+            <span class="material-symbols-outlined text-[14px]">{showPaused ? 'expand_less' : 'expand_more'}</span>
+            PAUSED ({pausedSessions.length}) — 4-24h ago
+        </button>
+        {#if showPaused}
+            <div class="flex flex-col gap-1 opacity-60">
+                {#each pausedSessions.slice(0, 10) as session}
+                    <div class="flex items-center gap-4 bg-primary/3 border-l border-primary/20 p-1.5 text-xs">
+                        <span class="text-[10px] text-primary/40 min-w-[55px]">{session.time_display}</span>
+                        {#if session.project}
+                            <span class="text-[10px] bg-primary/10 text-primary/50 px-1.5 py-0.5">{session.project}</span>
+                        {/if}
+                        <span class="text-primary/60 truncate flex-1" title={session.description}>{session.description}</span>
+                        {#if session.status_badge}
+                            {@const badge = BADGE_STYLES[session.status_badge] || BADGE_STYLES.paused}
+                            <span class="text-[9px] font-bold px-1 py-0.5 {badge.class} shrink-0">{badge.label}</span>
+                        {/if}
+                    </div>
+                {/each}
+                {#if pausedSessions.length > 10}
+                    <div class="text-[10px] text-primary/30 italic pl-2">+ {pausedSessions.length - 10} more paused</div>
+                {/if}
+            </div>
+        {/if}
+    {/if}
+
+    <!-- Stale Sessions (>24h) — archive prompt -->
+    {#if staleSessions.length > 0}
+        <div class="flex items-center gap-3 border border-primary/20 bg-primary/5 p-3 mt-1">
+            <span class="material-symbols-outlined text-[16px] text-primary/40">inventory_2</span>
+            <span class="text-xs text-primary/50 flex-1">
+                {staleSessions.length} stale session{staleSessions.length !== 1 ? 's' : ''} (no activity &gt;24h)
+            </span>
+        </div>
+    {/if}
 </div>

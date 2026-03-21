@@ -70,6 +70,28 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             const project = insights.project || stateData.project || formatProjectName(projName);
             const minutesAgo = (Date.now() - st.mtimeMs) / 60000;
 
+            // Determine session status for badges
+            const hoursAgo = minutesAgo / 60;
+            let bucket: 'active' | 'paused' | 'stale';
+            if (hoursAgo < 4) bucket = 'active';
+            else if (hoursAgo < 24) bucket = 'paused';
+            else bucket = 'stale';
+
+            // Detect "needs you" — errored, waiting for input, or completed awaiting review
+            const sessionStatus = stateData.status || insights.status || '';
+            const hasError = sessionStatus === 'error' || sessionStatus === 'errored' || !!stateData.error;
+            const waitingForInput = sessionStatus === 'waiting' || sessionStatus === 'needs_input';
+            const completedAwaitingReview = (sessionStatus === 'completed' || sessionStatus === 'done') && minutesAgo < 240;
+            const needsYou = hasError || waitingForInput || completedAwaitingReview;
+
+            let statusBadge: 'running' | 'needs_you' | 'errored' | 'completed' | 'paused' | 'idle';
+            if (hasError) statusBadge = 'errored';
+            else if (waitingForInput) statusBadge = 'needs_you';
+            else if (minutesAgo < 10) statusBadge = 'running';
+            else if (completedAwaitingReview) statusBadge = 'completed';
+            else if (bucket === 'paused') statusBadge = 'paused';
+            else statusBadge = 'idle';
+
             results.push({
                 session_id: stateData.session_id || sessName.split('-').pop(),
                 project,
@@ -84,6 +106,9 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
                 outcome_text: insights.outcome || '',
                 is_active: minutesAgo < 10,
                 last_modified: st.mtimeMs,
+                bucket,
+                status_badge: statusBadge,
+                needs_you: needsYou,
             });
         }
     }
@@ -225,37 +250,44 @@ function formatProjectName(folder: string): string {
 export const load = async () => {
     const [synthesis, sessions, summaries] = await Promise.all([
         loadSynthesis(),
-        findActiveSessions(24),
+        findActiveSessions(48), // Fetch 48h to populate stale bucket
         loadRecentSummaries(3),
     ]);
 
-    const activeSessions = sessions.filter(s => s.is_active);
+    // Bucket sessions by recency
+    const activeSessions = sessions.filter(s => s.bucket === 'active');
+    const pausedSessions = sessions.filter(s => s.bucket === 'paused');
+    const staleSessions = sessions.filter(s => s.bucket === 'stale');
+    const needsYouSessions = sessions.filter(s => s.needs_you);
 
-    // Build project-level data from synthesis
-    const projectProjects: string[] = synthesis?.sessions?.by_project
-        ? Object.keys(synthesis.sessions.by_project)
-        : [];
+    // Build project-level data: prefer graph data (via client), synthesis enriches
+    // Collect all projects from sessions + synthesis
+    const projectSet = new Set<string>();
+    sessions.forEach(s => { if (s.project) projectSet.add(s.project); });
+    if (synthesis?.sessions?.by_project) {
+        Object.keys(synthesis.sessions.by_project).forEach(p => projectSet.add(p));
+    }
+    const projectProjects = Array.from(projectSet).sort();
 
     const projectData: any = { meta: {}, tasks: {}, accomplishments: {}, sessions: {} };
-    if (synthesis) {
-        for (const proj of projectProjects) {
-            projectData.meta[proj] = {};
-            projectData.tasks[proj] = [];
-            projectData.sessions[proj] = sessions.filter(s => s.project === proj);
-            projectData.accomplishments[proj] = (synthesis.accomplishments?.items || [])
+    for (const proj of projectProjects) {
+        projectData.meta[proj] = {};
+        projectData.tasks[proj] = [];
+        projectData.sessions[proj] = sessions.filter(s => s.project === proj);
+        projectData.accomplishments[proj] = synthesis
+            ? (synthesis.accomplishments?.items || [])
                 .filter((a: any) => a.project === proj)
-                .map((a: any) => ({ description: a.text }));
-        }
+                .map((a: any) => ({ description: a.text }))
+            : [];
     }
 
     return {
         dashboardData: {
-            active_agents: activeSessions.map(s => ({
-                project: s.project,
-                description: s.description,
-                started_at: s.started_at,
-            })),
-            needs_you: [],
+            // Bucketed sessions for triage display
+            active_agents: activeSessions,
+            paused_sessions: pausedSessions,
+            stale_sessions: staleSessions,
+            needs_you: needsYouSessions,
             synthesis: synthesis ? {
                 alignment: synthesis.alignment,
                 recent_context: synthesis.context?.recent_threads?.join(', ') || '',

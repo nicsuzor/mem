@@ -4,15 +4,15 @@
 
     $: hasSynthesis = synthesis && Object.keys(synthesis).length > 0;
     $: rawStoryParagraphs = dailyStory?.story || synthesis?.daily_story || [];
-    $: storyParagraphs = rawStoryParagraphs.reduce((acc, curr) => {
-        const existing = acc.find(item => item.text === curr);
+    $: storyParagraphs = rawStoryParagraphs.reduce((acc: any[], curr: any) => {
+        const existing = acc.find((item: any) => item.text === curr);
         if (existing) {
             existing.count++;
         } else {
             acc.push({ text: curr, count: 1 });
         }
         return acc;
-    }, []).map(item => item.count > 1 ? `[${item.count}x] ${item.text}` : item.text);
+    }, []).map((item: any) => item.count > 1 ? `[${item.count}x] ${item.text}` : item.text);
     $: hasStory = storyParagraphs && storyParagraphs.length > 0;
 </script>
 
