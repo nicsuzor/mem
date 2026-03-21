@@ -8,7 +8,14 @@
     $: isTreemap = layout === "treemap";
 
     // Show live controls when the layout has tunable parameters
-    $: hasLiveControls = isForce || isCircle || isArc;
+    $: hasLiveControls = isForce || isCircle || isArc || isTreemap;
+
+    const WEIGHT_MODES = [
+        { value: 'sqrt', label: '√ DW' },
+        { value: 'priority', label: 'PRIORITY' },
+        { value: 'dw-bucket', label: 'DW BUCKET' },
+        { value: 'equal', label: 'EQUAL' },
+    ] as const;
 
     let expanded = false;
 </script>
@@ -19,7 +26,7 @@
             <div class="config-panel">
                 <div class="flex items-center justify-between border-b border-primary/10 pb-2">
                     <h3 class="text-[10px] font-bold tracking-[0.2em] text-primary/80 uppercase">
-                        {#if isForce}Simulation_Config{:else if isCircle}Circle_Pack_Config{:else if isArc}Arc_Diagram_Config{/if}
+                        {#if isForce}Simulation_Config{:else if isCircle}Circle_Pack_Config{:else if isArc}Arc_Diagram_Config{:else if isTreemap}Treemap_Config{/if}
                     </h3>
                     <button class="text-primary/40 hover:text-primary transition-colors cursor-pointer" onclick={() => expanded = false}>
                         <span class="material-symbols-outlined text-sm">close</span>
@@ -86,6 +93,25 @@
                         <input type="range" min="0.5" max="3.0" step="0.1" bind:value={$viewSettings.arcVerticalSpacing} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
                     </div>
                 {/if}
+
+                {#if isTreemap}
+                    <div class="space-y-2">
+                        <span class="text-[9px] text-primary/50 uppercase">Weight_Mode</span>
+                        <div class="grid grid-cols-2 gap-1">
+                            {#each WEIGHT_MODES as mode}
+                                <button
+                                    class="px-2 py-1.5 text-[9px] font-bold uppercase tracking-wider border rounded-sm transition-all cursor-pointer
+                                        {$viewSettings.treemapWeightMode === mode.value
+                                            ? 'bg-primary text-background border-primary'
+                                            : 'bg-primary/5 text-primary/60 border-primary/20 hover:border-primary/40'}"
+                                    onclick={() => viewSettings.update(s => ({ ...s, treemapWeightMode: mode.value }))}
+                                >
+                                    {mode.label}
+                                </button>
+                            {/each}
+                        </div>
+                    </div>
+                {/if}
             </div>
         {/if}
 
@@ -94,10 +120,10 @@
             onclick={() => expanded = !expanded}
         >
             <span class="material-symbols-outlined text-primary group-hover:rotate-90 transition-transform duration-300">
-                {#if isForce}settings_input_component{:else if isCircle}radio_button_checked{:else if isArc}architecture{/if}
+                {#if isForce}settings_input_component{:else if isCircle}radio_button_checked{:else if isArc}architecture{:else if isTreemap}grid_view{/if}
             </span>
             <span class="text-[10px] font-black uppercase tracking-widest text-primary">
-                {#if isForce}Force{:else if isCircle}Pack{:else if isArc}Arc{/if}_Config
+                {#if isForce}Force{:else if isCircle}Pack{:else if isArc}Arc{:else if isTreemap}Treemap{/if}_Config
             </span>
         </button>
     </div>

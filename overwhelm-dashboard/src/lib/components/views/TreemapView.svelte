@@ -5,6 +5,7 @@
     import { toggleSelection, selection } from "../../stores/selection";
     import { buildTreemapNode } from "../shared/NodeShapes";
     import { routeTreemapEdges } from "../shared/EdgeRenderer";
+    import { viewSettings } from "../../stores/viewSettings";
     import type { GraphEdge } from "../../data/prepareGraphData";
 
     let { containerGroup, width = 2000, height = 1000 } = $props<{ containerGroup: SVGGElement | null; width?: number; height?: number }>();
@@ -16,6 +17,7 @@
     const canvasH = $derived(canvasW * (height && width ? height / width : 0.5));
 
     $effect(() => {
+        const _weightMode = $viewSettings.treemapWeightMode;
         if (containerGroup && $graphData && nodesLayer) {
             updateLayoutAndRender();
         }
@@ -140,9 +142,28 @@
         const TREEMAP_PADDING_OUTER = 3;
         const TREEMAP_PADDING_TOP = 38;
 
+        const weightMode = $viewSettings.treemapWeightMode || 'sqrt';
         root.sum(d => {
             if (d.children?.length) return 0;
-            return Math.max(MIN_NODE_WEIGHT, Math.sqrt(d.dw || MIN_NODE_WEIGHT));
+            switch (weightMode) {
+                case 'priority': {
+                    if (d.status === 'done' || d.status === 'completed') return 1;
+                    if (d.priority <= 1) return 3;
+                    return 2;
+                }
+                case 'dw-bucket': {
+                    const s = Math.sqrt(d.dw || 1);
+                    if (s > 5) return 4;
+                    if (s > 2) return 3;
+                    if (s > 1) return 2;
+                    return 1;
+                }
+                case 'equal':
+                    return 1;
+                case 'sqrt':
+                default:
+                    return Math.max(MIN_NODE_WEIGHT, Math.sqrt(d.dw || MIN_NODE_WEIGHT));
+            }
         }).sort((a, b) => (b.value || 0) - (a.value || 0));
 
         const treemap = d3.treemap<any>()
