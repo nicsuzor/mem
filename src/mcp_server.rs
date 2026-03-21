@@ -78,20 +78,48 @@ impl PkbSearchServer {
         }
     }
 
-    /// Rebuild the graph store (e.g. after CRUD operations) and persist to disk
+    /// Full rebuild of the graph store from disk (for batch operations).
     fn rebuild_graph(&self) {
         let new_graph = GraphStore::build_from_directory(&self.pkb_root);
         *self.graph.write() = new_graph;
     }
 
-    /// Save the vector store to disk with an exclusive lock.
+    /// Incremental graph update after a single file changed.
+    /// Re-parses only the changed file, then rebuilds edges/metrics from existing nodes.
+    /// Falls back to full rebuild if parsing fails.
+    fn rebuild_graph_for_file(&self, abs_path: &std::path::Path) {
+        if let Some(doc) = crate::pkb::parse_file_relative(abs_path, &self.pkb_root) {
+            let node = crate::graph::GraphNode::from_pkb_document(&doc);
+            let mut nodes = self.graph.read().nodes_cloned();
+            nodes.insert(node.id.clone(), node);
+            let new_graph = GraphStore::rebuild_from_nodes(nodes, &self.pkb_root);
+            *self.graph.write() = new_graph;
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            self.rebuild_graph();
+        }
+    }
+
+    /// Incremental graph update after a node is removed.
+    fn rebuild_graph_remove(&self, id: &str) {
+        let mut nodes = self.graph.read().nodes_cloned();
+        nodes.remove(id);
+        let new_graph = GraphStore::rebuild_from_nodes(nodes, &self.pkb_root);
+        *self.graph.write() = new_graph;
+    }
+
+    /// Save the vector store to disk with a non-blocking lock.
+    /// If another process holds the lock, logs a warning and skips the save.
     fn save_store(&self) {
         match VectorStore::acquire_lock(&self.db_path) {
-            Ok(mut lock) => match lock.write() {
+            Ok(mut lock) => match lock.try_write() {
                 Ok(_guard) => {
                     if let Err(e) = self.store.read().save(&self.db_path) {
                         tracing::error!("Failed to save vector store: {e}");
                     }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    tracing::warn!("Vector store lock held by another process, skipping save");
                 }
                 Err(e) => {
                     tracing::error!("Failed to acquire write lock for save: {e}");
@@ -416,8 +444,8 @@ impl PkbSearchServer {
             self.save_store();
         }
 
-        // Rebuild graph
-        self.rebuild_graph();
+        // Incremental graph update for the new file
+        self.rebuild_graph_for_file(&path);
 
         let mut msg = format!("Task created: `{}`", path.display());
         if !warnings.is_empty() {
@@ -477,7 +505,7 @@ impl PkbSearchServer {
             let _ = self.store.write().upsert(&doc, &self.embedder);
             self.save_store();
         }
-        self.rebuild_graph();
+        self.rebuild_graph_for_file(&path);
 
         let id = path
             .file_stem()
@@ -1053,7 +1081,7 @@ impl PkbSearchServer {
             self.save_store();
         }
 
-        self.rebuild_graph();
+        self.rebuild_graph_for_file(&path);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Memory created: `{}`",
@@ -1164,7 +1192,7 @@ impl PkbSearchServer {
             self.save_store();
         }
 
-        self.rebuild_graph();
+        self.rebuild_graph_for_file(&path);
 
         let mut msg = format!("Document created: `{}`", path.display());
         if !warnings.is_empty() {
@@ -1224,7 +1252,7 @@ impl PkbSearchServer {
             self.save_store();
         }
 
-        self.rebuild_graph();
+        self.rebuild_graph_for_file(&abs_path);
 
         let section_msg = section
             .map(|s| format!(" under ## {s}"))
@@ -1254,6 +1282,7 @@ impl PkbSearchServer {
 
         let abs_path = self.abs_path(&node.path);
         let label = node.label.clone();
+        let node_id = node.id.clone();
         let rel_path = node.path.to_string_lossy().to_string();
         drop(graph); // release read lock before write operations
 
@@ -1267,8 +1296,8 @@ impl PkbSearchServer {
         self.store.write().remove(&rel_path);
         self.save_store();
 
-        // Rebuild graph
-        self.rebuild_graph();
+        // Incremental graph update — remove the deleted node
+        self.rebuild_graph_remove(&node_id);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Deleted: {} (`{}`)",
@@ -1316,7 +1345,7 @@ impl PkbSearchServer {
             self.save_store();
         }
 
-        self.rebuild_graph();
+        self.rebuild_graph_for_file(&abs_path);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Completed: {} (`{}`)",
@@ -2261,8 +2290,8 @@ impl PkbSearchServer {
             self.save_store();
         }
 
-        // Rebuild graph
-        self.rebuild_graph();
+        // Incremental graph update for the changed file
+        self.rebuild_graph_for_file(&path);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Task updated: `{}`",

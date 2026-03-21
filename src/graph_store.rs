@@ -190,6 +190,82 @@ impl GraphStore {
         Self::build(&docs, root)
     }
 
+    /// Rebuild graph from existing nodes (avoids re-scanning/re-parsing all files).
+    ///
+    /// Takes the current node map, rebuilds all edges, metrics, and indices.
+    /// Use after updating/inserting/removing a single node to avoid a full
+    /// directory walk.
+    pub fn rebuild_from_nodes(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
+        let mut nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
+
+        // Build lookup maps (same as build() steps 2-3)
+        let mut id_map: HashMap<String, String> = HashMap::new();
+        let mut path_to_id: HashMap<String, String> = HashMap::new();
+
+        for n in &nodes_vec {
+            let full_path = if n.path.is_absolute() {
+                n.path.clone()
+            } else {
+                pkb_root.join(&n.path)
+            };
+            let abs_path = full_path
+                .canonicalize()
+                .unwrap_or(full_path)
+                .to_string_lossy()
+                .to_string();
+            path_to_id.insert(abs_path.clone(), n.id.clone());
+            for key in &n.permalinks {
+                id_map.insert(key.clone(), abs_path.clone());
+            }
+        }
+
+        // Rebuild edges
+        let edges: Vec<Edge> = nodes_vec
+            .par_iter()
+            .flat_map(|n| build_node_edges(n, &id_map, &path_to_id, pkb_root))
+            .collect();
+
+        let mut seen: HashSet<(String, String, String)> = HashSet::new();
+        let edges: Vec<Edge> = edges
+            .into_iter()
+            .filter(|e| {
+                let key = (
+                    e.source.clone(),
+                    e.target.clone(),
+                    format!("{:?}", e.edge_type),
+                );
+                seen.insert(key)
+            })
+            .collect();
+
+        // Recompute all metrics (steps 4-9)
+        compute_inverses(&mut nodes_vec, &edges);
+        compute_degree_metrics(&mut nodes_vec, &edges);
+        compute_centrality_metrics(&mut nodes_vec, &edges);
+        compute_downstream_metrics(&mut nodes_vec);
+        compute_project_field(&mut nodes_vec);
+
+        let reachable_set = find_reachable_set(&nodes_vec, &edges);
+        for node in &mut nodes_vec {
+            node.reachable = reachable_set.contains(&node.id);
+        }
+
+        let node_map: HashMap<String, GraphNode> =
+            nodes_vec.into_iter().map(|n| (n.id.clone(), n)).collect();
+        let (ready, blocked, roots) = classify_tasks(&node_map);
+        let resolution_map = build_resolution_map(&node_map);
+
+        GraphStore {
+            nodes: node_map,
+            edges,
+            ready,
+            blocked,
+            roots,
+            resolution_map,
+            reachable_set,
+        }
+    }
+
     /// Compute all layout algorithms (ForceAtlas2, treemap, circle pack, arc).
     /// This is expensive (~30s for large graphs) and only needed for graph export.
     /// Call explicitly before `output_json()`, `output_dot()`, etc.
@@ -211,6 +287,11 @@ impl GraphStore {
 
     pub fn get_node(&self, id: &str) -> Option<&GraphNode> {
         self.nodes.get(id)
+    }
+
+    /// Clone the full node map (for incremental rebuilds).
+    pub fn nodes_cloned(&self) -> HashMap<String, GraphNode> {
+        self.nodes.clone()
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &GraphNode> {
