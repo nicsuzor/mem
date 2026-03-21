@@ -1,7 +1,7 @@
 <script lang="ts">
 	import favicon from "$lib/assets/favicon.svg";
 	import "../app.css";
-	import { viewSettings } from "$lib/stores/viewSettings";
+	import { viewSettings, VIEW_MODES } from "$lib/stores/viewSettings";
 
 	let { children } = $props();
 </script>
@@ -34,12 +34,12 @@
 
 			<span class="text-primary/20">|</span>
 
-			{#each [["Treemap", "Treemap"], ["Circle Pack", "Circle Pack"], ["SFDP", "SFDP"], ["Arc Diagram", "Arc Diagram"]] as [mode, label]}
+			{#each VIEW_MODES as mode}
 				<button
 					class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Task Graph' && $viewSettings.viewMode === mode ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
 					onclick={() => { $viewSettings.mainTab = 'Task Graph'; $viewSettings.viewMode = mode; }}
 				>
-					{label}
+					{mode}
 				</button>
 			{/each}
 

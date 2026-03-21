@@ -135,16 +135,21 @@
             return;
         }
 
+        const MIN_NODE_WEIGHT = 1;
+        const TREEMAP_PADDING_INNER = 1;
+        const TREEMAP_PADDING_OUTER = 2;
+        const TREEMAP_PADDING_TOP = 14;
+
         root.sum(d => {
             if (d.children?.length) return 0;
-            return Math.max(1, d.dw || 1);
+            return Math.max(MIN_NODE_WEIGHT, d.dw || MIN_NODE_WEIGHT);
         }).sort((a, b) => (b.value || 0) - (a.value || 0));
 
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
-            .paddingInner(1)
-            .paddingOuter(2)
-            .paddingTop(14)
+            .paddingInner(TREEMAP_PADDING_INNER)
+            .paddingOuter(TREEMAP_PADDING_OUTER)
+            .paddingTop(TREEMAP_PADDING_TOP)
             .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
 

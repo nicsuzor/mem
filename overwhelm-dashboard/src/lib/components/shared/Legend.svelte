@@ -18,7 +18,7 @@
         { label: 'P2 MEDIUM', color: '#f59e0b' },
         { label: 'P3 LOW', color: '#06b6d4' },
         { label: 'P4 BACKLOG', color: '#8b5cf6' },
-    ];
+    ] as const;
 
     const edgeTypes = [
         { key: 'showDependencies', label: 'DEPENDENCIES', color: '#ef4444', dash: false },

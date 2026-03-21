@@ -241,7 +241,11 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // Only attempt to render text if we have enough space. Small nodes collapse to solid colored boxes.
     // Address tall-node symptom: Do not attempt to render text in narrow vertical slices
-    if (w > 8 && h > 6 && (w >= h * 0.3 || w > 20)) {
+    const MIN_TEXT_WIDTH = 8;
+    const MIN_TEXT_HEIGHT = 6;
+    const MIN_ASPECT_RATIO_FOR_TEXT = 0.3;
+    const MIN_ABS_WIDTH_FOR_TEXT = 20;
+    if (w > MIN_TEXT_WIDTH && h > MIN_TEXT_HEIGHT && (w >= h * MIN_ASPECT_RATIO_FOR_TEXT || w > MIN_ABS_WIDTH_FOR_TEXT)) {
         const label = escapeHtml(d.label || '');
         const pad = 6;
 
@@ -292,6 +296,67 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     }
 }
 
+function renderWrappedTextInCircle(g: d3.Selection<SVGGElement, any, null, undefined>, r: number, rawLabel: string) {
+    const innerW = r * 1.3;
+    const innerH = r * 1.3;
+
+    const words = rawLabel.split(/\s+/).filter((w: string) => w);
+    if (words.length === 0) return;
+
+    function wrapAtFs(fs: number): string[] {
+        const charW = fs * 0.52;
+        const maxChars = Math.max(1, Math.floor(innerW / charW));
+        const lines: string[] = [];
+        let cur = '';
+        for (const w of words) {
+            const test = cur ? cur + ' ' + w : w;
+            if (test.length <= maxChars) {
+                cur = test;
+            } else {
+                if (cur) lines.push(cur);
+                cur = w.length > maxChars ? w.substring(0, maxChars) : w;
+            }
+        }
+        if (cur) lines.push(cur);
+        return lines;
+    }
+
+    let bestFs = 4;
+    let bestLines = wrapAtFs(4);
+    for (let tryFs = Math.min(r * 0.8, 60); tryFs >= 4; tryFs -= 0.5) {
+        const lines = wrapAtFs(tryFs);
+        const totalH = lines.length * tryFs * 1.15;
+        if (totalH <= innerH) {
+            bestFs = tryFs;
+            bestLines = lines;
+            break;
+        }
+    }
+
+    const maxLines = Math.max(1, Math.floor(innerH / (bestFs * 1.15)));
+    if (bestLines.length > maxLines) {
+        bestLines = bestLines.slice(0, maxLines);
+        bestLines[maxLines - 1] = bestLines[maxLines - 1].slice(0, -1) + '…';
+    }
+
+    const lineH = bestFs * 1.15;
+    const totalH = bestLines.length * lineH;
+    const startY = -totalH / 2 + bestFs * 0.35;
+
+    bestLines.forEach((line, i) => {
+        g.append("text")
+            .attr("x", 0)
+            .attr("y", startY + i * lineH)
+            .attr("text-anchor", "middle")
+            .attr("dominant-baseline", "central")
+            .attr("font-size", bestFs + "px")
+            .attr("font-weight", "600")
+            .attr("fill", "#fff")
+            .attr("pointer-events", "none")
+            .text(line);
+    });
+}
+
 export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, undefined>, d: any, isSelected = false) {
     const r = Math.max(d._lr || d.w / 2 || 5, 2);
     const isParent = !d.isLeaf;
@@ -337,8 +402,12 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
             .attr("stroke-dasharray", isSelected ? "none" : "3,2");
 
         // Parent label at top
-        if (r > 15) {
-            const fs = Math.max(6, Math.min(14, r * 0.12));
+        const MIN_RADIUS_FOR_LABEL = 15;
+        const MIN_FONT_SIZE = 6;
+        const MAX_FONT_SIZE = 14;
+        const FONT_SIZE_SCALE_FACTOR = 0.12;
+        if (r > MIN_RADIUS_FOR_LABEL) {
+            const fs = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, r * FONT_SIZE_SCALE_FACTOR));
             g.append("foreignObject")
                 .attr("x", -r * 0.7).attr("y", -r + pad(r))
                 .attr("width", r * 1.4).attr("height", fs * 2.5)
@@ -371,69 +440,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         }
 
         if (r > 6) {
-            const rawLabel = d.label || '';
-            const innerW = r * 1.3;
-            const innerH = r * 1.3;
-
-            const words = rawLabel.split(/\s+/).filter((w: string) => w);
-            if (words.length === 0) return;
-
-            // Wrap text into lines at a given font size
-            function wrapAtFs(fs: number): string[] {
-                const charW = fs * 0.52;
-                const maxChars = Math.max(1, Math.floor(innerW / charW));
-                const lines: string[] = [];
-                let cur = '';
-                for (const w of words) {
-                    const test = cur ? cur + ' ' + w : w;
-                    if (test.length <= maxChars) {
-                        cur = test;
-                    } else {
-                        if (cur) lines.push(cur);
-                        // Truncate long words to fit
-                        cur = w.length > maxChars ? w.substring(0, maxChars) : w;
-                    }
-                }
-                if (cur) lines.push(cur);
-                return lines;
-            }
-
-            // Find largest font size where wrapped text fits both W and H
-            let bestFs = 4;
-            let bestLines = wrapAtFs(4);
-            for (let tryFs = Math.min(r * 0.8, 60); tryFs >= 4; tryFs -= 0.5) {
-                const lines = wrapAtFs(tryFs);
-                const totalH = lines.length * tryFs * 1.15;
-                if (totalH <= innerH) {
-                    bestFs = tryFs;
-                    bestLines = lines;
-                    break;
-                }
-            }
-
-            // Limit lines to what fits vertically and truncate last line if needed
-            const maxLines = Math.max(1, Math.floor(innerH / (bestFs * 1.15)));
-            if (bestLines.length > maxLines) {
-                bestLines = bestLines.slice(0, maxLines);
-                bestLines[maxLines - 1] = bestLines[maxLines - 1].slice(0, -1) + '…';
-            }
-
-            const lineH = bestFs * 1.15;
-            const totalH = bestLines.length * lineH;
-            const startY = -totalH / 2 + bestFs * 0.35;
-
-            bestLines.forEach((line, i) => {
-                g.append("text")
-                    .attr("x", 0)
-                    .attr("y", startY + i * lineH)
-                    .attr("text-anchor", "middle")
-                    .attr("dominant-baseline", "central")
-                    .attr("font-size", bestFs + "px")
-                    .attr("font-weight", "600")
-                    .attr("fill", "#fff")
-                    .attr("pointer-events", "none")
-                    .text(line);
-            });
+            renderWrappedTextInCircle(g, r, d.label || '');
         }
     }
     }
