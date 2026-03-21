@@ -3,7 +3,8 @@
     import HierarchyTree from "./HierarchyTree.svelte";
     import {
         TYPE_CHARGE,
-        STATUS_FILLS
+        STATUS_FILLS,
+        STATUS_TEXT
     } from "../../data/constants";
 
     let { taskId = null, onclose = () => {} }: { taskId?: string | null, onclose?: () => void } = $props();
@@ -60,9 +61,13 @@
             const nodes = gd.nodes.map(n => {
                 if (n.id === taskId) {
                     const updated = { ...n, ...updates };
-                    // If status changed, update fill and text colors (simplified)
                     if (updates.status) {
                         updated.status = updates.status;
+                        updated.fill = STATUS_FILLS[updates.status] ?? updated.fill;
+                        updated.textColor = STATUS_TEXT[updates.status] ?? updated.textColor;
+                        updated.opacity = ['done', 'completed', 'cancelled'].includes(updates.status) ? 0.4 : 0.8;
+                        // Force D3 node rebuild by clearing cached selection state
+                        (updated as any)._lastSelected = undefined;
                     }
                     if (updates.type) {
                         updated.type = updates.type;
@@ -96,8 +101,34 @@
         }
     }
 
+    // Find active children of this task in the graph
+    let activeChildren = $derived(
+        taskId && $graphData
+            ? $graphData.nodes.filter(n =>
+                n.parent === taskId &&
+                !['done', 'completed', 'cancelled'].includes(n.status)
+            )
+            : []
+    );
+
+    // Whether this task type can be completed via the COMPLETE button
+    let canComplete = $derived(task ? task.type !== 'project' && task.type !== 'goal' : false);
+
+    let showConfirmComplete = $state(false);
+
     function setStatus(status: string) {
+        showConfirmComplete = false;
         updateTask({ status });
+    }
+
+    function handleComplete() {
+        if (!task || !canComplete) return;
+        // Warn if epic/task has active children
+        if (activeChildren.length > 0) {
+            showConfirmComplete = true;
+            return;
+        }
+        setStatus('done');
     }
 
     function setType(type: string) {
@@ -184,7 +215,7 @@
                             value={task.status}
                             onchange={(e) => setStatus(e.currentTarget.value)}
                         >
-                            {#each statusOptions as status}
+                            {#each statusOptions.filter(s => canComplete || s !== 'done') as status}
                                 <option value={status}>{status}</option>
                             {/each}
                         </select>
@@ -192,13 +223,15 @@
                 </div>
 
                 <div class="flex gap-2 mt-1">
-                    <button
-                        class="flex-1 py-1.5 border border-primary {task.status === 'done' ? 'bg-primary text-background' : 'bg-primary/5 text-primary'} hover:bg-primary hover:text-background font-bold text-[10px] transition-all rounded-sm uppercase tracking-widest disabled:opacity-50"
-                        onclick={() => setStatus('done')}
-                        disabled={updating}
-                    >
-                        {task.status === 'done' ? 'FINISHED' : 'COMPLETE'}
-                    </button>
+                    {#if canComplete}
+                        <button
+                            class="flex-1 py-1.5 border border-primary {task.status === 'done' ? 'bg-primary text-background' : 'bg-primary/5 text-primary'} hover:bg-primary hover:text-background font-bold text-[10px] transition-all rounded-sm uppercase tracking-widest disabled:opacity-50"
+                            onclick={handleComplete}
+                            disabled={updating}
+                        >
+                            {task.status === 'done' ? 'FINISHED' : 'COMPLETE'}
+                        </button>
+                    {/if}
                     <button
                         class="px-2 py-1.5 border border-primary/40 {task.status === 'ready' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
                         onclick={() => setStatus('ready')}
@@ -206,12 +239,36 @@
                     >
                         READY
                     </button>
-                    <button
-                        class="px-2 py-1.5 border border-destructive/30 text-destructive/60 hover:bg-destructive/10 hover:text-destructive font-bold text-[10px] transition-all rounded-sm" title="Delete Task"
-                    >
-                        <span class="material-symbols-outlined text-xs">delete</span>
-                    </button>
                 </div>
+                {#if showConfirmComplete}
+                    <div class="mt-1 p-2 border border-destructive/40 bg-destructive/5 rounded-sm">
+                        <p class="text-[9px] text-destructive font-mono mb-1.5">
+                            ⚠ {activeChildren.length} active sub-task{activeChildren.length === 1 ? '' : 's'} will remain open:
+                        </p>
+                        <ul class="text-[8px] text-destructive/80 font-mono mb-2 space-y-0.5 max-h-16 overflow-y-auto">
+                            {#each activeChildren.slice(0, 5) as child}
+                                <li class="truncate">• {child.label || child.id}</li>
+                            {/each}
+                            {#if activeChildren.length > 5}
+                                <li>… and {activeChildren.length - 5} more</li>
+                            {/if}
+                        </ul>
+                        <div class="flex gap-2">
+                            <button
+                                class="flex-1 py-1 border border-destructive/40 bg-destructive/10 text-destructive font-bold text-[9px] rounded-sm uppercase hover:bg-destructive/20"
+                                onclick={() => setStatus('done')}
+                            >
+                                COMPLETE ANYWAY
+                            </button>
+                            <button
+                                class="flex-1 py-1 border border-primary/30 text-primary/60 font-bold text-[9px] rounded-sm uppercase hover:bg-primary/10"
+                                onclick={() => showConfirmComplete = false}
+                            >
+                                CANCEL
+                            </button>
+                        </div>
+                    </div>
+                {/if}
                 {#if updating}
                     <p class="text-[9px] text-primary/50 mt-1 font-mono">saving…</p>
                 {:else if updateError}

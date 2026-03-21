@@ -5,6 +5,7 @@
     import { toggleSelection, selection } from "../../stores/selection";
     import { buildTreemapNode } from "../shared/NodeShapes";
     import { routeTreemapEdges } from "../shared/EdgeRenderer";
+    import { viewSettings } from "../../stores/viewSettings";
     import type { GraphEdge } from "../../data/prepareGraphData";
 
     let { containerGroup, width = 2000, height = 1000 } = $props<{ containerGroup: SVGGElement | null; width?: number; height?: number }>();
@@ -16,10 +17,53 @@
     const canvasH = $derived(canvasW * (height && width ? height / width : 0.5));
 
     $effect(() => {
+        const _weightMode = $viewSettings.treemapWeightMode;
         if (containerGroup && $graphData && nodesLayer) {
             updateLayoutAndRender();
         }
     });
+
+    function collapseSingleChildParents(nodes: any[], rootId: string): any[] {
+        const DONE_STATUSES = new Set(['done', 'completed', 'cancelled']);
+        let result = [...nodes];
+        let changed = true;
+        while (changed) {
+            changed = false;
+            const childrenOf = new Map<string, any[]>();
+            for (const n of result) {
+                if (n.parent) {
+                    if (!childrenOf.has(n.parent)) childrenOf.set(n.parent, []);
+                    childrenOf.get(n.parent)!.push(n);
+                }
+            }
+
+            for (const [parentId, children] of childrenOf) {
+                if (parentId === '' || parentId === rootId) continue;
+                const parent = result.find(n => n.id === parentId);
+                if (!parent) continue;
+
+                const activeChildren = children.filter(c => !DONE_STATUSES.has(c.status));
+                if (activeChildren.length !== 1) continue;
+
+                const child = activeChildren[0];
+                // Concatenate labels, cap at 2 segments
+                if (child.label && parent.label && !child.label.includes('›')) {
+                    child.label = parent.label + ' › ' + child.label;
+                }
+                // Inherit project color if child lacks one
+                if (!child.project && parent.project) child.project = parent.project;
+                // Reparent child to grandparent
+                child.parent = parent.parent;
+
+                // Remove parent + completed siblings (visual noise)
+                const removeIds = new Set([parentId, ...children.filter(c => c.id !== child.id).map(c => c.id)]);
+                result = result.filter(n => !removeIds.has(n.id));
+                changed = true;
+                break; // restart after mutation
+            }
+        }
+        return result;
+    }
 
     function updateLayoutAndRender() {
         const data = $graphData;
@@ -49,6 +93,9 @@
                 })),
             ];
         }
+
+        // Collapse single-child intermediate parents to reduce wasted nesting
+        stratifyNodes = collapseSingleChildParents(stratifyNodes, rootId);
 
         let root;
         try {
@@ -136,20 +183,38 @@
         }
 
         const MIN_NODE_WEIGHT = 1;
-        const TREEMAP_PADDING_INNER = 1;
-        const TREEMAP_PADDING_OUTER = 2;
-        const TREEMAP_PADDING_TOP = 14;
 
+        const weightMode = $viewSettings.treemapWeightMode || 'sqrt';
         root.sum(d => {
             if (d.children?.length) return 0;
-            return Math.max(MIN_NODE_WEIGHT, d.dw || MIN_NODE_WEIGHT);
+            switch (weightMode) {
+                case 'priority': {
+                    if (d.status === 'done' || d.status === 'completed') return 1;
+                    if (d.priority <= 1) return 3;
+                    return 2;
+                }
+                case 'dw-bucket': {
+                    const s = Math.sqrt(d.dw || 1);
+                    if (s > 5) return 4;
+                    if (s > 2) return 3;
+                    if (s > 1) return 2;
+                    return 1;
+                }
+                case 'equal':
+                    return 1;
+                case 'sqrt':
+                default:
+                    return Math.max(MIN_NODE_WEIGHT, Math.sqrt(d.dw || MIN_NODE_WEIGHT));
+            }
         }).sort((a, b) => (b.value || 0) - (a.value || 0));
 
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
-            .paddingInner(TREEMAP_PADDING_INNER)
-            .paddingOuter(TREEMAP_PADDING_OUTER)
-            .paddingTop(TREEMAP_PADDING_TOP)
+            .paddingInner((node: any) => node.depth <= 1 ? 3 : 1)
+            .paddingBottom((node: any) => node.depth <= 1 ? 3 : 1)
+            .paddingLeft((node: any) => node.depth <= 1 ? 3 : 1)
+            .paddingRight((node: any) => node.depth <= 1 ? 3 : 1)
+            .paddingTop((node: any) => node.depth <= 1 ? 38 : 20)
             .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
 
