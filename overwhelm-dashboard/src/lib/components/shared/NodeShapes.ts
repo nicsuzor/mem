@@ -273,7 +273,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             }
         } else {
             // Leaf nodes: Draw title
-            const fs = Math.max(5, Math.min(13, Math.min(w, h) * 0.28));
+            const fs = Math.max(4, Math.min(11, Math.min(w, h) * 0.22));
             const linesAvailable = Math.max(1, Math.floor((h - pad * 2) / (fs * 1.2)));
 
             const isBlocked = d.status === "blocked";
