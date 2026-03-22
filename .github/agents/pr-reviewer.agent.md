@@ -78,7 +78,7 @@ if [ -f pyproject.toml ]; then
   uv run ruff check --fix . && uv run ruff format .
   uv run pytest -x -m "not slow"
 elif [ -f package.json ]; then
-  npm test 2>/dev/null || true
+  npm test
 fi
 ```
 
