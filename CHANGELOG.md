@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/nicsuzor/mem/compare/v0.3.0...v0.3.1) - 2026-03-22
+
+### Added
+
+- add depth-dependent treemap padding and collapse single-child parents
+- add treemap weight mode toggle (sqrt/priority/dw-bucket/equal)
+- address overwhelm dashboard QA findings and improve graph performance
+- *(pkb)* add task_summary MCP tool + fix ready filter to claimable types only
+
+### Fixed
+
+- fix lint bug
+- flatten treemap weight curve with sqrt to distribute space more evenly
+- reduce leaf node font size (5-13px → 4-11px) to fit text on smaller nodes
+- reduce treemap parent font size (10-14px → 8-11px) to prevent node cutoff
+- add border clearance to treemap top padding (34→38px)
+- align treemap padding top with header height so children sit below parent title
+- improve treemap parent node text sizing, wrapping, and node spacing
+- harden dashboard task editor — remove delete, guard project completion, warn on active children
+- repair MCP connection and populate path reconstruction from session summaries
+
+### Other
+
+- Update src/lint.rs
+- spec
+- Merge pull request #113 from nicsuzor/feat/dashboard-density-legend
+- address PR #113 review comments — extract magic numbers and helpers
+
 ## [0.3.0](https://github.com/nicsuzor/mem/compare/v0.2.37...v0.3.0) - 2026-03-21
 
 ### Added
