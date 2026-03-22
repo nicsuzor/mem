@@ -52,7 +52,7 @@ struct Cli {
     layout_config: Option<String>,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -767,7 +767,8 @@ fn load_graph(pkb_root: &std::path::Path, _db_path: &std::path::Path) -> graph_s
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let is_mcp = matches!(cli.command, Commands::Mcp);
+    let command = cli.command.unwrap_or(Commands::Focus { limit: 20 });
+    let is_mcp = matches!(command, Commands::Mcp);
 
     // MCP mode: info-level logging to stderr (stdout is protocol).
     // CLI mode: only warnings.
@@ -784,7 +785,7 @@ async fn main() -> Result<()> {
 
     // Exclusive lock for index updates
     let needs_exclusive_lock = matches!(
-        cli.command,
+        command,
         Commands::Reindex { .. }
             | Commands::BenchReindex { .. }
             | Commands::Add { .. }
@@ -814,7 +815,7 @@ async fn main() -> Result<()> {
 
     // Only load embedder + vector store for commands that need them
     let needs_embedder = matches!(
-        cli.command,
+        command,
         Commands::Search { .. }
             | Commands::Add { .. }
             | Commands::Reindex { .. }
@@ -827,7 +828,7 @@ async fn main() -> Result<()> {
 
     // Some commands need the store but not the embedder
     let needs_store_only = matches!(
-        cli.command,
+        command,
         Commands::Tags { .. }
             | Commands::Memories { .. }
             | Commands::Forget { .. }
@@ -837,7 +838,7 @@ async fn main() -> Result<()> {
     let (embedder, store) = if needs_embedder {
         let mut e = embeddings::Embedder::new()?;
         // Apply parallelism overrides for reindex/bench-reindex
-        let overrides = match &cli.command {
+        let overrides = match &command {
             Commands::Reindex { sessions, threads, batch_size, .. }
             | Commands::BenchReindex { sessions, threads, batch_size, .. } => {
                 Some((sessions.unwrap_or(0), threads.unwrap_or(0), batch_size.unwrap_or(0)))
@@ -857,7 +858,7 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
-    match cli.command {
+    match command {
         Commands::Search { query, limit, full } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
@@ -999,15 +1000,36 @@ async fn main() -> Result<()> {
         }
 
         Commands::Status => {
+            let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
             let s = store.read();
             let total = s.len();
             let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
-            println!("PKB root:  {}", pkb_root.display());
-            println!("DB path:   {}", db_path.display());
-            println!("Documents: {total}");
-            println!("DB size:   {:.1} MB", db_size as f64 / 1_048_576.0);
+            println!("PKB root:    {}", pkb_root.display());
+            println!("DB path:     {}", db_path.display());
+            println!("Embeddings:  BGE-M3 ONNX ({}-dim)", embedder.dimension());
+            println!("Documents:   {total}");
+            println!("DB size:     {:.1} MB", db_size as f64 / 1_048_576.0);
+
+            // Index freshness
+            let stale_count = mem::check_index_staleness(&pkb_root, &store);
+            let num_stale_documents = mem::check_index_staleness(&pkb_root, &store);
+            if num_stale_documents > 0 {
+                println!("Index:       {}⚠ stale — {} document(s) need re-indexing{}", colors::YELLOW, num_stale_documents, colors::RESET);
+            } else {
+                println!("Index:       {}✓ fresh{}", colors::GREEN, colors::RESET);
+            }
+            }
+
+            // Graph stats
+            let gs = load_graph(&pkb_root, &db_path);
+            println!("Graph:       {} nodes, {} edges", gs.node_count(), gs.edge_count());
+
+            let ready = gs.ready_tasks().len();
+            let blocked = gs.blocked_tasks().len();
+            let all = gs.all_tasks().len();
+            println!("Tasks:       {} open ({} ready, {} blocked)", all, ready, blocked);
         }
 
         Commands::Tasks {
@@ -3316,6 +3338,7 @@ mod colors {
     pub const P2: &str = "\x1b[36m"; // cyan
     pub const P3: &str = "\x1b[2m"; // dim
     pub const RED: &str = "\x1b[31m";
+    pub const GREEN: &str = "\x1b[32m";
     pub const YELLOW: &str = "\x1b[33m";
     pub const CYAN: &str = "\x1b[36m";
     pub const BOLD_CYAN: &str = "\x1b[1;36m";
