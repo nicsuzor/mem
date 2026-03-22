@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4](https://github.com/nicsuzor/mem/compare/v0.3.3...v0.3.4) - 2026-03-22
+
+### Fixed
+
+- remove extra closing brace in Status command that broke compilation
+
+### Other
+
+- Update .github/agents/pr-reviewer.agent.md
+- Update .github/agents/pr-reviewer.agent.md
+- add PR reviewer bot (axiom-driven review agent)
+
 ## [0.3.3](https://github.com/nicsuzor/mem/compare/v0.3.2...v0.3.3) - 2026-03-22
 
 ### Added
