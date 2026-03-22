@@ -1014,10 +1014,12 @@ async fn main() -> Result<()> {
 
             // Index freshness
             let stale_count = mem::check_index_staleness(&pkb_root, &store);
-            if stale_count > 0 {
-                println!("Index:       {}⚠ stale — {} document(s) need re-indexing{}", colors::YELLOW, stale_count, colors::RESET);
+            let num_stale_documents = mem::check_index_staleness(&pkb_root, &store);
+            if num_stale_documents > 0 {
+                println!("Index:       {}⚠ stale — {} document(s) need re-indexing{}", colors::YELLOW, num_stale_documents, colors::RESET);
             } else {
                 println!("Index:       {}✓ fresh{}", colors::GREEN, colors::RESET);
+            }
             }
 
             // Graph stats
