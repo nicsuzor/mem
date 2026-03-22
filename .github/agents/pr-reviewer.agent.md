@@ -76,7 +76,7 @@ After making changes, validate:
 # Run whatever test/lint tooling the repo has
 if [ -f pyproject.toml ]; then
   uv run ruff check --fix . && uv run ruff format .
-  uv run pytest -x -m "not slow" 2>/dev/null || true
+  uv run pytest -x -m "not slow"
 elif [ -f package.json ]; then
   npm test 2>/dev/null || true
 fi
