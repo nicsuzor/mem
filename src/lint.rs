@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 static ID_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
 
 fn get_id_regex() -> &'static regex::Regex {
-    ID_RE.get_or_init(|| regex::Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9-]*-[a-f0-9]{8}$").unwrap())
+    ID_RE.get_or_init(|| regex::Regex::new(r"(?i)^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}$").unwrap())
 }
 
 // ── Diagnostic types ─────────────────────────────────────────────────────
@@ -229,7 +229,7 @@ fn extract_id_from_filename(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_string_lossy();
     // Match patterns like "academic-8c6h05e2-cite-her-work" or "aops-core-6a4f03c0-fix-something"
     // The hash portion is alphanumeric (may contain letters beyond a-f)
-    let re = regex::Regex::new(r"^([a-zA-Z][\w-]*?-[a-z0-9]{6,10})(?:-.+)?$").unwrap();
+    let re = { static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); RE.get_or_init(|| regex::Regex::new(r"(?i)^([a-z][\w-]*?-[a-z0-9]{6,10})(?:-.+)?$").unwrap()) };
     re.captures(&stem).map(|c| c[1].to_string())
 }
 
