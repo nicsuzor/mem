@@ -1013,13 +1013,11 @@ async fn main() -> Result<()> {
             println!("DB size:     {:.1} MB", db_size as f64 / 1_048_576.0);
 
             // Index freshness
-            let stale_count = mem::check_index_staleness(&pkb_root, &store);
             let num_stale_documents = mem::check_index_staleness(&pkb_root, &store);
             if num_stale_documents > 0 {
                 println!("Index:       {}⚠ stale — {} document(s) need re-indexing{}", colors::YELLOW, num_stale_documents, colors::RESET);
             } else {
                 println!("Index:       {}✓ fresh{}", colors::GREEN, colors::RESET);
-            }
             }
 
             // Graph stats
