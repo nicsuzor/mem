@@ -4,20 +4,20 @@
 
     let showLegend = true;
 
-    // Treemap uses project-hue-based colors, so we show status-based legend items
-    // that map to the filter toggles
+    // Status = fill color (primary signal)
     const statusGroups = [
-        { key: 'showActive', label: 'ACTIVE', statuses: ['active', 'inbox', 'todo', 'in_progress', 'review'], color: '#dbeafe' },
-        { key: 'showBlocked', label: 'BLOCKED', statuses: ['blocked'], color: '#ef4444' },
-        { key: 'showCompleted', label: 'COMPLETED', statuses: ['done', 'completed', 'cancelled'], color: '#22c55e' },
+        { key: 'showActive', label: 'ACTIVE', statuses: ['active', 'inbox', 'todo', 'in_progress', 'review'], color: '#2563eb' },
+        { key: 'showBlocked', label: 'BLOCKED', statuses: ['blocked'], color: '#dc2626' },
+        { key: 'showCompleted', label: 'COMPLETED', statuses: ['done', 'completed', 'cancelled'], color: '#374151' },
     ] as const;
 
+    // Priority = border color (secondary signal)
     const priorityColors = [
-        { label: 'P0 CRITICAL', color: '#ef4444' },
-        { label: 'P1 HIGH', color: '#f97316' },
-        { label: 'P2 MEDIUM', color: '#f59e0b' },
-        { label: 'P3 LOW', color: '#06b6d4' },
-        { label: 'P4 BACKLOG', color: '#8b5cf6' },
+        { label: 'P0 CRITICAL', color: '#fbbf24', border: true },
+        { label: 'P1 HIGH', color: '#f97316', border: true },
+        { label: 'P2 MEDIUM', color: '#a3a3a3', border: true },
+        { label: 'P3 LOW', color: '#6b7280', border: true },
+        { label: 'P4 BACKLOG', color: '#4b5563', border: true },
     ] as const;
 
     const edgeTypes = [
@@ -57,12 +57,12 @@
             {/each}
         </div>
 
-        <!-- Priority legend -->
+        <!-- Priority legend (shown as border strokes) -->
         <div class="legend-section">
-            <span class="legend-section-title">PRIORITY</span>
+            <span class="legend-section-title">PRIORITY (BORDER)</span>
             {#each priorityColors as p}
                 <div class="legend-item" style="cursor: default;">
-                    <div class="legend-box" style="background:{p.color};"></div>
+                    <div class="legend-box" style="background:transparent; border: 2px solid {p.color};"></div>
                     <span class="legend-label">{p.label}</span>
                 </div>
             {/each}

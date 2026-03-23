@@ -143,33 +143,44 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         return; // Skip the rest of the drawing logic for overflow nodes
     }
 
-    // Priority-based spectral colors for leaves (optional override or accent)
-    const spectralHues = [
-        "#ef4444", // 0 Critical (Red)
-        "#f97316", // 1 High (Orange)
-        "#f59e0b", // 2 Med (Amber)
-        "#06b6d4", // 3 Low (Cyan)
-        "#8b5cf6", // 4 Backlog (Purple)
-    ];
+    // Status-based fill colors (primary visual signal)
+    const STATUS_COLORS: Record<string, string> = {
+        active: '#2563eb',       // Blue
+        in_progress: '#2563eb',  // Blue
+        review: '#3b82f6',       // Lighter blue
+        waiting: '#1d4ed8',      // Darker blue
+        decomposing: '#1e40af',  // Deep blue
+        blocked: '#dc2626',      // Red
+        ready: '#16a34a',        // Green
+        todo: '#22c55e',         // Light green
+        inbox: '#15803d',        // Dark green
+        dormant: '#4b5563',      // Grey
+        done: '#374151',         // Dark grey
+        completed: '#374151',    // Dark grey
+        cancelled: '#1f2937',    // Darker grey
+        deferred: '#4b5563',     // Grey
+        paused: '#4b5563',       // Grey
+    };
+
+    // Priority border colors (secondary signal via thin stroke)
+    const PRIORITY_BORDERS: Record<number, string> = {
+        0: '#fbbf24',  // P0 Critical — bright amber
+        1: '#f97316',  // P1 High — orange
+        2: '#a3a3a3',  // P2 Med — neutral
+        3: '#6b7280',  // P3 Low — subtle
+        4: '#4b5563',  // P4 Backlog — dim
+    };
 
     let cellColor: string;
     if (isParent) {
-        // Parents get a stable project hue
+        // Parents get a stable project hue (unchanged)
         cellColor = `hsl(${hue}, 40%, 25%)`;
     } else {
-        // Leaves get priority color if active, else project-based shade
-        if (d.priority !== undefined && d.priority >= 0 && d.priority <= 2 && d.status !== 'done') {
-            cellColor = spectralHues[d.priority];
-        } else {
-            const lightness = d.status === 'active' ? '35%' : '15%';
-            cellColor = `hsl(${hue}, 35%, ${lightness})`;
-        }
+        const status = (d.status || 'inbox').toLowerCase();
+        cellColor = STATUS_COLORS[status] || '#4b5563';
     }
 
-    // Dim completed tasks
-    if (d.status === "done" || d.status === "completed" || d.status === "cancelled") {
-        cellColor = `hsl(${hue}, 10%, 15%)`;
-    }
+    const priorityBorder = PRIORITY_BORDERS[d.priority ?? 4] || '#4b5563';
 
     // Helper to calculate contrast color for text
     const getContrastColor = (hex: string) => {
@@ -193,13 +204,13 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     // Add native tooltip
     g.append("title").text(`${d.label} (${d.status})\nPriority: P${d.priority}\nProject: ${d.project || 'None'}`);
 
-    // Base solid background
+    // Base solid background — status fill + priority border
     g.append("rect")
         .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
         .attr("rx", 4)
-        .attr("fill", cellColor).attr("fill-opacity", isParent ? 0.2 : 0.6)
-        .attr("stroke", isSelected ? "#fff" : cellColor)
-        .attr("stroke-width", isSelected ? 4 : 1)
+        .attr("fill", cellColor).attr("fill-opacity", isParent ? 0.2 : 0.7)
+        .attr("stroke", isSelected ? "#fff" : (isParent ? cellColor : priorityBorder))
+        .attr("stroke-width", isSelected ? 4 : (d.priority <= 1 ? 2.5 : 1))
         .style("transition", "all 0.2s ease");
 
     if (isParent && h > 20) {
