@@ -127,28 +127,51 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     const isEpicTier = !d._isProjectContainer && !d._isOverflow && isParent
         && ['epic', 'goal', 'project'].includes(d.type);
 
-    // ── TIER 1: Project containers — large dark regions with prominent labels ──
+    // ── TIER 1: Project containers — explicit bounded regions ──
     if (d._isProjectContainer) {
-        const tint = `hsl(${hue}, 25%, 12%)`;
+        const bgTint = `hsl(${hue}, 20%, 10%)`;
+        const borderColor = `hsl(${hue}, 40%, 35%)`;
+        const labelColor = `hsl(${hue}, 50%, 65%)`;
+
+        // Solid dark background — makes project region clearly distinct from canvas
         g.append("rect")
             .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
-            .attr("rx", 8)
-            .attr("fill", tint).attr("fill-opacity", 0.5)
-            .attr("stroke", `hsl(${hue}, 35%, 30%)`).attr("stroke-width", isSelected ? 3 : 2)
+            .attr("rx", 10)
+            .attr("fill", bgTint).attr("fill-opacity", 0.7)
+            .attr("stroke", isSelected ? "#fff" : borderColor)
+            .attr("stroke-width", isSelected ? 3 : 2.5)
             .style("transition", "all 0.2s ease");
 
-        // Project label — large, pinned top-left
+        // Inner inset line for extra boundary definition
+        g.append("rect")
+            .attr("x", -w / 2 + 3).attr("y", -h / 2 + 3)
+            .attr("width", Math.max(0, w - 6)).attr("height", Math.max(0, h - 6))
+            .attr("rx", 8)
+            .attr("fill", "none")
+            .attr("stroke", borderColor).attr("stroke-width", 0.5).attr("stroke-opacity", 0.3);
+
+        // Project label — large, bold, pinned top-left with background pill
         if (w > 30 && h > 20) {
-            const fs = Math.max(12, Math.min(20, w * 0.035));
+            const fs = Math.max(12, Math.min(22, w * 0.04));
+            const labelText = (d.label || '').toUpperCase();
+            const labelW = labelText.length * fs * 0.65 + 16;
+
+            // Label background pill
+            g.append("rect")
+                .attr("x", -w / 2 + 6).attr("y", -h / 2 + 4)
+                .attr("width", Math.min(labelW, w - 16)).attr("height", fs + 8)
+                .attr("rx", 4)
+                .attr("fill", bgTint).attr("fill-opacity", 0.9);
+
             g.append("text")
-                .attr("x", -w / 2 + 10).attr("y", -h / 2 + fs + 5)
+                .attr("x", -w / 2 + 14).attr("y", -h / 2 + fs + 6)
                 .attr("text-anchor", "start").attr("dominant-baseline", "auto")
                 .attr("font-size", fs + "px").attr("font-weight", "900")
                 .attr("font-family", "var(--font-mono), monospace")
-                .attr("fill", `hsl(${hue}, 45%, 60%)`).attr("fill-opacity", 0.9)
+                .attr("fill", labelColor)
                 .attr("letter-spacing", "0.15em")
                 .attr("pointer-events", "none")
-                .text((d.label || '').toUpperCase());
+                .text(labelText);
         }
         return;
     }

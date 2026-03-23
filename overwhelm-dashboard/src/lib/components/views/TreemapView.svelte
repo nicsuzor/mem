@@ -273,8 +273,8 @@
         // Estimate header height based on label length and node width
         function estimateHeaderHeight(node: any): number {
             if (node.depth === 0) return 4; // virtual root
-            // Project containers: just enough for the label
-            if (node.data?._isProjectContainer) return 26;
+            // Project containers: space for the large label + breathing room
+            if (node.data?._isProjectContainer) return 34;
             const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
             const label = node.data?.label || '';
             if (!label || w < 20) return node.depth <= 1 ? 38 : 20;
@@ -288,13 +288,13 @@
             return Math.max(node.depth <= 1 ? 24 : 16, Math.min(60, lines * lineHeight + basePad));
         }
 
-        // 3-tier spacing: projects (generous) → epics (moderate) → task cards (breathing room)
+        // 3-tier spacing: projects (very generous) → epics (moderate) → task cards (breathing room)
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
-            .paddingInner((node: any) => node.depth <= 1 ? 12 : node.depth <= 2 ? 6 : 5)
-            .paddingBottom((node: any) => node.depth <= 1 ? 8 : node.depth <= 2 ? 5 : 4)
-            .paddingLeft((node: any) => node.depth <= 1 ? 8 : node.depth <= 2 ? 5 : 4)
-            .paddingRight((node: any) => node.depth <= 1 ? 8 : node.depth <= 2 ? 5 : 4)
+            .paddingInner((node: any) => node.depth <= 1 ? 14 : node.depth <= 2 ? 6 : 5)
+            .paddingBottom((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
+            .paddingLeft((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
+            .paddingRight((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
             .paddingTop((node: any) => estimateHeaderHeight(node))
             .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
