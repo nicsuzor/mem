@@ -39,14 +39,14 @@ export const getLayoutFromViewSettings = ($settings: any) => {
 export const getGraphLayoutKey = ($settings: any): string => {
     switch ($settings.viewMode) {
         case 'Treemap':
-            return 'tree';
+            return 'treemap';
         case 'Circle Pack':
-            return 'circle';
+            return 'circle_pack';
         case 'SFDP':
-            return 'sfdp';
+            return 'forceatlas2';
         case 'Arc Diagram':
-            return 'arc';
+            return 'arc-focus';
         default:
-            return 'sfdp';
+            return 'forceatlas2';
     }
 }
