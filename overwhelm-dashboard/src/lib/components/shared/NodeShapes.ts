@@ -182,22 +182,31 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     const priorityBorder = PRIORITY_BORDERS[d.priority ?? 4] || '#4b5563';
 
-    // Helper to calculate contrast color for text
-    const getContrastColor = (hex: string) => {
-        if (!hex) return '#ffffff';
-        // If HSL string
-        if (hex.startsWith('hsl')) {
-            const matches = hex.match(/hsl\(\d+,\s*\d+%,\s*(\d+)%/);
-            if (matches && parseInt(matches[1]) > 60) return '#000000';
-            return '#ffffff';
+    // WCAG AA contrast: compute relative luminance and pick text color
+    // that guarantees >= 4.5:1 contrast ratio
+    function relativeLuminance(hex: string): number {
+        if (!hex || !hex.startsWith('#') || hex.length < 7) return 0;
+        const srgb = [hex.slice(1,3), hex.slice(3,5), hex.slice(5,7)]
+            .map(c => { const v = parseInt(c, 16) / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+        return 0.2126 * srgb[0] + 0.7152 * srgb[1] + 0.0722 * srgb[2];
+    }
+
+    function getContrastColor(color: string): string {
+        if (!color) return '#ffffff';
+        // HSL: extract lightness
+        if (color.startsWith('hsl')) {
+            const m = color.match(/hsl\(\d+,\s*\d+%,\s*(\d+)%/);
+            return (m && parseInt(m[1]) > 55) ? '#000000' : '#ffffff';
         }
-        if (!hex.startsWith('#')) return '#ffffff';
-        const r = parseInt(hex.slice(1, 3), 16);
-        const g = parseInt(hex.slice(3, 5), 16);
-        const b = parseInt(hex.slice(5, 7), 16);
-        const yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000;
-        return (yiq >= 128) ? '#000000' : '#ffffff';
-    };
+        if (!color.startsWith('#')) return '#ffffff';
+        const lum = relativeLuminance(color);
+        // WCAG AA: contrast ratio >= 4.5:1
+        // White text on bg: (1.05) / (lum + 0.05)
+        // Black text on bg: (lum + 0.05) / (0.05)
+        const whiteContrast = 1.05 / (lum + 0.05);
+        const blackContrast = (lum + 0.05) / 0.05;
+        return whiteContrast >= blackContrast ? '#ffffff' : '#1a1a1a';
+    }
 
     const textColor = getContrastColor(cellColor);
 
@@ -208,7 +217,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     g.append("rect")
         .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
         .attr("rx", 4)
-        .attr("fill", cellColor).attr("fill-opacity", isParent ? 0.2 : 0.7)
+        .attr("fill", cellColor).attr("fill-opacity", isParent ? 0.2 : 0.85)
         .attr("stroke", isSelected ? "#fff" : (isParent ? cellColor : priorityBorder))
         .attr("stroke-width", isSelected ? 4 : (d.priority <= 1 ? 2.5 : 1))
         .style("transition", "all 0.2s ease");
@@ -231,14 +240,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             .attr("fill", cellColor).attr("fill-opacity", 0.8);
     }
 
-    // Operator grid pattern overlay for active tasks
-    if (d.status !== "done" && d.status !== "completed" && d.status !== "cancelled" && !isParent) {
-        g.append("rect")
-            .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
-            .attr("rx", 4)
-            .attr("fill", "url(#holographic-grid)").attr("pointer-events", "none")
-            .attr("opacity", 0.3);
-    }
+    // Grid overlay removed — status colors provide sufficient visual distinction
+    // without the noise of overlaid patterns
 
     // Striped overlay for blocked tasks
     if (d.status === "blocked") {

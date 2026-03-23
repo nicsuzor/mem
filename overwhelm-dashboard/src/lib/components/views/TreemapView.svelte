@@ -226,10 +226,10 @@
 
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
-            .paddingInner((node: any) => node.depth <= 1 ? 3 : 1)
-            .paddingBottom((node: any) => node.depth <= 1 ? 3 : 1)
-            .paddingLeft((node: any) => node.depth <= 1 ? 3 : 1)
-            .paddingRight((node: any) => node.depth <= 1 ? 3 : 1)
+            .paddingInner((node: any) => node.depth <= 1 ? 6 : 4)
+            .paddingBottom((node: any) => node.depth <= 1 ? 5 : 3)
+            .paddingLeft((node: any) => node.depth <= 1 ? 5 : 3)
+            .paddingRight((node: any) => node.depth <= 1 ? 5 : 3)
             .paddingTop((node: any) => estimateHeaderHeight(node))
             .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
