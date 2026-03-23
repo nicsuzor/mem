@@ -17,7 +17,7 @@ export const viewSettings = writable({
     velocityDecay: 0.7,
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
-    treemapWeightMode: 'sqrt' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal'
+    treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal'
 });
 
 export const getLayoutFromViewSettings = ($settings: any) => {

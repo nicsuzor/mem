@@ -74,7 +74,7 @@
         const nodeIdSet = new Set(nodes.map(n => n.id));
         const projectRootId = ($filters as any).projectFilter as string | undefined;
 
-        let stratifyNodes;
+        let stratifyNodes: any[];
         let rootId: string;
 
         if (projectRootId && nodeIdSet.has(projectRootId)) {
@@ -85,19 +85,75 @@
             })).filter(n => n.parent !== "__ignore__");
         } else {
             rootId = virtualRootId;
-            stratifyNodes = [
-                { id: rootId, parent: "", type: "root" },
-                ...nodes.map((n) => ({
-                    ...n,
-                    parent: (n.parent && nodeIdSet.has(n.parent)) ? n.parent : rootId,
-                })),
-            ];
+
+            // Build project-grouped hierarchy:
+            // root → project containers → (existing parent hierarchy within project)
+            const projects = new Set(nodes.map(n => n.project).filter(Boolean));
+            const projectContainerIds = new Map<string, string>();
+
+            stratifyNodes = [{ id: rootId, parent: "", type: "root" }];
+
+            // Create synthetic project container nodes
+            for (const proj of projects) {
+                const containerId = `__project_${proj}__`;
+                projectContainerIds.set(proj, containerId);
+                stratifyNodes.push({
+                    id: containerId,
+                    parent: rootId,
+                    label: proj,
+                    type: 'project_container',
+                    status: '',
+                    project: proj,
+                    _isProjectContainer: true,
+                });
+            }
+
+            // Reparent nodes: if a node's parent is in the graph AND shares the same project,
+            // keep it. Otherwise, reparent to the project container (or root for no-project).
+            for (const n of nodes) {
+                const projContainer = n.project ? projectContainerIds.get(n.project) : undefined;
+                let effectiveParent: string;
+
+                if (n.parent && nodeIdSet.has(n.parent)) {
+                    // Check if parent is in the same project
+                    const parentNode = nodes.find(p => p.id === n.parent);
+                    if (parentNode && parentNode.project === n.project) {
+                        effectiveParent = n.parent;
+                    } else {
+                        // Cross-project parent — reparent to project container
+                        effectiveParent = projContainer || rootId;
+                    }
+                } else {
+                    effectiveParent = projContainer || rootId;
+                }
+
+                stratifyNodes.push({ ...n, parent: effectiveParent });
+            }
+
+            // Also add a container for orphan nodes (no project)
+            const orphans = stratifyNodes.filter(n => n.parent === rootId && n.id !== rootId && n.type !== 'project_container');
+            if (orphans.length > 0) {
+                const orphanId = '__project_uncategorized__';
+                stratifyNodes.push({
+                    id: orphanId,
+                    parent: rootId,
+                    label: 'uncategorized',
+                    type: 'project_container',
+                    status: '',
+                    project: '',
+                    _isProjectContainer: true,
+                });
+                for (const o of orphans) {
+                    o.parent = orphanId;
+                }
+            }
         }
 
         // Collapse single-child intermediate parents to reduce wasted nesting
         stratifyNodes = collapseSingleChildParents(stratifyNodes, rootId);
 
         let root;
+        let filteredNodes: any[] = [];
         try {
             // Pre-stratification Rollup Strategy:
             // For any parent node, if it has more than MAX_NODES_PER_PARENT children,
@@ -157,7 +213,7 @@
             }
 
             // We must now recursively remove any node whose ancestor was discarded
-            let filteredNodes = [...rolledUpNodes, ...syntheticNodes];
+            filteredNodes = [...rolledUpNodes, ...syntheticNodes];
             let changed = true;
             while (changed) {
                 changed = false;
@@ -211,6 +267,8 @@
         // Estimate header height based on label length and node width
         function estimateHeaderHeight(node: any): number {
             if (node.depth === 0) return 4; // virtual root
+            // Project containers: just enough for the label
+            if (node.data?._isProjectContainer) return 26;
             const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
             const label = node.data?.label || '';
             if (!label || w < 20) return node.depth <= 1 ? 38 : 20;
@@ -249,6 +307,7 @@
             });
         });
 
+        // Apply layout positions to real nodes
         nodes.forEach((n) => {
             const l = layoutMap.get(n.id);
             if (l) {
@@ -260,7 +319,22 @@
             }
         });
 
-        const visibleNodes = [...nodes]
+        // Build synthetic nodes (project containers, overflow) with layout data
+        const syntheticVisible: any[] = [];
+        for (const sn of filteredNodes) {
+            if (sn._isProjectContainer || sn._isOverflow) {
+                const l = layoutMap.get(sn.id);
+                if (l) {
+                    syntheticVisible.push({
+                        ...sn,
+                        x: l.x, y: l.y, w: l.w, h: l.h,
+                        depth: l.depth, _isLeaf: l.isLeaf, isLeaf: l.isLeaf,
+                    });
+                }
+            }
+        }
+
+        const visibleNodes = [...syntheticVisible, ...nodes]
             .filter(n => (n.x || 0) > -9000)
             .sort((a, b) => (a.depth || 0) - (b.depth || 0));
 

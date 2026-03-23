@@ -123,6 +123,33 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     // Base color logic: Project-based Hue
     const hue = projectHue(d.project || d.id);
 
+    // Project container nodes: faint tinted region with prominent label
+    if (d._isProjectContainer) {
+        const tint = `hsl(${hue}, 30%, 18%)`;
+        g.append("rect")
+            .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
+            .attr("rx", 6)
+            .attr("fill", tint).attr("fill-opacity", 0.35)
+            .attr("stroke", `hsl(${hue}, 40%, 35%)`).attr("stroke-width", isSelected ? 3 : 1.5)
+            .style("transition", "all 0.2s ease");
+
+        // Project label — always visible at top-left
+        if (w > 30 && h > 20) {
+            const fs = Math.max(10, Math.min(16, w * 0.03));
+            g.append("text")
+                .attr("x", -w / 2 + 8).attr("y", -h / 2 + fs + 4)
+                .attr("text-anchor", "start").attr("dominant-baseline", "auto")
+                .attr("font-size", fs + "px").attr("font-weight", "800")
+                .attr("font-family", "var(--font-mono), monospace")
+                .attr("fill", `hsl(${hue}, 50%, 65%)`).attr("fill-opacity", 0.9)
+                .attr("letter-spacing", "0.12em")
+                .attr("text-transform", "uppercase")
+                .attr("pointer-events", "none")
+                .text((d.label || '').toUpperCase());
+        }
+        return;
+    }
+
     if (d._isOverflow) {
         g.append("rect")
             .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
