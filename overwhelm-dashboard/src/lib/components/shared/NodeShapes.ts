@@ -559,9 +559,8 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 .attr("class", "danger-pulse");
         }
 
-        if (r > 6) {
-            renderWrappedTextInCircle(g, r, d.label || '');
-        }
+        // Text always rendered; visibility toggled by zoom handler in CirclePackView
+        renderWrappedTextInCircle(g, r, d.label || '');
     }
     }
 

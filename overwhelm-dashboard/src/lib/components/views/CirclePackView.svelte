@@ -6,6 +6,8 @@
     import { buildCirclePackNode } from "../shared/NodeShapes";
     import { routeContainmentEdges } from "../shared/EdgeRenderer";
 
+    import { onMount } from "svelte";
+
     export let containerGroup: SVGGElement;
 
     let nodesLayer: SVGGElement;
@@ -13,6 +15,51 @@
 
     let layoutComputed = false;
     let lastGraphData: any = null;
+
+    // Minimum pixel-space radius for showing text labels
+    const MIN_TEXT_PIXEL_RADIUS = 12;
+
+    onMount(() => {
+        // Watch the zoom transform on the parent SVG to toggle text visibility
+        const svg = containerGroup?.closest('svg');
+        if (!svg) return;
+
+        const observer = new MutationObserver(() => updateTextVisibility());
+        observer.observe(containerGroup, { attributes: true, attributeFilter: ['transform'] });
+
+        // Initial visibility pass after layout settles
+        setTimeout(updateTextVisibility, 200);
+
+        return () => observer.disconnect();
+    });
+
+    function getZoomScale(): number {
+        if (!containerGroup) return 1;
+        const transform = containerGroup.getAttribute('transform') || '';
+        const m = transform.match(/scale\(([^)]+)\)/);
+        if (m) return parseFloat(m[1]);
+        // d3 uses matrix form: translate(x,y) scale(k)
+        // or matrix(a,b,c,d,e,f) where a=k
+        const mat = transform.match(/matrix\(([^,]+)/);
+        if (mat) return parseFloat(mat[1]);
+        return 1;
+    }
+
+    function updateTextVisibility() {
+        if (!nodesLayer) return;
+        const k = getZoomScale();
+        const nodes = nodesLayer.querySelectorAll<SVGGElement>('g.node');
+        nodes.forEach(g => {
+            const d = (d3.select(g).datum() as any);
+            if (!d || !d._isLeaf) return;
+            const r = d._lr || 0;
+            const pixelR = r * k;
+            // Hide all text/foreignObject children when circle is too small on screen
+            g.querySelectorAll('text, foreignObject').forEach(el => {
+                (el as SVGElement).style.display = pixelR < MIN_TEXT_PIXEL_RADIUS ? 'none' : '';
+            });
+        });
+    }
 
     $: {
         if (containerGroup && $graphData && nodesLayer && edgesLayer && $selection && $viewSettings.circleRollupThreshold) {
@@ -167,6 +214,9 @@
             .join("path");
 
         routeContainmentEdges(eEls);
+
+        // Apply zoom-responsive text visibility after render
+        setTimeout(updateTextVisibility, 50);
     }
 </script>
 
