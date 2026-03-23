@@ -604,13 +604,18 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         }
     } else {
         // Leaf task circle — fill=status color, stroke=priority color
-        const baseStrokeW = d.priority <= 1
-            ? Math.max(1.5, Math.min(4, r * 0.04))
-            : Math.max(0.5, Math.min(2, r * 0.02));
+        const isCompleted = ['done', 'completed', 'cancelled'].includes(d.status);
+        const baseStrokeW = isCompleted
+            ? Math.max(0.3, Math.min(1, r * 0.01))
+            : d.priority <= 1
+                ? Math.max(1.5, Math.min(4, r * 0.04))
+                : Math.max(0.5, Math.min(2, r * 0.02));
+        const strokeColor = isSelected ? "#fff" : isCompleted ? "#2D3340" : priorityBorder;
         g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
             .attr("fill", cellColor).attr("fill-opacity", opacity)
-            .attr("stroke", isSelected ? "#fff" : priorityBorder)
-            .attr("stroke-width", isSelected ? Math.max(2, r * 0.02) : baseStrokeW);
+            .attr("stroke", strokeColor)
+            .attr("stroke-width", isSelected ? Math.max(2, r * 0.02) : baseStrokeW)
+            .attr("stroke-opacity", isCompleted ? 0.3 : 1);
 
         if (d.status === "blocked" && d.dw >= 2) {
             const pulseGap = Math.max(1, r * 0.05);
