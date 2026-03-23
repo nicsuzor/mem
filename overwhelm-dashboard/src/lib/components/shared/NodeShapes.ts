@@ -231,32 +231,32 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         return; // Skip the rest of the drawing logic for overflow nodes
     }
 
-    // Status-based fill colors (primary visual signal)
+    // Status-based fill colors — muted by default, saturated only for attention states
     const STATUS_COLORS: Record<string, string> = {
-        active: '#2563eb',       // Blue
-        in_progress: '#2563eb',  // Blue
-        review: '#3b82f6',       // Lighter blue
-        waiting: '#1d4ed8',      // Darker blue
-        decomposing: '#1e40af',  // Deep blue
-        blocked: '#dc2626',      // Red
-        ready: '#16a34a',        // Green
-        todo: '#22c55e',         // Light green
-        inbox: '#15803d',        // Dark green
-        dormant: '#4b5563',      // Grey
-        done: '#374151',         // Dark grey
-        completed: '#374151',    // Dark grey
-        cancelled: '#1f2937',    // Darker grey
-        deferred: '#4b5563',     // Grey
+        active: '#2C4A88',       // Soft blue — calm, doesn't scream
+        in_progress: '#2C4A88',  // Soft blue
+        review: '#3A5A9E',       // Slightly lighter soft blue
+        waiting: '#1E3A6E',      // Darker muted blue
+        decomposing: '#1E3A6E',  // Darker muted blue
+        blocked: '#dc2626',      // STRONG red — needs attention
+        ready: '#2D5A3D',        // Muted green
+        todo: '#2D5A3D',         // Muted green
+        inbox: '#1E4A2E',        // Dark green
+        dormant: '#2D2D35',      // Very dark grey
+        done: '#1E1E24',         // Near-black — greyed out
+        completed: '#1E1E24',    // Near-black
+        cancelled: '#18181C',    // Darkest grey
+        deferred: '#2D2D35',     // Dark grey
         paused: '#4b5563',       // Grey
     };
 
-    // Priority border colors (secondary signal via thin stroke)
+    // Priority border colors — only P0/P1 draw the eye
     const PRIORITY_BORDERS: Record<number, string> = {
-        0: '#fbbf24',  // P0 Critical — bright amber
-        1: '#f97316',  // P1 High — orange
-        2: '#a3a3a3',  // P2 Med — neutral
-        3: '#6b7280',  // P3 Low — subtle
-        4: '#4b5563',  // P4 Backlog — dim
+        0: '#f59e0b',  // P0 Critical — strong amber (attention!)
+        1: '#d97706',  // P1 High — warm orange
+        2: '#4A5568',  // P2 Med — blends with card
+        3: '#3A4250',  // P3 Low — nearly invisible
+        4: '#2D3340',  // P4 Backlog — disappears
     };
 
     let cellColor: string;

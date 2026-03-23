@@ -4,20 +4,20 @@
 
     let showLegend = true;
 
-    // Status = fill color (primary signal)
+    // Status = fill color (muted defaults, saturated for attention)
     const statusGroups = [
-        { key: 'showActive', label: 'ACTIVE', statuses: ['active', 'inbox', 'todo', 'in_progress', 'review'], color: '#2563eb' },
+        { key: 'showActive', label: 'ACTIVE', statuses: ['active', 'inbox', 'todo', 'in_progress', 'review'], color: '#2C4A88' },
         { key: 'showBlocked', label: 'BLOCKED', statuses: ['blocked'], color: '#dc2626' },
-        { key: 'showCompleted', label: 'COMPLETED', statuses: ['done', 'completed', 'cancelled'], color: '#374151' },
+        { key: 'showCompleted', label: 'COMPLETED', statuses: ['done', 'completed', 'cancelled'], color: '#1E1E24' },
     ] as const;
 
-    // Priority = border color (secondary signal)
+    // Priority = border color (only P0/P1 pop)
     const priorityColors = [
-        { label: 'P0 CRITICAL', color: '#fbbf24', border: true },
-        { label: 'P1 HIGH', color: '#f97316', border: true },
-        { label: 'P2 MEDIUM', color: '#a3a3a3', border: true },
-        { label: 'P3 LOW', color: '#6b7280', border: true },
-        { label: 'P4 BACKLOG', color: '#4b5563', border: true },
+        { label: 'P0 CRITICAL', color: '#f59e0b', border: true },
+        { label: 'P1 HIGH', color: '#d97706', border: true },
+        { label: 'P2 MEDIUM', color: '#4A5568', border: true },
+        { label: 'P3 LOW', color: '#3A4250', border: true },
+        { label: 'P4 BACKLOG', color: '#2D3340', border: true },
     ] as const;
 
     const edgeTypes = [
