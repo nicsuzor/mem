@@ -113,9 +113,9 @@
             return;
         }
 
-        const COMPLETED_NODE_WEIGHT = 3;
-        const MIN_ACTIVE_NODE_WEIGHT = 8;
-        const DEFAULT_NODE_WEIGHT = 5;
+        const COMPLETED_NODE_WEIGHT = 1;
+        const MIN_ACTIVE_NODE_WEIGHT = 10;
+        const DEFAULT_NODE_WEIGHT = 6;
 
         const computeSum = (d: any) => {
             if (d.children?.length) return 0;
