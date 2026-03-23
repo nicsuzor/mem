@@ -248,7 +248,7 @@
 
     {:else}
     <!-- MAIN CONTENT: Graph or Dashboard -->
-    <section class="{$viewSettings.showSidebar ? 'col-span-6' : 'col-span-9'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
+    <section class="{$viewSettings.showSidebar ? ($selection.activeNodeId ? 'col-span-6' : 'col-span-9') : ($selection.activeNodeId ? 'col-span-9' : 'col-span-12')} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
         <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
 
             <!-- Focus banner (Absolute Over Graph) -->
@@ -301,10 +301,12 @@
             </div>
     </section>
 
-    <!-- RIGHT SIDEBAR: Details / Editor -->
+    <!-- RIGHT SIDEBAR: Details / Editor (only when a task is selected) -->
+    {#if $selection.activeNodeId}
     <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
         <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
     </aside>
+    {/if}
 {/if}
 {/if}
 
