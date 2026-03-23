@@ -416,7 +416,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     }
 }
 
-function renderWrappedTextInCircle(g: d3.Selection<SVGGElement, any, null, undefined>, r: number, rawLabel: string) {
+function renderWrappedTextInCircle(g: d3.Selection<SVGGElement, any, null, undefined>, r: number, rawLabel: string, status?: string) {
+    const isCompleted = ['done', 'completed', 'cancelled'].includes(status || '');
     const innerW = r * 1.3;
     const innerH = r * 1.3;
 
@@ -470,8 +471,8 @@ function renderWrappedTextInCircle(g: d3.Selection<SVGGElement, any, null, undef
             .attr("text-anchor", "middle")
             .attr("dominant-baseline", "central")
             .attr("font-size", bestFs + "px")
-            .attr("font-weight", "600")
-            .attr("fill", "#fff")
+            .attr("font-weight", isCompleted ? "400" : "600")
+            .attr("fill", isCompleted ? "rgba(255,255,255,0.25)" : "#fff")
             .attr("pointer-events", "none")
             .text(line);
     });
@@ -543,9 +544,9 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         // Parent label — positioned with background pill for readability
         const MIN_RADIUS_FOR_LABEL = 15;
         if (r > MIN_RADIUS_FOR_LABEL) {
-            const minFs = isProject ? 14 : isEpic ? 10 : 6;
-            const maxFs = isProject ? 60 : isEpic ? 36 : 18;
-            const scaleFactor = isProject ? 0.04 : isEpic ? 0.03 : 0.02;
+            const minFs = isProject ? 18 : isEpic ? 12 : 8;
+            const maxFs = isProject ? 80 : isEpic ? 50 : 24;
+            const scaleFactor = isProject ? 0.06 : isEpic ? 0.045 : 0.03;
             const fs = Math.max(minFs, Math.min(maxFs, r * scaleFactor));
             const labelText = escapeHtml(d.label || '');
             const labelColor = `hsl(${hue}, ${isProject ? 70 : 50}%, ${isProject ? 80 : 70}%)`;
@@ -600,7 +601,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         }
 
         // Text always rendered; visibility toggled by zoom handler in CirclePackView
-        renderWrappedTextInCircle(g, r, d.label || '');
+        renderWrappedTextInCircle(g, r, d.label || '', d.status);
     }
     }
 
