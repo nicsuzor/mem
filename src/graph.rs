@@ -146,37 +146,6 @@ pub struct GraphNode {
     pub reachable: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assumptions: Vec<Assumption>,
-    /// Precomputed layout X coordinate (force-directed graph layout)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub x: Option<f64>,
-    /// Precomputed layout Y coordinate (force-directed graph layout)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub y: Option<f64>,
-    /// Treemap/circle width (single-layout export only)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub w: Option<f64>,
-    /// Treemap/circle height (single-layout export only)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub h: Option<f64>,
-    /// Circle pack radius (single-layout export only)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub r: Option<f64>,
-    /// Named layout coordinates (treemap, circle_pack, arc, etc.)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub layouts: HashMap<String, LayoutPoint>,
-}
-
-/// A point in a named layout coordinate system.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LayoutPoint {
-    pub x: f64,
-    pub y: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub w: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub h: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub r: Option<f64>,
 }
 
 /// An assumption attached to a planning node.
@@ -587,12 +556,6 @@ impl GraphNode {
             stakeholder_exposure: false,
             reachable: false,
             assumptions,
-            x: None,
-            y: None,
-            w: None,
-            h: None,
-            r: None,
-            layouts: HashMap::new(),
         }
     }
 }

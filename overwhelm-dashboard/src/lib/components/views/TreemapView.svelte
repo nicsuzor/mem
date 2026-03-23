@@ -94,7 +94,7 @@
 
             // Build project-grouped hierarchy:
             // root → project containers → (existing parent hierarchy within project)
-            const projects = new Set(nodes.map(n => n.project).filter(Boolean));
+            const projects = new Set(nodes.map(n => n.project).filter((p): p is string => Boolean(p)));
             const projectContainerIds = new Map<string, string>();
 
             stratifyNodes = [{ id: rootId, parent: "", type: "root" }];

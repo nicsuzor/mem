@@ -24,7 +24,6 @@
     import {
         viewSettings,
         getLayoutFromViewSettings,
-        getGraphLayoutKey,
     } from "$lib/stores/viewSettings";
     import { filters } from "$lib/stores/filters";
     import { selection } from "$lib/stores/selection";
@@ -35,21 +34,19 @@
     let rawGraph: any = null;
     let loading = true;
     let errorMsg = "";
-    let currentLayoutKey = "";
 
-    async function fetchGraph(layoutKey: string) {
+    async function fetchGraph() {
         if (!browser) return;
-        if (layoutKey === currentLayoutKey && rawGraph) return;
+        if (rawGraph) return;
         loading = true;
         errorMsg = "";
         try {
-            const res = await fetch(`/api/graph?layout=${layoutKey}`);
+            const res = await fetch(`/api/graph`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             rawGraph = await res.json();
-            currentLayoutKey = layoutKey;
             recomputeGraph();
         } catch (e: any) {
-            errorMsg = `Failed to load graph (${layoutKey}): ` + e.message;
+            errorMsg = `Failed to load graph: ` + e.message;
             console.error(e);
         } finally {
             loading = false;
@@ -57,23 +54,8 @@
     }
 
     onMount(() => {
-        fetchGraph(getGraphLayoutKey($viewSettings));
+        fetchGraph();
     });
-
-    $: {
-        const key = getGraphLayoutKey($viewSettings);
-        if (key !== currentLayoutKey) {
-            fetchGraph(key);
-
-            // Apply requested defaults for specific views
-            if ($viewSettings.viewMode === "SFDP") {
-                filters.update(f => ({ ...f, showActive: true, showBlocked: true, showCompleted: false, showOrphans: true, showDependencies: true }));
-                viewSettings.update(s => ({ ...s, topNLeaves: 9999, gravity: 1.0, chargeStrength: 1.5 })); // Show ALL, high gravity
-            } else if ($viewSettings.viewMode === "Circle Pack") {
-                filters.update(f => ({ ...f, showCompleted: true }));
-            }
-        }
-    }
 
     // Debounce graph recomputes — filters/settings can fire multiple reactive updates
     let recomputeTimer: ReturnType<typeof setTimeout> | null = null;

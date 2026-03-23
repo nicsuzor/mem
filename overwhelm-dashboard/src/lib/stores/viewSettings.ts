@@ -35,18 +35,5 @@ export const getLayoutFromViewSettings = ($settings: any) => {
     }
 }
 
-/** Map view mode to the graph JSON filename key in $AOPS_SESSIONS */
-export const getGraphLayoutKey = ($settings: any): string => {
-    switch ($settings.viewMode) {
-        case 'Treemap':
-            return 'treemap';
-        case 'Circle Pack':
-            return 'circle_pack';
-        case 'SFDP':
-            return 'forceatlas2';
-        case 'Arc Diagram':
-            return 'arc-focus';
-        default:
-            return 'forceatlas2';
-    }
-}
+/** Graph layout key — all views use one graph file since layouts are computed client-side */
+export const getGraphLayoutKey = (_$settings: any): string => 'graph';

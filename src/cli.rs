@@ -13,25 +13,6 @@ use rmcp::ServiceExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(ValueEnum, Clone, Debug)]
-enum LayoutAlgorithm {
-    Forceatlas2,
-    Treemap,
-    CirclePack,
-    Arc,
-}
-
-impl std::fmt::Display for LayoutAlgorithm {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LayoutAlgorithm::Forceatlas2 => write!(f, "forceatlas2"),
-            LayoutAlgorithm::Treemap => write!(f, "treemap"),
-            LayoutAlgorithm::CirclePack => write!(f, "circle_pack"),
-            LayoutAlgorithm::Arc => write!(f, "arc"),
-        }
-    }
-}
-
 #[derive(Parser)]
 #[command(
     name = "pkb",
@@ -46,10 +27,6 @@ struct Cli {
     /// Path to the persistent vector database file
     #[arg(long, global = true, default_value_t = default_db_path())]
     db_path: String,
-
-    /// Path to layout.toml for graph layout parameters
-    #[arg(long, global = true)]
-    layout_config: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -371,25 +348,13 @@ enum Commands {
 
     /// Export knowledge graph
     Graph {
-        /// Output format: json, graphml, dot, mcp-index, all
+        /// Output format: json, graphml, mcp-index, all
         #[arg(short, long, default_value = "all")]
         format: String,
 
         /// Output file base name (for 'all' format) or path (for single format)
         #[arg(short, long)]
         output: Option<String>,
-
-        /// Layout to use for single-format export (e.g. forceatlas2, treemap, circle_pack, arc)
-        #[arg(long)]
-        layout: Option<LayoutAlgorithm>,
-
-        /// Filter to reachable (focus) nodes only
-        #[arg(long)]
-        focus: bool,
-
-        /// Skip layout computation (export graph structure only)
-        #[arg(long)]
-        no_layout: bool,
     },
 
     /// Search memories by semantic similarity
@@ -808,10 +773,6 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-
-    if let Some(ref lc) = cli.layout_config {
-        mem::layout::set_config_path(PathBuf::from(lc));
-    }
 
     // Only load embedder + vector store for commands that need them
     let needs_embedder = matches!(
@@ -2040,13 +2001,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Graph { format, output, layout, focus, no_layout } => {
-            let mut gs = load_graph(&pkb_root, &db_path);
-            // Only compute layouts for formats that need them (unless --no-layout)
-            let needs_layout = !no_layout && matches!(format.to_lowercase().as_str(), "all" | "json" | "dot");
-            if needs_layout {
-                gs.compute_layouts();
-            }
+        Commands::Graph { format, output } => {
+            let gs = load_graph(&pkb_root, &db_path);
 
             match format.to_lowercase().as_str() {
                 "all" => {
@@ -2054,8 +2010,7 @@ async fn main() -> Result<()> {
                     let base = output.as_deref().unwrap_or_else(|| sessions_default.as_deref().unwrap_or("graph"));
                     let base = base
                         .trim_end_matches(".json")
-                        .trim_end_matches(".graphml")
-                        .trim_end_matches(".dot");
+                        .trim_end_matches(".graphml");
 
                     let written = gs.output_all_files(base)?;
                     for path in &written {
@@ -2087,30 +2042,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 "json" => {
-                    let layout_name = layout
-                        .as_ref()
-                        .map(|l| l.to_string())
-                        .unwrap_or_else(|| "forceatlas2".to_string());
-                    let content = gs.output_json_for_layout(&layout_name, focus)?;
-                    match output {
-                        Some(path) => {
-                            std::fs::write(&path, &content)?;
-                            println!(
-                                "Graph: {} nodes, {} edges -> {}",
-                                gs.node_count(),
-                                gs.edge_count(),
-                                path
-                            );
-                        }
-                        None => print!("{content}"),
-                    }
-                }
-                "dot" => {
-                    let layout_name = layout
-                        .as_ref()
-                        .map(|l| l.to_string())
-                        .unwrap_or_else(|| "forceatlas2".to_string());
-                    let content = gs.output_dot_for_layout(&layout_name, focus);
+                    let content = gs.output_json()?;
                     match output {
                         Some(path) => {
                             std::fs::write(&path, &content)?;
@@ -2140,7 +2072,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 other => {
-                    eprintln!("Unknown format: {other}. Use: all, json, dot, graphml, mcp-index");
+                    eprintln!("Unknown format: {other}. Use: all, json, graphml, mcp-index");
                     std::process::exit(1);
                 }
             }
