@@ -203,8 +203,16 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         .style("transition", "all 0.2s ease");
 
     if (isParent && h > 20) {
-        // Parent Header Bar — depth-aware: full header at top level, compact at deeper levels
-        const headerH = Math.min(d.depth <= 1 ? 34 : 16, h * 0.8);
+        // Parent Header Bar — height adapts to label wrapping
+        const label = d.label || '';
+        const fontSize = d.depth <= 1 ? 11 : 9;
+        const charWidth = fontSize * 0.56;
+        const availableWidth = Math.max(20, w - 12);
+        const charsPerLine = Math.max(4, Math.floor(availableWidth / charWidth));
+        const lines = Math.min(3, Math.ceil(label.length / charsPerLine));
+        const lineHeight = fontSize * 1.3;
+        const basePad = d.depth <= 1 ? 10 : 6;
+        const headerH = Math.min(Math.max(d.depth <= 1 ? 24 : 16, lines * lineHeight + basePad), h * 0.8);
         g.append("rect")
             .attr("x", -w / 2).attr("y", -h / 2)
             .attr("width", w).attr("height", headerH)
@@ -255,9 +263,12 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             const parentFs = d.depth <= 1
                 ? Math.max(8, Math.min(11, Math.min(w, h) * 0.09))
                 : Math.max(6, Math.min(9, Math.min(w, h) * 0.09));
-            const headerTextH = d.depth <= 1
-                ? Math.min(32, h * 0.7)
-                : Math.min(14, h * 0.7);
+            // Header text height matches the dynamic header bar
+            const charWidth = parentFs * 0.56;
+            const textAvailW = Math.max(20, w - pad * 2);
+            const charsPerLine = Math.max(4, Math.floor(textAvailW / charWidth));
+            const textLines = Math.min(3, Math.ceil(label.length / Math.max(1, charsPerLine)));
+            const headerTextH = Math.min(textLines * parentFs * 1.3 + 6, h * 0.7);
             if (w > 20 && h > 12) {
                 g.append("foreignObject")
                     .attr("x", -w / 2 + pad).attr("y", -h / 2 + 2)
@@ -270,7 +281,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                     .style("height", "100%")
                     .style("pointer-events", "none")
                     .html(`
-                        <div style="font-size: ${parentFs}px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.3;">
+                        <div style="font-size: ${parentFs}px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: ${textLines}; -webkit-box-orient: vertical; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.3;">
                             ${label}
                         </div>
                     `);

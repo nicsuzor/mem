@@ -208,13 +208,29 @@
             }
         }).sort((a, b) => (b.value || 0) - (a.value || 0));
 
+        // Estimate header height based on label length and node width
+        function estimateHeaderHeight(node: any): number {
+            if (node.depth === 0) return 4; // virtual root
+            const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
+            const label = node.data?.label || '';
+            if (!label || w < 20) return node.depth <= 1 ? 38 : 20;
+            const fontSize = node.depth <= 1 ? 11 : 9;
+            const charWidth = fontSize * 0.56;
+            const availableWidth = Math.max(20, w - 12); // pad
+            const charsPerLine = Math.max(4, Math.floor(availableWidth / charWidth));
+            const lines = Math.min(3, Math.ceil(label.length / charsPerLine));
+            const lineHeight = fontSize * 1.3;
+            const basePad = node.depth <= 1 ? 10 : 6;
+            return Math.max(node.depth <= 1 ? 24 : 16, Math.min(60, lines * lineHeight + basePad));
+        }
+
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
             .paddingInner((node: any) => node.depth <= 1 ? 3 : 1)
             .paddingBottom((node: any) => node.depth <= 1 ? 3 : 1)
             .paddingLeft((node: any) => node.depth <= 1 ? 3 : 1)
             .paddingRight((node: any) => node.depth <= 1 ? 3 : 1)
-            .paddingTop((node: any) => node.depth <= 1 ? 38 : 20)
+            .paddingTop((node: any) => estimateHeaderHeight(node))
             .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
 
