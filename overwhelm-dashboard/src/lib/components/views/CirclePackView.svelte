@@ -45,19 +45,30 @@
         return 1;
     }
 
+    // Minimum pixel radius for parent labels to be visible
+    const MIN_PARENT_LABEL_PIXEL_RADIUS = 25;
+
     function updateTextVisibility() {
         if (!nodesLayer) return;
         const k = getZoomScale();
         const nodes = nodesLayer.querySelectorAll<SVGGElement>('g.node');
         nodes.forEach(g => {
             const d = (d3.select(g).datum() as any);
-            if (!d || !d._isLeaf) return;
+            if (!d) return;
             const r = d._lr || 0;
             const pixelR = r * k;
-            // Hide all text/foreignObject children when circle is too small on screen
-            g.querySelectorAll('text, foreignObject').forEach(el => {
-                (el as SVGElement).style.display = pixelR < MIN_TEXT_PIXEL_RADIUS ? 'none' : '';
-            });
+
+            if (d._isLeaf) {
+                // Leaf nodes: hide text when circle too small on screen
+                g.querySelectorAll('text, foreignObject').forEach(el => {
+                    (el as SVGElement).style.display = pixelR < MIN_TEXT_PIXEL_RADIUS ? 'none' : '';
+                });
+            } else {
+                // Parent nodes: hide label + pill when container too small
+                g.querySelectorAll('.parent-label, .parent-label-bg').forEach(el => {
+                    (el as SVGElement).style.display = pixelR < MIN_PARENT_LABEL_PIXEL_RADIUS ? 'none' : '';
+                });
+            }
         });
     }
 

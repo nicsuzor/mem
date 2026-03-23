@@ -513,24 +513,64 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
     }
 
     if (isParent) {
-        // Parent containment circle — border scaled to radius
-        const parentStroke = Math.max(0.5, Math.min(2, r * 0.01));
-        g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
-            .attr("fill", cellColor).attr("fill-opacity", 0.1)
-            .attr("stroke", isSelected ? "#fff" : `hsl(${hue}, 50%, 45%)`)
-            .attr("stroke-width", isSelected ? Math.max(1, r * 0.01) : parentStroke)
-            .attr("stroke-dasharray", isSelected ? "none" : "3,2");
+        // ── Depth-tiered parent rendering ──
+        // depth 1 = top-level projects, depth 2 = epics/goals, depth 3+ = sub-groups
+        const depth = d.depth || 1;
 
-        // Parent label at top
+        // Visual parameters per tier
+        const isProject = depth <= 1;
+        const isEpic = depth === 2;
+        // depth 3+ = sub-group
+
+        const fillOpacity = isProject ? 0.15 : isEpic ? 0.08 : 0.04;
+        const strokeSat = isProject ? 55 : isEpic ? 40 : 25;
+        const strokeLight = isProject ? 50 : isEpic ? 40 : 35;
+        const strokeWidth = isSelected
+            ? Math.max(2, r * 0.015)
+            : isProject
+                ? Math.max(1.5, Math.min(4, r * 0.003))
+                : isEpic
+                    ? Math.max(0.8, Math.min(2.5, r * 0.002))
+                    : Math.max(0.4, Math.min(1.5, r * 0.001));
+        const dashArray = isSelected ? "none" : isProject ? "none" : isEpic ? "6,3" : "3,2";
+
+        g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
+            .attr("fill", cellColor).attr("fill-opacity", fillOpacity)
+            .attr("stroke", isSelected ? "#fff" : `hsl(${hue}, ${strokeSat}%, ${strokeLight}%)`)
+            .attr("stroke-width", strokeWidth)
+            .attr("stroke-dasharray", dashArray);
+
+        // Parent label — positioned with background pill for readability
         const MIN_RADIUS_FOR_LABEL = 15;
-        const MIN_FONT_SIZE = 6;
-        const MAX_FONT_SIZE = 14;
-        const FONT_SIZE_SCALE_FACTOR = 0.12;
         if (r > MIN_RADIUS_FOR_LABEL) {
-            const fs = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, r * FONT_SIZE_SCALE_FACTOR));
+            const minFs = isProject ? 14 : isEpic ? 10 : 6;
+            const maxFs = isProject ? 60 : isEpic ? 36 : 18;
+            const scaleFactor = isProject ? 0.04 : isEpic ? 0.03 : 0.02;
+            const fs = Math.max(minFs, Math.min(maxFs, r * scaleFactor));
+            const labelText = escapeHtml(d.label || '');
+            const labelColor = `hsl(${hue}, ${isProject ? 70 : 50}%, ${isProject ? 80 : 70}%)`;
+            const pillBg = `hsla(${hue}, 30%, 10%, 0.85)`;
+            const labelPad = pad(r);
+
+            // Estimate label width for background pill
+            const estCharW = fs * 0.6;
+            const maxLabelW = r * 1.7;
+            const estLabelW = Math.min(labelText.length * estCharW + 16, maxLabelW);
+            const pillH = fs + 8;
+
+            // Background pill behind label
+            g.append("rect")
+                .attr("x", -estLabelW / 2).attr("y", -r + labelPad - 2)
+                .attr("width", estLabelW).attr("height", pillH)
+                .attr("rx", pillH / 2)
+                .attr("fill", pillBg)
+                .attr("class", "parent-label-bg")
+                .style("pointer-events", "none");
+
             g.append("foreignObject")
-                .attr("x", -r * 0.7).attr("y", -r + pad(r))
-                .attr("width", r * 1.4).attr("height", fs * 2.5)
+                .attr("x", -r * 0.85).attr("y", -r + labelPad)
+                .attr("width", r * 1.7).attr("height", fs * 2.5)
+                .attr("class", "parent-label")
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("display", "flex")
@@ -538,8 +578,8 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 .style("width", "100%")
                 .style("pointer-events", "none")
                 .html(`
-                    <div style="font-size: ${fs}px; font-weight: 800; color: hsl(${hue}, 70%, 75%); text-transform: uppercase; letter-spacing: 0.1em; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 0 5px rgba(0,0,0,0.5);">
-                        ${escapeHtml(d.label || '')}
+                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 700}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.15em' : '0.08em'}; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 4px rgba(0,0,0,0.8);">
+                        ${labelText}
                     </div>
                 `);
         }
