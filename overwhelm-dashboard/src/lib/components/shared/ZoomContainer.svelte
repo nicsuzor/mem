@@ -66,19 +66,25 @@
         }
       }
 
-      const xs = fitNodes.map(n => n.x as number);
-      const ys = fitNodes.map(n => n.y as number);
-      const x0 = Math.min(...xs) - 80;
-      const x1 = Math.max(...xs) + 80;
-      const y0 = Math.min(...ys) - 80;
-      const y1 = Math.max(...ys) + 80;
+      // Account for node radii (circle pack) or card size so bounds include full shapes
+      const margin = 20;
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      fitNodes.forEach(n => {
+        const r = (n as any)._lr || (n as any).w / 2 || 40;
+        const nx = n.x as number, ny = n.y as number;
+        if (nx - r < x0) x0 = nx - r;
+        if (nx + r > x1) x1 = nx + r;
+        if (ny - r < y0) y0 = ny - r;
+        if (ny + r > y1) y1 = ny + r;
+      });
+      x0 -= margin; x1 += margin; y0 -= margin; y1 += margin;
 
       const dx = x1 - x0, dy = y1 - y0;
       if (dx === 0 || dy === 0) return;
 
       const W = svgElement.clientWidth || innerWidth;
       const H = svgElement.clientHeight || innerHeight;
-      const zoomScale = Math.min(W / dx, H / dy) * 0.96; // Use 96% of space instead of 88%
+      const zoomScale = Math.min(W / dx, H / dy) * 0.98;
       const cx = (x0 + x1) / 2;
       const cy = (y0 + y1) / 2;
 
