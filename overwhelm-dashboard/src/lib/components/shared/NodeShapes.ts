@@ -123,29 +123,67 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     // Base color logic: Project-based Hue
     const hue = projectHue(d.project || d.id);
 
-    // Project container nodes: faint tinted region with prominent label
+    // Determine visual tier
+    const isEpicTier = !d._isProjectContainer && !d._isOverflow && isParent
+        && ['epic', 'goal', 'project'].includes(d.type);
+
+    // ── TIER 1: Project containers — large dark regions with prominent labels ──
     if (d._isProjectContainer) {
-        const tint = `hsl(${hue}, 30%, 18%)`;
+        const tint = `hsl(${hue}, 25%, 12%)`;
         g.append("rect")
             .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
-            .attr("rx", 6)
-            .attr("fill", tint).attr("fill-opacity", 0.35)
-            .attr("stroke", `hsl(${hue}, 40%, 35%)`).attr("stroke-width", isSelected ? 3 : 1.5)
+            .attr("rx", 8)
+            .attr("fill", tint).attr("fill-opacity", 0.5)
+            .attr("stroke", `hsl(${hue}, 35%, 30%)`).attr("stroke-width", isSelected ? 3 : 2)
             .style("transition", "all 0.2s ease");
 
-        // Project label — always visible at top-left
+        // Project label — large, pinned top-left
         if (w > 30 && h > 20) {
-            const fs = Math.max(10, Math.min(16, w * 0.03));
+            const fs = Math.max(12, Math.min(20, w * 0.035));
             g.append("text")
-                .attr("x", -w / 2 + 8).attr("y", -h / 2 + fs + 4)
+                .attr("x", -w / 2 + 10).attr("y", -h / 2 + fs + 5)
                 .attr("text-anchor", "start").attr("dominant-baseline", "auto")
-                .attr("font-size", fs + "px").attr("font-weight", "800")
+                .attr("font-size", fs + "px").attr("font-weight", "900")
                 .attr("font-family", "var(--font-mono), monospace")
-                .attr("fill", `hsl(${hue}, 50%, 65%)`).attr("fill-opacity", 0.9)
-                .attr("letter-spacing", "0.12em")
-                .attr("text-transform", "uppercase")
+                .attr("fill", `hsl(${hue}, 45%, 60%)`).attr("fill-opacity", 0.9)
+                .attr("letter-spacing", "0.15em")
                 .attr("pointer-events", "none")
                 .text((d.label || '').toUpperCase());
+        }
+        return;
+    }
+
+    // ── TIER 2: Epics/Goals — medium tinted rectangles with all-caps titles ──
+    if (isEpicTier) {
+        const epicTint = `hsl(${hue}, 30%, 20%)`;
+        g.append("rect")
+            .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
+            .attr("rx", 5)
+            .attr("fill", epicTint).attr("fill-opacity", 0.4)
+            .attr("stroke", `hsl(${hue}, 35%, 35%)`).attr("stroke-width", isSelected ? 3 : 1)
+            .style("transition", "all 0.2s ease");
+
+        // Thin divider line below header area
+        if (w > 40 && h > 30) {
+            const headerH = Math.min(22, h * 0.3);
+            g.append("line")
+                .attr("x1", -w / 2 + 6).attr("x2", w / 2 - 6)
+                .attr("y1", -h / 2 + headerH).attr("y2", -h / 2 + headerH)
+                .attr("stroke", `hsl(${hue}, 30%, 40%)`).attr("stroke-width", 0.5)
+                .attr("stroke-opacity", 0.6);
+        }
+
+        // Epic label — all-caps, medium size
+        if (w > 30 && h > 16) {
+            const fs = Math.max(7, Math.min(12, Math.min(w, h) * 0.08));
+            const label = escapeHtml(d.label || '');
+            g.append("foreignObject")
+                .attr("x", -w / 2 + 5).attr("y", -h / 2 + 2)
+                .attr("width", Math.max(0, w - 10)).attr("height", Math.min(20, h * 0.3))
+                .style("pointer-events", "none")
+                .append("xhtml:div")
+                .style("pointer-events", "none")
+                .html(`<div style="font-size:${fs}px; font-weight:700; color:hsl(${hue},40%,65%); text-transform:uppercase; letter-spacing:0.08em; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${label}</div>`);
         }
         return;
     }

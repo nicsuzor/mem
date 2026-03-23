@@ -23,6 +23,9 @@
         }
     });
 
+    // Types that should be preserved as grouping containers (never collapsed)
+    const CONTAINER_TYPES = new Set(['epic', 'goal', 'project', 'project_container']);
+
     function collapseSingleChildParents(nodes: any[], rootId: string): any[] {
         const DONE_STATUSES = new Set(['done', 'completed', 'cancelled']);
         let result = [...nodes];
@@ -41,6 +44,9 @@
                 if (parentId === '' || parentId === rootId) continue;
                 const parent = result.find(n => n.id === parentId);
                 if (!parent) continue;
+
+                // Never collapse epics/goals/projects — they form the visual hierarchy
+                if (CONTAINER_TYPES.has(parent.type)) continue;
 
                 const activeChildren = children.filter(c => !DONE_STATUSES.has(c.status));
                 if (activeChildren.length !== 1) continue;
@@ -282,12 +288,13 @@
             return Math.max(node.depth <= 1 ? 24 : 16, Math.min(60, lines * lineHeight + basePad));
         }
 
+        // 3-tier spacing: projects (generous) → epics (moderate) → tasks (tight)
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
-            .paddingInner((node: any) => node.depth <= 1 ? 6 : 4)
-            .paddingBottom((node: any) => node.depth <= 1 ? 5 : 3)
-            .paddingLeft((node: any) => node.depth <= 1 ? 5 : 3)
-            .paddingRight((node: any) => node.depth <= 1 ? 5 : 3)
+            .paddingInner((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 3)
+            .paddingBottom((node: any) => node.depth <= 1 ? 8 : node.depth <= 2 ? 4 : 2)
+            .paddingLeft((node: any) => node.depth <= 1 ? 8 : node.depth <= 2 ? 4 : 2)
+            .paddingRight((node: any) => node.depth <= 1 ? 8 : node.depth <= 2 ? 4 : 2)
             .paddingTop((node: any) => estimateHeaderHeight(node))
             .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
