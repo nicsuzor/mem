@@ -492,26 +492,44 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         g.classed("selected-node", false);
     }
 
-    // Color logic similar to Treemap
+    // Color: status → fill, priority → border (matches legend & treemap)
     const hue = projectHue(d.project || d.id);
-    const spectralHues = [
-        "#ef4444", // 0 Critical
-        "#f97316", // 1 High
-        "#f59e0b", // 2 Med
-        "#06b6d4", // 3 Low
-        "#8b5cf6", // 4 Backlog
-    ];
+
+    const CIRCLE_STATUS_COLORS: Record<string, string> = {
+        active: '#2C4A88',       // Soft blue
+        in_progress: '#2C4A88',  // Soft blue
+        review: '#3A5A9E',       // Lighter blue
+        waiting: '#1E3A6E',      // Darker muted blue
+        decomposing: '#1E3A6E',  // Darker muted blue
+        blocked: '#dc2626',      // STRONG red — needs attention
+        ready: '#2D5A3D',        // Muted green
+        todo: '#2D5A3D',         // Muted green
+        inbox: '#1E4A2E',        // Dark green
+        dormant: '#2D2D35',      // Very dark grey
+        done: '#1E1E24',         // Near-black
+        completed: '#1E1E24',    // Near-black
+        cancelled: '#18181C',    // Darkest grey
+        deferred: '#2D2D35',     // Dark grey
+        paused: '#4b5563',       // Grey
+    };
+
+    const CIRCLE_PRIORITY_BORDERS: Record<number, string> = {
+        0: '#f59e0b',  // P0 Critical — strong amber
+        1: '#d97706',  // P1 High — warm orange
+        2: '#4A5568',  // P2 Med — blends
+        3: '#3A4250',  // P3 Low — nearly invisible
+        4: '#2D3340',  // P4 Backlog — disappears
+    };
 
     let cellColor: string;
     if (isParent) {
         cellColor = `hsl(${hue}, 40%, 25%)`;
     } else {
-        if (d.priority !== undefined && d.priority >= 0 && d.priority <= 2 && d.status !== 'done') {
-            cellColor = spectralHues[d.priority];
-        } else {
-            cellColor = `hsl(${hue}, 35%, ${d.status === 'active' ? '35%' : '15%'})`;
-        }
+        const status = (d.status || 'inbox').toLowerCase();
+        cellColor = CIRCLE_STATUS_COLORS[status] || '#4b5563';
     }
+
+    const priorityBorder = CIRCLE_PRIORITY_BORDERS[d.priority ?? 4] || '#3A4250';
 
     if (isParent) {
         // ── Depth-tiered parent rendering ──
@@ -585,12 +603,14 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 `);
         }
     } else {
-        // Leaf task circle — border scaled to radius
-        const strokeW = Math.max(0.5, Math.min(3, r * 0.03));
+        // Leaf task circle — fill=status color, stroke=priority color
+        const baseStrokeW = d.priority <= 1
+            ? Math.max(1.5, Math.min(4, r * 0.04))
+            : Math.max(0.5, Math.min(2, r * 0.02));
         g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
             .attr("fill", cellColor).attr("fill-opacity", opacity)
-            .attr("stroke", isSelected ? "#fff" : cellColor)
-            .attr("stroke-width", isSelected ? Math.max(1, r * 0.02) : strokeW);
+            .attr("stroke", isSelected ? "#fff" : priorityBorder)
+            .attr("stroke-width", isSelected ? Math.max(2, r * 0.02) : baseStrokeW);
 
         if (d.status === "blocked" && d.dw >= 2) {
             const pulseGap = Math.max(1, r * 0.05);
