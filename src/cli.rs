@@ -2395,7 +2395,7 @@ async fn main() -> Result<()> {
             println!("  {} memories", memories.len());
         }
 
-        Commands::Blocks { id, tree } => {
+        Commands::Blocks { id, tree: _ } => {
             let gs = load_graph(&pkb_root, &db_path);
 
             if gs.get_node(&id).is_none() {
@@ -2411,11 +2411,7 @@ async fn main() -> Result<()> {
 
             println!();
             for (blocked_id, depth) in &blocks {
-                let indent = if tree {
-                    "  ".repeat(*depth)
-                } else {
-                    "  ".to_string()
-                };
+                let indent = "  ".repeat(*depth);
                 let label = gs
                     .get_node(blocked_id)
                     .map(|n| n.label.as_str())
