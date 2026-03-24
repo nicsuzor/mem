@@ -1484,26 +1484,92 @@ async fn main() -> Result<()> {
                     }
                 }
                 None => {
-                    // Summary: top 10 by pagerank
                     let pr = metrics::compute_pagerank(&node_ids, edges);
-                    let mut ranked: Vec<_> = pr.iter().collect();
-                    ranked
-                        .sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    let bc = metrics::compute_betweenness_centrality(&node_ids, edges);
+                    let degrees = metrics::compute_degrees(&node_ids, edges);
 
-                    println!();
-                    println!("  \x1b[1m{:<30} {:>10}\x1b[0m", "NODE", "PAGERANK");
-                    println!("  {}", "-".repeat(42));
-
-                    for (id, score) in ranked.iter().take(20) {
-                        let label = gs.get_node(id).map(|n| n.label.as_str()).unwrap_or("?");
-                        let display = if label.len() > 28 {
-                            format!("{}...", &label[..25])
+                    let trunc = |s: &str, max: usize| -> String {
+                        if s.chars().count() > max {
+                            let t: String = s.chars().take(max - 3).collect();
+                            format!("{}...", t)
                         } else {
-                            label.to_string()
-                        };
-                        println!("  {:<30} {:>10.4}", display, score);
+                            s.to_string()
+                        }
+                    };
+
+                    // --- Top by PageRank ---
+                    let mut by_pr: Vec<_> = pr.iter().collect();
+                    by_pr.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    println!();
+                    println!("  \x1b[1m=== Top 15 by PageRank ===\x1b[0m");
+                    println!("  {:<35} {:>8} {:>8} {:>6} {:>6}", "NODE", "PAGERANK", "BETWEEN", "IN", "OUT");
+                    println!("  {}", "-".repeat(67));
+                    for (id, pr_score) in by_pr.iter().take(15) {
+                        let label = gs.get_node(id).map(|n| n.label.as_str()).unwrap_or("?");
+                        let b = bc.get(id.as_str()).copied().unwrap_or(0.0);
+                        let (ind, outd) = degrees.get(id.as_str()).copied().unwrap_or((0, 0));
+                        println!("  {:<35} {:>8.4} {:>8.4} {:>6} {:>6}", trunc(label, 35), pr_score, b, ind, outd);
                     }
-                    println!("\n  {} nodes, {} edges", gs.node_count(), gs.edge_count());
+
+                    // --- Top by Betweenness ---
+                    let mut by_bc: Vec<_> = bc.iter().collect();
+                    by_bc.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    println!();
+                    println!("  \x1b[1m=== Top 15 by Betweenness ===\x1b[0m");
+                    println!("  {:<35} {:>8} {:>8} {:>6} {:>6}", "NODE", "BETWEEN", "PAGERANK", "IN", "OUT");
+                    println!("  {}", "-".repeat(67));
+                    for (id, bc_score) in by_bc.iter().take(15) {
+                        let label = gs.get_node(id).map(|n| n.label.as_str()).unwrap_or("?");
+                        let p = pr.get(id.as_str()).copied().unwrap_or(0.0);
+                        let (ind, outd) = degrees.get(id.as_str()).copied().unwrap_or((0, 0));
+                        println!("  {:<35} {:>8.4} {:>8.4} {:>6} {:>6}", trunc(label, 35), bc_score, p, ind, outd);
+                    }
+
+                    // --- Top ready tasks by downstream weight vs metrics ---
+                    let mut ready_nodes = gs.ready_tasks();
+                    ready_nodes.sort_by(|a, b| {
+                        b.downstream_weight.partial_cmp(&a.downstream_weight)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    println!();
+                    println!("  \x1b[1m=== Top 20 Ready Tasks by Downstream Weight ===\x1b[0m");
+                    println!("  {:<35} {:>4} {:>6} {:>8} {:>8}", "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN");
+                    println!("  {}", "-".repeat(65));
+                    for node in ready_nodes.iter().take(20) {
+                        let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
+                        let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
+                        let exposure = if node.stakeholder_exposure { "!" } else { "" };
+                        println!("  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
+                            trunc(&node.label, 35),
+                            node.priority.unwrap_or(2),
+                            node.downstream_weight,
+                            exposure,
+                            p, b);
+                    }
+
+                    // --- Top ready tasks by PageRank (for comparison) ---
+                    let mut ready_by_pr: Vec<_> = ready_nodes.iter()
+                        .map(|node| {
+                            let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
+                            (*node, p)
+                        })
+                        .collect();
+                    ready_by_pr.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    println!();
+                    println!("  \x1b[1m=== Top 20 Ready Tasks by PageRank ===\x1b[0m");
+                    println!("  {:<35} {:>4} {:>6} {:>8} {:>8}", "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN");
+                    println!("  {}", "-".repeat(65));
+                    for (node, p) in ready_by_pr.iter().take(20) {
+                        let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
+                        println!("  {:<35} P{:<3} {:>5.1}  {:>8.4} {:>8.4}",
+                            trunc(&node.label, 35),
+                            node.priority.unwrap_or(2),
+                            node.downstream_weight,
+                            p, b);
+                    }
+
+                    println!("\n  {} nodes, {} edges, {} ready tasks",
+                        gs.node_count(), gs.edge_count(), ready_nodes.len());
                     println!();
                 }
             }
