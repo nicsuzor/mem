@@ -1497,57 +1497,56 @@ async fn main() -> Result<()> {
                         }
                     };
 
-                    // --- Top by PageRank ---
-                    let mut by_pr: Vec<_> = pr.iter().collect();
-                    by_pr.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
-                    println!();
-                    println!("  \x1b[1m=== Top 15 by PageRank ===\x1b[0m");
-                    println!("  {:<35} {:>8} {:>8} {:>6} {:>6}", "NODE", "PAGERANK", "BETWEEN", "IN", "OUT");
-                    println!("  {}", "-".repeat(67));
-                    for (id, pr_score) in by_pr.iter().take(15) {
-                        let label = gs.get_node(id).map(|n| n.label.as_str()).unwrap_or("?");
-                        let b = bc.get(id.as_str()).copied().unwrap_or(0.0);
-                        let (ind, outd) = degrees.get(id.as_str()).copied().unwrap_or((0, 0));
-                        println!("  {:<35} {:>8.4} {:>8.4} {:>6} {:>6}", trunc(label, 35), pr_score, b, ind, outd);
-                    }
+                    // Helper: print a centrality table (top 15 nodes)
+                    let print_centrality = |title: &str,
+                                            primary_hdr: &str,
+                                            secondary_hdr: &str,
+                                            primary: &std::collections::HashMap<String, f64>,
+                                            secondary: &std::collections::HashMap<String, f64>| {
+                        let mut sorted: Vec<_> = primary.iter().collect();
+                        sorted.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+                        println!();
+                        println!("  \x1b[1m=== Top 15 by {} ===\x1b[0m", title);
+                        println!("  {:<35} {:>8} {:>8} {:>6} {:>6}", "NODE", primary_hdr, secondary_hdr, "IN", "OUT");
+                        println!("  {}", "-".repeat(67));
+                        for (id, score) in sorted.iter().take(15) {
+                            let id_str: &str = id;
+                            let label = gs.get_node(id_str).map(|n| n.label.as_str()).unwrap_or("?");
+                            let sec = secondary.get(id_str).copied().unwrap_or(0.0);
+                            let (ind, outd) = degrees.get(id_str).copied().unwrap_or((0, 0));
+                            println!("  {:<35} {:>8.4} {:>8.4} {:>6} {:>6}", trunc(label, 35), score, sec, ind, outd);
+                        }
+                    };
 
-                    // --- Top by Betweenness ---
-                    let mut by_bc: Vec<_> = bc.iter().collect();
-                    by_bc.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
-                    println!();
-                    println!("  \x1b[1m=== Top 15 by Betweenness ===\x1b[0m");
-                    println!("  {:<35} {:>8} {:>8} {:>6} {:>6}", "NODE", "BETWEEN", "PAGERANK", "IN", "OUT");
-                    println!("  {}", "-".repeat(67));
-                    for (id, bc_score) in by_bc.iter().take(15) {
-                        let label = gs.get_node(id).map(|n| n.label.as_str()).unwrap_or("?");
-                        let p = pr.get(id.as_str()).copied().unwrap_or(0.0);
-                        let (ind, outd) = degrees.get(id.as_str()).copied().unwrap_or((0, 0));
-                        println!("  {:<35} {:>8.4} {:>8.4} {:>6} {:>6}", trunc(label, 35), bc_score, p, ind, outd);
-                    }
+                    print_centrality("PageRank", "PAGERANK", "BETWEEN", &pr, &bc);
+                    print_centrality("Betweenness", "BETWEEN", "PAGERANK", &bc, &pr);
 
-                    // --- Top ready tasks by downstream weight vs metrics ---
+                    // Helper: print a ready-tasks table (top 20)
+                    let print_ready = |title: &str, nodes: &[&graph::GraphNode]| {
+                        println!();
+                        println!("  \x1b[1m=== Top 20 {} ===\x1b[0m", title);
+                        println!("  {:<35} {:>4} {:>6} {:>8} {:>8}", "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN");
+                        println!("  {}", "-".repeat(65));
+                        for node in nodes.iter().take(20) {
+                            let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
+                            let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
+                            let exposure = if node.stakeholder_exposure { "!" } else { "" };
+                            println!("  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
+                                trunc(&node.label, 35),
+                                node.priority.unwrap_or(2),
+                                node.downstream_weight,
+                                exposure,
+                                p, b);
+                        }
+                    };
+
                     let mut ready_nodes = gs.ready_tasks();
                     ready_nodes.sort_by(|a, b| {
                         b.downstream_weight.partial_cmp(&a.downstream_weight)
                             .unwrap_or(std::cmp::Ordering::Equal)
                     });
-                    println!();
-                    println!("  \x1b[1m=== Top 20 Ready Tasks by Downstream Weight ===\x1b[0m");
-                    println!("  {:<35} {:>4} {:>6} {:>8} {:>8}", "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN");
-                    println!("  {}", "-".repeat(65));
-                    for node in ready_nodes.iter().take(20) {
-                        let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
-                        let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
-                        let exposure = if node.stakeholder_exposure { "!" } else { "" };
-                        println!("  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
-                            trunc(&node.label, 35),
-                            node.priority.unwrap_or(2),
-                            node.downstream_weight,
-                            exposure,
-                            p, b);
-                    }
+                    print_ready("Ready Tasks by Downstream Weight", &ready_nodes);
 
-                    // --- Top ready tasks by PageRank (for comparison) ---
                     let mut ready_by_pr: Vec<_> = ready_nodes.iter()
                         .map(|node| {
                             let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
@@ -1555,18 +1554,8 @@ async fn main() -> Result<()> {
                         })
                         .collect();
                     ready_by_pr.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                    println!();
-                    println!("  \x1b[1m=== Top 20 Ready Tasks by PageRank ===\x1b[0m");
-                    println!("  {:<35} {:>4} {:>6} {:>8} {:>8}", "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN");
-                    println!("  {}", "-".repeat(65));
-                    for (node, p) in ready_by_pr.iter().take(20) {
-                        let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
-                        println!("  {:<35} P{:<3} {:>5.1}  {:>8.4} {:>8.4}",
-                            trunc(&node.label, 35),
-                            node.priority.unwrap_or(2),
-                            node.downstream_weight,
-                            p, b);
-                    }
+                    let sorted_by_pr: Vec<_> = ready_by_pr.iter().map(|(n, _)| *n).collect();
+                    print_ready("Ready Tasks by PageRank", &sorted_by_pr);
 
                     println!("\n  {} nodes, {} edges, {} ready tasks",
                         gs.node_count(), gs.edge_count(), ready_nodes.len());
