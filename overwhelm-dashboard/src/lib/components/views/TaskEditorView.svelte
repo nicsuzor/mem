@@ -10,7 +10,12 @@
     let { taskId = null, onclose = () => {} }: { taskId?: string | null, onclose?: () => void } = $props();
 
     let task = $derived(taskId ? ($graphData?.nodes.find(n => n.id === taskId) || null) : null);
-    let title = $derived((task as any)?.fullTitle || task?.label || "Unknown Task");
+    
+    // Check if this is a synthetic project container node (from TreemapView)
+    let isProjectContainer = $derived(taskId?.startsWith('__project_') && !taskId.endsWith('_uncategorized__'));
+    let projectName = $derived(isProjectContainer ? taskId?.replace(/^__project_/, '').replace(/__$/, '') : null);
+
+    let title = $derived(projectName || (task as any)?.fullTitle || task?.label || "Unknown Task");
     let metadata = $derived((task as any)?._raw || {});
 
     let description = $state("");
@@ -20,10 +25,11 @@
 
     // Fetch body on-demand
     $effect(() => {
-        if (taskId) {
+        if (taskId && !taskId.startsWith('__')) {
             fetchBody(taskId);
         } else {
             description = "";
+            loadingBody = false;
         }
     });
 
@@ -167,18 +173,20 @@
         <span class="text-[10px] tracking-[0.2em] uppercase font-bold">SYSTEM READY</span>
         <span class="text-[9px] opacity-40 mt-1 uppercase">Select node for telemetry</span>
     </div>
-{:else if task}
+{:else if task || isProjectContainer}
     <div class="flex flex-col h-full bg-background overflow-hidden font-mono border-l border-primary/20">
         <!-- Breadcrumbs & Header -->
         <div class="flex flex-col gap-1 p-3 border-b border-primary/20 bg-background shrink-0">
             <div class="flex items-center justify-between">
                 <div class="flex items-center gap-1.5 text-[9px] font-mono opacity-60">
-                    <span class="uppercase">{task.project || 'VOID'}</span>
-                    <span class="text-primary/30">/</span>
-                    <button class="text-primary hover:underline flex items-center gap-1" onclick={() => copyToClipboard(task.id)}>
-                        {task.id}
-                        <span class="material-symbols-outlined text-[10px]">content_copy</span>
-                    </button>
+                    <span class="uppercase">{projectName || task?.project || 'VOID'}</span>
+                    {#if !isProjectContainer}
+                        <span class="text-primary/30">/</span>
+                        <button class="text-primary hover:underline flex items-center gap-1" onclick={() => copyToClipboard(task.id)}>
+                            {task.id}
+                            <span class="material-symbols-outlined text-[10px]">content_copy</span>
+                        </button>
+                    {/if}
                 </div>
                 <button class="text-primary/40 hover:text-primary transition-colors" onclick={close}>
                     <span class="material-symbols-outlined text-base">close</span>
@@ -195,52 +203,59 @@
                     </button>
                 </div>
                 
-                <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-primary/60 text-[9px] font-mono uppercase tracking-wider">
-                    <div class="flex items-center gap-1.5 bg-primary/5 px-1.5 py-0.5 rounded border border-primary/10">
-                        <span>TYPE:</span>
-                        <select
-                            class="bg-transparent text-primary outline-none cursor-pointer"
-                            value={task.type}
-                            onchange={(e) => setType(e.currentTarget.value)}
-                        >
-                            {#each typeOptions as type}
-                                <option value={type}>{type}</option>
-                            {/each}
-                        </select>
+                {#if isProjectContainer}
+                    <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-primary/60 text-[9px] font-mono uppercase tracking-wider mt-2">
+                        <div class="flex items-center gap-1.5 bg-primary/10 px-2 py-1 rounded border border-primary/20 text-primary font-bold">
+                            <span>VIRTUAL PROJECT CONTAINER</span>
+                        </div>
                     </div>
-                    <div class="flex items-center gap-1.5 bg-primary/5 px-1.5 py-0.5 rounded border border-primary/10">
-                        <span>STATE:</span>
-                        <select
-                            class="bg-transparent text-primary outline-none cursor-pointer"
-                            value={task.status}
-                            onchange={(e) => setStatus(e.currentTarget.value)}
-                        >
-                            {#each statusOptions.filter(s => canComplete || s !== 'done') as status}
-                                <option value={status}>{status}</option>
-                            {/each}
-                        </select>
+                {:else}
+                    <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-primary/60 text-[9px] font-mono uppercase tracking-wider">
+                        <div class="flex items-center gap-1.5 bg-primary/5 px-1.5 py-0.5 rounded border border-primary/10">
+                            <span>TYPE:</span>
+                            <select
+                                class="bg-transparent text-primary outline-none cursor-pointer"
+                                value={task.type}
+                                onchange={(e) => setType(e.currentTarget.value)}
+                            >
+                                {#each typeOptions as type}
+                                    <option value={type}>{type}</option>
+                                {/each}
+                            </select>
+                        </div>
+                        <div class="flex items-center gap-1.5 bg-primary/5 px-1.5 py-0.5 rounded border border-primary/10">
+                            <span>STATE:</span>
+                            <select
+                                class="bg-transparent text-primary outline-none cursor-pointer"
+                                value={task.status}
+                                onchange={(e) => setStatus(e.currentTarget.value)}
+                            >
+                                {#each statusOptions.filter(s => canComplete || s !== 'done') as status}
+                                    <option value={status}>{status}</option>
+                                {/each}
+                            </select>
+                        </div>
                     </div>
-                </div>
 
-                <div class="flex gap-2 mt-1">
-                    {#if canComplete}
+                    <div class="flex gap-2 mt-1">
+                        {#if canComplete}
+                            <button
+                                class="flex-1 py-1.5 border border-primary {task.status === 'done' ? 'bg-primary text-background' : 'bg-primary/5 text-primary'} hover:bg-primary hover:text-background font-bold text-[10px] transition-all rounded-sm uppercase tracking-widest disabled:opacity-50"
+                                onclick={handleComplete}
+                                disabled={updating}
+                            >
+                                {task.status === 'done' ? 'FINISHED' : 'COMPLETE'}
+                            </button>
+                        {/if}
                         <button
-                            class="flex-1 py-1.5 border border-primary {task.status === 'done' ? 'bg-primary text-background' : 'bg-primary/5 text-primary'} hover:bg-primary hover:text-background font-bold text-[10px] transition-all rounded-sm uppercase tracking-widest disabled:opacity-50"
-                            onclick={handleComplete}
+                            class="px-2 py-1.5 border border-primary/40 {task.status === 'ready' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
+                            onclick={() => setStatus('ready')}
                             disabled={updating}
                         >
-                            {task.status === 'done' ? 'FINISHED' : 'COMPLETE'}
+                            READY
                         </button>
-                    {/if}
-                    <button
-                        class="px-2 py-1.5 border border-primary/40 {task.status === 'ready' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
-                        onclick={() => setStatus('ready')}
-                        disabled={updating}
-                    >
-                        READY
-                    </button>
-                </div>
-                {#if showConfirmComplete}
+                    </div>
+                {/if}                {#if showConfirmComplete}
                     <div class="mt-1 p-2 border border-destructive/40 bg-destructive/5 rounded-sm">
                         <p class="text-[9px] text-destructive font-mono mb-1.5">
                             ⚠ {activeChildren.length} active sub-task{activeChildren.length === 1 ? '' : 's'} will remain open:
@@ -280,8 +295,27 @@
         <!-- Scrollable content -->
         <div class="flex-1 overflow-y-auto custom-scrollbar">
             <div class="flex flex-col p-3 space-y-4">
-                <!-- Main Editor Area -->
-                <div class="space-y-1.5">
+                {#if isProjectContainer}
+                    <div class="space-y-4">
+                        <div class="p-4 border border-primary/20 bg-primary/5 rounded-sm">
+                            <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block mb-2">Project_Overview</span>
+                            <div class="text-[11px] leading-relaxed text-primary/80">
+                                This is a synthetic container for all tasks within the <strong>{projectName}</strong> project. 
+                                Click a specific task inside the treemap to edit its details.
+                            </div>
+                        </div>
+
+                        <div class="space-y-2">
+                            <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Lineage_Map</span>
+                            <div class="bg-primary/2 rounded p-1">
+                                <HierarchyTree {taskId} />
+                            </div>
+                        </div>
+                    </div>
+                {:else if task}
+                    <!-- Main Editor Area -->
+                    <div class="space-y-1.5">
+
                     <div class="flex items-center justify-between">
                         <span class="text-[9px] font-bold uppercase tracking-[0.15em] text-primary/50">Core_Intelligence</span>
                         <button class="text-primary/30 hover:text-primary transition-colors flex items-center gap-1 text-[9px]" onclick={() => copyToClipboard(description)}>
