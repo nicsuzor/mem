@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { untrack } from "svelte";
     import * as d3 from "d3";
     import { graphData } from "../../stores/graph";
     import { filters } from "../../stores/filters";
@@ -21,11 +22,14 @@
     let links = $state<any[]>([]);
 
     $effect(() => {
-        // Run layout ONLY when graph data or weight settings change
+        // Run layout ONLY when graph data or weight settings change.
+        // untrack() prevents Svelte from auto-tracking reactive reads inside
+        // computeLayout (e.g. canvasH, $filters) — those would cause a
+        // re-layout when the container resizes (sidebar open/close on click).
         const _data = $graphData;
         const _weightMode = $viewSettings.treemapWeightMode;
         if (containerGroup && _data && nodesLayer) {
-            computeLayout(_data);
+            untrack(() => computeLayout(_data));
         }
     });
 

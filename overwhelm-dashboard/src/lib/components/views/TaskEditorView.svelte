@@ -326,7 +326,6 @@
                     <div class="border border-primary/20 bg-black/20 p-3 min-h-[160px] relative">
                         <textarea class="w-full h-full min-h-[140px] bg-transparent border-none focus:ring-0 text-[11px] font-mono leading-relaxed text-primary/80 resize-none outline-none custom-scrollbar" placeholder={loadingBody ? "Syncing..." : "No data found."} value={description}></textarea>
                     </div>
-                </div>
 
                 <div class="grid grid-cols-2 gap-3">
                     <div class="space-y-1">
@@ -380,6 +379,8 @@
                         {/each}
                     </div>
                 </div>
+                </div>
+                {/if}
             </div>
         </div>
     </div>
