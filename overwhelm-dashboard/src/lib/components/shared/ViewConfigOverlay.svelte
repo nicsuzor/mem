@@ -39,6 +39,11 @@
                         <input type="checkbox" bind:checked={$viewSettings.liveSimulation} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
                     </label>
 
+                    <label class="flex items-center justify-between cursor-pointer group">
+                        <span class="text-[10px] font-bold text-primary/60 uppercase">Intention_Path</span>
+                        <input type="checkbox" bind:checked={$viewSettings.showIntentionPath} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
+                    </label>
+
                     {#if $viewSettings.liveSimulation}
                         <div class="space-y-3 pt-1 border-t border-primary/5">
                             <div class="space-y-1">
@@ -85,6 +90,10 @@
                 {/if}
 
                 {#if isArc}
+                    <label class="flex items-center justify-between cursor-pointer group">
+                        <span class="text-[10px] font-bold text-primary/60 uppercase">Focused_Only</span>
+                        <input type="checkbox" bind:checked={$viewSettings.arcFocusedOnly} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
+                    </label>
                     <div class="space-y-1">
                         <div class="flex justify-between text-[9px] text-primary/50 uppercase">
                             <span>Vertical_Scale</span>

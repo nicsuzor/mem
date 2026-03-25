@@ -11,8 +11,8 @@
 
     let { containerGroup, width = 2000, height = 1000 } = $props<{ containerGroup: SVGGElement | null; width?: number; height?: number }>();
 
-    let nodesLayer: SVGGElement;
-    let edgesLayer: SVGGElement;
+    let nodesLayer = $state<SVGGElement>(undefined!);
+    let edgesLayer = $state<SVGGElement>(undefined!);
 
     const canvasW = 3000;
     const canvasH = $derived(canvasW * (height && width ? height / width : 0.5));

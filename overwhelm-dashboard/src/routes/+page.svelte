@@ -80,7 +80,7 @@
             $viewSettings.viewMode === "SFDP";
 
         // Only include real task types with explicit ID and status
-        const TASK_TYPES = new Set(["task", "goal", "project", "epic"]);
+        const TASK_TYPES = new Set(["task", "goal", "project", "epic", "bug", "feature", "learn", "action", "subproject"]);
         fNodes = fNodes.filter(n => TASK_TYPES.has(n.type) && n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "" && n.status !== "inbox");
 
         if (!$filters.showActive) {
@@ -125,13 +125,53 @@
         }
 
         const survivingNodeIds = new Set(fNodes.map((n) => n.id));
+
+        // Sanitize parent references after filtering — prevents stratify failures in tree/circle views
+        fNodes.forEach(n => {
+            if (n.parent && !survivingNodeIds.has(n.parent)) n.parent = null;
+        });
+
         fLinks = fLinks.filter((l) => {
             const sid = typeof l.source === "object" ? l.source.id : l.source;
             const tid = typeof l.target === "object" ? l.target.id : l.target;
             return survivingNodeIds.has(sid) && survivingNodeIds.has(tid);
         });
 
-        $graphData = { ...prepared, nodes: fNodes, links: fLinks };
+        // Compute intention paths: trace from ready tasks up through parent chains
+        const nodeMap = new Map(fNodes.map(n => [n.id, n]));
+        const intentionOnPath = new Set<string>();
+        const intentionDone = new Set<string>();
+        const intentionRemaining = new Set<string>();
+
+        if (prepared.readyIds) {
+            // Walk up parent chains from each ready task
+            for (const readyId of prepared.readyIds) {
+                if (!survivingNodeIds.has(readyId)) continue;
+                let cur = readyId;
+                while (cur) {
+                    intentionOnPath.add(cur);
+                    const node = nodeMap.get(cur);
+                    cur = node?.parent || "";
+                }
+            }
+            // Mark siblings of path nodes as done or remaining
+            for (const node of fNodes) {
+                if (intentionOnPath.has(node.id)) continue;
+                if (!node.parent || !intentionOnPath.has(node.parent)) continue;
+                if (["done", "completed", "cancelled"].includes(node.status)) {
+                    intentionDone.add(node.id);
+                } else {
+                    intentionRemaining.add(node.id);
+                }
+            }
+        }
+
+        $graphData = {
+            ...prepared,
+            nodes: fNodes,
+            links: fLinks,
+            intentionPath: { onPath: intentionOnPath, done: intentionDone, remaining: intentionRemaining },
+        } as any;
     }
 
     function applyHighlightOpacity(nodes: GraphNode[], links: GraphEdge[]) {
