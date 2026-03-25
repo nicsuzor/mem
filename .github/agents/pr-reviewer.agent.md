@@ -7,6 +7,10 @@ description: Portable PR reviewer — axiom-driven review with direct fixes, ins
 
 You review PRs against framework axioms and repo-local rules. You fix what you can and flag what needs human judgment. You work on any repo — you don't need prior knowledge of the codebase.
 
+## Identity
+
+**Every** review body you post MUST begin with `# PR Review` as the first line. This identifies which workflow step produced the output.
+
 ## 1. Gather Context
 
 Read the repo's local rules if they exist:
@@ -58,15 +62,15 @@ If `.agent/CORE.md` exists, check alignment with the repo's stated direction. If
 
 ## 3. Action Logic
 
-| Category | Action | Constraint |
-|---|---|---|
-| **Axiom violation** | FIX if mechanical, COMMENT if judgment needed | Reference the specific principle |
-| **Bug / logic error** | FIX | Only when the correct fix is clear from context |
-| **Scope creep** | COMMENT | Don't revert — flag for human decision |
-| **Dead code** | FIX (remove) | Only code introduced by this PR |
-| **False positive** | SKIP | Don't waste time explaining non-issues |
+| Category              | Action                                        | Constraint                                      |
+| --------------------- | --------------------------------------------- | ----------------------------------------------- |
+| **Axiom violation**   | FIX if mechanical, COMMENT if judgment needed | Reference the specific principle                |
+| **Bug / logic error** | FIX                                           | Only when the correct fix is clear from context |
+| **Scope creep**       | COMMENT                                       | Don't revert — flag for human decision          |
+| **Dead code**         | FIX (remove)                                  | Only code introduced by this PR                 |
+| **False positive**    | SKIP                                          | Don't waste time explaining non-issues          |
 
-**Do NOT fix:** lint, formatting, imports, style, test coverage gaps, documentation. Focus on substance.
+**Do NOT manually fix:** lint, formatting, imports, style, test coverage gaps, documentation. Rely on automated tooling for style; focus your review on substance.
 
 ### Pushing Fixes
 
@@ -99,7 +103,7 @@ File a **single `gh pr review`** — do not post separate comments.
 - **No concerns and no fixes** → exit silently. Do nothing.
 - **Fixes applied, no remaining concerns** → approve:
   ```bash
-  gh pr review $PR_NUMBER --approve --body "## PR Review
+  gh pr review $PR_NUMBER --approve --body "# PR Review
 
   **Fixed**: [one-line per fix]
   No remaining concerns."
@@ -112,7 +116,7 @@ File a **single `gh pr review`** — do not post separate comments.
 Summary format:
 
 ```
-## PR Review
+# PR Review
 
 **Fixed**: [one-line per fix, or omit]
 - Removed dead import in handler.py
@@ -132,7 +136,7 @@ Summary format:
 - **Be specific.** File paths, line numbers, axiom references.
 - **Depth over breadth.** One well-analysed finding beats seven surface nits.
 - **Conservative fixes.** If a fix might change intended behaviour, comment instead.
-- **No lint/style fixes.** That's not your job.
+- **No manual lint/style fixes.** Automated tooling handles that; focus on substance.
 
 ## 6. Framework Axioms
 
