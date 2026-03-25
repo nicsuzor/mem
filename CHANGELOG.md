@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5](https://github.com/nicsuzor/mem/compare/v0.3.4...v0.3.5) - 2026-03-25
+
+### Fixed
+
+- *(treemap)* resolve parent IDs and prevent layout shuffle on click
+- *(dash)* resolve treemap hierarchy bugs and remove virtual containers
+
+### Other
+
+- update PR reviewer agent prompt to latest
+- Remove layout generation from Rust PKB tool; dashboard uses single graph.json
+- Dim completed task outlines so priority borders only pop on active tasks
+- radius-aware bounds for better circle pack viewport fit
+- Circle pack: expand graph to full width when no task selected
+- Circle pack: shrink completed tasks so active work dominates layout
+- Circle pack: consistent status-based color encoding matching legend
+- Circle pack: dim completed task text + larger parent labels
+- Circle pack: depth-tiered parent containers with prominent labels
+- Circle pack: zoom-responsive text labels hide when too small to read
+- Mute active task colors so only attention states pop
+- Make project boundaries visually explicit
+- Increase task card spacing for calmer visual texture
+- Add 3-tier visual hierarchy: projects → epics → tasks
+- project-grouped hierarchy with priority-driven area
+- Improve treemap readability: spacing, opacity, contrast, no grid
+- Switch treemap to status-based fill colors with priority borders
+- Fix treemap parent headers to grow dynamically with wrapped text
+- Fix graph layout key mapping to match actual filenames
+
 ## [0.3.4](https://github.com/nicsuzor/mem/compare/v0.3.3...v0.3.4) - 2026-03-22
 
 ### Fixed
