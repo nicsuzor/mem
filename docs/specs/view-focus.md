@@ -18,13 +18,7 @@ Part of the [[planning-web]] spec. See also: `task-focus-scoring.md` for how ite
 
 ## Design
 
-Shows top 5 actionable items selected by the focus scoring algorithm:
-
-1. P1 tasks first
-2. Approaching deadlines
-3. Oldest P2 tasks (staleness)
-4. Tasks that unblock the most (graph centrality / downstream_weight)
-5. Cap at 5
+Shows top 5 actionable items ranked by the `task-focus-scoring.md` formula (weighted multi-signal: intention alignment, downstream weight, priority, project activity, recency, blocking urgency, user boost). See [[task-focus-scoring]] for signal definitions and weights. Capped at 5.
 
 ### Sections
 

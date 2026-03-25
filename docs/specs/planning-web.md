@@ -137,6 +137,7 @@ focus_score = (
 | Task        | Standard size, white/neutral  | Single-session deliverables    |
 | Action      | Small                         | Atomic steps within tasks      |
 | Bug/Feature | Standard, distinct icon       | Typed work items               |
+| Review      | Standard, review icon         | Review/approval work items     |
 | PKB Note    | Green accent                  | Knowledge nodes                |
 | Source      | Green with bibliographic info | Citation nodes                 |
 
