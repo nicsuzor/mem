@@ -148,7 +148,9 @@
             for (const readyId of prepared.readyIds) {
                 if (!survivingNodeIds.has(readyId)) continue;
                 let cur = readyId;
-                while (cur) {
+                const visited = new Set<string>();
+                while (cur && !visited.has(cur)) {
+                    visited.add(cur);
                     intentionOnPath.add(cur);
                     const node = nodeMap.get(cur);
                     cur = node?.parent || "";
