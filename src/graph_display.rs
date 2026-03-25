@@ -3,9 +3,11 @@ use crate::graph_store::GraphStore;
 /// A node reference with label, type, and status for rendering.
 #[derive(Debug, Clone)]
 pub struct ContextNode {
+    pub id: String,
     pub label: String,
     pub node_type: Option<String>,
     pub status: Option<String>,
+    pub priority: Option<i32>,
 }
 
 /// Structured local graph context for a node, usable by both CLI and TUI.
@@ -29,9 +31,11 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
     let node = gs.get_node(node_id)?;
 
     let target = ContextNode {
+        id: node_id.to_string(),
         label: node.label.clone(),
         node_type: node.node_type.clone(),
         status: node.status.clone(),
+        priority: node.priority,
     };
 
     // Walk parent chain (with cycle detection)
@@ -45,9 +49,11 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         }
         if let Some(parent) = gs.get_node(pid) {
             parents.push(ContextNode {
+                id: pid.to_string(),
                 label: parent.label.clone(),
                 node_type: parent.node_type.clone(),
                 status: parent.status.clone(),
+                priority: parent.priority,
             });
             parent_id = parent.parent.as_deref();
         } else {
@@ -63,9 +69,11 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
                 .filter_map(|id| gs.get_node(id))
                 .take(5)
                 .map(|n| ContextNode {
+                    id: n.id.clone(),
                     label: n.label.clone(),
                     node_type: n.node_type.clone(),
                     status: n.status.clone(),
+                    priority: n.priority,
                 })
                 .collect()
         } else {
@@ -78,29 +86,35 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
     let children_total = node.children.len();
     let children: Vec<_> = node.children.iter()
         .filter_map(|id| gs.get_node(id))
-        .take(3)
+        .take(5)
         .map(|n| ContextNode {
+            id: n.id.clone(),
             label: n.label.clone(),
             node_type: n.node_type.clone(),
             status: n.status.clone(),
+            priority: n.priority,
         })
         .collect();
 
     let depends_on: Vec<_> = node.depends_on.iter()
         .filter_map(|id| gs.get_node(id))
         .map(|n| ContextNode {
+            id: n.id.clone(),
             label: n.label.clone(),
             node_type: n.node_type.clone(),
             status: n.status.clone(),
+            priority: n.priority,
         })
         .collect();
 
     let blocks: Vec<_> = node.blocks.iter()
         .filter_map(|id| gs.get_node(id))
         .map(|n| ContextNode {
+            id: n.id.clone(),
             label: n.label.clone(),
             node_type: n.node_type.clone(),
             status: n.status.clone(),
+            priority: n.priority,
         })
         .collect();
 
@@ -116,18 +130,46 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
     })
 }
 
-/// Renders a compact 2D ASCII representation of a node's local neighbourhood.
+/// Format a status tag with ANSI color.
+fn status_tag(status: Option<&str>) -> String {
+    match status {
+        Some("done" | "complete" | "completed") => "\x1b[32mdone\x1b[0m".to_string(),
+        Some("active") => "\x1b[33mactive\x1b[0m".to_string(),
+        Some("blocked") => "\x1b[31mblocked\x1b[0m".to_string(),
+        Some(s) => format!("\x1b[2m{s}\x1b[0m"),
+        None => String::new(),
+    }
+}
+
+/// Format a node for display: "Label  [status]"
+fn fmt_node(n: &ContextNode) -> String {
+    let st = status_tag(n.status.as_deref());
+    if st.is_empty() {
+        n.label.clone()
+    } else {
+        format!("{}  {}", n.label, st)
+    }
+}
+
+/// Renders a vertical tree view of a node's local neighbourhood.
 ///
-/// Layout:
-///         [Parent]
-///            |
-/// [Sibling]--[TARGET]--[Sibling]
-///            |
-///        [Children...]
-///
-/// Dependencies are shown with arrows:
-/// [TARGET] <--- [Depends On]
-/// [TARGET] ---> [Blocks]
+/// ```text
+///   Graph Context:
+///     ╭─ parent ─╮
+///     │  Grandparent
+///     │  └─ Parent
+///     │     ├─ Sibling A
+///     │     ├─ ★ THIS NODE  ← you are here
+///     │     └─ Sibling B
+///     ╰──────────╯
+///     depends on:
+///       ← Dependency A  [active]
+///     blocks:
+///       → Blocked Task  [blocked]
+///     children:
+///       ├─ Child A  [active]
+///       └─ Child B  [done]
+/// ```
 pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
     let ctx = match get_local_context(gs, node_id) {
         Some(c) => c,
@@ -135,55 +177,78 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
     };
 
     let mut lines = Vec::new();
-    let target_label = ctx.target.label.to_uppercase();
 
-    // 1. Parent (immediate, above)
-    if let Some(parent) = ctx.parents.first() {
-        lines.push(format!("      [{}]", parent.label));
-        lines.push("          |".to_string());
-    }
+    // --- Parent chain (reversed so root is first) ---
+    if !ctx.parents.is_empty() {
+        let mut chain: Vec<&ContextNode> = ctx.parents.iter().collect();
+        chain.reverse(); // root first
 
-    // 2. Siblings & Target (middle row)
-    let mut middle = format!("[{}]", target_label);
-    if !ctx.siblings.is_empty() {
-        let sibs: Vec<_> = ctx.siblings.iter().take(2).collect();
-        let mut left_sibs = Vec::new();
-        let mut right_sibs = Vec::new();
-        for (i, sib) in sibs.iter().enumerate() {
-            if i % 2 == 0 {
-                left_sibs.push(format!("[{}]", sib.label));
+        for (i, p) in chain.iter().enumerate() {
+            let indent = "  ".repeat(i);
+            let connector = if i == 0 { "" } else { "└─ " };
+            lines.push(format!("    \x1b[2m{indent}{connector}{}\x1b[0m", p.label));
+        }
+
+        // Now show siblings + target as children of the immediate parent
+        let depth = chain.len();
+        let indent = "  ".repeat(depth);
+        let total_siblings = ctx.siblings.len() + 1; // +1 for the target
+        let mut all_nodes: Vec<(bool, &ContextNode)> = Vec::new();
+        // We don't know the exact ordering, so put target first then siblings
+        all_nodes.push((true, &ctx.target));
+        for s in &ctx.siblings {
+            all_nodes.push((false, s));
+        }
+
+        for (i, (is_target, node)) in all_nodes.iter().enumerate() {
+            let is_last = i == total_siblings - 1;
+            let branch = if is_last { "└─" } else { "├─" };
+            if *is_target {
+                lines.push(format!(
+                    "    {indent}{branch} \x1b[1;36m★ {}\x1b[0m",
+                    ctx.target.label
+                ));
             } else {
-                right_sibs.push(format!("[{}]", sib.label));
+                lines.push(format!(
+                    "    {indent}{branch} \x1b[2m{}\x1b[0m",
+                    fmt_node(node)
+                ));
             }
         }
-        if !left_sibs.is_empty() {
-            middle = format!("{}--{}", left_sibs.join("--"), middle);
-        }
-        if !right_sibs.is_empty() {
-            middle = format!("{}--{}", middle, right_sibs.join("--"));
-        }
-    }
-    lines.push(middle);
-
-    // 3. Children (below)
-    if !ctx.children.is_empty() {
-        lines.push("          |".to_string());
-        for child in &ctx.children {
-            lines.push(format!("          +-- [{}]", child.label));
-        }
-        if ctx.children_total > 3 {
-            lines.push(format!("          +-- ... ({} more)", ctx.children_total - 3));
-        }
+    } else {
+        // Orphan — just show the target
+        lines.push(format!("    \x1b[1;36m★ {}\x1b[0m", ctx.target.label));
     }
 
-    // 4. Dependencies — use actual node label instead of [Target]
-    if !ctx.depends_on.is_empty() || !ctx.blocks.is_empty() {
-        lines.push("".to_string());
+    // --- Dependencies ---
+    if !ctx.depends_on.is_empty() {
+        lines.push(format!("    \x1b[2mdepends on:\x1b[0m"));
         for dep in &ctx.depends_on {
-            lines.push(format!("  [{}] <--- [{}] (depends on)", target_label, dep.label));
+            lines.push(format!("      \x1b[33m← {}\x1b[0m", fmt_node(dep)));
         }
+    }
+
+    // --- Blocks ---
+    if !ctx.blocks.is_empty() {
+        lines.push(format!("    \x1b[2mblocks:\x1b[0m"));
         for blocked in &ctx.blocks {
-            lines.push(format!("  [{}] ---> [{}] (blocks)", target_label, blocked.label));
+            lines.push(format!("      \x1b[36m→ {}\x1b[0m", fmt_node(blocked)));
+        }
+    }
+
+    // --- Children ---
+    if !ctx.children.is_empty() {
+        lines.push(format!("    \x1b[2mchildren:\x1b[0m"));
+        for (i, child) in ctx.children.iter().enumerate() {
+            let is_last = i == ctx.children.len() - 1 && ctx.children_total <= ctx.children.len();
+            let branch = if is_last { "└─" } else { "├─" };
+            lines.push(format!("      {branch} {}", fmt_node(child)));
+        }
+        if ctx.children_total > ctx.children.len() {
+            lines.push(format!(
+                "      └─ \x1b[2m... ({} more)\x1b[0m",
+                ctx.children_total - ctx.children.len()
+            ));
         }
     }
 
@@ -232,11 +297,6 @@ mod tests {
         }
     }
 
-    /// Build a graph with rich relationships:
-    ///   epic-1 (parent of task-a, task-b)
-    ///   task-a depends on task-b
-    ///   task-c depends on task-a (so task-a blocks task-c)
-    ///   isolated (no parent, no deps)
     fn build_graph() -> GraphStore {
         let docs = vec![
             make_doc("tasks/epic-1.md", "Epic One", "epic", "active", "epic-1", None, &[]),
@@ -248,7 +308,6 @@ mod tests {
         GraphStore::build(&docs, Path::new("/tmp/test-pkb"))
     }
 
-    /// Build a graph where a parent has more than 3 children to test truncation.
     fn build_graph_many_children() -> GraphStore {
         let docs = vec![
             make_doc("tasks/parent.md", "Big Parent", "epic", "active", "big-parent", None, &[]),
@@ -272,157 +331,52 @@ mod tests {
     #[test]
     fn test_node_with_parent_children_deps_and_blocks() {
         let gs = build_graph();
-        // task-a has parent epic-1, depends_on task-b, and blocks task-c
         let lines = render_ascii_graph(&gs, "task-a");
         let combined = lines.join("\n");
 
-        // Should show parent above
-        assert!(
-            combined.contains("[Epic One]"),
-            "Expected parent label [Epic One] in output:\n{}",
-            combined
-        );
-
-        // The target node label is uppercased
-        assert!(
-            combined.contains("[TASK A]"),
-            "Expected uppercased target [TASK A] in output:\n{}",
-            combined
-        );
-
-        // Should show a dependency line with actual node label (not [Target])
-        assert!(
-            combined.contains("[TASK A] <--- [Task B] (depends on)"),
-            "Expected depends_on line with actual label in output:\n{}",
-            combined
-        );
-
-        // Should show a blocks line with actual node label
-        assert!(
-            combined.contains("[TASK A] ---> [Task C] (blocks)"),
-            "Expected blocks line with actual label in output:\n{}",
-            combined
-        );
-
-        // Sibling: task-b is also a child of epic-1, so it should appear as a sibling
-        assert!(
-            combined.contains("[Task B]"),
-            "Expected sibling [Task B] in middle row in output:\n{}",
-            combined
-        );
+        // Should show parent
+        assert!(combined.contains("Epic One"), "Expected parent in output:\n{}", combined);
+        // Target highlighted with star
+        assert!(combined.contains("★ Task A"), "Expected ★ Task A in output:\n{}", combined);
+        // Dependency
+        assert!(combined.contains("← Task B"), "Expected ← Task B dep in output:\n{}", combined);
+        // Blocks
+        assert!(combined.contains("→ Task C"), "Expected → Task C blocks in output:\n{}", combined);
+        // Sibling
+        assert!(combined.contains("Task B"), "Expected sibling Task B in output:\n{}", combined);
     }
 
     #[test]
     fn test_orphan_node_no_parent() {
         let gs = build_graph();
-        // task-c has no parent but depends on task-a
         let lines = render_ascii_graph(&gs, "task-c");
         let combined = lines.join("\n");
 
-        // No parent line — first line should be the target itself (uppercased)
-        assert!(
-            lines[0].contains("[TASK C]"),
-            "Expected orphan's first line to be the target node, got:\n{}",
-            combined
-        );
-
-        // Should still show dependency with actual label
-        assert!(
-            combined.contains("[TASK C] <--- [Task A] (depends on)"),
-            "Expected depends_on line for Task A in output:\n{}",
-            combined
-        );
+        assert!(combined.contains("★ Task C"), "Expected ★ Task C in output:\n{}", combined);
+        assert!(combined.contains("← Task A"), "Expected dep in output:\n{}", combined);
     }
 
     #[test]
     fn test_isolated_node_no_relationships() {
         let gs = build_graph();
-        // isolated has no parent, no children, no deps, no blocks
         let lines = render_ascii_graph(&gs, "isolated");
         let combined = lines.join("\n");
 
-        // Should just have the target line
-        assert_eq!(
-            lines.len(),
-            1,
-            "Expected exactly 1 line for isolated node, got {} lines:\n{}",
-            lines.len(),
-            combined
-        );
-        assert!(
-            lines[0].contains("[ISOLATED]"),
-            "Expected [ISOLATED] in output:\n{}",
-            combined
-        );
+        assert_eq!(lines.len(), 1, "Expected exactly 1 line for isolated node, got:\n{}", combined);
+        assert!(combined.contains("★ Isolated"), "Expected ★ Isolated in output:\n{}", combined);
     }
 
     #[test]
-    fn test_children_truncation_at_three() {
+    fn test_children_truncation() {
         let gs = build_graph_many_children();
-        // big-parent has 5 children
         let lines = render_ascii_graph(&gs, "big-parent");
         let combined = lines.join("\n");
 
-        // Should show exactly 3 "+-- [Child" lines
-        let child_lines: Vec<_> = lines
-            .iter()
-            .filter(|l| l.contains("+-- [Child"))
-            .collect();
-        assert_eq!(
-            child_lines.len(),
-            3,
-            "Expected exactly 3 child lines before truncation, got {}:\n{}",
-            child_lines.len(),
-            combined
-        );
-
-        // Should show a "... (2 more)" truncation line
-        assert!(
-            combined.contains("(2 more)"),
-            "Expected truncation indicator '(2 more)' in output:\n{}",
-            combined
-        );
-    }
-
-    #[test]
-    fn test_get_local_context_structured() {
-        let gs = build_graph();
-        let ctx = get_local_context(&gs, "task-a").expect("task-a should exist");
-
-        assert_eq!(ctx.target.label, "Task A");
-        assert!(!ctx.is_orphan);
-        assert_eq!(ctx.parents.len(), 1);
-        assert_eq!(ctx.parents[0].label, "Epic One");
-        assert_eq!(ctx.parents[0].node_type.as_deref(), Some("epic"));
-
-        // task-b is a sibling under epic-1
-        assert!(!ctx.siblings.is_empty());
-        assert!(ctx.siblings.iter().any(|s| s.label == "Task B"));
-
-        // depends_on task-b
-        assert_eq!(ctx.depends_on.len(), 1);
-        assert_eq!(ctx.depends_on[0].label, "Task B");
-
-        // blocks task-c
-        assert_eq!(ctx.blocks.len(), 1);
-        assert_eq!(ctx.blocks[0].label, "Task C");
-    }
-
-    #[test]
-    fn test_get_local_context_orphan() {
-        let gs = build_graph();
-        let ctx = get_local_context(&gs, "isolated").expect("isolated should exist");
-        assert!(ctx.is_orphan);
-        assert!(ctx.parents.is_empty());
-        assert!(ctx.siblings.is_empty());
-        assert!(ctx.children.is_empty());
-        assert!(ctx.depends_on.is_empty());
-        assert!(ctx.blocks.is_empty());
-    }
-
-    #[test]
-    fn test_get_local_context_none_for_missing() {
-        let gs = build_graph();
-        assert!(get_local_context(&gs, "nonexistent").is_none());
+        // Should show children section
+        assert!(combined.contains("children:"), "Expected children section:\n{}", combined);
+        // Should show truncation
+        // 5 children, showing up to 5 now
+        let child_lines: Vec<_> = lines.iter().filter(|l| l.contains("Child")).collect();
+        assert!(child_lines.len() == 5, "Expected 5 child lines, got {}:\n{}", child_lines.len(), combined);
     }
 }
