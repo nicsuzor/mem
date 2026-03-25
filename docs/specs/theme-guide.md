@@ -3,7 +3,7 @@ title: Planning Web — Theme-Specific Design Guide
 type: spec
 status: draft
 tier: ux
-depends_on: [planning-web-spec]
+depends_on: [planning-web]
 tags: [spec, planning-web, themes, visual-design, operator, holographic]
 created: 2026-03-08
 ---
@@ -12,7 +12,7 @@ created: 2026-03-08
 
 Translates the functional spec into visual and interaction design for the **Operator** and **Holographic** themes.
 
-See: `specs/planning-web-spec.md` for functional requirements.
+See: `planning-web.md` for functional requirements.
 
 ---
 
