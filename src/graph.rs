@@ -513,6 +513,12 @@ impl GraphNode {
             })
             .unwrap_or_default();
 
+        let project = fm.as_ref().and_then(|f| {
+            f.get("project")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+
         let sg = status.as_deref().map(|s| status_group(Some(s)).to_string());
 
         GraphNode {
@@ -535,7 +541,7 @@ impl GraphNode {
             created,
             modified: doc.modified.clone(),
             assignee,
-            project: None, // computed post-build from parent chain
+            project,
             complexity,
             source,
             confidence,

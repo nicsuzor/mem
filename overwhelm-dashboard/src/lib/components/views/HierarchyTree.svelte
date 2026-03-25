@@ -5,9 +5,12 @@
     export let taskId: string | null;
 
     $: task = taskId ? $graphData?.nodes.find(n => n.id === taskId) : undefined;
+    $: isProjectContainer = taskId?.startsWith('__project_') && !taskId.endsWith('_uncategorized__');
+    $: projectName = isProjectContainer ? taskId?.replace(/^__project_/, '').replace(/__$/, '') : null;
 
     // Find ancestors (up)
     $: ancestors = (() => {
+        if (isProjectContainer) return [];
         const list = [];
         let curr = task;
         const seen = new Set();
@@ -22,7 +25,18 @@
     })();
 
     // Find children (down)
-    $: children = $graphData?.nodes.filter(n => n.parent === taskId).sort((a, b) => (a.priority ?? 5) - (b.priority ?? 5)) || [];
+    $: children = (() => {
+        if (isProjectContainer && projectName) {
+            // For project containers, show all root-level nodes in that project
+            // OR just all nodes in that project if they have no parent in the graph
+            return $graphData?.nodes
+                .filter(n => n.project === projectName && !n.parent)
+                .sort((a, b) => (a.priority ?? 5) - (b.priority ?? 5)) || [];
+        }
+        return $graphData?.nodes
+            .filter(n => n.parent === taskId)
+            .sort((a, b) => (a.priority ?? 5) - (b.priority ?? 5)) || [];
+    })();
 
     function select(id: string) {
         selection.update(s => ({ ...s, activeNodeId: id }));

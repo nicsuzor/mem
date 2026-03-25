@@ -959,6 +959,8 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
     let mut soft_block_updates: Vec<(usize, String)> = Vec::new();
     let mut children_updates: Vec<(usize, String)> = Vec::new();
     let mut subtask_updates: Vec<(usize, String)> = Vec::new();
+    // Resolve parent field: raw frontmatter value → actual node ID
+    let mut parent_updates: Vec<(usize, String)> = Vec::new(); // (child_idx, resolved_parent_id)
 
     for edge in edges {
         match edge.edge_type {
@@ -981,6 +983,10 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
                     } else {
                         children_updates.push((idx, edge.source.clone()));
                     }
+                }
+                // Resolve the child's parent field to the actual target node ID
+                if let Some(&child_idx) = id_to_idx.get(&edge.source) {
+                    parent_updates.push((child_idx, edge.target.clone()));
                 }
             }
             EdgeType::Link | EdgeType::Supersedes => {}
@@ -1006,6 +1012,12 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
         if !nodes[idx].subtasks.contains(&subtask_id) {
             nodes[idx].subtasks.push(subtask_id);
         }
+    }
+    // Resolve parent fields: replace raw frontmatter references with actual node IDs.
+    // This ensures node.parent matches node.id values throughout the graph,
+    // so treemap hierarchy, project computation, and frontend lookups all work correctly.
+    for (idx, resolved_parent_id) in parent_updates {
+        nodes[idx].parent = Some(resolved_parent_id);
     }
 
     // Deduplicate and update leaf status (subtasks do not affect leaf status)
@@ -1058,35 +1070,52 @@ fn compute_centrality_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
 }
 
 /// Compute the `project` field for each node by walking up the parent chain
-/// to find the nearest ancestor with `node_type == "project"`.
+/// to find the nearest ancestor with `node_type == "project"` OR an explicit `project` field.
 fn compute_project_field(nodes: &mut [GraphNode]) {
-    // Build id -> (parent, node_type, label) lookup
-    let info: HashMap<String, (Option<String>, Option<String>, String)> = nodes
+    // Build id -> (parent, node_type, label, explicit_project) lookup
+    let info: HashMap<String, (Option<String>, Option<String>, String, Option<String>)> = nodes
         .iter()
         .map(|n| {
             (
                 n.id.clone(),
-                (n.parent.clone(), n.node_type.clone(), n.label.clone()),
+                (
+                    n.parent.clone(),
+                    n.node_type.clone(),
+                    n.label.clone(),
+                    n.project.clone(),
+                ),
             )
         })
         .collect();
 
     for node in nodes.iter_mut() {
-        // If this node IS a project, its own project is its own label
+        // 1. If this node IS a project, its own project is its own label (overrides any explicit project field)
         if node.node_type.as_deref() == Some("project") {
             node.project = Some(node.label.clone());
             continue;
         }
-        // Walk up parent chain
+
+        // 2. If it already has an explicit project field from frontmatter, keep it
+        if node.project.is_some() {
+            continue;
+        }
+
+        // 3. Walk up parent chain
         let mut current = node.parent.clone();
         let mut depth = 0;
         while let Some(ref pid) = current {
             if depth > 50 {
                 break; // cycle guard
             }
-            if let Some((parent, ntype, label)) = info.get(pid) {
+            if let Some((parent, ntype, label, explicit_project)) = info.get(pid) {
+                // Ancestor is a project node
                 if ntype.as_deref() == Some("project") {
                     node.project = Some(label.clone());
+                    break;
+                }
+                // Ancestor has its own project field (inherited or explicit)
+                if let Some(ref proj) = explicit_project {
+                    node.project = Some(proj.clone());
                     break;
                 }
                 current = parent.clone();
