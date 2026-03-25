@@ -127,9 +127,22 @@
         const survivingNodeIds = new Set(fNodes.map((n) => n.id));
 
         // Sanitize parent references after filtering — prevents stratify failures in tree/circle views
+        // 1. Remove parents not in surviving set
         fNodes.forEach(n => {
             if (n.parent && !survivingNodeIds.has(n.parent)) n.parent = null;
         });
+        // 2. Break parent cycles (A→B→A) — stratify requires a strict tree
+        const parentMap = new Map(fNodes.map(n => [n.id, n.parent]));
+        for (const n of fNodes) {
+            if (!n.parent) continue;
+            const visited = new Set<string>();
+            let cur: string | null = n.id;
+            while (cur) {
+                if (visited.has(cur)) { n.parent = null; break; }
+                visited.add(cur);
+                cur = parentMap.get(cur) || null;
+            }
+        }
 
         fLinks = fLinks.filter((l) => {
             const sid = typeof l.source === "object" ? l.source.id : l.source;
