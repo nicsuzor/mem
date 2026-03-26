@@ -5,25 +5,35 @@
  */
 
 export const EDGE_FORCE = {
-    parent: { strength: 1.0, distance: 40 },
-    depends_on: { strength: 0.15, distance: 200 },
-    ref: { strength: 0.02, distance: 300 },
+    parent:         { strength: 0.9,  distance: 40  },  // Strong — keeps hierarchy rigid
+    depends_on:     { strength: 0.05, distance: 200 },  // Weak — shows link, doesn't pull clusters apart
+    soft_depends_on:{ strength: 0.02, distance: 250 },  // Very weak
+    ref:            { strength: 0.02, distance: 300 },  // Very weak
 } as const;
 
 export const FORCE_CONFIG = {
+    // Charge (repulsion)
     chargeDistanceMax: 280,
     chargeMult: 1.0,
+
+    // Collision
     collisionPadding: 2,
     collisionStrength: 0.4,
     collisionIterations: 3,
-    clusterStrength: 0.4,
-    orphanRadius: 0.45,
-    orphanStrength: 0.3,
+
+    // Link distance multiplier (applied to EDGE_FORCE distances)
     linkDistMult: 0.75,
-    alphaDecay: 0.04,
-    velocityDecay: 0.55,
-    alphaMin: 0.002,
-    warmupTicks: 80,
+
+    // Radial layout (concentric rings by hierarchy depth)
+    radialStrength: 0.3,
+
+    // Simulation dynamics
+    alphaDecay: 0.02,
+    velocityDecay: 0.7,
+    warmupTicks: 300,
+
+    // Center gravity
+    gravity: 0.05,
 } as const;
 
 export const TYPE_CHARGE: Record<string, number> = {

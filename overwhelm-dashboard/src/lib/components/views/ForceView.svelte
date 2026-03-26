@@ -6,7 +6,8 @@
     import { filters, type EdgeVisibility } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
-    import { routeForceEdges, routeSfdpEdges } from "../shared/EdgeRenderer";
+    import { routeSfdpEdges } from "../shared/EdgeRenderer";
+    import { FORCE_CONFIG } from "../../data/constants";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
     export let containerGroup: SVGGElement;
@@ -277,24 +278,26 @@
             );
     }
 
-    function drawStaticForce() {
+    function tickVisuals() {
+        d3.select(nodesLayer)
+            .selectAll<SVGGElement, GraphNode>("g.node")
+            .attr("transform", (d) => `translate(${d.x},${d.y})`);
+
+        const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
+        routeSfdpEdges(eEls);
+        updateHulls();
+    }
+
+    function drawForceAndStartPhysics() {
         if (!$graphData) return;
-        if (simulation) {
-            simulation.stop();
-            simulation = null;
-        }
+
+        // Setup DOM elements
+        if (simulation) { simulation.stop(); simulation = null; }
 
         const data = $graphData;
-        // Map initial precomputed SFDP layout
         data.nodes.forEach((d) => {
-            d.x =
-                d.layouts?.sfdp?.x ||
-                d.x ||
-                Math.random() * 500;
-            d.y =
-                d.layouts?.sfdp?.y ||
-                d.y ||
-                Math.random() * 500;
+            d.x = d.layouts?.sfdp?.x || d.x || Math.random() * 500;
+            d.y = d.layouts?.sfdp?.y || d.y || Math.random() * 500;
         });
 
         const nEls = d3
@@ -311,7 +314,6 @@
             const isSelected = d.id === activeId;
             const lastSelected = (d as any)._lastSelected;
             const isEmpty = g.selectAll("*").empty();
-            // Only rebuild DOM when selection state changes or node is new
             if (isEmpty || lastSelected !== isSelected) {
                 g.selectAll("*").remove();
                 buildTaskCardNode(g, d, isSelected);
@@ -335,135 +337,80 @@
             .attr("stroke-linejoin", "round")
             .attr("class", "force-edge");
 
-        // Apply edge visibility from filters
         applyEdgeVisibility(eEls);
-
-        if ($viewSettings.viewMode === "Force") {
-            routeSfdpEdges(eEls);
-        } else {
-            routeForceEdges(eEls);
-        }
+        routeSfdpEdges(eEls);
         updateHulls();
-    }
-
-    function tickVisuals() {
-        d3.select(nodesLayer)
-            .selectAll<SVGGElement, GraphNode>("g.node")
-            .attr("transform", (d) => `translate(${d.x},${d.y})`);
-
-        const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
-        if ($viewSettings.viewMode === "Force") {
-            // Use straight lines during live simulation; bundles recomputed when it cools
-            routeSfdpEdges(eEls);
-        } else {
-            routeForceEdges(eEls);
-        }
-        updateHulls();
-    }
-
-    function drawForceAndStartPhysics() {
-        if (!$graphData) return;
-
-        // Setup elements
-        drawStaticForce();
 
         // Start Simulation
         if (simulation) simulation.stop();
 
-        const fc = $graphData.forceConfig;
-        const cw = 1200,
-            ch = 800; // Expected center bounds
+        const fc = FORCE_CONFIG;
+        const cw = 1200, ch = 800;
 
-        // Separate parent (structural) and dependency (cross-link) edges
+        // Separate parent (structural spine) from cross-links (deps/refs)
         const parentLinks = $graphData.links.filter((l: any) => l.type === 'parent');
         const depLinks = $graphData.links.filter((l: any) => l.type !== 'parent');
 
         simulation = d3
             .forceSimulation<GraphNode, GraphEdge>($graphData.nodes)
-            .force(
-                "link-parent",
-                d3
-                    .forceLink<GraphNode, GraphEdge>(parentLinks)
-                    .id((d) => d.id)
-                    .distance((d) => d.distance * (fc.linkDistMult || 1.0) * $viewSettings.linkDistance)
-                    .strength(0.9),  // Strong: keeps hierarchical spine rigid
+            // Parent links: strong, keeps hierarchy clusters together
+            .force("link-parent", d3
+                .forceLink<GraphNode, GraphEdge>(parentLinks)
+                .id((d) => d.id)
+                .distance((d) => d.distance * fc.linkDistMult * $viewSettings.linkDistance)
+                .strength((d) => d.strength),
             )
-            .force(
-                "link-dep",
-                d3
-                    .forceLink<GraphNode, GraphEdge>(depLinks)
-                    .id((d) => d.id)
-                    .distance((d) => d.distance * (fc.linkDistMult || 1.0) * $viewSettings.linkDistance)
-                    .strength(0.05), // Weak: renders the line but doesn't pull nodes out of clusters
+            // Dependency/ref links: weak, renders line without distorting layout
+            .force("link-dep", d3
+                .forceLink<GraphNode, GraphEdge>(depLinks)
+                .id((d) => d.id)
+                .distance((d) => d.distance * fc.linkDistMult * $viewSettings.linkDistance)
+                .strength((d) => d.strength),
             )
-            .force(
-                "charge",
-                d3
-                    .forceManyBody<GraphNode>()
-                    .strength(
-                        (d) =>
-                            (d.charge || -100) *
-                            (fc.chargeMult || 1.0) *
-                            $viewSettings.chargeStrength,
-                    )
-                    .distanceMax(fc.chargeDistanceMax || 280),
+            // Charge: repels all nodes from each other (per-type strength from TYPE_CHARGE)
+            .force("charge", d3
+                .forceManyBody<GraphNode>()
+                .strength((d) => (d.charge || -100) * fc.chargeMult * $viewSettings.chargeStrength)
+                .distanceMax(fc.chargeDistanceMax),
             )
-            .force(
-                "collide",
-                d3
-                    .forceCollide<GraphNode>()
-                    .radius(
-                        (d) =>
-                            (Math.max(d.w / 2, d.h / 2) +
-                            (fc.collisionPadding || 2)) * $viewSettings.collisionRadius,
-                    )
-                    .strength(fc.collisionStrength || 0.4)
-                    .iterations(fc.collisionIterations || 3),
+            // Collision: prevents node overlap
+            .force("collide", d3
+                .forceCollide<GraphNode>()
+                .radius((d) => Math.max(d.w / 2, d.h / 2) + fc.collisionPadding)
+                .strength(fc.collisionStrength)
+                .iterations(fc.collisionIterations),
             )
-            .force("center", d3.forceCenter(cw / 2, ch / 2).strength($viewSettings.gravity));
+            // Center gravity
+            .force("center", d3.forceCenter(cw / 2, ch / 2).strength($viewSettings.gravity))
+            // Simulation dynamics
+            .alphaDecay(fc.alphaDecay)
+            .velocityDecay(fc.velocityDecay);
 
-        // Radial force — pulls nodes toward concentric rings by hierarchy depth
-        {
-            const depthMap = new Map<string, number>();
-            const childToParent = new Map<string, string>();
-            for (const l of parentLinks) {
-                const tid = typeof l.target === 'object' ? (l.target as any).id : l.target;
-                const sid = typeof l.source === 'object' ? (l.source as any).id : l.source;
-                childToParent.set(tid, sid);
-            }
-            for (const n of $graphData.nodes) {
-                let depth = 0;
-                let cur = n.id;
-                while (childToParent.has(cur) && depth < 20) {
-                    cur = childToParent.get(cur)!;
-                    depth++;
-                }
-                depthMap.set(n.id, depth);
-            }
-            const maxDepth = Math.max(...depthMap.values(), 1);
-            const radiusScale = Math.min(cw, ch) * 0.4;
-
-            simulation.force(
-                "radial",
-                d3.forceRadial<GraphNode>(
-                    (d) => ((depthMap.get(d.id) || 0) / maxDepth) * radiusScale + 50,
-                    cw / 2,
-                    ch / 2,
-                ).strength(0.3),
-            );
+        // Radial force — concentric rings by hierarchy depth
+        const depthMap = new Map<string, number>();
+        const childToParent = new Map<string, string>();
+        for (const l of parentLinks) {
+            const tid = typeof l.target === 'object' ? (l.target as any).id : l.target;
+            const sid = typeof l.source === 'object' ? (l.source as any).id : l.source;
+            childToParent.set(tid, sid);
         }
-
-        simulation
-            .alphaDecay($viewSettings.alphaDecay)
-            .velocityDecay($viewSettings.velocityDecay);
-
-        // Warm up ticks — run longer to let layout stabilize
-        const warmup = fc.warmupTicks || 300;
-        for (let i = 0; i < warmup; i++) {
-            simulation.tick();
+        for (const n of $graphData.nodes) {
+            let depth = 0, cur = n.id;
+            while (childToParent.has(cur) && depth < 20) { cur = childToParent.get(cur)!; depth++; }
+            depthMap.set(n.id, depth);
         }
+        const maxDepth = Math.max(...depthMap.values(), 1);
+        const radiusScale = Math.min(cw, ch) * 0.4;
+        simulation.force("radial", d3
+            .forceRadial<GraphNode>(
+                (d) => ((depthMap.get(d.id) || 0) / maxDepth) * radiusScale + 50,
+                cw / 2, ch / 2,
+            )
+            .strength(fc.radialStrength),
+        );
 
-        // Live loop
+        // Warm up then start live loop
+        for (let i = 0; i < fc.warmupTicks; i++) simulation.tick();
         simulation.on("tick", tickVisuals);
     }
 
