@@ -216,7 +216,32 @@
             }
 
             g.classed("hovered-node", isHovered);
+
+            // Focus highlight: gold ring on priority focus leaf nodes
+            const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
+            if ($viewSettings.showFocusHighlight && d._isLeaf) {
+                g.select('.focus-ring').remove();
+                if (focusIds.has(d.id)) {
+                    g.insert('circle', ':first-child')
+                        .attr('class', 'focus-ring')
+                        .attr('cx', 0).attr('cy', 0).attr('r', (d._lr || 5) + 3)
+                        .attr('fill', 'none').attr('stroke', '#f59e0b')
+                        .attr('stroke-width', 2).attr('opacity', 0.8);
+                }
+            }
         });
+
+        // Gentle dimming: non-focus leaves slightly faded
+        const focusIds2: Set<string> = ($graphData as any)?.focusIds || new Set();
+        if ($viewSettings.showFocusHighlight && focusIds2.size > 0) {
+            nEls.style("opacity", (d: any) => {
+                if (!d._isLeaf) return null;
+                if (focusIds2.has(d.id)) return 1;
+                return 0.6;
+            });
+        } else {
+            nEls.style("opacity", null);
+        }
 
         const eEls = d3
             .select(edgesLayer)

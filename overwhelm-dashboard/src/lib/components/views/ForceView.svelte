@@ -28,12 +28,10 @@
             edgesLayer &&
             hullLayer
         ) {
-            if (!simulation || $viewSettings.liveSimulation) {
-                // Reset when settings deeply change, handled via function call instead of basic reactivity
-                // to prevent overwhelming physics restarts.
+            if ($viewSettings.liveSimulation) {
                 drawForceAndStartPhysics();
             } else {
-                // Just a fast unlinked layout
+                // Static layout — stop any running simulation
                 drawStaticForce();
             }
         }
@@ -153,21 +151,20 @@
             .data(hullData, (d: any) => d.id)
             .join("text")
             .attr("class", "hull-label")
-            .attr("x", (d) => Number(d3.mean(d.points, (p: any) => p[0]) || 0))
-            .attr(
-                "y",
-                (d) => Number(d3.min(d.points, (p: any) => p[1]) || 0) - 5,
-            )
+            .attr("x", (d) => d.cx)
+            .attr("y", (d) => Number(d3.min(d.points, (p: any) => p[1]) || 0) - 12)
             .attr("text-anchor", "middle")
-            .attr("font-size", "180px")
-            .attr("font-weight", "900")
+            .attr("font-size", "14px")
+            .attr("font-weight", "700")
+            .attr("font-family", "var(--font-mono), monospace")
             .attr("fill", (d) => projectColor(d.id))
-            .attr("opacity", 0.5)
-            .attr("letter-spacing", "12px")
+            .attr("opacity", 0.7)
+            .attr("letter-spacing", "2px")
             .style("pointer-events", "none")
             .style("user-select", "none")
+            .style("text-shadow", "0 1px 6px rgba(0,0,0,0.8)")
             .text((d) =>
-                d.id.replace(/_/g, " ").toUpperCase().substring(0, 22),
+                d.id.replace(/_/g, " ").toUpperCase().substring(0, 30),
             );
     }
 
@@ -277,6 +274,51 @@
             routeForceEdges(eEls);
         }
         updateHulls();
+        applyFocusHighlighting(nEls, eEls);
+    }
+
+    function applyFocusHighlighting(nEls: any, eEls: any) {
+        const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
+        if (!$viewSettings.showFocusHighlight || focusIds.size === 0) {
+            nEls.classed('intent-dimmed', false).classed('intent-focus', false);
+            eEls.classed('intent-edge', false).classed('intent-edge-dim', false);
+            return;
+        }
+
+        nEls.each(function(this: SVGGElement, d: GraphNode) {
+            const g = d3.select(this);
+            g.select('.focus-glow').remove();
+
+            if (focusIds.has(d.id)) {
+                // Gold glow ring for priority focus tasks
+                g.insert('rect', ':first-child')
+                    .attr('class', 'focus-glow')
+                    .attr('x', -d.w / 2 - 4)
+                    .attr('y', -d.h / 2 - 4)
+                    .attr('width', d.w + 8)
+                    .attr('height', d.h + 8)
+                    .attr('rx', 6)
+                    .attr('fill', 'none')
+                    .attr('stroke', '#f59e0b')
+                    .attr('stroke-width', 2.5)
+                    .attr('opacity', 0.8)
+                    .attr('filter', 'url(#intent-glow-filter)');
+            }
+        });
+
+        // Gentle emphasis: focus nodes full opacity, others slightly faded
+        nEls.classed('intent-focus', (d: any) => focusIds.has(d.id));
+        nEls.classed('intent-dimmed', (d: any) => !focusIds.has(d.id));
+
+        // Edges: highlight edges between focus nodes, dim others
+        eEls.each(function(this: SVGPathElement, d: any) {
+            const sid = d.source.id || d.source;
+            const tid = d.target.id || d.target;
+            const bothFocused = focusIds.has(sid) && focusIds.has(tid);
+            d3.select(this)
+                .classed('intent-edge', bothFocused)
+                .classed('intent-edge-dim', !bothFocused);
+        });
     }
 
     function tickVisuals() {
@@ -361,6 +403,15 @@
 </script>
 
 {#if containerGroup}
+    <defs>
+        <filter id="intent-glow-filter" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3" result="blur"/>
+            <feMerge>
+                <feMergeNode in="blur"/>
+                <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+        </filter>
+    </defs>
     <g bind:this={hullLayer} class="hull-layer"></g>
     <g bind:this={edgesLayer}></g>
     <g bind:this={nodesLayer}></g>
@@ -394,5 +445,22 @@
         opacity: 1 !important;
         stroke: var(--color-primary) !important;
         stroke-width: 2px !important;
+    }
+    /* Intention path highlighting — gentle emphasis, don't over-dim */
+    :global(.node.intent-dimmed) {
+        opacity: 0.5 !important;
+        filter: grayscale(0.3) brightness(0.8);
+    }
+    :global(.node.intent-focus) {
+        opacity: 1 !important;
+        filter: none;
+    }
+    :global(path.force-edge.intent-edge) {
+        opacity: 0.9 !important;
+        stroke: #f59e0b !important;
+        stroke-width: 2.5px !important;
+    }
+    :global(path.force-edge.intent-edge-dim) {
+        opacity: 0.15 !important;
     }
 </style>

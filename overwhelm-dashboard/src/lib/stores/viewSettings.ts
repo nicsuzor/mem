@@ -8,7 +8,7 @@ export const viewSettings = writable({
     mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph'
     viewMode: 'Treemap',  // "Treemap", "Circle Pack", "SFDP", "Arc Diagram"
     topNLeaves: 80,
-    liveSimulation: false,
+    liveSimulation: true,
     chargeStrength: 1.0,
     linkDistance: 1.0,
     collisionRadius: 1.2,
@@ -17,7 +17,10 @@ export const viewSettings = writable({
     velocityDecay: 0.7,
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
-    treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal'
+    treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',
+    showIntentionPath: true,
+    showFocusHighlight: true,
+    arcFocusedOnly: true,
 });
 
 export const getLayoutFromViewSettings = ($settings: any) => {

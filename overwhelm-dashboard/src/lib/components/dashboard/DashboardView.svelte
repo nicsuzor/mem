@@ -119,7 +119,16 @@
         />
     </div>
 
-    <!-- PRIORITY 2: Dropped threads (most actionable for ADHD context recovery) -->
+    <!-- PRIORITY 2: Today's Story (narrative context recovery) -->
+    <div class="border border-primary/30 bg-surface p-4">
+        <SynthesisPanel
+            synthesis={data?.dashboardData?.synthesis}
+            dailyStory={data?.dashboardData?.daily_story}
+            inline={true}
+        />
+    </div>
+
+    <!-- PRIORITY 3: Dropped threads (most actionable for ADHD context recovery) -->
     {#if pathData.abandoned_work?.length > 0 || pathData.threads?.length > 0}
         <div class="border border-yellow-500/30 bg-surface p-4">
             <PathTimeline path={pathData} />
@@ -148,7 +157,8 @@
             <div class="border border-primary/30 bg-surface p-4 shadow-lg">
                 <SynthesisPanel
                     synthesis={data?.dashboardData?.synthesis}
-                    dailyStory={data?.dashboardData?.daily_story}
+                    dailyStory={null}
+                    inline={false}
                 />
             </div>
         </div>

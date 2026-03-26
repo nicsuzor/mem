@@ -1,9 +1,12 @@
 <script lang="ts">
     export let synthesis: any;
     export let dailyStory: any;
+    /** When true, show only the daily story (for above-the-fold placement).
+     *  When false, show alignment/blockers/context cards (for sidebar). */
+    export let inline: boolean = false;
 
     $: hasSynthesis = synthesis && Object.keys(synthesis).length > 0;
-    $: rawStoryParagraphs = dailyStory?.story || synthesis?.daily_story || [];
+    $: rawStoryParagraphs = dailyStory?.story || synthesis?.daily_narrative || synthesis?.narrative || [];
     $: storyParagraphs = rawStoryParagraphs.reduce((acc: any[], curr: any) => {
         const existing = acc.find((item: any) => item.text === curr);
         if (existing) {
@@ -14,37 +17,54 @@
         return acc;
     }, []).map((item: any) => item.count > 1 ? `[${item.count}x] ${item.text}` : item.text);
     $: hasStory = storyParagraphs && storyParagraphs.length > 0;
+    $: ageMinutes = synthesis?._age_minutes;
+    $: isStale = ageMinutes !== undefined && ageMinutes > 120;
 </script>
 
-{#if hasSynthesis || hasStory}
-    <div class="flex flex-col gap-4 font-mono">
-        <div class="flex justify-between items-baseline border-b border-primary/30 pb-2 mb-2">
-            <h3 class="text-xs font-bold tracking-[0.2em] text-primary/80">SYNTHESIS & INSIGHTS</h3>
+{#if inline}
+    <!-- Above-the-fold: daily story only -->
+    <div class="flex flex-col gap-2 font-mono">
+        <div class="flex justify-between items-baseline">
+            <h3 class="text-xs font-bold tracking-[0.2em] text-primary/80">TODAY'S STORY</h3>
             <div class="flex items-center gap-2">
-                {#if synthesis?._age_minutes !== undefined && synthesis._age_minutes > 60}
+                {#if isStale}
                     <span class="text-[10px] font-bold tracking-widest bg-red-900/50 text-red-400 border border-red-500/50 px-2 py-0.5 animate-pulse">STALE</span>
                 {/if}
-                {#if synthesis?._age_minutes !== undefined}
+                {#if ageMinutes !== undefined}
                     <span class="text-[10px] text-primary/60"
-                        >{synthesis._age_minutes < 60 ? Math.round(synthesis._age_minutes) + 'm ago' : Math.round(synthesis._age_minutes / 60) + 'h ago'}</span
+                        >{ageMinutes < 60 ? Math.round(ageMinutes) + 'm ago' : Math.round(ageMinutes / 60) + 'h ago'}</span
                     >
                 {/if}
             </div>
         </div>
 
         {#if hasStory}
-            <div class="bg-primary/5 border-l-2 border-primary p-4 mb-4">
-                <h4 class="text-[10px] font-bold tracking-widest text-primary mb-3">DAILY STORY</h4>
-                <div class="text-sm text-primary/80 space-y-3 leading-relaxed">
-                    {#each storyParagraphs as paragraph}
-                        <p>{paragraph}</p>
-                    {/each}
-                </div>
+            <div class="text-sm text-primary/80 space-y-2 leading-relaxed">
+                {#each storyParagraphs as paragraph}
+                    <p>{paragraph}</p>
+                {/each}
+            </div>
+        {:else}
+            <div class="text-sm text-primary/40 italic">
+                No narrative available. Run <code class="text-primary/60">/daily</code> to generate today's story.
             </div>
         {/if}
+    </div>
 
-        {#if hasSynthesis}
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+{:else}
+    <!-- Sidebar: alignment, blockers, context cards -->
+    {#if hasSynthesis}
+        <div class="flex flex-col gap-4 font-mono">
+            <div class="flex justify-between items-baseline border-b border-primary/30 pb-2 mb-2">
+                <h3 class="text-xs font-bold tracking-[0.2em] text-primary/80">INSIGHTS</h3>
+                {#if ageMinutes !== undefined}
+                    <span class="text-[10px] text-primary/60"
+                        >{ageMinutes < 60 ? Math.round(ageMinutes) + 'm ago' : Math.round(ageMinutes / 60) + 'h ago'}</span
+                    >
+                {/if}
+            </div>
+
+            <div class="grid grid-cols-1 gap-4">
                 {#if synthesis.alignment}
                     {@const align = synthesis.alignment}
                     {@const alignStatus = typeof align === 'string' ? align : (align.status || align.assessment || 'unknown')}
@@ -72,7 +92,7 @@
                 {/if}
 
                 {#if synthesis.blockers}
-                    <div class="bg-red-900/10 border border-red-500/30 p-4 hover:border-red-500 transition-colors col-span-1 md:col-span-2">
+                    <div class="bg-red-900/10 border border-red-500/30 p-4 hover:border-red-500 transition-colors">
                         <div class="text-[10px] font-bold tracking-widest text-red-500/80 mb-2">BLOCKERS</div>
                         <ul class="list-disc list-inside text-sm text-red-400 space-y-1 ml-4">
                             {#each Array.isArray(synthesis.blockers) ? synthesis.blockers : [synthesis.blockers] as blocker}
@@ -82,6 +102,6 @@
                     </div>
                 {/if}
             </div>
-        {/if}
-    </div>
+        </div>
+    {/if}
 {/if}
