@@ -1,5 +1,6 @@
 <script lang="ts">
     import * as d3 from "d3";
+    import * as cola from "webcola";
     import { onMount, onDestroy } from "svelte";
     import { graphData } from "../../stores/graph";
     import { viewSettings } from "../../stores/viewSettings";
@@ -16,7 +17,7 @@
     let edgesLayer: SVGGElement;
     let hullLayer: SVGGElement;
 
-    let simulation: d3.Simulation<GraphNode, GraphEdge> | null = null;
+    let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     // Track cleanup and frame loop
     let frameId = 0;
 
@@ -138,16 +139,6 @@
         }
     }
 
-    function projectColor(projectId: string) {
-        let hash = 0;
-        for (let i = 0; i < projectId.length; i++) {
-            hash = (hash << 5) - hash + projectId.charCodeAt(i);
-            hash |= 0;
-        }
-        const hue = Math.abs(hash) % 360;
-        return `hsl(${hue}, 55%, 52%)`;
-    }
-
     function edgeVisForType(type: string): EdgeVisibility {
         if (type === 'parent') return $filters.edgeParent;
         if (type === 'depends_on') return $filters.edgeDependencies;
@@ -179,77 +170,7 @@
     }
 
     function updateHulls() {
-        if (!$graphData || !hullLayer) return;
-
-        const projectNodes = new Map<string, [number, number][]>();
-        $graphData.nodes.forEach((n) => {
-            if (
-                typeof n.x !== "number" ||
-                typeof n.y !== "number" ||
-                n.x < -9000
-            )
-                return;
-            const p = n.project;
-            if (!p) return;
-            if (!projectNodes.has(p)) projectNodes.set(p, []);
-            projectNodes.get(p)!.push([n.x, n.y]);
-        });
-
-        const hullData: any[] = [];
-        projectNodes.forEach((pts, pid) => {
-            if (pts.length < 3) return;
-            const hull = d3.polygonHull(pts);
-            if (!hull) return;
-            // Expand hull
-            const cx = d3.mean(hull, (p) => p[0]) || 0;
-            const cy = d3.mean(hull, (p) => p[1]) || 0;
-            const expanded = hull.map(([x, y]) => {
-                const dx = x - cx,
-                    dy = y - cy;
-                const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-                return [x + (dx / dist) * 40, y + (dy / dist) * 40];
-            });
-            hullData.push({ id: pid, points: expanded, cx, cy });
-        });
-
-        d3.select(hullLayer)
-            .selectAll(".hull-path")
-            .data(hullData, (d: any) => d.id)
-            .join("path")
-            .attr("class", "hull-path")
-            .attr(
-                "d",
-                (d) =>
-                    "M" + d.points.map((p: any) => p.join(",")).join("L") + "Z",
-            )
-            .attr("fill", (d) => projectColor(d.id))
-            .attr("fill-opacity", 0.15)
-            .attr("stroke", (d) => projectColor(d.id))
-            .attr("stroke-opacity", 0.45)
-            .attr("stroke-width", 2)
-            .attr("stroke-dasharray", "5,3")
-            .style("pointer-events", "none");
-
-        d3.select(hullLayer)
-            .selectAll(".hull-label")
-            .data(hullData, (d: any) => d.id)
-            .join("text")
-            .attr("class", "hull-label")
-            .attr("x", (d) => d.cx)
-            .attr("y", (d) => Number(d3.min(d.points, (p: any) => p[1]) || 0) - 12)
-            .attr("text-anchor", "middle")
-            .attr("font-size", "14px")
-            .attr("font-weight", "700")
-            .attr("font-family", "var(--font-mono), monospace")
-            .attr("fill", (d) => projectColor(d.id))
-            .attr("opacity", 0.7)
-            .attr("letter-spacing", "2px")
-            .style("pointer-events", "none")
-            .style("user-select", "none")
-            .style("text-shadow", "0 1px 6px rgba(0,0,0,0.8)")
-            .text((d) =>
-                d.id.replace(/_/g, " ").toUpperCase().substring(0, 30),
-            );
+        // Old polygon hulls removed — Cola group bounding boxes handle this now
     }
 
     function bindDragAndClick(nEls: any) {
@@ -267,19 +188,16 @@
             .call(
                 d3
                     .drag<SVGGElement, GraphNode>()
-                    .on("start", (e, d) => {
-                        if (simulation) simulation.alphaTarget(0.1).restart();
-                        d.fx = d.x;
-                        d.fy = d.y;
+                    .on("start", (e, d: any) => {
+                        cola.Layout.dragStart(d);
                     })
-                    .on("drag", (e, d) => {
-                        d.fx = e.x;
-                        d.fy = e.y;
+                    .on("drag", (e, d: any) => {
+                        d.x = e.x;
+                        d.y = e.y;
+                        if (colaLayout) colaLayout.resume();
                     })
-                    .on("end", (e, d) => {
-                        if (simulation) simulation.alphaTarget(0);
-                        d.fx = null;
-                        d.fy = null;
+                    .on("end", (e, d: any) => {
+                        d.fixed = 0;
                     }),
             );
     }
@@ -287,24 +205,51 @@
     function tickVisuals() {
         d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
-            .attr("transform", (d) => `translate(${d.x},${d.y})`);
+            .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
 
         const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
         routeSfdpEdges(eEls);
         applyEdgeVisibility(eEls);
-        updateHulls();
+
+        // Render group bounding boxes from WebCola
+        if (hullLayer && colaLayout) {
+            const groups = colaLayout.groups() || [];
+            const groupEls = d3.select(hullLayer)
+                .selectAll<SVGRectElement, any>("rect.cola-group")
+                .data(groups);
+
+            groupEls.join("rect")
+                .attr("class", "cola-group")
+                .attr("rx", 8).attr("ry", 8)
+                .attr("x", (d: any) => d.bounds?.x ?? 0)
+                .attr("y", (d: any) => d.bounds?.y ?? 0)
+                .attr("width", (d: any) => d.bounds?.width() ?? 0)
+                .attr("height", (d: any) => d.bounds?.height() ?? 0)
+                .attr("fill", (d: any, i: number) => {
+                    const hue = (i * 47) % 360;
+                    return `hsla(${hue}, 40%, 50%, 0.08)`;
+                })
+                .attr("stroke", (d: any, i: number) => {
+                    const hue = (i * 47) % 360;
+                    return `hsla(${hue}, 40%, 50%, 0.3)`;
+                })
+                .attr("stroke-width", 1.5)
+                .attr("stroke-dasharray", "6,3")
+                .style("pointer-events", "none");
+        }
     }
 
     function drawForceAndStartPhysics() {
         if (!$graphData) return;
 
         // Setup DOM elements
-        if (simulation) { simulation.stop(); simulation = null; }
+        if (colaLayout) { colaLayout.stop(); colaLayout = null; }
 
         const data = $graphData;
-        data.nodes.forEach((d) => {
-            d.x = d.layouts?.sfdp?.x || d.x || Math.random() * 500;
-            d.y = d.layouts?.sfdp?.y || d.y || Math.random() * 500;
+        // Initialize positions — Cola will spread them out
+        data.nodes.forEach((d: any) => {
+            if (typeof d.x !== 'number') d.x = 800;
+            if (typeof d.y !== 'number') d.y = 600;
         });
 
         const nEls = d3
@@ -313,7 +258,7 @@
             .data(data.nodes, (d) => d.id)
             .join("g")
             .attr("class", "node")
-            .attr("transform", (d) => `translate(${d.x},${d.y})`);
+            .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
 
         const activeId = $selection.activeNodeId;
         nEls.each(function (d) {
@@ -348,74 +293,90 @@
         routeSfdpEdges(eEls);
         updateHulls();
 
-        // Start simulation — 3 forces: link (parent only), charge, radial
-        if (simulation) simulation.stop();
+        // Start WebCola layout with hierarchical grouping
+        if (colaLayout) colaLayout.stop();
 
         const fc = FORCE_CONFIG;
-        const cw = 1200, ch = 800;
+        const cw = 1600, ch = 1200;
 
-        // Only parent edges drive the layout; deps/refs render as lines but don't pull
-        const parentLinks = $graphData.links.filter((l: any) => l.type === 'parent');
-
-        // Resolve string IDs to node references for non-parent edges
-        // (d3.forceLink only resolves edges it manages; deps/refs need manual resolution)
+        // Resolve string IDs to node references for all edges
         const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
+        const nodeIndex = new Map($graphData.nodes.map((n, i) => [n.id, i]));
         $graphData.links.forEach((l: any) => {
             if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
 
-        // Compute hierarchy depth for radial placement
-        const depthMap = new Map<string, number>();
-        const childToParent = new Map<string, string>();
+        // Set width/height on nodes for avoidOverlaps
+        $graphData.nodes.forEach((n: any) => {
+            n.width = n.w + 10;
+            n.height = n.h + 10;
+        });
+
+        // Build flat groups by project — one group per project containing all its nodes.
+        // No nesting, so Cola treats this as a force layout with non-overlapping clusters.
+        const parentLinks = $graphData.links.filter((l: any) => l.type === 'parent');
+
+        // Build parent lookup: child ID → parent node
+        const parentOf = new Map<string, GraphNode>();
         for (const l of parentLinks) {
-            const tid = typeof l.target === 'object' ? (l.target as any).id : l.target;
-            const sid = typeof l.source === 'object' ? (l.source as any).id : l.source;
-            childToParent.set(tid, sid);
+            const pid = typeof l.source === 'object' ? l.source.id : l.source;
+            const cid = typeof l.target === 'object' ? l.target.id : l.target;
+            const pNode = nodeById.get(pid);
+            if (pNode) parentOf.set(cid, pNode);
         }
-        for (const n of $graphData.nodes) {
-            let depth = 0, cur = n.id;
-            while (childToParent.has(cur) && depth < 20) { cur = childToParent.get(cur)!; depth++; }
-            depthMap.set(n.id, depth);
+
+        // Group by nearest epic ancestor only
+        function findEpic(nodeId: string): string {
+            let cur = nodeId;
+            let depth = 0;
+            while (depth < 20) {
+                const p = parentOf.get(cur);
+                if (!p) break;
+                if (p.type === 'epic') return p.id;
+                cur = p.id;
+                depth++;
+            }
+            return '_ungrouped';
         }
-        const maxDepth = Math.max(...depthMap.values(), 1);
-        const nodeCount = $graphData.nodes.length;
-        // Scale radius with node count so the layout breathes
-        const radiusScale = Math.max(800, Math.sqrt(nodeCount) * 120);
 
-        simulation = d3
-            .forceSimulation<GraphNode, GraphEdge>($graphData.nodes)
-            // 1. Link: parent edges keep hierarchy clusters together
-            .force("link", d3
-                .forceLink<GraphNode, GraphEdge>(parentLinks)
-                .id((d) => d.id)
-                .distance((d) => d.distance * fc.linkDistMult * $viewSettings.linkDistance)
-                .strength((d) => d.strength),
-            )
-            // 2. Charge: repels nodes from each other (per-type strength)
-            .force("charge", d3
-                .forceManyBody<GraphNode>()
-                .strength((d) => (d.charge || -100) * fc.chargeMult * $viewSettings.chargeStrength)
-                .distanceMax(fc.chargeDistanceMax),
-            )
-            // 3. Radial: concentric rings by hierarchy depth (replaces center gravity)
-            .force("radial", d3
-                .forceRadial<GraphNode>(
-                    (d) => ((depthMap.get(d.id) || 0) / maxDepth) * radiusScale + 50,
-                    cw / 2, ch / 2,
-                )
-                .strength(fc.radialStrength),
-            )
-            .alphaDecay(fc.alphaDecay)
-            .velocityDecay(fc.velocityDecay);
+        const epicMembers = new Map<string, number[]>();
+        $graphData.nodes.forEach((n, i) => {
+            const epicId = n.type === 'epic' ? n.id : findEpic(n.id);
+            if (!epicMembers.has(epicId)) epicMembers.set(epicId, []);
+            epicMembers.get(epicId)!.push(i);
+        });
 
-        // Warm up to get a stable initial layout, then restart for live interaction
-        for (let i = 0; i < fc.warmupTicks; i++) simulation.tick();
-        simulation.alpha(0.3).on("tick", tickVisuals).restart();
+        const colaGroups: any[] = [];
+        for (const [, members] of epicMembers) {
+            if (members.length >= 2) {
+                colaGroups.push({ leaves: members, padding: 20 });
+            }
+        }
+
+        // Build cola links from parent edges (index-based)
+        const colaLinks = parentLinks.map((l: any) => {
+            const si = nodeIndex.get(typeof l.source === 'object' ? l.source.id : l.source)!;
+            const ti = nodeIndex.get(typeof l.target === 'object' ? l.target.id : l.target)!;
+            return { source: si, target: ti };
+        }).filter((l: any) => l.source !== undefined && l.target !== undefined);
+
+        console.log(`[Cola] ${$graphData.nodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups`, colaGroups.map(g => g.leaves.length));
+
+        colaLayout = cola.d3adaptor(d3)
+            .size([cw, ch])
+            .nodes($graphData.nodes as any)
+            .links(colaLinks)
+            .groups(colaGroups)
+            .avoidOverlaps(true)
+            .handleDisconnected(true)
+            .jaccardLinkLengths(60, 0.7)
+            .on("tick", tickVisuals)
+            .start(30, 30, 30);
     }
 
     onDestroy(() => {
-        if (simulation) simulation.stop();
+        if (colaLayout) colaLayout.stop();
         cancelAnimationFrame(frameId);
     });
 </script>
