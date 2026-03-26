@@ -150,50 +150,10 @@
             return survivingNodeIds.has(sid) && survivingNodeIds.has(tid);
         });
 
-        // Compute intention paths: trace from ready tasks up through parent chains
-        const nodeMap = new Map(fNodes.map(n => [n.id, n]));
-        const intentionOnPath = new Set<string>();
-        const intentionDone = new Set<string>();
-        const intentionRemaining = new Set<string>();
-
-        if (prepared.readyIds) {
-            // Intention seeds: only P0/P1 ready tasks (not ALL ready tasks)
-            // Using all 210+ ready tasks covers ~70% of the graph, making highlighting meaningless
-            const intentionSeeds = new Set<string>();
-            for (const readyId of prepared.readyIds) {
-                if (!survivingNodeIds.has(readyId)) continue;
-                const node = nodeMap.get(readyId);
-                if (node && node.priority <= 1) intentionSeeds.add(readyId);
-            }
-
-            // Walk up parent chains from each seed
-            for (const seedId of intentionSeeds) {
-                let cur = seedId;
-                const visited = new Set<string>();
-                while (cur && !visited.has(cur)) {
-                    visited.add(cur);
-                    intentionOnPath.add(cur);
-                    const node = nodeMap.get(cur);
-                    cur = node?.parent || "";
-                }
-            }
-            // Mark siblings of path nodes as done or remaining
-            for (const node of fNodes) {
-                if (intentionOnPath.has(node.id)) continue;
-                if (!node.parent || !intentionOnPath.has(node.parent)) continue;
-                if (["done", "completed", "cancelled"].includes(node.status)) {
-                    intentionDone.add(node.id);
-                } else {
-                    intentionRemaining.add(node.id);
-                }
-            }
-        }
-
         $graphData = {
             ...prepared,
             nodes: fNodes,
             links: fLinks,
-            intentionPath: { onPath: intentionOnPath, done: intentionDone, remaining: intentionRemaining },
         } as any;
     }
 

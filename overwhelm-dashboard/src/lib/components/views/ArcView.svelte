@@ -37,34 +37,6 @@
     }
   }
 
-  /** Score a node for focus priority — mirrors Rust select_focus_picks */
-  function focusScore(n: GraphNode): number {
-    let score = 0;
-    const p = n.priority ?? 5;
-    if (p === 0) score += 10000;
-    else if (p === 1) score += 5000;
-
-    // Deadline urgency
-    const due = n._raw?.due;
-    if (due) {
-        const daysUntil = (new Date(due).getTime() - Date.now()) / 86400000;
-        if (daysUntil < 0) score += 8000;       // overdue
-        else if (daysUntil <= 7) score += 3000;  // due within a week
-        else if (daysUntil <= 30) score += 1000; // due within a month
-    }
-
-    // Staleness
-    const created = n._raw?.created;
-    if (created && p >= 2) {
-        const age = Math.max(0, (Date.now() - new Date(created).getTime()) / 86400000);
-        score += Math.min(age, 200);
-    }
-
-    // Downstream weight
-    score += (n.dw || 0) * 10;
-    return score;
-  }
-
   function computeArcLayout() {
     if (!$graphData) return;
 
@@ -104,7 +76,7 @@
     // Sort by focus score, then depth
     nodes.sort((a, b) => {
         if ((a.depth || 0) !== (b.depth || 0)) return (a.depth || 0) - (b.depth || 0);
-        return focusScore(b) - focusScore(a);
+        return (b.focusScore || 0) - (a.focusScore || 0);
     });
 
     // Layout: depth maps to Y bands, x to sorted index within depth

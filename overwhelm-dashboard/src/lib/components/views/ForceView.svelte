@@ -419,17 +419,17 @@
 
 <style>
     /* Flashlight depth-of-field state classes */
-    :global(.node) {
+    :global(g.node) {
         transition:
             opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
             filter 0.3s ease;
     }
-    :global(.node.dimmed) {
-        opacity: 0.15 !important;
+    :global(g.node.dimmed) {
+        opacity: 0.15;
         filter: grayscale(0.8) brightness(0.6);
     }
-    :global(.node.illuminated) {
-        opacity: 1 !important;
+    :global(g.node.illuminated) {
+        opacity: 1;
         filter: drop-shadow(0 0 16px var(--color-primary));
     }
     :global(path.force-edge) {
@@ -439,28 +439,28 @@
             stroke 0.3s ease;
     }
     :global(path.force-edge.dimmed) {
-        opacity: 0.05 !important;
+        opacity: 0.05;
     }
     :global(path.force-edge.illuminated) {
-        opacity: 1 !important;
-        stroke: var(--color-primary) !important;
-        stroke-width: 2px !important;
+        opacity: 1;
+        stroke: var(--color-primary);
+        stroke-width: 2px;
     }
     /* Intention path highlighting — gentle emphasis, don't over-dim */
-    :global(.node.intent-dimmed) {
-        opacity: 0.5 !important;
+    :global(g.node.intent-dimmed) {
+        opacity: 0.5;
         filter: grayscale(0.3) brightness(0.8);
     }
-    :global(.node.intent-focus) {
-        opacity: 1 !important;
+    :global(g.node.intent-focus) {
+        opacity: 1;
         filter: none;
     }
     :global(path.force-edge.intent-edge) {
-        opacity: 0.9 !important;
-        stroke: #f59e0b !important;
-        stroke-width: 2.5px !important;
+        opacity: 0.9;
+        stroke: #f59e0b;
+        stroke-width: 2.5px;
     }
     :global(path.force-edge.intent-edge-dim) {
-        opacity: 0.15 !important;
+        opacity: 0.15;
     }
 </style>
