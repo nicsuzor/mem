@@ -84,86 +84,6 @@
         }
     }
 
-    // Intention path highlighting
-    $: if (nodesLayer && edgesLayer && $graphData && $viewSettings.showIntentionPath) {
-        const intentionPath = ($graphData as any).intentionPath;
-        if (intentionPath) {
-            const { onPath, done, remaining } = intentionPath;
-            const nEls = d3.select(nodesLayer).selectAll<SVGGElement, GraphNode>(".node");
-            const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
-
-            nEls.each(function(d) {
-                const g = d3.select(this);
-                g.select('.intent-glow').remove();
-                g.select('.intent-badge').remove();
-
-                if (onPath.has(d.id)) {
-                    // Gold glow ring for nodes on the active intention path
-                    g.insert('rect', ':first-child')
-                        .attr('class', 'intent-glow')
-                        .attr('x', -d.w / 2 - 4)
-                        .attr('y', -d.h / 2 - 4)
-                        .attr('width', d.w + 8)
-                        .attr('height', d.h + 8)
-                        .attr('rx', 6)
-                        .attr('fill', 'none')
-                        .attr('stroke', '#f59e0b')
-                        .attr('stroke-width', 2.5)
-                        .attr('opacity', 0.8)
-                        .attr('filter', 'url(#intent-glow-filter)');
-                } else if (done.has(d.id)) {
-                    // Green checkmark badge for accomplished siblings
-                    g.append('text')
-                        .attr('class', 'intent-badge')
-                        .attr('x', d.w / 2 - 4)
-                        .attr('y', -d.h / 2 + 4)
-                        .attr('font-size', '10px')
-                        .attr('fill', '#22c55e')
-                        .text('\u2713');
-                } else if (remaining.has(d.id)) {
-                    // Pulsing amber border for remaining work
-                    g.insert('rect', ':first-child')
-                        .attr('class', 'intent-glow')
-                        .attr('x', -d.w / 2 - 2)
-                        .attr('y', -d.h / 2 - 2)
-                        .attr('width', d.w + 4)
-                        .attr('height', d.h + 4)
-                        .attr('rx', 4)
-                        .attr('fill', 'none')
-                        .attr('stroke', '#f59e0b')
-                        .attr('stroke-width', 1)
-                        .attr('stroke-dasharray', '4,3')
-                        .attr('opacity', 0.5);
-                }
-            });
-
-            // Dim non-path nodes
-            nEls.classed('intent-dimmed', (d: any) =>
-                !onPath.has(d.id) && !done.has(d.id) && !remaining.has(d.id));
-
-            // Highlight edges connecting path nodes
-            eEls.each(function(d: any) {
-                const sid = d.source.id || d.source;
-                const tid = d.target.id || d.target;
-                const onIntent = onPath.has(sid) && onPath.has(tid);
-                d3.select(this)
-                    .classed('intent-edge', onIntent)
-                    .classed('intent-edge-dim', !onIntent);
-            });
-        }
-    }
-
-    // Clear intent highlighting when toggled off
-    $: if (nodesLayer && edgesLayer && !$viewSettings.showIntentionPath) {
-        d3.select(nodesLayer).selectAll('.intent-glow').remove();
-        d3.select(nodesLayer).selectAll('.intent-badge').remove();
-        d3.select(nodesLayer).selectAll('.node')
-            .classed('intent-dimmed', false);
-        d3.select(edgesLayer).selectAll('path')
-            .classed('intent-edge', false)
-            .classed('intent-edge-dim', false);
-    }
-
     function projectColor(projectId: string) {
         let hash = 0;
         for (let i = 0; i < projectId.length; i++) {
@@ -355,6 +275,72 @@
             routeForceEdges(eEls);
         }
         updateHulls();
+        applyIntentionHighlighting(nEls, eEls);
+    }
+
+    function applyIntentionHighlighting(nEls: any, eEls: any) {
+        const intentionPath = ($graphData as any)?.intentionPath;
+        if (!$viewSettings.showIntentionPath || !intentionPath) {
+            nEls.classed('intent-dimmed', false);
+            eEls.classed('intent-edge', false).classed('intent-edge-dim', false);
+            return;
+        }
+
+        const { onPath, done, remaining } = intentionPath;
+
+        nEls.each(function(this: SVGGElement, d: GraphNode) {
+            const g = d3.select(this);
+            g.select('.intent-glow').remove();
+            g.select('.intent-badge').remove();
+
+            if (onPath.has(d.id)) {
+                g.insert('rect', ':first-child')
+                    .attr('class', 'intent-glow')
+                    .attr('x', -d.w / 2 - 4)
+                    .attr('y', -d.h / 2 - 4)
+                    .attr('width', d.w + 8)
+                    .attr('height', d.h + 8)
+                    .attr('rx', 6)
+                    .attr('fill', 'none')
+                    .attr('stroke', '#f59e0b')
+                    .attr('stroke-width', 2.5)
+                    .attr('opacity', 0.8)
+                    .attr('filter', 'url(#intent-glow-filter)');
+            } else if (done.has(d.id)) {
+                g.append('text')
+                    .attr('class', 'intent-badge')
+                    .attr('x', d.w / 2 - 4)
+                    .attr('y', -d.h / 2 + 4)
+                    .attr('font-size', '10px')
+                    .attr('fill', '#22c55e')
+                    .text('\u2713');
+            } else if (remaining.has(d.id)) {
+                g.insert('rect', ':first-child')
+                    .attr('class', 'intent-glow')
+                    .attr('x', -d.w / 2 - 2)
+                    .attr('y', -d.h / 2 - 2)
+                    .attr('width', d.w + 4)
+                    .attr('height', d.h + 4)
+                    .attr('rx', 4)
+                    .attr('fill', 'none')
+                    .attr('stroke', '#f59e0b')
+                    .attr('stroke-width', 1)
+                    .attr('stroke-dasharray', '4,3')
+                    .attr('opacity', 0.5);
+            }
+        });
+
+        nEls.classed('intent-dimmed', (d: any) =>
+            !onPath.has(d.id) && !done.has(d.id) && !remaining.has(d.id));
+
+        eEls.each(function(this: SVGPathElement, d: any) {
+            const sid = d.source.id || d.source;
+            const tid = d.target.id || d.target;
+            const onIntent = onPath.has(sid) && onPath.has(tid);
+            d3.select(this)
+                .classed('intent-edge', onIntent)
+                .classed('intent-edge-dim', !onIntent);
+        });
     }
 
     function tickVisuals() {
