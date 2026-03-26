@@ -37,17 +37,24 @@
                     <div class="space-y-3 pt-1 border-t border-primary/5">
                         <div class="space-y-1">
                             <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                                <span>Repulsion</span>
-                                <span>{$viewSettings.chargeStrength.toFixed(1)}x</span>
+                                <span>Link_Length</span>
+                                <span>{$viewSettings.colaLinkLength}</span>
                             </div>
-                            <input type="range" min="0.1" max="3.0" step="0.1" bind:value={$viewSettings.chargeStrength} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                            <input type="range" min="30" max="400" step="10" bind:value={$viewSettings.colaLinkLength} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
                         </div>
                         <div class="space-y-1">
                             <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                                <span>Link_Distance</span>
-                                <span>{$viewSettings.linkDistance.toFixed(1)}x</span>
+                                <span>Flow_Separation</span>
+                                <span>{$viewSettings.colaFlowSep}</span>
                             </div>
-                            <input type="range" min="0.1" max="3.0" step="0.1" bind:value={$viewSettings.linkDistance} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                            <input type="range" min="10" max="200" step="5" bind:value={$viewSettings.colaFlowSep} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Group_Padding</span>
+                                <span>{$viewSettings.colaGroupPadding}</span>
+                            </div>
+                            <input type="range" min="5" max="80" step="5" bind:value={$viewSettings.colaGroupPadding} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
                         </div>
                     </div>
 
