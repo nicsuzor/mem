@@ -17,6 +17,21 @@ function statusOpacity(d: GraphNode) {
     return 0.35;
 }
 
+// Epic styling constants
+const EPIC_SCALE = 1.3;
+const EPIC_CORNER_RADIUS = 16;
+const EPIC_OUTER_OFFSET = 3;
+const EPIC_OUTER_CORNER_RADIUS = 18;
+const EPIC_OUTER_STROKE_WIDTH = 1;
+const EPIC_OUTER_OPACITY = 0.3;
+const EPIC_OUTER_DASHARRAY = "4,2";
+const EPIC_INNER_STROKE_WIDTH = 2.5;
+const EPIC_INNER_FILL_OPACITY = 0.7;
+const EPIC_INNER_STROKE_OPACITY = 0.6;
+const EPIC_BADGE_Y_OFFSET = -6;
+const EPIC_BADGE_FONT_SIZE = 7;
+const EPIC_BADGE_LETTER_SPACING = "1.5px";
+
 export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, undefined>, d: GraphNode, isSelected = false) {
     const hw = d.w / 2;
     const hh = d.h / 2;
@@ -55,26 +70,30 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
             .attr("fill-opacity", opacity).attr("stroke-opacity", Math.max(opacity, 0.4));
     } else if (d.shape === "hexagon") {
         // Epics: distinctive double-border hexagon with larger size and type badge
-        const scale = 1.3; // Make epics visually larger
-        const sw = d.w * scale, sh = d.h * scale;
+        const sw = d.w * EPIC_SCALE, sh = d.h * EPIC_SCALE;
         const shw = sw / 2, shh = sh / 2;
-        const c = Math.min(shh * 0.5, 16);
+        const c = Math.min(shh * 0.5, EPIC_CORNER_RADIUS);
         const pts = `${-shw + c},${-shh} ${shw - c},${-shh} ${shw},${0} ${shw - c},${shh} ${-shw + c},${shh} ${-shw},${0}`;
+        
         // Outer glow hexagon
-        const c2 = Math.min((shh + 3) * 0.5, 18);
-        const pts2 = `${-(shw+3) + c2},${-(shh+3)} ${(shw+3) - c2},${-(shh+3)} ${shw+3},${0} ${(shw+3) - c2},${shh+3} ${-(shw+3) + c2},${shh+3} ${-(shw+3)},${0}`;
+        const off = EPIC_OUTER_OFFSET;
+        const c2 = Math.min((shh + off) * 0.5, EPIC_OUTER_CORNER_RADIUS);
+        const pts2 = `${-(shw+off) + c2},${-(shh+off)} ${(shw+off) - c2},${-(shh+off)} ${shw+off},${0} ${(shw+off) - c2},${shh+off} ${-(shw+off) + c2},${shh+off} ${-(shw+off)},${0}`;
+        
         g.append("polygon").attr("points", pts2)
-            .attr("fill", "none").attr("stroke", d.borderColor).attr("stroke-width", 1)
-            .attr("stroke-opacity", 0.3).attr("stroke-dasharray", "4,2");
+            .attr("fill", "none").attr("stroke", d.borderColor).attr("stroke-width", EPIC_OUTER_STROKE_WIDTH)
+            .attr("stroke-opacity", EPIC_OUTER_OPACITY).attr("stroke-dasharray", EPIC_OUTER_DASHARRAY);
+            
         g.append("polygon").attr("points", pts)
-            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", Math.max(d.borderWidth, 2.5))
-            .attr("fill-opacity", Math.max(opacity, 0.7)).attr("stroke-opacity", Math.max(opacity, 0.6));
+            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", Math.max(d.borderWidth, EPIC_INNER_STROKE_WIDTH))
+            .attr("fill-opacity", Math.max(opacity, EPIC_INNER_FILL_OPACITY)).attr("stroke-opacity", Math.max(opacity, EPIC_INNER_STROKE_OPACITY));
+            
         // Epic type badge at top
         g.append("text")
-            .attr("x", 0).attr("y", -shh - 6)
-            .attr("text-anchor", "middle").attr("font-size", "7px")
+            .attr("x", 0).attr("y", -shh + EPIC_BADGE_Y_OFFSET)
+            .attr("text-anchor", "middle").attr("font-size", `${EPIC_BADGE_FONT_SIZE}px`)
             .attr("font-weight", "800").attr("fill", d.borderColor)
-            .attr("letter-spacing", "1.5px").attr("pointer-events", "none")
+            .attr("letter-spacing", EPIC_BADGE_LETTER_SPACING).attr("pointer-events", "none")
             .text("EPIC");
     } else {
         g.append("rect").attr("x", -hw).attr("y", -hh).attr("width", d.w).attr("height", d.h)

@@ -221,8 +221,7 @@
                     <tbody class="divide-y divide-primary/10 text-sm">
                         {#each tasks as task}
                             <tr
-                                class="hover:bg-primary/5 group transition-colors cursor-pointer {$selection.activeNodeId === task.id ? 'bg-primary/10' : ''} {focusIds.has(task.id) ? 'border-l-3 border-l-amber-500/80' : ''}"
-                                onclick={() => selection.update(s => ({...s, activeNodeId: task.id}))}
+                                class="hover:bg-primary/5 group transition-colors cursor-pointer {$selection.activeNodeId === task.id ? 'bg-primary/10' : ''} {focusIds.has(task.id) ? 'border-l-[3px] border-l-amber-500/80' : ''}"                                onclick={() => selection.update(s => ({...s, activeNodeId: task.id}))}
                             >
                                 <td class="px-4 py-4 text-primary/60 font-mono text-xs">
                                     {#if focusIds.has(task.id)}<span class="text-[9px] font-bold text-amber-500 mr-1">FOCUS</span>{/if}

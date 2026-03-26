@@ -200,6 +200,8 @@
 
         const activeNodeId = $selection.activeNodeId;
         const hoveredNodeId = $selection.hoveredNodeId;
+        const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
+        const showFocus = $viewSettings.showFocusHighlight && focusIds.size > 0;
 
         nEls.each(function (d) {
             const g = d3.select(this);
@@ -218,8 +220,7 @@
             g.classed("hovered-node", isHovered);
 
             // Focus highlight: gold ring on priority focus leaf nodes
-            const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
-            if ($viewSettings.showFocusHighlight && d._isLeaf) {
+            if (showFocus && d._isLeaf) {
                 g.select('.focus-ring').remove();
                 if (focusIds.has(d.id)) {
                     g.insert('circle', ':first-child')
@@ -232,11 +233,10 @@
         });
 
         // Gentle dimming: non-focus leaves slightly faded
-        const focusIds2: Set<string> = ($graphData as any)?.focusIds || new Set();
-        if ($viewSettings.showFocusHighlight && focusIds2.size > 0) {
+        if (showFocus) {
             nEls.style("opacity", (d: any) => {
                 if (!d._isLeaf) return null;
-                if (focusIds2.has(d.id)) return 1;
+                if (focusIds.has(d.id)) return 1;
                 return 0.6;
             });
         } else {

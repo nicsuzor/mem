@@ -128,7 +128,10 @@ impl GraphStore {
         // 7. Compute downstream metrics (BFS through blocks/soft_blocks)
         compute_downstream_metrics(&mut nodes);
 
-        // 8. Compute project field (nearest ancestor with node_type == "project")
+        // 8. Compute focus scores
+        compute_focus_scores(&mut nodes);
+
+        // 9. Compute project field (nearest ancestor with node_type == "project")
         compute_project_field(&mut nodes);
 
         // 9. Compute reachable set (upstream BFS from active leaves)
@@ -220,6 +223,7 @@ impl GraphStore {
         compute_degree_metrics(&mut nodes_vec, &edges);
         compute_centrality_metrics(&mut nodes_vec, &edges);
         compute_downstream_metrics(&mut nodes_vec);
+        compute_focus_scores(&mut nodes_vec);
         compute_project_field(&mut nodes_vec);
 
         let reachable_set = find_reachable_set(&nodes_vec, &edges);
@@ -694,58 +698,62 @@ impl GraphStore {
         Ok(written)
     }
 
-    /// Compute focus picks: top ready tasks ranked by priority + deadline + staleness + dw.
-    pub fn focus_picks(&self, max: usize) -> Vec<String> {
-        let today = chrono::Utc::now().date_naive();
-        let ready_nodes: Vec<&GraphNode> = self.ready
-            .iter()
-            .filter_map(|id| self.nodes.get(id))
-            .collect();
-
-        let mut scored: Vec<(&GraphNode, i64)> = ready_nodes
-            .iter()
-            .map(|&t| {
-                let pri = t.priority.unwrap_or(2);
-                let mut score: i64 = match pri {
-                    0 => 10000,
-                    1 => 5000,
-                    _ => 0,
-                };
-                if let Some(ref due) = t.due {
-                    let len = std::cmp::min(10, due.len());
-                    if let Ok(due_date) =
-                        chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+/// Compute focus scores for all nodes.
+///
+/// Score based on priority, deadline urgency, staleness, and downstream weight.
+/// Results are stored in node.focus_score.
+fn compute_focus_scores(nodes: &mut [GraphNode]) {
+    let today = chrono::Utc::now().date_naive();
+    for node in nodes.iter_mut() {
+        let pri = node.priority.unwrap_or(2);
+        let mut score: i64 = match pri {
+            0 => 10000,
+            1 => 5000,
+            _ => 0,
+        };
+        if let Some(ref due) = node.due {
+            let len = std::cmp::min(10, due.len());
+            if let Ok(due_date) =
+                chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+            {
+                let days_until = (due_date - today).num_days();
+                if days_until < 0 {
+                    score += 8000;
+                } else if days_until <= 7 {
+                    score += 3000 + (7 - days_until) * 100;
+                } else if days_until <= 30 {
+                    score += 1000;
+                }
+            }
+        }
+        if pri >= 2 {
+            if let Some(ref created) = node.created {
+                if created.len() >= 10 {
+                    if let Ok(created_dt) =
+                        chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d")
                     {
-                        let days_until = (due_date - today).num_days();
-                        if days_until < 0 {
-                            score += 8000;
-                        } else if days_until <= 7 {
-                            score += 3000 + (7 - days_until) * 100;
-                        } else if days_until <= 30 {
-                            score += 1000;
-                        }
+                        let days = (today - created_dt).num_days();
+                        score += std::cmp::min(days.max(0), 200);
                     }
                 }
-                if pri >= 2 {
-                    if let Some(ref created) = t.created {
-                        if created.len() >= 10 {
-                            if let Ok(created_dt) =
-                                chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d")
-                            {
-                                let days = (today - created_dt).num_days();
-                                score += std::cmp::min(days.max(0), 200);
-                            }
-                        }
-                    }
-                }
-                score += (t.downstream_weight * 10.0) as i64;
-                (t, score)
-            })
-            .collect();
-
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
-        scored.into_iter().take(max).map(|(t, _)| t.id.clone()).collect()
+            }
+        }
+        score += (node.downstream_weight * 10.0) as i64;
+        node.focus_score = Some(score);
     }
+}
+
+/// Compute focus picks: top ready tasks ranked by pre-computed focus_score.
+pub fn focus_picks(&self, max: usize) -> Vec<String> {
+    let mut scored: Vec<(&GraphNode, i64)> = self.ready
+        .iter()
+        .filter_map(|id| self.nodes.get(id))
+        .map(|t| (t, t.focus_score.unwrap_or(0)))
+        .collect();
+
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.into_iter().take(max).map(|(t, _)| t.id.clone()).collect()
+}
 
     /// Full graph as JSON — all task nodes and their edges.
     pub fn output_json(&self) -> Result<String> {

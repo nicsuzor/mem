@@ -209,7 +209,7 @@
         transition: opacity 0.15s;
     }
     .legend-line.dashed {
-        background: none !important;
+        background: transparent;
         border-top: 3px dashed;
         border-color: inherit;
         height: 0;

@@ -49,6 +49,7 @@ export interface GraphNode {
     y?: number;
     layouts: Record<string, any>;
     fullTitle: string;
+    focusScore: number;
     _raw: any;
 
     // D3 physics mutation state
@@ -303,6 +304,7 @@ export function prepareGraphData(
             x: node.x,
             y: node.y,
             layouts: node.layouts || {},
+            focusScore: node.focus_score || 0,
             _raw: node
         });
     }

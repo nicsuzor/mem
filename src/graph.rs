@@ -121,6 +121,8 @@ pub struct GraphNode {
     #[serde(skip)]
     pub permalinks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus_score: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     /// Computed status group: "active", "blocked", or "completed"
     #[serde(skip_serializing_if = "Option::is_none")]

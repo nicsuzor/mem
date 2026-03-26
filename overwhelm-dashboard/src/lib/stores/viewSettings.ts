@@ -18,7 +18,6 @@ export const viewSettings = writable({
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',
-    showIntentionPath: true,
     showFocusHighlight: true,
     arcFocusedOnly: true,
 });

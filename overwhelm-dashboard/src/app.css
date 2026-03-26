@@ -32,9 +32,9 @@
     z-index: 100;
   }
   .selected-node rect, .selected-node circle, .selected-node polygon {
-    stroke: #fff !important;
-    stroke-width: 5px !important;
-    stroke-opacity: 1 !important;
+    stroke: #fff;
+    stroke-width: 5px;
+    stroke-opacity: 1;
   }
 }
 
