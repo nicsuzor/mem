@@ -235,16 +235,12 @@
             nEls.style("opacity", null);
         }
 
-        if (!$filters.showDependencies) {
-            d3.select(edgesLayer).selectAll("path").remove();
-        } else {
-            const eEls = d3
-                .select(edgesLayer)
-                .selectAll("path")
-                .data(links)
-                .join("path");
-            routeTreemapEdges(eEls);
-        }
+        const eEls = d3
+            .select(edgesLayer)
+            .selectAll("path")
+            .data(links)
+            .join("path");
+        routeTreemapEdges(eEls);
     }
 </script>
 

@@ -125,6 +125,7 @@ export const ASSIGNEE_COLORS: Record<string, string> = {
 export const ASSIGNEE_DEFAULT = "#6c757d";
 
 export const PRIORITY_BORDERS: Record<number, string> = {
+    [-1]: "#f59e0b", // Intent/focus — amber, above P0
     0: "#dc3545",
     1: "#fd7e14",
     2: "#6c757d",

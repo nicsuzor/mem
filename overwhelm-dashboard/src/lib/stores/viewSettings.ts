@@ -1,24 +1,21 @@
 import { writable } from 'svelte/store';
 
-export const VIEW_MODES = ['Treemap', 'Circle Pack', 'SFDP', 'Arc Diagram'] as const;
+export const VIEW_MODES = ['Treemap', 'Circle Pack', 'Force', 'Arc Diagram'] as const;
 export type ViewMode = typeof VIEW_MODES[number];
 
 export const viewSettings = writable({
-    showSidebar: false, // controls sidebar visibility
     mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph'
-    viewMode: 'Treemap',  // "Treemap", "Circle Pack", "SFDP", "Arc Diagram"
+    viewMode: 'Treemap',  // "Treemap", "Circle Pack", "Force", "Arc Diagram"
     topNLeaves: 80,
-    liveSimulation: true,
     chargeStrength: 1.0,
     linkDistance: 1.0,
     collisionRadius: 1.2,
     gravity: 0.05,
-    alphaDecay: 0.04,
+    alphaDecay: 0.02,
     velocityDecay: 0.7,
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',
-    showFocusHighlight: true,
     arcFocusedOnly: true,
 });
 
@@ -28,7 +25,7 @@ export const getLayoutFromViewSettings = ($settings: any) => {
             return 'treemap';
         case 'Circle Pack':
             return 'circle_pack';
-        case 'SFDP':
+        case 'Force':
             return 'force';
         case 'Arc Diagram':
             return 'arc';

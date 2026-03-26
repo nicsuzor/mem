@@ -10,12 +10,8 @@ function escapeHtml(str: string): string {
         .replace(/'/g, '&#39;');
 }
 
-function statusOpacity(d: GraphNode) {
-    if (['done', 'completed', 'cancelled'].includes(d.status)) return 0.15;
-    if (['active', 'inbox', 'todo', 'in_progress', 'review'].includes(d.status)) return 0.9;
-    if (['waiting', 'decomposing', 'dormant'].includes(d.status)) return 0.5;
-    return 0.35;
-}
+// Status is encoded via fill color + text color, not opacity.
+// Opacity is reserved for interactive states (hover flashlight, selection).
 
 // Epic styling constants
 const EPIC_SCALE = 1.3;
@@ -61,33 +57,29 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
             .text("★ START HERE");
     }
 
-    const opacity = statusOpacity(d);
-
     if (d.shape === "pill") {
         g.append("rect").attr("x", -hw).attr("y", -hh).attr("width", d.w).attr("height", d.h)
             .attr("rx", hh).attr("ry", hh)
-            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", d.borderWidth)
-            .attr("fill-opacity", opacity).attr("stroke-opacity", Math.max(opacity, 0.4));
+            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", d.borderWidth);
     } else if (d.shape === "hexagon") {
         // Epics: distinctive double-border hexagon with larger size and type badge
         const sw = d.w * EPIC_SCALE, sh = d.h * EPIC_SCALE;
         const shw = sw / 2, shh = sh / 2;
         const c = Math.min(shh * 0.5, EPIC_CORNER_RADIUS);
         const pts = `${-shw + c},${-shh} ${shw - c},${-shh} ${shw},${0} ${shw - c},${shh} ${-shw + c},${shh} ${-shw},${0}`;
-        
+
         // Outer glow hexagon
         const off = EPIC_OUTER_OFFSET;
         const c2 = Math.min((shh + off) * 0.5, EPIC_OUTER_CORNER_RADIUS);
         const pts2 = `${-(shw+off) + c2},${-(shh+off)} ${(shw+off) - c2},${-(shh+off)} ${shw+off},${0} ${(shw+off) - c2},${shh+off} ${-(shw+off) + c2},${shh+off} ${-(shw+off)},${0}`;
-        
+
         g.append("polygon").attr("points", pts2)
             .attr("fill", "none").attr("stroke", d.borderColor).attr("stroke-width", EPIC_OUTER_STROKE_WIDTH)
             .attr("stroke-opacity", EPIC_OUTER_OPACITY).attr("stroke-dasharray", EPIC_OUTER_DASHARRAY);
-            
+
         g.append("polygon").attr("points", pts)
-            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", Math.max(d.borderWidth, EPIC_INNER_STROKE_WIDTH))
-            .attr("fill-opacity", Math.max(opacity, EPIC_INNER_FILL_OPACITY)).attr("stroke-opacity", Math.max(opacity, EPIC_INNER_STROKE_OPACITY));
-            
+            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", Math.max(d.borderWidth, EPIC_INNER_STROKE_WIDTH));
+
         // Epic type badge at top
         g.append("text")
             .attr("x", 0).attr("y", -shh + EPIC_BADGE_Y_OFFSET)
@@ -98,8 +90,7 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
     } else {
         g.append("rect").attr("x", -hw).attr("y", -hh).attr("width", d.w).attr("height", d.h)
             .attr("rx", d.shape === "rounded" ? 10 : 4)
-            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", d.borderWidth)
-            .attr("fill-opacity", opacity).attr("stroke-opacity", Math.max(opacity, 0.4));
+            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", d.borderWidth);
     }
 
     if (d.status === "blocked" && d.dw >= 2) {
@@ -148,7 +139,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     const w = d._lw || d.w;
     const h = d._lh || d.h;
     const isParent = !d.isLeaf;
-    const opacity = statusOpacity(d);
+
 
     if (isSelected) {
         g.classed("selected-node", true);
@@ -288,6 +279,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // Priority border colors — only P0/P1 draw the eye
     const PRIORITY_BORDERS: Record<number, string> = {
+        [-1]: '#e11d48', // Intent/focus — hot pink, above P0
         0: '#f59e0b',  // P0 Critical — strong amber (attention!)
         1: '#d97706',  // P1 High — warm orange
         2: '#4A5568',  // P2 Med — blends with card
@@ -517,7 +509,7 @@ function renderWrappedTextInCircle(g: d3.Selection<SVGGElement, any, null, undef
 export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, undefined>, d: any, isSelected = false) {
     const r = Math.max(d._lr || d.w / 2 || 5, 2);
     const isParent = !d.isLeaf;
-    const opacity = statusOpacity(d);
+
 
     // Add native tooltip
     g.append("title").text(`${d.label} (${d.status})\nType: ${d.type}`);
@@ -550,6 +542,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
     };
 
     const CIRCLE_PRIORITY_BORDERS: Record<number, string> = {
+        [-1]: '#e11d48', // Intent/focus — hot pink, above P0
         0: '#f59e0b',  // P0 Critical — strong amber
         1: '#d97706',  // P1 High — warm orange
         2: '#4A5568',  // P2 Med — blends
@@ -648,7 +641,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 : Math.max(0.5, Math.min(2, r * 0.02));
         const strokeColor = isSelected ? "#fff" : isCompleted ? "#2D3340" : priorityBorder;
         g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
-            .attr("fill", cellColor).attr("fill-opacity", opacity)
+            .attr("fill", cellColor)
             .attr("stroke", strokeColor)
             .attr("stroke-width", isSelected ? Math.max(2, r * 0.02) : baseStrokeW)
             .attr("stroke-opacity", isCompleted ? 0.3 : 1);
@@ -673,7 +666,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
 
 export function buildArcNode(g: d3.Selection<SVGGElement, any, null, undefined>, d: any, isSelected = false) {
     const r = Math.max(4, (d.dw || 1) * 0.5 + 3);
-    const opacity = statusOpacity(d);
+
 
     // Add native tooltip
     g.append("title").text(`${d.label} (${d.status})`);
@@ -685,7 +678,7 @@ export function buildArcNode(g: d3.Selection<SVGGElement, any, null, undefined>,
     }
 
     g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
-        .attr("fill", d.fill).attr("fill-opacity", opacity)
+        .attr("fill", d.fill)
         .attr("stroke", isSelected ? "#fff" : d.borderColor).attr("stroke-width", isSelected ? 4 : 1);
 
     g.append("text").attr("class", "node-text")

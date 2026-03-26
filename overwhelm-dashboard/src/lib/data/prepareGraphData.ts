@@ -181,6 +181,9 @@ export function prepareGraphData(
         if (n.parent) parentIdsInGraph.add(n.parent);
     });
 
+    // Intent/focus nodes get promoted to priority above P0
+    const focusSet = new Set(graph.focus || []);
+
     const validEdges = rawEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
     const maxDepth = Math.max(0, ...rawNodes.map(n => n.depth || 0));
 
@@ -197,7 +200,9 @@ export function prepareGraphData(
         const nid = node.id;
         const nodeType = node.node_type || "";
         const status = (node.status || "inbox").toLowerCase();
-        const priority = typeof node.priority === 'number' ? node.priority : 2;
+        // Intent/focus nodes are promoted above P0 (priority -1)
+        const basePriority = typeof node.priority === 'number' ? node.priority : 2;
+        const priority = focusSet.has(nid) ? Math.min(basePriority, -1) : basePriority;
         const dw = node.downstream_weight || 0;
         const stakeholder = node.stakeholder_exposure || false;
         const depth = node.depth || 0;

@@ -1,6 +1,5 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import Sidebar from "$lib/components/Sidebar.svelte";
     import TaskEditorView from "$lib/components/views/TaskEditorView.svelte";
     import ZoomContainer from "$lib/components/shared/ZoomContainer.svelte";
     import Legend from "$lib/components/shared/Legend.svelte";
@@ -77,7 +76,7 @@
         let fNodes = [...prepared.nodes];
         let fLinks = [...prepared.links];
         const isForce =
-            $viewSettings.viewMode === "SFDP";
+            $viewSettings.viewMode === "Force";
 
         // Only include real task types with explicit ID and status
         const TASK_TYPES = new Set(["task", "goal", "project", "epic", "bug", "feature", "learn", "action", "subproject"]);
@@ -101,7 +100,7 @@
                 (n) => n.project === $filters.project || n.type === "project" || n.type === "goal",
             );
         }
-        if ($viewSettings.viewMode === "SFDP" && !$filters.showOrphans) {
+        if ($viewSettings.viewMode === "Force" && !$filters.showOrphans) {
             const nodesWithEdges = new Set<string>();
             fLinks.forEach((l) => {
                 const sid = typeof l.source === "object" ? l.source.id : l.source;
@@ -111,12 +110,7 @@
             });
             fNodes = fNodes.filter((n) => nodesWithEdges.has(n.id) || !n.isLeaf);
         }
-        if (!$filters.showDependencies) {
-            fLinks = fLinks.filter((e) => e.type !== "depends_on");
-        }
-        if (!$filters.showReferences) {
-            fLinks = fLinks.filter((e) => e.type !== "ref");
-        }
+        // Edge visibility is handled via CSS opacity, not by filtering
         if (isForce && $viewSettings.topNLeaves < fNodes.length) {
             const parents = fNodes.filter((n) => !n.isLeaf);
             let leaves = fNodes.filter((n) => n.isLeaf).sort((a, b) => b.dw - a.dw);
@@ -233,16 +227,9 @@
     </div>
 {:else}
     <!-- OPERATOR LAYOUT (12-Column Bento Grid) -->
-    <!-- LEFT SIDEBAR: Navigation & Filters -->
-    {#if $viewSettings.showSidebar}
-        <aside class="col-span-3 border-r border-primary-border bg-background flex flex-col h-full overflow-y-auto custom-scrollbar transition-all">
-            <Sidebar />
-        </aside>
-    {/if}
-
     {#if $viewSettings.mainTab === "Threaded Tasks"}
-        <!-- THREADED TASKS & EDITOR OVERRIDE -->    <!-- THREADED TASKS & EDITOR OVERRIDE -->
-        <section class="{$viewSettings.showSidebar ? 'col-span-9' : 'col-span-12'} flex flex-col h-full bg-background overflow-hidden transition-all" class:hidden={$viewSettings.mainTab !== "Threaded Tasks"}>
+        <!-- THREADED TASKS & EDITOR OVERRIDE -->
+        <section class="col-span-12 flex flex-col h-full bg-background overflow-hidden transition-all" class:hidden={$viewSettings.mainTab !== "Threaded Tasks"}>
             <ThreadedTasksView />
         </section>
     {:else if $viewSettings.mainTab === "Dashboard"}
@@ -253,7 +240,7 @@
 
     {:else}
     <!-- MAIN CONTENT: Graph or Dashboard -->
-    <section class="{$viewSettings.showSidebar ? ($selection.activeNodeId ? 'col-span-6' : 'col-span-9') : ($selection.activeNodeId ? 'col-span-9' : 'col-span-12')} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
+    <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
         <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
 
             <!-- Focus banner (Absolute Over Graph) -->
