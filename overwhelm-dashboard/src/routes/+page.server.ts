@@ -296,7 +296,11 @@ export const load = async () => {
                 sessions: synthesis.sessions,
                 narrative: synthesis.narrative,
             } : null,
-            daily_story: synthesis?.narrative ? { story: synthesis.narrative } : null,
+            daily_story: synthesis?.daily_story
+                ? { story: synthesis.daily_story }
+                : synthesis?.narrative
+                    ? { story: synthesis.narrative }
+                    : null,
             project_projects: projectProjects,
             project_data: projectData,
             path: buildPathData(summaries),
