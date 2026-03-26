@@ -22,6 +22,10 @@
     let frameId = 0;
 
     $: {
+        // Touch Cola settings so Svelte re-runs when sliders change
+        const _ll = $viewSettings.colaLinkLength;
+        const _fs = $viewSettings.colaFlowSep;
+        const _gp = $viewSettings.colaGroupPadding;
         if (
             containerGroup &&
             $graphData &&
@@ -236,6 +240,26 @@
                 .attr("stroke-width", 1.5)
                 .attr("stroke-dasharray", "6,3")
                 .style("pointer-events", "none");
+
+            // Epic group labels
+            const labelEls = d3.select(hullLayer)
+                .selectAll<SVGTextElement, any>("text.cola-group-label")
+                .data(groups);
+
+            labelEls.join("text")
+                .attr("class", "cola-group-label")
+                .attr("x", (d: any) => (d.bounds?.x ?? 0) + 12)
+                .attr("y", (d: any) => (d.bounds?.y ?? 0) + 24)
+                .text((d: any) => d.label || "")
+                .attr("font-size", 18)
+                .attr("font-weight", 700)
+                .attr("fill", (d: any, i: number) => {
+                    const hue = (i * 47) % 360;
+                    return `hsla(${hue}, 40%, 35%, 0.7)`;
+                })
+                .style("pointer-events", "none")
+                .style("text-transform", "uppercase")
+                .style("letter-spacing", "0.05em");
         }
     }
 
@@ -246,10 +270,14 @@
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
 
         const data = $graphData;
-        // Initialize positions — Cola will spread them out
+        // Scatter initial positions across the canvas so Cola's constraint
+        // solver can spread nodes in 2D (starting from a single point
+        // causes overlap avoidance to push nodes along one axis only).
+        const cw = 2400, ch = 900;
+        const pad = 100;
         data.nodes.forEach((d: any) => {
-            if (typeof d.x !== 'number') d.x = 800;
-            if (typeof d.y !== 'number') d.y = 600;
+            if (typeof d.x !== 'number') d.x = pad + Math.random() * (cw - 2 * pad);
+            if (typeof d.y !== 'number') d.y = pad + Math.random() * (ch - 2 * pad);
         });
 
         const nEls = d3
@@ -294,10 +322,7 @@
         updateHulls();
 
         // Start WebCola layout with hierarchical grouping
-        if (colaLayout) colaLayout.stop();
-
         const fc = FORCE_CONFIG;
-        const cw = 1600, ch = 1200;
 
         // Resolve string IDs to node references for all edges
         const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
@@ -307,10 +332,10 @@
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
 
-        // Set width/height on nodes for avoidOverlaps
+        // Set width/height on nodes for avoidOverlaps (generous padding to prevent touching)
         $graphData.nodes.forEach((n: any) => {
-            n.width = n.w + 10;
-            n.height = n.h + 10;
+            n.width = n.w + 20;
+            n.height = n.h + 20;
         });
 
         // Build flat groups by project — one group per project containing all its nodes.
@@ -326,8 +351,8 @@
             if (pNode) parentOf.set(cid, pNode);
         }
 
-        // Group by nearest epic ancestor only
-        function findEpic(nodeId: string): string {
+        // Group by nearest epic ancestor — nodes without an epic stay ungrouped
+        function findEpic(nodeId: string): string | null {
             let cur = nodeId;
             let depth = 0;
             while (depth < 20) {
@@ -337,20 +362,23 @@
                 cur = p.id;
                 depth++;
             }
-            return '_ungrouped';
+            return null;
         }
 
         const epicMembers = new Map<string, number[]>();
         $graphData.nodes.forEach((n, i) => {
             const epicId = n.type === 'epic' ? n.id : findEpic(n.id);
+            if (epicId === null) return; // leave ungrouped
             if (!epicMembers.has(epicId)) epicMembers.set(epicId, []);
             epicMembers.get(epicId)!.push(i);
         });
 
         const colaGroups: any[] = [];
-        for (const [, members] of epicMembers) {
+        for (const [epicId, members] of epicMembers) {
             if (members.length >= 2) {
-                colaGroups.push({ leaves: members, padding: 20 });
+                const epicNode = nodeById.get(epicId);
+                const label = epicNode?.label || epicNode?.fullTitle || epicId;
+                colaGroups.push({ leaves: members, padding: $viewSettings.colaGroupPadding, label });
             }
         }
 
@@ -370,9 +398,10 @@
             .groups(colaGroups)
             .avoidOverlaps(true)
             .handleDisconnected(true)
-            .jaccardLinkLengths(60, 0.7)
+            .flowLayout('y', $viewSettings.colaFlowSep)
+            .symmetricDiffLinkLengths($viewSettings.colaLinkLength, 0.7)
             .on("tick", tickVisuals)
-            .start(30, 30, 30);
+            .start(50, 50, 50);
     }
 
     onDestroy(() => {

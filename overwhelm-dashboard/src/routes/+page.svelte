@@ -79,8 +79,14 @@
             $viewSettings.viewMode === "Force";
 
         // Only include real task types with explicit ID and status
+        // Structural types (epic, project, goal) are always included — they often lack task_id or explicit status
         const TASK_TYPES = new Set(["task", "goal", "project", "epic", "bug", "feature", "learn", "action", "subproject"]);
-        fNodes = fNodes.filter(n => TASK_TYPES.has(n.type) && n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "" && n.status !== "inbox");
+        const STRUCTURAL_TYPES = new Set(["epic", "project", "goal"]);
+        fNodes = fNodes.filter(n => {
+            if (!TASK_TYPES.has(n.type)) return false;
+            if (STRUCTURAL_TYPES.has(n.type)) return true;
+            return n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "" && n.status !== "inbox";
+        });
 
         if (!$filters.showActive) {
             fNodes = fNodes.filter(
