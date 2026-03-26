@@ -295,8 +295,12 @@ export const load = async () => {
                 _age_minutes: synthesis._age_minutes,
                 sessions: synthesis.sessions,
                 narrative: synthesis.narrative,
+                daily_narrative: synthesis.daily_narrative,
             } : null,
-            daily_story: synthesis?.narrative ? { story: synthesis.narrative } : null,
+            // Prefer LLM-generated daily_narrative from /daily skill; fall back to mechanical narrative
+            daily_story: synthesis?.daily_narrative ? { story: synthesis.daily_narrative }
+                : synthesis?.narrative ? { story: synthesis.narrative }
+                : null,
             project_projects: projectProjects,
             project_data: projectData,
             path: buildPathData(summaries),

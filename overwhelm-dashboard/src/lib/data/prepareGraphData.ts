@@ -159,7 +159,7 @@ function classifyEdge(sourceId: string, targetId: string, nodeById: Map<string, 
 }
 
 export function prepareGraphData(
-    graph: { nodes?: any[]; edges?: any[]; ready?: string[]; blocked?: string[] },
+    graph: { nodes?: any[]; edges?: any[]; ready?: string[]; blocked?: string[]; focus?: string[] },
     structuralIds: Set<string> = new Set()
 ): PreparedGraph {
     const rawNodes = graph.nodes || [];
