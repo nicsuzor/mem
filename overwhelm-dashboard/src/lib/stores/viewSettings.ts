@@ -9,7 +9,6 @@ export const viewSettings = writable({
     topNLeaves: 80,
     chargeStrength: 1.0,  // Multiplier on FORCE_CONFIG.chargeMult
     linkDistance: 1.0,     // Multiplier on EDGE_FORCE distances
-    gravity: 0.05,        // Center gravity strength
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',

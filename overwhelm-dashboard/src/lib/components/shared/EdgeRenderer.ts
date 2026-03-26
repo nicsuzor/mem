@@ -70,18 +70,14 @@ export function routeForceEdges(linkSelection: Selection<any, any, any, any>) {
 }
 
 export function routeSfdpEdges(linkSelection: Selection<any, any, any, any>) {
+    // Only updates path geometry — opacity is controlled by edge visibility filters
     linkSelection.attr("d", (d: any) => {
         if (!d.source || !d.target) return null;
         const sx = d.source.x, sy = d.source.y;
         const tx = d.target.x, ty = d.target.y;
         if (sx == null || tx == null) return null;
 
-        // Manhattan routing (orthogonal steps)
         const my = (sy + ty) / 2;
         return `M${sx},${sy} L${sx},${my} L${tx},${my} L${tx},${ty}`;
-    })
-    .attr("stroke", (d: any) => d.color)
-    .attr("stroke-width", (d: any) => d.width)
-    .attr("stroke-dasharray", (d: any) => d.dash)
-    .attr("opacity", (d: any) => d.type === "ref" ? 0.35 : 0.85);
+    });
 }

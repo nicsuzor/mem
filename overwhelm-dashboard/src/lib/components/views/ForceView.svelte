@@ -165,10 +165,16 @@
     }
 
     // Reactively update edge visibility when filters change (no redraw needed)
-    $: if (edgesLayer && $filters) {
-        const eEls = d3.select(edgesLayer).selectAll("path");
-        if (!eEls.empty()) {
-            applyEdgeVisibility(eEls);
+    $: {
+        // Touch specific filter values so Svelte tracks them as dependencies
+        const _ep = $filters.edgeParent;
+        const _ed = $filters.edgeDependencies;
+        const _er = $filters.edgeReferences;
+        if (edgesLayer) {
+            const eEls = d3.select(edgesLayer).selectAll("path");
+            if (!eEls.empty()) {
+                applyEdgeVisibility(eEls);
+            }
         }
     }
 
@@ -285,6 +291,7 @@
 
         const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
         routeSfdpEdges(eEls);
+        applyEdgeVisibility(eEls);
         updateHulls();
     }
 
@@ -341,52 +348,24 @@
         routeSfdpEdges(eEls);
         updateHulls();
 
-        // Start Simulation
+        // Start simulation — 3 forces: link (parent only), charge, radial
         if (simulation) simulation.stop();
 
         const fc = FORCE_CONFIG;
         const cw = 1200, ch = 800;
 
-        // Separate parent (structural spine) from cross-links (deps/refs)
+        // Only parent edges drive the layout; deps/refs render as lines but don't pull
         const parentLinks = $graphData.links.filter((l: any) => l.type === 'parent');
-        const depLinks = $graphData.links.filter((l: any) => l.type !== 'parent');
 
-        simulation = d3
-            .forceSimulation<GraphNode, GraphEdge>($graphData.nodes)
-            // Parent links: strong, keeps hierarchy clusters together
-            .force("link-parent", d3
-                .forceLink<GraphNode, GraphEdge>(parentLinks)
-                .id((d) => d.id)
-                .distance((d) => d.distance * fc.linkDistMult * $viewSettings.linkDistance)
-                .strength((d) => d.strength),
-            )
-            // Dependency/ref links: weak, renders line without distorting layout
-            .force("link-dep", d3
-                .forceLink<GraphNode, GraphEdge>(depLinks)
-                .id((d) => d.id)
-                .distance((d) => d.distance * fc.linkDistMult * $viewSettings.linkDistance)
-                .strength((d) => d.strength),
-            )
-            // Charge: repels all nodes from each other (per-type strength from TYPE_CHARGE)
-            .force("charge", d3
-                .forceManyBody<GraphNode>()
-                .strength((d) => (d.charge || -100) * fc.chargeMult * $viewSettings.chargeStrength)
-                .distanceMax(fc.chargeDistanceMax),
-            )
-            // Collision: prevents node overlap
-            .force("collide", d3
-                .forceCollide<GraphNode>()
-                .radius((d) => Math.max(d.w / 2, d.h / 2) + fc.collisionPadding)
-                .strength(fc.collisionStrength)
-                .iterations(fc.collisionIterations),
-            )
-            // Center gravity
-            .force("center", d3.forceCenter(cw / 2, ch / 2).strength($viewSettings.gravity))
-            // Simulation dynamics
-            .alphaDecay(fc.alphaDecay)
-            .velocityDecay(fc.velocityDecay);
+        // Resolve string IDs to node references for non-parent edges
+        // (d3.forceLink only resolves edges it manages; deps/refs need manual resolution)
+        const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
+        $graphData.links.forEach((l: any) => {
+            if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
+            if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
+        });
 
-        // Radial force — concentric rings by hierarchy depth
+        // Compute hierarchy depth for radial placement
         const depthMap = new Map<string, number>();
         const childToParent = new Map<string, string>();
         for (const l of parentLinks) {
@@ -400,18 +379,39 @@
             depthMap.set(n.id, depth);
         }
         const maxDepth = Math.max(...depthMap.values(), 1);
-        const radiusScale = Math.min(cw, ch) * 0.4;
-        simulation.force("radial", d3
-            .forceRadial<GraphNode>(
-                (d) => ((depthMap.get(d.id) || 0) / maxDepth) * radiusScale + 50,
-                cw / 2, ch / 2,
-            )
-            .strength(fc.radialStrength),
-        );
+        const nodeCount = $graphData.nodes.length;
+        // Scale radius with node count so the layout breathes
+        const radiusScale = Math.max(800, Math.sqrt(nodeCount) * 120);
 
-        // Warm up then start live loop
+        simulation = d3
+            .forceSimulation<GraphNode, GraphEdge>($graphData.nodes)
+            // 1. Link: parent edges keep hierarchy clusters together
+            .force("link", d3
+                .forceLink<GraphNode, GraphEdge>(parentLinks)
+                .id((d) => d.id)
+                .distance((d) => d.distance * fc.linkDistMult * $viewSettings.linkDistance)
+                .strength((d) => d.strength),
+            )
+            // 2. Charge: repels nodes from each other (per-type strength)
+            .force("charge", d3
+                .forceManyBody<GraphNode>()
+                .strength((d) => (d.charge || -100) * fc.chargeMult * $viewSettings.chargeStrength)
+                .distanceMax(fc.chargeDistanceMax),
+            )
+            // 3. Radial: concentric rings by hierarchy depth (replaces center gravity)
+            .force("radial", d3
+                .forceRadial<GraphNode>(
+                    (d) => ((depthMap.get(d.id) || 0) / maxDepth) * radiusScale + 50,
+                    cw / 2, ch / 2,
+                )
+                .strength(fc.radialStrength),
+            )
+            .alphaDecay(fc.alphaDecay)
+            .velocityDecay(fc.velocityDecay);
+
+        // Warm up to get a stable initial layout, then restart for live interaction
         for (let i = 0; i < fc.warmupTicks; i++) simulation.tick();
-        simulation.on("tick", tickVisuals);
+        simulation.alpha(0.3).on("tick", tickVisuals).restart();
     }
 
     onDestroy(() => {

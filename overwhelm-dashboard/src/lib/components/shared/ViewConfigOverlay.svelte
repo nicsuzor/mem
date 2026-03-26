@@ -49,13 +49,6 @@
                             </div>
                             <input type="range" min="0.1" max="3.0" step="0.1" bind:value={$viewSettings.linkDistance} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
                         </div>
-                        <div class="space-y-1">
-                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                                <span>Gravity</span>
-                                <span>{$viewSettings.gravity.toFixed(2)}</span>
-                            </div>
-                            <input type="range" min="0.1" max="3.0" step="0.1" bind:value={$viewSettings.gravity} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
-                        </div>
                     </div>
 
                     <div class="space-y-1 pt-1 border-t border-primary/5">
