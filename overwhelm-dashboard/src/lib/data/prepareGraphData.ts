@@ -83,6 +83,9 @@ export interface PreparedGraph {
     forceConfig: typeof FORCE_CONFIG;
     hasLayout: boolean;
     availableLayouts: string[];
+    readyIds: Set<string>;
+    blockedIds: Set<string>;
+    focusIds: Set<string>;
 }
 
 function estimateTextWidth(text: string, fontSize: number): number {
@@ -156,7 +159,7 @@ function classifyEdge(sourceId: string, targetId: string, nodeById: Map<string, 
 }
 
 export function prepareGraphData(
-    graph: { nodes?: any[]; edges?: any[] },
+    graph: { nodes?: any[]; edges?: any[]; ready?: string[]; blocked?: string[]; focus?: string[] },
     structuralIds: Set<string> = new Set()
 ): PreparedGraph {
     const rawNodes = graph.nodes || [];
@@ -379,6 +382,9 @@ export function prepareGraphData(
         links: d3Links,
         forceConfig: FORCE_CONFIG,
         hasLayout,
-        availableLayouts: Array.from(availableLayouts).sort()
+        availableLayouts: Array.from(availableLayouts).sort(),
+        readyIds: new Set(graph.ready || []),
+        blockedIds: new Set(graph.blocked || []),
+        focusIds: new Set(graph.focus || []),
     };
 }

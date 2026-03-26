@@ -11,8 +11,8 @@
 
     let { containerGroup, width = 2000, height = 1000 } = $props<{ containerGroup: SVGGElement | null; width?: number; height?: number }>();
 
-    let nodesLayer: SVGGElement;
-    let edgesLayer: SVGGElement;
+    let nodesLayer = $state<SVGGElement>(undefined!);
+    let edgesLayer = $state<SVGGElement>(undefined!);
 
     const canvasW = 3000;
     const canvasH = $derived(canvasW * (height && width ? height / width : 0.5));
@@ -205,13 +205,35 @@
         const activeNodeId = $selection.activeNodeId;
         const hoveredNodeId = $selection.hoveredNodeId;
 
+        const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
+        const showFocus = $viewSettings.showFocusHighlight && focusIds.size > 0;
+
         nEls.each(function (d) {
             const g = d3.select(this);
             const needsHighlight = d.id === activeNodeId || d.id === hoveredNodeId;
             g.selectAll("*").remove();
             buildTreemapNode(g, d, needsHighlight);
             (d as any)._lastHighlight = needsHighlight;
+
+            // Focus accent: gold left-border on priority focus tasks
+            if (showFocus && d._isLeaf && focusIds.has(d.id)) {
+                g.append("rect")
+                    .attr("x", -d.w / 2).attr("y", -d.h / 2)
+                    .attr("width", 3).attr("height", d.h)
+                    .attr("fill", "#f59e0b").attr("opacity", 0.9);
+            }
         });
+
+        // Gentle dimming: non-focus leaf nodes slightly faded
+        if (showFocus) {
+            nEls.style("opacity", (d: any) => {
+                if (!d._isLeaf) return null; // Don't dim containers
+                if (focusIds.has(d.id)) return 1;
+                return 0.65;
+            });
+        } else {
+            nEls.style("opacity", null);
+        }
 
         if (!$filters.showDependencies) {
             d3.select(edgesLayer).selectAll("path").remove();

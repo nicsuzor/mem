@@ -54,11 +54,28 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
             .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", d.borderWidth)
             .attr("fill-opacity", opacity).attr("stroke-opacity", Math.max(opacity, 0.4));
     } else if (d.shape === "hexagon") {
-        const c = Math.min(hh * 0.6, 12);
-        const pts = `${-hw + c},${-hh} ${hw - c},${-hh} ${hw},${0} ${hw - c},${hh} ${-hw + c},${hh} ${-hw},${0}`;
+        // Epics: distinctive double-border hexagon with larger size and type badge
+        const scale = 1.3; // Make epics visually larger
+        const sw = d.w * scale, sh = d.h * scale;
+        const shw = sw / 2, shh = sh / 2;
+        const c = Math.min(shh * 0.5, 16);
+        const pts = `${-shw + c},${-shh} ${shw - c},${-shh} ${shw},${0} ${shw - c},${shh} ${-shw + c},${shh} ${-shw},${0}`;
+        // Outer glow hexagon
+        const c2 = Math.min((shh + 3) * 0.5, 18);
+        const pts2 = `${-(shw+3) + c2},${-(shh+3)} ${(shw+3) - c2},${-(shh+3)} ${shw+3},${0} ${(shw+3) - c2},${shh+3} ${-(shw+3) + c2},${shh+3} ${-(shw+3)},${0}`;
+        g.append("polygon").attr("points", pts2)
+            .attr("fill", "none").attr("stroke", d.borderColor).attr("stroke-width", 1)
+            .attr("stroke-opacity", 0.3).attr("stroke-dasharray", "4,2");
         g.append("polygon").attr("points", pts)
-            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", d.borderWidth)
-            .attr("fill-opacity", opacity).attr("stroke-opacity", Math.max(opacity, 0.4));
+            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", Math.max(d.borderWidth, 2.5))
+            .attr("fill-opacity", Math.max(opacity, 0.7)).attr("stroke-opacity", Math.max(opacity, 0.6));
+        // Epic type badge at top
+        g.append("text")
+            .attr("x", 0).attr("y", -shh - 6)
+            .attr("text-anchor", "middle").attr("font-size", "7px")
+            .attr("font-weight", "800").attr("fill", d.borderColor)
+            .attr("letter-spacing", "1.5px").attr("pointer-events", "none")
+            .text("EPIC");
     } else {
         g.append("rect").attr("x", -hw).attr("y", -hh).attr("width", d.w).attr("height", d.h)
             .attr("rx", d.shape === "rounded" ? 10 : 4)

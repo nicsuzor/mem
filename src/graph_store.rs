@@ -27,6 +27,9 @@ pub struct OutputGraph {
     pub blocked: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roots: Vec<String>,
+    /// Top focus picks: ready tasks ranked by priority + deadline + staleness + downstream weight.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub focus: Vec<String>,
 }
 
 // ===========================================================================
@@ -691,6 +694,59 @@ impl GraphStore {
         Ok(written)
     }
 
+    /// Compute focus picks: top ready tasks ranked by priority + deadline + staleness + dw.
+    pub fn focus_picks(&self, max: usize) -> Vec<String> {
+        let today = chrono::Utc::now().date_naive();
+        let ready_nodes: Vec<&GraphNode> = self.ready
+            .iter()
+            .filter_map(|id| self.nodes.get(id))
+            .collect();
+
+        let mut scored: Vec<(&GraphNode, i64)> = ready_nodes
+            .iter()
+            .map(|&t| {
+                let pri = t.priority.unwrap_or(2);
+                let mut score: i64 = match pri {
+                    0 => 10000,
+                    1 => 5000,
+                    _ => 0,
+                };
+                if let Some(ref due) = t.due {
+                    let len = std::cmp::min(10, due.len());
+                    if let Ok(due_date) =
+                        chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+                    {
+                        let days_until = (due_date - today).num_days();
+                        if days_until < 0 {
+                            score += 8000;
+                        } else if days_until <= 7 {
+                            score += 3000 + (7 - days_until) * 100;
+                        } else if days_until <= 30 {
+                            score += 1000;
+                        }
+                    }
+                }
+                if pri >= 2 {
+                    if let Some(ref created) = t.created {
+                        if created.len() >= 10 {
+                            if let Ok(created_dt) =
+                                chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d")
+                            {
+                                let days = (today - created_dt).num_days();
+                                score += std::cmp::min(days.max(0), 200);
+                            }
+                        }
+                    }
+                }
+                score += (t.downstream_weight * 10.0) as i64;
+                (t, score)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.into_iter().take(max).map(|(t, _)| t.id.clone()).collect()
+    }
+
     /// Full graph as JSON — all task nodes and their edges.
     pub fn output_json(&self) -> Result<String> {
         let mut nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
@@ -702,12 +758,14 @@ impl GraphStore {
             .filter(|e| placed_ids.contains(e.source.as_str()) && placed_ids.contains(e.target.as_str()))
             .cloned()
             .collect();
+        let focus = self.focus_picks(50);
         let graph = OutputGraph {
             nodes,
             edges,
             ready: self.ready.clone(),
             blocked: self.blocked.clone(),
             roots: self.roots.clone(),
+            focus,
         };
         Ok(serde_json::to_string_pretty(&graph)?)
     }
@@ -721,6 +779,7 @@ impl GraphStore {
             ready: self.ready.clone(),
             blocked: self.blocked.clone(),
             roots: self.roots.clone(),
+            focus: vec![],
         };
         let mut xml = String::from(
             r#"<?xml version="1.0" encoding="UTF-8"?>
