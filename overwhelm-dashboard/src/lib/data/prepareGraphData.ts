@@ -85,6 +85,7 @@ export interface PreparedGraph {
     availableLayouts: string[];
     readyIds: Set<string>;
     blockedIds: Set<string>;
+    focusIds: Set<string>;
 }
 
 function estimateTextWidth(text: string, fontSize: number): number {
@@ -384,5 +385,6 @@ export function prepareGraphData(
         availableLayouts: Array.from(availableLayouts).sort(),
         readyIds: new Set(graph.ready || []),
         blockedIds: new Set(graph.blocked || []),
+        focusIds: new Set(graph.focus || []),
     };
 }

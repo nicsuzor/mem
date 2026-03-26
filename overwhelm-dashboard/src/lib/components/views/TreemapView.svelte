@@ -205,8 +205,8 @@
         const activeNodeId = $selection.activeNodeId;
         const hoveredNodeId = $selection.hoveredNodeId;
 
-        const intentionPath = ($graphData as any)?.intentionPath;
-        const showIntent = $viewSettings.showIntentionPath && intentionPath;
+        const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
+        const showFocus = $viewSettings.showFocusHighlight && focusIds.size > 0;
 
         nEls.each(function (d) {
             const g = d3.select(this);
@@ -215,27 +215,20 @@
             buildTreemapNode(g, d, needsHighlight);
             (d as any)._lastHighlight = needsHighlight;
 
-            // Intent path: gold left-border accent on focus nodes
-            if (showIntent && d._isLeaf) {
-                if (intentionPath.onPath.has(d.id)) {
-                    g.append("rect")
-                        .attr("x", -d.w / 2).attr("y", -d.h / 2)
-                        .attr("width", 3).attr("height", d.h)
-                        .attr("fill", "#f59e0b").attr("opacity", 0.9);
-                } else if (intentionPath.done.has(d.id)) {
-                    g.append("rect")
-                        .attr("x", -d.w / 2).attr("y", -d.h / 2)
-                        .attr("width", 3).attr("height", d.h)
-                        .attr("fill", "#22c55e").attr("opacity", 0.7);
-                }
+            // Focus accent: gold left-border on priority focus tasks
+            if (showFocus && d._isLeaf && focusIds.has(d.id)) {
+                g.append("rect")
+                    .attr("x", -d.w / 2).attr("y", -d.h / 2)
+                    .attr("width", 3).attr("height", d.h)
+                    .attr("fill", "#f59e0b").attr("opacity", 0.9);
             }
         });
 
-        // Gentle intent dimming on treemap — slightly fade non-focus leaf nodes
-        if (showIntent) {
+        // Gentle dimming: non-focus leaf nodes slightly faded
+        if (showFocus) {
             nEls.style("opacity", (d: any) => {
                 if (!d._isLeaf) return null; // Don't dim containers
-                if (intentionPath.onPath.has(d.id) || intentionPath.done.has(d.id)) return 1;
+                if (focusIds.has(d.id)) return 1;
                 return 0.65;
             });
         } else {

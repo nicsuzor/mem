@@ -19,6 +19,7 @@ export const viewSettings = writable({
     arcVerticalSpacing: 1.0,
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',
     showIntentionPath: true,
+    showFocusHighlight: true,
     arcFocusedOnly: true,
 });
 

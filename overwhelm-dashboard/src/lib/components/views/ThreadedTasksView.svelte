@@ -58,6 +58,8 @@
         }
     }
 
+    $: focusIds = ($graphData as any)?.focusIds as Set<string> || new Set<string>();
+
     $: tasks = $graphData ? $graphData.nodes.filter(n => {
         const matchesType = n.type === 'task';
         const matchesProject = $filters.project === 'ALL' || n.project === $filters.project;
@@ -70,7 +72,7 @@
         } else if (currentTab === 'BACKLOG') {
             matchesTab = ['backlog', 'deferred', 'paused', 'cancelled'].includes(n.status);
         }
-        
+
         let matchesSearch = true;
         if (searchQuery.trim() !== '') {
             const q = searchQuery.toLowerCase();
@@ -79,6 +81,11 @@
 
         return matchesType && matchesProject && matchesTab && matchesSearch;
     }).sort((a, b) => {
+        // Pin focus tasks to top
+        const aFocus = focusIds.has(a.id) ? 0 : 1;
+        const bFocus = focusIds.has(b.id) ? 0 : 1;
+        if (aFocus !== bFocus) return aFocus - bFocus;
+
         let valA, valB;
         if (sortField === 'priority') {
             valA = a.priority ?? 5;
@@ -93,7 +100,7 @@
             valA = a.label || '';
             valB = b.label || '';
         }
-        
+
         if (valA < valB) return sortAsc ? -1 : 1;
         if (valA > valB) return sortAsc ? 1 : -1;
         return 0;
@@ -214,10 +221,13 @@
                     <tbody class="divide-y divide-primary/10 text-sm">
                         {#each tasks as task}
                             <tr
-                                class="hover:bg-primary/5 group transition-colors cursor-pointer {$selection.activeNodeId === task.id ? 'bg-primary/10' : ''}"
+                                class="hover:bg-primary/5 group transition-colors cursor-pointer {$selection.activeNodeId === task.id ? 'bg-primary/10' : ''} {focusIds.has(task.id) ? 'border-l-3 border-l-amber-500/80' : ''}"
                                 onclick={() => selection.update(s => ({...s, activeNodeId: task.id}))}
                             >
-                                <td class="px-4 py-4 text-primary/60 font-mono text-xs">{task.id.length > 12 ? task.id.substring(0, 12) + '...' : task.id}</td>
+                                <td class="px-4 py-4 text-primary/60 font-mono text-xs">
+                                    {#if focusIds.has(task.id)}<span class="text-[9px] font-bold text-amber-500 mr-1">FOCUS</span>{/if}
+                                    {task.id.length > 12 ? task.id.substring(0, 12) + '...' : task.id}
+                                </td>
                                 <td class="px-4 py-4">
                                     <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border {task.status === 'in_progress' ? 'bg-primary/20 text-primary border-primary/30' : 'bg-primary/5 text-primary/60 border-primary/20'} uppercase">
                                         {task.status}

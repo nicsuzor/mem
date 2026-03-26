@@ -70,19 +70,13 @@
 
     const allNodes = $graphData.nodes;
     const data = $graphData as any;
-    const readyIds: Set<string> = data.readyIds || new Set();
-    const intentionPath = data.intentionPath;
+    const focusIds: Set<string> = data.focusIds || new Set();
 
     let nodes: GraphNode[];
 
     if ($viewSettings.arcFocusedOnly) {
-        // Filter to focused tasks: P0 + intention path (onPath + done only, not remaining siblings)
-        const focused = allNodes.filter(n => {
-            if (n.priority === 0) return true;
-            if (intentionPath?.onPath?.has(n.id)) return true;
-            if (intentionPath?.done?.has(n.id)) return true;
-            return false;
-        });
+        // Filter to server-computed focus set (priority + deadline + staleness + dw)
+        const focused = allNodes.filter(n => focusIds.has(n.id));
 
         // Include ancestor chains for context (with cycle detection)
         const focusedIds = new Set(focused.map(n => n.id));

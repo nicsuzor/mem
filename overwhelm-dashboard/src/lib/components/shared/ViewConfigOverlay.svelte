@@ -40,8 +40,8 @@
                     </label>
 
                     <label class="flex items-center justify-between cursor-pointer group">
-                        <span class="text-[10px] font-bold text-primary/60 uppercase">Intention_Path</span>
-                        <input type="checkbox" bind:checked={$viewSettings.showIntentionPath} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
+                        <span class="text-[10px] font-bold text-primary/60 uppercase">Focus_Highlight</span>
+                        <input type="checkbox" bind:checked={$viewSettings.showFocusHighlight} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
                     </label>
 
                     {#if $viewSettings.liveSimulation}

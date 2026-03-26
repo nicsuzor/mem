@@ -274,30 +274,25 @@
             routeForceEdges(eEls);
         }
         updateHulls();
-        applyIntentionHighlighting(nEls, eEls);
+        applyFocusHighlighting(nEls, eEls);
     }
 
-    function applyIntentionHighlighting(nEls: any, eEls: any) {
-        const intentionPath = ($graphData as any)?.intentionPath;
-        if (!$viewSettings.showIntentionPath || !intentionPath) {
+    function applyFocusHighlighting(nEls: any, eEls: any) {
+        const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
+        if (!$viewSettings.showFocusHighlight || focusIds.size === 0) {
             nEls.classed('intent-dimmed', false).classed('intent-focus', false);
             eEls.classed('intent-edge', false).classed('intent-edge-dim', false);
             return;
         }
 
-        const { onPath, done, remaining } = intentionPath;
-        // Only onPath and done count as "focused" — remaining siblings stay at normal opacity
-        const isFocused = (id: string) => onPath.has(id) || done.has(id);
-
         nEls.each(function(this: SVGGElement, d: GraphNode) {
             const g = d3.select(this);
-            g.select('.intent-glow').remove();
-            g.select('.intent-badge').remove();
+            g.select('.focus-glow').remove();
 
-            if (onPath.has(d.id)) {
-                // Gold glow ring for active intention path nodes
+            if (focusIds.has(d.id)) {
+                // Gold glow ring for priority focus tasks
                 g.insert('rect', ':first-child')
-                    .attr('class', 'intent-glow')
+                    .attr('class', 'focus-glow')
                     .attr('x', -d.w / 2 - 4)
                     .attr('y', -d.h / 2 - 4)
                     .attr('width', d.w + 8)
@@ -308,41 +303,18 @@
                     .attr('stroke-width', 2.5)
                     .attr('opacity', 0.8)
                     .attr('filter', 'url(#intent-glow-filter)');
-            } else if (done.has(d.id)) {
-                // Green checkmark for completed siblings
-                g.append('text')
-                    .attr('class', 'intent-badge')
-                    .attr('x', d.w / 2 - 2)
-                    .attr('y', -d.h / 2 + 2)
-                    .attr('font-size', '10px')
-                    .attr('fill', '#22c55e')
-                    .text('\u2713');
-            } else if (remaining.has(d.id)) {
-                // Dashed amber border for remaining siblings
-                g.insert('rect', ':first-child')
-                    .attr('class', 'intent-glow')
-                    .attr('x', -d.w / 2 - 2)
-                    .attr('y', -d.h / 2 - 2)
-                    .attr('width', d.w + 4)
-                    .attr('height', d.h + 4)
-                    .attr('rx', 4)
-                    .attr('fill', 'none')
-                    .attr('stroke', '#f59e0b')
-                    .attr('stroke-width', 1)
-                    .attr('stroke-dasharray', '4,3')
-                    .attr('opacity', 0.5);
             }
         });
 
         // Gentle emphasis: focus nodes full opacity, others slightly faded
-        nEls.classed('intent-focus', (d: any) => isFocused(d.id));
-        nEls.classed('intent-dimmed', (d: any) => !isFocused(d.id) && !remaining.has(d.id));
+        nEls.classed('intent-focus', (d: any) => focusIds.has(d.id));
+        nEls.classed('intent-dimmed', (d: any) => !focusIds.has(d.id));
 
-        // Edges: highlight path edges, dim others
+        // Edges: highlight edges between focus nodes, dim others
         eEls.each(function(this: SVGPathElement, d: any) {
             const sid = d.source.id || d.source;
             const tid = d.target.id || d.target;
-            const bothFocused = isFocused(sid) && isFocused(tid);
+            const bothFocused = focusIds.has(sid) && focusIds.has(tid);
             d3.select(this)
                 .classed('intent-edge', bothFocused)
                 .classed('intent-edge-dim', !bothFocused);
