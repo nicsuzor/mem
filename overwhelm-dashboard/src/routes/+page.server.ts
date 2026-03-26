@@ -301,6 +301,7 @@ export const load = async () => {
             daily_story: synthesis?.daily_narrative ? { story: synthesis.daily_narrative }
                 : synthesis?.narrative ? { story: synthesis.narrative }
                 : null,
+            
             project_projects: projectProjects,
             project_data: projectData,
             path: buildPathData(summaries),
