@@ -76,14 +76,12 @@
     let nodes: GraphNode[];
 
     if ($viewSettings.arcFocusedOnly) {
-        // Filter to focused tasks: P0/P1, high-weight blockers, ready, intention path
+        // Filter to focused tasks: P0 + intention path only
         const focused = allNodes.filter(n => {
-            if (n.priority <= 1) return true;
-            if (n.status === 'blocked' && n.dw >= 5) return true;
-            if (readyIds.has(n.id)) return true;
+            if (n.priority === 0) return true;
             if (intentionPath?.onPath?.has(n.id)) return true;
-            // Reachable container types
-            if (['goal', 'project', 'epic'].includes(n.type) && n._raw?.reachable) return true;
+            if (intentionPath?.done?.has(n.id)) return true;
+            if (intentionPath?.remaining?.has(n.id)) return true;
             return false;
         });
 

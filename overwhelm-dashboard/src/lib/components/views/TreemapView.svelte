@@ -205,13 +205,42 @@
         const activeNodeId = $selection.activeNodeId;
         const hoveredNodeId = $selection.hoveredNodeId;
 
+        const intentionPath = ($graphData as any)?.intentionPath;
+        const showIntent = $viewSettings.showIntentionPath && intentionPath;
+
         nEls.each(function (d) {
             const g = d3.select(this);
             const needsHighlight = d.id === activeNodeId || d.id === hoveredNodeId;
             g.selectAll("*").remove();
             buildTreemapNode(g, d, needsHighlight);
             (d as any)._lastHighlight = needsHighlight;
+
+            // Intent path: gold left-border accent on focus nodes
+            if (showIntent && d._isLeaf) {
+                if (intentionPath.onPath.has(d.id)) {
+                    g.append("rect")
+                        .attr("x", -d.w / 2).attr("y", -d.h / 2)
+                        .attr("width", 3).attr("height", d.h)
+                        .attr("fill", "#f59e0b").attr("opacity", 0.9);
+                } else if (intentionPath.done.has(d.id)) {
+                    g.append("rect")
+                        .attr("x", -d.w / 2).attr("y", -d.h / 2)
+                        .attr("width", 3).attr("height", d.h)
+                        .attr("fill", "#22c55e").attr("opacity", 0.7);
+                }
+            }
         });
+
+        // Gentle intent dimming on treemap — slightly fade non-focus leaf nodes
+        if (showIntent) {
+            nEls.style("opacity", (d: any) => {
+                if (!d._isLeaf) return null; // Don't dim containers
+                if (intentionPath.onPath.has(d.id) || intentionPath.done.has(d.id) || intentionPath.remaining.has(d.id)) return 1;
+                return 0.65;
+            });
+        } else {
+            nEls.style("opacity", null);
+        }
 
         if (!$filters.showDependencies) {
             d3.select(edgesLayer).selectAll("path").remove();

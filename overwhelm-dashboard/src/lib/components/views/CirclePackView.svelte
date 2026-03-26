@@ -216,7 +216,38 @@
             }
 
             g.classed("hovered-node", isHovered);
+
+            // Intent path: gold ring on focus leaf nodes
+            const intentionPath = ($graphData as any)?.intentionPath;
+            if ($viewSettings.showIntentionPath && intentionPath && d._isLeaf) {
+                g.select('.intent-ring').remove();
+                if (intentionPath.onPath.has(d.id)) {
+                    g.insert('circle', ':first-child')
+                        .attr('class', 'intent-ring')
+                        .attr('cx', 0).attr('cy', 0).attr('r', (d._lr || 5) + 3)
+                        .attr('fill', 'none').attr('stroke', '#f59e0b')
+                        .attr('stroke-width', 2).attr('opacity', 0.8);
+                } else if (intentionPath.done.has(d.id)) {
+                    g.insert('circle', ':first-child')
+                        .attr('class', 'intent-ring')
+                        .attr('cx', 0).attr('cy', 0).attr('r', (d._lr || 5) + 2)
+                        .attr('fill', 'none').attr('stroke', '#22c55e')
+                        .attr('stroke-width', 1.5).attr('opacity', 0.6);
+                }
+            }
         });
+
+        // Gentle intent dimming on circle pack — fade non-focus leaves
+        const intentionPath2 = ($graphData as any)?.intentionPath;
+        if ($viewSettings.showIntentionPath && intentionPath2) {
+            nEls.style("opacity", (d: any) => {
+                if (!d._isLeaf) return null;
+                if (intentionPath2.onPath.has(d.id) || intentionPath2.done.has(d.id) || intentionPath2.remaining.has(d.id)) return 1;
+                return 0.6;
+            });
+        } else {
+            nEls.style("opacity", null);
+        }
 
         const eEls = d3
             .select(edgesLayer)

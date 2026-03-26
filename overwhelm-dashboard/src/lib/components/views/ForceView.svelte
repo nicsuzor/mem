@@ -151,21 +151,20 @@
             .data(hullData, (d: any) => d.id)
             .join("text")
             .attr("class", "hull-label")
-            .attr("x", (d) => Number(d3.mean(d.points, (p: any) => p[0]) || 0))
-            .attr(
-                "y",
-                (d) => Number(d3.min(d.points, (p: any) => p[1]) || 0) - 5,
-            )
+            .attr("x", (d) => d.cx)
+            .attr("y", (d) => Number(d3.min(d.points, (p: any) => p[1]) || 0) - 12)
             .attr("text-anchor", "middle")
-            .attr("font-size", "180px")
-            .attr("font-weight", "900")
+            .attr("font-size", "14px")
+            .attr("font-weight", "700")
+            .attr("font-family", "var(--font-mono), monospace")
             .attr("fill", (d) => projectColor(d.id))
-            .attr("opacity", 0.5)
-            .attr("letter-spacing", "12px")
+            .attr("opacity", 0.7)
+            .attr("letter-spacing", "2px")
             .style("pointer-events", "none")
             .style("user-select", "none")
+            .style("text-shadow", "0 1px 6px rgba(0,0,0,0.8)")
             .text((d) =>
-                d.id.replace(/_/g, " ").toUpperCase().substring(0, 22),
+                d.id.replace(/_/g, " ").toUpperCase().substring(0, 30),
             );
     }
 
@@ -281,12 +280,13 @@
     function applyIntentionHighlighting(nEls: any, eEls: any) {
         const intentionPath = ($graphData as any)?.intentionPath;
         if (!$viewSettings.showIntentionPath || !intentionPath) {
-            nEls.classed('intent-dimmed', false);
+            nEls.classed('intent-dimmed', false).classed('intent-focus', false);
             eEls.classed('intent-edge', false).classed('intent-edge-dim', false);
             return;
         }
 
         const { onPath, done, remaining } = intentionPath;
+        const isOnAnyPath = (id: string) => onPath.has(id) || done.has(id) || remaining.has(id);
 
         nEls.each(function(this: SVGGElement, d: GraphNode) {
             const g = d3.select(this);
@@ -294,6 +294,7 @@
             g.select('.intent-badge').remove();
 
             if (onPath.has(d.id)) {
+                // Gold glow ring for active intention path nodes
                 g.insert('rect', ':first-child')
                     .attr('class', 'intent-glow')
                     .attr('x', -d.w / 2 - 4)
@@ -307,14 +308,16 @@
                     .attr('opacity', 0.8)
                     .attr('filter', 'url(#intent-glow-filter)');
             } else if (done.has(d.id)) {
+                // Green checkmark for completed siblings
                 g.append('text')
                     .attr('class', 'intent-badge')
-                    .attr('x', d.w / 2 - 4)
-                    .attr('y', -d.h / 2 + 4)
+                    .attr('x', d.w / 2 - 2)
+                    .attr('y', -d.h / 2 + 2)
                     .attr('font-size', '10px')
                     .attr('fill', '#22c55e')
                     .text('\u2713');
             } else if (remaining.has(d.id)) {
+                // Dashed amber border for remaining siblings
                 g.insert('rect', ':first-child')
                     .attr('class', 'intent-glow')
                     .attr('x', -d.w / 2 - 2)
@@ -330,16 +333,18 @@
             }
         });
 
-        nEls.classed('intent-dimmed', (d: any) =>
-            !onPath.has(d.id) && !done.has(d.id) && !remaining.has(d.id));
+        // Gentle emphasis: focus nodes full opacity, others slightly faded
+        nEls.classed('intent-focus', (d: any) => isOnAnyPath(d.id));
+        nEls.classed('intent-dimmed', (d: any) => !isOnAnyPath(d.id));
 
+        // Edges: highlight path edges, dim others
         eEls.each(function(this: SVGPathElement, d: any) {
             const sid = d.source.id || d.source;
             const tid = d.target.id || d.target;
-            const onIntent = onPath.has(sid) && onPath.has(tid);
+            const bothOnPath = isOnAnyPath(sid) && isOnAnyPath(tid);
             d3.select(this)
-                .classed('intent-edge', onIntent)
-                .classed('intent-edge-dim', !onIntent);
+                .classed('intent-edge', bothOnPath)
+                .classed('intent-edge-dim', !bothOnPath);
         });
     }
 
@@ -468,10 +473,14 @@
         stroke: var(--color-primary) !important;
         stroke-width: 2px !important;
     }
-    /* Intention path highlighting */
+    /* Intention path highlighting — gentle emphasis, don't over-dim */
     :global(.node.intent-dimmed) {
-        opacity: 0.12 !important;
-        filter: grayscale(0.9) brightness(0.5);
+        opacity: 0.5 !important;
+        filter: grayscale(0.3) brightness(0.8);
+    }
+    :global(.node.intent-focus) {
+        opacity: 1 !important;
+        filter: none;
     }
     :global(path.force-edge.intent-edge) {
         opacity: 0.9 !important;
@@ -479,6 +488,6 @@
         stroke-width: 2.5px !important;
     }
     :global(path.force-edge.intent-edge-dim) {
-        opacity: 0.04 !important;
+        opacity: 0.15 !important;
     }
 </style>
