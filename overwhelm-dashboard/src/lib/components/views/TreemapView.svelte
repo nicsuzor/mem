@@ -235,7 +235,7 @@
         if (showIntent) {
             nEls.style("opacity", (d: any) => {
                 if (!d._isLeaf) return null; // Don't dim containers
-                if (intentionPath.onPath.has(d.id) || intentionPath.done.has(d.id) || intentionPath.remaining.has(d.id)) return 1;
+                if (intentionPath.onPath.has(d.id) || intentionPath.done.has(d.id)) return 1;
                 return 0.65;
             });
         } else {

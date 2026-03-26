@@ -76,22 +76,23 @@
     let nodes: GraphNode[];
 
     if ($viewSettings.arcFocusedOnly) {
-        // Filter to focused tasks: P0 + intention path only
+        // Filter to focused tasks: P0 + intention path (onPath + done only, not remaining siblings)
         const focused = allNodes.filter(n => {
             if (n.priority === 0) return true;
             if (intentionPath?.onPath?.has(n.id)) return true;
             if (intentionPath?.done?.has(n.id)) return true;
-            if (intentionPath?.remaining?.has(n.id)) return true;
             return false;
         });
 
-        // Include ancestor chains for context
+        // Include ancestor chains for context (with cycle detection)
         const focusedIds = new Set(focused.map(n => n.id));
         const nodeMap = new Map(allNodes.map(n => [n.id, n]));
         const withAncestors = [...focused];
         focused.forEach(n => {
             let parentId = n.parent;
-            while (parentId) {
+            const visited = new Set<string>();
+            while (parentId && !visited.has(parentId)) {
+                visited.add(parentId);
                 if (!focusedIds.has(parentId)) {
                     const parent = nodeMap.get(parentId);
                     if (parent) { withAncestors.push(parent); focusedIds.add(parentId); }

@@ -286,7 +286,8 @@
         }
 
         const { onPath, done, remaining } = intentionPath;
-        const isOnAnyPath = (id: string) => onPath.has(id) || done.has(id) || remaining.has(id);
+        // Only onPath and done count as "focused" — remaining siblings stay at normal opacity
+        const isFocused = (id: string) => onPath.has(id) || done.has(id);
 
         nEls.each(function(this: SVGGElement, d: GraphNode) {
             const g = d3.select(this);
@@ -334,17 +335,17 @@
         });
 
         // Gentle emphasis: focus nodes full opacity, others slightly faded
-        nEls.classed('intent-focus', (d: any) => isOnAnyPath(d.id));
-        nEls.classed('intent-dimmed', (d: any) => !isOnAnyPath(d.id));
+        nEls.classed('intent-focus', (d: any) => isFocused(d.id));
+        nEls.classed('intent-dimmed', (d: any) => !isFocused(d.id) && !remaining.has(d.id));
 
         // Edges: highlight path edges, dim others
         eEls.each(function(this: SVGPathElement, d: any) {
             const sid = d.source.id || d.source;
             const tid = d.target.id || d.target;
-            const bothOnPath = isOnAnyPath(sid) && isOnAnyPath(tid);
+            const bothFocused = isFocused(sid) && isFocused(tid);
             d3.select(this)
-                .classed('intent-edge', bothOnPath)
-                .classed('intent-edge-dim', !bothOnPath);
+                .classed('intent-edge', bothFocused)
+                .classed('intent-edge-dim', !bothFocused);
         });
     }
 

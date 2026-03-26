@@ -157,10 +157,18 @@
         const intentionRemaining = new Set<string>();
 
         if (prepared.readyIds) {
-            // Walk up parent chains from each ready task
+            // Intention seeds: only P0/P1 ready tasks (not ALL ready tasks)
+            // Using all 210+ ready tasks covers ~70% of the graph, making highlighting meaningless
+            const intentionSeeds = new Set<string>();
             for (const readyId of prepared.readyIds) {
                 if (!survivingNodeIds.has(readyId)) continue;
-                let cur = readyId;
+                const node = nodeMap.get(readyId);
+                if (node && node.priority <= 1) intentionSeeds.add(readyId);
+            }
+
+            // Walk up parent chains from each seed
+            for (const seedId of intentionSeeds) {
+                let cur = seedId;
                 const visited = new Set<string>();
                 while (cur && !visited.has(cur)) {
                     visited.add(cur);

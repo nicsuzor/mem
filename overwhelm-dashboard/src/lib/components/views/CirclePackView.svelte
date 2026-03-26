@@ -242,7 +242,7 @@
         if ($viewSettings.showIntentionPath && intentionPath2) {
             nEls.style("opacity", (d: any) => {
                 if (!d._isLeaf) return null;
-                if (intentionPath2.onPath.has(d.id) || intentionPath2.done.has(d.id) || intentionPath2.remaining.has(d.id)) return 1;
+                if (intentionPath2.onPath.has(d.id) || intentionPath2.done.has(d.id)) return 1;
                 return 0.6;
             });
         } else {
