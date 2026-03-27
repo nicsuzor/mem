@@ -113,23 +113,14 @@
             return;
         }
 
-        const COMPLETED_NODE_WEIGHT = 1;
-        const MIN_ACTIVE_NODE_WEIGHT = 10;
-        const DEFAULT_NODE_WEIGHT = 6;
-
-        // Mark hierarchy parents — raw data objects don't have .children
-        // (stratify uses parentId). Without this, parents get their own weight
-        // on top of children's, inflating containers.
+        // Use .radius() so leaves get explicit radii and parents auto-size
+        // as minimum enclosing circles — no .size() inflation.
         root.each((node: any) => { node.data._isHierarchyParent = !!node.children; });
 
-        const computeSum = (d: any) => {
-            if (d._isHierarchyParent) return 0;
-            if (["done", "completed", "cancelled"].includes(d.status)) return COMPLETED_NODE_WEIGHT;
-            // Ensure all active nodes get a meaningful minimum size
-            return Math.max(MIN_ACTIVE_NODE_WEIGHT, d.dw || DEFAULT_NODE_WEIGHT);
-        };
+        // Still need .sum() for sorting, but radius() overrides sizing
+        root.sum((d: any) => d._isHierarchyParent ? 0 : Math.max(1, d.dw || 1));
 
-        root.sum(computeSum).sort((a, b) => {
+        root.sort((a, b) => {
             const pa = a.data.priority ?? 5;
             const pb = b.data.priority ?? 5;
             if (pa !== pb) return pa - pb;
@@ -140,20 +131,30 @@
             return (b.value || 0) - (a.value || 0);
         });
 
-        const PACK_SIZE = 10000;
-        const pack = d3.pack<any>().size([PACK_SIZE, PACK_SIZE]).padding(4);
+        const COMPLETED_RADIUS = 8;
+        const MIN_ACTIVE_RADIUS = 20;
+        const DEFAULT_RADIUS = 15;
+
+        const pack = d3.pack<any>()
+            .radius((d: any) => {
+                const data = d.data;
+                if (["done", "completed", "cancelled"].includes(data.status)) return COMPLETED_RADIUS;
+                return Math.max(MIN_ACTIVE_RADIUS, Math.sqrt(data.dw || 1) * 5 + DEFAULT_RADIUS);
+            })
+            .padding(3);
 
         pack(root);
 
-        const nodesToRollup = new Set<string>();
-        // Rollup logic removed to show all nodes again as per user request
+        // Center on the root node's position
+        const rootX = root.x;
+        const rootY = root.y;
 
         const layoutMap = new Map();
         root.descendants().forEach((d: any) => {
             if (d.data.id === rootId) return;
             layoutMap.set(d.data.id, {
-                x: d.x - PACK_SIZE / 2, // center at 0
-                y: d.y - PACK_SIZE / 2,
+                x: d.x - rootX,
+                y: d.y - rootY,
                 r: d.r,
                 depth: d.depth,
                 isLeaf: !d.children,
