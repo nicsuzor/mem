@@ -131,8 +131,8 @@
         </div>
     {/if}
 
-    <!-- PRIORITY 4: Session history (gated, collapsed by default) -->
-    {#if pathData.threads?.length > 0}
+    <!-- PRIORITY 4: Recent activity feed (what happened, by project) -->
+    {#if pathData.activity?.length > 0}
         <div class="border border-primary/30 bg-surface p-4">
             <PathTimeline path={pathData} />
         </div>
