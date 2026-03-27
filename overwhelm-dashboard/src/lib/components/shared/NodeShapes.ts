@@ -609,16 +609,16 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         const isEpic = depth === 2;
         // depth 3+ = sub-group
 
-        const fillOpacity = isProject ? 0.18 : isEpic ? 0.10 : 0.04;
-        const strokeSat = isProject ? 65 : isEpic ? 50 : 25;
-        const strokeLight = isProject ? 55 : isEpic ? 45 : 35;
+        const fillOpacity = isProject ? 0.18 : isEpic ? 0.12 : 0.06;
+        const strokeSat = isProject ? 65 : isEpic ? 50 : 30;
+        const strokeLight = isProject ? 60 : isEpic ? 50 : 40;
         const strokeWidth = isSelected
-            ? Math.max(2, r * 0.015)
+            ? Math.max(3, r * 0.02)
             : isProject
-                ? Math.max(2.5, Math.min(5, r * 0.004))
+                ? Math.max(2.5, Math.min(6, r * 0.008))
                 : isEpic
-                    ? Math.max(1.2, Math.min(3, r * 0.0025))
-                    : Math.max(0.4, Math.min(1.5, r * 0.001));
+                    ? Math.max(1.5, Math.min(4, r * 0.005))
+                    : Math.max(0.8, Math.min(2, r * 0.003));
         const dashArray = isSelected ? "none" : isProject ? "none" : isEpic ? "8,3,2,3" : "3,2";
         const strokeColor = isSelected ? "#fff" : `hsl(${hue}, ${strokeSat}%, ${strokeLight}%)`;
 
@@ -657,12 +657,12 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 .style("pointer-events", "none");
         }
 
-        // Parent label — positioned with background pill for readability
+        // Parent label — centered in container with background pill
         const MIN_RADIUS_FOR_LABEL = 15;
         if (r > MIN_RADIUS_FOR_LABEL) {
-            const minFs = isProject ? 18 : isEpic ? 12 : 8;
-            const maxFs = isProject ? 80 : isEpic ? 50 : 24;
-            const scaleFactor = isProject ? 0.06 : isEpic ? 0.045 : 0.03;
+            const minFs = isProject ? 16 : isEpic ? 11 : 8;
+            const maxFs = isProject ? 60 : isEpic ? 36 : 20;
+            const scaleFactor = isProject ? 0.08 : isEpic ? 0.06 : 0.04;
             const fs = Math.max(minFs, Math.min(maxFs, r * scaleFactor));
             const labelText = escapeHtml(d.label || '');
             const labelColor = isProject
@@ -671,38 +671,38 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                     ? `hsl(${hue}, 55%, 75%)`
                     : `hsl(${hue}, 40%, 65%)`;
             const pillBg = isProject
-                ? `hsla(${hue}, 40%, 12%, 0.9)`
-                : `hsla(${hue}, 30%, 10%, 0.85)`;
+                ? `hsla(${hue}, 40%, 8%, 0.92)`
+                : `hsla(${hue}, 30%, 8%, 0.88)`;
             const pillBorder = isProject
-                ? `hsla(${hue}, 50%, 40%, 0.4)`
+                ? `hsla(${hue}, 50%, 40%, 0.5)`
                 : isEpic
-                    ? `hsla(${hue}, 40%, 35%, 0.25)`
-                    : 'none';
-            const labelPad = pad(r);
+                    ? `hsla(${hue}, 40%, 35%, 0.35)`
+                    : `hsla(${hue}, 20%, 30%, 0.2)`;
 
             // Estimate label width for background pill
             const estCharW = fs * 0.6;
             const maxLabelW = r * 1.7;
-            const estLabelW = Math.min(labelText.length * estCharW + 16, maxLabelW);
-            const pillH = fs + 8;
+            const estLabelW = Math.min(labelText.length * estCharW + 20, maxLabelW);
+            const pillH = fs + 10;
+
+            // Position label at top of circle, inset from edge
+            const labelY = -r + Math.min(25, r * 0.18);
 
             // Background pill behind label
             const pill = g.append("rect")
-                .attr("x", -estLabelW / 2).attr("y", -r + labelPad - 2)
+                .attr("x", -estLabelW / 2).attr("y", labelY - pillH / 2)
                 .attr("width", estLabelW).attr("height", pillH)
                 .attr("rx", pillH / 2)
                 .attr("fill", pillBg)
                 .attr("class", "parent-label-bg")
                 .style("pointer-events", "none");
-            if (pillBorder !== 'none') {
-                pill.attr("stroke", pillBorder).attr("stroke-width", 1);
-            }
+            pill.attr("stroke", pillBorder).attr("stroke-width", 1);
 
-            // Type prefix for projects
+            // Type prefix for projects/epics
             const displayLabel = isProject ? `▣ ${labelText}` : isEpic ? `◆ ${labelText}` : labelText;
 
             g.append("foreignObject")
-                .attr("x", -r * 0.85).attr("y", -r + labelPad)
+                .attr("x", -r * 0.85).attr("y", labelY - fs * 0.6)
                 .attr("width", r * 1.7).attr("height", fs * 2.5)
                 .attr("class", "parent-label")
                 .style("pointer-events", "none")
@@ -712,7 +712,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 .style("width", "100%")
                 .style("pointer-events", "none")
                 .html(`
-                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 700}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.15em' : '0.08em'}; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 2px 6px rgba(0,0,0,0.9);">
+                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 700}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.15em' : '0.08em'}; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 2px 8px rgba(0,0,0,0.95), 0 0 20px rgba(0,0,0,0.7);">
                         ${displayLabel}
                     </div>
                 `);
