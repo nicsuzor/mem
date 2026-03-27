@@ -117,8 +117,13 @@
         const MIN_ACTIVE_NODE_WEIGHT = 10;
         const DEFAULT_NODE_WEIGHT = 6;
 
+        // Mark hierarchy parents — raw data objects don't have .children
+        // (stratify uses parentId). Without this, parents get their own weight
+        // on top of children's, inflating containers.
+        root.each((node: any) => { node.data._isHierarchyParent = !!node.children; });
+
         const computeSum = (d: any) => {
-            if (d.children?.length) return 0;
+            if (d._isHierarchyParent) return 0;
             if (["done", "completed", "cancelled"].includes(d.status)) return COMPLETED_NODE_WEIGHT;
             // Ensure all active nodes get a meaningful minimum size
             return Math.max(MIN_ACTIVE_NODE_WEIGHT, d.dw || DEFAULT_NODE_WEIGHT);
