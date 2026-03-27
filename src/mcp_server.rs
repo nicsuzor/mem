@@ -71,6 +71,41 @@ impl PkbSearchServer {
         }
     }
 
+    /// Validate that completion_evidence is present and non-empty.
+    fn require_evidence(evidence: Option<&str>) -> Result<&str, McpError> {
+        let ev = evidence.ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(
+                "completion_evidence is required. Describe what was done before completing this task.",
+            ),
+            data: None,
+        })?;
+        if ev.trim().is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "completion_evidence is required. Describe what was done before completing this task.",
+                ),
+                data: None,
+            });
+        }
+        Ok(ev)
+    }
+
+    /// Append a "## Completion Evidence" section to a document.
+    fn append_evidence(path: &std::path::Path, evidence: &str, pr_url: Option<&str>) -> Result<(), McpError> {
+        let evidence_block = if let Some(url) = pr_url {
+            format!("\n\n## Completion Evidence\n\n{}\n\nPR: {}\n", evidence.trim(), url)
+        } else {
+            format!("\n\n## Completion Evidence\n\n{}\n", evidence.trim())
+        };
+        crate::document_crud::append_to_document(path, &evidence_block, None).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to append evidence: {e}")),
+            data: None,
+        })
+    }
+
     fn args_to_value(args: Option<JsonObject>) -> JsonValue {
         match args {
             Some(map) => JsonValue::Object(map),
@@ -146,6 +181,22 @@ impl PkbSearchServer {
             })?;
 
         let path = self.resolve_path(path_str);
+
+        // If the path doesn't exist on disk, try flexible ID resolution via the graph
+        let path = if !path.exists() {
+            let graph = self.graph.read();
+            if let Some(node) = graph.resolve(path_str) {
+                self.abs_path(&node.path)
+            } else {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!("File not found: {}", path.display())),
+                    data: None,
+                });
+            }
+        } else {
+            path
+        };
 
         if !path.exists() {
             return Err(McpError {
@@ -835,6 +886,11 @@ impl PkbSearchServer {
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
 
+        let include_all = args
+            .get("include_all")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let type_filter: Option<Vec<String>> =
             args.get("types").and_then(|v| v.as_array()).map(|arr| {
                 arr.iter()
@@ -851,6 +907,22 @@ impl PkbSearchServer {
                     .as_deref()
                     .map(|t| types.iter().any(|f| f.eq_ignore_ascii_case(t)))
                     .unwrap_or(false)
+            });
+        } else if !include_all {
+            // Default: only show actionable types (task, bug, feature, action, epic, project, goal)
+            // and exclude completed nodes — matches graph_stats orphan_count definition
+            let actionable: std::collections::HashSet<&str> =
+                ["task", "bug", "feature", "action", "epic", "project", "goal"]
+                    .into_iter()
+                    .collect();
+            orphans.retain(|n| {
+                let is_actionable = n
+                    .node_type
+                    .as_deref()
+                    .map(|t| actionable.contains(t))
+                    .unwrap_or(false);
+                let is_completed = crate::graph::is_completed(n.status.as_deref());
+                is_actionable && !is_completed
             });
         }
 
@@ -1316,6 +1388,12 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        let evidence = Self::require_evidence(
+            args.get("completion_evidence").and_then(|v| v.as_str()),
+        )?;
+
+        let pr_url = args.get("pr_url").and_then(|v| v.as_str());
+
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
@@ -1332,12 +1410,21 @@ impl PkbSearchServer {
             "status".to_string(),
             serde_json::Value::String("done".to_string()),
         );
+        if let Some(url) = pr_url {
+            updates.insert(
+                "pr_url".to_string(),
+                serde_json::Value::String(url.to_string()),
+            );
+        }
 
         crate::document_crud::update_document(&abs_path, updates).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to complete task: {e}")),
             data: None,
         })?;
+
+        // Append completion evidence to the document body
+        Self::append_evidence(&abs_path, evidence, pr_url)?;
 
         // Re-index
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
@@ -2007,6 +2094,10 @@ impl PkbSearchServer {
             .get("include_subtasks")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let format = args
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("markdown");
 
         let graph = self.graph.read();
 
@@ -2078,6 +2169,37 @@ impl PkbSearchServer {
 
         let total = tasks.len();
         tasks.truncate(limit);
+
+        // JSON output mode
+        if format.eq_ignore_ascii_case("json") {
+            let json_tasks: Vec<serde_json::Value> = tasks
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "id": t.task_id.as_deref().unwrap_or(&t.id),
+                        "title": t.label,
+                        "status": t.status.as_deref().unwrap_or("unknown"),
+                        "priority": t.priority.unwrap_or(2),
+                        "project": t.project,
+                        "assignee": t.assignee,
+                        "modified": t.modified,
+                        "tags": t.tags,
+                        "downstream_weight": t.downstream_weight,
+                        "parent": t.parent,
+                        "depends_on": t.depends_on,
+                        "node_type": t.node_type,
+                    })
+                })
+                .collect();
+            let result = serde_json::json!({
+                "total": total,
+                "showing": tasks.len(),
+                "tasks": json_tasks,
+            });
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            )]));
+        }
 
         let output = if is_blocked {
             // Blocked view: heading per task with blocker details
@@ -2273,8 +2395,42 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        // When setting status to "done", require completion_evidence
+        let setting_done = updates
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(|s| s.eq_ignore_ascii_case("done"))
+            .unwrap_or(false);
+
+        if setting_done {
+            let evidence = updates
+                .get("completion_evidence")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if evidence.trim().is_empty() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(
+                        "completion_evidence is required when setting status to done. Describe what was done before completing this task.",
+                    ),
+                    data: None,
+                });
+            }
+        }
+
+        // Build update map, filtering out completion_evidence (stored in body, not frontmatter)
+        let evidence_text = updates
+            .get("completion_evidence")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let pr_url_text = updates
+            .get("pr_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         let update_map: std::collections::HashMap<String, serde_json::Value> = updates
             .iter()
+            .filter(|(k, _)| k.as_str() != "completion_evidence")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
@@ -2283,6 +2439,13 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to update task: {e}")),
             data: None,
         })?;
+
+        // Append completion evidence to body when completing via update_task
+        if let Some(evidence) = evidence_text {
+            if setting_done && !evidence.trim().is_empty() {
+                Self::append_evidence(&path, &evidence, pr_url_text.as_deref())?;
+            }
+        }
 
         // Re-index the updated file (with relative path for portable storage)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
@@ -2831,13 +2994,15 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "complete_task",
-                "Mark a task as done. Sets status to 'done' and re-indexes.",
+                "Mark a task as done. Requires completion_evidence describing what was done. Sets status to 'done', appends evidence to body, and re-indexes.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Task ID (supports flexible resolution: ID, filename stem, or title)" }
+                        "id": { "type": "string", "description": "Task ID (supports flexible resolution: ID, filename stem, or title)" },
+                        "completion_evidence": { "type": "string", "description": "What was done + outcome. Required — describe the work before completing." },
+                        "pr_url": { "type": "string", "description": "Link to PR/commit (optional, for code tasks)" }
                     },
-                    "required": ["id"]
+                    "required": ["id", "completion_evidence"]
                 }))
                 .unwrap(),
             ),
@@ -2851,7 +3016,8 @@ impl ServerHandler for PkbSearchServer {
                         "priority": { "type": "integer", "description": "Filter by exact priority (0-4)" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
-                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." }
+                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
+                        "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
                     }
                 }))
                 .unwrap(),
@@ -2870,13 +3036,13 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "update_task",
-                "Update frontmatter fields on an existing task file. Auto-sets modified timestamp.",
+                "Update frontmatter fields on an existing task file. Auto-sets modified timestamp. When setting status to 'done', completion_evidence is required inside updates.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Path to task file" },
                         "id": { "type": "string", "description": "Document ID (alternative to path — uses flexible resolution)" },
-                        "updates": { "type": "object", "description": "Fields to update (null to remove)" }
+                        "updates": { "type": "object", "description": "Fields to update (null to remove). When status='done', include completion_evidence (string) describing what was done." }
                     },
                     "required": ["updates"]
                 }))
@@ -3034,12 +3200,13 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "pkb_orphans",
-                "Find orphan nodes with no valid parent (parent is absent or references a non-existent node). Filter by node type or project.",
+                "Find orphan nodes with no valid parent. By default shows only actionable types (task/bug/feature/action/epic/project/goal) excluding completed — matching graph_stats orphan_count. Use include_all=true or types filter to override.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "limit": { "type": "integer", "description": "Max results (default: all). Set to 0 for unlimited." },
-                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Omit for all types." }
+                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Overrides default actionable-only filter." },
+                        "include_all": { "type": "boolean", "description": "Include all node types (notes, memories, etc.) — default false." }
                     }
                 }))
                 .unwrap(),

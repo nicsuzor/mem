@@ -129,7 +129,7 @@ impl GraphStore {
         compute_downstream_metrics(&mut nodes);
 
         // 8. Compute focus scores
-        compute_focus_scores(&mut nodes);
+        Self::compute_focus_scores(&mut nodes);
 
         // 9. Compute project field (nearest ancestor with node_type == "project")
         compute_project_field(&mut nodes);
@@ -223,7 +223,7 @@ impl GraphStore {
         compute_degree_metrics(&mut nodes_vec, &edges);
         compute_centrality_metrics(&mut nodes_vec, &edges);
         compute_downstream_metrics(&mut nodes_vec);
-        compute_focus_scores(&mut nodes_vec);
+        Self::compute_focus_scores(&mut nodes_vec);
         compute_project_field(&mut nodes_vec);
 
         let reachable_set = find_reachable_set(&nodes_vec, &edges);
@@ -405,15 +405,40 @@ impl GraphStore {
     /// Resolve a query to a node using flexible matching.
     ///
     /// Tries (in order): exact ID → resolution map (case-insensitive match on
-    /// ID, task_id, filename stem, title, permalink).
+    /// ID, task_id, filename stem, title, permalink) → path-based fallbacks
+    /// (strip .md extension, extract filename stem from full paths).
     pub fn resolve(&self, query: &str) -> Option<&GraphNode> {
         // 1. Exact ID match
         if let Some(node) = self.nodes.get(query) {
             return Some(node);
         }
         // 2. Resolution map (case-insensitive)
-        if let Some(canonical_id) = self.resolution_map.get(&query.to_lowercase()) {
+        let lower = query.to_lowercase();
+        if let Some(canonical_id) = self.resolution_map.get(&lower) {
             return self.nodes.get(canonical_id);
+        }
+        // 3. Strip .md extension and retry
+        if let Some(stripped) = lower.strip_suffix(".md") {
+            if let Some(canonical_id) = self.resolution_map.get(stripped) {
+                return self.nodes.get(canonical_id);
+            }
+        }
+        // 4. Extract filename stem from path-like queries (e.g. "/abs/path/to/task-abc.md")
+        let as_path = std::path::Path::new(query);
+        if let Some(stem) = as_path.file_stem() {
+            let stem_lower = stem.to_string_lossy().to_lowercase();
+            if stem_lower != lower {
+                if let Some(canonical_id) = self.resolution_map.get(&stem_lower) {
+                    return self.nodes.get(canonical_id);
+                }
+            }
+        }
+        // 5. Match by absolute path directly against node paths
+        for node in self.nodes.values() {
+            let node_path_str = node.path.to_string_lossy();
+            if node_path_str == query || node_path_str.to_lowercase() == lower {
+                return Some(node);
+            }
         }
         None
     }
@@ -1328,29 +1353,50 @@ fn classify_tasks(
         .map(|(id, _)| id.clone())
         .collect();
 
-    let mut ready: Vec<String> = Vec::new();
-    let mut blocked: Vec<String> = Vec::new();
+    // Phase 1: identify directly blocked tasks (unmet deps or explicit status)
+    let mut directly_blocked: HashSet<String> = HashSet::new();
+    let mut task_ids: Vec<String> = Vec::new();
 
     for (id, node) in nodes {
-        // Only classify nodes that have a task_id
         if node.task_id.is_none() {
             continue;
         }
-
         let status = node.status.as_deref().unwrap_or("active");
         if graph::is_completed(Some(status)) {
             continue;
         }
+        task_ids.push(id.clone());
 
-        let unmet_deps: Vec<&String> = node
-            .depends_on
-            .iter()
-            .filter(|d| !completed_ids.contains(*d))
-            .collect();
+        let has_unmet = node.depends_on.iter().any(|d| !completed_ids.contains(d));
+        if has_unmet || status == "blocked" {
+            directly_blocked.insert(id.clone());
+        }
+    }
 
-        if !unmet_deps.is_empty() || status == "blocked" {
+    // Phase 2: transitively propagate blocked status via BFS through blocks edges.
+    let effectively_blocked = {
+        let mut blocked_set = directly_blocked.clone();
+        let mut queue: std::collections::VecDeque<String> = directly_blocked.into_iter().collect();
+        while let Some(blocked_id) = queue.pop_front() {
+            if let Some(node) = nodes.get(&blocked_id) {
+                for downstream_id in &node.blocks {
+                    if blocked_set.insert(downstream_id.clone()) {
+                        queue.push_back(downstream_id.clone());
+                    }
+                }
+            }
+        }
+        blocked_set
+    };
+
+    let mut ready: Vec<String> = Vec::new();
+    let mut blocked: Vec<String> = Vec::new();
+
+    for id in &task_ids {
+        let node = nodes.get(id).unwrap();
+        if effectively_blocked.contains(id) {
             blocked.push(id.clone());
-        } else if node.leaf && status == "active" {
+        } else if node.leaf && node.status.as_deref().unwrap_or("active") == "active" {
             // Only claimable types — epics/projects/goals/containers are graph structure, not work items
             if CLAIMABLE_TYPES.contains(&node.node_type.as_deref().unwrap_or("")) {
                 ready.push(id.clone());
