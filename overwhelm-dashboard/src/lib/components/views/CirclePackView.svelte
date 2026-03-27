@@ -131,17 +131,19 @@
             return (b.value || 0) - (a.value || 0);
         });
 
-        const COMPLETED_RADIUS = 8;
-        const MIN_ACTIVE_RADIUS = 20;
-        const DEFAULT_RADIUS = 15;
+        // Tight radius range for dense packing — circles pack badly when
+        // sizes vary widely. Use log scale to compress the range.
+        const COMPLETED_RADIUS = 6;
+        const BASE_RADIUS = 12;
 
         const pack = d3.pack<any>()
             .radius((d: any) => {
                 const data = d.data;
                 if (["done", "completed", "cancelled"].includes(data.status)) return COMPLETED_RADIUS;
-                return Math.max(MIN_ACTIVE_RADIUS, Math.sqrt(data.dw || 1) * 5 + DEFAULT_RADIUS);
+                // Log scale: dw=1→12, dw=10→17, dw=100→22, dw=1000→27
+                return BASE_RADIUS + Math.log1p(data.dw || 1) * 2.2;
             })
-            .padding(3);
+            .padding(1);
 
         pack(root);
 
