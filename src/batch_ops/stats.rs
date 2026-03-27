@@ -3,7 +3,7 @@
 use crate::graph::is_completed;
 use crate::graph_store::{GraphStore, ACTIONABLE_TYPES};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Graph health statistics.
 #[derive(Debug, Serialize)]
@@ -14,9 +14,9 @@ pub struct GraphStats {
     pub total_tasks: usize,
     /// Tasks with no parent and no project
     pub orphan_count: usize,
-    /// Deepest nesting level
+    /// Deepest parent-chain nesting level (computed by walking parent links)
     pub max_depth: usize,
-    /// Count of leaf tasks directly under a project (no epic grouping)
+    /// Actionable nodes (task/bug/feature/action/epic) with no parent AND no children, excluding completed
     pub flat_tasks: usize,
     /// Tasks not modified in >60 days
     pub stale_count: usize,
@@ -24,10 +24,13 @@ pub struct GraphStats {
     pub priority_distribution: HashMap<String, usize>,
     /// Count per document type
     pub type_distribution: HashMap<String, usize>,
-    /// Epics with no children
+    /// Epics not connected to a project or goal via their ancestor chain
     pub disconnected_epics: usize,
     /// Projects not linked to any goal
     pub projects_without_goals: usize,
+    /// Deterministic hash of health metrics for convergence detection.
+    /// Compare with previous run's hash — if equal, the graph has stabilized.
+    pub metrics_hash: String,
 }
 
 impl GraphStats {
@@ -87,6 +90,10 @@ impl GraphStats {
         out.push_str(&format!(
             "  Projects w/o goals:   {}\n",
             self.projects_without_goals
+        ));
+        out.push_str(&format!(
+            "  Metrics hash:         {}\n",
+            self.metrics_hash
         ));
 
         out
@@ -151,20 +158,29 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
             orphan_count += 1;
         }
 
-        // Depth
-        let depth = node.depth as usize;
-        if depth > max_depth {
-            max_depth = depth;
+        // Depth: walk parent chain to compute actual nesting depth
+        let computed_depth = {
+            let mut d = 0usize;
+            let mut current_id = node.parent.clone();
+            let mut visited = HashSet::new();
+            while let Some(ref pid) = current_id {
+                if !visited.insert(pid.clone()) {
+                    break; // cycle guard
+                }
+                d += 1;
+                current_id = graph.get_node(pid).and_then(|p| p.parent.clone());
+            }
+            d
+        };
+        if computed_depth > max_depth {
+            max_depth = computed_depth;
         }
 
-        // Flat tasks: leaf tasks whose parent is a project (not an epic)
-        if node.leaf && node.children.is_empty() {
-            if let Some(ref parent_id) = node.parent {
-                if let Some(parent) = graph.get_node(parent_id) {
-                    if parent.node_type.as_deref() == Some("project") {
-                        flat_tasks += 1;
-                    }
-                }
+        // Flat tasks: actionable nodes with no parent AND no children
+        if node.parent.is_none() && node.children.is_empty() {
+            let actionable_flat = ["task", "bug", "feature", "action", "epic"];
+            if actionable_flat.contains(&node_type) {
+                flat_tasks += 1;
             }
         }
 
@@ -178,21 +194,77 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
             }
         }
 
-        // Disconnected epics (epics with no children)
-        if node_type == "epic" && node.children.is_empty() {
-            disconnected_epics += 1;
+        // Disconnected epics: traverse full parent chain looking for project or goal ancestor
+        if node_type == "epic" {
+            let has_project_or_goal_ancestor = {
+                let mut current_id = node.parent.clone();
+                let mut found = false;
+                let mut visited = HashSet::new();
+                while let Some(ref pid) = current_id {
+                    if !visited.insert(pid.clone()) {
+                        break; // cycle guard
+                    }
+                    if let Some(ancestor) = graph.get_node(pid) {
+                        let ancestor_type = ancestor.node_type.as_deref().unwrap_or("");
+                        if ancestor_type == "project" || ancestor_type == "goal" {
+                            found = true;
+                            break;
+                        }
+                        current_id = ancestor.parent.clone();
+                    } else {
+                        break;
+                    }
+                }
+                found
+            };
+            if !has_project_or_goal_ancestor {
+                disconnected_epics += 1;
+            }
         }
 
-        // Projects without goals (projects with no parent, or parent isn't a goal)
+        // Projects without goals: traverse full parent chain for goal ancestor
         if node_type == "project" {
-            let has_goal_parent = node.parent.as_ref().and_then(|pid| {
-                graph.get_node(pid)
-            }).map(|p| p.node_type.as_deref() == Some("goal")).unwrap_or(false);
-            if !has_goal_parent {
+            let has_goal_ancestor = {
+                let mut current_id = node.parent.clone();
+                let mut found = false;
+                let mut visited = HashSet::new();
+                while let Some(ref pid) = current_id {
+                    if !visited.insert(pid.clone()) {
+                        break;
+                    }
+                    if let Some(ancestor) = graph.get_node(pid) {
+                        if ancestor.node_type.as_deref() == Some("goal") {
+                            found = true;
+                            break;
+                        }
+                        current_id = ancestor.parent.clone();
+                    } else {
+                        break;
+                    }
+                }
+                found
+            };
+            if !has_goal_ancestor {
                 projects_without_goals += 1;
             }
         }
     }
+
+    // Compute deterministic hash for convergence detection.
+    // Uses health indicators (not counts that change with normal work like done/active).
+    let hash_input = format!(
+        "orphan={},flat={},disconnected_epics={},projects_wo_goals={},max_depth={},stale={}",
+        orphan_count, flat_tasks, disconnected_epics, projects_without_goals, max_depth, stale_count
+    );
+    let metrics_hash = format!("{:x}", {
+        // Simple FNV-1a hash for deterministic, lightweight hashing
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in hash_input.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    });
 
     GraphStats {
         status_counts,
@@ -205,6 +277,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         type_distribution,
         disconnected_epics,
         projects_without_goals,
+        metrics_hash,
     }
 }
 
