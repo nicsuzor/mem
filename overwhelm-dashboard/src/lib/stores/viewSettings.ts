@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 
-export const VIEW_MODES = ['Treemap', 'Circle Pack', 'Force', 'Arc Diagram'] as const;
+export const VIEW_MODES = ['Treemap', 'Circle Pack', 'Force', 'Metro', 'Arc Diagram'] as const;
 export type ViewMode = typeof VIEW_MODES[number];
 
 export const viewSettings = writable({
@@ -26,6 +26,8 @@ export const getLayoutFromViewSettings = ($settings: any) => {
             return 'circle_pack';
         case 'Force':
             return 'force';
+        case 'Metro':
+            return 'metro';
         case 'Arc Diagram':
             return 'arc';
         default:

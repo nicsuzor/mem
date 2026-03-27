@@ -9,6 +9,7 @@
     import CirclePackView from "$lib/components/views/CirclePackView.svelte";
     import ForceView from "$lib/components/views/ForceView.svelte";
     import ArcView from "$lib/components/views/ArcView.svelte";
+    import MetroView from "$lib/components/views/MetroView.svelte";
 
     import DashboardView from "$lib/components/dashboard/DashboardView.svelte";
     import ThreadedTasksView from "$lib/components/views/ThreadedTasksView.svelte";
@@ -305,23 +306,27 @@
 
             <!-- The Graph Area -->
             <div class="flex-1 relative z-0 h-full">
-                <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
-                    {#if containerGroup}
-                        {#if activeLayout === "treemap" || activeLayout === "tree"}
-                            <TreemapView
-                                {containerGroup}
-                                width={innerWidth}
-                                height={innerHeight}
-                            />
-                        {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
-                            <CirclePackView {containerGroup} />
-                        {:else if activeLayout === "force" || activeLayout === "sfdp"}
-                            <ForceView {containerGroup} />
-                        {:else if activeLayout === "arc"}
-                            <ArcView {containerGroup} />
+                {#if activeLayout === "metro"}
+                    <MetroView />
+                {:else}
+                    <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
+                        {#if containerGroup}
+                            {#if activeLayout === "treemap" || activeLayout === "tree"}
+                                <TreemapView
+                                    {containerGroup}
+                                    width={innerWidth}
+                                    height={innerHeight}
+                                />
+                            {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
+                                <CirclePackView {containerGroup} />
+                            {:else if activeLayout === "force" || activeLayout === "sfdp"}
+                                <ForceView {containerGroup} />
+                            {:else if activeLayout === "arc"}
+                                <ArcView {containerGroup} />
+                            {/if}
                         {/if}
-                    {/if}
-                </ZoomContainer>
+                    </ZoomContainer>
+                {/if}
             </div>
 
             <!-- Legend -->

@@ -660,9 +660,9 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         // Parent label — centered in container with background pill
         const MIN_RADIUS_FOR_LABEL = 15;
         if (r > MIN_RADIUS_FOR_LABEL) {
-            const minFs = isProject ? 16 : isEpic ? 11 : 8;
-            const maxFs = isProject ? 60 : isEpic ? 36 : 20;
-            const scaleFactor = isProject ? 0.08 : isEpic ? 0.06 : 0.04;
+            const minFs = isProject ? 18 : isEpic ? 13 : 9;
+            const maxFs = isProject ? 60 : isEpic ? 40 : 22;
+            const scaleFactor = isProject ? 0.09 : isEpic ? 0.07 : 0.05;
             const fs = Math.max(minFs, Math.min(maxFs, r * scaleFactor));
             const labelText = escapeHtml(d.label || '');
             const labelColor = isProject
@@ -679,20 +679,20 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                     ? `hsla(${hue}, 40%, 35%, 0.35)`
                     : `hsla(${hue}, 20%, 30%, 0.2)`;
 
-            // Estimate label width for background pill
-            const estCharW = fs * 0.6;
-            const maxLabelW = r * 1.7;
-            const estLabelW = Math.min(labelText.length * estCharW + 20, maxLabelW);
-            const pillH = fs + 10;
+            // Label dimensions — allow wrapping for legibility
+            const labelW = r * 1.6;
+            const lineH = fs * 1.25;
+            const maxLines = isProject ? 3 : 2;
+            const labelH = lineH * maxLines + 8;
 
             // Position label at top of circle, inset from edge
-            const labelY = -r + Math.min(25, r * 0.18);
+            const labelY = -r + Math.max(fs * 0.5, Math.min(30, r * 0.15));
 
-            // Background pill behind label
+            // Background pill behind label — sized to wrapping text
             const pill = g.append("rect")
-                .attr("x", -estLabelW / 2).attr("y", labelY - pillH / 2)
-                .attr("width", estLabelW).attr("height", pillH)
-                .attr("rx", pillH / 2)
+                .attr("x", -labelW / 2 - 6).attr("y", labelY - 4)
+                .attr("width", labelW + 12).attr("height", labelH)
+                .attr("rx", 6)
                 .attr("fill", pillBg)
                 .attr("class", "parent-label-bg")
                 .style("pointer-events", "none");
@@ -702,17 +702,19 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
             const displayLabel = isProject ? `▣ ${labelText}` : isEpic ? `◆ ${labelText}` : labelText;
 
             g.append("foreignObject")
-                .attr("x", -r * 0.85).attr("y", labelY - fs * 0.6)
-                .attr("width", r * 1.7).attr("height", fs * 2.5)
+                .attr("x", -labelW / 2).attr("y", labelY - 2)
+                .attr("width", labelW).attr("height", labelH)
                 .attr("class", "parent-label")
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("display", "flex")
                 .style("justify-content", "center")
+                .style("align-items", "flex-start")
                 .style("width", "100%")
+                .style("height", "100%")
                 .style("pointer-events", "none")
                 .html(`
-                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 700}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.15em' : '0.08em'}; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 2px 8px rgba(0,0,0,0.95), 0 0 20px rgba(0,0,0,0.7);">
+                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 700}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.12em' : '0.06em'}; text-align: center; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${maxLines}; -webkit-box-orient: vertical; line-height: ${lineH}px; text-shadow: 0 2px 8px rgba(0,0,0,0.95), 0 0 20px rgba(0,0,0,0.8), 0 0 3px rgba(0,0,0,1);">
                         ${displayLabel}
                     </div>
                 `);

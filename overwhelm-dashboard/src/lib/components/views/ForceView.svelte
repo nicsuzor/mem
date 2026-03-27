@@ -206,39 +206,13 @@
             );
     }
 
-    let edgeRoutingPrepared = false;
-
     function tickVisuals() {
         d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
             .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
 
         const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
-
-        // Use Cola's edge routing to avoid node overlaps once layout settles
-        if (colaLayout && edgeRoutingPrepared) {
-            eEls.attr("d", function(d: any) {
-                try {
-                    const route = colaLayout!.routeEdge(d, 5);
-                    if (route && route.length >= 2) {
-                        let path = `M${route[0].x},${route[0].y}`;
-                        for (let i = 1; i < route.length; i++) {
-                            path += ` L${route[i].x},${route[i].y}`;
-                        }
-                        return path;
-                    }
-                } catch(e) {
-                    // Fallback to direct line
-                }
-                if (!d.source || !d.target) return null;
-                const sx = d.source.x, sy = d.source.y;
-                const tx = d.target.x, ty = d.target.y;
-                if (sx == null || tx == null) return null;
-                return `M${sx},${sy} L${tx},${ty}`;
-            });
-        } else {
-            routeSfdpEdges(eEls);
-        }
+        routeSfdpEdges(eEls);
         applyEdgeVisibility(eEls);
 
         // Render group bounding boxes from WebCola (skip unlabelled catch-all group)
@@ -442,8 +416,6 @@
 
         console.log(`[Cola] ${$graphData.nodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups`, colaGroups.map(g => g.leaves.length));
 
-        edgeRoutingPrepared = false;
-
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
             .nodes($graphData.nodes as any)
@@ -454,18 +426,6 @@
             .flowLayout('y', $viewSettings.colaFlowSep)
             .symmetricDiffLinkLengths($viewSettings.colaLinkLength, 0.7)
             .on("tick", tickVisuals)
-            .on("end", () => {
-                // Once layout converges, prepare edge routing around nodes
-                if (colaLayout) {
-                    try {
-                        colaLayout.prepareEdgeRouting(10);
-                        edgeRoutingPrepared = true;
-                        tickVisuals(); // Re-render edges with routing
-                    } catch(e) {
-                        console.warn("[Cola] Edge routing failed:", e);
-                    }
-                }
-            })
             .start(80, 80, 80);
     }
 
