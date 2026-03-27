@@ -71,6 +71,41 @@ impl PkbSearchServer {
         }
     }
 
+    /// Validate that completion_evidence is present and non-empty.
+    fn require_evidence(evidence: Option<&str>) -> Result<&str, McpError> {
+        let ev = evidence.ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(
+                "completion_evidence is required. Describe what was done before completing this task.",
+            ),
+            data: None,
+        })?;
+        if ev.trim().is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "completion_evidence is required. Describe what was done before completing this task.",
+                ),
+                data: None,
+            });
+        }
+        Ok(ev)
+    }
+
+    /// Append a "## Completion Evidence" section to a document.
+    fn append_evidence(path: &std::path::Path, evidence: &str, pr_url: Option<&str>) -> Result<(), McpError> {
+        let evidence_block = if let Some(url) = pr_url {
+            format!("\n\n## Completion Evidence\n\n{}\n\nPR: {}\n", evidence.trim(), url)
+        } else {
+            format!("\n\n## Completion Evidence\n\n{}\n", evidence.trim())
+        };
+        crate::document_crud::append_to_document(path, &evidence_block, None).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to append evidence: {e}")),
+            data: None,
+        })
+    }
+
     fn args_to_value(args: Option<JsonObject>) -> JsonValue {
         match args {
             Some(map) => JsonValue::Object(map),
@@ -1353,26 +1388,9 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let evidence = args
-            .get("completion_evidence")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(
-                    "completion_evidence is required. Describe what was done before completing this task.",
-                ),
-                data: None,
-            })?;
-
-        if evidence.trim().is_empty() {
-            return Err(McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(
-                    "completion_evidence is required. Describe what was done before completing this task.",
-                ),
-                data: None,
-            });
-        }
+        let evidence = Self::require_evidence(
+            args.get("completion_evidence").and_then(|v| v.as_str()),
+        )?;
 
         let pr_url = args.get("pr_url").and_then(|v| v.as_str());
 
@@ -1406,18 +1424,7 @@ impl PkbSearchServer {
         })?;
 
         // Append completion evidence to the document body
-        let evidence_block = if let Some(url) = pr_url {
-            format!("\n\n## Completion Evidence\n\n{}\n\nPR: {}\n", evidence.trim(), url)
-        } else {
-            format!("\n\n## Completion Evidence\n\n{}\n", evidence.trim())
-        };
-        crate::document_crud::append_to_document(&abs_path, &evidence_block, None).map_err(
-            |e| McpError {
-                code: ErrorCode::INTERNAL_ERROR,
-                message: Cow::from(format!("Failed to append evidence: {e}")),
-                data: None,
-            },
-        )?;
+        Self::append_evidence(&abs_path, evidence, pr_url)?;
 
         // Re-index
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
@@ -2436,22 +2443,7 @@ impl PkbSearchServer {
         // Append completion evidence to body when completing via update_task
         if let Some(evidence) = evidence_text {
             if setting_done && !evidence.trim().is_empty() {
-                let evidence_block = if let Some(ref url) = pr_url_text {
-                    format!(
-                        "\n\n## Completion Evidence\n\n{}\n\nPR: {}\n",
-                        evidence.trim(),
-                        url
-                    )
-                } else {
-                    format!("\n\n## Completion Evidence\n\n{}\n", evidence.trim())
-                };
-                crate::document_crud::append_to_document(&path, &evidence_block, None).map_err(
-                    |e| McpError {
-                        code: ErrorCode::INTERNAL_ERROR,
-                        message: Cow::from(format!("Failed to append evidence: {e}")),
-                        data: None,
-                    },
-                )?;
+                Self::append_evidence(&path, &evidence, pr_url_text.as_deref())?;
             }
         }
 

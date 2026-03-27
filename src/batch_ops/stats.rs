@@ -5,6 +5,30 @@ use crate::graph_store::{GraphStore, ACTIONABLE_TYPES};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
+const ACTIONABLE_FLAT_TYPES: &[&str] = &["task", "bug", "feature", "action", "epic"];
+
+/// Walk the parent chain looking for an ancestor whose type is in `types`.
+fn has_ancestor_of_type(graph: &GraphStore, node: &crate::graph::GraphNode, types: &[&str]) -> bool {
+    let mut current_id = node.parent.clone();
+    let mut visited = HashSet::new();
+    while let Some(ref pid) = current_id {
+        if !visited.insert(pid.clone()) {
+            break;
+        }
+        if let Some(ancestor) = graph.get_node(pid) {
+            if let Some(ancestor_type) = ancestor.node_type.as_deref() {
+                if types.contains(&ancestor_type) {
+                    return true;
+                }
+            }
+            current_id = ancestor.parent.clone();
+        } else {
+            break;
+        }
+    }
+    false
+}
+
 /// Graph health statistics.
 #[derive(Debug, Serialize)]
 pub struct GraphStats {
@@ -178,8 +202,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
 
         // Flat tasks: actionable nodes with no parent AND no children
         if node.parent.is_none() && node.children.is_empty() {
-            let actionable_flat = ["task", "bug", "feature", "action", "epic"];
-            if actionable_flat.contains(&node_type) {
+            if ACTIONABLE_FLAT_TYPES.contains(&node_type) {
                 flat_tasks += 1;
             }
         }
@@ -196,55 +219,14 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
 
         // Disconnected epics: traverse full parent chain looking for project or goal ancestor
         if node_type == "epic" {
-            let has_project_or_goal_ancestor = {
-                let mut current_id = node.parent.clone();
-                let mut found = false;
-                let mut visited = HashSet::new();
-                while let Some(ref pid) = current_id {
-                    if !visited.insert(pid.clone()) {
-                        break; // cycle guard
-                    }
-                    if let Some(ancestor) = graph.get_node(pid) {
-                        let ancestor_type = ancestor.node_type.as_deref().unwrap_or("");
-                        if ancestor_type == "project" || ancestor_type == "goal" {
-                            found = true;
-                            break;
-                        }
-                        current_id = ancestor.parent.clone();
-                    } else {
-                        break;
-                    }
-                }
-                found
-            };
-            if !has_project_or_goal_ancestor {
+            if !has_ancestor_of_type(graph, node, &["project", "goal"]) {
                 disconnected_epics += 1;
             }
         }
 
         // Projects without goals: traverse full parent chain for goal ancestor
         if node_type == "project" {
-            let has_goal_ancestor = {
-                let mut current_id = node.parent.clone();
-                let mut found = false;
-                let mut visited = HashSet::new();
-                while let Some(ref pid) = current_id {
-                    if !visited.insert(pid.clone()) {
-                        break;
-                    }
-                    if let Some(ancestor) = graph.get_node(pid) {
-                        if ancestor.node_type.as_deref() == Some("goal") {
-                            found = true;
-                            break;
-                        }
-                        current_id = ancestor.parent.clone();
-                    } else {
-                        break;
-                    }
-                }
-                found
-            };
-            if !has_goal_ancestor {
+            if !has_ancestor_of_type(graph, node, &["goal"]) {
                 projects_without_goals += 1;
             }
         }

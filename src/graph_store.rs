@@ -129,7 +129,7 @@ impl GraphStore {
         compute_downstream_metrics(&mut nodes);
 
         // 8. Compute focus scores
-        compute_focus_scores(&mut nodes);
+        Self::compute_focus_scores(&mut nodes);
 
         // 9. Compute project field (nearest ancestor with node_type == "project")
         compute_project_field(&mut nodes);
@@ -223,7 +223,7 @@ impl GraphStore {
         compute_degree_metrics(&mut nodes_vec, &edges);
         compute_centrality_metrics(&mut nodes_vec, &edges);
         compute_downstream_metrics(&mut nodes_vec);
-        compute_focus_scores(&mut nodes_vec);
+        Self::compute_focus_scores(&mut nodes_vec);
         compute_project_field(&mut nodes_vec);
 
         let reachable_set = find_reachable_set(&nodes_vec, &edges);
@@ -1373,26 +1373,15 @@ fn classify_tasks(
         }
     }
 
-    // Phase 2: transitively propagate blocked status through dependency chain.
-    // A task is effectively blocked if any of its transitive dependencies are
-    // blocked (explicitly or via their own unmet deps).
+    // Phase 2: transitively propagate blocked status via BFS through blocks edges.
     let effectively_blocked = {
         let mut blocked_set = directly_blocked.clone();
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for id in &task_ids {
-                if blocked_set.contains(id) {
-                    continue;
-                }
-                if let Some(node) = nodes.get(id) {
-                    let upstream_blocked = node
-                        .depends_on
-                        .iter()
-                        .any(|d| blocked_set.contains(d));
-                    if upstream_blocked {
-                        blocked_set.insert(id.clone());
-                        changed = true;
+        let mut queue: std::collections::VecDeque<String> = directly_blocked.into_iter().collect();
+        while let Some(blocked_id) = queue.pop_front() {
+            if let Some(node) = nodes.get(&blocked_id) {
+                for downstream_id in &node.blocks {
+                    if blocked_set.insert(downstream_id.clone()) {
+                        queue.push_back(downstream_id.clone());
                     }
                 }
             }
