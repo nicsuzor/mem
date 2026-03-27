@@ -124,6 +124,43 @@
             fNodes = [...parents, ...leaves];
         }
 
+        // Restore parent containers needed by surviving children — even if the parent
+        // was filtered out by status (e.g. a cancelled project with active children)
+        {
+            const allNodeMap = new Map(prepared.nodes.map(n => [n.id, n]));
+            const survivingIds = new Set(fNodes.map(n => n.id));
+            const toRestore: typeof fNodes = [];
+            for (const n of fNodes) {
+                let pid = n.parent;
+                while (pid && !survivingIds.has(pid)) {
+                    const parent = allNodeMap.get(pid);
+                    if (!parent) break;
+                    survivingIds.add(pid);
+                    toRestore.push(parent);
+                    pid = parent.parent;
+                }
+            }
+            if (toRestore.length > 0) fNodes = [...fNodes, ...toRestore];
+        }
+
+        // Prune empty structural containers — remove epics/projects/goals with no surviving children
+        {
+            let changed = true;
+            while (changed) {
+                changed = false;
+                const childCount = new Map<string, number>();
+                for (const n of fNodes) {
+                    if (n.parent) childCount.set(n.parent, (childCount.get(n.parent) || 0) + 1);
+                }
+                const before = fNodes.length;
+                fNodes = fNodes.filter(n => {
+                    if (!STRUCTURAL_TYPES.has(n.type)) return true;
+                    return (childCount.get(n.id) || 0) > 0;
+                });
+                if (fNodes.length < before) changed = true;
+            }
+        }
+
         const survivingNodeIds = new Set(fNodes.map((n) => n.id));
 
         // Sanitize parent references after filtering — prevents stratify failures in tree/circle views

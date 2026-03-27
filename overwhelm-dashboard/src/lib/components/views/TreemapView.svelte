@@ -95,9 +95,15 @@
 
         const MIN_NODE_WEIGHT = 1;
         const weightMode = $viewSettings.treemapWeightMode || 'sqrt';
-        
+
+        // Mark hierarchy parents — d.children on raw data is always undefined
+        // since parent-child is defined by parent ID, not nested arrays.
+        // Without this, every node (including parents) gets its own weight,
+        // inflating containers beyond what their children fill.
+        root.each((node: any) => { node.data._isHierarchyParent = !!node.children; });
+
         root.sum(d => {
-            if (d.children?.length) return 0;
+            if (d._isHierarchyParent) return 0;
             switch (weightMode) {
                 case 'priority': {
                     if (d.status === 'done' || d.status === 'completed') return 1;
@@ -150,6 +156,11 @@
         const layoutMap = new Map();
         root.descendants().forEach((d: any) => {
             if (d.data.id === rootId) return;
+            // Count leaf descendants (actual tasks inside this container)
+            let leafCount = 0;
+            if (d.children) {
+                d.leaves().forEach(() => leafCount++);
+            }
             layoutMap.set(d.data.id, {
                 x: d.x0 + (d.x1 - d.x0) / 2,
                 y: d.y0 + (d.y1 - d.y0) / 2,
@@ -157,6 +168,7 @@
                 h: d.y1 - d.y0,
                 depth: d.depth,
                 isLeaf: !d.children || d.children.length === 0,
+                leafCount,
             });
         });
 
@@ -167,6 +179,7 @@
                     n.x = l.x; n.y = l.y; n.w = l.w; n.h = l.h;
                     n.depth = l.depth;
                     n._isLeaf = l.isLeaf;
+                    n._leafCount = l.leafCount;
                     return true;
                 }
                 n.x = -9999;

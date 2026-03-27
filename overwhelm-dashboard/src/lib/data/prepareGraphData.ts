@@ -332,20 +332,20 @@ export function prepareGraphData(
             width = 3.5;
             dash = "";
         } else if (etype === 'depends_on') {
-            color = "#ef4444"; // Red for hard dependencies
-            width = 3.0;
+            color = "#f59e0b"; // Amber — dependency edges draw attention to the blocker
+            width = 3.5;
             dash = "";
             const tw = targetWeight.get(edge.target) || 0;
             if (tw > 0 && maxWeight > 0) {
                 const critRatio = Math.min(Math.log1p(tw) / Math.log1p(maxWeight), 1.0);
                 if (critRatio > 0.5) {
-                    width = 2.5 + critRatio * 1.5;
+                    width = 3.0 + critRatio * 2.0;
                 }
             }
         } else if (etype === 'soft_depends_on') {
-            color = "#3b82f6"; // Blue for soft dependencies
+            color = "#d97706"; // Warm orange — softer version of dependency
             width = 2.0;
-            dash = "4,4";
+            dash = "6,3";
         } else {
             color = "#a3a3a3"; // Lighter grey for references
             width = 1.5;

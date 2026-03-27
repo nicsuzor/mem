@@ -134,6 +134,39 @@ function projectHue(projectId: string): number {
     return Math.abs(hash) % 360;
 }
 
+/** Render a child-count badge in top-right of a treemap container */
+function renderCountBadge(
+    g: d3.Selection<SVGGElement, any, null, undefined>,
+    w: number, h: number, hue: number,
+    leafCount: number, totalDown: number, fontSize: number
+) {
+    if ((leafCount <= 0 && totalDown <= 0) || w < 50) return;
+    const badgeFs = Math.max(6, Math.min(9, fontSize * 0.8));
+    const hasHidden = totalDown > leafCount;
+    const badgeText = hasHidden ? `${leafCount}/${totalDown}` : `${leafCount}`;
+    const badgeW = badgeText.length * badgeFs * 0.55 + 10;
+    const badgeH = badgeFs + 4;
+    const badgeX = w / 2 - badgeW - 4;
+    const badgeY = -h / 2 + 3;
+
+    g.append("rect")
+        .attr("x", badgeX).attr("y", badgeY)
+        .attr("width", badgeW).attr("height", badgeH)
+        .attr("rx", badgeH / 2)
+        .attr("fill", hasHidden ? `hsla(${hue}, 35%, 18%, 0.9)` : `hsla(${hue}, 30%, 20%, 0.8)`)
+        .attr("stroke", hasHidden ? `hsla(${hue}, 50%, 50%, 0.6)` : `hsla(${hue}, 40%, 45%, 0.5)`)
+        .attr("stroke-width", 0.5)
+        .style("pointer-events", "none");
+    g.append("text")
+        .attr("x", badgeX + badgeW / 2).attr("y", badgeY + badgeH / 2)
+        .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+        .attr("font-size", badgeFs + "px").attr("font-weight", "600")
+        .attr("font-family", "var(--font-mono), monospace")
+        .attr("fill", hasHidden ? `hsl(${hue}, 50%, 75%)` : `hsl(${hue}, 40%, 70%)`)
+        .style("pointer-events", "none")
+        .text(badgeText);
+}
+
 export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefined>, d: any, isSelected = false) {
     // expects d._lw and d._lh to be populated by the layout algo if using true sizes, else uses d.w/d.h
     const w = d._lw || d.w;
@@ -199,6 +232,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .attr("letter-spacing", "0.15em")
                 .attr("pointer-events", "none")
                 .text(labelText);
+
+            renderCountBadge(g, w, h, hue, d._leafCount || 0, Math.round(d.dw || 0), fs);
         }
         return;
     }
@@ -234,6 +269,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .append("xhtml:div")
                 .style("pointer-events", "none")
                 .html(`<div style="font-size:${fs}px; font-weight:700; color:hsl(${hue},40%,65%); text-transform:uppercase; letter-spacing:0.08em; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${label}</div>`);
+
+            renderCountBadge(g, w, h, hue, d._leafCount || 0, Math.round(d.dw || 0), fs);
         }
         return;
     }
@@ -265,7 +302,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         review: '#3A5A9E',       // Slightly lighter soft blue
         waiting: '#1E3A6E',      // Darker muted blue
         decomposing: '#1E3A6E',  // Darker muted blue
-        blocked: '#dc2626',      // STRONG red — needs attention
+        blocked: '#6B3A3A',      // Muted dark red — blocked but not urgent
         ready: '#2D5A3D',        // Muted green
         todo: '#2D5A3D',         // Muted green
         inbox: '#1E4A2E',        // Dark green
@@ -359,13 +396,13 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     // Grid overlay removed — status colors provide sufficient visual distinction
     // without the noise of overlaid patterns
 
-    // Striped overlay for blocked tasks
+    // Subtle blocked indicator — thin left border, not screaming red
     if (d.status === "blocked") {
         g.append("rect")
-            .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
-            .attr("rx", 4)
-            .attr("fill", "url(#striped-blocked)").attr("pointer-events", "none")
-            .attr("opacity", 0.4);
+            .attr("x", -w / 2).attr("y", -h / 2).attr("width", 3).attr("height", h)
+            .attr("rx", 1)
+            .attr("fill", "#9B5555").attr("pointer-events", "none")
+            .attr("opacity", 0.7);
     }
 
     // Double border for Critical (P0) priorities
@@ -415,6 +452,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                             ${label}
                         </div>
                     `);
+
+                renderCountBadge(g, w, h, hue, d._leafCount || 0, Math.round(d.dw || 0), parentFs);
             }
         } else {
             // Leaf nodes: Draw title
@@ -435,7 +474,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("height", "100%")
                 .style("pointer-events", "none")
                 .html(`
-                    ${isBlocked && h > 40 ? `<div style="display: flex; justify-content: flex-end; margin-bottom: 2px;"><span class="material-symbols-outlined" style="font-size: ${fs + 2}px; color: #fff; background: var(--color-destructive); border-radius: 50%;">warning</span></div>` : ''}
+                    ${isBlocked && h > 40 ? `<div style="display: flex; justify-content: flex-end; margin-bottom: 2px;"><span class="material-symbols-outlined" style="font-size: ${fs + 2}px; color: rgba(255,255,255,0.5); background: #6B3A3A; border-radius: 50%;">pause_circle</span></div>` : ''}
                     <div style="font-size: ${fs}px; font-weight: 500; color: ${textColor}; line-height: 1.1; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${linesAvailable}; -webkit-box-orient: vertical; letter-spacing: -0.01em;">
                         ${label}
                     </div>
@@ -529,7 +568,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         review: '#3A5A9E',       // Lighter blue
         waiting: '#1E3A6E',      // Darker muted blue
         decomposing: '#1E3A6E',  // Darker muted blue
-        blocked: '#dc2626',      // STRONG red — needs attention
+        blocked: '#6B3A3A',      // Muted dark red — blocked but not urgent
         ready: '#2D5A3D',        // Muted green
         todo: '#2D5A3D',         // Muted green
         inbox: '#1E4A2E',        // Dark green
@@ -570,23 +609,53 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         const isEpic = depth === 2;
         // depth 3+ = sub-group
 
-        const fillOpacity = isProject ? 0.15 : isEpic ? 0.08 : 0.04;
-        const strokeSat = isProject ? 55 : isEpic ? 40 : 25;
-        const strokeLight = isProject ? 50 : isEpic ? 40 : 35;
+        const fillOpacity = isProject ? 0.18 : isEpic ? 0.10 : 0.04;
+        const strokeSat = isProject ? 65 : isEpic ? 50 : 25;
+        const strokeLight = isProject ? 55 : isEpic ? 45 : 35;
         const strokeWidth = isSelected
             ? Math.max(2, r * 0.015)
             : isProject
-                ? Math.max(1.5, Math.min(4, r * 0.003))
+                ? Math.max(2.5, Math.min(5, r * 0.004))
                 : isEpic
-                    ? Math.max(0.8, Math.min(2.5, r * 0.002))
+                    ? Math.max(1.2, Math.min(3, r * 0.0025))
                     : Math.max(0.4, Math.min(1.5, r * 0.001));
-        const dashArray = isSelected ? "none" : isProject ? "none" : isEpic ? "6,3" : "3,2";
+        const dashArray = isSelected ? "none" : isProject ? "none" : isEpic ? "8,3,2,3" : "3,2";
+        const strokeColor = isSelected ? "#fff" : `hsl(${hue}, ${strokeSat}%, ${strokeLight}%)`;
 
+        // Main circle
         g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
             .attr("fill", cellColor).attr("fill-opacity", fillOpacity)
-            .attr("stroke", isSelected ? "#fff" : `hsl(${hue}, ${strokeSat}%, ${strokeLight}%)`)
+            .attr("stroke", strokeColor)
             .attr("stroke-width", strokeWidth)
             .attr("stroke-dasharray", dashArray);
+
+        if (isProject && !isSelected) {
+            // Projects: outer accent ring for double-border effect
+            const outerGap = Math.max(3, r * 0.008);
+            g.insert("circle", ":first-child")
+                .attr("cx", 0).attr("cy", 0).attr("r", r + outerGap)
+                .attr("fill", "none")
+                .attr("stroke", `hsl(${hue}, ${strokeSat}%, ${strokeLight}%)`)
+                .attr("stroke-width", Math.max(0.8, strokeWidth * 0.4))
+                .attr("stroke-opacity", 0.5);
+            // Inner subtle glow
+            g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
+                .attr("fill", "none")
+                .attr("stroke", `hsl(${hue}, 70%, 70%)`)
+                .attr("stroke-width", Math.max(1, r * 0.002))
+                .attr("stroke-opacity", 0.15)
+                .style("pointer-events", "none");
+        } else if (isEpic && !isSelected) {
+            // Epics: inner glow ring for subtle distinction
+            const inset = Math.max(2, r * 0.015);
+            g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r - inset)
+                .attr("fill", "none")
+                .attr("stroke", `hsl(${hue}, 45%, 50%)`)
+                .attr("stroke-width", Math.max(0.5, r * 0.001))
+                .attr("stroke-opacity", 0.25)
+                .attr("stroke-dasharray", "4,4")
+                .style("pointer-events", "none");
+        }
 
         // Parent label — positioned with background pill for readability
         const MIN_RADIUS_FOR_LABEL = 15;
@@ -596,8 +665,19 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
             const scaleFactor = isProject ? 0.06 : isEpic ? 0.045 : 0.03;
             const fs = Math.max(minFs, Math.min(maxFs, r * scaleFactor));
             const labelText = escapeHtml(d.label || '');
-            const labelColor = `hsl(${hue}, ${isProject ? 70 : 50}%, ${isProject ? 80 : 70}%)`;
-            const pillBg = `hsla(${hue}, 30%, 10%, 0.85)`;
+            const labelColor = isProject
+                ? `hsl(${hue}, 80%, 85%)`
+                : isEpic
+                    ? `hsl(${hue}, 55%, 75%)`
+                    : `hsl(${hue}, 40%, 65%)`;
+            const pillBg = isProject
+                ? `hsla(${hue}, 40%, 12%, 0.9)`
+                : `hsla(${hue}, 30%, 10%, 0.85)`;
+            const pillBorder = isProject
+                ? `hsla(${hue}, 50%, 40%, 0.4)`
+                : isEpic
+                    ? `hsla(${hue}, 40%, 35%, 0.25)`
+                    : 'none';
             const labelPad = pad(r);
 
             // Estimate label width for background pill
@@ -607,13 +687,19 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
             const pillH = fs + 8;
 
             // Background pill behind label
-            g.append("rect")
+            const pill = g.append("rect")
                 .attr("x", -estLabelW / 2).attr("y", -r + labelPad - 2)
                 .attr("width", estLabelW).attr("height", pillH)
                 .attr("rx", pillH / 2)
                 .attr("fill", pillBg)
                 .attr("class", "parent-label-bg")
                 .style("pointer-events", "none");
+            if (pillBorder !== 'none') {
+                pill.attr("stroke", pillBorder).attr("stroke-width", 1);
+            }
+
+            // Type prefix for projects
+            const displayLabel = isProject ? `▣ ${labelText}` : isEpic ? `◆ ${labelText}` : labelText;
 
             g.append("foreignObject")
                 .attr("x", -r * 0.85).attr("y", -r + labelPad)
@@ -626,8 +712,8 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 .style("width", "100%")
                 .style("pointer-events", "none")
                 .html(`
-                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 700}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.15em' : '0.08em'}; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 4px rgba(0,0,0,0.8);">
-                        ${labelText}
+                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 700}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.15em' : '0.08em'}; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 2px 6px rgba(0,0,0,0.9);">
+                        ${displayLabel}
                     </div>
                 `);
         }
@@ -646,12 +732,14 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
             .attr("stroke-width", isSelected ? Math.max(2, r * 0.02) : baseStrokeW)
             .attr("stroke-opacity", isCompleted ? 0.3 : 1);
 
-        if (d.status === "blocked" && d.dw >= 2) {
-            const pulseGap = Math.max(1, r * 0.05);
-            g.insert("circle", ":first-child")
-                .attr("cx", 0).attr("cy", 0).attr("r", r + pulseGap)
-                .attr("fill", "none").attr("stroke", "#ef4444")
-                .attr("class", "danger-pulse");
+        // Blocked: subtle dashed ring instead of pulsing red
+        if (d.status === "blocked") {
+            g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
+                .attr("fill", "none").attr("stroke", "#9B5555")
+                .attr("stroke-width", Math.max(0.5, r * 0.015))
+                .attr("stroke-dasharray", "3,3")
+                .attr("stroke-opacity", 0.5)
+                .style("pointer-events", "none");
         }
 
         // Text always rendered; visibility toggled by zoom handler in CirclePackView

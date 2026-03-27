@@ -67,7 +67,7 @@
     const STATUS_COLORS: Record<string, string> = {
         done: 'text-green-500/60',
         active: 'text-primary',
-        blocked: 'text-red-400',
+        blocked: 'text-stone-400',
         ready: 'text-yellow-400',
     };
 </script>
