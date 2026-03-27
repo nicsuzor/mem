@@ -206,18 +206,44 @@
             );
     }
 
+    let edgeRoutingPrepared = false;
+
     function tickVisuals() {
         d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
             .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
 
         const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
-        routeSfdpEdges(eEls);
+
+        // Use Cola's edge routing to avoid node overlaps once layout settles
+        if (colaLayout && edgeRoutingPrepared) {
+            eEls.attr("d", function(d: any) {
+                try {
+                    const route = colaLayout!.routeEdge(d, 5);
+                    if (route && route.length >= 2) {
+                        let path = `M${route[0].x},${route[0].y}`;
+                        for (let i = 1; i < route.length; i++) {
+                            path += ` L${route[i].x},${route[i].y}`;
+                        }
+                        return path;
+                    }
+                } catch(e) {
+                    // Fallback to direct line
+                }
+                if (!d.source || !d.target) return null;
+                const sx = d.source.x, sy = d.source.y;
+                const tx = d.target.x, ty = d.target.y;
+                if (sx == null || tx == null) return null;
+                return `M${sx},${sy} L${tx},${ty}`;
+            });
+        } else {
+            routeSfdpEdges(eEls);
+        }
         applyEdgeVisibility(eEls);
 
-        // Render group bounding boxes from WebCola
+        // Render group bounding boxes from WebCola (skip unlabelled catch-all group)
         if (hullLayer && colaLayout) {
-            const groups = colaLayout.groups() || [];
+            const groups = (colaLayout.groups() || []).filter((g: any) => g.label);
             const groupEls = d3.select(hullLayer)
                 .selectAll<SVGRectElement, any>("rect.cola-group")
                 .data(groups);
@@ -270,15 +296,7 @@
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
 
         const data = $graphData;
-        // Scatter initial positions across the canvas so Cola's constraint
-        // solver can spread nodes in 2D (starting from a single point
-        // causes overlap avoidance to push nodes along one axis only).
-        const cw = 2400, ch = 900;
-        const pad = 100;
-        data.nodes.forEach((d: any) => {
-            if (typeof d.x !== 'number') d.x = pad + Math.random() * (cw - 2 * pad);
-            if (typeof d.y !== 'number') d.y = pad + Math.random() * (ch - 2 * pad);
-        });
+        const cw = 4000, ch = 2000;
 
         const nEls = d3
             .select(nodesLayer)
@@ -332,10 +350,10 @@
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
 
-        // Set width/height on nodes for avoidOverlaps (generous padding to prevent touching)
+        // Set width/height on nodes for avoidOverlaps (generous padding to prevent edges overlapping)
         $graphData.nodes.forEach((n: any) => {
-            n.width = n.w + 20;
-            n.height = n.h + 20;
+            n.width = n.w + 40;
+            n.height = n.h + 30;
         });
 
         // Build flat groups by project — one group per project containing all its nodes.
@@ -351,36 +369,69 @@
             if (pNode) parentOf.set(cid, pNode);
         }
 
-        // Group by nearest epic ancestor — nodes without an epic stay ungrouped
-        function findEpic(nodeId: string): string | null {
+        // Group by nearest epic/project ancestor — ALL nodes must belong to a group
+        // so that avoidOverlaps prevents non-descendants from entering epic containers
+        const CONTAINER_TYPES = new Set(['epic', 'project', 'goal']);
+        function findContainer(nodeId: string): string | null {
             let cur = nodeId;
             let depth = 0;
             while (depth < 20) {
                 const p = parentOf.get(cur);
                 if (!p) break;
-                if (p.type === 'epic') return p.id;
+                if (CONTAINER_TYPES.has(p.type)) return p.id;
                 cur = p.id;
                 depth++;
             }
             return null;
         }
 
-        const epicMembers = new Map<string, number[]>();
+        const containerMembers = new Map<string, number[]>();
+        const ungroupedIndices: number[] = [];
         $graphData.nodes.forEach((n, i) => {
-            const epicId = n.type === 'epic' ? n.id : findEpic(n.id);
-            if (epicId === null) return; // leave ungrouped
-            if (!epicMembers.has(epicId)) epicMembers.set(epicId, []);
-            epicMembers.get(epicId)!.push(i);
+            const containerId = CONTAINER_TYPES.has(n.type) ? n.id : findContainer(n.id);
+            if (containerId === null) {
+                ungroupedIndices.push(i);
+                return;
+            }
+            if (!containerMembers.has(containerId)) containerMembers.set(containerId, []);
+            containerMembers.get(containerId)!.push(i);
         });
 
+        const groupPadding = $viewSettings.colaGroupPadding;
         const colaGroups: any[] = [];
-        for (const [epicId, members] of epicMembers) {
+        for (const [containerId, members] of containerMembers) {
             if (members.length >= 2) {
-                const epicNode = nodeById.get(epicId);
-                const label = epicNode?.label || epicNode?.fullTitle || epicId;
-                colaGroups.push({ leaves: members, padding: $viewSettings.colaGroupPadding, label });
+                const containerNode = nodeById.get(containerId);
+                const label = containerNode?.label || containerNode?.fullTitle || containerId;
+                colaGroups.push({ leaves: members, padding: groupPadding, label });
+            } else {
+                // Single-member groups: add members to ungrouped
+                ungroupedIndices.push(...members);
             }
         }
+        // Put ungrouped nodes in a catch-all group so Cola keeps them outside epic containers
+        if (ungroupedIndices.length > 0) {
+            colaGroups.push({ leaves: ungroupedIndices, padding: groupPadding, label: '' });
+        }
+
+        // Initial positions: randomize group centers, place all members at their group center.
+        // This lets Cola's overlap avoidance expand each cluster outward from a shared origin,
+        // producing cleaner separation than fully random initial positions.
+        const pad = 200;
+        colaGroups.forEach(group => {
+            const cx = pad + Math.random() * (cw - 2 * pad);
+            const cy = pad + Math.random() * (ch - 2 * pad);
+            (group.leaves as number[]).forEach(idx => {
+                const n = data.nodes[idx] as any;
+                n.x = cx;
+                n.y = cy;
+            });
+        });
+        // Any nodes not in any group (shouldn't happen, but safety)
+        data.nodes.forEach((d: any) => {
+            if (typeof d.x !== 'number') d.x = cw / 2;
+            if (typeof d.y !== 'number') d.y = ch / 2;
+        });
 
         // Build cola links from parent edges (index-based)
         const colaLinks = parentLinks.map((l: any) => {
@@ -390,6 +441,8 @@
         }).filter((l: any) => l.source !== undefined && l.target !== undefined);
 
         console.log(`[Cola] ${$graphData.nodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups`, colaGroups.map(g => g.leaves.length));
+
+        edgeRoutingPrepared = false;
 
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
@@ -401,7 +454,19 @@
             .flowLayout('y', $viewSettings.colaFlowSep)
             .symmetricDiffLinkLengths($viewSettings.colaLinkLength, 0.7)
             .on("tick", tickVisuals)
-            .start(50, 50, 50);
+            .on("end", () => {
+                // Once layout converges, prepare edge routing around nodes
+                if (colaLayout) {
+                    try {
+                        colaLayout.prepareEdgeRouting(10);
+                        edgeRoutingPrepared = true;
+                        tickVisuals(); // Re-render edges with routing
+                    } catch(e) {
+                        console.warn("[Cola] Edge routing failed:", e);
+                    }
+                }
+            })
+            .start(80, 80, 80);
     }
 
     onDestroy(() => {
