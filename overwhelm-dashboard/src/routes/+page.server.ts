@@ -150,92 +150,75 @@ async function loadRecentSummaries(days = 3): Promise<any[]> {
 }
 
 function buildPathData(summaries: any[]): any {
-    // Group summaries by project into threads
-    const byProject = new Map<string, any[]>();
+    const abandoned: any[] = [];
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    const yesterday = new Date(now.getTime() - 86400000);
+    const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+    // Collect accomplishments per project, deduped
+    const byProject = new Map<string, { items: any[]; latestDate: string }>();
+    const seenAccomplishments = new Set<string>();
+
     for (const s of summaries) {
         const proj = s.project || 'unknown';
-        if (!byProject.has(proj)) byProject.set(proj, []);
-        byProject.get(proj)!.push(s);
-    }
+        if (!byProject.has(proj)) byProject.set(proj, { items: [], latestDate: '' });
+        const group = byProject.get(proj)!;
 
-    const threads: any[] = [];
-    const abandoned: any[] = [];
+        const sessionDate = s.date || '';
+        const dateStr = sessionDate.slice(0, 10);
+        if (dateStr > group.latestDate) group.latestDate = dateStr;
 
-    for (const [project, sessions] of byProject) {
-        for (const s of sessions) {
-            const events: any[] = [];
+        const outcome = s.outcome || 'unknown';
 
-            // Build events from timeline_events if available
-            for (const te of s.timeline_events || []) {
-                if (te.type === 'user_prompt') {
-                    // Trim hook context noise from descriptions
-                    let desc = te.description || '';
-                    const hookIdx = desc.indexOf('<hook_context>');
-                    if (hookIdx > 0) desc = desc.slice(0, hookIdx).trim();
-                    if (desc.length > 200) desc = desc.slice(0, 200) + '…';
-                    if (desc && desc !== 'Request cancelled.') {
-                        events.push({
-                            timestamp: te.timestamp,
-                            narrative: desc,
-                        });
-                    }
-                }
+        // Use accomplishments as the primary source — meaningful outcomes, not raw events
+        const accomplishments = s.accomplishments || [];
+        if (accomplishments.length > 0) {
+            for (const acc of accomplishments) {
+                const key = `${proj}:${acc}`;
+                if (seenAccomplishments.has(key)) continue;
+                seenAccomplishments.add(key);
+                group.items.push({ text: acc, outcome, date: dateStr });
             }
-
-            // Fall back to accomplishments as events if no timeline
-            if (events.length === 0) {
-                for (const acc of s.accomplishments || []) {
-                    events.push({
-                        timestamp: s.date,
-                        narrative: acc,
-                    });
-                }
+        } else if (s.summary) {
+            const key = `${proj}:${s.summary}`;
+            if (!seenAccomplishments.has(key)) {
+                seenAccomplishments.add(key);
+                group.items.push({ text: s.summary, outcome, date: dateStr });
             }
+        }
 
-            // If still no events, use summary
-            if (events.length === 0 && s.summary) {
-                events.push({
-                    timestamp: s.date,
-                    narrative: s.summary,
+        // Detect abandoned work: sessions with friction or no outcome
+        if (outcome !== 'success' && s.friction_points?.length > 0) {
+            for (const fp of s.friction_points) {
+                const sessionDateObj = sessionDate ? new Date(sessionDate) : null;
+                const minutesAgo = sessionDateObj ? (Date.now() - sessionDateObj.getTime()) / 60000 : 0;
+                abandoned.push({
+                    project: proj,
+                    description: fp,
+                    time_ago: minutesAgo < 60
+                        ? `${Math.round(minutesAgo)}m ago`
+                        : minutesAgo < 1440
+                            ? `${Math.round(minutesAgo / 60)}h ago`
+                            : `${Math.round(minutesAgo / 1440)}d ago`,
                 });
-            }
-
-            if (events.length > 0) {
-                threads.push({
-                    project,
-                    session_id: s.session_id || '',
-                    initial_goal: s.summary || '',
-                    events,
-                });
-            }
-
-            // Detect abandoned work: sessions with friction or no outcome
-            if (s.outcome !== 'success' && s.friction_points?.length > 0) {
-                for (const fp of s.friction_points) {
-                    const sessionDate = s.date ? new Date(s.date) : null;
-                    const minutesAgo = sessionDate ? (Date.now() - sessionDate.getTime()) / 60000 : 0;
-                    abandoned.push({
-                        project,
-                        description: fp,
-                        time_ago: minutesAgo < 60
-                            ? `${Math.round(minutesAgo)}m ago`
-                            : minutesAgo < 1440
-                                ? `${Math.round(minutesAgo / 60)}h ago`
-                                : `${Math.round(minutesAgo / 1440)}d ago`,
-                    });
-                }
             }
         }
     }
 
-    // Sort threads by most recent event
-    threads.sort((a, b) => {
-        const aTime = a.events[a.events.length - 1]?.timestamp || '';
-        const bTime = b.events[b.events.length - 1]?.timestamp || '';
-        return bTime.localeCompare(aTime);
-    });
+    // Build activity feed sorted by most recent activity
+    const activity = Array.from(byProject.entries())
+        .map(([project, { items, latestDate }]) => {
+            let period: string;
+            if (latestDate === todayStr) period = 'today';
+            else if (latestDate === yesterdayStr) period = 'yesterday';
+            else period = `${Math.ceil((now.getTime() - new Date(latestDate).getTime()) / 86400000)}d ago`;
+            return { project, period, latestDate, items };
+        })
+        .filter(g => g.items.length > 0)
+        .sort((a, b) => b.latestDate.localeCompare(a.latestDate));
 
-    return { threads, abandoned_work: abandoned };
+    return { activity, abandoned_work: abandoned };
 }
 
 function formatProjectName(folder: string): string {
