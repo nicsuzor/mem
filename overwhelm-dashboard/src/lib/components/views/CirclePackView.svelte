@@ -117,8 +117,30 @@
         // as minimum enclosing circles — no .size() inflation.
         root.each((node: any) => { node.data._isHierarchyParent = !!node.children; });
 
-        // Still need .sum() for sorting, but radius() overrides sizing
-        root.sum((d: any) => d._isHierarchyParent ? 0 : Math.max(1, d.dw || 1));
+        // Size leaves the same way as the treemap: by weight mode
+        const weightMode = $viewSettings.treemapWeightMode || 'priority';
+        const BASE_RADIUS = 10;
+
+        function leafWeight(d: any): number {
+            switch (weightMode) {
+                case 'priority': {
+                    if (['done', 'completed', 'cancelled'].includes(d.status)) return 1;
+                    if ((d.priority ?? 5) <= 1) return 3;
+                    return 2;
+                }
+                case 'dw-bucket': {
+                    const s = Math.sqrt(d.dw ?? 0);
+                    if (s > 5) return 4;
+                    if (s > 2) return 3;
+                    if (s > 1) return 2;
+                    return 1;
+                }
+                case 'equal': return 1;
+                default: return Math.max(1, Math.sqrt(d.dw ?? 0) || 1);
+            }
+        }
+
+        root.sum((d: any) => d._isHierarchyParent ? 0 : leafWeight(d));
 
         root.sort((a, b) => {
             const pa = a.data.priority ?? 5;
@@ -131,18 +153,8 @@
             return (b.value || 0) - (a.value || 0);
         });
 
-        // Tight radius range for dense packing — circles pack badly when
-        // sizes vary widely. Use log scale to compress the range.
-        const COMPLETED_RADIUS = 6;
-        const BASE_RADIUS = 12;
-
         const pack = d3.pack<any>()
-            .radius((d: any) => {
-                const data = d.data;
-                if (["done", "completed", "cancelled"].includes(data.status)) return COMPLETED_RADIUS;
-                // Log scale: dw=1→12, dw=10→17, dw=100→22, dw=1000→27
-                return BASE_RADIUS + Math.log1p(data.dw || 1) * 2.2;
-            })
+            .radius((d: any) => BASE_RADIUS * Math.sqrt(leafWeight(d.data)))
             .padding(1);
 
         pack(root);
