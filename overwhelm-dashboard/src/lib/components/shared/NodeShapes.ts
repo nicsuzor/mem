@@ -660,9 +660,9 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         // Parent label — centered in container with background pill
         const MIN_RADIUS_FOR_LABEL = 15;
         if (r > MIN_RADIUS_FOR_LABEL) {
-            const minFs = isProject ? 18 : isEpic ? 13 : 9;
-            const maxFs = isProject ? 60 : isEpic ? 40 : 22;
-            const scaleFactor = isProject ? 0.09 : isEpic ? 0.07 : 0.05;
+            const minFs = isProject ? 14 : isEpic ? 11 : 8;
+            const maxFs = isProject ? 40 : isEpic ? 28 : 18;
+            const scaleFactor = isProject ? 0.08 : isEpic ? 0.06 : 0.04;
             const fs = Math.max(minFs, Math.min(maxFs, r * scaleFactor));
             const labelText = escapeHtml(d.label || '');
             const labelColor = isProject
@@ -670,40 +670,26 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 : isEpic
                     ? `hsl(${hue}, 55%, 75%)`
                     : `hsl(${hue}, 40%, 65%)`;
-            const pillBg = isProject
-                ? `hsla(${hue}, 40%, 8%, 0.92)`
-                : `hsla(${hue}, 30%, 8%, 0.88)`;
-            const pillBorder = isProject
-                ? `hsla(${hue}, 50%, 40%, 0.5)`
-                : isEpic
-                    ? `hsla(${hue}, 40%, 35%, 0.35)`
-                    : `hsla(${hue}, 20%, 30%, 0.2)`;
 
             // Label dimensions — allow wrapping for legibility
-            const labelW = r * 1.6;
             const lineH = fs * 1.25;
-            const maxLines = isProject ? 3 : 2;
-            const labelH = lineH * maxLines + 8;
+            const maxLines = isProject ? 2 : 1;
+            const labelH = lineH * maxLines;
 
             // Position label at top of circle, inset from edge
-            const labelY = -r + Math.max(fs * 0.5, Math.min(30, r * 0.15));
+            const labelY = -r + Math.max(4, r * 0.05);
 
-            // Background pill behind label — sized to wrapping text
-            const pill = g.append("rect")
-                .attr("x", -labelW / 2 - 6).attr("y", labelY - 4)
-                .attr("width", labelW + 12).attr("height", labelH)
-                .attr("rx", 6)
-                .attr("fill", pillBg)
-                .attr("class", "parent-label-bg")
-                .style("pointer-events", "none");
-            pill.attr("stroke", pillBorder).attr("stroke-width", 1);
+            // Compute chord width at the bottom of the label to ensure it fits inside the circle
+            const yBottom = Math.abs(labelY + labelH);
+            const maxChordW = yBottom < r ? 2 * Math.sqrt(r * r - yBottom * yBottom) : r * 1.5;
+            const labelW = Math.max(20, Math.min(r * 1.6, maxChordW * 0.9));
 
             // Type prefix for projects/epics
             const displayLabel = isProject ? `▣ ${labelText}` : isEpic ? `◆ ${labelText}` : labelText;
 
             g.append("foreignObject")
-                .attr("x", -labelW / 2).attr("y", labelY - 2)
-                .attr("width", labelW).attr("height", labelH)
+                .attr("x", -labelW / 2).attr("y", labelY)
+                .attr("width", labelW).attr("height", labelH + 10)
                 .attr("class", "parent-label")
                 .style("pointer-events", "none")
                 .append("xhtml:div")
@@ -714,7 +700,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 .style("height", "100%")
                 .style("pointer-events", "none")
                 .html(`
-                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 700}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.12em' : '0.06em'}; text-align: center; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${maxLines}; -webkit-box-orient: vertical; line-height: ${lineH}px; text-shadow: 0 2px 8px rgba(0,0,0,0.95), 0 0 20px rgba(0,0,0,0.8), 0 0 3px rgba(0,0,0,1);">
+                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 800}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.08em' : '0.05em'}; text-align: center; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${maxLines}; -webkit-box-orient: vertical; line-height: ${lineH}px; text-shadow: 0 1px 4px rgba(0,0,0,0.9), 0 2px 10px rgba(0,0,0,0.8), 0 0 15px rgba(0,0,0,1);">
                         ${displayLabel}
                     </div>
                 `);
