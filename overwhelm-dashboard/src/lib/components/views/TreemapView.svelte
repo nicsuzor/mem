@@ -130,15 +130,20 @@
             if (node.depth === 0) return 4; // virtual root
             const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
             const label = node.data?.label || '';
-            if (!label || w < 20) return node.depth <= 1 ? 38 : 20;
-            const fontSize = node.depth <= 1 ? 11 : 9;
-            const charWidth = fontSize * 0.56;
-            const availableWidth = Math.max(20, w - 12); // pad
-            const charsPerLine = Math.max(4, Math.floor(availableWidth / charWidth));
+            const isEpicTier = node.data && ['epic', 'goal', 'project'].includes(node.data.type) && node.depth <= 1;
+            
+            // For tiny containers, return minimum padding to avoid pushing children out
+            if (!label || w < 25) return isEpicTier ? 22 : 12;
+            
+            const fontSize = isEpicTier ? 9 : 7;
+            const charWidth = fontSize * 0.58;
+            const availableWidth = Math.max(15, w - (isEpicTier ? 16 : 10)); // pad
+            const charsPerLine = Math.max(3, Math.floor(availableWidth / charWidth));
             const lines = Math.min(3, Math.ceil(label.length / charsPerLine));
-            const lineHeight = fontSize * 1.3;
-            const basePad = node.depth <= 1 ? 10 : 6;
-            return Math.max(node.depth <= 1 ? 24 : 16, Math.min(60, lines * lineHeight + basePad));
+            const lineHeight = fontSize * 1.25;
+            const basePad = isEpicTier ? 8 : 4;
+            
+            return Math.max(isEpicTier ? 18 : 12, Math.min(45, lines * lineHeight + basePad));
         }
 
         const treemap = d3.treemap<any>()

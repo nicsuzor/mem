@@ -179,14 +179,14 @@ export function prepareGraphData(
         }
     });
 
-    const CONTAINER_TYPES = new Set(['goal', 'project', 'epic']);
+    const CONTAINER_TYPES = new Set(['goal', 'project', 'epic', 'task']);
     const collapseMap = new Map<string, string>();
     
     let changed = true;
     while (changed) {
         changed = false;
         for (const n of rawNodes) {
-            if (CONTAINER_TYPES.has(n.node_type || '')) {
+            if (CONTAINER_TYPES.has((n.node_type || '').toLowerCase())) {
                 const kids = initialChildrenMap.get(n.id) || [];
                 if (kids.length === 1) {
                     const childId = kids[0];

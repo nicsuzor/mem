@@ -428,14 +428,14 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             // Parent nodes: Draw label in the header bar
             // Font size scales with node but never smaller than child leaf text
             const parentFs = d.depth <= 1
-                ? Math.max(8, Math.min(11, Math.min(w, h) * 0.09))
-                : Math.max(6, Math.min(9, Math.min(w, h) * 0.09));
+                ? Math.max(7, Math.min(10, Math.min(w, h) * 0.08))
+                : Math.max(5, Math.min(8, Math.min(w, h) * 0.08));
             // Header text height matches the dynamic header bar
-            const charWidth = parentFs * 0.56;
-            const textAvailW = Math.max(20, w - pad * 2);
-            const charsPerLine = Math.max(4, Math.floor(textAvailW / charWidth));
+            const charWidth = parentFs * 0.58;
+            const textAvailW = Math.max(15, w - pad * 2);
+            const charsPerLine = Math.max(3, Math.floor(textAvailW / charWidth));
             const textLines = Math.min(3, Math.ceil(label.length / Math.max(1, charsPerLine)));
-            const headerTextH = Math.min(textLines * parentFs * 1.3 + 6, h * 0.7);
+            const headerTextH = Math.min(textLines * parentFs * 1.25 + 4, h * 0.7);
             if (w > 20 && h > 12) {
                 g.append("foreignObject")
                     .attr("x", -w / 2 + pad).attr("y", -h / 2 + 2)
@@ -448,7 +448,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                     .style("height", "100%")
                     .style("pointer-events", "none")
                     .html(`
-                        <div style="font-size: ${parentFs}px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: ${textLines}; -webkit-box-orient: vertical; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.3;">
+                        <div style="font-size: ${parentFs}px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: ${textLines}; -webkit-box-orient: vertical; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.25;">
                             ${label}
                         </div>
                     `);
