@@ -189,11 +189,15 @@ pub fn index_pkb(
 #[cfg(test)]
 mod stdout_guard {
     //! Ensure no library source file writes to stdout, which would corrupt
-    //! the MCP JSON-RPC transport. cli.rs and test-only modules are excluded.
+    //! the MCP JSON-RPC transport. Excluded: cli.rs, reproduction.rs, lib.rs
+    //! (contains this test), and the tui/ directory (CLI-only code paths).
+    //! lib.rs is still guarded by `#![deny(clippy::print_stdout)]`.
 
     #[test]
     fn no_println_in_library_sources() {
         let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // lib.rs excluded because this test module itself references print patterns.
+        // lib.rs is still guarded by #![deny(clippy::print_stdout)] at compile time.
         let allow_list: &[&str] = &["cli.rs", "reproduction.rs", "lib.rs"];
 
         let mut violations = Vec::new();
@@ -212,11 +216,13 @@ mod stdout_guard {
         allow_list: &[&str],
         violations: &mut Vec<String>,
     ) {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-        for entry in entries.flatten() {
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+            panic!(
+                "stdout_guard: failed to read directory {}: {e}",
+                dir.display()
+            )
+        });
+        for entry in entries.map(|e| e.unwrap()) {
             let path = entry.path();
             if path.is_dir() {
                 // tui/ is CLI-only, skip it
@@ -230,33 +236,41 @@ mod stdout_guard {
                 if allow_list.iter().any(|a| filename.ends_with(a)) {
                     continue;
                 }
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    for (line_no, line) in content.lines().enumerate() {
-                        let trimmed = line.trim();
-                        // Skip comments
-                        if trimmed.starts_with("//") || trimmed.starts_with("///") {
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        violations.push(format!(
+                            "  {}:0: <error reading file: {e}>",
+                            filename
+                        ));
+                        continue;
+                    }
+                };
+                for (line_no, line) in content.lines().enumerate() {
+                    let trimmed = line.trim();
+                    // Skip comments
+                    if trimmed.starts_with("//") || trimmed.starts_with("///") {
+                        continue;
+                    }
+                    // Match println!/print! but NOT eprintln!/eprint!
+                    let has_println = trimmed.contains("println!(")
+                        && !trimmed.contains("eprintln!(");
+                    let has_print = trimmed.contains("print!(")
+                        && !trimmed.contains("eprint!(")
+                        && !trimmed.contains("println!(")
+                        && !trimmed.contains("eprintln!(");
+                    if has_println || has_print {
+                        // Skip lines inside string literals: escaped quotes
+                        // indicate the code is embedded in a string constant
+                        if trimmed.contains("\\\"") || trimmed.contains("\\n") {
                             continue;
                         }
-                        // Match println!/print! but NOT eprintln!/eprint!
-                        let has_println = trimmed.contains("println!(")
-                            && !trimmed.contains("eprintln!(");
-                        let has_print = trimmed.contains("print!(")
-                            && !trimmed.contains("eprint!(")
-                            && !trimmed.contains("println!(")
-                            && !trimmed.contains("eprintln!(");
-                        if has_println || has_print {
-                            // Skip lines inside string literals: escaped quotes
-                            // indicate the code is embedded in a string constant
-                            if trimmed.contains("\\\"") || trimmed.contains("\\n") {
-                                continue;
-                            }
-                            violations.push(format!(
-                                "  {}:{}: {}",
-                                filename,
-                                line_no + 1,
-                                trimmed
-                            ));
-                        }
+                        violations.push(format!(
+                            "  {}:{}: {}",
+                            filename,
+                            line_no + 1,
+                            trimmed
+                        ));
                     }
                 }
             }
