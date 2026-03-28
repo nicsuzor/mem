@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7](https://github.com/nicsuzor/mem/compare/v0.3.6...v0.3.7) - 2026-03-28
+
+### Added
+
+- *(dashboard)* adjust treemap font sizes and add task editor status buttons
+- *(dashboard)* collapse 1:1 containers into single child; add custom attractive force for epics
+- *(mcp)* add HTTP/SSE transport for Cowork VM ([#151](https://github.com/nicsuzor/mem/pull/151))
+
+### Fixed
+
+- deny println! in library code to protect MCP transport ([#150](https://github.com/nicsuzor/mem/pull/150))
+- *(dashboard)* visual hierarchy and blocked/dependency styling ([#149](https://github.com/nicsuzor/mem/pull/149))
+- *(dashboard)* QA improvements to overwhelm dash main page ([#147](https://github.com/nicsuzor/mem/pull/147))
+
+### Other
+
+- add axiom-driven PR reviewer ([#153](https://github.com/nicsuzor/mem/pull/153))
+- MCP integration tests for stdio and HTTP/SSE transports ([#154](https://github.com/nicsuzor/mem/pull/154))
+- update dash and delete test files
+- qa checkin
+
 ## [0.3.6](https://github.com/nicsuzor/mem/compare/v0.3.5...v0.3.6) - 2026-03-27
 
 ### Added
