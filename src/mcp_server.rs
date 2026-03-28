@@ -2814,7 +2814,7 @@ impl ServerHandler for PkbSearchServer {
 
     fn list_tools(
         &self,
-        _request: PaginatedRequestParam,
+        _request: Option<PaginatedRequestParam>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = vec![
@@ -3392,41 +3392,31 @@ impl ServerHandler for PkbSearchServer {
             ),
         ];
 
-        std::future::ready(Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-        }))
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
 
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation {
-                name: "pkb".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-            },
-            instructions: Some({
-                let mut instructions = String::from(
-                    "PKB Search — semantic search + task graph over personal knowledge base. \
-                     26 tools: search, get_document, list_documents, \
-                     task_search, get_network_metrics, create_task, create_memory, \
-                     create, append, delete, complete_task, list_tasks, \
-                     get_task, update_task, bulk_reparent, retrieve_memory, search_by_tag, \
-                     list_memories, delete_memory, decompose_task, \
-                     get_dependency_tree, get_task_children, \
-                     pkb_context, pkb_trace, pkb_orphans, task_summary.",
-                );
-                if self.stale_count > 0 {
-                    instructions.push_str(&format!(
-                        " WARNING: Index is stale — {} document(s) need re-indexing. \
-                         Search results may be incomplete or outdated. \
-                         Run `pkb reindex` to update.",
-                        self.stale_count
-                    ));
-                }
-                instructions
-            }),
+        let mut instructions = String::from(
+            "PKB Search — semantic search + task graph over personal knowledge base. \
+             26 tools: search, get_document, list_documents, \
+             task_search, get_network_metrics, create_task, create_memory, \
+             create, append, delete, complete_task, list_tasks, \
+             get_task, update_task, bulk_reparent, retrieve_memory, search_by_tag, \
+             list_memories, delete_memory, decompose_task, \
+             get_dependency_tree, get_task_children, \
+             pkb_context, pkb_trace, pkb_orphans, task_summary.",
+        );
+        if self.stale_count > 0 {
+            instructions.push_str(&format!(
+                " WARNING: Index is stale — {} document(s) need re-indexing. \
+                 Search results may be incomplete or outdated. \
+                 Run `pkb reindex` to update.",
+                self.stale_count
+            ));
         }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
+            .with_instructions(instructions)
     }
 }
