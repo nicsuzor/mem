@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onDestroy } from "svelte";
     import cytoscape from "cytoscape";
-    import { graphData } from "../../stores/graph";
+    import { graphData, graphStructureKey } from "../../stores/graph";
     import { selection, toggleSelection } from "../../stores/selection";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
@@ -199,11 +199,11 @@
                         'font-weight': 'bold',
                     } as any,
                 },
-                // Parent edges — thick metro lines in project color
+                // Parent edges — thick metro lines in project color (width ≈ node size)
                 {
                     selector: 'edge[type="parent"]',
                     style: {
-                        'width': 6,
+                        'width': 12,
                         'line-color': 'data(lineColor)',
                         'line-opacity': 0.85,
                         'curve-style': 'taxi',
@@ -215,7 +215,7 @@
                 {
                     selector: 'edge[type="depends_on"], edge[type="soft_depends_on"]',
                     style: {
-                        'width': 2,
+                        'width': 4,
                         'line-color': '#f59e0b',
                         'line-opacity': 0.5,
                         'curve-style': 'taxi',
@@ -258,12 +258,17 @@
             layout: {
                 name: 'cose',
                 animate: false,
-                nodeRepulsion: () => 8000,
-                idealEdgeLength: () => 50,
-                edgeElasticity: () => 100,
-                gravity: 0.8,
-                numIter: 500,
-                padding: 40,
+                boundingBox: {
+                    x1: 0, y1: 0,
+                    w: containerEl.clientWidth || 1200,
+                    h: containerEl.clientHeight || 800,
+                },
+                nodeRepulsion: () => 12000,
+                idealEdgeLength: () => 60,
+                edgeElasticity: () => 80,
+                gravity: 1.0,
+                numIter: 600,
+                padding: 30,
                 nodeDimensionsIncludeLabels: true,
                 nodeOverlap: 10,
                 randomize: false,
@@ -311,8 +316,24 @@
         }
     }
 
-    $: if (containerEl && $graphData) {
+    // Only rebuild the full Cytoscape graph when the structure changes, not on property-only updates
+    let lastMetroStructureKey = '';
+    $: if (containerEl && $graphData && $graphStructureKey !== lastMetroStructureKey) {
+        lastMetroStructureKey = $graphStructureKey;
         initCytoscape();
+    }
+
+    // Property-only updates — patch node styles without rebuilding layout
+    $: if (cy && $graphData && $graphStructureKey === lastMetroStructureKey) {
+        for (const n of $graphData.nodes) {
+            const cyNode = cy.getElementById(n.id);
+            if (!cyNode.length) continue;
+            const statusColor = STATUS_COLORS[n.status] || '#666';
+            const isCompleted = ['done', 'completed', 'cancelled'].includes(n.status);
+            cyNode.data('statusColor', statusColor);
+            cyNode.data('isCompleted', isCompleted);
+            cyNode.data('status', n.status);
+        }
     }
 
     onDestroy(() => {

@@ -2,7 +2,7 @@
     import * as d3 from "d3";
     import * as cola from "webcola";
     import { onMount, onDestroy } from "svelte";
-    import { graphData } from "../../stores/graph";
+    import { graphData, graphStructureKey } from "../../stores/graph";
     import { viewSettings } from "../../stores/viewSettings";
     import { filters, type EdgeVisibility } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
@@ -21,20 +21,44 @@
     // Track cleanup and frame loop
     let frameId = 0;
 
+    // Full physics rebuild only when structure (node/link set) or Cola params change
+    let lastStructureKey = '';
+    let lastColaParams = '';
     $: {
-        // Touch Cola settings so Svelte re-runs when sliders change
-        const _ll = $viewSettings.colaLinkLength;
-        const _fs = $viewSettings.colaFlowSep;
-        const _gp = $viewSettings.colaGroupPadding;
+        const sk = $graphStructureKey;
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaFlowSep}|${$viewSettings.colaGroupPadding}`;
         if (
             containerGroup &&
             $graphData &&
             nodesLayer &&
             edgesLayer &&
-            hullLayer
+            hullLayer &&
+            (sk !== lastStructureKey || cp !== lastColaParams)
         ) {
+            lastStructureKey = sk;
+            lastColaParams = cp;
             drawForceAndStartPhysics();
         }
+    }
+
+    // Property-only updates (status, priority, etc.) — patch node visuals without restarting physics
+    $: if ($graphData && nodesLayer && lastStructureKey && lastStructureKey === $graphStructureKey) {
+        const activeId = $selection.activeNodeId;
+        d3.select(nodesLayer)
+            .selectAll<SVGGElement, GraphNode>("g.node")
+            .each(function (d) {
+                const fresh = $graphData!.nodes.find(n => n.id === d.id);
+                if (!fresh) return;
+                // Sync mutable display properties
+                if (d.status !== fresh.status || d.fill !== fresh.fill || d.opacity !== fresh.opacity) {
+                    Object.assign(d, fresh);
+                    const g = d3.select(this) as any;
+                    g.selectAll("*").remove();
+                    const isSelected = d.id === activeId;
+                    buildTaskCardNode(g, d, isSelected);
+                    (d as any)._lastSelected = isSelected;
+                }
+            });
     }
 
     // Pre-built adjacency map for O(1) neighbor lookup during hover
@@ -233,9 +257,9 @@
                 if (targetContainer && typeof targetContainer.x === 'number' && typeof targetContainer.y === 'number') {
                     const dx = targetContainer.x - n.x;
                     const dy = targetContainer.y - n.y;
-                    // Apply an attractive spring force towards the container
-                    n.x += dx * 0.02;
-                    n.y += dy * 0.02;
+                    // Apply a strong attractive spring force towards the container centre
+                    n.x += dx * 0.08;
+                    n.y += dy * 0.08;
                 }
             });
         }
