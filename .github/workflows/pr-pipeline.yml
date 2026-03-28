@@ -1,0 +1,39 @@
+name: PR Review Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+  id-token: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: pr-pipeline-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── PHASE 1: Settle Delay ──────────────────────────────────────────
+  # Wait 120s before starting the agent. Absorbs rapid pushes
+  # by cancelling the cheap sleep rather than the expensive agent run.
+  settle:
+    name: Settle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for branch to settle
+        run: sleep 120
+
+  # ─── PHASE 2: Axiom Review (read-only) ─────────────────────────────
+  axiom-review:
+    name: Axiom Review
+    needs: [settle]
+    if: always() && !cancelled()
+    uses: ./.github/workflows/agent-auditor.yml
+    with:
+      pr_number: "${{ github.event.pull_request.number }}"
+      ref: ${{ github.event.pull_request.head.ref }}
+    secrets: inherit
