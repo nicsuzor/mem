@@ -35,6 +35,7 @@ export interface GraphNode {
     stakeholder: boolean;
     structural: boolean;
     dw: number;
+    totalLeafCount: number;
     modified: number | null;
     badge: string;
     charge: number;
@@ -181,6 +182,31 @@ export function prepareGraphData(
         if (n.parent) parentIdsInGraph.add(n.parent);
     });
 
+    // Compute total leaf descendant counts from parent hierarchy
+    const childrenMap = new Map<string, string[]>();
+    rawNodes.forEach(n => {
+        if (n.parent && nodeIds.has(n.parent)) {
+            const kids = childrenMap.get(n.parent) || [];
+            kids.push(n.id);
+            childrenMap.set(n.parent, kids);
+        }
+    });
+
+    const totalLeafCountCache = new Map<string, number>();
+    function countLeaves(id: string): number {
+        if (totalLeafCountCache.has(id)) return totalLeafCountCache.get(id)!;
+        const kids = childrenMap.get(id);
+        if (!kids || kids.length === 0) {
+            totalLeafCountCache.set(id, 1); // leaf counts as 1
+            return 1;
+        }
+        let total = 0;
+        for (const kid of kids) total += countLeaves(kid);
+        totalLeafCountCache.set(id, total);
+        return total;
+    }
+    rawNodes.forEach(n => countLeaves(n.id));
+
     // Intent/focus nodes get promoted to priority above P0
     const focusSet = new Set(graph.focus || []);
 
@@ -296,6 +322,7 @@ export function prepareGraphData(
             stakeholder,
             structural: isStructural,
             dw: Math.round(dw * 10) / 10,
+            totalLeafCount: parentIdsInGraph.has(nid) ? (totalLeafCountCache.get(nid) || 0) : 0,
             modified,
             badge,
             charge: TYPE_CHARGE[nodeType] ?? -100,

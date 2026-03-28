@@ -134,16 +134,16 @@ function projectHue(projectId: string): number {
     return Math.abs(hash) % 360;
 }
 
-/** Render a child-count badge in top-right of a treemap container */
+/** Render a child-count badge in top-right of a container: visible/total leaf descendants */
 function renderCountBadge(
     g: d3.Selection<SVGGElement, any, null, undefined>,
     w: number, h: number, hue: number,
-    leafCount: number, totalDown: number, fontSize: number
+    leafCount: number, totalLeafCount: number, fontSize: number
 ) {
-    if ((leafCount <= 0 && totalDown <= 0) || w < 50) return;
+    if ((leafCount <= 0 && totalLeafCount <= 0) || w < 50) return;
     const badgeFs = Math.max(6, Math.min(9, fontSize * 0.8));
-    const hasHidden = totalDown > leafCount;
-    const badgeText = hasHidden ? `${leafCount}/${totalDown}` : `${leafCount}`;
+    const hasHidden = totalLeafCount > leafCount;
+    const badgeText = hasHidden ? `${leafCount}/${totalLeafCount}` : `${leafCount}`;
     const badgeW = badgeText.length * badgeFs * 0.55 + 10;
     const badgeH = badgeFs + 4;
     const badgeX = w / 2 - badgeW - 4;
@@ -233,7 +233,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .attr("pointer-events", "none")
                 .text(labelText);
 
-            renderCountBadge(g, w, h, hue, d._leafCount || 0, Math.round(d.dw || 0), fs);
+            renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, fs);
         }
         return;
     }
@@ -270,7 +270,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .html(`<div style="font-size:${fs}px; font-weight:700; color:hsl(${hue},40%,65%); text-transform:uppercase; letter-spacing:0.08em; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${label}</div>`);
 
-            renderCountBadge(g, w, h, hue, d._leafCount || 0, Math.round(d.dw || 0), fs);
+            renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, fs);
         }
         return;
     }
@@ -453,7 +453,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                         </div>
                     `);
 
-                renderCountBadge(g, w, h, hue, d._leafCount || 0, Math.round(d.dw || 0), parentFs);
+                renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, parentFs);
             }
         } else {
             // Leaf nodes: Draw title
