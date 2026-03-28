@@ -280,7 +280,8 @@ fn http_post(
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+        .and_then(|s| s.parse().ok())
+        .expect("failed to parse HTTP status code");
 
     // Parse headers
     let mut headers = HashMap::new();
