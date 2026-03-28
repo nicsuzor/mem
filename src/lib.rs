@@ -1,4 +1,9 @@
 //! Shared library for the pkb binary (CLI + MCP server).
+//!
+//! stdout is reserved for MCP JSON-RPC when running as a server.
+//! All diagnostics must go to stderr via `tracing` or `eprintln!`.
+//! Library code must never write to stdout directly.
+#![deny(clippy::print_stdout)]
 
 pub mod batch_ops;
 pub mod distance;
@@ -179,4 +184,82 @@ pub fn index_pkb(
     tracing::info!("Indexing complete: {indexed} indexed, {removed} removed, {total} total");
 
     (indexed, removed, total)
+}
+
+#[cfg(test)]
+mod stdout_guard {
+    //! Ensure no library source file writes to stdout, which would corrupt
+    //! the MCP JSON-RPC transport. cli.rs and test-only modules are excluded.
+
+    #[test]
+    fn no_println_in_library_sources() {
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let allow_list: &[&str] = &["cli.rs", "reproduction.rs", "lib.rs"];
+
+        let mut violations = Vec::new();
+        check_dir(&src_dir, &src_dir, allow_list, &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "stdout writes found in library code (would corrupt MCP transport):\n{}",
+            violations.join("\n")
+        );
+    }
+
+    fn check_dir(
+        dir: &std::path::Path,
+        src_root: &std::path::Path,
+        allow_list: &[&str],
+        violations: &mut Vec<String>,
+    ) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // tui/ is CLI-only, skip it
+                if path.file_name().map_or(false, |n| n == "tui") {
+                    continue;
+                }
+                check_dir(&path, src_root, allow_list, violations);
+            } else if path.extension().map_or(false, |e| e == "rs") {
+                let rel = path.strip_prefix(src_root).unwrap_or(&path);
+                let filename = rel.to_string_lossy();
+                if allow_list.iter().any(|a| filename.ends_with(a)) {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    for (line_no, line) in content.lines().enumerate() {
+                        let trimmed = line.trim();
+                        // Skip comments
+                        if trimmed.starts_with("//") || trimmed.starts_with("///") {
+                            continue;
+                        }
+                        // Match println!/print! but NOT eprintln!/eprint!
+                        let has_println = trimmed.contains("println!(")
+                            && !trimmed.contains("eprintln!(");
+                        let has_print = trimmed.contains("print!(")
+                            && !trimmed.contains("eprint!(")
+                            && !trimmed.contains("println!(")
+                            && !trimmed.contains("eprintln!(");
+                        if has_println || has_print {
+                            // Skip lines inside string literals: escaped quotes
+                            // indicate the code is embedded in a string constant
+                            if trimmed.contains("\\\"") || trimmed.contains("\\n") {
+                                continue;
+                            }
+                            violations.push(format!(
+                                "  {}:{}: {}",
+                                filename,
+                                line_no + 1,
+                                trimmed
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
