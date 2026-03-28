@@ -9,6 +9,7 @@
     import CirclePackView from "$lib/components/views/CirclePackView.svelte";
     import ForceView from "$lib/components/views/ForceView.svelte";
     import ArcView from "$lib/components/views/ArcView.svelte";
+    import MetroView from "$lib/components/views/MetroView.svelte";
 
     import DashboardView from "$lib/components/dashboard/DashboardView.svelte";
     import ThreadedTasksView from "$lib/components/views/ThreadedTasksView.svelte";
@@ -122,6 +123,43 @@
             let leaves = fNodes.filter((n) => n.isLeaf).sort((a, b) => b.dw - a.dw);
             leaves = leaves.slice(0, $viewSettings.topNLeaves);
             fNodes = [...parents, ...leaves];
+        }
+
+        // Restore parent containers needed by surviving children — even if the parent
+        // was filtered out by status (e.g. a cancelled project with active children)
+        {
+            const allNodeMap = new Map(prepared.nodes.map(n => [n.id, n]));
+            const survivingIds = new Set(fNodes.map(n => n.id));
+            const toRestore: typeof fNodes = [];
+            for (const n of fNodes) {
+                let pid = n.parent;
+                while (pid && !survivingIds.has(pid)) {
+                    const parent = allNodeMap.get(pid);
+                    if (!parent) break;
+                    survivingIds.add(pid);
+                    toRestore.push(parent);
+                    pid = parent.parent;
+                }
+            }
+            if (toRestore.length > 0) fNodes = [...fNodes, ...toRestore];
+        }
+
+        // Prune empty structural containers — remove epics/projects/goals with no surviving children
+        {
+            let changed = true;
+            while (changed) {
+                changed = false;
+                const childCount = new Map<string, number>();
+                for (const n of fNodes) {
+                    if (n.parent) childCount.set(n.parent, (childCount.get(n.parent) || 0) + 1);
+                }
+                const before = fNodes.length;
+                fNodes = fNodes.filter(n => {
+                    if (!STRUCTURAL_TYPES.has(n.type)) return true;
+                    return (childCount.get(n.id) || 0) > 0;
+                });
+                if (fNodes.length < before) changed = true;
+            }
         }
 
         const survivingNodeIds = new Set(fNodes.map((n) => n.id));
@@ -268,23 +306,27 @@
 
             <!-- The Graph Area -->
             <div class="flex-1 relative z-0 h-full">
-                <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
-                    {#if containerGroup}
-                        {#if activeLayout === "treemap" || activeLayout === "tree"}
-                            <TreemapView
-                                {containerGroup}
-                                width={innerWidth}
-                                height={innerHeight}
-                            />
-                        {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
-                            <CirclePackView {containerGroup} />
-                        {:else if activeLayout === "force" || activeLayout === "sfdp"}
-                            <ForceView {containerGroup} />
-                        {:else if activeLayout === "arc"}
-                            <ArcView {containerGroup} />
+                {#if activeLayout === "metro"}
+                    <MetroView />
+                {:else}
+                    <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
+                        {#if containerGroup}
+                            {#if activeLayout === "treemap" || activeLayout === "tree"}
+                                <TreemapView
+                                    {containerGroup}
+                                    width={innerWidth}
+                                    height={innerHeight}
+                                />
+                            {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
+                                <CirclePackView {containerGroup} />
+                            {:else if activeLayout === "force" || activeLayout === "sfdp"}
+                                <ForceView {containerGroup} />
+                            {:else if activeLayout === "arc"}
+                                <ArcView {containerGroup} />
+                            {/if}
                         {/if}
-                    {/if}
-                </ZoomContainer>
+                    </ZoomContainer>
+                {/if}
             </div>
 
             <!-- Legend -->

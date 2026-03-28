@@ -7,7 +7,7 @@
     // Status = fill color (muted defaults, saturated for attention)
     const statusGroups = [
         { key: 'showActive', label: 'ACTIVE', statuses: ['active', 'inbox', 'todo', 'in_progress', 'review'], color: '#2C4A88' },
-        { key: 'showBlocked', label: 'BLOCKED', statuses: ['blocked'], color: '#dc2626' },
+        { key: 'showBlocked', label: 'BLOCKED', statuses: ['blocked'], color: '#6B3A3A' },
         { key: 'showCompleted', label: 'COMPLETED', statuses: ['done', 'completed', 'cancelled'], color: '#1E1E24' },
     ] as const;
 

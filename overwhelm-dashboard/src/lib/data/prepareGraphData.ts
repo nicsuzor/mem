@@ -35,6 +35,7 @@ export interface GraphNode {
     stakeholder: boolean;
     structural: boolean;
     dw: number;
+    totalLeafCount: number;
     modified: number | null;
     badge: string;
     charge: number;
@@ -181,6 +182,31 @@ export function prepareGraphData(
         if (n.parent) parentIdsInGraph.add(n.parent);
     });
 
+    // Compute total leaf descendant counts from parent hierarchy
+    const childrenMap = new Map<string, string[]>();
+    rawNodes.forEach(n => {
+        if (n.parent && nodeIds.has(n.parent)) {
+            const kids = childrenMap.get(n.parent) || [];
+            kids.push(n.id);
+            childrenMap.set(n.parent, kids);
+        }
+    });
+
+    const totalLeafCountCache = new Map<string, number>();
+    function countLeaves(id: string): number {
+        if (totalLeafCountCache.has(id)) return totalLeafCountCache.get(id)!;
+        const kids = childrenMap.get(id);
+        if (!kids || kids.length === 0) {
+            totalLeafCountCache.set(id, 1); // leaf counts as 1
+            return 1;
+        }
+        let total = 0;
+        for (const kid of kids) total += countLeaves(kid);
+        totalLeafCountCache.set(id, total);
+        return total;
+    }
+    rawNodes.forEach(n => countLeaves(n.id));
+
     // Intent/focus nodes get promoted to priority above P0
     const focusSet = new Set(graph.focus || []);
 
@@ -296,6 +322,7 @@ export function prepareGraphData(
             stakeholder,
             structural: isStructural,
             dw: Math.round(dw * 10) / 10,
+            totalLeafCount: parentIdsInGraph.has(nid) ? (totalLeafCountCache.get(nid) || 0) : 0,
             modified,
             badge,
             charge: TYPE_CHARGE[nodeType] ?? -100,
@@ -332,20 +359,20 @@ export function prepareGraphData(
             width = 3.5;
             dash = "";
         } else if (etype === 'depends_on') {
-            color = "#ef4444"; // Red for hard dependencies
-            width = 3.0;
+            color = "#f59e0b"; // Amber — dependency edges draw attention to the blocker
+            width = 3.5;
             dash = "";
             const tw = targetWeight.get(edge.target) || 0;
             if (tw > 0 && maxWeight > 0) {
                 const critRatio = Math.min(Math.log1p(tw) / Math.log1p(maxWeight), 1.0);
                 if (critRatio > 0.5) {
-                    width = 2.5 + critRatio * 1.5;
+                    width = 3.0 + critRatio * 2.0;
                 }
             }
         } else if (etype === 'soft_depends_on') {
-            color = "#3b82f6"; // Blue for soft dependencies
+            color = "#d97706"; // Warm orange — softer version of dependency
             width = 2.0;
-            dash = "4,4";
+            dash = "6,3";
         } else {
             color = "#a3a3a3"; // Lighter grey for references
             width = 1.5;
