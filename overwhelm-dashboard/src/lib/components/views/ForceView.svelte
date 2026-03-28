@@ -207,6 +207,39 @@
     }
 
     function tickVisuals() {
+        // --- Custom Force: Keep epics and child tasks closely packed ---
+        if ($graphData && parentOf) {
+            const nodeMap = new Map<string, any>();
+            $graphData.nodes.forEach((n: any) => nodeMap.set(n.id, n));
+
+            const CONTAINER_TYPES = new Set(['epic', 'project', 'goal']);
+
+            $graphData.nodes.forEach((n: any) => {
+                if (CONTAINER_TYPES.has(n.type)) return;
+                
+                let cur = n.id;
+                let targetContainer = null;
+                for (let i = 0; i < 20; i++) {
+                    const pid = parentOf.get(cur);
+                    if (!pid) break;
+                    const pNode = nodeMap.get(pid);
+                    if (pNode && CONTAINER_TYPES.has(pNode.type)) {
+                        targetContainer = pNode;
+                        break;
+                    }
+                    cur = pid;
+                }
+
+                if (targetContainer && typeof targetContainer.x === 'number' && typeof targetContainer.y === 'number') {
+                    const dx = targetContainer.x - n.x;
+                    const dy = targetContainer.y - n.y;
+                    // Apply an attractive spring force towards the container
+                    n.x += dx * 0.02;
+                    n.y += dy * 0.02;
+                }
+            });
+        }
+
         d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
             .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);

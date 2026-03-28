@@ -164,8 +164,72 @@ export function prepareGraphData(
     graph: { nodes?: any[]; edges?: any[]; ready?: string[]; blocked?: string[]; focus?: string[] },
     structuralIds: Set<string> = new Set()
 ): PreparedGraph {
-    const rawNodes = graph.nodes || [];
-    const rawEdges = graph.edges || [];
+    let rawNodes = (graph.nodes || []).map(n => ({ ...n }));
+    let rawEdges = (graph.edges || []).map(e => ({ ...e }));
+
+    const initialNodeById = new Map<string, any>(rawNodes.map(n => [n.id, n]));
+    const initialNodeIds = new Set(rawNodes.map(n => n.id));
+
+    const initialChildrenMap = new Map<string, string[]>();
+    rawNodes.forEach(n => {
+        if (n.parent && initialNodeIds.has(n.parent)) {
+            const kids = initialChildrenMap.get(n.parent) || [];
+            kids.push(n.id);
+            initialChildrenMap.set(n.parent, kids);
+        }
+    });
+
+    const CONTAINER_TYPES = new Set(['goal', 'project', 'epic']);
+    const collapseMap = new Map<string, string>();
+    
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const n of rawNodes) {
+            if (CONTAINER_TYPES.has(n.node_type || '')) {
+                const kids = initialChildrenMap.get(n.id) || [];
+                if (kids.length === 1) {
+                    const childId = kids[0];
+                    if (!collapseMap.has(n.id)) {
+                        collapseMap.set(n.id, childId);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        for (const [k, v] of collapseMap.entries()) {
+            if (collapseMap.has(v)) {
+                collapseMap.set(k, collapseMap.get(v)!);
+                changed = true;
+            }
+        }
+    }
+
+    rawNodes = rawNodes.filter(n => !collapseMap.has(n.id));
+    rawNodes.forEach(n => {
+        let curParent = n.parent;
+        const seen = new Set<string>();
+        while (curParent && collapseMap.has(curParent)) {
+            if (seen.has(curParent)) break;
+            seen.add(curParent);
+            const pNode = initialNodeById.get(curParent);
+            curParent = pNode ? pNode.parent : null;
+        }
+        n.parent = curParent;
+    });
+
+    rawEdges = rawEdges.map(e => ({
+        ...e,
+        source: collapseMap.get(e.source) || e.source,
+        target: collapseMap.get(e.target) || e.target
+    })).filter(e => e.source !== e.target);
+
+    const uniqueEdges = new Map<string, any>();
+    rawEdges.forEach(e => {
+        const key = `${e.source}-${e.target}-${e.type || ''}`;
+        uniqueEdges.set(key, e);
+    });
+    rawEdges = Array.from(uniqueEdges.values());
 
     const nodeById = new Map<string, any>(rawNodes.map(n => [n.id, n]));
     const nodeIds = new Set(rawNodes.map(n => n.id));
