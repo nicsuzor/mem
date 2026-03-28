@@ -485,7 +485,19 @@ enum Commands {
     },
 
     /// Start the MCP server on stdio (for Claude, Cursor, etc.)
-    Mcp,
+    Mcp {
+        /// Serve over HTTP/SSE instead of stdio
+        #[arg(long)]
+        http: bool,
+
+        /// HTTP listen port (default: 8080)
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+
+        /// HTTP listen address (default: 127.0.0.1)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+    },
 
     /// Find potential duplicate tasks
     Duplicates {
@@ -733,7 +745,7 @@ fn load_graph(pkb_root: &std::path::Path, _db_path: &std::path::Path) -> graph_s
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let command = cli.command.unwrap_or(Commands::Focus { limit: 20 });
-    let is_mcp = matches!(command, Commands::Mcp);
+    let is_mcp = matches!(command, Commands::Mcp { .. });
 
     // MCP mode: info-level logging to stderr (stdout is protocol).
     // CLI mode: only warnings.
@@ -784,7 +796,7 @@ async fn main() -> Result<()> {
             | Commands::Status
             | Commands::Recall { .. }
             | Commands::Eval { .. }
-            | Commands::Mcp
+            | Commands::Mcp { .. }
     );
 
     // Some commands need the store but not the embedder
@@ -2714,7 +2726,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Mcp => {
+        Commands::Mcp { http, port, host } => {
             let embedder = embedder.unwrap();
             let store = store.unwrap();
 
@@ -2743,8 +2755,7 @@ async fn main() -> Result<()> {
                 graph.read().edge_count()
             );
 
-            // Create and start MCP server
-            eprintln!("   Starting MCP server on stdio...");
+            // Create MCP server
             let server = mcp_server::PkbSearchServer::new(
                 store,
                 embedder,
@@ -2754,12 +2765,48 @@ async fn main() -> Result<()> {
             )
             .with_stale_count(stale_count);
 
-            let service = server.serve(rmcp::transport::stdio()).await?;
-            eprintln!("   ✓ MCP server ready");
+            if http {
+                // HTTP/SSE mode
+                use rmcp::transport::streamable_http_server::{
+                    session::local::LocalSessionManager,
+                    StreamableHttpServerConfig, StreamableHttpService,
+                };
 
-            // Wait for client to disconnect
-            service.waiting().await?;
-            eprintln!("   ✓ Shutdown complete");
+                let ct = tokio_util::sync::CancellationToken::new();
+                let config = StreamableHttpServerConfig::default()
+                    .with_sse_keep_alive(Some(std::time::Duration::from_secs(30)))
+                    .with_stateful_mode(true)
+                    .with_cancellation_token(ct.clone());
+
+                let session_manager = std::sync::Arc::new(LocalSessionManager::default());
+
+                let mcp_service = StreamableHttpService::new(
+                    move || Ok(server.clone()),
+                    session_manager,
+                    config,
+                );
+
+                let app = axum::Router::new()
+                    .route("/mcp", axum::routing::any_service(mcp_service));
+
+                let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
+                eprintln!("   Starting MCP HTTP/SSE server on http://{addr}/mcp");
+
+                let listener = tokio::net::TcpListener::bind(addr).await?;
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async move { ct.cancelled().await })
+                    .await?;
+                eprintln!("   ✓ Shutdown complete");
+            } else {
+                // Stdio mode (existing)
+                eprintln!("   Starting MCP server on stdio...");
+                let service = server.serve(rmcp::transport::stdio()).await?;
+                eprintln!("   ✓ MCP server ready");
+
+                // Wait for client to disconnect
+                service.waiting().await?;
+                eprintln!("   ✓ Shutdown complete");
+            }
         }
     }
 
