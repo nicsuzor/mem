@@ -16,6 +16,7 @@ export const viewSettings = writable({
     arcVerticalSpacing: 1.0,
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',
     arcFocusedOnly: true,
+    showFocusHighlight: true,
 });
 
 export const getLayoutFromViewSettings = ($settings: any) => {

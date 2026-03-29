@@ -4,7 +4,7 @@
     import { graphData } from "../../stores/graph";
     import { filters } from "../../stores/filters";
     import { toggleSelection, selection } from "../../stores/selection";
-    import { buildTreemapNode } from "../shared/NodeShapes";
+    import { buildTreemapNode, treemapHeaderMetrics } from "../shared/NodeShapes";
     import { routeTreemapEdges } from "../shared/EdgeRenderer";
     import { viewSettings } from "../../stores/viewSettings";
     import type { GraphEdge } from "../../data/prepareGraphData";
@@ -60,7 +60,7 @@
     function computeLayout(data: any) {
         const nodes = data.nodes;
         const virtualRootId = "__treemap_root__";
-        const nodeIdSet = new Set(nodes.map(n => n.id));
+        const nodeIdSet = new Set(nodes.map((n: any) => n.id));
         const projectRootId = ($filters as any).projectFilter as string | undefined;
 
         let stratifyNodes: any[];
@@ -68,10 +68,10 @@
 
         if (projectRootId && nodeIdSet.has(projectRootId)) {
             rootId = projectRootId;
-            stratifyNodes = nodes.map(n => ({
+            stratifyNodes = nodes.map((n: any) => ({
                 ...n,
                 parent: (n.parent && nodeIdSet.has(n.parent) && n.id !== rootId) ? n.parent : (n.id === rootId ? "" : "__ignore__")
-            })).filter(n => n.parent !== "__ignore__");
+            })).filter((n: any) => n.parent !== "__ignore__");
         } else {
             rootId = virtualRootId;
             stratifyNodes = [{ id: rootId, parent: "", type: "root", label: "ROOT" }];
@@ -125,25 +125,15 @@
         // STABLE SORT: Tie-break with ID to prevent jumping on re-renders
         root.sort((a, b) => (b.value || 0) - (a.value || 0) || a.id!.localeCompare(b.id!));
 
-        // Estimate header height based on label length and node width
+        // Use the same header height computation as the renderer
         function estimateHeaderHeight(node: any): number {
             if (node.depth === 0) return 4; // virtual root
+            if (!node.children) return 0; // leaves don't need header padding
             const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
+            const h = (node.y1 ?? canvasH) - (node.y0 ?? 0);
             const label = node.data?.label || '';
-            const isEpicTier = node.data && ['epic', 'goal', 'project'].includes(node.data.type) && node.depth <= 1;
-            
-            // For tiny containers, return minimum padding to avoid pushing children out
-            if (!label || w < 25) return isEpicTier ? 22 : 12;
-            
-            const fontSize = isEpicTier ? 9 : 7;
-            const charWidth = fontSize * 0.58;
-            const availableWidth = Math.max(15, w - (isEpicTier ? 16 : 10)); // pad
-            const charsPerLine = Math.max(3, Math.floor(availableWidth / charWidth));
-            const lines = Math.min(3, Math.ceil(label.length / charsPerLine));
-            const lineHeight = fontSize * 1.25;
-            const basePad = isEpicTier ? 8 : 4;
-            
-            return Math.max(isEpicTier ? 18 : 12, Math.min(45, lines * lineHeight + basePad));
+            if (!label || w < 25) return 14;
+            return treemapHeaderMetrics(w, h, label, node.depth).headerH;
         }
 
         const treemap = d3.treemap<any>()
@@ -178,7 +168,7 @@
         });
 
         visibleNodes = nodes
-            .filter(n => {
+            .filter((n: any) => {
                 const l = layoutMap.get(n.id);
                 if (l) {
                     n.x = l.x; n.y = l.y; n.w = l.w; n.h = l.h;
@@ -190,7 +180,7 @@
                 n.x = -9999;
                 return false;
             })
-            .sort((a, b) => (a.depth || 0) - (b.depth || 0));
+            .sort((a: any, b: any) => (a.depth || 0) - (b.depth || 0));
             
         links = data.links;
 

@@ -2,6 +2,7 @@
     import { graphData } from "../../stores/graph";
     import { selection } from "../../stores/selection";
     import { filters } from "../../stores/filters";
+    import { projectHue } from "../shared/NodeShapes";
     import TaskEditorView from "./TaskEditorView.svelte";
 
     let currentTab = "ACTIVE_TASKS";
@@ -132,7 +133,8 @@
                             <div class="flex items-center gap-1 group">
                                 <button
                                     class="flex-1 flex items-center gap-2 p-1.5 text-left rounded cursor-pointer transition-colors
-                                    {$filters.project === project ? 'text-primary bg-primary/20 border-l-2 border-primary' : 'text-primary/80 hover:bg-primary/10'}"
+                                    {$filters.project === project ? 'text-primary bg-primary/20' : 'text-primary/80 hover:bg-primary/10'}"
+                                    style="border-left: 3px solid hsl({projectHue(project)}, 45%, 45%);"
                                     onclick={() => selectProject(project)}
                                 >
                                     <span class="material-symbols-outlined text-base">{$filters.project === project || expandedProjects[project] ? 'folder_open' : 'folder'}</span>
@@ -221,7 +223,9 @@
                     <tbody class="divide-y divide-primary/10 text-sm">
                         {#each tasks as task}
                             <tr
-                                class="hover:bg-primary/5 group transition-colors cursor-pointer {$selection.activeNodeId === task.id ? 'bg-primary/10' : ''} {focusIds.has(task.id) ? 'border-l-[3px] border-l-amber-500/80' : ''}"                                onclick={() => selection.update(s => ({...s, activeNodeId: task.id}))}
+                                class="hover:bg-primary/5 group transition-colors cursor-pointer {$selection.activeNodeId === task.id ? 'bg-primary/10' : ''} {focusIds.has(task.id) ? 'border-l-[3px] border-l-amber-500/80' : ''}"
+                                style="border-left: 3px solid hsl({projectHue(task.project || '')}, 45%, 45%);"
+                                onclick={() => selection.update(s => ({...s, activeNodeId: task.id}))}
                             >
                                 <td class="px-4 py-4 text-primary/60 font-mono text-xs">
                                     {#if focusIds.has(task.id)}<span class="text-[9px] font-bold text-amber-500 mr-1">FOCUS</span>{/if}

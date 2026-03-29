@@ -158,7 +158,7 @@
                 const tid = l.target.id || l.target;
                 const hoverMatch = sid === hoveredId || tid === hoveredId;
                 const selMatch = (selectedNeighbors.has(sid) && selectedNeighbors.has(tid));
-                const activeMatch = activeId && (sid === activeId || tid === activeId);
+                const activeMatch = !!(activeId && (sid === activeId || tid === activeId));
                 return hoverMatch || selMatch || activeMatch;
             });
         } else {
@@ -327,7 +327,7 @@
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
 
         const data = $graphData;
-        const cw = 4000, ch = 2000;
+        const cw = 5000, ch = 3000;
 
         const nEls = d3
             .select(nodesLayer)
@@ -480,7 +480,6 @@
             .groups(colaGroups)
             .avoidOverlaps(true)
             .handleDisconnected(true)
-            .flowLayout('y', $viewSettings.colaFlowSep)
             .symmetricDiffLinkLengths($viewSettings.colaLinkLength, 0.7)
             .on("tick", tickVisuals)
             .start(80, 80, 80);

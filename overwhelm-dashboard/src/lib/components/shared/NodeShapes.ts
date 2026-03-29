@@ -124,7 +124,28 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
     }
 }
 
-function projectHue(projectId: string): number {
+/**
+ * Compute header height for a treemap container label.
+ * Shared between layout (paddingTop) and rendering (header bar + label).
+ * Returns { headerH, fs, lines, badgeReserve } so both sides stay in sync.
+ */
+export function treemapHeaderMetrics(w: number, h: number, label: string, depth: number) {
+    const pad = 6;
+    // Uniform font sizing: scale with node, min 6px max 12px
+    const fs = Math.max(6, Math.min(12, Math.min(w, h) * 0.08));
+    const charWidth = fs * 0.58;
+    const badgeReserve = w > 50 ? 36 : 0;
+    const textAvailW = Math.max(15, w - pad * 2 - badgeReserve);
+    const charsPerLine = Math.max(3, Math.floor(textAvailW / charWidth));
+    const lines = Math.min(3, Math.ceil(label.length / Math.max(1, charsPerLine)));
+    const lineHeight = fs * 1.25;
+    // Padding: HR line (1px) + breathing room
+    const basePad = 8;
+    const headerH = Math.max(14, Math.min(50, lines * lineHeight + basePad));
+    return { headerH, fs, lines, badgeReserve, pad };
+}
+
+export function projectHue(projectId: string): number {
     let hash = 0;
     const id = projectId || 'default';
     for (let i = 0; i < id.length; i++) {
@@ -210,30 +231,35 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             .attr("fill", "none")
             .attr("stroke", borderColor).attr("stroke-width", 0.5).attr("stroke-opacity", 0.3);
 
-        // Project label — large, bold, pinned top-left with background pill
+        // Project label — uses shared header metrics for consistent sizing
         if (w > 30 && h > 20) {
-            const fs = Math.max(12, Math.min(22, w * 0.04));
-            const labelText = (d.label || '').toUpperCase();
-            const labelW = labelText.length * fs * 0.65 + 16;
+            const label = d.label || '';
+            const m = treemapHeaderMetrics(w, h, label, d.depth || 0);
+            const labelText = escapeHtml(label);
+            const labelW = Math.max(0, w - m.pad * 2 - m.badgeReserve);
 
-            // Label background pill
+            // Label background bar
             g.append("rect")
-                .attr("x", -w / 2 + 6).attr("y", -h / 2 + 4)
-                .attr("width", Math.min(labelW, w - 16)).attr("height", fs + 8)
+                .attr("x", -w / 2).attr("y", -h / 2)
+                .attr("width", w).attr("height", m.headerH)
                 .attr("rx", 4)
                 .attr("fill", bgTint).attr("fill-opacity", 0.9);
 
-            g.append("text")
-                .attr("x", -w / 2 + 14).attr("y", -h / 2 + fs + 6)
-                .attr("text-anchor", "start").attr("dominant-baseline", "auto")
-                .attr("font-size", fs + "px").attr("font-weight", "900")
-                .attr("font-family", "var(--font-mono), monospace")
-                .attr("fill", labelColor)
-                .attr("letter-spacing", "0.15em")
-                .attr("pointer-events", "none")
-                .text(labelText);
+            // HR divider at bottom of header
+            g.append("line")
+                .attr("x1", -w / 2 + 6).attr("x2", w / 2 - 6)
+                .attr("y1", -h / 2 + m.headerH).attr("y2", -h / 2 + m.headerH)
+                .attr("stroke", borderColor).attr("stroke-width", 0.5).attr("stroke-opacity", 0.5);
 
-            renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, fs);
+            g.append("foreignObject")
+                .attr("x", -w / 2 + m.pad).attr("y", -h / 2 + 1)
+                .attr("width", labelW).attr("height", m.headerH - 2)
+                .style("pointer-events", "none")
+                .append("xhtml:div")
+                .style("pointer-events", "none")
+                .html(`<div style="font-size:${m.fs}px; font-weight:900; color:${labelColor}; text-transform:uppercase; letter-spacing:0.12em; line-height:1.25; overflow:hidden; display:-webkit-box; -webkit-line-clamp:${m.lines}; -webkit-box-orient:vertical; font-family:var(--font-mono),monospace;">${labelText}</div>`);
+
+            renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
         }
         return;
     }
@@ -248,29 +274,30 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             .attr("stroke", `hsl(${hue}, 35%, 35%)`).attr("stroke-width", isSelected ? 3 : 1)
             .style("transition", "all 0.2s ease");
 
-        // Thin divider line below header area
-        if (w > 40 && h > 30) {
-            const headerH = Math.min(22, h * 0.3);
-            g.append("line")
-                .attr("x1", -w / 2 + 6).attr("x2", w / 2 - 6)
-                .attr("y1", -h / 2 + headerH).attr("y2", -h / 2 + headerH)
-                .attr("stroke", `hsl(${hue}, 30%, 40%)`).attr("stroke-width", 0.5)
-                .attr("stroke-opacity", 0.6);
-        }
-
-        // Epic label — all-caps, medium size
+        // Epic label — uses shared header metrics
         if (w > 30 && h > 16) {
-            const fs = Math.max(7, Math.min(12, Math.min(w, h) * 0.08));
-            const label = escapeHtml(d.label || '');
+            const label = d.label || '';
+            const m = treemapHeaderMetrics(w, h, label, d.depth || 0);
+            const labelW = Math.max(0, w - m.pad * 2 - m.badgeReserve);
+
+            // HR divider at bottom of header
+            if (w > 40 && h > 30) {
+                g.append("line")
+                    .attr("x1", -w / 2 + 6).attr("x2", w / 2 - 6)
+                    .attr("y1", -h / 2 + m.headerH).attr("y2", -h / 2 + m.headerH)
+                    .attr("stroke", `hsl(${hue}, 30%, 40%)`).attr("stroke-width", 0.5)
+                    .attr("stroke-opacity", 0.6);
+            }
+
             g.append("foreignObject")
-                .attr("x", -w / 2 + 5).attr("y", -h / 2 + 2)
-                .attr("width", Math.max(0, w - 10)).attr("height", Math.min(20, h * 0.3))
+                .attr("x", -w / 2 + m.pad).attr("y", -h / 2 + 1)
+                .attr("width", labelW).attr("height", m.headerH - 2)
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("pointer-events", "none")
-                .html(`<div style="font-size:${fs}px; font-weight:700; color:hsl(${hue},40%,65%); text-transform:uppercase; letter-spacing:0.08em; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${label}</div>`);
+                .html(`<div style="font-size:${m.fs}px; font-weight:700; color:hsl(${hue},40%,65%); text-transform:uppercase; letter-spacing:0.08em; line-height:1.25; overflow:hidden; display:-webkit-box; -webkit-line-clamp:${m.lines}; -webkit-box-orient:vertical;">${escapeHtml(label)}</div>`);
 
-            renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, fs);
+            renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
         }
         return;
     }
@@ -376,19 +403,12 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         .style("transition", "all 0.2s ease");
 
     if (isParent && h > 20) {
-        // Parent Header Bar — height adapts to label wrapping
+        // Parent Header Bar — uses shared metrics for consistent height
         const label = d.label || '';
-        const fontSize = d.depth <= 1 ? 11 : 9;
-        const charWidth = fontSize * 0.56;
-        const availableWidth = Math.max(20, w - 12);
-        const charsPerLine = Math.max(4, Math.floor(availableWidth / charWidth));
-        const lines = Math.min(3, Math.ceil(label.length / charsPerLine));
-        const lineHeight = fontSize * 1.3;
-        const basePad = d.depth <= 1 ? 10 : 6;
-        const headerH = Math.min(Math.max(d.depth <= 1 ? 24 : 16, lines * lineHeight + basePad), h * 0.8);
+        const m = treemapHeaderMetrics(w, h, label, d.depth || 0);
         g.append("rect")
             .attr("x", -w / 2).attr("y", -h / 2)
-            .attr("width", w).attr("height", headerH)
+            .attr("width", w).attr("height", m.headerH)
             .attr("rx", 4)
             .attr("fill", cellColor).attr("fill-opacity", 0.8);
     }
@@ -425,21 +445,13 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         const pad = 6;
 
         if (isParent) {
-            // Parent nodes: Draw label in the header bar
-            // Font size scales with node but never smaller than child leaf text
-            const parentFs = d.depth <= 1
-                ? Math.max(7, Math.min(10, Math.min(w, h) * 0.08))
-                : Math.max(5, Math.min(8, Math.min(w, h) * 0.08));
-            // Header text height matches the dynamic header bar
-            const charWidth = parentFs * 0.58;
-            const textAvailW = Math.max(15, w - pad * 2);
-            const charsPerLine = Math.max(3, Math.floor(textAvailW / charWidth));
-            const textLines = Math.min(3, Math.ceil(label.length / Math.max(1, charsPerLine)));
-            const headerTextH = Math.min(textLines * parentFs * 1.25 + 4, h * 0.7);
+            // Parent nodes: Draw label in the header bar — shared metrics
+            const m = treemapHeaderMetrics(w, h, d.label || '', d.depth || 0);
+            const labelW = Math.max(0, w - m.pad * 2 - m.badgeReserve);
             if (w > 20 && h > 12) {
                 g.append("foreignObject")
-                    .attr("x", -w / 2 + pad).attr("y", -h / 2 + 2)
-                    .attr("width", Math.max(0, w - pad * 2)).attr("height", headerTextH)
+                    .attr("x", -w / 2 + m.pad).attr("y", -h / 2 + 1)
+                    .attr("width", labelW).attr("height", m.headerH - 2)
                     .style("pointer-events", "none")
                     .append("xhtml:div")
                     .style("display", "flex")
@@ -448,12 +460,12 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                     .style("height", "100%")
                     .style("pointer-events", "none")
                     .html(`
-                        <div style="font-size: ${parentFs}px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: ${textLines}; -webkit-box-orient: vertical; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.25;">
+                        <div style="font-size: ${m.fs}px; font-weight: 700; color: #fff; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${m.lines}; -webkit-box-orient: vertical; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.25;">
                             ${label}
                         </div>
                     `);
 
-                renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, parentFs);
+                renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
             }
         } else {
             // Leaf nodes: Draw title
@@ -485,8 +497,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
 function renderWrappedTextInCircle(g: d3.Selection<SVGGElement, any, null, undefined>, r: number, rawLabel: string, status?: string) {
     const isCompleted = ['done', 'completed', 'cancelled'].includes(status || '');
-    const innerW = r * 1.3;
-    const innerH = r * 1.3;
+    const innerW = r * 1.4;
+    const innerH = r * 1.5;
 
     const words = rawLabel.split(/\s+/).filter((w: string) => w);
     if (words.length === 0) return;
@@ -658,11 +670,11 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         }
 
         // Parent label — centered in container with background pill
-        const MIN_RADIUS_FOR_LABEL = 15;
+        const MIN_RADIUS_FOR_LABEL = 10;
         if (r > MIN_RADIUS_FOR_LABEL) {
-            const minFs = isProject ? 14 : isEpic ? 11 : 8;
+            const minFs = isProject ? 14 : isEpic ? 10 : 7;
             const maxFs = isProject ? 40 : isEpic ? 28 : 18;
-            const scaleFactor = isProject ? 0.08 : isEpic ? 0.06 : 0.04;
+            const scaleFactor = isProject ? 0.08 : isEpic ? 0.08 : 0.06;
             const fs = Math.max(minFs, Math.min(maxFs, r * scaleFactor));
             const labelText = escapeHtml(d.label || '');
             const labelColor = isProject
@@ -673,16 +685,15 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
 
             // Label dimensions — allow wrapping for legibility
             const lineH = fs * 1.25;
-            const maxLines = isProject ? 2 : 1;
+            const maxLines = isProject ? 3 : 2;
             const labelH = lineH * maxLines;
 
             // Position label at top of circle, inset from edge
-            const labelY = -r + Math.max(4, r * 0.05);
+            const labelY = -r + Math.max(4, r * 0.08);
 
-            // Compute chord width at the bottom of the label to ensure it fits inside the circle
-            const yBottom = Math.abs(labelY + labelH);
-            const maxChordW = yBottom < r ? 2 * Math.sqrt(r * r - yBottom * yBottom) : r * 1.5;
-            const labelW = Math.max(20, Math.min(r * 1.6, maxChordW * 0.9));
+            // Use a generous width — the label sits at the top where the chord is narrower,
+            // but we'd rather show the full name and let CSS clip than truncate aggressively
+            const labelW = Math.max(30, r * 1.6);
 
             // Type prefix for projects/epics
             const displayLabel = isProject ? `▣ ${labelText}` : isEpic ? `◆ ${labelText}` : labelText;

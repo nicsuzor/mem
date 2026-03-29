@@ -18,6 +18,10 @@
     let title = $derived(projectName || (task as any)?.fullTitle || task?.label || "Unknown Task");
     let metadata = $derived((task as any)?._raw || {});
 
+    // Non-null accessor for template use — only referenced inside {:else if task} blocks
+    let t = $derived(task!);
+
+
     let description = $state("");
     let loadingBody = $state(false);
     let updating = $state(false);
@@ -61,31 +65,23 @@
     async function updateTask(updates: Record<string, any>) {
         if (!taskId || !task) return;
 
-        // Optimistic local update
+        // Optimistic local update — mutate the existing node in place so Cola's
+        // internal references stay valid and graphStructureKey doesn't change.
+        // This avoids a full physics rebuild for property-only edits.
         graphData.update(gd => {
             if (!gd) return gd;
-            const nodes = gd.nodes.map(n => {
-                if (n.id === taskId) {
-                    const updated = { ...n, ...updates };
-                    if (updates.status) {
-                        updated.status = updates.status;
-                        updated.fill = STATUS_FILLS[updates.status] ?? updated.fill;
-                        updated.textColor = STATUS_TEXT[updates.status] ?? updated.textColor;
-                        updated.opacity = ['done', 'completed', 'cancelled', 'archived'].includes(updates.status) ? 0.4 : 0.8;
-                        // Force D3 node rebuild by clearing cached selection state
-                        (updated as any)._lastSelected = undefined;
-                    }
-                    if (updates.priority !== undefined) {
-                        updated.priority = updates.priority;
-                    }
-                    if (updates.type) {
-                        updated.type = updates.type;
-                    }
-                    return updated;
+            const node = gd.nodes.find(n => n.id === taskId);
+            if (node) {
+                Object.assign(node, updates);
+                if (updates.status) {
+                    node.fill = STATUS_FILLS[updates.status] ?? node.fill;
+                    node.textColor = STATUS_TEXT[updates.status] ?? node.textColor;
+                    node.opacity = ['done', 'completed', 'cancelled', 'archived'].includes(updates.status) ? 0.4 : 0.8;
                 }
-                return n;
-            });
-            return { ...gd, nodes };
+                // Force D3 node rebuild by clearing cached selection state
+                (node as any)._lastSelected = undefined;
+            }
+            return gd;
         });
 
         // Persist via API — send any fields that the endpoint accepts
@@ -214,8 +210,8 @@
                     <span class="uppercase">{projectName || task?.project || 'VOID'}</span>
                     {#if !isProjectContainer}
                         <span class="text-primary/30">/</span>
-                        <button class="text-primary hover:underline flex items-center gap-1" onclick={() => copyToClipboard(task.id)}>
-                            {task.id}
+                        <button class="text-primary hover:underline flex items-center gap-1" onclick={() => copyToClipboard(t.id)}>
+                            {t.id}
                             <span class="material-symbols-outlined text-[10px]">content_copy</span>
                         </button>
                     {/if}
@@ -247,7 +243,7 @@
                             <span>TYPE:</span>
                             <select
                                 class="bg-transparent text-primary outline-none cursor-pointer"
-                                value={task.type}
+                                value={t.type}
                                 onchange={(e) => setType(e.currentTarget.value)}
                             >
                                 {#each typeOptions as type}
@@ -259,7 +255,7 @@
                             <span>STATE:</span>
                             <select
                                 class="bg-transparent text-primary outline-none cursor-pointer"
-                                value={task.status}
+                                value={t.status}
                                 onchange={(e) => setStatus(e.currentTarget.value)}
                             >
                                 {#each statusOptions.filter(s => canComplete || s !== 'done') as status}
@@ -272,22 +268,22 @@
                     <div class="flex gap-2 mt-1">
                         {#if canComplete}
                             <button
-                                class="flex-1 py-1.5 border border-primary {task.status === 'done' ? 'bg-primary text-background' : 'bg-primary/5 text-primary'} hover:bg-primary hover:text-background font-bold text-[10px] transition-all rounded-sm uppercase tracking-widest disabled:opacity-50"
+                                class="flex-1 py-1.5 border border-primary {t.status === 'done' ? 'bg-primary text-background' : 'bg-primary/5 text-primary'} hover:bg-primary hover:text-background font-bold text-[10px] transition-all rounded-sm uppercase tracking-widest disabled:opacity-50"
                                 onclick={handleComplete}
                                 disabled={updating}
                             >
-                                {task.status === 'done' ? 'FINISHED' : 'COMPLETE'}
+                                {t.status === 'done' ? 'FINISHED' : 'COMPLETE'}
                             </button>
                         {/if}
                         <button
-                            class="px-2 py-1.5 border border-primary/40 {task.status === 'ready' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
+                            class="px-2 py-1.5 border border-primary/40 {t.status === 'ready' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
                             onclick={() => setStatus('ready')}
                             disabled={updating}
                         >
                             READY
                         </button>
                         <button
-                            class="px-2 py-1.5 border border-sky-500/40 {task.status === 'decomposing' ? 'bg-sky-500/20 border-sky-500 text-sky-400' : 'text-primary/60'} hover:border-sky-500 hover:text-sky-400 font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
+                            class="px-2 py-1.5 border border-sky-500/40 {t.status === 'decomposing' ? 'bg-sky-500/20 border-sky-500 text-sky-400' : 'text-primary/60'} hover:border-sky-500 hover:text-sky-400 font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
                             onclick={handleDecompose}
                             disabled={updating}
                             title="Needs decomposition into subtasks"
@@ -299,7 +295,7 @@
                         <button
                             class="flex-1 py-1.5 border border-primary/30 text-primary/60 hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50 flex items-center justify-center gap-1"
                             onclick={priorityUp}
-                            disabled={updating || (task.priority ?? 2) <= 0}
+                            disabled={updating || (t.priority ?? 2) <= 0}
                             title="Increase priority"
                         >
                             <span class="material-symbols-outlined text-[12px]">arrow_upward</span>
@@ -308,7 +304,7 @@
                         <button
                             class="flex-1 py-1.5 border border-primary/30 text-primary/60 hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50 flex items-center justify-center gap-1"
                             onclick={priorityDown}
-                            disabled={updating || (task.priority ?? 2) >= 4}
+                            disabled={updating || (t.priority ?? 2) >= 4}
                             title="Decrease priority"
                         >
                             <span class="material-symbols-outlined text-[12px]">arrow_downward</span>
@@ -326,14 +322,14 @@
                     </div>
                     <div class="flex gap-2 mt-1">
                         <button
-                            class="flex-1 py-1.5 border border-primary/40 {task.status === 'inbox' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
+                            class="flex-1 py-1.5 border border-primary/40 {t.status === 'inbox' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
                             onclick={() => setStatus('inbox')}
                             disabled={updating}
                         >
                             INBOX
                         </button>
                         <button
-                            class="flex-1 py-1.5 border border-destructive/40 {task.status === 'cancelled' ? 'bg-destructive/20 border-destructive text-destructive' : 'text-destructive/60'} hover:border-destructive hover:text-destructive font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
+                            class="flex-1 py-1.5 border border-destructive/40 {t.status === 'cancelled' ? 'bg-destructive/20 border-destructive text-destructive' : 'text-destructive/60'} hover:border-destructive hover:text-destructive font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
                             onclick={() => setStatus('cancelled')}
                             disabled={updating}
                         >
@@ -418,7 +414,7 @@
                         <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50">Priority</span>
                         <select
                             class="w-full bg-primary/5 border border-primary/20 rounded p-1.5 text-[10px] text-primary focus:border-primary/50 outline-none"
-                            value={String(task.priority ?? 2)}
+                            value={String(t.priority ?? 2)}
                             onchange={(e) => setPriority(Number(e.currentTarget.value))}
                         >
                             <option value="0">P0 CRITICAL</option>
@@ -430,7 +426,7 @@
                     </div>
                     <div class="space-y-1">
                         <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50">Assignee</span>
-                        <input class="w-full bg-primary/5 border border-primary/20 rounded p-1.5 text-[10px] text-primary focus:border-primary/50 outline-none placeholder:text-primary/20" placeholder="NONE" type="text" value={task.assignee || ""}/>
+                        <input class="w-full bg-primary/5 border border-primary/20 rounded p-1.5 text-[10px] text-primary focus:border-primary/50 outline-none placeholder:text-primary/20" placeholder="NONE" type="text" value={t.assignee || ""}/>
                     </div>
                 </div>
 
@@ -444,7 +440,7 @@
                 <div class="space-y-2">
                     <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Dependencies</span>
                     <div class="space-y-1 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
-                        {#each ($graphData?.links || []).filter(l => (typeof l.source === 'object' ? l.source.id : l.source) === task.id && l.type === 'depends_on') as dep}
+                        {#each ($graphData?.links || []).filter(l => (typeof l.source === 'object' ? l.source.id : l.source) === t.id && l.type === 'depends_on') as dep}
                             <div class="flex items-center justify-between px-2 py-1.5 border border-primary/10 bg-primary/5 rounded-sm">
                                 <span class="text-[9px] font-mono text-primary/70 truncate">{typeof dep.target === 'object' ? dep.target.id : String(dep.target)}</span>
                                 <span class="material-symbols-outlined text-[10px] text-primary/30 hover:text-primary cursor-pointer">close</span>

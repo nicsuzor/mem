@@ -17,7 +17,7 @@
     let lastGraphData: any = null;
 
     // Minimum pixel-space radius for showing text labels
-    const MIN_TEXT_PIXEL_RADIUS = 12;
+    const MIN_TEXT_PIXEL_RADIUS = 8;
 
     onMount(() => {
         // Watch the zoom transform on the parent SVG to toggle text visibility
@@ -142,16 +142,8 @@
 
         root.sum((d: any) => d._isHierarchyParent ? 0 : leafWeight(d));
 
-        root.sort((a, b) => {
-            const pa = a.data.priority ?? 5;
-            const pb = b.data.priority ?? 5;
-            if (pa !== pb) return pa - pb;
-            const statusOrder: Record<string, number> = { "active": 0, "blocked": 1, "waiting": 2, "review": 3, "done": 4, "completed": 4, "cancelled": 5 };
-            const sa = statusOrder[a.data.status] ?? 10;
-            const sb = statusOrder[b.data.status] ?? 10;
-            if (sa !== sb) return sa - sb;
-            return (b.value || 0) - (a.value || 0);
-        });
+        // Sort by decreasing size for tighter geometric packing
+        root.sort((a, b) => (b.value || 0) - (a.value || 0));
 
         const pack = d3.pack<any>()
             .radius((d: any) => BASE_RADIUS * Math.sqrt(leafWeight(d.data)))
@@ -163,8 +155,8 @@
         pack(root);
 
         // Center on the root node's position
-        const rootX = root.x;
-        const rootY = root.y;
+        const rootX = root.x ?? 0;
+        const rootY = root.y ?? 0;
 
         const layoutMap = new Map();
         root.descendants().forEach((d: any) => {
