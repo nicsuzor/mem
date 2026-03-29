@@ -71,9 +71,12 @@
                         updated.status = updates.status;
                         updated.fill = STATUS_FILLS[updates.status] ?? updated.fill;
                         updated.textColor = STATUS_TEXT[updates.status] ?? updated.textColor;
-                        updated.opacity = ['done', 'completed', 'cancelled'].includes(updates.status) ? 0.4 : 0.8;
+                        updated.opacity = ['done', 'completed', 'cancelled', 'archived'].includes(updates.status) ? 0.4 : 0.8;
                         // Force D3 node rebuild by clearing cached selection state
                         (updated as any)._lastSelected = undefined;
+                    }
+                    if (updates.priority !== undefined) {
+                        updated.priority = updates.priority;
                     }
                     if (updates.type) {
                         updated.type = updates.type;
@@ -85,15 +88,20 @@
             return { ...gd, nodes };
         });
 
-        // Persist via aops CLI
-        if (updates.status) {
+        // Persist via API — send any fields that the endpoint accepts
+        const apiPayload: Record<string, unknown> = { id: taskId };
+        if (updates.status) apiPayload.status = updates.status;
+        if (updates.priority !== undefined) apiPayload.priority = updates.priority;
+        if (updates.assignee !== undefined) apiPayload.assignee = updates.assignee;
+
+        if (Object.keys(apiPayload).length > 1) {
             updating = true;
             updateError = null;
             try {
                 const res = await fetch('/api/task/status', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: taskId, status: updates.status })
+                    body: JSON.stringify(apiPayload)
                 });
                 if (!res.ok) {
                     const data = await res.json().catch(() => ({}));
@@ -139,6 +147,30 @@
 
     function setType(type: string) {
         updateTask({ type });
+    }
+
+    function setPriority(p: number) {
+        updateTask({ priority: p });
+    }
+
+    function priorityUp() {
+        if (!task) return;
+        const current = task.priority ?? 2;
+        if (current > 0) setPriority(current - 1);
+    }
+
+    function priorityDown() {
+        if (!task) return;
+        const current = task.priority ?? 2;
+        if (current < 4) setPriority(current + 1);
+    }
+
+    function handleArchive() {
+        setStatus('archived');
+    }
+
+    function handleDecompose() {
+        setStatus('decomposing');
     }
 
     function close() {
@@ -254,6 +286,43 @@
                         >
                             READY
                         </button>
+                        <button
+                            class="px-2 py-1.5 border border-sky-500/40 {task.status === 'decomposing' ? 'bg-sky-500/20 border-sky-500 text-sky-400' : 'text-primary/60'} hover:border-sky-500 hover:text-sky-400 font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
+                            onclick={handleDecompose}
+                            disabled={updating}
+                            title="Needs decomposition into subtasks"
+                        >
+                            DECOMPOSE
+                        </button>
+                    </div>
+                    <div class="flex gap-2">
+                        <button
+                            class="flex-1 py-1.5 border border-primary/30 text-primary/60 hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50 flex items-center justify-center gap-1"
+                            onclick={priorityUp}
+                            disabled={updating || (task.priority ?? 2) <= 0}
+                            title="Increase priority"
+                        >
+                            <span class="material-symbols-outlined text-[12px]">arrow_upward</span>
+                            PRI UP
+                        </button>
+                        <button
+                            class="flex-1 py-1.5 border border-primary/30 text-primary/60 hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50 flex items-center justify-center gap-1"
+                            onclick={priorityDown}
+                            disabled={updating || (task.priority ?? 2) >= 4}
+                            title="Decrease priority"
+                        >
+                            <span class="material-symbols-outlined text-[12px]">arrow_downward</span>
+                            PRI DOWN
+                        </button>
+                        <button
+                            class="flex-1 py-1.5 border border-primary/30 text-primary/50 hover:border-destructive/60 hover:text-destructive/80 font-bold text-[10px] transition-all rounded-sm disabled:opacity-50 flex items-center justify-center gap-1"
+                            onclick={handleArchive}
+                            disabled={updating}
+                            title="Archive this task"
+                        >
+                            <span class="material-symbols-outlined text-[12px]">inventory_2</span>
+                            ARCHIVE
+                        </button>
                     </div>
                 {/if}                {#if showConfirmComplete}
                     <div class="mt-1 p-2 border border-destructive/40 bg-destructive/5 rounded-sm">
@@ -330,12 +399,16 @@
                 <div class="grid grid-cols-2 gap-3">
                     <div class="space-y-1">
                         <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50">Priority</span>
-                        <select class="w-full bg-primary/5 border border-primary/20 rounded p-1.5 text-[10px] text-primary focus:border-primary/50 outline-none">
-                            <option value="0" selected={task.priority === 0}>P0 CRITICAL</option>
-                            <option value="1" selected={task.priority === 1}>P1 HIGH</option>
-                            <option value="2" selected={task.priority === 2}>P2 MEDIUM</option>
-                            <option value="3" selected={task.priority === 3}>P3 LOW</option>
-                            <option value="4" selected={task.priority === 4}>P4 BACKLOG</option>
+                        <select
+                            class="w-full bg-primary/5 border border-primary/20 rounded p-1.5 text-[10px] text-primary focus:border-primary/50 outline-none"
+                            value={String(task.priority ?? 2)}
+                            onchange={(e) => setPriority(Number(e.currentTarget.value))}
+                        >
+                            <option value="0">P0 CRITICAL</option>
+                            <option value="1">P1 HIGH</option>
+                            <option value="2">P2 MEDIUM</option>
+                            <option value="3">P3 LOW</option>
+                            <option value="4">P4 BACKLOG</option>
                         </select>
                     </div>
                     <div class="space-y-1">
