@@ -324,7 +324,24 @@
                             ARCHIVE
                         </button>
                     </div>
-                {/if}                {#if showConfirmComplete}
+                    <div class="flex gap-2 mt-1">
+                        <button
+                            class="flex-1 py-1.5 border border-primary/40 {task.status === 'inbox' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
+                            onclick={() => setStatus('inbox')}
+                            disabled={updating}
+                        >
+                            INBOX
+                        </button>
+                        <button
+                            class="flex-1 py-1.5 border border-destructive/40 {task.status === 'cancelled' ? 'bg-destructive/20 border-destructive text-destructive' : 'text-destructive/60'} hover:border-destructive hover:text-destructive font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
+                            onclick={() => setStatus('cancelled')}
+                            disabled={updating}
+                        >
+                            CANCEL
+                        </button>
+                    </div>
+                {/if}
+                {#if showConfirmComplete}
                     <div class="mt-1 p-2 border border-destructive/40 bg-destructive/5 rounded-sm">
                         <p class="text-[9px] text-destructive font-mono mb-1.5">
                             ⚠ {activeChildren.length} active sub-task{activeChildren.length === 1 ? '' : 's'} will remain open:

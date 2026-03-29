@@ -95,9 +95,15 @@
 
         const MIN_NODE_WEIGHT = 1;
         const weightMode = $viewSettings.treemapWeightMode || 'sqrt';
-        
+
+        // Mark hierarchy parents — d.children on raw data is always undefined
+        // since parent-child is defined by parent ID, not nested arrays.
+        // Without this, every node (including parents) gets its own weight,
+        // inflating containers beyond what their children fill.
+        root.each((node: any) => { node.data._isHierarchyParent = !!node.children; });
+
         root.sum(d => {
-            if (d.children?.length) return 0;
+            if (d._isHierarchyParent) return 0;
             switch (weightMode) {
                 case 'priority': {
                     if (d.status === 'done' || d.status === 'completed') return 1;
@@ -105,14 +111,14 @@
                     return 2;
                 }
                 case 'dw-bucket': {
-                    const s = Math.sqrt(d.dw || 1);
+                    const s = Math.sqrt(d.dw ?? 0);
                     if (s > 5) return 4;
                     if (s > 2) return 3;
                     if (s > 1) return 2;
                     return 1;
                 }
                 case 'equal': return 1;
-                default: return Math.max(MIN_NODE_WEIGHT, Math.sqrt(d.dw || MIN_NODE_WEIGHT));
+                default: return Math.max(MIN_NODE_WEIGHT, Math.sqrt(d.dw ?? 0) || MIN_NODE_WEIGHT);
             }
         });
 
@@ -124,15 +130,20 @@
             if (node.depth === 0) return 4; // virtual root
             const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
             const label = node.data?.label || '';
-            if (!label || w < 20) return node.depth <= 1 ? 38 : 20;
-            const fontSize = node.depth <= 1 ? 11 : 9;
-            const charWidth = fontSize * 0.56;
-            const availableWidth = Math.max(20, w - 12); // pad
-            const charsPerLine = Math.max(4, Math.floor(availableWidth / charWidth));
+            const isEpicTier = node.data && ['epic', 'goal', 'project'].includes(node.data.type) && node.depth <= 1;
+            
+            // For tiny containers, return minimum padding to avoid pushing children out
+            if (!label || w < 25) return isEpicTier ? 22 : 12;
+            
+            const fontSize = isEpicTier ? 9 : 7;
+            const charWidth = fontSize * 0.58;
+            const availableWidth = Math.max(15, w - (isEpicTier ? 16 : 10)); // pad
+            const charsPerLine = Math.max(3, Math.floor(availableWidth / charWidth));
             const lines = Math.min(3, Math.ceil(label.length / charsPerLine));
-            const lineHeight = fontSize * 1.3;
-            const basePad = node.depth <= 1 ? 10 : 6;
-            return Math.max(node.depth <= 1 ? 24 : 16, Math.min(60, lines * lineHeight + basePad));
+            const lineHeight = fontSize * 1.25;
+            const basePad = isEpicTier ? 8 : 4;
+            
+            return Math.max(isEpicTier ? 18 : 12, Math.min(45, lines * lineHeight + basePad));
         }
 
         const treemap = d3.treemap<any>()
@@ -150,6 +161,11 @@
         const layoutMap = new Map();
         root.descendants().forEach((d: any) => {
             if (d.data.id === rootId) return;
+            // Count leaf descendants (actual tasks inside this container)
+            let leafCount = 0;
+            if (d.children) {
+                d.leaves().forEach(() => leafCount++);
+            }
             layoutMap.set(d.data.id, {
                 x: d.x0 + (d.x1 - d.x0) / 2,
                 y: d.y0 + (d.y1 - d.y0) / 2,
@@ -157,6 +173,7 @@
                 h: d.y1 - d.y0,
                 depth: d.depth,
                 isLeaf: !d.children || d.children.length === 0,
+                leafCount,
             });
         });
 
@@ -167,6 +184,7 @@
                     n.x = l.x; n.y = l.y; n.w = l.w; n.h = l.h;
                     n.depth = l.depth;
                     n._isLeaf = l.isLeaf;
+                    n._leafCount = l.leafCount;
                     return true;
                 }
                 n.x = -9999;
@@ -235,16 +253,12 @@
             nEls.style("opacity", null);
         }
 
-        if (!$filters.showDependencies) {
-            d3.select(edgesLayer).selectAll("path").remove();
-        } else {
-            const eEls = d3
-                .select(edgesLayer)
-                .selectAll("path")
-                .data(links)
-                .join("path");
-            routeTreemapEdges(eEls);
-        }
+        const eEls = d3
+            .select(edgesLayer)
+            .selectAll("path")
+            .data(links)
+            .join("path");
+        routeTreemapEdges(eEls);
     }
 </script>
 

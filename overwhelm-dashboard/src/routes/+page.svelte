@@ -1,6 +1,5 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import Sidebar from "$lib/components/Sidebar.svelte";
     import TaskEditorView from "$lib/components/views/TaskEditorView.svelte";
     import ZoomContainer from "$lib/components/shared/ZoomContainer.svelte";
     import Legend from "$lib/components/shared/Legend.svelte";
@@ -10,6 +9,7 @@
     import CirclePackView from "$lib/components/views/CirclePackView.svelte";
     import ForceView from "$lib/components/views/ForceView.svelte";
     import ArcView from "$lib/components/views/ArcView.svelte";
+    import MetroView from "$lib/components/views/MetroView.svelte";
 
     import DashboardView from "$lib/components/dashboard/DashboardView.svelte";
     import ThreadedTasksView from "$lib/components/views/ThreadedTasksView.svelte";
@@ -77,11 +77,17 @@
         let fNodes = [...prepared.nodes];
         let fLinks = [...prepared.links];
         const isForce =
-            $viewSettings.viewMode === "SFDP";
+            $viewSettings.viewMode === "Force";
 
         // Only include real task types with explicit ID and status
+        // Structural types (epic, project, goal) are always included — they often lack task_id or explicit status
         const TASK_TYPES = new Set(["task", "goal", "project", "epic", "bug", "feature", "learn", "action", "subproject"]);
-        fNodes = fNodes.filter(n => TASK_TYPES.has(n.type) && n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "" && n.status !== "inbox");
+        const STRUCTURAL_TYPES = new Set(["epic", "project", "goal"]);
+        fNodes = fNodes.filter(n => {
+            if (!TASK_TYPES.has(n.type)) return false;
+            if (STRUCTURAL_TYPES.has(n.type)) return true;
+            return n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "" && n.status !== "inbox";
+        });
 
         if (!$filters.showActive) {
             fNodes = fNodes.filter(
@@ -101,7 +107,7 @@
                 (n) => n.project === $filters.project || n.type === "project" || n.type === "goal",
             );
         }
-        if ($viewSettings.viewMode === "SFDP" && !$filters.showOrphans) {
+        if ($viewSettings.viewMode === "Force" && !$filters.showOrphans) {
             const nodesWithEdges = new Set<string>();
             fLinks.forEach((l) => {
                 const sid = typeof l.source === "object" ? l.source.id : l.source;
@@ -111,17 +117,49 @@
             });
             fNodes = fNodes.filter((n) => nodesWithEdges.has(n.id) || !n.isLeaf);
         }
-        if (!$filters.showDependencies) {
-            fLinks = fLinks.filter((e) => e.type !== "depends_on");
-        }
-        if (!$filters.showReferences) {
-            fLinks = fLinks.filter((e) => e.type !== "ref");
-        }
+        // Edge visibility is handled via CSS opacity, not by filtering
         if (isForce && $viewSettings.topNLeaves < fNodes.length) {
             const parents = fNodes.filter((n) => !n.isLeaf);
             let leaves = fNodes.filter((n) => n.isLeaf).sort((a, b) => b.dw - a.dw);
             leaves = leaves.slice(0, $viewSettings.topNLeaves);
             fNodes = [...parents, ...leaves];
+        }
+
+        // Restore parent containers needed by surviving children — even if the parent
+        // was filtered out by status (e.g. a cancelled project with active children)
+        {
+            const allNodeMap = new Map(prepared.nodes.map(n => [n.id, n]));
+            const survivingIds = new Set(fNodes.map(n => n.id));
+            const toRestore: typeof fNodes = [];
+            for (const n of fNodes) {
+                let pid = n.parent;
+                while (pid && !survivingIds.has(pid)) {
+                    const parent = allNodeMap.get(pid);
+                    if (!parent) break;
+                    survivingIds.add(pid);
+                    toRestore.push(parent);
+                    pid = parent.parent;
+                }
+            }
+            if (toRestore.length > 0) fNodes = [...fNodes, ...toRestore];
+        }
+
+        // Prune empty structural containers — remove epics/projects/goals with no surviving children
+        {
+            let changed = true;
+            while (changed) {
+                changed = false;
+                const childCount = new Map<string, number>();
+                for (const n of fNodes) {
+                    if (n.parent) childCount.set(n.parent, (childCount.get(n.parent) || 0) + 1);
+                }
+                const before = fNodes.length;
+                fNodes = fNodes.filter(n => {
+                    if (!STRUCTURAL_TYPES.has(n.type)) return true;
+                    return (childCount.get(n.id) || 0) > 0;
+                });
+                if (fNodes.length < before) changed = true;
+            }
         }
 
         const survivingNodeIds = new Set(fNodes.map((n) => n.id));
@@ -233,16 +271,9 @@
     </div>
 {:else}
     <!-- OPERATOR LAYOUT (12-Column Bento Grid) -->
-    <!-- LEFT SIDEBAR: Navigation & Filters -->
-    {#if $viewSettings.showSidebar}
-        <aside class="col-span-3 border-r border-primary-border bg-background flex flex-col h-full overflow-y-auto custom-scrollbar transition-all">
-            <Sidebar />
-        </aside>
-    {/if}
-
     {#if $viewSettings.mainTab === "Threaded Tasks"}
-        <!-- THREADED TASKS & EDITOR OVERRIDE -->    <!-- THREADED TASKS & EDITOR OVERRIDE -->
-        <section class="{$viewSettings.showSidebar ? 'col-span-9' : 'col-span-12'} flex flex-col h-full bg-background overflow-hidden transition-all" class:hidden={$viewSettings.mainTab !== "Threaded Tasks"}>
+        <!-- THREADED TASKS & EDITOR OVERRIDE -->
+        <section class="col-span-12 flex flex-col h-full bg-background overflow-hidden transition-all" class:hidden={$viewSettings.mainTab !== "Threaded Tasks"}>
             <ThreadedTasksView />
         </section>
     {:else if $viewSettings.mainTab === "Dashboard"}
@@ -253,7 +284,7 @@
 
     {:else}
     <!-- MAIN CONTENT: Graph or Dashboard -->
-    <section class="{$viewSettings.showSidebar ? ($selection.activeNodeId ? 'col-span-6' : 'col-span-9') : ($selection.activeNodeId ? 'col-span-9' : 'col-span-12')} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
+    <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
         <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
 
             <!-- Focus banner (Absolute Over Graph) -->
@@ -275,23 +306,27 @@
 
             <!-- The Graph Area -->
             <div class="flex-1 relative z-0 h-full">
-                <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
-                    {#if containerGroup}
-                        {#if activeLayout === "treemap" || activeLayout === "tree"}
-                            <TreemapView
-                                {containerGroup}
-                                width={innerWidth}
-                                height={innerHeight}
-                            />
-                        {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
-                            <CirclePackView {containerGroup} />
-                        {:else if activeLayout === "force" || activeLayout === "sfdp"}
-                            <ForceView {containerGroup} />
-                        {:else if activeLayout === "arc"}
-                            <ArcView {containerGroup} />
+                {#if activeLayout === "metro"}
+                    <MetroView />
+                {:else}
+                    <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
+                        {#if containerGroup}
+                            {#if activeLayout === "treemap" || activeLayout === "tree"}
+                                <TreemapView
+                                    {containerGroup}
+                                    width={innerWidth}
+                                    height={innerHeight}
+                                />
+                            {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
+                                <CirclePackView {containerGroup} />
+                            {:else if activeLayout === "force" || activeLayout === "sfdp"}
+                                <ForceView {containerGroup} />
+                            {:else if activeLayout === "arc"}
+                                <ArcView {containerGroup} />
+                            {/if}
                         {/if}
-                    {/if}
-                </ZoomContainer>
+                    </ZoomContainer>
+                {/if}
             </div>
 
             <!-- Legend -->

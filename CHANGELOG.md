@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7](https://github.com/nicsuzor/mem/compare/v0.3.6...v0.3.7) - 2026-03-28
+
+### Added
+
+- *(dashboard)* adjust treemap font sizes and add task editor status buttons
+- *(dashboard)* collapse 1:1 containers into single child; add custom attractive force for epics
+- *(mcp)* add HTTP/SSE transport for Cowork VM ([#151](https://github.com/nicsuzor/mem/pull/151))
+
+### Fixed
+
+- deny println! in library code to protect MCP transport ([#150](https://github.com/nicsuzor/mem/pull/150))
+- *(dashboard)* visual hierarchy and blocked/dependency styling ([#149](https://github.com/nicsuzor/mem/pull/149))
+- *(dashboard)* QA improvements to overwhelm dash main page ([#147](https://github.com/nicsuzor/mem/pull/147))
+
+### Other
+
+- add axiom-driven PR reviewer ([#153](https://github.com/nicsuzor/mem/pull/153))
+- MCP integration tests for stdio and HTTP/SSE transports ([#154](https://github.com/nicsuzor/mem/pull/154))
+- update dash and delete test files
+- qa checkin
+
+## [0.3.6](https://github.com/nicsuzor/mem/compare/v0.3.5...v0.3.6) - 2026-03-27
+
+### Added
+
+- *(dashboard)* overhaul force graph visuals and simplify controls
+- *(dashboard)* centralize focus scoring in backend and address PR feedback
+- *(dashboard)* promote narrative above fold, fail visibly when missing
+- *(dashboard)* server-computed focus set replaces client-side intention path highlighting
+- *(dashboard)* visual refinements — epics, hulls, intent highlighting
+- *(dashboard)* fix tree/circle views, add intention path + focused arc
+
+### Fixed
+
+- graph accuracy, blocked propagation, ID resolution, completion evidence ([#146](https://github.com/nicsuzor/mem/pull/146))
+- *(dashboard)* improve webcola layout spread and add force config sliders
+- *(dashboard)* simplify to 3 forces, fix edge visibility and clumping
+- *(dashboard)* narrow intention path to P0/P1 seeds, exclude remaining siblings from highlight
+- *(dashboard)* move intention highlighting into drawStaticForce
+- *(dashboard)* break parent cycles before stratify in tree/circle views
+- *(dashboard)* add cycle detection to intention path parent walk
+
+### Other
+
+- *(dashboard)* webcola integration with epic-based grouping
+- *(dashboard)* consolidate force simulation config into constants.ts
+- add CLAUDE.md and GEMINI.md pointing to .agent/CORE.md
+- update CORE.md — 36 tools, new source files
+
 ## [0.3.5](https://github.com/nicsuzor/mem/compare/v0.3.4...v0.3.5) - 2026-03-25
 
 ### Fixed

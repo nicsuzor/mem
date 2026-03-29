@@ -27,7 +27,6 @@
     $: droppedFromGraph = $graphData ? $graphData.nodes
         .filter(n => n.type === 'task' && ['active', 'in_progress'].includes(n.status) && n._raw?.created)
         .filter(n => {
-            // Tasks older than 3 days with no recent modification are "dropped"
             const created = new Date(n._raw.created).getTime();
             const modified = n._raw?.modified ? new Date(n._raw.modified).getTime() : created;
             const daysSinceModified = (Date.now() - modified) / 86400000;
@@ -47,7 +46,6 @@
 
     $: pathData = data?.dashboardData?.path || { threads: [], abandoned_work: [] };
     $: {
-        // Enrich path data with graph-derived dropped threads if none from summaries
         if (pathData.abandoned_work.length === 0 && droppedFromGraph.length > 0) {
             pathData = { ...pathData, abandoned_work: droppedFromGraph };
         }
@@ -59,7 +57,6 @@
         const serverData = data?.dashboardData?.project_data || { meta: {}, tasks: {}, accomplishments: {}, sessions: {} };
         const result: any = { meta: { ...serverData.meta }, tasks: {}, accomplishments: { ...serverData.accomplishments }, sessions: { ...serverData.sessions } };
 
-        // Build tasks per project from graph data
         const gd = $graphData;
         for (const proj of projects) {
             if (!proj) continue;
@@ -70,10 +67,8 @@
             );
             result.tasks[p] = projTasks.length > 0 ? projTasks : (serverData.tasks?.[p] || []);
 
-            // Ensure meta exists
             if (!result.meta[p]) result.meta[p] = {};
 
-            // Build epics from graph data
             const projEpics = gd.nodes.filter((n: any) =>
                 n.type === 'epic' && n.project === p &&
                 !['done', 'completed', 'cancelled'].includes(n.status)
@@ -86,7 +81,6 @@
                 });
             }
 
-            // Accomplishments: also pull done tasks from graph as fallback
             if (!result.accomplishments[p] || result.accomplishments[p].length === 0) {
                 const doneTasks = gd.nodes
                     .filter((n: any) => n.type === 'task' && n.project === p && ['done', 'completed'].includes(n.status))
@@ -97,7 +91,6 @@
                 }
             }
 
-            // Sessions
             if (!result.sessions[p]) result.sessions[p] = [];
         }
 
@@ -107,6 +100,9 @@
     $: enrichedProjects = projects.length > 0 ? projects :
         (data?.dashboardData?.project_projects || []);
 </script>
+
+<!-- Floating Quick Capture — always accessible -->
+<QuickCapture />
 
 <div class="h-full p-8 font-mono text-primary flex flex-col gap-6">
     <!-- US-D7: Above-the-fold triage bar — answers "running?", "dropped?", "needs me?" in 5 seconds -->
@@ -156,15 +152,23 @@
         />
     </div>
 
-    <!-- PRIORITY 3: Dropped threads (most actionable for ADHD context recovery) -->
-    {#if pathData.abandoned_work?.length > 0 || pathData.threads?.length > 0}
+    <!-- PRIORITY 3: Dropped threads — promoted to standalone section -->
+    {#if pathData.abandoned_work?.length > 0}
         <div class="border border-yellow-500/30 bg-surface p-4">
+            <PathTimeline path={pathData} abandonedOnly={true} />
+        </div>
+    {/if}
+
+    <!-- PRIORITY 4: Recent activity feed (what happened, by project) -->
+    {#if pathData.activity?.length > 0}
+        <div class="border border-primary/30 bg-surface p-4">
             <PathTimeline path={pathData} />
         </div>
     {/if}
 
-    <div class="grid grid-cols-12 gap-6 flex-1 min-h-0">
-        <div class="col-span-8 flex flex-col gap-6 overflow-y-auto custom-scrollbar pr-2">
+    <!-- PRIORITY 5: Project details + sessions — use auto height, not flex-1 -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div class="lg:col-span-8 flex flex-col gap-6">
             <div class="border border-primary/30 bg-surface p-4">
                 <RecentSessions synthesis={data?.dashboardData?.synthesis} />
             </div>
@@ -177,18 +181,16 @@
             </div>
         </div>
 
-        <div class="col-span-4 flex flex-col gap-6 overflow-y-auto custom-scrollbar pr-2 bg-black/40 p-4 border border-primary/20 rounded-xl">
-            <div class="border border-primary/30 bg-surface p-4 shadow-lg">
-                <QuickCapture />
-            </div>
-
-            <div class="border border-primary/30 bg-surface p-4 shadow-lg">
-                <SynthesisPanel
-                    synthesis={data?.dashboardData?.synthesis}
-                    dailyStory={null}
-                    inline={false}
-                />
-            </div>
+        <div class="lg:col-span-4 flex flex-col gap-6 bg-black/40 p-4 border border-primary/20 rounded-xl">
+            {#if data?.dashboardData?.synthesis?.blockers || data?.dashboardData?.synthesis?.recent_context}
+                <div class="border border-primary/30 bg-surface p-4 shadow-lg">
+                    <SynthesisPanel
+                        synthesis={data?.dashboardData?.synthesis}
+                        dailyStory={null}
+                        inline={false}
+                    />
+                </div>
+            {/if}
         </div>
     </div>
 </div>

@@ -1,20 +1,28 @@
 <script lang="ts">
     export let path: any;
+    /** When true, only render the abandoned work section */
+    export let abandonedOnly: boolean = false;
 
-    $: threads = path?.threads || [];
+    $: activity = path?.activity || [];
     $: abandoned = path?.abandoned_work || [];
 
-    function formatTime(isoString: string): string {
-        if (!isoString) return "";
-        try {
-            const d = new Date(isoString);
-            return d.toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-            });
-        } catch {
-            return isoString;
-        }
+    const INITIAL_PROJECTS = 8;
+    let showAll = false;
+    $: visible = showAll ? activity : activity.slice(0, INITIAL_PROJECTS);
+    $: hiddenCount = Math.max(0, activity.length - INITIAL_PROJECTS);
+
+    function outcomeIcon(outcome: string): string {
+        if (outcome === 'success') return '✓';
+        if (outcome === 'in_progress' || outcome === 'partial') return '↻';
+        if (outcome === 'failure' || outcome === 'error') return '✗';
+        return '·';
+    }
+
+    function outcomeClass(outcome: string): string {
+        if (outcome === 'success') return 'text-green-500';
+        if (outcome === 'in_progress' || outcome === 'partial') return 'text-primary/60';
+        if (outcome === 'failure' || outcome === 'error') return 'text-red-500';
+        return 'text-primary/40';
     }
 
     function projectColor(name: string): string {
@@ -39,76 +47,66 @@
     })();
 </script>
 
-{#if threads.length > 0 || abandoned.length > 0}
-    <div class="flex flex-col gap-6 font-mono text-primary">
-        <h3 class="text-xs font-bold tracking-[0.2em] text-primary/80 border-b border-primary/30 pb-2">PATH RECONSTRUCTION</h3>
-
-        {#if abandoned.length > 0}
-            <div class="flex flex-col gap-3 p-4 border border-yellow-500/30 bg-yellow-900/10">
-                <h4 class="text-xs font-bold text-yellow-500 tracking-widest flex items-center gap-2">
-                    <span class="material-symbols-outlined text-[14px]">warning</span>
-                    DROPPED THREADS ({abandoned.length})
-                </h4>
-                <div class="flex flex-col gap-4">
-                    {#each abandonedByProject as [project, items]}
-                        <div class="flex flex-col gap-2 border-l-3 pl-3" style="border-left: 3px solid {projectColor(project)};">
-                            <span class="text-[10px] font-bold px-1.5 py-0.5 w-fit" style="background: {projectColor(project)}20; color: {projectColor(project)};">{project}</span>
-                            {#each items as item}
-                                <div class="flex items-start gap-2 text-xs">
-                                    <span class="text-[10px] text-yellow-500/60 shrink-0 pt-0.5">{item.time_ago || ""}</span>
-                                    <span class="text-yellow-500/90">{item.description}</span>
-                                </div>
-                            {/each}
-                        </div>
-                    {/each}
-                </div>
-            </div>
-        {/if}
-
-        <div class="flex flex-col gap-6">
-            {#each threads as thread}
-                <div class="flex flex-col gap-3">
-                    <div class="flex items-center gap-3 text-xs">
-                        <span class="font-bold px-2 py-0.5 border" style="background: {projectColor(thread.project)}15; color: {projectColor(thread.project)}; border-color: {projectColor(thread.project)}40;">{thread.project}</span>
-                        {#if thread.git_branch}
-                            <span class="text-primary/70 flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">fork_right</span> {thread.git_branch}</span>
-                        {/if}
-                        <span class="text-[10px] text-primary/40 ml-auto">{thread.session_id}</span>
-                    </div>
-
-                    {#if thread.initial_goal || thread.hydrated_intent}
-                        <div class="bg-black/40 border border-primary/20 p-3 text-xs leading-relaxed">
-                            <strong class="text-primary/60">GOAL:</strong>
-                            <span class="text-primary/90">{thread.hydrated_intent || thread.initial_goal}</span>
-                        </div>
-                    {/if}
-
-                    <div class="flex flex-col gap-0 ml-2 border-l border-primary/20 pl-4 relative">
-                        {#each thread.events as event}
-                            <div class="relative py-3 group hover:bg-primary/5 -ml-4 pl-4 pr-2 transition-colors">
-                                <!-- Marker -->
-                                <div class="absolute left-[-4.5px] top-[18px] w-2 h-2 rounded-full bg-black border border-primary group-hover:bg-primary transition-colors"></div>
-
-                                <div class="flex items-start gap-4">
-                                    <div class="text-[10px] text-primary/50 pt-0.5 w-12 shrink-0">
-                                        {formatTime(event.timestamp)}
-                                    </div>
-                                    <div class="flex flex-col gap-1 flex-1">
-                                        <div class="text-xs text-primary/80 leading-relaxed">
-                                            {event.narrative}
-                                        </div>
-                                        {#if event.task_id}
-                                            <div class="text-[10px] text-primary/40 mt-1">
-                                                ID: {event.task_id}
-                                            </div>
-                                        {/if}
-                                    </div>
-                                </div>
+{#if abandonedOnly}
+    {#if abandoned.length > 0}
+        <div class="flex flex-col gap-3 font-mono">
+            <h3 class="text-xs font-bold tracking-[0.2em] text-yellow-500/80 border-b border-yellow-500/30 pb-2 flex items-center gap-2">
+                <span class="material-symbols-outlined text-[14px]">warning</span>
+                DROPPED THREADS ({abandoned.length})
+            </h3>
+            <div class="flex flex-col gap-4">
+                {#each abandonedByProject as [project, items]}
+                    <div class="flex flex-col gap-2 pl-3" style="border-left: 3px solid {projectColor(project)};">
+                        <span class="text-[10px] font-bold px-1.5 py-0.5 w-fit" style="background: {projectColor(project)}20; color: {projectColor(project)};">{project}</span>
+                        {#each items as item}
+                            <div class="flex items-start gap-2 text-xs">
+                                <span class="text-[10px] text-yellow-500/60 shrink-0 pt-0.5">{item.time_ago || ""}</span>
+                                <span class="text-yellow-500/90">{item.description}</span>
                             </div>
                         {/each}
+                    </div>
+                {/each}
+            </div>
+        </div>
+    {/if}
+
+{:else if activity.length > 0}
+    <div class="flex flex-col gap-4 font-mono text-primary">
+        <h3 class="text-xs font-bold tracking-[0.2em] text-primary/80 border-b border-primary/30 pb-2">
+            RECENT ACTIVITY
+            <span class="text-primary/40 font-normal ml-2">({activity.length} projects)</span>
+        </h3>
+
+        <div class="flex flex-col gap-4">
+            {#each visible as group}
+                <div class="flex flex-col gap-1.5">
+                    <div class="flex items-center gap-3 text-xs">
+                        <span class="font-bold bg-primary/20 text-primary px-2 py-0.5 border border-primary/30">{group.project}</span>
+                        <span class="text-primary/30 ml-auto">{group.period}</span>
+                    </div>
+
+                    <div class="flex flex-col gap-0.5 ml-1">
+                        {#each group.items.slice(0, 5) as item}
+                            <div class="flex items-start gap-2 text-xs py-0.5">
+                                <span class="{outcomeClass(item.outcome)} shrink-0 w-3 text-center">{outcomeIcon(item.outcome)}</span>
+                                <span class="text-primary/80 line-clamp-1">{item.text}</span>
+                            </div>
+                        {/each}
+                        {#if group.items.length > 5}
+                            <div class="text-[10px] text-primary/30 ml-5">+ {group.items.length - 5} more</div>
+                        {/if}
                     </div>
                 </div>
             {/each}
         </div>
+
+        {#if !showAll && hiddenCount > 0}
+            <button
+                class="text-xs text-primary/50 hover:text-primary transition-colors cursor-pointer border border-primary/20 hover:border-primary/40 px-3 py-2 text-center"
+                on:click={() => showAll = true}
+            >
+                Show {hiddenCount} more project{hiddenCount !== 1 ? 's' : ''}...
+            </button>
+        {/if}
     </div>
 {/if}

@@ -1,12 +1,14 @@
 <script lang="ts">
     import * as d3 from "d3";
+    import * as cola from "webcola";
     import { onMount, onDestroy } from "svelte";
-    import { graphData } from "../../stores/graph";
+    import { graphData, graphStructureKey } from "../../stores/graph";
     import { viewSettings } from "../../stores/viewSettings";
-    import { filters } from "../../stores/filters";
+    import { filters, type EdgeVisibility } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
-    import { routeForceEdges, routeSfdpEdges } from "../shared/EdgeRenderer";
+    import { routeSfdpEdges } from "../shared/EdgeRenderer";
+    import { FORCE_CONFIG } from "../../data/constants";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
     export let containerGroup: SVGGElement;
@@ -15,26 +17,48 @@
     let edgesLayer: SVGGElement;
     let hullLayer: SVGGElement;
 
-    let simulation: d3.Simulation<GraphNode, GraphEdge> | null = null;
-
+    let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     // Track cleanup and frame loop
     let frameId = 0;
 
+    // Full physics rebuild only when structure (node/link set) or Cola params change
+    let lastStructureKey = '';
+    let lastColaParams = '';
     $: {
+        const sk = $graphStructureKey;
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaFlowSep}|${$viewSettings.colaGroupPadding}`;
         if (
             containerGroup &&
             $graphData &&
             nodesLayer &&
             edgesLayer &&
-            hullLayer
+            hullLayer &&
+            (sk !== lastStructureKey || cp !== lastColaParams)
         ) {
-            if ($viewSettings.liveSimulation) {
-                drawForceAndStartPhysics();
-            } else {
-                // Static layout — stop any running simulation
-                drawStaticForce();
-            }
+            lastStructureKey = sk;
+            lastColaParams = cp;
+            drawForceAndStartPhysics();
         }
+    }
+
+    // Property-only updates (status, priority, etc.) — patch node visuals without restarting physics
+    $: if ($graphData && nodesLayer && lastStructureKey && lastStructureKey === $graphStructureKey) {
+        const activeId = $selection.activeNodeId;
+        d3.select(nodesLayer)
+            .selectAll<SVGGElement, GraphNode>("g.node")
+            .each(function (d) {
+                const fresh = $graphData!.nodes.find(n => n.id === d.id);
+                if (!fresh) return;
+                // Sync mutable display properties
+                if (d.status !== fresh.status || d.fill !== fresh.fill || d.opacity !== fresh.opacity) {
+                    Object.assign(d, fresh);
+                    const g = d3.select(this) as any;
+                    g.selectAll("*").remove();
+                    const isSelected = d.id === activeId;
+                    buildTaskCardNode(g, d, isSelected);
+                    (d as any)._lastSelected = isSelected;
+                }
+            });
     }
 
     // Pre-built adjacency map for O(1) neighbor lookup during hover
@@ -52,6 +76,49 @@
         adjacencyMap = adj;
     }
 
+    // Build parent-child maps for hierarchy walking
+    let parentOf = new Map<string, string>();   // child → parent
+    let childrenOf = new Map<string, Set<string>>(); // parent → children
+    $: if ($graphData) {
+        const pOf = new Map<string, string>();
+        const cOf = new Map<string, Set<string>>();
+        $graphData.links.forEach((l: any) => {
+            if (l.type !== 'parent') return;
+            // parent edges are flipped: source=parent, target=child
+            const pid = l.source.id || l.source;
+            const cid = l.target.id || l.target;
+            pOf.set(cid, pid);
+            if (!cOf.has(pid)) cOf.set(pid, new Set());
+            cOf.get(pid)!.add(cid);
+        });
+        parentOf = pOf;
+        childrenOf = cOf;
+    }
+
+    // Collect full hierarchy (ancestors + descendants) for a node
+    function getHierarchy(nodeId: string): Set<string> {
+        const result = new Set<string>([nodeId]);
+        // Walk up ancestors
+        let cur = nodeId;
+        while (parentOf.has(cur)) {
+            cur = parentOf.get(cur)!;
+            result.add(cur);
+        }
+        // Walk down descendants (BFS)
+        const queue = [nodeId];
+        while (queue.length > 0) {
+            const id = queue.shift()!;
+            const kids = childrenOf.get(id);
+            if (kids) for (const kid of kids) {
+                if (!result.has(kid)) {
+                    result.add(kid);
+                    queue.push(kid);
+                }
+            }
+        }
+        return result;
+    }
+
     // Flashlight Hover Effect Logic — uses pre-built adjacency for O(1) lookups
     $: if (nodesLayer && edgesLayer && $graphData) {
         const hoveredId = $selection.hoveredNodeId;
@@ -59,24 +126,40 @@
         const nEls = d3.select(nodesLayer).selectAll(".node");
         const eEls = d3.select(edgesLayer).selectAll("path");
 
-        nEls.classed("selected-node", (d: any) => d.id === activeId);
+        // Hierarchy + direct neighbors (deps/refs) of selected node — always at full opacity
+        const hierarchyIds = activeId ? getHierarchy(activeId) : new Set<string>();
+        // Add direct adjacency (dependencies, references) of the selected node
+        const selectedNeighbors = new Set<string>(hierarchyIds);
+        if (activeId) {
+            const adj = adjacencyMap.get(activeId);
+            if (adj) adj.forEach(id => selectedNeighbors.add(id));
+        }
+
+        nEls.classed("selected-node", (d: any) => selectedNeighbors.has(d.id));
 
         if (hoveredId) {
             const neighbors = new Set<string>([hoveredId]);
             const adj = adjacencyMap.get(hoveredId);
             if (adj) adj.forEach(id => neighbors.add(id));
 
-            nEls.classed("dimmed", (d: any) => !neighbors.has(d.id))
-                .classed("illuminated", (d: any) => neighbors.has(d.id));
+            nEls.classed("dimmed", (d: any) => !neighbors.has(d.id) && !selectedNeighbors.has(d.id))
+                .classed("illuminated", (d: any) => neighbors.has(d.id) || selectedNeighbors.has(d.id));
 
             eEls.classed("dimmed", (l: any) => {
                 const sid = l.source.id || l.source;
                 const tid = l.target.id || l.target;
-                return sid !== hoveredId && tid !== hoveredId;
+                const hoverMatch = sid === hoveredId || tid === hoveredId;
+                const selMatch = (selectedNeighbors.has(sid) && selectedNeighbors.has(tid));
+                // Also highlight edges touching the selected node directly
+                const activeMatch = activeId && (sid === activeId || tid === activeId);
+                return !hoverMatch && !selMatch && !activeMatch;
             }).classed("illuminated", (l: any) => {
                 const sid = l.source.id || l.source;
                 const tid = l.target.id || l.target;
-                return sid === hoveredId || tid === hoveredId;
+                const hoverMatch = sid === hoveredId || tid === hoveredId;
+                const selMatch = (selectedNeighbors.has(sid) && selectedNeighbors.has(tid));
+                const activeMatch = activeId && (sid === activeId || tid === activeId);
+                return hoverMatch || selMatch || activeMatch;
             });
         } else {
             nEls.classed("dimmed", false).classed("illuminated", false);
@@ -84,88 +167,38 @@
         }
     }
 
-    function projectColor(projectId: string) {
-        let hash = 0;
-        for (let i = 0; i < projectId.length; i++) {
-            hash = (hash << 5) - hash + projectId.charCodeAt(i);
-            hash |= 0;
+    function edgeVisForType(type: string): EdgeVisibility {
+        if (type === 'parent') return $filters.edgeParent;
+        if (type === 'depends_on') return $filters.edgeDependencies;
+        return $filters.edgeReferences; // ref, soft_depends_on, etc.
+    }
+
+    function edgeOpacity(vis: EdgeVisibility): number {
+        if (vis === 'bright') return 0.85;
+        if (vis === 'half') return 0.25;
+        return 0;
+    }
+
+    function applyEdgeVisibility(eEls: any) {
+        eEls.attr("opacity", (d: any) => edgeOpacity(edgeVisForType(d.type)));
+    }
+
+    // Reactively update edge visibility when filters change (no redraw needed)
+    $: {
+        // Touch specific filter values so Svelte tracks them as dependencies
+        const _ep = $filters.edgeParent;
+        const _ed = $filters.edgeDependencies;
+        const _er = $filters.edgeReferences;
+        if (edgesLayer) {
+            const eEls = d3.select(edgesLayer).selectAll("path");
+            if (!eEls.empty()) {
+                applyEdgeVisibility(eEls);
+            }
         }
-        const hue = Math.abs(hash) % 360;
-        return `hsl(${hue}, 55%, 52%)`;
     }
 
     function updateHulls() {
-        if (!$graphData || !hullLayer) return;
-
-        const projectNodes = new Map<string, [number, number][]>();
-        $graphData.nodes.forEach((n) => {
-            if (
-                typeof n.x !== "number" ||
-                typeof n.y !== "number" ||
-                n.x < -9000
-            )
-                return;
-            const p = n.project;
-            if (!p) return;
-            if (!projectNodes.has(p)) projectNodes.set(p, []);
-            projectNodes.get(p)!.push([n.x, n.y]);
-        });
-
-        const hullData: any[] = [];
-        projectNodes.forEach((pts, pid) => {
-            if (pts.length < 3) return;
-            const hull = d3.polygonHull(pts);
-            if (!hull) return;
-            // Expand hull
-            const cx = d3.mean(hull, (p) => p[0]) || 0;
-            const cy = d3.mean(hull, (p) => p[1]) || 0;
-            const expanded = hull.map(([x, y]) => {
-                const dx = x - cx,
-                    dy = y - cy;
-                const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-                return [x + (dx / dist) * 40, y + (dy / dist) * 40];
-            });
-            hullData.push({ id: pid, points: expanded, cx, cy });
-        });
-
-        d3.select(hullLayer)
-            .selectAll(".hull-path")
-            .data(hullData, (d: any) => d.id)
-            .join("path")
-            .attr("class", "hull-path")
-            .attr(
-                "d",
-                (d) =>
-                    "M" + d.points.map((p: any) => p.join(",")).join("L") + "Z",
-            )
-            .attr("fill", (d) => projectColor(d.id))
-            .attr("fill-opacity", 0.15)
-            .attr("stroke", (d) => projectColor(d.id))
-            .attr("stroke-opacity", 0.45)
-            .attr("stroke-width", 2)
-            .attr("stroke-dasharray", "5,3")
-            .style("pointer-events", "none");
-
-        d3.select(hullLayer)
-            .selectAll(".hull-label")
-            .data(hullData, (d: any) => d.id)
-            .join("text")
-            .attr("class", "hull-label")
-            .attr("x", (d) => d.cx)
-            .attr("y", (d) => Number(d3.min(d.points, (p: any) => p[1]) || 0) - 12)
-            .attr("text-anchor", "middle")
-            .attr("font-size", "14px")
-            .attr("font-weight", "700")
-            .attr("font-family", "var(--font-mono), monospace")
-            .attr("fill", (d) => projectColor(d.id))
-            .attr("opacity", 0.7)
-            .attr("letter-spacing", "2px")
-            .style("pointer-events", "none")
-            .style("user-select", "none")
-            .style("text-shadow", "0 1px 6px rgba(0,0,0,0.8)")
-            .text((d) =>
-                d.id.replace(/_/g, " ").toUpperCase().substring(0, 30),
-            );
+        // Old polygon hulls removed — Cola group bounding boxes handle this now
     }
 
     function bindDragAndClick(nEls: any) {
@@ -183,51 +216,118 @@
             .call(
                 d3
                     .drag<SVGGElement, GraphNode>()
-                    .on("start", (e, d) => {
-                        if ($viewSettings.liveSimulation && simulation) {
-                            simulation.alphaTarget(0.1).restart();
-                        }
-                        d.fx = d.x;
-                        d.fy = d.y;
+                    .on("start", (e, d: any) => {
+                        cola.Layout.dragStart(d);
                     })
-                    .on("drag", (e, d) => {
-                        d.fx = e.x;
-                        d.fy = e.y;
-                        if (!$viewSettings.liveSimulation) {
-                            d.x = e.x;
-                            d.y = e.y;
-                            tickVisuals();
-                        }
+                    .on("drag", (e, d: any) => {
+                        d.x = e.x;
+                        d.y = e.y;
+                        if (colaLayout) colaLayout.resume();
                     })
-                    .on("end", (e, d) => {
-                        if ($viewSettings.liveSimulation && simulation) {
-                            simulation.alphaTarget(0);
-                        }
-                        d.fx = null;
-                        d.fy = null;
+                    .on("end", (e, d: any) => {
+                        d.fixed = 0;
                     }),
             );
     }
 
-    function drawStaticForce() {
-        if (!$graphData) return;
-        if (simulation) {
-            simulation.stop();
-            simulation = null;
+    function tickVisuals() {
+        // --- Custom Force: Keep epics and child tasks closely packed ---
+        if ($graphData && parentOf) {
+            const nodeMap = new Map<string, any>();
+            $graphData.nodes.forEach((n: any) => nodeMap.set(n.id, n));
+
+            const CONTAINER_TYPES = new Set(['epic', 'project', 'goal']);
+
+            $graphData.nodes.forEach((n: any) => {
+                if (CONTAINER_TYPES.has(n.type)) return;
+                
+                let cur = n.id;
+                let targetContainer = null;
+                for (let i = 0; i < 20; i++) {
+                    const pid = parentOf.get(cur);
+                    if (!pid) break;
+                    const pNode = nodeMap.get(pid);
+                    if (pNode && CONTAINER_TYPES.has(pNode.type)) {
+                        targetContainer = pNode;
+                        break;
+                    }
+                    cur = pid;
+                }
+
+                if (targetContainer && typeof targetContainer.x === 'number' && typeof targetContainer.y === 'number') {
+                    const dx = targetContainer.x - n.x;
+                    const dy = targetContainer.y - n.y;
+                    // Apply a strong attractive spring force towards the container centre
+                    n.x += dx * 0.08;
+                    n.y += dy * 0.08;
+                }
+            });
         }
 
+        d3.select(nodesLayer)
+            .selectAll<SVGGElement, GraphNode>("g.node")
+            .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
+
+        const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
+        routeSfdpEdges(eEls);
+        applyEdgeVisibility(eEls);
+
+        // Render group bounding boxes from WebCola (skip unlabelled catch-all group)
+        if (hullLayer && colaLayout) {
+            const groups = (colaLayout.groups() || []).filter((g: any) => g.label);
+            const groupEls = d3.select(hullLayer)
+                .selectAll<SVGRectElement, any>("rect.cola-group")
+                .data(groups);
+
+            groupEls.join("rect")
+                .attr("class", "cola-group")
+                .attr("rx", 8).attr("ry", 8)
+                .attr("x", (d: any) => d.bounds?.x ?? 0)
+                .attr("y", (d: any) => d.bounds?.y ?? 0)
+                .attr("width", (d: any) => d.bounds?.width() ?? 0)
+                .attr("height", (d: any) => d.bounds?.height() ?? 0)
+                .attr("fill", (d: any, i: number) => {
+                    const hue = (i * 47) % 360;
+                    return `hsla(${hue}, 40%, 50%, 0.08)`;
+                })
+                .attr("stroke", (d: any, i: number) => {
+                    const hue = (i * 47) % 360;
+                    return `hsla(${hue}, 40%, 50%, 0.3)`;
+                })
+                .attr("stroke-width", 1.5)
+                .attr("stroke-dasharray", "6,3")
+                .style("pointer-events", "none");
+
+            // Epic group labels
+            const labelEls = d3.select(hullLayer)
+                .selectAll<SVGTextElement, any>("text.cola-group-label")
+                .data(groups);
+
+            labelEls.join("text")
+                .attr("class", "cola-group-label")
+                .attr("x", (d: any) => (d.bounds?.x ?? 0) + 12)
+                .attr("y", (d: any) => (d.bounds?.y ?? 0) + 24)
+                .text((d: any) => d.label || "")
+                .attr("font-size", 18)
+                .attr("font-weight", 700)
+                .attr("fill", (d: any, i: number) => {
+                    const hue = (i * 47) % 360;
+                    return `hsla(${hue}, 40%, 35%, 0.7)`;
+                })
+                .style("pointer-events", "none")
+                .style("text-transform", "uppercase")
+                .style("letter-spacing", "0.05em");
+        }
+    }
+
+    function drawForceAndStartPhysics() {
+        if (!$graphData) return;
+
+        // Setup DOM elements
+        if (colaLayout) { colaLayout.stop(); colaLayout = null; }
+
         const data = $graphData;
-        // Map initial precomputed SFDP layout
-        data.nodes.forEach((d) => {
-            d.x =
-                d.layouts?.sfdp?.x ||
-                d.x ||
-                Math.random() * 500;
-            d.y =
-                d.layouts?.sfdp?.y ||
-                d.y ||
-                Math.random() * 500;
-        });
+        const cw = 4000, ch = 2000;
 
         const nEls = d3
             .select(nodesLayer)
@@ -235,7 +335,7 @@
             .data(data.nodes, (d) => d.id)
             .join("g")
             .attr("class", "node")
-            .attr("transform", (d) => `translate(${d.x},${d.y})`);
+            .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
 
         const activeId = $selection.activeNodeId;
         nEls.each(function (d) {
@@ -243,7 +343,6 @@
             const isSelected = d.id === activeId;
             const lastSelected = (d as any)._lastSelected;
             const isEmpty = g.selectAll("*").empty();
-            // Only rebuild DOM when selection state changes or node is new
             if (isEmpty || lastSelected !== isSelected) {
                 g.selectAll("*").remove();
                 buildTaskCardNode(g, d, isSelected);
@@ -265,153 +364,135 @@
             .attr("marker-end", "url(#ar)")
             .attr("stroke-linecap", "round")
             .attr("stroke-linejoin", "round")
-            .attr("opacity", (d: any) => d.type === 'depends_on' ? 0.8 : d.type === 'parent' ? 0.9 : 0.5)
             .attr("class", "force-edge");
 
-        if ($viewSettings.viewMode === "SFDP") {
-            routeSfdpEdges(eEls);
-        } else {
-            routeForceEdges(eEls);
-        }
+        applyEdgeVisibility(eEls);
+        routeSfdpEdges(eEls);
         updateHulls();
-        applyFocusHighlighting(nEls, eEls);
-    }
 
-    function applyFocusHighlighting(nEls: any, eEls: any) {
-        const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
-        if (!$viewSettings.showFocusHighlight || focusIds.size === 0) {
-            nEls.classed('intent-dimmed', false).classed('intent-focus', false);
-            eEls.classed('intent-edge', false).classed('intent-edge-dim', false);
-            return;
+        // Start WebCola layout with hierarchical grouping
+        const fc = FORCE_CONFIG;
+
+        // Resolve string IDs to node references for all edges
+        const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
+        const nodeIndex = new Map($graphData.nodes.map((n, i) => [n.id, i]));
+        $graphData.links.forEach((l: any) => {
+            if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
+            if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
+        });
+
+        // Set width/height on nodes for avoidOverlaps (generous padding to prevent edges overlapping)
+        $graphData.nodes.forEach((n: any) => {
+            n.width = n.w + 40;
+            n.height = n.h + 30;
+        });
+
+        // Build flat groups by project — one group per project containing all its nodes.
+        // No nesting, so Cola treats this as a force layout with non-overlapping clusters.
+        const parentLinks = $graphData.links.filter((l: any) => l.type === 'parent');
+
+        // Build parent lookup: child ID → parent node
+        const parentOf = new Map<string, GraphNode>();
+        for (const l of parentLinks) {
+            const pid = typeof l.source === 'object' ? l.source.id : l.source;
+            const cid = typeof l.target === 'object' ? l.target.id : l.target;
+            const pNode = nodeById.get(pid);
+            if (pNode) parentOf.set(cid, pNode);
         }
 
-        nEls.each(function(this: SVGGElement, d: GraphNode) {
-            const g = d3.select(this);
-            g.select('.focus-glow').remove();
-
-            if (focusIds.has(d.id)) {
-                // Gold glow ring for priority focus tasks
-                g.insert('rect', ':first-child')
-                    .attr('class', 'focus-glow')
-                    .attr('x', -d.w / 2 - 4)
-                    .attr('y', -d.h / 2 - 4)
-                    .attr('width', d.w + 8)
-                    .attr('height', d.h + 8)
-                    .attr('rx', 6)
-                    .attr('fill', 'none')
-                    .attr('stroke', '#f59e0b')
-                    .attr('stroke-width', 2.5)
-                    .attr('opacity', 0.8)
-                    .attr('filter', 'url(#intent-glow-filter)');
+        // Group by nearest epic/project ancestor — ALL nodes must belong to a group
+        // so that avoidOverlaps prevents non-descendants from entering epic containers
+        const CONTAINER_TYPES = new Set(['epic', 'project', 'goal']);
+        function findContainer(nodeId: string): string | null {
+            let cur = nodeId;
+            let depth = 0;
+            while (depth < 20) {
+                const p = parentOf.get(cur);
+                if (!p) break;
+                if (CONTAINER_TYPES.has(p.type)) return p.id;
+                cur = p.id;
+                depth++;
             }
-        });
-
-        // Gentle emphasis: focus nodes full opacity, others slightly faded
-        nEls.classed('intent-focus', (d: any) => focusIds.has(d.id));
-        nEls.classed('intent-dimmed', (d: any) => !focusIds.has(d.id));
-
-        // Edges: highlight edges between focus nodes, dim others
-        eEls.each(function(this: SVGPathElement, d: any) {
-            const sid = d.source.id || d.source;
-            const tid = d.target.id || d.target;
-            const bothFocused = focusIds.has(sid) && focusIds.has(tid);
-            d3.select(this)
-                .classed('intent-edge', bothFocused)
-                .classed('intent-edge-dim', !bothFocused);
-        });
-    }
-
-    function tickVisuals() {
-        d3.select(nodesLayer)
-            .selectAll<SVGGElement, GraphNode>("g.node")
-            .attr("transform", (d) => `translate(${d.x},${d.y})`);
-
-        const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
-        if ($viewSettings.viewMode === "SFDP") {
-            routeSfdpEdges(eEls);
-        } else {
-            routeForceEdges(eEls);
-        }
-        updateHulls();
-    }
-
-    function drawForceAndStartPhysics() {
-        if (!$graphData) return;
-
-        // Setup elements
-        drawStaticForce();
-
-        // Start Simulation
-        if (simulation) simulation.stop();
-
-        const fc = $graphData.forceConfig;
-        const cw = 1200,
-            ch = 800; // Expected center bounds
-
-        simulation = d3
-            .forceSimulation<GraphNode, GraphEdge>($graphData.nodes)
-            .force(
-                "link",
-                d3
-                    .forceLink<GraphNode, GraphEdge>($graphData.links)
-                    .id((d) => d.id)
-                    .distance((d) => d.distance * (fc.linkDistMult || 1.0) * $viewSettings.linkDistance)
-                    .strength((d) => d.strength),
-            )
-            .force(
-                "charge",
-                d3
-                    .forceManyBody<GraphNode>()
-                    .strength(
-                        (d) =>
-                            (d.charge || -100) *
-                            (fc.chargeMult || 1.0) *
-                            $viewSettings.chargeStrength,
-                    )
-                    .distanceMax(fc.chargeDistanceMax || 280),
-            )
-            .force(
-                "collide",
-                d3
-                    .forceCollide<GraphNode>()
-                    .radius(
-                        (d) =>
-                            (Math.max(d.w / 2, d.h / 2) +
-                            (fc.collisionPadding || 2)) * $viewSettings.collisionRadius,
-                    )
-                    .strength(fc.collisionStrength || 0.4)
-                    .iterations(fc.collisionIterations || 3),
-            )
-            .force("center", d3.forceCenter(cw / 2, ch / 2).strength($viewSettings.gravity))
-            .alphaDecay($viewSettings.alphaDecay)
-            .velocityDecay($viewSettings.velocityDecay);
-
-        // Warm up ticks
-        const warmup = fc.warmupTicks || 80;
-        for (let i = 0; i < warmup; i++) {
-            simulation.tick();
+            return null;
         }
 
-        // Live loop
-        simulation.on("tick", tickVisuals);
+        const containerMembers = new Map<string, number[]>();
+        const ungroupedIndices: number[] = [];
+        $graphData.nodes.forEach((n, i) => {
+            const containerId = CONTAINER_TYPES.has(n.type) ? n.id : findContainer(n.id);
+            if (containerId === null) {
+                ungroupedIndices.push(i);
+                return;
+            }
+            if (!containerMembers.has(containerId)) containerMembers.set(containerId, []);
+            containerMembers.get(containerId)!.push(i);
+        });
+
+        const groupPadding = $viewSettings.colaGroupPadding;
+        const colaGroups: any[] = [];
+        for (const [containerId, members] of containerMembers) {
+            if (members.length >= 2) {
+                const containerNode = nodeById.get(containerId);
+                const label = containerNode?.label || containerNode?.fullTitle || containerId;
+                colaGroups.push({ leaves: members, padding: groupPadding, label });
+            } else {
+                // Single-member groups: add members to ungrouped
+                ungroupedIndices.push(...members);
+            }
+        }
+        // Put ungrouped nodes in a catch-all group so Cola keeps them outside epic containers
+        if (ungroupedIndices.length > 0) {
+            colaGroups.push({ leaves: ungroupedIndices, padding: groupPadding, label: '' });
+        }
+
+        // Initial positions: randomize group centers, place all members at their group center.
+        // This lets Cola's overlap avoidance expand each cluster outward from a shared origin,
+        // producing cleaner separation than fully random initial positions.
+        const pad = 200;
+        colaGroups.forEach(group => {
+            const cx = pad + Math.random() * (cw - 2 * pad);
+            const cy = pad + Math.random() * (ch - 2 * pad);
+            (group.leaves as number[]).forEach(idx => {
+                const n = data.nodes[idx] as any;
+                n.x = cx;
+                n.y = cy;
+            });
+        });
+        // Any nodes not in any group (shouldn't happen, but safety)
+        data.nodes.forEach((d: any) => {
+            if (typeof d.x !== 'number') d.x = cw / 2;
+            if (typeof d.y !== 'number') d.y = ch / 2;
+        });
+
+        // Build cola links from parent edges (index-based)
+        const colaLinks = parentLinks.map((l: any) => {
+            const si = nodeIndex.get(typeof l.source === 'object' ? l.source.id : l.source)!;
+            const ti = nodeIndex.get(typeof l.target === 'object' ? l.target.id : l.target)!;
+            return { source: si, target: ti };
+        }).filter((l: any) => l.source !== undefined && l.target !== undefined);
+
+        console.log(`[Cola] ${$graphData.nodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups`, colaGroups.map(g => g.leaves.length));
+
+        colaLayout = cola.d3adaptor(d3)
+            .size([cw, ch])
+            .nodes($graphData.nodes as any)
+            .links(colaLinks)
+            .groups(colaGroups)
+            .avoidOverlaps(true)
+            .handleDisconnected(true)
+            .flowLayout('y', $viewSettings.colaFlowSep)
+            .symmetricDiffLinkLengths($viewSettings.colaLinkLength, 0.7)
+            .on("tick", tickVisuals)
+            .start(80, 80, 80);
     }
 
     onDestroy(() => {
-        if (simulation) simulation.stop();
+        if (colaLayout) colaLayout.stop();
         cancelAnimationFrame(frameId);
     });
 </script>
 
 {#if containerGroup}
-    <defs>
-        <filter id="intent-glow-filter" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="3" result="blur"/>
-            <feMerge>
-                <feMergeNode in="blur"/>
-                <feMergeNode in="SourceGraphic"/>
-            </feMerge>
-        </filter>
-    </defs>
     <g bind:this={hullLayer} class="hull-layer"></g>
     <g bind:this={edgesLayer}></g>
     <g bind:this={nodesLayer}></g>
@@ -425,8 +506,8 @@
             filter 0.3s ease;
     }
     :global(g.node.dimmed) {
-        opacity: 0.15;
-        filter: grayscale(0.8) brightness(0.6);
+        opacity: 0.6;
+        filter: grayscale(0.5) brightness(0.75);
     }
     :global(g.node.illuminated) {
         opacity: 1;
@@ -439,26 +520,17 @@
             stroke 0.3s ease;
     }
     :global(path.force-edge.dimmed) {
-        opacity: 0.05;
+        opacity: 0.3;
     }
     :global(path.force-edge.illuminated) {
         opacity: 1;
         stroke: var(--color-primary);
         stroke-width: 2px;
     }
-    /* Intention path highlighting — gentle emphasis, don't over-dim */
-    :global(g.node.intent-dimmed) {
-        opacity: 0.5;
-        filter: grayscale(0.3) brightness(0.8);
-    }
-    :global(g.node.intent-focus) {
-        opacity: 1;
-        filter: none;
-    }
-    :global(path.force-edge.intent-edge) {
-        opacity: 0.9;
-        stroke: #f59e0b;
-        stroke-width: 2.5px;
+    /* Selected (clicked) node always at full opacity */
+    :global(g.node.selected-node) {
+        opacity: 1 !important;
+        filter: none !important;
     }
     :global(path.force-edge.intent-edge-dim) {
         opacity: 0.15;

@@ -35,6 +35,7 @@ export interface GraphNode {
     stakeholder: boolean;
     structural: boolean;
     dw: number;
+    totalLeafCount: number;
     modified: number | null;
     badge: string;
     charge: number;
@@ -163,8 +164,72 @@ export function prepareGraphData(
     graph: { nodes?: any[]; edges?: any[]; ready?: string[]; blocked?: string[]; focus?: string[] },
     structuralIds: Set<string> = new Set()
 ): PreparedGraph {
-    const rawNodes = graph.nodes || [];
-    const rawEdges = graph.edges || [];
+    let rawNodes = (graph.nodes || []).map(n => ({ ...n }));
+    let rawEdges = (graph.edges || []).map(e => ({ ...e }));
+
+    const initialNodeById = new Map<string, any>(rawNodes.map(n => [n.id, n]));
+    const initialNodeIds = new Set(rawNodes.map(n => n.id));
+
+    const initialChildrenMap = new Map<string, string[]>();
+    rawNodes.forEach(n => {
+        if (n.parent && initialNodeIds.has(n.parent)) {
+            const kids = initialChildrenMap.get(n.parent) || [];
+            kids.push(n.id);
+            initialChildrenMap.set(n.parent, kids);
+        }
+    });
+
+    const CONTAINER_TYPES = new Set(['goal', 'project', 'epic', 'task']);
+    const collapseMap = new Map<string, string>();
+    
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const n of rawNodes) {
+            if (CONTAINER_TYPES.has((n.node_type || '').toLowerCase())) {
+                const kids = initialChildrenMap.get(n.id) || [];
+                if (kids.length === 1) {
+                    const childId = kids[0];
+                    if (!collapseMap.has(n.id)) {
+                        collapseMap.set(n.id, childId);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        for (const [k, v] of collapseMap.entries()) {
+            if (collapseMap.has(v)) {
+                collapseMap.set(k, collapseMap.get(v)!);
+                changed = true;
+            }
+        }
+    }
+
+    rawNodes = rawNodes.filter(n => !collapseMap.has(n.id));
+    rawNodes.forEach(n => {
+        let curParent = n.parent;
+        const seen = new Set<string>();
+        while (curParent && collapseMap.has(curParent)) {
+            if (seen.has(curParent)) break;
+            seen.add(curParent);
+            const pNode = initialNodeById.get(curParent);
+            curParent = pNode ? pNode.parent : null;
+        }
+        n.parent = curParent;
+    });
+
+    rawEdges = rawEdges.map(e => ({
+        ...e,
+        source: collapseMap.get(e.source) || e.source,
+        target: collapseMap.get(e.target) || e.target
+    })).filter(e => e.source !== e.target);
+
+    const uniqueEdges = new Map<string, any>();
+    rawEdges.forEach(e => {
+        const key = `${e.source}-${e.target}-${e.type || ''}`;
+        uniqueEdges.set(key, e);
+    });
+    rawEdges = Array.from(uniqueEdges.values());
 
     const nodeById = new Map<string, any>(rawNodes.map(n => [n.id, n]));
     const nodeIds = new Set(rawNodes.map(n => n.id));
@@ -180,6 +245,34 @@ export function prepareGraphData(
     rawNodes.forEach(n => {
         if (n.parent) parentIdsInGraph.add(n.parent);
     });
+
+    // Compute total leaf descendant counts from parent hierarchy
+    const childrenMap = new Map<string, string[]>();
+    rawNodes.forEach(n => {
+        if (n.parent && nodeIds.has(n.parent)) {
+            const kids = childrenMap.get(n.parent) || [];
+            kids.push(n.id);
+            childrenMap.set(n.parent, kids);
+        }
+    });
+
+    const totalLeafCountCache = new Map<string, number>();
+    function countLeaves(id: string): number {
+        if (totalLeafCountCache.has(id)) return totalLeafCountCache.get(id)!;
+        const kids = childrenMap.get(id);
+        if (!kids || kids.length === 0) {
+            totalLeafCountCache.set(id, 1); // leaf counts as 1
+            return 1;
+        }
+        let total = 0;
+        for (const kid of kids) total += countLeaves(kid);
+        totalLeafCountCache.set(id, total);
+        return total;
+    }
+    rawNodes.forEach(n => countLeaves(n.id));
+
+    // Intent/focus nodes get promoted to priority above P0
+    const focusSet = new Set(graph.focus || []);
 
     const validEdges = rawEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
     const maxDepth = Math.max(0, ...rawNodes.map(n => n.depth || 0));
@@ -197,7 +290,9 @@ export function prepareGraphData(
         const nid = node.id;
         const nodeType = node.node_type || "";
         const status = (node.status || "inbox").toLowerCase();
-        const priority = typeof node.priority === 'number' ? node.priority : 2;
+        // Intent/focus nodes are promoted above P0 (priority -1)
+        const basePriority = typeof node.priority === 'number' ? node.priority : 2;
+        const priority = focusSet.has(nid) ? Math.min(basePriority, -1) : basePriority;
         const dw = node.downstream_weight || 0;
         const stakeholder = node.stakeholder_exposure || false;
         const depth = node.depth || 0;
@@ -291,6 +386,7 @@ export function prepareGraphData(
             stakeholder,
             structural: isStructural,
             dw: Math.round(dw * 10) / 10,
+            totalLeafCount: parentIdsInGraph.has(nid) ? (totalLeafCountCache.get(nid) || 0) : 0,
             modified,
             badge,
             charge: TYPE_CHARGE[nodeType] ?? -100,
@@ -327,20 +423,20 @@ export function prepareGraphData(
             width = 3.5;
             dash = "";
         } else if (etype === 'depends_on') {
-            color = "#ef4444"; // Red for hard dependencies
-            width = 3.0;
+            color = "#f59e0b"; // Amber — dependency edges draw attention to the blocker
+            width = 3.5;
             dash = "";
             const tw = targetWeight.get(edge.target) || 0;
             if (tw > 0 && maxWeight > 0) {
                 const critRatio = Math.min(Math.log1p(tw) / Math.log1p(maxWeight), 1.0);
                 if (critRatio > 0.5) {
-                    width = 2.5 + critRatio * 1.5;
+                    width = 3.0 + critRatio * 2.0;
                 }
             }
         } else if (etype === 'soft_depends_on') {
-            color = "#3b82f6"; // Blue for soft dependencies
+            color = "#d97706"; // Warm orange — softer version of dependency
             width = 2.0;
-            dash = "4,4";
+            dash = "6,3";
         } else {
             color = "#a3a3a3"; // Lighter grey for references
             width = 1.5;

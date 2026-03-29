@@ -18,6 +18,11 @@ export const POST: RequestHandler = async ({ request }) => {
     if (assignee !== undefined) updates.assignee = assignee;
     if (parent !== undefined) updates.parent = parent;
 
+    // PKB requires completion_evidence when setting status to done
+    if (status === 'done') {
+        updates.completion_evidence = 'Manually completed via dashboard';
+    }
+
     if (Object.keys(updates).length === 0) {
         return json({ error: 'No updates provided' }, { status: 400 });
     }

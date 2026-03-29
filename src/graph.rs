@@ -564,6 +564,7 @@ impl GraphNode {
             stakeholder_exposure: false,
             reachable: false,
             assumptions,
+            focus_score: None,
         }
     }
 }

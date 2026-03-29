@@ -59,7 +59,10 @@
             </div>
         {/each}
         {#if sessions.length === 0}
-            <div class="text-xs text-primary/40 italic">No active agent sessions in the last 4 hours.</div>
+            <div class="flex items-center gap-3 text-xs text-primary/50 py-2">
+                <span class="material-symbols-outlined text-[16px] text-primary/30">nights_stay</span>
+                All quiet — no active sessions right now.
+            </div>
         {/if}
     </div>
 

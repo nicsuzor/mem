@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { filters } from '../../stores/filters';
+    import { filters, cycleEdgeVisibility, type EdgeVisibility } from '../../stores/filters';
     import { graphData } from '../../stores/graph';
 
     let showLegend = true;
@@ -7,7 +7,7 @@
     // Status = fill color (muted defaults, saturated for attention)
     const statusGroups = [
         { key: 'showActive', label: 'ACTIVE', statuses: ['active', 'inbox', 'todo', 'in_progress', 'review'], color: '#2C4A88' },
-        { key: 'showBlocked', label: 'BLOCKED', statuses: ['blocked'], color: '#dc2626' },
+        { key: 'showBlocked', label: 'BLOCKED', statuses: ['blocked'], color: '#6B3A3A' },
         { key: 'showCompleted', label: 'COMPLETED', statuses: ['done', 'completed', 'cancelled'], color: '#1E1E24' },
     ] as const;
 
@@ -21,12 +21,32 @@
     ] as const;
 
     const edgeTypes = [
-        { key: 'showDependencies', label: 'DEPENDENCIES', color: '#ef4444', dash: false },
-        { key: 'showReferences', label: 'REFERENCES', color: '#a3a3a3', dash: true },
+        { key: 'edgeParent', label: 'PARENT', color: '#facc15', dash: false },
+        { key: 'edgeDependencies', label: 'DEPENDENCIES', color: '#ef4444', dash: false },
+        { key: 'edgeReferences', label: 'REFERENCES', color: '#a3a3a3', dash: true },
     ] as const;
 
     function toggleStatus(key: string) {
         filters.update(f => ({ ...f, [key]: !f[key as keyof typeof f] }));
+    }
+
+    function cycleEdge(key: string) {
+        filters.update(f => ({
+            ...f,
+            [key]: cycleEdgeVisibility(f[key as keyof typeof f] as EdgeVisibility),
+        }));
+    }
+
+    function edgeOpacityForLegend(vis: EdgeVisibility): number {
+        if (vis === 'bright') return 1;
+        if (vis === 'half') return 0.4;
+        return 0.1;
+    }
+
+    function edgeStateLabel(vis: EdgeVisibility): string {
+        if (vis === 'bright') return '●';
+        if (vis === 'half') return '◐';
+        return '○';
     }
 
     $: availableProjects = $graphData
@@ -68,18 +88,21 @@
             {/each}
         </div>
 
-        <!-- Edge filters -->
+        <!-- Edge visibility (click to cycle: bright → half → hidden) -->
         <div class="legend-section">
             <span class="legend-section-title">EDGES</span>
             {#each edgeTypes as edge}
+                {@const vis = $filters[edge.key]}
                 <button
                     class="legend-item"
-                    class:dimmed={!$filters[edge.key]}
-                    on:click={() => toggleStatus(edge.key)}
+                    class:dimmed={vis === 'hidden'}
+                    on:click={() => cycleEdge(edge.key)}
+                    title="Click to cycle: bright → half → hidden"
                 >
-                    <div class="legend-line" style="background:{edge.color}; opacity:{$filters[edge.key] ? 1 : 0.2};"
+                    <div class="legend-line" style="background:{edge.color}; opacity:{edgeOpacityForLegend(vis)};"
                         class:dashed={edge.dash}></div>
                     <span class="legend-label">{edge.label}</span>
+                    <span class="edge-state">{edgeStateLabel(vis)}</span>
                 </button>
             {/each}
         </div>
@@ -213,6 +236,12 @@
         border-top: 3px dashed;
         border-color: inherit;
         height: 0;
+    }
+
+    .edge-state {
+        margin-left: auto;
+        font-size: 10px;
+        opacity: 0.6;
     }
 
     .legend-select {

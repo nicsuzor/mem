@@ -5,25 +5,27 @@
  */
 
 export const EDGE_FORCE = {
-    parent: { strength: 1.0, distance: 40 },
-    depends_on: { strength: 0.15, distance: 200 },
-    ref: { strength: 0.02, distance: 300 },
+    parent:         { strength: 0.1,  distance: 200 },
+    depends_on:     { strength: 0.02, distance: 400 },
+    soft_depends_on:{ strength: 0.01, distance: 500 },
+    ref:            { strength: 0.01, distance: 500 },
 } as const;
 
 export const FORCE_CONFIG = {
-    chargeDistanceMax: 280,
-    chargeMult: 1.0,
-    collisionPadding: 2,
-    collisionStrength: 0.4,
-    collisionIterations: 3,
-    clusterStrength: 0.4,
-    orphanRadius: 0.45,
-    orphanStrength: 0.3,
+    // Charge (repulsion) — repels all nodes from each other
+    chargeDistanceMax: 800,
+    chargeMult: 2.0,
+
+    // Link distance multiplier (applied to EDGE_FORCE distances)
     linkDistMult: 0.75,
-    alphaDecay: 0.04,
-    velocityDecay: 0.55,
-    alphaMin: 0.002,
-    warmupTicks: 80,
+
+    // Radial layout (concentric rings by hierarchy depth, replaces center gravity)
+    radialStrength: 0.15,
+
+    // Simulation dynamics
+    alphaDecay: 0.02,
+    velocityDecay: 0.7,
+    warmupTicks: 300,
 } as const;
 
 export const TYPE_CHARGE: Record<string, number> = {
@@ -80,7 +82,7 @@ export const STATUS_FILLS: Record<string, string> = {
     cancelled: "#f1f5f9",
     active: "#dbeafe",
     in_progress: "#c7d2fe",
-    blocked: "#fee2e2",
+    blocked: "#3D2B2B",
     waiting: "#fef9c3",
     inbox: "#f1f5f9",
     todo: "#f1f5f9",
@@ -96,7 +98,7 @@ export const STATUS_TEXT: Record<string, string> = {
     cancelled: "#94a3b8",
     active: "#1e3a5f",
     in_progress: "#312e81",
-    blocked: "#991b1b",
+    blocked: "#9B7070",
     waiting: "#854d0e",
     inbox: "#475569",
     todo: "#475569",
@@ -127,6 +129,7 @@ export const ASSIGNEE_COLORS: Record<string, string> = {
 export const ASSIGNEE_DEFAULT = "#6c757d";
 
 export const PRIORITY_BORDERS: Record<number, string> = {
+    [-1]: "#f59e0b", // Intent/focus — amber, above P0
     0: "#dc3545",
     1: "#fd7e14",
     2: "#6c757d",
