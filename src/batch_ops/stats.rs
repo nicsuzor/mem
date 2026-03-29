@@ -81,10 +81,10 @@ impl GraphStats {
         for (priority, count) in &priorities {
             let label = match priority.as_str() {
                 "0" => "P0 (critical)",
-                "1" => "P1 (high)",
-                "2" => "P2 (medium)",
-                "3" => "P3 (low)",
-                "4" => "P4 (someday)",
+                "1" => "P1 (intended)",
+                "2" => "P2 (active)",
+                "3" => "P3 (planned)",
+                "4" => "P4 (backlog)",
                 _ => priority,
             };
             out.push_str(&format!("  {:<20} {}\n", label, count));

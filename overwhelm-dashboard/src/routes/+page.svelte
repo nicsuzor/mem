@@ -277,10 +277,15 @@
             <ThreadedTasksView />
         </section>
     {:else if $viewSettings.mainTab === "Dashboard"}
-        <!-- DASHBOARD: Full width, no graph underneath -->
-        <section class="col-span-12 bg-background overflow-y-auto custom-scrollbar">
+        <!-- DASHBOARD: with optional detail drawer -->
+        <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} bg-background overflow-y-auto custom-scrollbar transition-all">
             <DashboardView {data} />
         </section>
+        {#if $selection.activeNodeId}
+        <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar">
+            <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
+        </aside>
+        {/if}
 
     {:else}
     <!-- MAIN CONTENT: Graph or Dashboard -->

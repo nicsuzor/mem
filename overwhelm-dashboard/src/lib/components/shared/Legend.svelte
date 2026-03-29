@@ -1,6 +1,7 @@
 <script lang="ts">
     import { filters, cycleEdgeVisibility, type EdgeVisibility } from '../../stores/filters';
     import { graphData } from '../../stores/graph';
+    import { PRIORITIES } from '../../data/constants';
 
     let showLegend = true;
 
@@ -12,13 +13,11 @@
     ] as const;
 
     // Priority = border color (only P0/P1 pop)
-    const priorityColors = [
-        { label: 'P0 CRITICAL', color: '#f59e0b', border: true },
-        { label: 'P1 HIGH', color: '#d97706', border: true },
-        { label: 'P2 MEDIUM', color: '#4A5568', border: true },
-        { label: 'P3 LOW', color: '#3A4250', border: true },
-        { label: 'P4 BACKLOG', color: '#2D3340', border: true },
-    ] as const;
+    const priorityColors = PRIORITIES.map(p => ({
+        label: `P${p.value} ${p.label}`,
+        color: p.color,
+        border: true,
+    }));
 
     const edgeTypes = [
         { key: 'edgeParent', label: 'PARENT', color: '#facc15', dash: false },

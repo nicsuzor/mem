@@ -290,9 +290,7 @@ export function prepareGraphData(
         const nid = node.id;
         const nodeType = node.node_type || "";
         const status = (node.status || "inbox").toLowerCase();
-        // Intent/focus nodes are promoted above P0 (priority -1)
-        const basePriority = typeof node.priority === 'number' ? node.priority : 2;
-        const priority = focusSet.has(nid) ? Math.min(basePriority, -1) : basePriority;
+        const priority = typeof node.priority === 'number' ? node.priority : 2;
         const dw = node.downstream_weight || 0;
         const stakeholder = node.stakeholder_exposure || false;
         const depth = node.depth || 0;

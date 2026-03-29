@@ -343,11 +343,10 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // Priority border colors — only P0/P1 draw the eye
     const PRIORITY_BORDERS: Record<number, string> = {
-        [-1]: '#e11d48', // Intent/focus — hot pink, above P0
-        0: '#f59e0b',  // P0 Critical — strong amber (attention!)
-        1: '#d97706',  // P1 High — warm orange
-        2: '#4A5568',  // P2 Med — blends with card
-        3: '#3A4250',  // P3 Low — nearly invisible
+        0: '#ef4444',  // P0 Critical — red
+        1: '#f59e0b',  // P1 Intended — amber
+        2: '#4A5568',  // P2 Active — blends with card
+        3: '#3A4250',  // P3 Planned — nearly invisible
         4: '#2D3340',  // P4 Backlog — disappears
     };
 
@@ -593,11 +592,10 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
     };
 
     const CIRCLE_PRIORITY_BORDERS: Record<number, string> = {
-        [-1]: '#e11d48', // Intent/focus — hot pink, above P0
-        0: '#f59e0b',  // P0 Critical — strong amber
-        1: '#d97706',  // P1 High — warm orange
-        2: '#4A5568',  // P2 Med — blends
-        3: '#3A4250',  // P3 Low — nearly invisible
+        0: '#ef4444',  // P0 Critical — red
+        1: '#f59e0b',  // P1 Intended — amber
+        2: '#4A5568',  // P2 Active — blends
+        3: '#3A4250',  // P3 Planned — nearly invisible
         4: '#2D3340',  // P4 Backlog — disappears
     };
 

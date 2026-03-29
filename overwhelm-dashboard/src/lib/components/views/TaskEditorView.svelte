@@ -418,9 +418,9 @@
                             onchange={(e) => setPriority(Number(e.currentTarget.value))}
                         >
                             <option value="0">P0 CRITICAL</option>
-                            <option value="1">P1 HIGH</option>
-                            <option value="2">P2 MEDIUM</option>
-                            <option value="3">P3 LOW</option>
+                            <option value="1">P1 INTENDED</option>
+                            <option value="2">P2 ACTIVE</option>
+                            <option value="3">P3 PLANNED</option>
                             <option value="4">P4 BACKLOG</option>
                         </select>
                     </div>

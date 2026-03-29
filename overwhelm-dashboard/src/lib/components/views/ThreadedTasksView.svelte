@@ -2,6 +2,7 @@
     import { graphData } from "../../stores/graph";
     import { selection } from "../../stores/selection";
     import { filters } from "../../stores/filters";
+    import { PRIORITIES } from "../../data/constants";
     import { projectHue } from "../shared/NodeShapes";
     import TaskEditorView from "./TaskEditorView.svelte";
 
@@ -255,9 +256,9 @@
                                     </div>
                                 </td>
                                 <td class="px-4 py-4">
-                                    <span class="inline-flex items-center gap-1.5 text-[10px] font-bold {task.priority === 0 ? 'text-red-500' : task.priority === 1 ? 'text-primary' : 'text-primary/60'}">
-                                        <span class="size-1.5 rounded-full {task.priority === 0 ? 'bg-red-500' : task.priority === 1 ? 'bg-primary' : 'bg-primary/60'}"></span>
-                                        {task.priority === 0 ? 'CRITICAL' : task.priority === 1 ? 'HIGH' : task.priority === 2 ? 'MED' : 'LOW'}
+                                    <span class="inline-flex items-center gap-1.5 text-[10px] font-bold {task.priority <= 1 ? 'text-primary' : 'text-primary/60'}">
+                                        <span class="size-1.5 rounded-full" style="background-color: {PRIORITIES[task.priority ?? 2]?.color ?? '#6c757d'};"></span>
+                                        {PRIORITIES[task.priority ?? 2]?.short ?? 'ACTV'}
                                     </span>
                                 </td>
                                 <td class="px-4 py-4 text-right">

@@ -177,7 +177,7 @@ enum Commands {
         #[arg(long)]
         parent: Option<String>,
 
-        /// Priority (0=critical, 1=high, 2=medium, 3=low, 4=someday)
+        /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
         #[arg(short, long)]
         priority: Option<i32>,
 
@@ -236,7 +236,7 @@ enum Commands {
         #[arg(short, long)]
         status: Option<String>,
 
-        /// Priority (0=critical, 1=high, 2=medium, 3=low, 4=someday)
+        /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
         #[arg(short, long)]
         priority: Option<i32>,
 
@@ -295,7 +295,7 @@ enum Commands {
         #[arg(short, long)]
         status: Option<String>,
 
-        /// Priority (0=critical, 1=high, 2=medium, 3=low, 4=someday)
+        /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
         #[arg(short, long)]
         priority: Option<i32>,
 
