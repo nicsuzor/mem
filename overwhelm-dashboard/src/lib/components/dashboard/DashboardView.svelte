@@ -105,7 +105,35 @@
 <QuickCapture />
 
 <div class="h-full p-8 font-mono text-primary flex flex-col gap-6">
-    <!-- PRIORITY 1: What's running + what needs you -->
+    <!-- US-D7: Above-the-fold triage bar — answers "running?", "dropped?", "needs me?" in 5 seconds -->
+    <div class="flex items-center gap-4 text-xs">
+        <div class="flex items-center gap-2 bg-primary/10 border border-primary/30 px-3 py-2">
+            <span class="material-symbols-outlined text-[14px]">bolt</span>
+            <span class="font-bold">{activeSessionsData.length}</span>
+            <span class="text-primary/60">running</span>
+        </div>
+        {#if (data?.dashboardData?.needs_you || []).length > 0}
+            <div class="flex items-center gap-2 bg-red-900/20 border border-red-500/50 px-3 py-2 text-red-400 animate-pulse">
+                <span class="material-symbols-outlined text-[14px]">warning</span>
+                <span class="font-bold">{(data?.dashboardData?.needs_you || []).length}</span>
+                <span>needs you</span>
+            </div>
+        {:else}
+            <div class="flex items-center gap-2 bg-primary/5 border border-primary/20 px-3 py-2 text-primary/40">
+                <span class="material-symbols-outlined text-[14px]">check_circle</span>
+                <span>nothing needs you</span>
+            </div>
+        {/if}
+        {#if pathData.abandoned_work?.length > 0}
+            <div class="flex items-center gap-2 bg-yellow-900/20 border border-yellow-500/40 px-3 py-2 text-yellow-500">
+                <span class="material-symbols-outlined text-[14px]">sync_problem</span>
+                <span class="font-bold">{pathData.abandoned_work.length}</span>
+                <span class="text-yellow-500/70">dropped threads</span>
+            </div>
+        {/if}
+    </div>
+
+    <!-- PRIORITY 1: What's running + what needs you (above the fold) -->
     <div class="border border-primary/30 bg-surface p-4">
         <ActiveSessions
             sessions={activeSessionsData}

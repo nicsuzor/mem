@@ -27,7 +27,7 @@
 
     $: hasStory = storyByProject.size > 0;
     $: ageMinutes = synthesis?._age_minutes;
-    $: isStale = ageMinutes !== undefined && ageMinutes > 120;
+    $: isStale = ageMinutes !== undefined && ageMinutes > 60;
 </script>
 
 {#if inline}
@@ -70,6 +70,12 @@
         {:else}
             <div class="text-sm text-primary/40 italic">
                 No narrative available. Run <code class="text-primary/60">/daily</code> to generate today's story.
+            </div>
+        {/if}
+
+        {#if isStale && hasStory}
+            <div class="text-[10px] text-primary/40 mt-1">
+                Narrative is stale. Run <code class="text-primary/50">/daily</code> to refresh.
             </div>
         {/if}
 

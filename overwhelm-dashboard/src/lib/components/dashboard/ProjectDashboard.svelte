@@ -5,6 +5,15 @@
 
     $: hasData = projectProjects && projectProjects.length > 0;
 
+    // Sort projects by activity: sessions + active tasks count (spec: "Sorted by activity score")
+    $: sortedProjects = [...projectProjects].sort((a, b) => {
+        const aSessions = (projectData.sessions?.[a] || []).length;
+        const bSessions = (projectData.sessions?.[b] || []).length;
+        const aTaskNodes = $graphData ? $graphData.nodes.filter(n => n.project === a && ['active', 'in_progress', 'blocked'].includes(n.status)).length : 0;
+        const bTaskNodes = $graphData ? $graphData.nodes.filter(n => n.project === b && ['active', 'in_progress', 'blocked'].includes(n.status)).length : 0;
+        return (bSessions + bTaskNodes) - (aSessions + aTaskNodes);
+    });
+
     function dedup(items: any[]): any[] {
         return items.filter((acc, i, arr) => arr.findIndex(a => a.description === acc.description) === i);
     }
@@ -12,7 +21,7 @@
 
 {#if hasData}
     <div class="flex flex-col gap-6 font-mono text-primary">
-        {#each projectProjects as project}
+        {#each sortedProjects as project}
             {@const meta = projectData.meta?.[project] || {}}
             {@const storeTasks = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && n.project === project && ['active', 'in_progress', 'blocked'].includes(n.status)) : []}
             {@const tasks = storeTasks.length > 0 ? storeTasks : (projectData.tasks?.[project] || [])}
@@ -68,9 +77,13 @@
                                     <div class="flex items-start gap-2 p-2 bg-primary/5 border-l-2 {task.priority === 0 ? 'border-red-500' : task.priority === 1 ? 'border-orange-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors">
                                         <span class="text-[10px] font-bold {task.priority === 0 ? 'text-red-500' : task.priority === 1 ? 'text-orange-500' : 'text-primary/70'}">P{task.priority !== undefined ? task.priority : '?'}</span>
                                         <span class="text-xs text-primary/90 flex-1">{task.title || task.label}</span>
-                                        {#if task.status === "in_progress"}
-                                            <span class="text-[10px] bg-primary text-black px-1 font-bold animate-pulse">RUNNING</span>
-                                        {/if}
+                                        <span class="text-[10px] font-bold px-1 py-0.5 shrink-0 {
+                                            task.status === 'in_progress' ? 'bg-primary text-black animate-pulse' :
+                                            task.status === 'blocked' ? 'bg-red-900/50 text-red-400 border border-red-500/40' :
+                                            task.status === 'waiting' ? 'bg-yellow-900/30 text-yellow-400 border border-yellow-500/40' :
+                                            task.status === 'review' ? 'bg-purple-900/30 text-purple-400 border border-purple-500/40' :
+                                            'bg-primary/10 text-primary/50 border border-primary/20'
+                                        }">{(task.status || 'active').toUpperCase().replace('_', ' ')}</span>
                                     </div>
                                 {:else}
                                     <div class="text-xs text-primary/40 italic">No active tasks.</div>

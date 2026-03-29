@@ -97,13 +97,21 @@
         {/if}
     {/if}
 
-    <!-- Stale Sessions (>24h) — archive prompt -->
+    <!-- Stale Sessions (>24h) — archive prompt per spec -->
     {#if staleSessions.length > 0}
         <div class="flex items-center gap-3 border border-primary/20 bg-primary/5 p-3 mt-1">
             <span class="material-symbols-outlined text-[16px] text-primary/40">inventory_2</span>
             <span class="text-xs text-primary/50 flex-1">
                 {staleSessions.length} stale session{staleSessions.length !== 1 ? 's' : ''} (no activity &gt;24h)
             </span>
+            <div class="flex items-center gap-2">
+                <button class="text-[10px] font-bold tracking-widest text-primary/50 hover:text-primary border border-primary/20 hover:border-primary/50 px-2 py-1 transition-colors">
+                    REVIEW
+                </button>
+                <button class="text-[10px] font-bold tracking-widest text-primary/30 hover:text-primary/60 px-2 py-1 transition-colors">
+                    DISMISS
+                </button>
+            </div>
         </div>
     {/if}
 </div>

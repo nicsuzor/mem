@@ -89,6 +89,7 @@ export const STATUS_FILLS: Record<string, string> = {
     review: "#f3e8ff",
     decomposing: "#e0f2fe",
     dormant: "#f1f5f9",
+    archived: "#e2e8f0",
 };
 
 export const STATUS_TEXT: Record<string, string> = {
@@ -104,6 +105,7 @@ export const STATUS_TEXT: Record<string, string> = {
     review: "#6b21a8",
     decomposing: "#0369a1",
     dormant: "#94a3b8",
+    archived: "#94a3b8",
 };
 
 export const TYPE_BADGE: Record<string, string> = {
