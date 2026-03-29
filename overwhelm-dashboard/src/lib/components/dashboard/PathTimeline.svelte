@@ -16,6 +16,27 @@
             return isoString;
         }
     }
+
+    function projectColor(name: string): string {
+        let hash = 0;
+        for (let i = 0; i < name.length; i++) {
+            hash = (hash << 5) - hash + name.charCodeAt(i);
+            hash |= 0;
+        }
+        const hue = Math.abs(hash) % 360;
+        return `hsl(${hue}, 55%, 52%)`;
+    }
+
+    // Group abandoned work by project (spec: "grouped by project with coloured borders")
+    $: abandonedByProject = (() => {
+        const map = new Map<string, any[]>();
+        for (const item of abandoned) {
+            const proj = item.project || 'unknown';
+            if (!map.has(proj)) map.set(proj, []);
+            map.get(proj)!.push(item);
+        }
+        return Array.from(map.entries());
+    })();
 </script>
 
 {#if threads.length > 0 || abandoned.length > 0}
@@ -26,16 +47,18 @@
             <div class="flex flex-col gap-3 p-4 border border-yellow-500/30 bg-yellow-900/10">
                 <h4 class="text-xs font-bold text-yellow-500 tracking-widest flex items-center gap-2">
                     <span class="material-symbols-outlined text-[14px]">warning</span>
-                    ABANDONED WORK DETECTED
+                    DROPPED THREADS ({abandoned.length})
                 </h4>
-                <div class="flex flex-col gap-2">
-                    {#each abandoned as item}
-                        <div class="flex flex-col gap-1 border-l-2 border-yellow-500/50 pl-3">
-                            <div class="flex items-center gap-2">
-                                <span class="text-[10px] font-bold bg-yellow-500/20 text-yellow-500 px-1.5 py-0.5">{item.project || "UNKNOWN"}</span>
-                                <span class="text-[10px] text-yellow-500/60">{item.time_ago || ""}</span>
-                            </div>
-                            <div class="text-xs text-yellow-500/90">{item.description}</div>
+                <div class="flex flex-col gap-4">
+                    {#each abandonedByProject as [project, items]}
+                        <div class="flex flex-col gap-2 border-l-3 pl-3" style="border-left: 3px solid {projectColor(project)};">
+                            <span class="text-[10px] font-bold px-1.5 py-0.5 w-fit" style="background: {projectColor(project)}20; color: {projectColor(project)};">{project}</span>
+                            {#each items as item}
+                                <div class="flex items-start gap-2 text-xs">
+                                    <span class="text-[10px] text-yellow-500/60 shrink-0 pt-0.5">{item.time_ago || ""}</span>
+                                    <span class="text-yellow-500/90">{item.description}</span>
+                                </div>
+                            {/each}
                         </div>
                     {/each}
                 </div>
@@ -46,7 +69,7 @@
             {#each threads as thread}
                 <div class="flex flex-col gap-3">
                     <div class="flex items-center gap-3 text-xs">
-                        <span class="font-bold bg-primary/20 text-primary px-2 py-0.5 border border-primary/30">{thread.project}</span>
+                        <span class="font-bold px-2 py-0.5 border" style="background: {projectColor(thread.project)}15; color: {projectColor(thread.project)}; border-color: {projectColor(thread.project)}40;">{thread.project}</span>
                         {#if thread.git_branch}
                             <span class="text-primary/70 flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">fork_right</span> {thread.git_branch}</span>
                         {/if}

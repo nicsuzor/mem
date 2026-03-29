@@ -25,9 +25,17 @@
                         {#if session.outcome}
                             <span class="text-[10px] {session.outcome === 'success' ? 'text-green-400/70' : 'text-yellow-400/70'}">{session.outcome}</span>
                         {/if}
+                        {#if session.date}
+                            <span class="text-[10px] text-primary/40 ml-auto">{session.date}</span>
+                        {/if}
                     </div>
+                    {#if session.initial_prompt || session.user_prompts?.[0]}
+                        <div class="text-[11px] text-primary/50 mt-1 italic truncate" title={session.initial_prompt || session.user_prompts?.[0]}>
+                            "{session.initial_prompt || session.user_prompts?.[0]}"
+                        </div>
+                    {/if}
                     {#if session.summary}
-                        <div class="text-sm text-primary/90 mt-2">{session.summary}</div>
+                        <div class="text-sm text-primary/90 mt-1">{session.summary}</div>
                     {/if}
                     {#if session.accomplishments?.length > 0}
                         <ul class="mt-2 text-xs text-primary/60 list-none">
