@@ -154,7 +154,7 @@
                         'min-zoomed-font-size': 6,
                     } as any,
                 },
-                // Leaf station nodes — small circles
+                // Leaf station nodes — small circles, no labels (only projects/epics get labels)
                 {
                     selector: 'node[!isContainer]',
                     style: {
@@ -164,16 +164,7 @@
                         'background-color': 'data(statusColor)',
                         'border-width': 2,
                         'border-color': 'data(lineColor)',
-                        'label': 'data(label)',
-                        'text-valign': 'center',
-                        'text-halign': 'right',
-                        'text-margin-x': 6,
-                        'font-size': '9px',
-                        'color': '#d4d4d8',
-                        'text-outline-color': '#0a0a14',
-                        'text-outline-width': 1.5,
-                        'text-max-width': '140px',
-                        'text-wrap': 'ellipsis',
+                        'label': '',
                         'min-zoomed-font-size': 7,
                     } as any,
                 },

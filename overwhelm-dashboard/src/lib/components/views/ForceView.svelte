@@ -6,7 +6,7 @@
     import { viewSettings } from "../../stores/viewSettings";
     import { filters, type EdgeVisibility } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
-    import { buildTaskCardNode } from "../shared/NodeShapes";
+    import { buildTaskCardNode, projectHue } from "../shared/NodeShapes";
     import { routeSfdpEdges } from "../shared/EdgeRenderer";
     import { FORCE_CONFIG } from "../../data/constants";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
@@ -286,12 +286,12 @@
                 .attr("y", (d: any) => d.bounds?.y ?? 0)
                 .attr("width", (d: any) => d.bounds?.width() ?? 0)
                 .attr("height", (d: any) => d.bounds?.height() ?? 0)
-                .attr("fill", (d: any, i: number) => {
-                    const hue = (i * 47) % 360;
+                .attr("fill", (d: any) => {
+                    const hue = projectHue(d.containerId || d.label || '');
                     return `hsla(${hue}, 40%, 50%, 0.08)`;
                 })
-                .attr("stroke", (d: any, i: number) => {
-                    const hue = (i * 47) % 360;
+                .attr("stroke", (d: any) => {
+                    const hue = projectHue(d.containerId || d.label || '');
                     return `hsla(${hue}, 40%, 50%, 0.3)`;
                 })
                 .attr("stroke-width", 1.5)
@@ -310,8 +310,8 @@
                 .text((d: any) => d.label || "")
                 .attr("font-size", 18)
                 .attr("font-weight", 700)
-                .attr("fill", (d: any, i: number) => {
-                    const hue = (i * 47) % 360;
+                .attr("fill", (d: any) => {
+                    const hue = projectHue(d.containerId || d.label || '');
                     return `hsla(${hue}, 40%, 35%, 0.7)`;
                 })
                 .style("pointer-events", "none")
@@ -434,7 +434,7 @@
             if (members.length >= 2) {
                 const containerNode = nodeById.get(containerId);
                 const label = containerNode?.label || containerNode?.fullTitle || containerId;
-                colaGroups.push({ leaves: members, padding: groupPadding, label });
+                colaGroups.push({ leaves: members, padding: groupPadding, label, containerId });
             } else {
                 // Single-member groups: add members to ungrouped
                 ungroupedIndices.push(...members);

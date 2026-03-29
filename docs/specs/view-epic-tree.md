@@ -22,7 +22,7 @@ Hierarchical tree of goal > project > epic > task with:
 
 - Task counts per node (done / total)
 - Progress bars for epics
-- Priority badges (P0 red, P1 orange, P2 default, P3 dim)
+- Priority badges (P0 critical red, P1 intended amber, P2 active default, P3 planned dim, P4 backlog invisible)
 - Staleness badges (yellow >14d, red >30d)
 - Type icons (Bootstrap Icons per node type)
 - Expand/collapse with progressive depth

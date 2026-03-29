@@ -63,9 +63,16 @@ export function routeForceEdges(linkSelection: Selection<any, any, any, any>) {
 
         if (d.type === 'parent') {
             const my = (sy + ty) / 2;
-            return `M${sx},${sy} L${sx},${my} L${tx},${my} L${tx},${ty}`;
+            return `M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`;
         }
-        return `M${sx},${sy} L${tx},${ty}`;
+        // Curved arc for deps/refs
+        const dx = tx - sx, dy = ty - sy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 1) return `M${sx},${sy} L${tx},${ty}`;
+        const bulge = Math.min(60, dist * 0.2);
+        const mx = (sx + tx) / 2 - (dy / dist) * bulge;
+        const my = (sy + ty) / 2 + (dx / dist) * bulge;
+        return `M${sx},${sy} Q${mx},${my} ${tx},${ty}`;
     })
     .attr("stroke", (d: any) => d.color)
     .attr("stroke-width", (d: any) => d.width)
@@ -74,14 +81,26 @@ export function routeForceEdges(linkSelection: Selection<any, any, any, any>) {
 }
 
 export function routeSfdpEdges(linkSelection: Selection<any, any, any, any>) {
-    // Only updates path geometry — opacity is controlled by edge visibility filters
+    // Curved paths avoid routing through unrelated epic group bounding boxes.
+    // Parent edges use a gentle S-curve; dependency/ref edges use a direct quadratic arc.
     linkSelection.attr("d", (d: any) => {
         if (!d.source || !d.target) return null;
         const sx = d.source.x, sy = d.source.y;
         const tx = d.target.x, ty = d.target.y;
         if (sx == null || tx == null) return null;
 
-        const my = (sy + ty) / 2;
-        return `M${sx},${sy} L${sx},${my} L${tx},${my} L${tx},${ty}`;
+        if (d.type === 'parent') {
+            // S-curve for parent edges — stays close to source/target columns
+            const my = (sy + ty) / 2;
+            return `M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`;
+        }
+        // Quadratic arc for deps/refs — curves away from the midpoint line
+        const dx = tx - sx, dy = ty - sy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const bulge = Math.min(60, dist * 0.2);
+        // Perpendicular offset for the control point
+        const mx = (sx + tx) / 2 - (dy / dist) * bulge;
+        const my = (sy + ty) / 2 + (dx / dist) * bulge;
+        return `M${sx},${sy} Q${mx},${my} ${tx},${ty}`;
     });
 }

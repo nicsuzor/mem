@@ -411,12 +411,13 @@ Muted academic palette with sharp accents. Must work in both light and dark them
 
 **Priority colours:**
 
-| Priority      | Treatment       |
-| ------------- | --------------- |
-| P0 (critical) | Bold red badge  |
-| P1            | Orange badge    |
-| P2            | Default/neutral |
-| P3            | Dim grey        |
+| Priority        | Treatment       |
+| --------------- | --------------- |
+| P0 (critical)   | Bold red badge  |
+| P1 (intended)   | Amber badge     |
+| P2 (active)     | Default/neutral |
+| P3 (planned)    | Dim grey        |
+| P4 (backlog)    | Near-invisible  |
 
 **Node type accents:**
 

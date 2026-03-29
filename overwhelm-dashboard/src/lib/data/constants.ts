@@ -128,14 +128,17 @@ export const ASSIGNEE_COLORS: Record<string, string> = {
 
 export const ASSIGNEE_DEFAULT = "#6c757d";
 
-export const PRIORITY_BORDERS: Record<number, string> = {
-    [-1]: "#f59e0b", // Intent/focus — amber, above P0
-    0: "#dc3545",
-    1: "#fd7e14",
-    2: "#6c757d",
-    3: "#adb5bd",
-    4: "#dee2e6",
-};
+export const PRIORITIES = [
+    { value: 0, label: 'CRITICAL', short: 'CRIT', color: '#dc3545' },
+    { value: 1, label: 'INTENDED', short: 'INTD', color: '#f59e0b' },
+    { value: 2, label: 'ACTIVE',   short: 'ACTV', color: '#6c757d' },
+    { value: 3, label: 'PLANNED',  short: 'PLAN', color: '#adb5bd' },
+    { value: 4, label: 'BACKLOG',  short: 'BKLG', color: '#dee2e6' },
+] as const;
+
+export const PRIORITY_BORDERS: Record<number, string> = Object.fromEntries(
+    PRIORITIES.map(p => [p.value, p.color])
+);
 
 export const INCOMPLETE_STATUSES = new Set([
     "inbox",

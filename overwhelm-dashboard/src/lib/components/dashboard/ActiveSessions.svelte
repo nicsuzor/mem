@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { projectColor, projectBgTint, projectBorderColor } from "../../data/projectUtils";
     export let sessions: any[] = [];
     export let pausedSessions: any[] = [];
     export let staleSessions: any[] = [];
@@ -47,7 +48,8 @@
             <div class="flex items-center gap-4 bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} p-2 hover:bg-primary/10 transition-colors cursor-default">
                 <span class="text-[10px] text-primary/60 min-w-[55px]">{formatTimeAgo(session.started_at)}</span>
                 {#if session.project}
-                    <span class="text-[10px] font-bold bg-primary/20 text-primary px-2 py-0.5 border border-primary/20">{session.project}</span>
+                    <span class="text-[10px] font-bold px-2 py-0.5"
+                          style="background: {projectBgTint(session.project)}; color: {projectColor(session.project)}; border: 1px solid {projectBorderColor(session.project)};">{session.project}</span>
                 {/if}
                 <span class="text-xs text-primary/90 truncate flex-1" title={session.description}>
                     {session.description}
@@ -81,7 +83,8 @@
                     <div class="flex items-center gap-4 bg-primary/3 border-l border-primary/20 p-1.5 text-xs">
                         <span class="text-[10px] text-primary/40 min-w-[55px]">{session.time_display}</span>
                         {#if session.project}
-                            <span class="text-[10px] bg-primary/10 text-primary/50 px-1.5 py-0.5">{session.project}</span>
+                            <span class="text-[10px] font-bold px-1.5 py-0.5"
+                                  style="background: {projectBgTint(session.project)}; color: {projectColor(session.project)}; border: 1px solid {projectBorderColor(session.project)};">{session.project}</span>
                         {/if}
                         <span class="text-primary/60 truncate flex-1" title={session.description}>{session.description}</span>
                         {#if session.status_badge}
