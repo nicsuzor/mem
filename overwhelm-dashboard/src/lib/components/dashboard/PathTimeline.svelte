@@ -8,10 +8,13 @@
 
     function findNodeForTask(description: string, project: string): string | null {
         if (!$graphData) return null;
-        const match = $graphData.nodes.find(n =>
-            (n.label === description || n.fullTitle === description) &&
-            (!project || n.project === project)
-        );
+        const match = $graphData.nodes.find(n => {
+            if (n.label !== description && n.fullTitle !== description) return false;
+            if (!project) return true;
+            // Match by direct project or rolled-up major project
+            const nodeMajor = summarizeProjectName(resolveMajorProject(n.project || '', rollupMap), rollupMap);
+            return n.project === project || nodeMajor === project;
+        });
         return match?.id || null;
     }
 
@@ -120,7 +123,7 @@
                             <div class="flex items-start gap-2 text-xs py-0.5 cursor-pointer hover:text-primary transition-colors"
                                  role="button" tabindex="0"
                                  on:click={() => { const id = findNodeForTask(item.text, group.project); if (id) toggleSelection(id); }}
-                                 on:keydown={(e) => { if (e.key === 'Enter') { const id = findNodeForTask(item.text, group.project); if (id) toggleSelection(id); } }}>
+                                 on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { if (e.key === ' ') e.preventDefault(); const id = findNodeForTask(item.text, group.project); if (id) toggleSelection(id); } }}>
                                 <span class="{outcomeClass(item.outcome)} shrink-0 w-3 text-center">{outcomeIcon(item.outcome)}</span>
                                 <span class="text-primary/80 line-clamp-1">{item.text}</span>
                             </div>

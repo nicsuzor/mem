@@ -272,8 +272,6 @@ export function prepareGraphData(
     rawNodes.forEach(n => countLeaves(n.id));
 
     // Intent/focus nodes get promoted to priority above P0
-    const focusSet = new Set(graph.focus || []);
-
     const validEdges = rawEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
     const maxDepth = Math.max(0, ...rawNodes.map(n => n.depth || 0));
 

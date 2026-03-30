@@ -156,7 +156,7 @@
                         'min-zoomed-font-size': 5,
                     } as any,
                 },
-                // Leaf station nodes — small circles, no labels
+                // Leaf station nodes — small circles, no labels (only projects/epics get labels)
                 {
                     selector: 'node[!isContainer]',
                     style: {

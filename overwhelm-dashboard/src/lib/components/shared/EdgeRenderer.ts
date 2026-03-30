@@ -97,6 +97,7 @@ export function routeSfdpEdges(linkSelection: Selection<any, any, any, any>) {
         // Quadratic arc for deps/refs — curves away from the midpoint line
         const dx = tx - sx, dy = ty - sy;
         const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 1) return `M${sx},${sy} L${tx},${ty}`;
         const bulge = Math.min(60, dist * 0.2);
         // Perpendicular offset for the control point
         const mx = (sx + tx) / 2 - (dy / dist) * bulge;

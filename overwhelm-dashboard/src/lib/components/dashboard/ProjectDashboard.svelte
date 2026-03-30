@@ -64,7 +64,7 @@
                             style="color: {projectColor(project)};"
                             role="button" tabindex="0"
                             on:click={() => { const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); }}
-                            on:keydown={(e) => { if (e.key === 'Enter') { const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); } }}>
+                            on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { if (e.key === ' ') e.preventDefault(); const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); } }}>
                             <span class="material-symbols-outlined text-[16px]">folder_open</span>
                             {project.toUpperCase()}
                             {#if meta.is_spotlight}
@@ -82,7 +82,7 @@
                                     <div class="bg-black/40 border border-primary/20 p-3 hover:border-primary transition-colors cursor-pointer"
                                          role="button" tabindex="0"
                                          on:click={() => { const eNode = $graphData?.nodes.find(n => n.label === epic.title && n.type === 'epic'); if (eNode) toggleSelection(eNode.id); }}
-                                         on:keydown={(e) => { if (e.key === 'Enter') { const eNode = $graphData?.nodes.find(n => n.label === epic.title && n.type === 'epic'); if (eNode) toggleSelection(eNode.id); } }}>
+                                         on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { if (e.key === ' ') e.preventDefault(); const eNode = $graphData?.nodes.find(n => n.label === epic.title && n.type === 'epic'); if (eNode) toggleSelection(eNode.id); } }}>
                                         <div class="flex justify-between items-center mb-2">
                                             <span class="text-xs font-bold truncate pr-2">{epic.title}</span>
                                             {#if epic.progress}
