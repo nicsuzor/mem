@@ -20,7 +20,8 @@ beforeAll(async () => {
     try {
         await client.connect(transport);
         serverAvailable = true;
-    } catch {
+    } catch (error) {
+        console.warn(`PKB server not available at ${PKB_MCP_URL} — skipping integration tests: ${error}`);
         console.warn(`PKB server not available at ${PKB_MCP_URL} — skipping integration tests`);
     }
 }, 15_000);
