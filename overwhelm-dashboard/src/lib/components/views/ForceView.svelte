@@ -6,7 +6,8 @@
     import { viewSettings } from "../../stores/viewSettings";
     import { filters, type EdgeVisibility } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
-    import { buildTaskCardNode, projectHue } from "../shared/NodeShapes";
+    import { buildTaskCardNode } from "../shared/NodeShapes";
+    import { projectHue } from "../../data/projectUtils";
     import { routeSfdpEdges } from "../shared/EdgeRenderer";
     import { FORCE_CONFIG } from "../../data/constants";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
