@@ -1,5 +1,8 @@
 /**
- * PKB client singleton — single MCP connection to pkb binary, shared across all server routes.
+ * PKB client singleton — single MCP connection to pkb HTTP server, shared across all server routes.
+ *
+ * Connects to a running `pkb mcp --http` server via Streamable HTTP transport.
+ * Set PKB_MCP_URL to override the default (http://127.0.0.1:8026/mcp).
  *
  * Usage:
  *   import { callPkbTool, getPkbTask } from '$lib/server/pkb';
@@ -9,7 +12,7 @@
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,15 +57,12 @@ export interface PkbTask {
 let client: Client | null = null;
 let initPromise: Promise<Client | null> | null = null;
 
+const PKB_MCP_URL = process.env.PKB_MCP_URL || 'http://127.0.0.1:8026/mcp';
+
 async function connect(): Promise<Client | null> {
-    const transport = new StdioClientTransport({
-        command: 'pkb',
-        args: ['mcp'],
-        env: {
-            ...process.env as Record<string, string>,
-            ACA_DATA: process.env.ACA_DATA || '/opt/nic/brain',
-        },
-    });
+    const transport = new StreamableHTTPClientTransport(
+        new URL(PKB_MCP_URL),
+    );
 
     const c = new Client({ name: 'overwhelm-dashboard', version: '1.0.0' });
 
@@ -74,11 +74,12 @@ async function connect(): Promise<Client | null> {
 
     try {
         await c.connect(transport);
+        console.log(`[pkb] Connected to ${PKB_MCP_URL}`);
         return c;
     } catch (err) {
         client = null;
         initPromise = null;
-        console.error('[pkb] Failed to connect to pkb binary:', err);
+        console.error(`[pkb] Failed to connect to ${PKB_MCP_URL}:`, err);
         return null;
     }
 }
