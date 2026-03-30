@@ -52,7 +52,6 @@
             {@const members = projectMembers.get(project) || [project]}
             {@const meta = members.reduce((acc, p) => ({ ...acc, ...(projectData.meta?.[p] || {}) }), {} as any)}
             {@const allEpics = members.flatMap(p => (projectData.meta?.[p] || {}).epics || [])}
-            {@const _meta = allEpics.length > 0 ? { ...meta, epics: allEpics } : meta}
             {@const storeTasks = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && members.includes(n.project || '') && ['active', 'in_progress', 'blocked'].includes(n.status)) : []}
             {@const tasks = storeTasks.length > 0 ? storeTasks : members.flatMap(p => projectData.tasks?.[p] || [])}
             {@const accomplishments = members.flatMap(p => projectData.accomplishments?.[p] || [])}
@@ -77,9 +76,9 @@
                     </div>
 
                     <div class="flex flex-col gap-4">
-                        {#if _meta.epics && _meta.epics.length > 0}
+                        {#if allEpics.length > 0}
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                {#each _meta.epics as epic}
+                                {#each allEpics as epic}
                                     <div class="bg-black/40 border border-primary/20 p-3 hover:border-primary transition-colors cursor-pointer"
                                          role="button" tabindex="0"
                                          on:click={() => { const eNode = $graphData?.nodes.find(n => n.label === epic.title && n.type === 'epic'); if (eNode) toggleSelection(eNode.id); }}

@@ -3,7 +3,7 @@
     import { selection } from "../../stores/selection";
     import { filters } from "../../stores/filters";
     import { PRIORITIES } from "../../data/constants";
-    import { projectHue } from "../shared/NodeShapes";
+    import { projectHue } from "../../data/projectUtils";
     import TaskEditorView from "./TaskEditorView.svelte";
 
     let currentTab = "ACTIVE_TASKS";

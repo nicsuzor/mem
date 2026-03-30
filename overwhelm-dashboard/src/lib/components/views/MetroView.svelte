@@ -127,7 +127,6 @@
         cy = cytoscape({
             container: containerEl,
             elements,
-            ready: function() { (window as any).__cy = this; },
             style: [
                 // Container-type nodes (epics, projects, goals) — larger interchange stations
                 {

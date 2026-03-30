@@ -1,5 +1,6 @@
 import * as d3 from 'd3';
 import type { GraphNode } from '../../data/prepareGraphData';
+import { projectHue } from '../../data/projectUtils';
 
 function escapeHtml(str: string): string {
     return str
@@ -143,16 +144,6 @@ export function treemapHeaderMetrics(w: number, h: number, label: string, depth:
     const basePad = 8;
     const headerH = Math.max(14, Math.min(50, lines * lineHeight + basePad));
     return { headerH, fs, lines, badgeReserve, pad };
-}
-
-export function projectHue(projectId: string): number {
-    let hash = 0;
-    const id = projectId || 'default';
-    for (let i = 0; i < id.length; i++) {
-        hash = (hash << 5) - hash + id.charCodeAt(i);
-        hash |= 0;
-    }
-    return Math.abs(hash) % 360;
 }
 
 /** Render a child-count badge in top-right of a container: visible/total leaf descendants */
