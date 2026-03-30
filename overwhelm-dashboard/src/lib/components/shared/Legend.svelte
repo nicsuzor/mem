@@ -2,8 +2,11 @@
     import { filters, cycleEdgeVisibility, type EdgeVisibility } from '../../stores/filters';
     import { graphData } from '../../stores/graph';
     import { PRIORITIES } from '../../data/constants';
+    import { projectColor } from '../../data/projectUtils';
 
     let showLegend = true;
+    let showAllProjects = false;
+    const MAX_VISIBLE_PROJECTS = 6;
 
     // Status = fill color (muted defaults, saturated for attention)
     const statusGroups = [
@@ -12,11 +15,11 @@
         { key: 'showCompleted', label: 'COMPLETED', statuses: ['done', 'completed', 'cancelled'], color: '#1E1E24' },
     ] as const;
 
-    // Priority = border color (only P0/P1 pop)
-    const priorityColors = PRIORITIES.map(p => ({
+    // Priority = border color — now interactive (click to filter)
+    const priorityItems = PRIORITIES.map(p => ({
+        value: p.value,
         label: `P${p.value} ${p.label}`,
         color: p.color,
-        border: true,
     }));
 
     const edgeTypes = [
@@ -27,6 +30,17 @@
 
     function toggleStatus(key: string) {
         filters.update(f => ({ ...f, [key]: !f[key as keyof typeof f] }));
+    }
+
+    function togglePriority(value: number) {
+        filters.update(f => {
+            const current = f.priorityFilter;
+            return { ...f, priorityFilter: current === value ? null : value };
+        });
+    }
+
+    function setProjectFilter(project: string) {
+        filters.update(f => ({ ...f, project }));
     }
 
     function cycleEdge(key: string) {
@@ -49,14 +63,21 @@
     }
 
     $: availableProjects = $graphData
-        ? Array.from(new Set($graphData.nodes.map((n) => n.project).filter((p) => p))).sort()
+        ? Array.from(new Set($graphData.nodes.map((n) => n.project).filter((p): p is string => !!p))).sort()
         : [];
+
+    $: visibleProjects = showAllProjects
+        ? availableProjects
+        : availableProjects.slice(0, MAX_VISIBLE_PROJECTS);
+
+    $: hasOverflow = availableProjects.length > MAX_VISIBLE_PROJECTS;
 </script>
 
 {#if showLegend}
     <div class="legend" role="complementary" aria-label="Filters & Legend">
         <div class="legend-header">
             <span class="legend-title">VISIBILITY</span>
+            <span class="component-name">filter-panel</span>
             <button class="legend-close" on:click={() => showLegend = false}>
                 <span class="material-symbols-outlined" style="font-size: 14px;">close</span>
             </button>
@@ -76,14 +97,23 @@
             {/each}
         </div>
 
-        <!-- Priority legend (shown as border strokes) -->
+        <!-- Priority filter (click to isolate a priority level) -->
         <div class="legend-section">
-            <span class="legend-section-title">PRIORITY (BORDER)</span>
-            {#each priorityColors as p}
-                <div class="legend-item" style="cursor: default;">
+            <span class="legend-section-title">PRIORITY (CLICK TO FILTER)</span>
+            {#each priorityItems as p}
+                <button
+                    class="legend-item"
+                    class:active-filter={$filters.priorityFilter === p.value}
+                    class:dimmed={$filters.priorityFilter !== null && $filters.priorityFilter !== p.value}
+                    on:click={() => togglePriority(p.value)}
+                    title="Click to show only P{p.value} tasks"
+                >
                     <div class="legend-box" style="background:transparent; border: 2px solid {p.color};"></div>
                     <span class="legend-label">{p.label}</span>
-                </div>
+                    {#if $filters.priorityFilter === p.value}
+                        <span class="filter-badge">ON</span>
+                    {/if}
+                </button>
             {/each}
         </div>
 
@@ -106,18 +136,47 @@
             {/each}
         </div>
 
-        <!-- Project filter -->
+        <!-- Project filter with color swatches -->
         <div class="legend-section">
-            <span class="legend-section-title">PROJECT</span>
-            <select
-                class="legend-select"
-                bind:value={$filters.project}
+            <span class="legend-section-title">PROJECTS</span>
+            <button
+                class="legend-item"
+                class:active-filter={$filters.project === 'ALL'}
+                on:click={() => setProjectFilter('ALL')}
             >
-                <option value="ALL">ALL</option>
-                {#each availableProjects as project}
-                    <option value={project}>{(project || '').toUpperCase()}</option>
+                <div class="legend-box" style="background: #666; border-radius: 50%;"></div>
+                <span class="legend-label">ALL PROJECTS</span>
+                {#if $filters.project === 'ALL'}
+                    <span class="filter-badge">ON</span>
+                {/if}
+            </button>
+            <div class="project-list" class:expanded={showAllProjects}>
+                {#each visibleProjects as proj}
+                    <button
+                        class="legend-item"
+                        class:active-filter={$filters.project === proj}
+                        class:dimmed={$filters.project !== 'ALL' && $filters.project !== proj}
+                        on:click={() => setProjectFilter(proj)}
+                        title="Filter to {proj}"
+                    >
+                        <div class="legend-box project-swatch" style="background: {projectColor(proj)};"></div>
+                        <span class="legend-label">{(proj || '').toUpperCase()}</span>
+                        {#if $filters.project === proj}
+                            <span class="filter-badge">ON</span>
+                        {/if}
+                    </button>
                 {/each}
-            </select>
+            </div>
+            {#if hasOverflow}
+                <button
+                    class="legend-item overflow-toggle"
+                    on:click={() => showAllProjects = !showAllProjects}
+                >
+                    <span class="legend-label overflow-label">
+                        {showAllProjects ? '▲ LESS' : `▼ +${availableProjects.length - MAX_VISIBLE_PROJECTS} MORE`}
+                    </span>
+                </button>
+            {/if}
         </div>
     </div>
 {:else}
@@ -144,7 +203,9 @@
         flex-direction: column;
         gap: 8px;
         font-family: var(--font-mono);
-        min-width: 160px;
+        min-width: 180px;
+        max-height: calc(100vh - 120px);
+        overflow-y: auto;
     }
 
     .legend-header {
@@ -153,6 +214,7 @@
         justify-content: space-between;
         border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 10%, transparent);
         padding-bottom: 6px;
+        gap: 6px;
     }
 
     .legend-title {
@@ -161,6 +223,13 @@
         letter-spacing: 0.2em;
         color: color-mix(in srgb, var(--color-primary) 80%, transparent);
         text-transform: uppercase;
+    }
+
+    .component-name {
+        font-size: 7px;
+        color: color-mix(in srgb, var(--color-primary) 20%, transparent);
+        letter-spacing: 0.1em;
+        font-style: italic;
     }
 
     .legend-close {
@@ -208,6 +277,11 @@
         text-decoration: line-through;
     }
 
+    .legend-item.active-filter {
+        background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+        border-left: 2px solid var(--color-primary);
+    }
+
     .legend-label {
         font-size: 10px;
         font-weight: 700;
@@ -221,6 +295,12 @@
         border-radius: 2px;
         flex-shrink: 0;
         transition: opacity 0.15s;
+    }
+
+    .project-swatch {
+        border-radius: 50%;
+        width: 10px;
+        height: 10px;
     }
 
     .legend-line {
@@ -243,21 +323,35 @@
         opacity: 0.6;
     }
 
-    .legend-select {
-        width: 100%;
-        background: rgba(0, 0, 0, 0.5);
-        border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
+    .filter-badge {
+        margin-left: auto;
+        font-size: 8px;
+        font-weight: 900;
         color: var(--color-primary);
-        font-size: 10px;
-        font-family: var(--font-mono);
-        font-weight: 700;
-        padding: 4px 6px;
-        border-radius: 4px;
-        outline: none;
-        cursor: pointer;
+        background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+        padding: 1px 4px;
+        border-radius: 2px;
+        letter-spacing: 0.1em;
     }
-    .legend-select:focus {
-        border-color: color-mix(in srgb, var(--color-primary) 50%, transparent);
+
+    .project-list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+    .project-list.expanded {
+        max-height: 400px;
+    }
+
+    .overflow-toggle {
+        justify-content: center;
+        padding: 2px 4px;
+    }
+    .overflow-label {
+        font-size: 9px;
+        opacity: 0.5;
     }
 
     .legend-toggle {

@@ -68,3 +68,24 @@
     linear-gradient(90deg, var(--color-primary-dim) 1px, transparent 1px);
   background-size: 24px 24px;
 }
+
+/* Component name labels — subtle identifiers for each UI region */
+[data-component]::before {
+  content: attr(data-component);
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 7px;
+  font-family: var(--font-mono);
+  color: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  letter-spacing: 0.08em;
+  font-style: italic;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Custom scrollbar for consistency */
+.custom-scrollbar::-webkit-scrollbar { width: 4px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--color-primary) 20%, transparent); border-radius: 2px; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--color-primary) 40%, transparent); }

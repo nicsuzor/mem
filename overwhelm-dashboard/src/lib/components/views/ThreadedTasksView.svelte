@@ -111,9 +111,9 @@
     $: activeCount = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && !['done', 'completed', 'cancelled', 'deferred', 'paused', 'backlog'].includes(n.status)).length : 0;
 </script>
 
-<div class="flex flex-1 overflow-hidden h-full">
-    <!-- Directory Tree (TUI Style) -->
-    <aside class="w-64 border-r border-primary/20 bg-background flex flex-col shrink-0">
+<div class="flex flex-1 overflow-hidden h-full relative" data-component="task-list">
+    <!-- Directory Tree -->
+    <aside class="w-64 border-r border-primary/20 bg-background flex flex-col shrink-0 relative" data-component="project-nav">
         <div class="p-4 border-b border-primary/10">
             <h3 class="text-xs font-bold text-primary/60 uppercase tracking-widest mb-1">Directory_Tree</h3>
             <p class="text-[10px] font-mono text-primary/40">WORKSPACE/PROJECTS</p>

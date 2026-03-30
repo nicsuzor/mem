@@ -2,6 +2,7 @@
 	import favicon from "$lib/assets/favicon.svg";
 	import "../app.css";
 	import { viewSettings, VIEW_MODES } from "$lib/stores/viewSettings";
+	import QuickCapture from "$lib/components/dashboard/QuickCapture.svelte";
 
 	let { children } = $props();
 </script>
@@ -62,3 +63,6 @@
 <main class="flex-1 grid grid-cols-12 gap-0 overflow-hidden relative z-0 h-[calc(100vh-3.5rem)]">
 	{@render children()}
 </main>
+
+<!-- Quick Capture available from any view (Alt+C) -->
+<QuickCapture />

@@ -15,6 +15,7 @@ export const filters = writable({
     showBlocked: true,
     showCompleted: false,
     showOrphans: false,
+    priorityFilter: null as number | null,
     edgeDependencies: 'half' as EdgeVisibility,
     edgeReferences: 'hidden' as EdgeVisibility,
     edgeParent: 'bright' as EdgeVisibility,

@@ -91,6 +91,9 @@
             {/if}
             {#if errorMsg}
                 <p class="text-[10px] font-mono text-destructive">{errorMsg}</p>
+                {#if errorMsg.includes('unavailable')}
+                    <p class="text-[9px] font-mono text-primary/30 mt-1">Ensure <code>pkb mcp</code> is running and ACA_DATA is set.</p>
+                {/if}
             {/if}
         </div>
     </div>

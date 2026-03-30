@@ -5,7 +5,7 @@ import type { RequestHandler } from './$types';
 /** POST /api/task/status — update task fields via MCP (replaces CLI spawn) */
 export const POST: RequestHandler = async ({ request }) => {
     const body = await request.json().catch(() => null);
-    const { id, status, priority, assignee, parent } = body ?? {};
+    const { id, status, priority, assignee, parent, refile } = body ?? {};
 
     if (!id) {
         return json({ error: 'Missing id' }, { status: 400 });
@@ -17,6 +17,7 @@ export const POST: RequestHandler = async ({ request }) => {
     if (priority !== undefined) updates.priority = priority;
     if (assignee !== undefined) updates.assignee = assignee;
     if (parent !== undefined) updates.parent = parent;
+    if (refile !== undefined) updates.refile = refile;
 
     // PKB requires completion_evidence when setting status to done
     if (status === 'done') {
