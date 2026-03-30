@@ -1,7 +1,17 @@
 import type { GraphNode } from './prepareGraphData';
-import { projectHue } from '../components/shared/NodeShapes';
 
-export { projectHue };
+/**
+ * Compute a stable hue for a project name.
+ */
+export function projectHue(projectId: string): number {
+    let hash = 0;
+    const id = projectId || 'default';
+    for (let i = 0; i < id.length; i++) {
+        hash = (hash << 5) - hash + id.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash) % 360;
+}
 
 /** HSL color string for a project name. */
 export function projectColor(name: string): string {
