@@ -491,8 +491,8 @@ enum Commands {
         #[arg(long)]
         http: bool,
 
-        /// HTTP listen port (default: 8080)
-        #[arg(long, default_value_t = 8080)]
+        /// HTTP listen port (default: 8026)
+        #[arg(long, default_value_t = 8026)]
         port: u16,
 
         /// HTTP listen address (default: 127.0.0.1)
