@@ -1,4 +1,4 @@
-//! The Planning Web TUI (`pkb tui`)
+//! The Planning Web Dashboard (`pkb dash`)
 //!
 //! A graph-native terminal interface for academic planning built on the mem library.
 //! Makes the PKB graph the interface rather than a flat task list.
@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use app::{App, View};
 
-/// Launch the interactive TUI. Tracing must already be initialised by the caller.
+/// Launch the interactive dashboard. Tracing must already be initialised by the caller.
 pub fn run(pkb_root: &Path, db_path: &Path) -> Result<()> {
     let mut app = App::new(pkb_root, db_path);
     app.load_graph();

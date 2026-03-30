@@ -463,8 +463,9 @@ enum Commands {
         format: String,
     },
 
-    /// Launch the interactive planning TUI
-    Tui,
+    /// Launch the interactive planning dashboard
+    #[command(alias = "tui")]
+    Dash,
 
     /// Run search evaluation with golden queries
     Eval {
@@ -2661,7 +2662,7 @@ async fn main() -> Result<()> {
             print!("{}", eval::format_report(&summary, "current index"));
         }
 
-        Commands::Tui => {
+        Commands::Dash => {
             tui::run(&pkb_root, &db_path)?;
         }
 

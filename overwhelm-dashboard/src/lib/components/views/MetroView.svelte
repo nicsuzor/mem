@@ -27,7 +27,7 @@
         paused: '#999',
     };
 
-    // Priority → border color
+    // Priority → border color + glow intensity
     const PRIORITY_COLORS: Record<number, string> = {
         [-1]: '#e11d48',
         0: '#f59e0b',
@@ -68,6 +68,7 @@
             const priorityColor = PRIORITY_COLORS[n.priority] ?? '#4b5563';
             const isCompleted = ['done', 'completed', 'cancelled'].includes(n.status);
             const isContainer = CONTAINER_TYPES.has(n.type);
+            const isHighPriority = n.priority <= 1;
 
             elements.push({
                 group: 'nodes',
@@ -83,6 +84,7 @@
                     priorityColor,
                     isContainer,
                     isCompleted,
+                    isHighPriority,
                     fullTitle: n.fullTitle,
                 },
             });
@@ -99,9 +101,9 @@
             if (edgeIds.has(edgeId)) return;
             edgeIds.add(edgeId);
 
-            const lineColor = projectColors.get(
-                data.nodes.find(n => n.id === sid)?.project || ''
-            ) || '#666';
+            const sourceNode = data.nodes.find(n => n.id === sid);
+            const lineColor = projectColors.get(sourceNode?.project || '') || '#666';
+            const isHighPriRoute = sourceNode && sourceNode.priority <= 1;
 
             elements.push({
                 group: 'edges',
@@ -111,6 +113,7 @@
                     target: tid,
                     type: l.type,
                     lineColor,
+                    isHighPriRoute,
                 },
             });
         });
@@ -127,15 +130,14 @@
         cy = cytoscape({
             container: containerEl,
             elements,
-            ready: function() { (window as any).__cy = this; },
             style: [
                 // Container-type nodes (epics, projects, goals) — larger interchange stations
                 {
                     selector: 'node[?isContainer]',
                     style: {
                         'shape': 'round-rectangle',
-                        'width': 30,
-                        'height': 30,
+                        'width': 36,
+                        'height': 36,
                         'background-color': 'data(lineColor)',
                         'background-opacity': 0.9,
                         'border-width': 3,
@@ -143,15 +145,15 @@
                         'label': 'data(label)',
                         'text-valign': 'top',
                         'text-halign': 'center',
-                        'text-margin-y': -8,
-                        'font-size': '11px',
+                        'text-margin-y': -10,
+                        'font-size': '12px',
                         'font-weight': 'bold',
                         'color': '#e5e5e5',
                         'text-outline-color': '#0a0a14',
                         'text-outline-width': 2,
-                        'text-max-width': '180px',
+                        'text-max-width': '200px',
                         'text-wrap': 'wrap',
-                        'min-zoomed-font-size': 6,
+                        'min-zoomed-font-size': 5,
                     } as any,
                 },
                 // Leaf station nodes — small circles, no labels (only projects/epics get labels)
@@ -179,18 +181,46 @@
                         'font-size': '7px',
                     } as any,
                 },
-                // High-priority stations — larger with bold border
+                // HIGH PRIORITY stations — much larger with bold glow border and label
                 {
-                    selector: 'node[priority <= 0][!isContainer]',
+                    selector: 'node[?isHighPriority][!isContainer]',
                     style: {
-                        'width': 20,
-                        'height': 20,
-                        'border-width': 3,
+                        'width': 26,
+                        'height': 26,
+                        'border-width': 4,
+                        'border-color': 'data(priorityColor)',
                         'font-size': '10px',
                         'font-weight': 'bold',
+                        'label': 'data(label)',
+                        'text-valign': 'bottom',
+                        'text-halign': 'center',
+                        'text-margin-y': 6,
+                        'color': 'data(priorityColor)',
+                        'text-outline-color': '#0a0a14',
+                        'text-outline-width': 2,
+                        'text-max-width': '160px',
+                        'text-wrap': 'wrap',
+                        'min-zoomed-font-size': 5,
+                        'overlay-color': 'data(priorityColor)',
+                        'overlay-padding': 4,
+                        'overlay-opacity': 0.12,
                     } as any,
                 },
-                // Parent edges — thick metro lines in project color (width ≈ node size)
+                // High-priority container stations — extra prominent
+                {
+                    selector: 'node[?isHighPriority][?isContainer]',
+                    style: {
+                        'width': 44,
+                        'height': 44,
+                        'border-width': 5,
+                        'border-color': 'data(priorityColor)',
+                        'font-size': '13px',
+                        'overlay-color': 'data(priorityColor)',
+                        'overlay-padding': 6,
+                        'overlay-opacity': 0.15,
+                    } as any,
+                },
+                // Parent edges — thick metro lines in project color, LONGER spacing
                 {
                     selector: 'edge[type="parent"]',
                     style: {
@@ -199,7 +229,18 @@
                         'line-opacity': 0.85,
                         'curve-style': 'taxi',
                         'taxi-direction': 'downward',
-                        'taxi-turn': '20px',
+                        'taxi-turn': '40px',
+                    } as any,
+                },
+                // HIGH PRIORITY parent routes — much thicker, brighter, with glow
+                {
+                    selector: 'edge[type="parent"][?isHighPriRoute]',
+                    style: {
+                        'width': 18,
+                        'line-opacity': 1.0,
+                        'overlay-color': 'data(lineColor)',
+                        'overlay-padding': 3,
+                        'overlay-opacity': 0.2,
                     } as any,
                 },
                 // Dependency edges — thinner dashed transfer lines
@@ -211,7 +252,7 @@
                         'line-opacity': 0.5,
                         'curve-style': 'taxi',
                         'taxi-direction': 'downward',
-                        'taxi-turn': '25px',
+                        'taxi-turn': '35px',
                         'line-style': 'dashed',
                         'target-arrow-shape': 'triangle',
                         'target-arrow-color': '#f59e0b',
@@ -227,7 +268,7 @@
                         'line-opacity': 0.25,
                         'curve-style': 'taxi',
                         'taxi-direction': 'downward',
-                        'taxi-turn': '15px',
+                        'taxi-turn': '20px',
                         'line-style': 'dotted',
                         'target-arrow-shape': 'triangle',
                         'target-arrow-color': '#6b7280',
@@ -254,24 +295,24 @@
                     w: containerEl.clientWidth || 1200,
                     h: containerEl.clientHeight || 800,
                 },
-                nodeRepulsion: () => 12000,
-                idealEdgeLength: () => 60,
-                edgeElasticity: () => 80,
-                gravity: 1.0,
-                numIter: 600,
-                padding: 30,
+                nodeRepulsion: () => 18000,
+                idealEdgeLength: () => 120,
+                edgeElasticity: () => 100,
+                gravity: 0.6,
+                numIter: 800,
+                padding: 50,
                 nodeDimensionsIncludeLabels: true,
-                nodeOverlap: 10,
+                nodeOverlap: 12,
                 randomize: false,
             } as any,
             wheelSensitivity: 0.3,
-            minZoom: 0.05,
+            minZoom: 0.03,
             maxZoom: 5,
         });
 
         // Fit after layout settles
         cy.one('layoutstop', () => {
-            cy!.fit(undefined, 40);
+            cy!.fit(undefined, 50);
         });
 
         // Wire up selection
@@ -321,9 +362,12 @@
             if (!cyNode.length) continue;
             const statusColor = STATUS_COLORS[n.status] || '#666';
             const isCompleted = ['done', 'completed', 'cancelled'].includes(n.status);
+            const isHighPriority = n.priority <= 1;
             cyNode.data('statusColor', statusColor);
             cyNode.data('isCompleted', isCompleted);
+            cyNode.data('isHighPriority', isHighPriority);
             cyNode.data('status', n.status);
+            cyNode.data('priority', n.priority);
         }
     }
 
@@ -334,8 +378,9 @@
 
 <div
     bind:this={containerEl}
-    class="w-full h-full"
+    class="w-full h-full relative"
     style="background: #0a0a14;"
+    data-component="metro-map"
 ></div>
 
 <style>

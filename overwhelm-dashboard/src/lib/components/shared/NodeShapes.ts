@@ -342,8 +342,9 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     };
 
     // Priority border colors — only P0/P1 draw the eye
+    // P0/P1 use shared PRIORITIES colors; P2+ are muted to blend with cards
     const PRIORITY_BORDERS: Record<number, string> = {
-        0: '#ef4444',  // P0 Critical — red
+        0: '#dc3545',  // P0 Critical — red (matches PRIORITIES)
         1: '#f59e0b',  // P1 Intended — amber
         2: '#4A5568',  // P2 Active — blends with card
         3: '#3A4250',  // P3 Planned — nearly invisible

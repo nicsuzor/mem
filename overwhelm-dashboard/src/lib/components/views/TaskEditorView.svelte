@@ -169,6 +169,40 @@
         setStatus('decomposing');
     }
 
+    let refileMarked = $state(false);
+
+    async function handleMarkForRefile() {
+        if (!taskId || !task) return;
+        updating = true;
+        updateError = null;
+        try {
+            const res = await fetch('/api/task/status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: taskId, refile: true }),
+            });
+            if (res.ok) {
+                refileMarked = true;
+                // Also optimistically mark it in-graph
+                graphData.update(gd => {
+                    if (!gd) return gd;
+                    const node = gd.nodes.find(n => n.id === taskId);
+                    if (node && (node as any)._raw) {
+                        (node as any)._raw.refile = true;
+                    }
+                    return gd;
+                });
+            } else {
+                const data = await res.json().catch(() => ({}));
+                updateError = data.error ?? `HTTP ${res.status}`;
+            }
+        } catch (e: any) {
+            updateError = e.message ?? 'Network error';
+        } finally {
+            updating = false;
+        }
+    }
+
     function close() {
         onclose();
     }
@@ -202,11 +236,12 @@
         <span class="text-[9px] opacity-40 mt-1 uppercase">Select node for telemetry</span>
     </div>
 {:else if task || isProjectContainer}
-    <div class="flex flex-col h-full bg-background overflow-hidden font-mono border-l border-primary/20">
+    <div class="flex flex-col h-full bg-background overflow-hidden font-mono border-l border-primary/20" data-component="task-pane">
         <!-- Breadcrumbs & Header -->
         <div class="flex flex-col gap-1 p-3 border-b border-primary/20 bg-background shrink-0">
             <div class="flex items-center justify-between">
                 <div class="flex items-center gap-1.5 text-[9px] font-mono opacity-60">
+                    <span class="text-[7px] italic opacity-30 mr-1">task-pane</span>
                     <span class="uppercase">{projectName || task?.project || 'VOID'}</span>
                     {#if !isProjectContainer}
                         <span class="text-primary/30">/</span>
@@ -327,6 +362,15 @@
                             disabled={updating}
                         >
                             INBOX
+                        </button>
+                        <button
+                            class="flex-1 py-1.5 border {refileMarked ? 'border-amber-500 bg-amber-500/20 text-amber-400' : 'border-amber-500/40 text-amber-500/60'} hover:border-amber-500 hover:text-amber-400 font-bold text-[10px] transition-all rounded-sm disabled:opacity-50 flex items-center justify-center gap-1"
+                            onclick={handleMarkForRefile}
+                            disabled={updating || refileMarked}
+                            title="Mark this task for refiling/reorganization"
+                        >
+                            <span class="material-symbols-outlined text-[12px]">drive_file_move</span>
+                            {refileMarked ? 'MARKED' : 'REFILE'}
                         </button>
                         <button
                             class="flex-1 py-1.5 border border-destructive/40 {t.status === 'cancelled' ? 'bg-destructive/20 border-destructive text-destructive' : 'text-destructive/60'} hover:border-destructive hover:text-destructive font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"

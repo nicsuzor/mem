@@ -1,4 +1,4 @@
-//! View rendering for the Planning Web TUI.
+//! View rendering for the Planning Web dashboard.
 
 mod capture;
 mod dashboard;

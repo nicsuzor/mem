@@ -10,7 +10,7 @@ pub struct ContextNode {
     pub priority: Option<i32>,
 }
 
-/// Structured local graph context for a node, usable by both CLI and TUI.
+/// Structured local graph context for a node, usable by both CLI and dashboard views.
 #[derive(Debug)]
 pub struct LocalContext {
     pub target: ContextNode,

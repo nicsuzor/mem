@@ -7,7 +7,6 @@
     import SynthesisPanel from "./SynthesisPanel.svelte";
     import PathTimeline from "./PathTimeline.svelte";
     import ProjectDashboard from "./ProjectDashboard.svelte";
-    import QuickCapture from "./QuickCapture.svelte";
 
     // Extract dynamic project list from graph data
     $: projects = $graphData ? Array.from(new Set($graphData.nodes.map(n => n.project).filter(p => !!p))).sort() : [];
@@ -101,10 +100,7 @@
         (data?.dashboardData?.project_projects || []);
 </script>
 
-<!-- Floating Quick Capture — always accessible -->
-<QuickCapture />
-
-<div class="h-full p-8 font-mono text-primary flex flex-col gap-6">
+<div class="h-full p-8 font-mono text-primary flex flex-col gap-6 relative" data-component="dashboard">
     <!-- US-D7: Above-the-fold triage bar — answers "running?", "dropped?", "needs me?" in 5 seconds -->
     <div class="flex items-center gap-4 text-xs">
         <div class="flex items-center gap-2 bg-primary/10 border border-primary/30 px-3 py-2">

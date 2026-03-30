@@ -190,7 +190,7 @@ pub fn index_pkb(
 mod stdout_guard {
     //! Ensure no library source file writes to stdout, which would corrupt
     //! the MCP JSON-RPC transport. Excluded: cli.rs, reproduction.rs, lib.rs
-    //! (contains this test), and the tui/ directory (CLI-only code paths).
+    //! (contains this test), and the tui/ directory (CLI-only dashboard code paths).
     //! lib.rs is still guarded by `#![deny(clippy::print_stdout)]`.
 
     #[test]

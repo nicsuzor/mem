@@ -102,6 +102,13 @@
                 (n) => !["done", "completed", "cancelled", "historical", "deferred", "paused", "seed", "early-scaffold"].includes(n.status),
             );
         }
+        // Priority filter from legend
+        if ($filters.priorityFilter !== null) {
+            const pf = $filters.priorityFilter;
+            fNodes = fNodes.filter(
+                (n) => STRUCTURAL_TYPES.has(n.type) || n.priority === pf,
+            );
+        }
         if (isForce && $filters.project !== "ALL") {
             fNodes = fNodes.filter(
                 (n) => n.project === $filters.project || n.type === "project" || n.type === "goal",
@@ -289,7 +296,7 @@
 
     {:else}
     <!-- MAIN CONTENT: Graph or Dashboard -->
-    <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
+    <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"} data-component="graph-canvas">
         <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
 
             <!-- Focus banner (Absolute Over Graph) -->
@@ -348,7 +355,7 @@
 
     <!-- RIGHT SIDEBAR: Details / Editor (only when a task is selected) -->
     {#if $selection.activeNodeId}
-    <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab === "Threaded Tasks"}>
+    <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab === "Threaded Tasks"} data-component="detail-sidebar">
         <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
     </aside>
     {/if}
