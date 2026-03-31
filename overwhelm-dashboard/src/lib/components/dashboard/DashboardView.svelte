@@ -3,7 +3,6 @@
 
     import { graphData } from "../../stores/graph";
     import ActiveSessions from "./ActiveSessions.svelte";
-    import RecentSessions from "./RecentSessions.svelte";
     import SynthesisPanel from "./SynthesisPanel.svelte";
     import PathTimeline from "./PathTimeline.svelte";
     import ProjectDashboard from "./ProjectDashboard.svelte";
@@ -162,31 +161,15 @@
         </div>
     {/if}
 
-    <!-- PRIORITY 5: Project details + sessions — use auto height, not flex-1 -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div class="lg:col-span-8 flex flex-col gap-6">
-            <div class="border border-primary/30 bg-surface p-4">
-                <RecentSessions synthesis={data?.dashboardData?.synthesis} />
-            </div>
-
-            <div class="border border-primary/30 bg-surface p-4">
-                <ProjectDashboard
-                    projectProjects={enrichedProjects}
-                    projectData={graphProjectData}
-                />
-            </div>
-        </div>
-
-        <div class="lg:col-span-4 flex flex-col gap-6 bg-black/40 p-4 border border-primary/20 rounded-xl">
-            {#if data?.dashboardData?.synthesis?.blockers || data?.dashboardData?.synthesis?.recent_context}
-                <div class="border border-primary/30 bg-surface p-4 shadow-lg">
-                    <SynthesisPanel
-                        synthesis={data?.dashboardData?.synthesis}
-                        dailyStory={null}
-                        inline={false}
-                    />
-                </div>
-            {/if}
-        </div>
+    <!-- PRIORITY 5: Project details (sessions + tasks) -->
+    <div class="border border-primary/30 bg-surface p-4">
+        <ProjectDashboard
+            projectProjects={enrichedProjects}
+            projectData={graphProjectData}
+        />
+    </div>
+</div>
+a}
+        />
     </div>
 </div>
