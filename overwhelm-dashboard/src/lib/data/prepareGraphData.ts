@@ -419,7 +419,7 @@ export function prepareGraphData(
             width = 3.5;
             dash = "";
         } else if (etype === 'depends_on') {
-            color = "#f59e0b"; // Amber — dependency edges draw attention to the blocker
+            color = "#ef4444"; // Red — dependency edges draw attention to the blocker
             width = 3.5;
             dash = "";
             const tw = targetWeight.get(edge.target) || 0;
@@ -430,7 +430,7 @@ export function prepareGraphData(
                 }
             }
         } else if (etype === 'soft_depends_on') {
-            color = "#d97706"; // Warm orange — softer version of dependency
+            color = "#b91c1c"; // Muted red — softer version of dependency
             width = 2.0;
             dash = "6,3";
         } else {

@@ -382,10 +382,15 @@
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
 
-        // Set width/height on nodes for avoidOverlaps (generous padding to prevent edges overlapping)
+        const CONTAINER_TYPES = new Set(['epic', 'project', 'goal']);
+
+        // Set width/height on nodes for avoidOverlaps — account for epic scaling
+        const CONTAINER_SCALE = 1.3; // Must match EPIC_SCALE in NodeShapes.ts
         $graphData.nodes.forEach((n: any) => {
-            n.width = n.w + 40;
-            n.height = n.h + 30;
+            const isContainer = CONTAINER_TYPES.has(n.type);
+            const scale = isContainer ? CONTAINER_SCALE : 1.0;
+            n.width = n.w * scale + 40;
+            n.height = n.h * scale + 30;
         });
 
         // Build flat groups by project — one group per project containing all its nodes.
@@ -403,7 +408,6 @@
 
         // Group by nearest epic/project ancestor — ALL nodes must belong to a group
         // so that avoidOverlaps prevents non-descendants from entering epic containers
-        const CONTAINER_TYPES = new Set(['epic', 'project', 'goal']);
         function findContainer(nodeId: string): string | null {
             let cur = nodeId;
             let depth = 0;

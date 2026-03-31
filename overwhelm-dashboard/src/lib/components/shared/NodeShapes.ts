@@ -64,6 +64,11 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
             .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", d.borderWidth);
     } else if (d.shape === "hexagon") {
         // Epics: distinctive double-border hexagon with larger size and type badge
+        // Color by project hue
+        const hue = projectHue(d.project || d.id);
+        const epicFill = `hsl(${hue}, 35%, 85%)`;
+        const epicStroke = `hsl(${hue}, 45%, 45%)`;
+
         const sw = d.w * EPIC_SCALE, sh = d.h * EPIC_SCALE;
         const shw = sw / 2, shh = sh / 2;
         const c = Math.min(shh * 0.5, EPIC_CORNER_RADIUS);
@@ -75,17 +80,17 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
         const pts2 = `${-(shw+off) + c2},${-(shh+off)} ${(shw+off) - c2},${-(shh+off)} ${shw+off},${0} ${(shw+off) - c2},${shh+off} ${-(shw+off) + c2},${shh+off} ${-(shw+off)},${0}`;
 
         g.append("polygon").attr("points", pts2)
-            .attr("fill", "none").attr("stroke", d.borderColor).attr("stroke-width", EPIC_OUTER_STROKE_WIDTH)
+            .attr("fill", "none").attr("stroke", epicStroke).attr("stroke-width", EPIC_OUTER_STROKE_WIDTH)
             .attr("stroke-opacity", EPIC_OUTER_OPACITY).attr("stroke-dasharray", EPIC_OUTER_DASHARRAY);
 
         g.append("polygon").attr("points", pts)
-            .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", Math.max(d.borderWidth, EPIC_INNER_STROKE_WIDTH));
+            .attr("fill", epicFill).attr("stroke", epicStroke).attr("stroke-width", Math.max(d.borderWidth, EPIC_INNER_STROKE_WIDTH));
 
         // Epic type badge at top
         g.append("text")
             .attr("x", 0).attr("y", -shh + EPIC_BADGE_Y_OFFSET)
             .attr("text-anchor", "middle").attr("font-size", `${EPIC_BADGE_FONT_SIZE}px`)
-            .attr("font-weight", "800").attr("fill", d.borderColor)
+            .attr("font-weight", "800").attr("fill", epicStroke)
             .attr("letter-spacing", EPIC_BADGE_LETTER_SPACING).attr("pointer-events", "none")
             .text("EPIC");
     } else {
