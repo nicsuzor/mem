@@ -13,7 +13,13 @@
             const text = typeof raw === 'string' ? raw : String(raw);
             const match = text.match(/^\[([^\]]+)\]\s*(.+)$/);
             const project = match ? match[1] : '_general';
-            const content = match ? match[2] : text;
+            let content = match ? match[2] : text;
+            
+            // Strip robotic preambles
+            content = content.replace(/^(Successfully completed|Completed|Successfully finished|Done):\s*/i, '');
+            // Capitalize first letter
+            content = content.charAt(0).toUpperCase() + content.slice(1);
+            
             if (seen.has(content)) continue;
             seen.add(content);
             if (!groups.has(project)) groups.set(project, []);

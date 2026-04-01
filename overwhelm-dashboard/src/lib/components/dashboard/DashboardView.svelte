@@ -10,16 +10,37 @@
     // Extract dynamic project list from graph data
     $: projects = $graphData ? Array.from(new Set($graphData.nodes.map(n => n.project).filter(p => !!p))).sort() : [];
 
-    // Fallback logic if server data is empty
-    $: activeSessionsData = data?.dashboardData?.active_agents?.length ? data.dashboardData.active_agents :
-        ($graphData ? $graphData.nodes.filter(n => n.status === 'in_progress').map(n => ({
-            project: n.project || 'Uncategorized',
-            description: n.label,
-            started_at: (n as any)._raw?.modified || new Date().toISOString(),
-            status_badge: 'running',
-            needs_you: false,
-            bucket: 'active',
-        })) : []);
+    // Derive sessions from graph data
+    $: derivedSessions = $graphData ? $graphData.nodes.filter(n => ['in_progress', 'active', 'todo'].includes(n.status)).map(n => {
+            const modified = (n as any)._raw?.modified ? new Date((n as any)._raw.modified).getTime() : Date.now();
+            const hoursAgo = (Date.now() - modified) / 3600000;
+            const minutesAgo = (Date.now() - modified) / 60000;
+            
+            let status_badge = 'running';
+            let bucket = 'active';
+            if (hoursAgo > 24) { status_badge = 'idle'; bucket = 'stale'; }
+            else if (hoursAgo > 12) { status_badge = 'paused'; bucket = 'paused'; }
+            
+            return {
+                id: n.id, // Keep ID for actions
+                project: n.project || 'Uncategorized',
+                description: n.label,
+                started_at: (n as any)._raw?.modified || new Date().toISOString(),
+                time_display: minutesAgo < 60 ? `${Math.round(minutesAgo)}m ago` : `${Math.round(hoursAgo)}h ago`,
+                status_badge,
+                needs_you: false,
+                bucket,
+                source: 'pkb' // Mark source for UI handling
+            };
+        }) : [];
+
+    // Deduplicate and merge server sessions and derived PKB sessions
+    function dedupeById(items: any[]): any[] {
+        return items.filter((s, i, arr) => arr.findIndex(x => x.id === s.id) === i);
+    }
+    $: activeSessionsData = dedupeById([...(data?.dashboardData?.active_agents || []), ...derivedSessions.filter(s => s.bucket === 'active')]);
+    $: pausedSessionsData = dedupeById([...(data?.dashboardData?.paused_sessions || []), ...derivedSessions.filter(s => s.bucket === 'paused')]);
+    $: staleSessionsData = dedupeById([...(data?.dashboardData?.stale_sessions || []), ...derivedSessions.filter(s => s.bucket === 'stale')]);
 
     // Build dropped threads from graph data when path reconstruction has none
     $: droppedFromGraph = $graphData ? $graphData.nodes
@@ -85,7 +106,12 @@
                     .sort((a: any, b: any) => (b.modified || 0) - (a.modified || 0))
                     .slice(0, 5);
                 if (doneTasks.length > 0) {
-                    result.accomplishments[p] = doneTasks.map((t: any) => ({ description: t.label }));
+                    result.accomplishments[p] = doneTasks.map((t: any) => {
+                        const mod = t._raw?.modified ? new Date(t._raw.modified).getTime() : 0;
+                        const days = mod ? Math.round((Date.now() - mod) / 86400000) : 0;
+                        const time_ago = days > 0 ? `${days}d ago` : mod ? 'today' : '';
+                        return { description: t.label, time_ago };
+                    });
                 }
             }
 
@@ -143,7 +169,6 @@
         <SynthesisPanel
             synthesis={data?.dashboardData?.synthesis}
             dailyStory={data?.dashboardData?.daily_story}
-            inline={true}
         />
     </div>
 
@@ -166,10 +191,6 @@
         <ProjectDashboard
             projectProjects={enrichedProjects}
             projectData={graphProjectData}
-        />
-    </div>
-</div>
-a}
         />
     </div>
 </div>

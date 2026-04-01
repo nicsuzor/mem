@@ -1,11 +1,14 @@
 <script lang="ts">
     import { projectColor, projectBgTint, projectBorderColor } from "../../data/projectUtils";
+    import { toggleSelection } from "../../stores/selection";
+    
     export let sessions: any[] = [];
     export let pausedSessions: any[] = [];
     export let staleSessions: any[] = [];
     export let needsYou: any[] = [];
 
     let showPaused = false;
+    let isSubmitting = false;
 
     function formatTimeAgo(isoString: string): string {
         if (!isoString) return "just started";
@@ -16,6 +19,43 @@
         if (diffMins < 60) return `${diffMins}m ago`;
         const diffHrs = Math.floor(diffMins / 60);
         return `${diffHrs}h ago`;
+    }
+
+    async function dismissStaleSession(session: any) {
+        if (session.source !== 'pkb' || !session.id || isSubmitting) return;
+        isSubmitting = true;
+        try {
+            await fetch('/api/task/status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: session.id, status: 'active' }), // Demote from in_progress
+            });
+            // Let the graph sync interval handle the UI update
+        } catch (e) {
+            console.error('Failed to dismiss session', e);
+        } finally {
+            isSubmitting = false;
+        }
+    }
+
+    async function dismissAllStale() {
+        if (isSubmitting) return;
+        isSubmitting = true;
+        try {
+            // Dismiss all pkb-sourced stale sessions
+            const pkbStale = staleSessions.filter(s => s.source === 'pkb' && s.id);
+            await Promise.all(pkbStale.map(s => 
+                fetch('/api/task/status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: s.id, status: 'active' }),
+                })
+            ));
+        } catch (e) {
+            console.error('Failed to dismiss all sessions', e);
+        } finally {
+            isSubmitting = false;
+        }
     }
 
     const BADGE_STYLES: Record<string, { label: string; class: string }> = {
@@ -45,7 +85,8 @@
     <!-- Active Sessions (< 4h) — full cards -->
     <div class="flex flex-col gap-2">
         {#each sessions.slice(0, 8) as session}
-            <div class="flex items-center gap-4 bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} p-2 hover:bg-primary/10 transition-colors cursor-default">
+            <div class="flex items-center gap-4 bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} p-2 hover:bg-primary/10 transition-colors cursor-pointer"
+                 role="button" tabindex="0" on:click={() => { if(session.id) toggleSelection(session.id); }} on:keydown={(e) => { if(e.key === 'Enter' && session.id) toggleSelection(session.id); }}>
                 <span class="text-[10px] text-primary/60 min-w-[55px]">{formatTimeAgo(session.started_at)}</span>
                 {#if session.project}
                     <span class="text-[10px] font-bold px-2 py-0.5"
@@ -80,7 +121,8 @@
         {#if showPaused}
             <div class="flex flex-col gap-1 opacity-60">
                 {#each pausedSessions.slice(0, 10) as session}
-                    <div class="flex items-center gap-4 bg-primary/3 border-l border-primary/20 p-1.5 text-xs">
+                    <div class="flex items-center gap-4 bg-primary/3 border-l border-primary/20 p-1.5 text-xs cursor-pointer hover:bg-primary/10"
+                         role="button" tabindex="0" on:click={() => { if(session.id) toggleSelection(session.id); }} on:keydown={(e) => { if(e.key === 'Enter' && session.id) toggleSelection(session.id); }}>
                         <span class="text-[10px] text-primary/40 min-w-[55px]">{session.time_display}</span>
                         {#if session.project}
                             <span class="text-[10px] font-bold px-1.5 py-0.5"
@@ -102,19 +144,40 @@
 
     <!-- Stale Sessions (>24h) — archive prompt per spec -->
     {#if staleSessions.length > 0}
-        <div class="flex items-center gap-3 border border-primary/20 bg-primary/5 p-3 mt-1">
-            <span class="material-symbols-outlined text-[16px] text-primary/40">inventory_2</span>
-            <span class="text-xs text-primary/50 flex-1">
-                {staleSessions.length} stale session{staleSessions.length !== 1 ? 's' : ''} (no activity &gt;24h)
-            </span>
-            <div class="flex items-center gap-2">
-                <button class="text-[10px] font-bold tracking-widest text-primary/50 hover:text-primary border border-primary/20 hover:border-primary/50 px-2 py-1 transition-colors">
-                    REVIEW
-                </button>
-                <button class="text-[10px] font-bold tracking-widest text-primary/30 hover:text-primary/60 px-2 py-1 transition-colors">
-                    DISMISS
-                </button>
-            </div>
+        <div class="flex flex-col gap-2 mt-2">
+            {#each staleSessions.slice(0, 5) as session}
+                <div class="flex items-center gap-3 border border-primary/20 bg-primary/5 p-3">
+                    <span class="material-symbols-outlined text-[16px] text-primary/40">inventory_2</span>
+                    <div class="flex flex-col gap-1 flex-1 min-w-0">
+                        <div class="flex items-center gap-2">
+                            {#if session.project}
+                                <span class="text-[9px] font-bold px-1 py-0.5"
+                                      style="background: {projectBgTint(session.project)}; color: {projectColor(session.project)}; border: 1px solid {projectBorderColor(session.project)};">{session.project}</span>
+                            {/if}
+                            <span class="text-[10px] text-primary/50">{session.time_display}</span>
+                        </div>
+                        <span class="text-xs text-primary/70 truncate" title={session.description}>{session.description}</span>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        {#if session.id}
+                            <button class="text-[10px] font-bold tracking-widest text-primary/50 hover:text-primary border border-primary/20 hover:border-primary/50 px-2 py-1 transition-colors"
+                                    on:click={() => toggleSelection(session.id)}>
+                                REVIEW
+                            </button>
+                        {/if}
+                        {#if session.source === 'pkb'}
+                            <button class="text-[10px] font-bold tracking-widest text-primary/30 hover:text-primary/60 px-2 py-1 transition-colors disabled:opacity-50"
+                                    disabled={isSubmitting}
+                                    on:click={() => dismissStaleSession(session)}>
+                                DISMISS
+                            </button>
+                        {/if}
+                    </div>
+                </div>
+            {/each}
+            {#if staleSessions.length > 5}
+                <div class="text-xs text-primary/50 pl-2">+ {staleSessions.length - 5} more stale sessions</div>
+            {/if}
         </div>
     {/if}
 </div>
