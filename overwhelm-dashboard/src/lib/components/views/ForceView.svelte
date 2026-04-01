@@ -8,7 +8,7 @@
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
-    import { routeSfdpEdges } from "../shared/EdgeRenderer";
+    import { routeSfdpEdges, setEdgeObstacles } from "../shared/EdgeRenderer";
     import { FORCE_CONFIG } from "../../data/constants";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
@@ -268,6 +268,31 @@
         d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
             .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
+
+        // Update obstacle data for edge routing from Cola group bounding boxes
+        if (colaLayout) {
+            const groups = (colaLayout.groups() || []).filter((g: any) => g.label && g.bounds);
+            const obstacles = groups.map((g: any) => ({
+                x: g.bounds.x,
+                y: g.bounds.y,
+                X: g.bounds.X,
+                Y: g.bounds.Y,
+                containerId: g.containerId || g.label || '',
+            }));
+            // Build node → group map so edges skip their own group's obstacles
+            const nodeGroupMap = new Map<string, string>();
+            groups.forEach((g: any) => {
+                const gId = g.containerId || g.label || '';
+                (g.leaves || []).forEach((leaf: any) => {
+                    // Cola leaves are node objects after layout resolves them
+                    const nodeId = typeof leaf === 'number'
+                        ? $graphData?.nodes[leaf]?.id
+                        : (leaf.id || leaf);
+                    if (nodeId) nodeGroupMap.set(nodeId, gId);
+                });
+            });
+            setEdgeObstacles(obstacles, nodeGroupMap);
+        }
 
         const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
         routeSfdpEdges(eEls);
