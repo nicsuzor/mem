@@ -89,9 +89,13 @@
                         <span class="text-[10px] font-bold px-1.5 py-0.5 w-fit uppercase tracking-wider"
                               style="background: {projectBgTint(project)}; color: {projectColor(project)};">{project}</span>
                         {#each items as item}
-                            <div class="flex items-start gap-2 text-xs">
-                                <span class="text-[10px] text-yellow-500/60 shrink-0 pt-0.5">{item.time_ago || ""}</span>
-                                <span class="text-yellow-500/90">{item.description}</span>
+                            <div class="group flex items-start gap-2 text-xs hover:bg-yellow-500/10 p-1 -ml-1 rounded cursor-pointer transition-colors"
+                                 role="button" tabindex="0"
+                                 on:click={() => { const id = findNodeForTask(item.description, project); if (id) toggleSelection(id); }}
+                                 on:keydown={(e) => { if (e.key === 'Enter') { const id = findNodeForTask(item.description, project); if (id) toggleSelection(id); } }}>
+                                <span class="text-[10px] text-yellow-500/60 shrink-0 pt-0.5 min-w-[40px]">{item.time_ago || ""}</span>
+                                <span class="text-yellow-500/90 flex-1">{item.description}</span>
+                                <span class="material-symbols-outlined text-[14px] text-yellow-500/40 opacity-0 group-hover:opacity-100 transition-opacity" title="Open in graph">open_in_new</span>
                             </div>
                         {/each}
                     </div>

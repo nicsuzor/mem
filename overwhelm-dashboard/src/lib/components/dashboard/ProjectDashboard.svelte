@@ -77,8 +77,8 @@
 
                     <div class="flex flex-col gap-4">
                         {#if allEpics.length > 0}
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                {#each allEpics as epic}
+                            <div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));">
+                                {#each allEpics.slice(0, 3) as epic}
                                     <div class="bg-black/40 border border-primary/20 p-3 hover:border-primary transition-colors cursor-pointer"
                                          role="button" tabindex="0"
                                          on:click={() => { const eNode = $graphData?.nodes.find(n => n.label === epic.title && n.type === 'epic'); if (eNode) toggleSelection(eNode.id); }}
@@ -104,7 +104,7 @@
                             </div>
                         {/if}
 
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="grid gap-6" style="grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));">
                             <!-- Active Tasks Column -->
                             <div class="flex flex-col gap-2">
                                 <h4 class="text-[10px] font-bold tracking-widest text-primary/60 mb-1">TOP PRIORITIES & NEXT TASKS</h4>
@@ -127,7 +127,10 @@
                                     <div class="text-xs text-primary/40 italic">No active tasks.</div>
                                 {/each}
                                 {#if tasks.length > 3}
-                                    <div class="text-xs text-primary/40 italic pl-2">+ {tasks.length - 3} more tasks</div>
+                                    <button class="text-[10px] text-primary/30 hover:text-primary/60 text-left pl-2 transition-colors cursor-pointer"
+                                            on:click={() => { const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); }}>
+                                        · · · view all {tasks.length} active
+                                    </button>
                                 {/if}
                             </div>
 
@@ -137,7 +140,10 @@
                                 {#each dedup(accomplishments).slice(0, 3) as acc}
                                     <div class="flex items-start gap-2 p-2 border border-primary/10 bg-black/30 hover:border-primary/30 transition-colors">
                                         <span class="material-symbols-outlined text-[14px] text-green-500">check</span>
-                                        <span class="text-xs text-primary/70 line-clamp-2">{acc.description}</span>
+                                        <span class="text-xs text-primary/70 line-clamp-2 flex-1">{acc.description}</span>
+                                        {#if acc.time_ago}
+                                            <span class="text-[10px] text-primary/40 shrink-0">{acc.time_ago}</span>
+                                        {/if}
                                     </div>
                                 {:else}
                                     <div class="text-xs text-primary/40 italic">
@@ -145,7 +151,10 @@
                                     </div>
                                 {/each}
                                 {#if dedup(accomplishments).length > 3}
-                                    <div class="text-xs text-primary/40 italic pl-2">+ {dedup(accomplishments).length - 3} more</div>
+                                    <button class="text-[10px] text-primary/30 hover:text-primary/60 text-left pl-2 transition-colors cursor-pointer"
+                                            on:click={() => { const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); }}>
+                                        · · · view all {dedup(accomplishments).length} completed
+                                    </button>
                                 {/if}
                             </div>
                         </div>
