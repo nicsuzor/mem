@@ -801,6 +801,31 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    fn handle_graph_json(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let graph = self.graph.read();
+        let json = graph.output_json().map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to generate graph JSON: {e}")),
+            data: None,
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_graph_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let graph = self.graph.read();
+        let stats = serde_json::json!({
+            "nodes": graph.node_count(),
+            "edges": graph.edge_count(),
+            "ready": graph.ready_tasks().len(),
+            "blocked": graph.blocked_tasks().len(),
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&stats).unwrap(),
+        )]))
+    }
+
     fn handle_get_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
@@ -2055,6 +2080,8 @@ impl ServerHandler for PkbSearchServer {
             "pkb_context" => self.handle_pkb_context(&args),
             "pkb_trace" => self.handle_pkb_trace(&args),
             "pkb_orphans" => self.handle_pkb_orphans(&args),
+            "graph_json" => self.handle_graph_json(&args),
+            "graph_stats" => self.handle_graph_stats(&args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {}", request.name)),
@@ -2447,6 +2474,24 @@ impl ServerHandler for PkbSearchServer {
                 }))
                 .unwrap(),
             ),
+            Tool::new(
+                "graph_json",
+                "Get the full knowledge graph as JSON for visualizations.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "graph_stats",
+                "Get summary statistics for the knowledge graph (node/edge counts, etc.).",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }))
+                .unwrap(),
+            ),
         ];
 
         std::future::ready(Ok(ListToolsResult {
@@ -2465,13 +2510,14 @@ impl ServerHandler for PkbSearchServer {
             },
             instructions: Some(
                 "PKB Search — semantic search + task graph over personal knowledge base. \
-                 25 tools: search, get_document, list_documents, reindex, \
+                 27 tools: search, get_document, list_documents, reindex, \
                  task_search, get_network_metrics, create_task, create_memory, \
                  create, append, delete, complete_task, list_tasks, \
                  get_task, update_task, retrieve_memory, search_by_tag, \
                  list_memories, delete_memory, decompose_task, \
                  get_dependency_tree, get_task_children, \
-                 pkb_context, pkb_trace, pkb_orphans."
+                 pkb_context, pkb_trace, pkb_orphans, \
+                 graph_json, graph_stats."
                     .to_string(),
             ),
         }
