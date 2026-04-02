@@ -134,6 +134,11 @@ export async function callPkbTool(
 // Typed convenience wrappers
 // ---------------------------------------------------------------------------
 
+/** Fetch the full graph for visualization. Returns raw JSON text or null. */
+export async function fetchPkbGraph(): Promise<string | null> {
+    return callPkbTool('graph_json');
+}
+
 /** Fetch a single task by ID. Returns parsed task object or null. */
 export async function getPkbTask(id: string): Promise<PkbTask | null> {
     const text = await callPkbTool('get_task', { id });
