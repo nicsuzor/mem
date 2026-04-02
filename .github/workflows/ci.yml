@@ -11,6 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check no tracked files are gitignored
+        run: |
+          ignored=$(git ls-files -ci --exclude-standard)
+          if [ -n "$ignored" ]; then
+            echo "These files are tracked but gitignored (breaks release-plz):"
+            echo "$ignored"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check

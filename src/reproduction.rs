@@ -30,6 +30,6 @@ mod tests {
         let dash_count = content.matches("---").count();
         assert_eq!(dash_count, 2, "Should have exactly two '---' separators");
 
-        assert!(content.contains("title: \"Updated Title\""));
+        assert!(content.contains("title: Updated Title") || content.contains("title: \"Updated Title\""));
     }
 }

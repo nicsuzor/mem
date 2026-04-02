@@ -1,0 +1,258 @@
+<script lang="ts">
+    import { untrack } from "svelte";
+    import * as d3 from "d3";
+    import { graphData } from "../../stores/graph";
+    import { filters } from "../../stores/filters";
+    import { toggleSelection, selection } from "../../stores/selection";
+    import { buildTreemapNode, treemapHeaderMetrics } from "../shared/NodeShapes";
+    import { routeTreemapEdges } from "../shared/EdgeRenderer";
+    import { viewSettings } from "../../stores/viewSettings";
+    import type { GraphEdge } from "../../data/prepareGraphData";
+
+    let { containerGroup, width = 2000, height = 1000 } = $props<{ containerGroup: SVGGElement | null; width?: number; height?: number }>();
+
+    let nodesLayer = $state<SVGGElement>(undefined!);
+    let edgesLayer = $state<SVGGElement>(undefined!);
+
+    const canvasW = 3000;
+    const canvasH = $derived(canvasW * (height && width ? height / width : 0.5));
+
+    // Reactive state for the computed layout
+    let visibleNodes = $state<any[]>([]);
+    let links = $state<any[]>([]);
+
+    $effect(() => {
+        // Run layout ONLY when graph data or weight settings change.
+        // untrack() prevents Svelte from auto-tracking reactive reads inside
+        // computeLayout (e.g. canvasH, $filters) — those would cause a
+        // re-layout when the container resizes (sidebar open/close on click).
+        const _data = $graphData;
+        const _weightMode = $viewSettings.treemapWeightMode;
+        if (containerGroup && _data && nodesLayer) {
+            untrack(() => computeLayout(_data));
+        }
+    });
+
+    $effect(() => {
+        // Update Highlights ONLY when selection changes
+        const activeNodeId = $selection.activeNodeId;
+        const hoveredNodeId = $selection.hoveredNodeId;
+        
+        if (nodesLayer) {
+            d3.select(nodesLayer)
+                .selectAll<SVGGElement, any>("g.node")
+                .each(function (d) {
+                    const g = d3.select(this);
+                    const isSelected = d.id === activeNodeId;
+                    const isHovered = d.id === hoveredNodeId;
+                    const needsHighlight = isSelected || isHovered;
+                    
+                    const lastState = (d as any)._lastHighlight;
+                    if (g.selectAll("*").empty() || lastState !== needsHighlight) {
+                        g.selectAll("*").remove();
+                        buildTreemapNode(g, d, needsHighlight);
+                        (d as any)._lastHighlight = needsHighlight;
+                    }
+                });
+        }
+    });
+
+    function computeLayout(data: any) {
+        const nodes = data.nodes;
+        const virtualRootId = "__treemap_root__";
+        const nodeIdSet = new Set(nodes.map((n: any) => n.id));
+        const projectRootId = ($filters as any).projectFilter as string | undefined;
+
+        let stratifyNodes: any[];
+        let rootId: string;
+
+        if (projectRootId && nodeIdSet.has(projectRootId)) {
+            rootId = projectRootId;
+            stratifyNodes = nodes.map((n: any) => ({
+                ...n,
+                parent: (n.parent && nodeIdSet.has(n.parent) && n.id !== rootId) ? n.parent : (n.id === rootId ? "" : "__ignore__")
+            })).filter((n: any) => n.parent !== "__ignore__");
+        } else {
+            rootId = virtualRootId;
+            stratifyNodes = [{ id: rootId, parent: "", type: "root", label: "ROOT" }];
+
+            for (const n of nodes) {
+                const effectiveParent = (n.parent && nodeIdSet.has(n.parent)) ? n.parent : rootId;
+                stratifyNodes.push({ ...n, parent: effectiveParent });
+            }
+        }
+
+        let root;
+        try {
+            root = d3
+                .stratify<any>()
+                .id((d) => d.id)
+                .parentId((d) => d.parent)(stratifyNodes);
+        } catch (e) {
+            console.error("Stratify failed for Treemap", e);
+            return;
+        }
+
+        const MIN_NODE_WEIGHT = 1;
+        const weightMode = $viewSettings.treemapWeightMode || 'sqrt';
+
+        // Mark hierarchy parents — d.children on raw data is always undefined
+        // since parent-child is defined by parent ID, not nested arrays.
+        // Without this, every node (including parents) gets its own weight,
+        // inflating containers beyond what their children fill.
+        root.each((node: any) => { node.data._isHierarchyParent = !!node.children; });
+
+        root.sum(d => {
+            if (d._isHierarchyParent) return 0;
+            switch (weightMode) {
+                case 'priority': {
+                    if (d.status === 'done' || d.status === 'completed') return 1;
+                    if (d.priority <= 1) return 3;
+                    return 2;
+                }
+                case 'dw-bucket': {
+                    const s = Math.sqrt(d.dw ?? 0);
+                    if (s > 5) return 4;
+                    if (s > 2) return 3;
+                    if (s > 1) return 2;
+                    return 1;
+                }
+                case 'equal': return 1;
+                default: return Math.max(MIN_NODE_WEIGHT, Math.sqrt(d.dw ?? 0) || MIN_NODE_WEIGHT);
+            }
+        });
+
+        // STABLE SORT: Tie-break with ID to prevent jumping on re-renders
+        root.sort((a, b) => (b.value || 0) - (a.value || 0) || a.id!.localeCompare(b.id!));
+
+        // Use the same header height computation as the renderer
+        function estimateHeaderHeight(node: any): number {
+            if (node.depth === 0) return 4; // virtual root
+            if (!node.children) return 0; // leaves don't need header padding
+            const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
+            const h = (node.y1 ?? canvasH) - (node.y0 ?? 0);
+            const label = node.data?.label || '';
+            if (!label || w < 25) return 14;
+            return treemapHeaderMetrics(w, h, label, node.depth).headerH;
+        }
+
+        const treemap = d3.treemap<any>()
+            .size([canvasW, canvasH])
+            .paddingInner((node: any) => node.depth <= 1 ? 14 : node.depth <= 2 ? 6 : 5)
+            .paddingBottom((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
+            .paddingLeft((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
+            .paddingRight((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
+            .paddingTop((node: any) => estimateHeaderHeight(node))
+            .tile(d3.treemapSquarify.ratio(1.618))
+            .round(true);
+
+        treemap(root);
+
+        const layoutMap = new Map();
+        root.descendants().forEach((d: any) => {
+            if (d.data.id === rootId) return;
+            // Count leaf descendants (actual tasks inside this container)
+            let leafCount = 0;
+            if (d.children) {
+                d.leaves().forEach(() => leafCount++);
+            }
+            layoutMap.set(d.data.id, {
+                x: d.x0 + (d.x1 - d.x0) / 2,
+                y: d.y0 + (d.y1 - d.y0) / 2,
+                w: d.x1 - d.x0,
+                h: d.y1 - d.y0,
+                depth: d.depth,
+                isLeaf: !d.children || d.children.length === 0,
+                leafCount,
+            });
+        });
+
+        visibleNodes = nodes
+            .filter((n: any) => {
+                const l = layoutMap.get(n.id);
+                if (l) {
+                    n.x = l.x; n.y = l.y; n.w = l.w; n.h = l.h;
+                    n.depth = l.depth;
+                    n._isLeaf = l.isLeaf;
+                    n._leafCount = l.leafCount;
+                    return true;
+                }
+                n.x = -9999;
+                return false;
+            })
+            .sort((a: any, b: any) => (a.depth || 0) - (b.depth || 0));
+            
+        links = data.links;
+
+        renderNodes();
+    }
+
+    function renderNodes() {
+        if (!nodesLayer) return;
+
+        const nEls = d3
+            .select(nodesLayer)
+            .selectAll<SVGGElement, any>("g.node")
+            .data(visibleNodes, (d: any) => d.id)
+            .join("g")
+            .attr("class", "node")
+            .attr("transform", (d) => `translate(${d.x},${d.y})`)
+            .style("cursor", "pointer")
+            .on("click", (e, d) => {
+                e.stopPropagation();
+                toggleSelection(d.id);
+            })
+            .on("mouseenter", (e, d) => {
+                selection.update(s => ({ ...s, hoveredNodeId: d.id }));
+            })
+            .on("mouseleave", () => {
+                selection.update(s => ({ ...s, hoveredNodeId: null }));
+            });
+
+        // Current selection state for initial build
+        const activeNodeId = $selection.activeNodeId;
+        const hoveredNodeId = $selection.hoveredNodeId;
+
+        const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
+        const showFocus = $viewSettings.showFocusHighlight && focusIds.size > 0;
+
+        nEls.each(function (d) {
+            const g = d3.select(this);
+            const needsHighlight = d.id === activeNodeId || d.id === hoveredNodeId;
+            g.selectAll("*").remove();
+            buildTreemapNode(g, d, needsHighlight);
+            (d as any)._lastHighlight = needsHighlight;
+
+            // Focus accent: gold left-border on priority focus tasks
+            if (showFocus && d._isLeaf && focusIds.has(d.id)) {
+                g.append("rect")
+                    .attr("x", -d.w / 2).attr("y", -d.h / 2)
+                    .attr("width", 3).attr("height", d.h)
+                    .attr("fill", "#f59e0b").attr("opacity", 0.9);
+            }
+        });
+
+        // Gentle dimming: non-focus leaf nodes slightly faded
+        if (showFocus) {
+            nEls.style("opacity", (d: any) => {
+                if (!d._isLeaf) return null; // Don't dim containers
+                if (focusIds.has(d.id)) return 1;
+                return 0.65;
+            });
+        } else {
+            nEls.style("opacity", null);
+        }
+
+        const eEls = d3
+            .select(edgesLayer)
+            .selectAll("path")
+            .data(links)
+            .join("path");
+        routeTreemapEdges(eEls);
+    }
+</script>
+
+{#if containerGroup}
+    <g bind:this={edgesLayer}></g>
+    <g bind:this={nodesLayer}></g>
+{/if}

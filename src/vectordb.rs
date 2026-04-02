@@ -7,8 +7,10 @@ use crate::distance;
 use crate::embeddings;
 use crate::pkb::PkbDocument;
 use anyhow::Result;
+use fd_lock::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 /// A stored document entry with its embeddings
@@ -24,9 +26,6 @@ pub struct DocumentEntry {
     pub status: Option<String>,
     /// Tags
     pub tags: Vec<String>,
-    /// Project name (from frontmatter)
-    #[serde(default)]
-    pub project: Option<String>,
     /// Document ID (from frontmatter)
     #[serde(default)]
     pub id: Option<String>,
@@ -51,12 +50,14 @@ pub struct SearchResult {
     pub path: PathBuf,
     pub title: String,
     pub score: f32,
+    /// Short extract (300 chars) for quick scanning
     pub snippet: String,
+    /// Full text of the best-matching chunk
+    pub chunk_text: String,
     pub id: Option<String>,
     pub doc_type: Option<String>,
     pub status: Option<String>,
     pub tags: Vec<String>,
-    pub project: Option<String>,
     pub confidence: Option<f64>,
 }
 
@@ -75,6 +76,22 @@ impl VectorStore {
             documents: HashMap::new(),
             dimension,
         }
+    }
+
+    /// Acquire an exclusive lock on the index to prevent concurrent updates.
+    /// The lock is held until the returned lock itself is dropped.
+    pub fn acquire_lock(path: &Path) -> Result<RwLock<File>> {
+        let lock_path = path.with_extension("lock");
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)?;
+
+        Ok(RwLock::new(file))
     }
 
     /// Load from disk, or create new if file doesn't exist.
@@ -142,24 +159,20 @@ impl VectorStore {
     /// Check if a document needs re-indexing based on content hash
     pub fn needs_update(&self, path: &str, content_hash: &str) -> bool {
         match self.documents.get(path) {
-            Some(entry) => {
-                // If entry has no hash (old format), needs update
-                match &entry.content_hash {
-                    Some(stored_hash) => stored_hash != content_hash,
-                    None => true,
-                }
-            }
+            Some(entry) => match &entry.content_hash {
+                Some(stored) if !stored.is_empty() => stored != content_hash,
+                _ => true, // None or empty → always needs update
+            },
             None => true,
         }
     }
 
-    /// Extract id, project, and confidence from frontmatter
-    fn extract_frontmatter_fields(doc: &PkbDocument) -> (Option<String>, Option<String>, Option<f64>) {
+    /// Extract id and confidence from frontmatter
+    fn extract_frontmatter_fields(doc: &PkbDocument) -> (Option<String>, Option<f64>) {
         let fm = doc.frontmatter.as_ref();
         let id = fm.and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
-        let project = fm.and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
         let confidence = fm.and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
-        (id, project, confidence)
+        (id, confidence)
     }
 
     /// Insert or update a document
@@ -174,7 +187,7 @@ impl VectorStore {
         let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
         let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
 
-        let (id, project, confidence) = Self::extract_frontmatter_fields(doc);
+        let (id, confidence) = Self::extract_frontmatter_fields(doc);
 
         let entry = DocumentEntry {
             path: doc.path.clone(),
@@ -182,7 +195,6 @@ impl VectorStore {
             doc_type: doc.doc_type.clone(),
             status: doc.status.clone(),
             tags: doc.tags.clone(),
-            project,
             id,
             confidence,
             content_hash: Some(doc.content_hash.clone()),
@@ -203,7 +215,7 @@ impl VectorStore {
         chunk_embeddings: Vec<Vec<f32>>,
     ) {
         let path_str = doc.path.to_string_lossy().to_string();
-        let (id, project, confidence) = Self::extract_frontmatter_fields(doc);
+        let (id, confidence) = Self::extract_frontmatter_fields(doc);
         let body_chunks =
             embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
         let entry = DocumentEntry {
@@ -212,7 +224,6 @@ impl VectorStore {
             doc_type: doc.doc_type.clone(),
             status: doc.status.clone(),
             tags: doc.tags.clone(),
-            project,
             id,
             confidence,
             content_hash: Some(doc.content_hash.clone()),
@@ -268,24 +279,28 @@ impl VectorStore {
             }
 
             if best_score > f32::NEG_INFINITY {
-                // Use chunk_texts for snippet to ensure alignment with embedding index
-                let snippet_source = &entry.chunk_texts;
-                let best_snippet = if best_chunk_idx < snippet_source.len() {
-                    let text = &snippet_source[best_chunk_idx];
-                    let mut trunc = 300.min(text.len());
-                    while trunc > 0 && !text.is_char_boundary(trunc) {
-                        trunc -= 1;
-                    }
-                    text[..trunc].to_string()
-                } else if !snippet_source.is_empty() {
-                    let text = &snippet_source[0];
-                    let mut trunc = 300.min(text.len());
-                    while trunc > 0 && !text.is_char_boundary(trunc) {
-                        trunc -= 1;
-                    }
-                    text[..trunc].to_string()
+                // Prefer body_chunks (no frontmatter metadata) for display;
+                // fall back to chunk_texts if body_chunks unavailable
+                let display_source = if !entry.body_chunks.is_empty() {
+                    &entry.body_chunks
+                } else {
+                    &entry.chunk_texts
+                };
+
+                let full_chunk = if best_chunk_idx < display_source.len() {
+                    display_source[best_chunk_idx].clone()
+                } else if !display_source.is_empty() {
+                    display_source[0].clone()
                 } else {
                     String::new()
+                };
+
+                let snippet = {
+                    let mut trunc = 300.min(full_chunk.len());
+                    while trunc > 0 && !full_chunk.is_char_boundary(trunc) {
+                        trunc -= 1;
+                    }
+                    full_chunk[..trunc].to_string()
                 };
 
                 let abs_path = if entry.path.is_absolute() {
@@ -297,12 +312,12 @@ impl VectorStore {
                     path: abs_path,
                     title: entry.title.clone(),
                     score: best_score,
-                    snippet: best_snippet,
+                    snippet,
+                    chunk_text: full_chunk,
                     id: entry.id.clone(),
                     doc_type: entry.doc_type.clone(),
                     status: entry.status.clone(),
                     tags: entry.tags.clone(),
-                    project: entry.project.clone(),
                     confidence: entry.confidence,
                 });
             }
@@ -325,7 +340,6 @@ impl VectorStore {
         tag_filter: Option<&str>,
         type_filter: Option<&str>,
         status_filter: Option<&str>,
-        project_filter: Option<&str>,
         pkb_root: &Path,
     ) -> Vec<SearchResult> {
         let mut results: Vec<SearchResult> = Vec::new();
@@ -349,12 +363,6 @@ impl VectorStore {
                     _ => continue,
                 }
             }
-            if let Some(proj) = project_filter {
-                match &entry.project {
-                    Some(p) if p.eq_ignore_ascii_case(proj) => {}
-                    _ => continue,
-                }
-            }
 
             let abs_path = if entry.path.is_absolute() {
                 entry.path.clone()
@@ -366,17 +374,27 @@ impl VectorStore {
                 title: entry.title.clone(),
                 score: 0.0,
                 snippet: String::new(),
+                chunk_text: String::new(),
                 id: entry.id.clone(),
                 doc_type: entry.doc_type.clone(),
                 status: entry.status.clone(),
                 tags: entry.tags.clone(),
-                project: entry.project.clone(),
                 confidence: entry.confidence,
             });
         }
 
         results.sort_by(|a, b| a.title.cmp(&b.title));
         results
+    }
+
+    /// Iterate over all document entries (for pairwise comparison in duplicate detection).
+    pub fn documents(&self) -> impl Iterator<Item = (&String, &DocumentEntry)> {
+        self.documents.iter()
+    }
+
+    /// Get a document entry by its relative path key.
+    pub fn get_entry(&self, path: &str) -> Option<&DocumentEntry> {
+        self.documents.get(path)
     }
 
     /// List all tags across all documents with their occurrence counts.
@@ -404,7 +422,6 @@ mod tests {
         doc_type: Option<&str>,
         status: Option<&str>,
         tags: &[&str],
-        project: Option<&str>,
         id: Option<&str>,
         confidence: Option<f64>,
         embedding: Vec<f32>,
@@ -415,7 +432,6 @@ mod tests {
             doc_type: doc_type.map(String::from),
             status: status.map(String::from),
             tags: tags.iter().map(|s| s.to_string()).collect(),
-            project: project.map(String::from),
             id: id.map(String::from),
             confidence,
             content_hash: Some("test_hash_123".to_string()),
@@ -435,7 +451,6 @@ mod tests {
                 Some("task"),
                 Some("active"),
                 &["bugfix", "urgent"],
-                Some("mem"),
                 Some("task-abc"),
                 None,
                 vec![1.0, 0.0, 0.0],
@@ -449,7 +464,6 @@ mod tests {
                 Some("memory"),
                 None,
                 &["pattern", "urgent"],
-                None,
                 Some("mem-001"),
                 None,
                 vec![0.0, 1.0, 0.0],
@@ -463,7 +477,6 @@ mod tests {
                 Some("note"),
                 None,
                 &["research"],
-                Some("mem"),
                 Some("note-xyz"),
                 None,
                 vec![0.0, 0.0, 1.0],
@@ -498,7 +511,7 @@ mod tests {
     fn test_list_documents_no_filters() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(None, None, None, None, root);
+        let results = store.list_documents(None, None, None, root);
         assert_eq!(results.len(), 3);
     }
 
@@ -506,7 +519,7 @@ mod tests {
     fn test_list_documents_filter_by_tag() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(Some("urgent"), None, None, None, root);
+        let results = store.list_documents(Some("urgent"), None, None, root);
         assert_eq!(results.len(), 2);
     }
 
@@ -514,7 +527,7 @@ mod tests {
     fn test_list_documents_filter_by_type() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(None, Some("task"), None, None, root);
+        let results = store.list_documents(None, Some("task"), None, root);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Fix the bug");
     }
@@ -523,7 +536,7 @@ mod tests {
     fn test_list_documents_filter_by_type_case_insensitive() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(None, Some("TASK"), None, None, root);
+        let results = store.list_documents(None, Some("TASK"), None, root);
         assert_eq!(results.len(), 1);
     }
 
@@ -531,24 +544,16 @@ mod tests {
     fn test_list_documents_filter_by_status() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(None, None, Some("active"), None, root);
+        let results = store.list_documents(None, None, Some("active"), root);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Fix the bug");
-    }
-
-    #[test]
-    fn test_list_documents_filter_by_project() {
-        let store = build_test_store();
-        let root = Path::new("/pkb");
-        let results = store.list_documents(None, None, None, Some("mem"), root);
-        assert_eq!(results.len(), 2);
     }
 
     #[test]
     fn test_list_documents_combined_filters() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(Some("urgent"), Some("memory"), None, None, root);
+        let results = store.list_documents(Some("urgent"), Some("memory"), None, root);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Important insight");
     }
@@ -557,7 +562,7 @@ mod tests {
     fn test_list_documents_no_match() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.list_documents(Some("nonexistent"), None, None, None, root);
+        let results = store.list_documents(Some("nonexistent"), None, None, root);
         assert!(results.is_empty());
     }
 
@@ -651,8 +656,8 @@ mod tests {
     }
 
     #[test]
-    fn test_needs_update_migration_old_format() {
-        // Test migration: old format documents without content_hash should need update
+    fn test_needs_update_missing_hash() {
+        // Documents with None content_hash (old format) should always need update
         let mut store = VectorStore::new(3);
         let mut entry = make_entry(
             "tasks/old-task.md",
@@ -662,14 +667,31 @@ mod tests {
             &[],
             None,
             None,
-            None,
             vec![1.0, 0.0, 0.0],
         );
-        // Simulate old format by removing content_hash
         entry.content_hash = None;
         store.documents.insert("tasks/old-task.md".to_string(), entry);
 
-        // Document with no hash should always need update
+        assert!(store.needs_update("tasks/old-task.md", "any_hash"));
+    }
+
+    #[test]
+    fn test_needs_update_empty_hash() {
+        // Documents with empty content_hash should also need update
+        let mut store = VectorStore::new(3);
+        let mut entry = make_entry(
+            "tasks/old-task.md",
+            "Old Task",
+            Some("task"),
+            None,
+            &[],
+            None,
+            None,
+            vec![1.0, 0.0, 0.0],
+        );
+        entry.content_hash = Some(String::new());
+        store.documents.insert("tasks/old-task.md".to_string(), entry);
+
         assert!(store.needs_update("tasks/old-task.md", "any_hash"));
     }
 
@@ -728,5 +750,63 @@ mod tests {
         let root = Path::new("/pkb");
         let results = store.search(&[1.0, 0.0, 0.0], 1, root);
         assert!(results[0].snippet.contains("body of"));
+    }
+
+    #[test]
+    fn test_race_condition_resolved_with_locking() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("pkb_vectors.bin");
+        let dimension = 3;
+
+        // Simulate Process A
+        {
+            let mut lock_a = VectorStore::acquire_lock(&db_path).unwrap();
+            let _guard_a = lock_a.write().unwrap();
+
+            let mut sa = VectorStore::load_or_create(&db_path, dimension).unwrap();
+            let doc_a = crate::pkb::PkbDocument {
+                path: PathBuf::from("doc_a.md"),
+                title: "Doc A".to_string(),
+                body: "Body A".to_string(),
+                doc_type: None,
+                status: None,
+                modified: None,
+                tags: vec![],
+                frontmatter: None,
+                content_hash: "hash_a".to_string(),
+            };
+            sa.insert_precomputed(&doc_a, vec!["A".to_string()], vec![vec![1.0, 0.0, 0.0]]);
+            sa.save(&db_path).unwrap();
+        } // Lock A released
+
+        // Simulate Process B
+        {
+            let mut lock_b = VectorStore::acquire_lock(&db_path).unwrap();
+            let _guard_b = lock_b.write().unwrap();
+
+            let mut sb = VectorStore::load_or_create(&db_path, dimension).unwrap();
+            let doc_b = crate::pkb::PkbDocument {
+                path: PathBuf::from("doc_b.md"),
+                title: "Doc B".to_string(),
+                body: "Body B".to_string(),
+                doc_type: None,
+                status: None,
+                modified: None,
+                tags: vec![],
+                frontmatter: None,
+                content_hash: "hash_b".to_string(),
+            };
+            sb.insert_precomputed(&doc_b, vec!["B".to_string()], vec![vec![0.0, 1.0, 0.0]]);
+            sb.save(&db_path).unwrap();
+        } // Lock B released
+
+        // Reload and check
+        let final_store = VectorStore::load_or_create(&db_path, dimension).unwrap();
+        let has_a = final_store.get_entry("doc_a.md").is_some();
+        let has_b = final_store.get_entry("doc_b.md").is_some();
+
+        assert!(has_a, "Doc A should be present");
+        assert!(has_b, "Doc B should be present");
     }
 }

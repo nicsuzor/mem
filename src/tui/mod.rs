@@ -1,4 +1,4 @@
-//! The Planning Web TUI (`aops tui`)
+//! The Planning Web Dashboard (`pkb dash`)
 //!
 //! A graph-native terminal interface for academic planning built on the mem library.
 //! Makes the PKB graph the interface rather than a flat task list.
@@ -17,9 +17,9 @@ use std::io::stdout;
 use std::path::Path;
 use std::time::Duration;
 
-use app::{App, CaptureField, View};
+use app::{App, View};
 
-/// Launch the interactive TUI. Tracing must already be initialised by the caller.
+/// Launch the interactive dashboard. Tracing must already be initialised by the caller.
 pub fn run(pkb_root: &Path, db_path: &Path) -> Result<()> {
     let mut app = App::new(pkb_root, db_path);
     app.load_graph();
@@ -58,17 +58,6 @@ fn run_event_loop(
     Ok(())
 }
 
-fn get_selected_node_id(app: &App) -> Option<String> {
-    match app.current_view {
-        View::EpicTree | View::Graph => app
-            .tree_rows
-            .get(app.selected_index)
-            .map(|r| r.node_id.clone()),
-        View::Focus => app.focus_picks.get(app.selected_index).cloned(),
-        _ => None,
-    }
-}
-
 fn handle_key(key: KeyEvent, app: &mut App) -> bool {
     // Ctrl-C always quits
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -77,65 +66,6 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
     // Ctrl-D also quits
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
         return true;
-    }
-
-    // Quick capture overlay
-    if app.show_capture {
-        match key.code {
-            KeyCode::Esc => {
-                app.show_capture = false;
-            }
-            KeyCode::Tab => {
-                app.capture_field = match app.capture_field {
-                    CaptureField::Title => CaptureField::Project,
-                    CaptureField::Project => CaptureField::Priority,
-                    CaptureField::Priority => CaptureField::Title,
-                };
-            }
-            KeyCode::Enter => {
-                app.submit_capture();
-            }
-            KeyCode::Left => match app.capture_field {
-                CaptureField::Project => {
-                    if app.capture_project_idx > 0 {
-                        app.capture_project_idx -= 1;
-                    }
-                }
-                CaptureField::Priority => {
-                    if app.capture_priority > 0 {
-                        app.capture_priority -= 1;
-                    }
-                }
-                _ => {}
-            },
-            KeyCode::Right => match app.capture_field {
-                CaptureField::Project => {
-                    if !app.project_names.is_empty()
-                        && app.capture_project_idx < app.project_names.len() - 1
-                    {
-                        app.capture_project_idx += 1;
-                    }
-                }
-                CaptureField::Priority => {
-                    if app.capture_priority < 4 {
-                        app.capture_priority += 1;
-                    }
-                }
-                _ => {}
-            },
-            KeyCode::Backspace => {
-                if app.capture_field == CaptureField::Title {
-                    app.capture_title.pop();
-                }
-            }
-            KeyCode::Char(c) => {
-                if app.capture_field == CaptureField::Title {
-                    app.capture_title.push(c);
-                }
-            }
-            _ => {}
-        }
-        return false;
     }
 
     // Search overlay captures all key input
@@ -179,10 +109,9 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
         return false;
     }
 
-    // Quick capture (global shortcut)
+    // q quits
     if key.code == KeyCode::Char('q') {
-        app.open_capture();
-        return false;
+        return true;
     }
 
     // View-specific keys when in detail overlay
@@ -221,16 +150,7 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
         KeyCode::Char(' ') => app.toggle_expand(),
 
         // Detail view
-        KeyCode::Enter => {
-            if app.reparent_mode {
-                app.confirm_reparent();
-            } else {
-                app.open_detail();
-            }
-        }
-
-        // Quick capture
-        KeyCode::Char('n') => app.open_capture(),
+        KeyCode::Enter => app.open_detail(),
 
         // Search
         KeyCode::Char('/') => {
@@ -248,41 +168,6 @@ fn handle_key(key: KeyEvent, app: &mut App) -> bool {
         // Toggles
         KeyCode::Char('C') => app.toggle_show_completed(),
         KeyCode::Char('T') => app.cycle_type_filter(),
-
-        // Manipulation
-        KeyCode::Char('s') => {
-            if let Some(id) = get_selected_node_id(app) {
-                if let Some(node) = app.get_node(&id) {
-                    let new_status = match node.status.as_deref().unwrap_or("active") {
-                        "active" => "done",
-                        "done" => "blocked",
-                        "blocked" => "dead",
-                        "dead" => "active",
-                        _ => "active",
-                    };
-                    app.set_status(&id, new_status);
-                }
-            }
-        }
-        KeyCode::Char('p') => {
-            if let Some(id) = get_selected_node_id(app) {
-                if let Some(node) = app.get_node(&id) {
-                    let new_pri = match node.priority.unwrap_or(2) {
-                        0 => 1,
-                        1 => 2,
-                        2 => 3,
-                        3 => 0,
-                        _ => 2,
-                    };
-                    app.set_priority(&id, new_pri);
-                }
-            }
-        }
-        KeyCode::Char('r') => app.enter_reparent_mode(),
-
-        // Priority
-        KeyCode::Char('+') => app.change_priority(-1),
-        KeyCode::Char('-') => app.change_priority(1),
 
         // Help
         KeyCode::Char('?') => app.show_help = !app.show_help,

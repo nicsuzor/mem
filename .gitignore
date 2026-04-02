@@ -2,3 +2,6 @@ target/
 models/
 mem
 .claude/settings.json
+*.png
+.playwright-mcp
+graph.json

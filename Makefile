@@ -1,4 +1,4 @@
-# mem — pkb, aops
+# mem — pkb
 # Cross-compile to Apple Silicon from Linux using cargo-zigbuild + zig 0.13
 
 CARGO        ?= cargo
@@ -6,7 +6,7 @@ TARGET_MACOS  = aarch64-apple-darwin
 TARGET_LINUX  = x86_64-unknown-linux-gnu
 RELEASE_DIR   = target/release
 MACOS_DIR     = target/$(TARGET_MACOS)/release
-BINS          = pkb aops
+BINS          = pkb
 VERSION       = $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
 # macOS SDK sysroot with framework stubs (needed for cross-compile)
@@ -19,8 +19,8 @@ build:
 	$(CARGO) build --release
 
 .PHONY: install
-install: build
-	$(CARGO) install --path . --bin aops --bin pkb
+install:
+	curl -fsSL https://raw.githubusercontent.com/nicsuzor/mem/main/install.sh | sh
 
 # ── Apple Silicon cross-build ────────────────────────────────────────
 # Requires: zig 0.13, cargo-zigbuild, macOS sysroot with framework stubs
@@ -33,63 +33,16 @@ apple: $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd
 	@echo "Binaries:"
 	@for b in $(BINS); do ls -lh $(MACOS_DIR)/$$b 2>/dev/null; done
 	@echo ""
-	@file $(MACOS_DIR)/aops
+	@file $(MACOS_DIR)/pkb
 
 # ── Release ────────────────────────────────────────────────────────
-# Bump version, commit, tag, push. CI builds and publishes binaries.
+# Automated via release-plz (see .github/workflows/release-plz.yml):
 #
-#   make release          # bump patch: 0.1.0 → 0.1.1
-#   make release-minor    # bump minor: 0.1.0 → 0.2.0
-#   make release-major    # bump major: 0.1.0 → 1.0.0
-
-.PHONY: release
-release: bump-patch release-tag
-
-.PHONY: release-minor
-release-minor: bump-minor release-tag
-
-.PHONY: release-major
-release-major: bump-major release-tag
-
-.PHONY: release-tag
-release-tag:
-	@$(CARGO) generate-lockfile
-	@NEW_VER=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
-		git add Cargo.toml Cargo.lock && \
-		git commit -m "release: v$$NEW_VER" && \
-		git tag -a "v$$NEW_VER" -m "Release v$$NEW_VER" && \
-		git push && git push --tags && \
-		echo "" && \
-		echo "Tagged v$$NEW_VER — CI will build and publish the release."
-
-# ── Version bumping ───────────────────────────────────────────────
-
-.PHONY: bump-patch
-bump-patch:
-	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	MAJOR=$$(echo $$OLD | cut -d. -f1); \
-	MINOR=$$(echo $$OLD | cut -d. -f2); \
-	PATCH=$$(echo $$OLD | cut -d. -f3); \
-	NEW="$$MAJOR.$$MINOR.$$((PATCH + 1))"; \
-	sed "s/^version = \"$$OLD\"/version = \"$$NEW\"/" Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml; \
-	echo "Version: $$OLD → $$NEW"
-
-.PHONY: bump-minor
-bump-minor:
-	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	MAJOR=$$(echo $$OLD | cut -d. -f1); \
-	MINOR=$$(echo $$OLD | cut -d. -f2); \
-	NEW="$$MAJOR.$$((MINOR + 1)).0"; \
-	sed "s/^version = \"$$OLD\"/version = \"$$NEW\"/" Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml; \
-	echo "Version: $$OLD → $$NEW"
-
-.PHONY: bump-major
-bump-major:
-	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	MAJOR=$$(echo $$OLD | cut -d. -f1); \
-	NEW="$$((MAJOR + 1)).0.0"; \
-	sed "s/^version = \"$$OLD\"/version = \"$$NEW\"/" Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml; \
-	echo "Version: $$OLD → $$NEW"
+#   1. Use conventional commits (feat:, fix:, perf:, etc.)
+#   2. Merge PR to main
+#   3. release-plz opens a Release PR (version bump + CHANGELOG)
+#   4. Merge the Release PR → CI builds + publishes automatically
+#
 
 .PHONY: version
 version:
@@ -166,19 +119,17 @@ sizes:
 help:
 	@echo "Targets:"
 	@echo "  build          Release build for current host"
-	@echo "  install        Build and install binaries to CARGO_HOME/bin"
+	@echo "  install        Install release binaries via cargo-binstall"
 	@echo "  apple          Cross-compile for Apple Silicon (aarch64-apple-darwin)"
-	@echo "  release        Bump patch, commit, tag, push (CI builds + publishes)"
-	@echo "  release-minor  Bump minor, commit, tag, push (CI builds + publishes)"
-	@echo "  release-major  Bump major, commit, tag, push (CI builds + publishes)"
-	@echo "  bump-patch     Bump patch version in Cargo.toml (no build)"
-	@echo "  bump-minor     Bump minor version in Cargo.toml (no build)"
 	@echo "  version        Print current version"
 	@echo "  setup-cross    Install rustup target + cargo-zigbuild + zig instructions"
 	@echo "  check          Type-check without building"
 	@echo "  test           Run tests"
 	@echo "  clean          Remove target/"
 	@echo "  sizes          Show binary sizes"
+	@echo ""
+	@echo "Releases are automated via release-plz. Just merge PRs to main"
+	@echo "using conventional commits (feat:, fix:, perf:, etc.)."
 	@echo ""
 	@echo "Prerequisites for cross-compile:"
 	@echo "  1. make setup-cross"

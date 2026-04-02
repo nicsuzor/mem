@@ -86,8 +86,10 @@ pub struct GraphNode {
     pub soft_blocks: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
+    /// Sub-tasks (type=subtask) — travel with the parent and render as checkboxes.
+    /// Computed from edges; not stored in frontmatter.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub subtasks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,6 +98,9 @@ pub struct GraphNode {
     pub modified: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Computed: label of nearest ancestor with node_type == "project"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,7 +121,12 @@ pub struct GraphNode {
     #[serde(skip)]
     pub permalinks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus_score: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// Computed status group: "active", "blocked", or "completed"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_group: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub downstream_weight: f64,
     #[serde(default, skip_serializing_if = "is_zero_f64")]
@@ -131,14 +141,13 @@ pub struct GraphNode {
     pub backlink_count: i32,
     #[serde(default, skip_serializing_if = "is_false")]
     pub stakeholder_exposure: bool,
+    /// True if this node is reachable from an active leaf task via upstream BFS
+    /// (parent, depends_on, soft_depends_on edges). Used by renderers to show
+    /// only the planning-relevant subgraph.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reachable: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assumptions: Vec<Assumption>,
-    /// Precomputed layout X coordinate (force-directed graph layout)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub x: Option<f64>,
-    /// Precomputed layout Y coordinate (force-directed graph layout)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub y: Option<f64>,
 }
 
 /// An assumption attached to a planning node.
@@ -167,10 +176,26 @@ fn is_zero_i32(v: &i32) -> bool {
 // Parsing helpers
 // ===========================================================================
 
-/// Compute a stable ID from a file path (MD5 of path without extension).
-pub fn compute_id(path: &Path) -> String {
-    let key = path.with_extension("").to_string_lossy().to_string();
-    format!("{:x}", md5::compute(key.as_bytes()))
+/// Generate a new random ID with the given prefix: `{prefix}-{8 random hex chars}`.
+///
+/// Used when creating new documents. For reading existing documents without an
+/// explicit `id` field, use the filename stem as the fallback ID instead.
+pub fn create_id(prefix: &str) -> String {
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let random: u32 = rng.random();
+    format!("{}-{:08x}", prefix, random)
+}
+
+/// Derive a fallback ID from a file path (filename stem, no extension).
+///
+/// Used only when reading documents that lack an explicit `id` in frontmatter.
+/// This is stable across re-indexes (same file = same ID) but changes if the
+/// file is renamed. Prefer explicit `id` fields — the linter flags missing IDs.
+pub fn fallback_id(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
 }
 
 /// Normalize status values for backwards compatibility.
@@ -178,11 +203,86 @@ pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         "inbox" | "todo" | "open" => "active",
         "in-progress" => "in_progress",
-        "in_review" | "in-review" => "review",
-        "complete" | "completed" | "closed" => "done",
+        "in_review" | "in-review" | "ready-for-review" | "merge_ready" | "ISSUES_FOUND" => "review",
+        "complete" | "completed" | "closed" | "archived" | "resolved" | "published-spir" => "done",
+        "dead" => "cancelled",
+        "deferred" => "paused",
+        "queued" => "active",
+        "early-scaffold" | "planning" | "seed" => "draft",
+        "in-preparation" | "partial" => "in_progress",
+        "historical" => "done",
+        "conditionally-accepted" | "revise-and-resubmit" => "review",
+        "invited" | "awaiting-approval" => "waiting",
         other => other,
     }
 }
+
+// ── Canonical status and type values ────────────────────────────────────
+
+/// All recognized canonical status values (post-alias resolution).
+///
+/// - **active**: default / open / ready to work on
+/// - **in_progress**: currently being worked on
+/// - **blocked**: waiting on dependencies
+/// - **review**: in review / awaiting feedback
+/// - **paused**: intentionally deferred
+/// - **someday**: low priority / maybe later
+/// - **draft**: early / incomplete / seed content
+/// - **waiting**: waiting on external input (not a dependency)
+/// - **submitted**: sent for external decision
+/// - **accepted**: approved / accepted externally
+/// - **done**: completed successfully
+/// - **cancelled**: abandoned / no longer relevant
+pub const VALID_STATUSES: &[&str] = &[
+    "active", "in_progress", "blocked", "review",
+    "paused", "someday", "draft", "waiting",
+    "submitted", "accepted",
+    "done", "cancelled",
+];
+
+/// Statuses that indicate a task is finished (no longer active).
+pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled"];
+
+/// Statuses that represent active/open work items.
+pub const ACTIVE_STATUSES: &[&str] = &[
+    "active", "in_progress", "review", "waiting",
+    "draft", "submitted", "accepted",
+    "paused", "someday",
+];
+
+/// Statuses that represent blocked work.
+pub const BLOCKED_STATUSES: &[&str] = &["blocked"];
+
+/// Returns true if the status represents a completed/finished state.
+pub fn is_completed(status: Option<&str>) -> bool {
+    matches!(status, Some("done") | Some("cancelled"))
+}
+
+/// Returns the status group ("active", "blocked", or "completed") for a given status.
+pub fn status_group(status: Option<&str>) -> &'static str {
+    match status {
+        Some(s) if COMPLETED_STATUSES.contains(&s) => "completed",
+        Some(s) if BLOCKED_STATUSES.contains(&s) => "blocked",
+        _ => "active",
+    }
+}
+
+/// Node types that represent actionable work items (shown in dashboards).
+pub const TASK_TYPES: &[&str] = &["task", "goal", "project", "epic"];
+
+/// All recognized canonical node type values.
+pub const VALID_NODE_TYPES: &[&str] = &[
+    // Hierarchy / planning
+    "goal", "project", "subproject", "epic",
+    // Work items
+    "task", "action", "bug", "feature",
+    "milestone", "learn",
+    // Knowledge / reference
+    "note", "knowledge", "memory", "contact",
+    "document", "reference", "review", "case", "spec",
+    // Structural / log
+    "index", "daily", "session-log", "audit-report",
+];
 
 /// Parse a string array from a JSON frontmatter value.
 pub fn parse_string_array(fm: &serde_json::Value, key: &str) -> Vec<String> {
@@ -280,7 +380,7 @@ impl GraphNode {
         let task_id = fm
             .as_ref()
             .and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
-        let id = task_id.clone().unwrap_or_else(|| compute_id(&doc.path));
+        let id = task_id.clone().unwrap_or_else(|| fallback_id(&doc.path));
 
         let node_type = fm
             .as_ref()
@@ -300,9 +400,6 @@ impl GraphNode {
         let parent = fm
             .as_ref()
             .and_then(|f| f.get("parent").and_then(|v| v.as_str()).map(String::from));
-        let project = fm
-            .as_ref()
-            .and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
         let due = fm
             .as_ref()
             .and_then(|f| f.get("due").and_then(|v| v.as_str()).map(String::from));
@@ -418,6 +515,14 @@ impl GraphNode {
             })
             .unwrap_or_default();
 
+        let project = fm.as_ref().and_then(|f| {
+            f.get("project")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+
+        let sg = status.as_deref().map(|s| status_group(Some(s)).to_string());
+
         GraphNode {
             id,
             path: doc.path.clone(),
@@ -433,11 +538,12 @@ impl GraphNode {
             blocks,
             soft_blocks,
             children,
-            project,
+            subtasks: Vec::new(),
             due,
             created,
             modified: doc.modified.clone(),
             assignee,
+            project,
             complexity,
             source,
             confidence,
@@ -447,6 +553,7 @@ impl GraphNode {
             leaf,
             raw_links,
             permalinks,
+            status_group: sg,
             task_id,
             downstream_weight: 0.0,
             pagerank: 0.0,
@@ -455,9 +562,9 @@ impl GraphNode {
             outdegree: 0,
             backlink_count: 0,
             stakeholder_exposure: false,
+            reachable: false,
             assumptions,
-            x: None,
-            y: None,
+            focus_score: None,
         }
     }
 }

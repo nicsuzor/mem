@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TUI capture helper — launch aops TUI in tmux and capture screenshots.
+# TUI capture helper — launch pkb TUI in tmux and capture screenshots.
 # Usage:
 #   ./scripts/tui-capture.sh start    — build and launch TUI in tmux
 #   ./scripts/tui-capture.sh capture  — capture current pane content (plain text)
@@ -7,8 +7,8 @@
 #   ./scripts/tui-capture.sh stop     — kill the tmux session
 #   ./scripts/tui-capture.sh restart  — rebuild, kill, and relaunch
 
-SESSION="aops-tui"
-BINARY="./target/release/aops"
+SESSION="pkb-tui"
+BINARY="./target/release/pkb"
 WIDTH=120
 HEIGHT=40
 

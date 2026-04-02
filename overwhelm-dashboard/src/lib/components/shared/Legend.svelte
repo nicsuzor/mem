@@ -1,0 +1,379 @@
+<script lang="ts">
+    import { filters, cycleEdgeVisibility, type EdgeVisibility } from '../../stores/filters';
+    import { graphData } from '../../stores/graph';
+    import { PRIORITIES } from '../../data/constants';
+    import { projectColor } from '../../data/projectUtils';
+
+    let showLegend = true;
+    let showAllProjects = false;
+    const MAX_VISIBLE_PROJECTS = 6;
+
+    // Status = fill color (muted defaults, saturated for attention)
+    const statusGroups = [
+        { key: 'showActive', label: 'ACTIVE', statuses: ['active', 'inbox', 'todo', 'in_progress', 'review'], color: '#2C4A88' },
+        { key: 'showBlocked', label: 'BLOCKED', statuses: ['blocked'], color: '#6B3A3A' },
+        { key: 'showCompleted', label: 'COMPLETED', statuses: ['done', 'completed', 'cancelled'], color: '#1E1E24' },
+    ] as const;
+
+    // Priority = border color — now interactive (click to filter)
+    const priorityItems = PRIORITIES.map(p => ({
+        value: p.value,
+        label: `P${p.value} ${p.label}`,
+        color: p.color,
+    }));
+
+    const edgeTypes = [
+        { key: 'edgeParent', label: 'PARENT', color: '#facc15', dash: false },
+        { key: 'edgeDependencies', label: 'DEPENDENCIES', color: '#ef4444', dash: false },
+        { key: 'edgeReferences', label: 'REFERENCES', color: '#a3a3a3', dash: true },
+    ] as const;
+
+    function toggleStatus(key: string) {
+        filters.update(f => ({ ...f, [key]: !f[key as keyof typeof f] }));
+    }
+
+    function togglePriority(value: number) {
+        filters.update(f => {
+            const current = f.priorityFilter;
+            return { ...f, priorityFilter: current === value ? null : value };
+        });
+    }
+
+    function setProjectFilter(project: string) {
+        filters.update(f => ({ ...f, project }));
+    }
+
+    function cycleEdge(key: string) {
+        filters.update(f => ({
+            ...f,
+            [key]: cycleEdgeVisibility(f[key as keyof typeof f] as EdgeVisibility),
+        }));
+    }
+
+    function edgeOpacityForLegend(vis: EdgeVisibility): number {
+        if (vis === 'bright') return 1;
+        if (vis === 'half') return 0.4;
+        return 0.1;
+    }
+
+    function edgeStateLabel(vis: EdgeVisibility): string {
+        if (vis === 'bright') return '●';
+        if (vis === 'half') return '◐';
+        return '○';
+    }
+
+    $: availableProjects = $graphData
+        ? Array.from(new Set($graphData.nodes.map((n) => n.project).filter((p): p is string => !!p))).sort()
+        : [];
+
+    $: visibleProjects = showAllProjects
+        ? availableProjects
+        : availableProjects.slice(0, MAX_VISIBLE_PROJECTS);
+
+    $: hasOverflow = availableProjects.length > MAX_VISIBLE_PROJECTS;
+</script>
+
+{#if showLegend}
+    <div class="legend" role="complementary" aria-label="Filters & Legend">
+        <div class="legend-header">
+            <span class="legend-title">VISIBILITY</span>
+            <span class="component-name">filter-panel</span>
+            <button class="legend-close" on:click={() => showLegend = false}>
+                <span class="material-symbols-outlined" style="font-size: 14px;">close</span>
+            </button>
+        </div>
+
+        <!-- Status filters -->
+        <div class="legend-section">
+            {#each statusGroups as group}
+                <button
+                    class="legend-item"
+                    class:dimmed={!$filters[group.key]}
+                    on:click={() => toggleStatus(group.key)}
+                >
+                    <div class="legend-box" style="background:{group.color}; opacity:{$filters[group.key] ? 1 : 0.2}"></div>
+                    <span class="legend-label">{group.label}</span>
+                </button>
+            {/each}
+        </div>
+
+        <!-- Priority filter (click to isolate a priority level) -->
+        <div class="legend-section">
+            <span class="legend-section-title">PRIORITY (CLICK TO FILTER)</span>
+            {#each priorityItems as p}
+                <button
+                    class="legend-item"
+                    class:active-filter={$filters.priorityFilter === p.value}
+                    class:dimmed={$filters.priorityFilter !== null && $filters.priorityFilter !== p.value}
+                    on:click={() => togglePriority(p.value)}
+                    title="Click to show only P{p.value} tasks"
+                >
+                    <div class="legend-box" style="background:transparent; border: 2px solid {p.color};"></div>
+                    <span class="legend-label">{p.label}</span>
+                    {#if $filters.priorityFilter === p.value}
+                        <span class="filter-badge">ON</span>
+                    {/if}
+                </button>
+            {/each}
+        </div>
+
+        <!-- Edge visibility (click to cycle: bright → half → hidden) -->
+        <div class="legend-section">
+            <span class="legend-section-title">EDGES</span>
+            {#each edgeTypes as edge}
+                {@const vis = $filters[edge.key]}
+                <button
+                    class="legend-item"
+                    class:dimmed={vis === 'hidden'}
+                    on:click={() => cycleEdge(edge.key)}
+                    title="Click to cycle: bright → half → hidden"
+                >
+                    <div class="legend-line" style="background:{edge.color}; opacity:{edgeOpacityForLegend(vis)};"
+                        class:dashed={edge.dash}></div>
+                    <span class="legend-label">{edge.label}</span>
+                    <span class="edge-state">{edgeStateLabel(vis)}</span>
+                </button>
+            {/each}
+        </div>
+
+        <!-- Project filter with color swatches -->
+        <div class="legend-section">
+            <span class="legend-section-title">PROJECTS</span>
+            <button
+                class="legend-item"
+                class:active-filter={$filters.project === 'ALL'}
+                on:click={() => setProjectFilter('ALL')}
+            >
+                <div class="legend-box" style="background: #666; border-radius: 50%;"></div>
+                <span class="legend-label">ALL PROJECTS</span>
+                {#if $filters.project === 'ALL'}
+                    <span class="filter-badge">ON</span>
+                {/if}
+            </button>
+            <div class="project-list" class:expanded={showAllProjects}>
+                {#each visibleProjects as proj}
+                    <button
+                        class="legend-item"
+                        class:active-filter={$filters.project === proj}
+                        class:dimmed={$filters.project !== 'ALL' && $filters.project !== proj}
+                        on:click={() => setProjectFilter(proj)}
+                        title="Filter to {proj}"
+                    >
+                        <div class="legend-box project-swatch" style="background: {projectColor(proj)};"></div>
+                        <span class="legend-label">{(proj || '').toUpperCase()}</span>
+                        {#if $filters.project === proj}
+                            <span class="filter-badge">ON</span>
+                        {/if}
+                    </button>
+                {/each}
+            </div>
+            {#if hasOverflow}
+                <button
+                    class="legend-item overflow-toggle"
+                    on:click={() => showAllProjects = !showAllProjects}
+                >
+                    <span class="legend-label overflow-label">
+                        {showAllProjects ? '▲ LESS' : `▼ +${availableProjects.length - MAX_VISIBLE_PROJECTS} MORE`}
+                    </span>
+                </button>
+            {/if}
+        </div>
+    </div>
+{:else}
+    <button class="legend-toggle" on:click={() => showLegend = true}>
+        <span class="material-symbols-outlined" style="font-size: 14px;">visibility</span>
+        <span>Filters</span>
+    </button>
+{/if}
+
+<style>
+    .legend {
+        position: absolute;
+        bottom: 16px;
+        left: 16px;
+        z-index: 10;
+        background: rgba(10, 10, 10, 0.92);
+        border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 10px;
+        color: var(--color-primary);
+        backdrop-filter: blur(12px);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        font-family: var(--font-mono);
+        min-width: 180px;
+        max-height: calc(100vh - 120px);
+        overflow-y: auto;
+    }
+
+    .legend-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 10%, transparent);
+        padding-bottom: 6px;
+        gap: 6px;
+    }
+
+    .legend-title {
+        font-size: 9px;
+        font-weight: 900;
+        letter-spacing: 0.2em;
+        color: color-mix(in srgb, var(--color-primary) 80%, transparent);
+        text-transform: uppercase;
+    }
+
+    .component-name {
+        font-size: 7px;
+        color: color-mix(in srgb, var(--color-primary) 20%, transparent);
+        letter-spacing: 0.1em;
+        font-style: italic;
+    }
+
+    .legend-close {
+        color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 0;
+        line-height: 1;
+    }
+    .legend-close:hover { color: var(--color-primary); }
+
+    .legend-section {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .legend-section-title {
+        font-size: 9px;
+        font-weight: 900;
+        letter-spacing: 0.15em;
+        color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+        text-transform: uppercase;
+        padding-top: 4px;
+        border-top: 1px solid color-mix(in srgb, var(--color-primary) 10%, transparent);
+    }
+
+    .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        background: none;
+        border: none;
+        padding: 3px 4px;
+        border-radius: 4px;
+        transition: background 0.15s;
+        text-align: left;
+    }
+    .legend-item:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
+
+    .legend-item.dimmed .legend-label {
+        opacity: 0.35;
+        text-decoration: line-through;
+    }
+
+    .legend-item.active-filter {
+        background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+        border-left: 2px solid var(--color-primary);
+    }
+
+    .legend-label {
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--color-primary);
+        transition: opacity 0.15s;
+    }
+
+    .legend-box {
+        width: 12px;
+        height: 12px;
+        border-radius: 2px;
+        flex-shrink: 0;
+        transition: opacity 0.15s;
+    }
+
+    .project-swatch {
+        border-radius: 50%;
+        width: 10px;
+        height: 10px;
+    }
+
+    .legend-line {
+        width: 16px;
+        height: 3px;
+        border-radius: 1.5px;
+        flex-shrink: 0;
+        transition: opacity 0.15s;
+    }
+    .legend-line.dashed {
+        background: transparent;
+        border-top: 3px dashed;
+        border-color: inherit;
+        height: 0;
+    }
+
+    .edge-state {
+        margin-left: auto;
+        font-size: 10px;
+        opacity: 0.6;
+    }
+
+    .filter-badge {
+        margin-left: auto;
+        font-size: 8px;
+        font-weight: 900;
+        color: var(--color-primary);
+        background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+        padding: 1px 4px;
+        border-radius: 2px;
+        letter-spacing: 0.1em;
+    }
+
+    .project-list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+    .project-list.expanded {
+        max-height: 400px;
+    }
+
+    .overflow-toggle {
+        justify-content: center;
+        padding: 2px 4px;
+    }
+    .overflow-label {
+        font-size: 9px;
+        opacity: 0.5;
+    }
+
+    .legend-toggle {
+        position: absolute;
+        bottom: 16px;
+        left: 16px;
+        z-index: 10;
+        background: rgba(10, 10, 10, 0.92);
+        border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
+        border-radius: 8px;
+        padding: 6px 12px;
+        font-size: 10px;
+        cursor: pointer;
+        color: var(--color-primary);
+        font-weight: 900;
+        font-family: var(--font-mono);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        backdrop-filter: blur(12px);
+    }
+    .legend-toggle:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
+</style>

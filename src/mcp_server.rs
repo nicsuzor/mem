@@ -4,6 +4,7 @@
 //! Provides 18 tools for search, documents, tasks, and knowledge graph.
 
 use crate::embeddings::Embedder;
+use crate::graph::is_completed;
 use crate::graph_store::GraphStore;
 use crate::vectordb::VectorStore;
 use parking_lot::RwLock;
@@ -11,6 +12,7 @@ use rmcp::model::*;
 use rmcp::{Error as McpError, ServerHandler};
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -25,6 +27,7 @@ pub struct PkbSearchServer {
     pkb_root: PathBuf,
     db_path: PathBuf,
     graph: Arc<RwLock<GraphStore>>,
+    stale_count: usize,
 }
 
 impl PkbSearchServer {
@@ -41,7 +44,13 @@ impl PkbSearchServer {
             pkb_root,
             db_path,
             graph,
+            stale_count: 0,
         }
+    }
+
+    pub fn with_stale_count(mut self, count: usize) -> Self {
+        self.stale_count = count;
+        self
     }
 
     fn resolve_path(&self, path_str: &str) -> PathBuf {
@@ -62,6 +71,41 @@ impl PkbSearchServer {
         }
     }
 
+    /// Validate that completion_evidence is present and non-empty.
+    fn require_evidence(evidence: Option<&str>) -> Result<&str, McpError> {
+        let ev = evidence.ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(
+                "completion_evidence is required. Describe what was done before completing this task.",
+            ),
+            data: None,
+        })?;
+        if ev.trim().is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "completion_evidence is required. Describe what was done before completing this task.",
+                ),
+                data: None,
+            });
+        }
+        Ok(ev)
+    }
+
+    /// Append a "## Completion Evidence" section to a document.
+    fn append_evidence(path: &std::path::Path, evidence: &str, pr_url: Option<&str>) -> Result<(), McpError> {
+        let evidence_block = if let Some(url) = pr_url {
+            format!("\n\n## Completion Evidence\n\n{}\n\nPR: {}\n", evidence.trim(), url)
+        } else {
+            format!("\n\n## Completion Evidence\n\n{}\n", evidence.trim())
+        };
+        crate::document_crud::append_to_document(path, &evidence_block, None).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to append evidence: {e}")),
+            data: None,
+        })
+    }
+
     fn args_to_value(args: Option<JsonObject>) -> JsonValue {
         match args {
             Some(map) => JsonValue::Object(map),
@@ -69,10 +113,57 @@ impl PkbSearchServer {
         }
     }
 
-    /// Rebuild the graph store (e.g. after CRUD operations) and persist to disk
+    /// Full rebuild of the graph store from disk (for batch operations).
     fn rebuild_graph(&self) {
         let new_graph = GraphStore::build_from_directory(&self.pkb_root);
         *self.graph.write() = new_graph;
+    }
+
+    /// Incremental graph update after a single file changed.
+    /// Re-parses only the changed file, then rebuilds edges/metrics from existing nodes.
+    /// Falls back to full rebuild if parsing fails.
+    fn rebuild_graph_for_file(&self, abs_path: &std::path::Path) {
+        if let Some(doc) = crate::pkb::parse_file_relative(abs_path, &self.pkb_root) {
+            let node = crate::graph::GraphNode::from_pkb_document(&doc);
+            let mut nodes = self.graph.read().nodes_cloned();
+            nodes.insert(node.id.clone(), node);
+            let new_graph = GraphStore::rebuild_from_nodes(nodes, &self.pkb_root);
+            *self.graph.write() = new_graph;
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            self.rebuild_graph();
+        }
+    }
+
+    /// Incremental graph update after a node is removed.
+    fn rebuild_graph_remove(&self, id: &str) {
+        let mut nodes = self.graph.read().nodes_cloned();
+        nodes.remove(id);
+        let new_graph = GraphStore::rebuild_from_nodes(nodes, &self.pkb_root);
+        *self.graph.write() = new_graph;
+    }
+
+    /// Save the vector store to disk with a non-blocking lock.
+    /// If another process holds the lock, logs a warning and skips the save.
+    fn save_store(&self) {
+        match VectorStore::acquire_lock(&self.db_path) {
+            Ok(mut lock) => match lock.try_write() {
+                Ok(_guard) => {
+                    if let Err(e) = self.store.read().save(&self.db_path) {
+                        tracing::error!("Failed to save vector store: {e}");
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    tracing::info!("Vector store lock held by another process — disk save deferred (in-memory index updated, source file written)");
+                }
+                Err(e) => {
+                    tracing::error!("Failed to acquire write lock for save: {e}");
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to open lock file for save: {e}");
+            }
+        }
     }
 
     // =========================================================================
@@ -90,6 +181,22 @@ impl PkbSearchServer {
             })?;
 
         let path = self.resolve_path(path_str);
+
+        // If the path doesn't exist on disk, try flexible ID resolution via the graph
+        let path = if !path.exists() {
+            let graph = self.graph.read();
+            if let Some(node) = graph.resolve(path_str) {
+                self.abs_path(&node.path)
+            } else {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!("File not found: {}", path.display())),
+                    data: None,
+                });
+            }
+        } else {
+            path
+        };
 
         if !path.exists() {
             return Err(McpError {
@@ -116,7 +223,6 @@ impl PkbSearchServer {
         let tag = args.get("tag").and_then(|v| v.as_str());
         let doc_type = args.get("type").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
-        let project = args.get("project").and_then(|v| v.as_str());
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -124,7 +230,7 @@ impl PkbSearchServer {
         let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         let store = self.store.read();
-        let results = store.list_documents(tag, doc_type, status, project, &self.pkb_root);
+        let results = store.list_documents(tag, doc_type, status, &self.pkb_root);
         let total = results.len();
 
         if total == 0 {
@@ -158,29 +264,6 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    fn handle_reindex(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-        let (indexed, removed, total) = crate::index_pkb(
-            &self.pkb_root,
-            &self.db_path,
-            &self.store,
-            &self.embedder,
-            force,
-        );
-
-        // Save vector store
-        if let Err(e) = self.store.read().save(&self.db_path) {
-            tracing::error!("Failed to save vector store: {e}");
-        }
-
-        // Rebuild graph
-        self.rebuild_graph();
-
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Reindex complete: {indexed} indexed, {removed} removed, {total} total documents."
-        ))]))
-    }
-
     // =========================================================================
     // GRAPH/TASK TOOLS (7)
     // =========================================================================
@@ -196,7 +279,10 @@ impl PkbSearchServer {
             })?;
 
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-        let project = args.get("project").and_then(|v| v.as_str());
+        let include_subtasks = args
+            .get("include_subtasks")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -205,11 +291,7 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let fetch_limit = if project.is_some() {
-            limit * 10
-        } else {
-            limit * 3
-        };
+        let fetch_limit = limit * 3;
         let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         let graph = self.graph.read();
@@ -229,21 +311,14 @@ impl PkbSearchServer {
             }
             let is_task = r.doc_type.as_deref() == Some("task")
                 || r.doc_type.as_deref() == Some("project")
-                || r.doc_type.as_deref() == Some("goal");
+                || r.doc_type.as_deref() == Some("goal")
+                || r.doc_type.as_deref() == Some("subtask");
 
             if !is_task {
                 continue;
             }
-
-            if let Some(proj) = project {
-                if !r
-                    .project
-                    .as_deref()
-                    .map(|p| p.eq_ignore_ascii_case(proj))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
+            if !include_subtasks && r.doc_type.as_deref() == Some("subtask") {
+                continue;
             }
 
             count += 1;
@@ -347,10 +422,6 @@ impl PkbSearchServer {
                 .get("priority")
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32),
-            project: args
-                .get("project")
-                .and_then(|v| v.as_str())
-                .map(String::from),
             tags: args
                 .get("tags")
                 .and_then(|v| v.as_array())
@@ -380,17 +451,36 @@ impl PkbSearchServer {
             body: args.get("body").and_then(|v| v.as_str()).map(String::from),
         };
 
-        // Hierarchy validation: warn if task type should have a parent
-        let mut warnings = Vec::new();
+        // Hierarchy validation: tasks must have a parent
         if fields.parent.is_none() {
-            // create_task always creates type "task", which should have a parent
-            warnings.push(
-                "Hierarchy warning: Task type 'task' should have a parent. \
-                 Only goal, learn, and project types can be root-level. \
-                 Consider assigning a parent to maintain graph hierarchy."
-                    .to_string(),
-            );
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Missing required parameter: parent. Tasks must have a parent node. \
+                     Only goal, learn, and project types can be root-level.",
+                ),
+                data: None,
+            });
         }
+
+        // Validate parent exists in the PKB graph
+        {
+            let graph = self.graph.read();
+            if let Some(ref parent_id) = fields.parent {
+                if graph.resolve(parent_id).is_none() {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Parent '{}' not found in PKB. Create the parent node first or verify the ID.",
+                            parent_id
+                        )),
+                        data: None,
+                    });
+                }
+            }
+        }
+
+        let warnings: Vec<String> = Vec::new();
 
         let path =
             crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
@@ -402,11 +492,11 @@ impl PkbSearchServer {
         // Index the new file (with relative path for portable storage)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
-        // Rebuild graph
-        self.rebuild_graph();
+        // Incremental graph update for the new file
+        self.rebuild_graph_for_file(&path);
 
         let mut msg = format!("Task created: `{}`", path.display());
         if !warnings.is_empty() {
@@ -417,6 +507,65 @@ impl PkbSearchServer {
         }
 
         Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    fn handle_create_subtask(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let parent_id = args
+            .get("parent_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: parent_id"),
+                data: None,
+            })?;
+        let title = args
+            .get("title")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: title"),
+                data: None,
+            })?;
+
+        // Validate parent exists
+        {
+            let graph = self.graph.read();
+            if graph.resolve(parent_id).is_none() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!("Parent task not found: {parent_id}")),
+                    data: None,
+                });
+            }
+        }
+
+        let fields = crate::document_crud::SubtaskFields {
+            parent_id: parent_id.to_string(),
+            title: title.to_string(),
+            body: args.get("body").and_then(|v| v.as_str()).map(String::from),
+        };
+
+        let path =
+            crate::document_crud::create_subtask(&self.pkb_root, fields).map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to create sub-task: {e}")),
+                data: None,
+            })?;
+
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            let _ = self.store.write().upsert(&doc, &self.embedder);
+            self.save_store();
+        }
+        self.rebuild_graph_for_file(&path);
+
+        let id = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Sub-task created: `{id}` at `{}`",
+            path.display()
+        ))]))
     }
 
     // =========================================================================
@@ -457,9 +606,6 @@ impl PkbSearchServer {
         }
         if let Some(p) = node.priority {
             output.push_str(&format!("**Priority:** {p}\n"));
-        }
-        if let Some(ref proj) = node.project {
-            output.push_str(&format!("**Project:** {proj}\n"));
         }
         if let Some(ref due) = node.due {
             output.push_str(&format!("**Due:** {due}\n"));
@@ -561,7 +707,10 @@ impl PkbSearchServer {
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let boost_id = args.get("boost_id").and_then(|v| v.as_str());
-        let project = args.get("project").and_then(|v| v.as_str());
+        let detail = args
+            .get("detail")
+            .and_then(|v| v.as_str())
+            .unwrap_or("chunk");
 
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -570,11 +719,7 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let fetch_limit = if project.is_some() {
-            limit * 5
-        } else {
-            limit * 2
-        };
+        let fetch_limit = limit * 2;
         let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         // Build proximity boost map if boost_id provided
@@ -616,14 +761,6 @@ impl PkbSearchServer {
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        if let Some(proj) = project {
-            scored.retain(|(r, _)| {
-                r.project
-                    .as_deref()
-                    .map(|p| p.eq_ignore_ascii_case(proj))
-                    .unwrap_or(false)
-            });
-        }
         scored.truncate(limit);
 
         if scored.is_empty() {
@@ -657,8 +794,19 @@ impl PkbSearchServer {
             if !r.tags.is_empty() {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
             }
-            if !r.snippet.is_empty() {
-                output.push_str(&format!("\n> {}\n", r.snippet.replace('\n', "\n> ")));
+            let extract: std::borrow::Cow<'_, str> = match detail {
+                "snippet" => std::borrow::Cow::Borrowed(&r.snippet),
+                "full" => {
+                    // Read full document from disk
+                    match std::fs::read_to_string(&r.path) {
+                        Ok(content) => std::borrow::Cow::Owned(content),
+                        Err(_) => std::borrow::Cow::Borrowed(&r.chunk_text),
+                    }
+                }
+                _ => std::borrow::Cow::Borrowed(&r.chunk_text), // "chunk" (default)
+            };
+            if !extract.is_empty() {
+                output.push_str(&format!("\n> {}\n", extract.replace('\n', "\n> ")));
             }
             output.push('\n');
         }
@@ -738,14 +886,17 @@ impl PkbSearchServer {
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
 
+        let include_all = args
+            .get("include_all")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let type_filter: Option<Vec<String>> =
             args.get("types").and_then(|v| v.as_array()).map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
             });
-        let project = args.get("project").and_then(|v| v.as_str());
-
         let graph = self.graph.read();
         let mut orphans = graph.orphans();
 
@@ -757,16 +908,27 @@ impl PkbSearchServer {
                     .map(|t| types.iter().any(|f| f.eq_ignore_ascii_case(t)))
                     .unwrap_or(false)
             });
-        }
-
-        // Filter by project if requested
-        if let Some(proj) = project {
-            orphans.retain(|n| n.project.as_deref() == Some(proj));
+        } else if !include_all {
+            // Default: only show actionable types (task, bug, feature, action, epic, project, goal)
+            // and exclude completed nodes — matches graph_stats orphan_count definition
+            let actionable: std::collections::HashSet<&str> =
+                ["task", "bug", "feature", "action", "epic", "project", "goal"]
+                    .into_iter()
+                    .collect();
+            orphans.retain(|n| {
+                let is_actionable = n
+                    .node_type
+                    .as_deref()
+                    .map(|t| actionable.contains(t))
+                    .unwrap_or(false);
+                let is_completed = crate::graph::is_completed(n.status.as_deref());
+                is_actionable && !is_completed
+            });
         }
 
         if orphans.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
-                "No orphan nodes found. All nodes have at least one connection.",
+                "No orphan nodes found. All nodes have a valid parent.",
             )]));
         }
 
@@ -783,7 +945,7 @@ impl PkbSearchServer {
             .unwrap_or_default();
 
         let mut output = format!(
-            "**{total} orphan nodes{type_desc}** (showing {showing})\n\nThese nodes have no edges — no incoming or outgoing connections.\n\n"
+            "**{total} orphan nodes{type_desc}** (showing {showing})\n\nThese nodes have no valid parent.\n\n"
         );
 
         for node in orphans.iter().take(max) {
@@ -799,31 +961,6 @@ impl PkbSearchServer {
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
-    }
-
-    fn handle_graph_json(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let graph = self.graph.read();
-        let json = graph.output_json().map_err(|e| McpError {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Failed to generate graph JSON: {e}")),
-            data: None,
-        })?;
-
-        Ok(CallToolResult::success(vec![Content::text(json)]))
-    }
-
-    fn handle_graph_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let graph = self.graph.read();
-        let stats = serde_json::json!({
-            "nodes": graph.node_count(),
-            "edges": graph.edge_count(),
-            "ready": graph.ready_tasks().len(),
-            "blocked": graph.blocked_tasks().len(),
-        });
-
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&stats).unwrap(),
-        )]))
     }
 
     fn handle_get_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -895,6 +1032,55 @@ impl PkbSearchServer {
             node.children.iter().map(|c| resolve_ref(c)).collect();
         let parent = node.parent.as_ref().map(|p| resolve_ref(p));
 
+        // Build subtask list and inject a checklist section into the body
+        let subtask_nodes: Vec<serde_json::Value> = node
+            .subtasks
+            .iter()
+            .map(|sid| {
+                if let Some(n) = graph.get_node(sid) {
+                    serde_json::json!({
+                        "id": sid,
+                        "title": n.label,
+                        "status": n.status,
+                    })
+                } else {
+                    serde_json::json!({ "id": sid })
+                }
+            })
+            .collect();
+
+        // Sort subtasks by numeric suffix so they appear in order
+        let mut subtask_nodes_sorted = subtask_nodes;
+        subtask_nodes_sorted.sort_by(|a, b| {
+            let parse_n = |v: &serde_json::Value| -> u32 {
+                v.get("id")
+                    .and_then(|id| id.as_str())
+                    .and_then(|id| id.rsplit('.').next())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0)
+            };
+            parse_n(a).cmp(&parse_n(b))
+        });
+
+        let body = if !subtask_nodes_sorted.is_empty() {
+            let mut checklist = String::from("\n\n## Subtasks\n\n");
+            for st in &subtask_nodes_sorted {
+                let done = crate::graph::is_completed(
+                    st.get("status").and_then(|s| s.as_str()),
+                );
+                let check = if done { "x" } else { " " };
+                let title = st
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("<untitled>");
+                let id = st.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                checklist.push_str(&format!("- [{check}] **{id}**: {title}\n"));
+            }
+            format!("{body}{checklist}")
+        } else {
+            body
+        };
+
         let result = serde_json::json!({
             "frontmatter": frontmatter,
             "body": body,
@@ -902,6 +1088,7 @@ impl PkbSearchServer {
             "depends_on": depends_on,
             "blocks": blocks,
             "children": children,
+            "subtasks": subtask_nodes_sorted,
             "parent": parent,
             "downstream_weight": node.downstream_weight,
             "stakeholder_exposure": node.stakeholder_exposure,
@@ -963,10 +1150,10 @@ impl PkbSearchServer {
         // Index the new file
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
-        self.rebuild_graph();
+        self.rebuild_graph_for_file(&path);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Memory created: `{}`",
@@ -1028,10 +1215,6 @@ impl PkbSearchServer {
                         .collect()
                 })
                 .unwrap_or_default(),
-            project: args
-                .get("project")
-                .and_then(|v| v.as_str())
-                .map(String::from),
             assignee: args
                 .get("assignee")
                 .and_then(|v| v.as_str())
@@ -1078,10 +1261,10 @@ impl PkbSearchServer {
         // Index the new file
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
-        self.rebuild_graph();
+        self.rebuild_graph_for_file(&path);
 
         let mut msg = format!("Document created: `{}`", path.display());
         if !warnings.is_empty() {
@@ -1138,10 +1321,10 @@ impl PkbSearchServer {
         // Re-index the updated file
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
-        self.rebuild_graph();
+        self.rebuild_graph_for_file(&abs_path);
 
         let section_msg = section
             .map(|s| format!(" under ## {s}"))
@@ -1171,6 +1354,7 @@ impl PkbSearchServer {
 
         let abs_path = self.abs_path(&node.path);
         let label = node.label.clone();
+        let node_id = node.id.clone();
         let rel_path = node.path.to_string_lossy().to_string();
         drop(graph); // release read lock before write operations
 
@@ -1182,10 +1366,10 @@ impl PkbSearchServer {
 
         // Remove from vector store
         self.store.write().remove(&rel_path);
-        let _ = self.store.read().save(&self.db_path);
+        self.save_store();
 
-        // Rebuild graph
-        self.rebuild_graph();
+        // Incremental graph update — remove the deleted node
+        self.rebuild_graph_remove(&node_id);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Deleted: {} (`{}`)",
@@ -1204,6 +1388,12 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        let evidence = Self::require_evidence(
+            args.get("completion_evidence").and_then(|v| v.as_str()),
+        )?;
+
+        let pr_url = args.get("pr_url").and_then(|v| v.as_str());
+
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
@@ -1220,6 +1410,12 @@ impl PkbSearchServer {
             "status".to_string(),
             serde_json::Value::String("done".to_string()),
         );
+        if let Some(url) = pr_url {
+            updates.insert(
+                "pr_url".to_string(),
+                serde_json::Value::String(url.to_string()),
+            );
+        }
 
         crate::document_crud::update_document(&abs_path, updates).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -1227,13 +1423,16 @@ impl PkbSearchServer {
             data: None,
         })?;
 
+        // Append completion evidence to the document body
+        Self::append_evidence(&abs_path, evidence, pr_url)?;
+
         // Re-index
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
-        self.rebuild_graph();
+        self.rebuild_graph_for_file(&abs_path);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Completed: {} (`{}`)",
@@ -1404,7 +1603,7 @@ impl PkbSearchServer {
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
         let store = self.store.read();
-        let all = store.list_documents(None, type_filter, None, None, &self.pkb_root);
+        let all = store.list_documents(None, type_filter, None, &self.pkb_root);
 
         let mut matching: Vec<_> = all
             .into_iter()
@@ -1448,7 +1647,7 @@ impl PkbSearchServer {
         let store = self.store.read();
 
         let mut memories: Vec<_> = store
-            .list_documents(None, None, None, None, &self.pkb_root)
+            .list_documents(None, None, None, &self.pkb_root)
             .into_iter()
             .filter(|r| {
                 r.doc_type
@@ -1553,7 +1752,7 @@ impl PkbSearchServer {
             });
         }
 
-        {
+        let project_prefix = {
             let graph = self.graph.read();
             match graph.resolve(parent_id) {
                 None => {
@@ -1573,8 +1772,55 @@ impl PkbSearchServer {
                             data: None,
                         });
                     }
+                    node.node_type.clone().unwrap_or_else(|| "task".to_string())
                 }
             }
+        };
+
+        // First pass: assign IDs to all subtasks and build title map for cross-references
+        let mut subtask_ids: Vec<String> = Vec::with_capacity(subtasks.len());
+        let mut title_to_id: HashMap<String, String> = HashMap::new();
+        let mut seen_ids: HashSet<String> = HashSet::new();
+        for subtask in subtasks {
+            let title = subtask.get("title").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Each subtask must have a 'title'"),
+                data: None,
+            })?;
+
+            let title_lower = title.to_lowercase();
+            if title_to_id.contains_key(&title_lower) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Duplicate subtask title: '{}'. Sibling titles must be unique for cross-referencing.",
+                        title
+                    )),
+                    data: None,
+                });
+            }
+
+            let id = subtask
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(crate::document_crud::sanitize_prefix)
+                .unwrap_or_else(|| {
+                    crate::graph::create_id(&project_prefix)
+                });
+
+            if !seen_ids.insert(id.clone()) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Duplicate subtask ID: '{}'. Subtask IDs must be unique within a batch.",
+                        id
+                    )),
+                    data: None,
+                });
+            }
+
+            subtask_ids.push(id.clone());
+            title_to_id.insert(title_lower, id);
         }
 
         let mut created: Vec<(String, String)> = Vec::new();
@@ -1582,28 +1828,44 @@ impl PkbSearchServer {
             regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex")
         });
 
-        for subtask in subtasks {
-            let title = subtask
-                .get("title")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from("Each subtask must have a 'title'"),
-                    data: None,
-                })?;
+        // Second pass: create tasks with resolved dependencies
+        for (i, subtask) in subtasks.iter().enumerate() {
+            let title = subtask.get("title").and_then(|v| v.as_str()).unwrap(); // validated in first pass
+
+            let mut depends_on: Vec<String> = subtask
+                .get("depends_on")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Resolve sibling cross-references
+            for dep in depends_on.iter_mut() {
+                // 1. Positional references: $1, $2, etc. (1-indexed)
+                if dep.starts_with('$') {
+                    if let Ok(idx) = dep[1..].parse::<usize>() {
+                        if idx > 0 && idx <= subtask_ids.len() {
+                            *dep = subtask_ids[idx - 1].clone();
+                        }
+                    }
+                }
+                // 2. Title references (exact case-insensitive match on sibling title)
+                else if let Some(sid) = title_to_id.get(&dep.to_lowercase()) {
+                    *dep = sid.clone();
+                }
+            }
 
             let fields = crate::document_crud::TaskFields {
                 title: title.to_string(),
-                id: subtask.get("id").and_then(|v| v.as_str()).map(String::from),
+                id: Some(subtask_ids[i].clone()),
                 parent: Some(parent_id.to_string()),
                 priority: subtask
                     .get("priority")
                     .and_then(|v| v.as_i64())
                     .map(|v| v as i32),
-                project: subtask
-                    .get("project")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
                 tags: subtask
                     .get("tags")
                     .and_then(|v| v.as_array())
@@ -1613,15 +1875,7 @@ impl PkbSearchServer {
                             .collect()
                     })
                     .unwrap_or_default(),
-                depends_on: subtask
-                    .get("depends_on")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                depends_on,
                 assignee: subtask
                     .get("assignee")
                     .and_then(|v| v.as_str())
@@ -1661,7 +1915,7 @@ impl PkbSearchServer {
             created.push((id_str, path.display().to_string()));
         }
 
-        let _ = self.store.read().save(&self.db_path);
+        self.save_store();
         self.rebuild_graph();
 
         let mut output = format!(
@@ -1783,8 +2037,7 @@ impl PkbSearchServer {
                 for child_id in &node.children {
                     if let Some(child) = graph.get_node(child_id) {
                         *total += 1;
-                        let is_done = child.status.as_deref() == Some("done")
-                            || child.status.as_deref() == Some("cancelled");
+                        let is_done = is_completed(child.status.as_deref());
                         if is_done {
                             *done += 1;
                         }
@@ -1830,7 +2083,6 @@ impl PkbSearchServer {
     }
 
     fn handle_list_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let project = args.get("project").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
         let priority = args
             .get("priority")
@@ -1838,6 +2090,14 @@ impl PkbSearchServer {
             .map(|v| v as i32);
         let assignee = args.get("assignee").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+        let include_subtasks = args
+            .get("include_subtasks")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let format = args
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("markdown");
 
         let graph = self.graph.read();
 
@@ -1880,14 +2140,6 @@ impl PkbSearchServer {
             all
         };
 
-        if let Some(proj) = project {
-            tasks.retain(|t| {
-                t.project
-                    .as_deref()
-                    .map(|p| p.eq_ignore_ascii_case(proj))
-                    .unwrap_or(false)
-            });
-        }
         if let Some(pri) = priority {
             tasks.retain(|t| t.priority == Some(pri));
         }
@@ -1898,6 +2150,10 @@ impl PkbSearchServer {
                     .map(|ag| ag.eq_ignore_ascii_case(a))
                     .unwrap_or(false)
             });
+        }
+
+        if !include_subtasks {
+            tasks.retain(|t| t.node_type.as_deref() != Some("subtask"));
         }
 
         if tasks.is_empty() {
@@ -1913,6 +2169,37 @@ impl PkbSearchServer {
 
         let total = tasks.len();
         tasks.truncate(limit);
+
+        // JSON output mode
+        if format.eq_ignore_ascii_case("json") {
+            let json_tasks: Vec<serde_json::Value> = tasks
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "id": t.task_id.as_deref().unwrap_or(&t.id),
+                        "title": t.label,
+                        "status": t.status.as_deref().unwrap_or("unknown"),
+                        "priority": t.priority.unwrap_or(2),
+                        "project": t.project,
+                        "assignee": t.assignee,
+                        "modified": t.modified,
+                        "tags": t.tags,
+                        "downstream_weight": t.downstream_weight,
+                        "parent": t.parent,
+                        "depends_on": t.depends_on,
+                        "node_type": t.node_type,
+                    })
+                })
+                .collect();
+            let result = serde_json::json!({
+                "total": total,
+                "showing": tasks.len(),
+                "tasks": json_tasks,
+            });
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            )]));
+        }
 
         let output = if is_blocked {
             // Blocked view: heading per task with blocker details
@@ -1991,6 +2278,94 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    fn handle_bulk_reparent(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let pattern = args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: pattern (directory path or glob)"),
+                data: None,
+            })?;
+
+        let parent_id = args
+            .get("parent_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: parent_id"),
+                data: None,
+            })?;
+
+        // Verify the parent exists in the graph
+        {
+            let graph = self.graph.read();
+            if graph.resolve(parent_id).is_none() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Parent not found in graph: {}. Create it first or check the ID.",
+                        parent_id
+                    )),
+                    data: None,
+                });
+            }
+        }
+
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let results =
+            crate::document_crud::bulk_reparent(&self.pkb_root, pattern, parent_id, dry_run)
+                .map_err(|e| McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from(format!("bulk_reparent failed: {e}")),
+                    data: None,
+                })?;
+
+        let mut updated = 0usize;
+        let mut skipped_self = 0usize;
+        let mut skipped_already = 0usize;
+        let mut details = Vec::new();
+
+        for r in &results {
+            match r {
+                crate::document_crud::ReparentResult::Updated(p) => {
+                    updated += 1;
+                    details.push(format!("  updated: {}", p.display()));
+                }
+                crate::document_crud::ReparentResult::SkippedSelf(p) => {
+                    skipped_self += 1;
+                    details.push(format!("  skipped (is parent): {}", p.display()));
+                }
+                crate::document_crud::ReparentResult::SkippedAlreadyParented(p) => {
+                    skipped_already += 1;
+                    details.push(format!("  skipped (already parented): {}", p.display()));
+                }
+            }
+        }
+
+        // Rebuild graph after bulk update (unless dry run)
+        if !dry_run && updated > 0 {
+            self.rebuild_graph();
+        }
+
+        let mode = if dry_run { "DRY RUN" } else { "APPLIED" };
+        let summary = format!(
+            "bulk_reparent [{}]: {} updated, {} skipped (self), {} skipped (already parented), {} total files\n{}",
+            mode,
+            updated,
+            skipped_self,
+            skipped_already,
+            results.len(),
+            details.join("\n")
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(summary)]))
+    }
+
     fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         // Accept either `path` or `id` — resolve id via graph if path not given
         let path = if let Some(path_str) = args.get("path").and_then(|v| v.as_str()) {
@@ -2020,8 +2395,42 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        // When setting status to "done", require completion_evidence
+        let setting_done = updates
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(|s| s.eq_ignore_ascii_case("done"))
+            .unwrap_or(false);
+
+        if setting_done {
+            let evidence = updates
+                .get("completion_evidence")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if evidence.trim().is_empty() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(
+                        "completion_evidence is required when setting status to done. Describe what was done before completing this task.",
+                    ),
+                    data: None,
+                });
+            }
+        }
+
+        // Build update map, filtering out completion_evidence (stored in body, not frontmatter)
+        let evidence_text = updates
+            .get("completion_evidence")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let pr_url_text = updates
+            .get("pr_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         let update_map: std::collections::HashMap<String, serde_json::Value> = updates
             .iter()
+            .filter(|(k, _)| k.as_str() != "completion_evidence")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
@@ -2031,19 +2440,322 @@ impl PkbSearchServer {
             data: None,
         })?;
 
+        // Append completion evidence to body when completing via update_task
+        if let Some(evidence) = evidence_text {
+            if setting_done && !evidence.trim().is_empty() {
+                Self::append_evidence(&path, &evidence, pr_url_text.as_deref())?;
+            }
+        }
+
         // Re-index the updated file (with relative path for portable storage)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             let _ = self.store.write().upsert(&doc, &self.embedder);
-            let _ = self.store.read().save(&self.db_path);
+            self.save_store();
         }
 
-        // Rebuild graph
-        self.rebuild_graph();
+        // Incremental graph update for the changed file
+        self.rebuild_graph_for_file(&path);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Task updated: `{}`",
             path.display()
         ))]))
+    }
+
+    // =========================================================================
+    // BATCH OPERATIONS
+    // =========================================================================
+
+    fn handle_batch_update(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let filters = crate::batch_ops::filters::parse_filter_set(args);
+        let updates = args.get("updates").cloned().unwrap_or(JsonValue::Object(serde_json::Map::new()));
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if filters.is_empty() && updates.as_object().map(|m| m.is_empty()).unwrap_or(true) {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("At least one filter and one update field required"),
+                data: None,
+            });
+        }
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::update::batch_update(&graph, &self.pkb_root, &filters, &updates, dry_run);
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_batch_reparent(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let new_parent = args
+            .get("new_parent")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("new_parent is required"),
+                data: None,
+            })?
+            .to_string();
+
+        let filters = crate::batch_ops::filters::parse_filter_set(args);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::reparent::batch_reparent(
+            &graph, &self.pkb_root, &filters, &new_parent, dry_run,
+        );
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_batch_archive(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let filters = crate::batch_ops::filters::parse_filter_set(args);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true); // default true!
+        let reason = args.get("reason").and_then(|v| v.as_str());
+
+        if filters.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("At least one filter is required for batch archive"),
+                data: None,
+            });
+        }
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::update::batch_archive(
+            &graph, &self.pkb_root, &filters, reason, dry_run,
+        );
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_merge_node(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let canonical_id = args
+            .get("canonical_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("canonical_id is required"),
+                data: None,
+            })?
+            .to_string();
+
+        let source_ids: Vec<String> = args
+            .get("source_ids")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        if source_ids.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("source_ids must contain at least one ID"),
+                data: None,
+            });
+        }
+
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let summary =
+            crate::document_crud::merge_node(&self.pkb_root, &source_ids, &canonical_id, dry_run)
+                .map_err(|e| McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from(format!("merge_node failed: {e}")),
+                    data: None,
+                })?;
+
+        if !dry_run && summary.nodes_archived > 0 {
+            self.rebuild_graph();
+        }
+
+        let msg = format!(
+            "merge_node{}: {} files updated, {} references redirected, {} node(s) archived{}",
+            if dry_run { " (dry run)" } else { "" },
+            summary.files_updated,
+            summary.refs_redirected,
+            summary.nodes_archived,
+            if dry_run { " — no changes written" } else { "" },
+        );
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    fn handle_graph_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let graph = self.graph.read();
+        let stats = crate::batch_ops::stats::graph_stats(&graph);
+        drop(graph);
+
+        let json = serde_json::to_string_pretty(&stats).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_task_summary(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let graph = self.graph.read();
+        let ready = graph.ready_tasks();
+        let blocked = graph.blocked_tasks();
+
+        let mut by_priority: std::collections::HashMap<i32, usize> =
+            std::collections::HashMap::new();
+        for task in &ready {
+            let p = task.priority.unwrap_or(2);
+            *by_priority.entry(p).or_insert(0) += 1;
+        }
+
+        let summary = serde_json::json!({
+            "ready": ready.len(),
+            "blocked": blocked.len(),
+            "by_priority": {
+                "p0": by_priority.get(&0).copied().unwrap_or(0),
+                "p1": by_priority.get(&1).copied().unwrap_or(0),
+                "p2": by_priority.get(&2).copied().unwrap_or(0),
+                "p3": by_priority.get(&3).copied().unwrap_or(0),
+            }
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&summary).unwrap_or_default(),
+        )]))
+    }
+
+    fn handle_find_duplicates(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let filters = crate::batch_ops::filters::parse_filter_set(args);
+        let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("both");
+        let mode = crate::batch_ops::duplicates::DuplicateMode::from_str(mode_str);
+        let title_threshold = args.get("title_threshold").and_then(|v| v.as_f64()).unwrap_or(0.7);
+        let semantic_threshold = args.get("similarity_threshold").and_then(|v| v.as_f64()).unwrap_or(0.85);
+
+        let graph = self.graph.read();
+        let store = self.store.read();
+        let report = crate::batch_ops::duplicates::find_duplicates(
+            &graph, &store, &filters, mode, title_threshold, semantic_threshold,
+        );
+        drop(graph);
+        drop(store);
+
+        let json = serde_json::to_string_pretty(&report).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_batch_merge(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let canonical = args
+            .get("canonical")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("canonical is required"),
+                data: None,
+            })?
+            .to_string();
+
+        let merge_ids: Vec<String> = args
+            .get("merge_ids")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if merge_ids.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("merge_ids must contain at least one ID"),
+                data: None,
+            });
+        }
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::duplicates::batch_merge(
+            &graph, &self.pkb_root, &canonical, &merge_ids, dry_run,
+        );
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_batch_create_epics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let parent = args.get("parent").and_then(|v| v.as_str());
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let epics: Vec<crate::batch_ops::epics::EpicDef> = args
+            .get("epics")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        if epics.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("epics array is required and must not be empty"),
+                data: None,
+            });
+        }
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::epics::batch_create_epics(
+            &graph, &self.pkb_root, parent, &epics, dry_run,
+        );
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn handle_batch_reclassify(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let filters = crate::batch_ops::filters::parse_filter_set(args);
+        let new_type = args
+            .get("new_type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("new_type is required"),
+                data: None,
+            })?;
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if filters.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("At least one filter is required"),
+                data: None,
+            });
+        }
+
+        let graph = self.graph.read();
+        let summary = crate::batch_ops::reclassify::batch_reclassify(
+            &graph, &self.pkb_root, &filters, new_type, dry_run,
+        );
+        drop(graph);
+
+        if !dry_run && summary.changed > 0 {
+            self.rebuild_graph();
+        }
+
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 }
 
@@ -2058,10 +2770,10 @@ impl ServerHandler for PkbSearchServer {
             "search" => self.handle_pkb_search(&args),
             "get_document" => self.handle_get_document(&args),
             "list_documents" => self.handle_list_documents(&args),
-            "reindex" => self.handle_reindex(&args),
             "task_search" => self.handle_task_search(&args),
             "get_network_metrics" => self.handle_get_network_metrics(&args),
             "create_task" => self.handle_create_task(&args),
+            "create_subtask" => self.handle_create_subtask(&args),
             "create_memory" => self.handle_create_memory(&args),
             "create" => self.handle_create_document(&args),
             "append" => self.handle_append_to_document(&args),
@@ -2070,6 +2782,7 @@ impl ServerHandler for PkbSearchServer {
             "list_tasks" => self.handle_list_tasks(&args),
             "get_task" => self.handle_get_task(&args),
             "update_task" => self.handle_update_task(&args),
+            "bulk_reparent" => self.handle_bulk_reparent(&args),
             "retrieve_memory" => self.handle_retrieve_memory(&args),
             "search_by_tag" => self.handle_search_by_tag(&args),
             "list_memories" => self.handle_list_memories(&args),
@@ -2080,8 +2793,16 @@ impl ServerHandler for PkbSearchServer {
             "pkb_context" => self.handle_pkb_context(&args),
             "pkb_trace" => self.handle_pkb_trace(&args),
             "pkb_orphans" => self.handle_pkb_orphans(&args),
-            "graph_json" => self.handle_graph_json(&args),
+            "batch_update" => self.handle_batch_update(&args),
+            "batch_reparent" => self.handle_batch_reparent(&args),
+            "batch_archive" => self.handle_batch_archive(&args),
             "graph_stats" => self.handle_graph_stats(&args),
+            "task_summary" => self.handle_task_summary(&args),
+            "find_duplicates" => self.handle_find_duplicates(&args),
+            "batch_merge" => self.handle_batch_merge(&args),
+            "merge_node" => self.handle_merge_node(&args),
+            "batch_create_epics" => self.handle_batch_create_epics(&args),
+            "batch_reclassify" => self.handle_batch_reclassify(&args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {}", request.name)),
@@ -2093,7 +2814,7 @@ impl ServerHandler for PkbSearchServer {
 
     fn list_tools(
         &self,
-        _request: PaginatedRequestParam,
+        _request: Option<PaginatedRequestParam>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = vec![
@@ -2106,7 +2827,7 @@ impl ServerHandler for PkbSearchServer {
                         "query": { "type": "string", "description": "Natural language search query" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
                         "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
-                        "project": { "type": "string", "description": "Filter by project" }
+                        "detail": { "type": "string", "description": "Result detail level: 'snippet' (300 chars), 'chunk' (full matching chunk, default), 'full' (entire document)", "enum": ["snippet", "chunk", "full"], "default": "chunk" }
                     },
                     "required": ["query"]
                 }))
@@ -2133,20 +2854,8 @@ impl ServerHandler for PkbSearchServer {
                         "tag": { "type": "string", "description": "Filter by tag" },
                         "type": { "type": "string", "description": "Filter by type" },
                         "status": { "type": "string", "description": "Filter by status" },
-                        "project": { "type": "string", "description": "Filter by project" },
                         "limit": { "type": "integer", "description": "Max results (default: all)" },
                         "offset": { "type": "integer", "description": "Skip first N results (default: 0)" }
-                    }
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "reindex",
-                "Re-scan and re-index. Rebuilds vector store and knowledge graph. Incremental by default (mtime-based); set force=true to re-embed all files.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "force": { "type": "boolean", "description": "Force full re-index of all files (default: false, incremental mtime-based)" }
                     }
                 }))
                 .unwrap(),
@@ -2159,7 +2868,7 @@ impl ServerHandler for PkbSearchServer {
                     "properties": {
                         "query": { "type": "string", "description": "Query to search tasks" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "project": { "type": "string", "description": "Filter by project" }
+                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." }
                     },
                     "required": ["query"]
                 }))
@@ -2186,8 +2895,7 @@ impl ServerHandler for PkbSearchServer {
                         "title": { "type": "string", "description": "Task title" },
                         "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
                         "parent": { "type": "string", "description": "Parent task ID" },
-                        "priority": { "type": "integer", "description": "0-4 (0=critical)" },
-                        "project": { "type": "string", "description": "Project name" },
+                        "priority": { "type": "integer", "description": "0-4 (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
@@ -2195,6 +2903,20 @@ impl ServerHandler for PkbSearchServer {
                         "body": { "type": "string", "description": "Markdown body" }
                     },
                     "required": ["title"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "create_subtask",
+                "Create a numbered sub-task attached to a parent task. Sub-tasks use dot-notation IDs (e.g. proj-deadbeef.1) and appear as a markdown checkbox checklist when the parent is retrieved via get_task. They can also be addressed individually. Use for checklist-style completion tracking within a task.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "parent_id": { "type": "string", "description": "ID of the parent task (e.g. proj-deadbeef)" },
+                        "title": { "type": "string", "description": "Sub-task title" },
+                        "body": { "type": "string", "description": "Optional markdown body" }
+                    },
+                    "required": ["parent_id", "title"]
                 }))
                 .unwrap(),
             ),
@@ -2229,10 +2951,9 @@ impl ServerHandler for PkbSearchServer {
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body" },
                         "status": { "type": "string" },
-                        "priority": { "type": "integer", "description": "0-4 (0=critical)" },
+                        "priority": { "type": "integer", "description": "0-4 (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)" },
                         "parent": { "type": "string", "description": "Parent document ID" },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
-                        "project": { "type": "string", "description": "Project name" },
                         "assignee": { "type": "string" },
                         "complexity": { "type": "string" },
                         "source": { "type": "string", "description": "Source context" },
@@ -2273,13 +2994,15 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "complete_task",
-                "Mark a task as done. Sets status to 'done' and re-indexes.",
+                "Mark a task as done. Requires completion_evidence describing what was done. Sets status to 'done', appends evidence to body, and re-indexes.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Task ID (supports flexible resolution: ID, filename stem, or title)" }
+                        "id": { "type": "string", "description": "Task ID (supports flexible resolution: ID, filename stem, or title)" },
+                        "completion_evidence": { "type": "string", "description": "What was done + outcome. Required — describe the work before completing." },
+                        "pr_url": { "type": "string", "description": "Link to PR/commit (optional, for code tasks)" }
                     },
-                    "required": ["id"]
+                    "required": ["id", "completion_evidence"]
                 }))
                 .unwrap(),
             ),
@@ -2289,18 +3012,19 @@ impl ServerHandler for PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "project": { "type": "string", "description": "Filter by project" },
                         "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, done, etc." },
                         "priority": { "type": "integer", "description": "Filter by exact priority (0-4)" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
-                        "limit": { "type": "integer", "description": "Max results (default: 50)" }
+                        "limit": { "type": "integer", "description": "Max results (default: 50)" },
+                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
+                        "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
                     }
                 }))
                 .unwrap(),
             ),
             Tool::new(
                 "get_task",
-                "Retrieve a task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, parent with titles/statuses, downstream_weight, stakeholder_exposure).",
+                "Retrieve a task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, subtasks, parent with titles/statuses, downstream_weight, stakeholder_exposure). Sub-tasks (type=subtask) are injected as a markdown checkbox checklist in the body and listed in the 'subtasks' field.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2312,15 +3036,29 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "update_task",
-                "Update frontmatter fields on an existing task file. Auto-sets modified timestamp.",
+                "Update frontmatter fields on an existing task file. Auto-sets modified timestamp. When setting status to 'done', completion_evidence is required inside updates.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Path to task file" },
                         "id": { "type": "string", "description": "Document ID (alternative to path — uses flexible resolution)" },
-                        "updates": { "type": "object", "description": "Fields to update (null to remove)" }
+                        "updates": { "type": "object", "description": "Fields to update (null to remove). When status='done', include completion_evidence (string) describing what was done." }
                     },
                     "required": ["updates"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "bulk_reparent",
+                "Bulk reparent: set parent field on all .md files matching a directory or glob pattern. Dry run by default — set dry_run=false to apply. Skips files that ARE the parent (by permalink/id) and files already parented correctly.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Directory path or glob pattern (e.g. 'archive/', 'tasks/*.md'). Relative to PKB root." },
+                        "parent_id": { "type": "string", "description": "Parent ID to set on matching files" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: true). Set to false to apply.", "default": true }
+                    },
+                    "required": ["pattern", "parent_id"]
                 }))
                 .unwrap(),
             ),
@@ -2379,7 +3117,7 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "decompose_task",
-                "Batch creation of subtasks under a parent task. More efficient than calling create_task N times (single graph rebuild).",
+                "Batch creation of subtasks under a parent task. Supports sibling cross-references in 'depends_on' using '$1', '$2', etc. (1-indexed position) or by exact sibling title.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2396,8 +3134,7 @@ impl ServerHandler for PkbSearchServer {
                                     "tags": { "type": "array", "items": { "type": "string" } },
                                     "assignee": { "type": "string" },
                                     "complexity": { "type": "string" },
-                                    "body": { "type": "string" },
-                                    "project": { "type": "string" }
+                                    "body": { "type": "string" }
                                 },
                                 "required": ["title"]
                             },
@@ -2463,63 +3200,223 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "pkb_orphans",
-                "Find disconnected nodes with zero edges (no incoming or outgoing connections). Filter by node type or project.",
+                "Find orphan nodes with no valid parent. By default shows only actionable types (task/bug/feature/action/epic/project/goal) excluding completed — matching graph_stats orphan_count. Use include_all=true or types filter to override.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "limit": { "type": "integer", "description": "Max results (default: all). Set to 0 for unlimited." },
-                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Omit for all types." },
-                        "project": { "type": "string", "description": "Filter by project" }
+                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Overrides default actionable-only filter." },
+                        "include_all": { "type": "boolean", "description": "Include all node types (notes, memories, etc.) — default false." }
+                    }
+                }))
+                .unwrap(),
+            ),
+            // ── Batch Operations ──────────────────────────────────────────
+            Tool::new(
+                "batch_update",
+                "Update frontmatter fields across multiple tasks in one operation. Supports filtered selection (by project, priority, tags, age, etc.) or explicit ID lists. Use _add_tags/_remove_tags for array manipulation. Set dry_run=true to preview changes.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs (flexible resolution)" },
+                        "parent": { "type": "string", "description": "Filter: direct children of parent" },
+                        "subtree": { "type": "string", "description": "Filter: all descendants of node" },
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "priority": { "type": "integer", "description": "Filter by exact priority" },
+                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
+                        "type": { "type": "string", "description": "Filter by document type" },
+                        "older_than_days": { "type": "integer", "description": "Filter: created > N days ago" },
+                        "stale_days": { "type": "integer", "description": "Filter: not modified in N days" },
+                        "orphan": { "type": "boolean", "description": "Filter: no parent and no project" },
+                        "title_contains": { "type": "string", "description": "Filter: title substring (case-insensitive)" },
+                        "directory": { "type": "string", "description": "Filter: file path contains directory" },
+                        "weight_gte": { "type": "integer", "description": "Filter: downstream weight >= N" },
+                        "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["updates"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "batch_reparent",
+                "Move multiple tasks to a new parent in one operation. Use when restructuring the task graph — grouping flat tasks into epics, or reorganizing tasks between projects.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
+                        "parent": { "type": "string", "description": "Filter: direct children of parent" },
+                        "subtree": { "type": "string", "description": "Filter: all descendants of node" },
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "priority": { "type": "integer", "description": "Filter by exact priority" },
+                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
+                        "title_contains": { "type": "string", "description": "Filter: title substring" },
+                        "new_parent": { "type": "string", "description": "ID of new parent (flexible resolution)" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["new_parent"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "batch_archive",
+                "Archive multiple tasks (set status=done). Dry-run by default for safety — set dry_run=false to execute. Warns about in_progress tasks and those with active children.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
+                        "parent": { "type": "string", "description": "Filter: direct children of parent" },
+                        "subtree": { "type": "string", "description": "Filter: all descendants of node" },
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "priority": { "type": "integer", "description": "Filter by exact priority" },
+                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
+                        "older_than_days": { "type": "integer", "description": "Filter: created > N days ago" },
+                        "stale_days": { "type": "integer", "description": "Filter: not modified in N days" },
+                        "title_contains": { "type": "string", "description": "Filter: title substring" },
+                        "reason": { "type": "string", "description": "Archive reason (appended to task body)" },
+                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     }
                 }))
                 .unwrap(),
             ),
             Tool::new(
-                "graph_json",
-                "Get the full knowledge graph as JSON for visualizations.",
+                "graph_stats",
+                "Report on graph health: status/priority/type distributions, orphan count, stale tasks, disconnected epics, and more. Read-only, no mutations.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                    }
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "task_summary",
+                "Returns pre-computed counts of ready and blocked tasks, plus a per-priority breakdown of ready tasks. 'ready' = leaf tasks with claimable types (task/bug/feature), active status, and all dependencies met. Use this instead of list_tasks for dashboard counts and priority bars.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {}
                 }))
                 .unwrap(),
             ),
+            // ── Phase 2: Deduplication & Restructuring ────────────────────
             Tool::new(
-                "graph_stats",
-                "Get summary statistics for the knowledge graph (node/edge counts, etc.).",
+                "find_duplicates",
+                "Detect potential duplicate tasks using title similarity and/or semantic embedding similarity. Returns clusters with suggested canonical task. Read-only.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
-                    "properties": {}
+                    "properties": {
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "mode": { "type": "string", "description": "Detection mode: title, semantic, or both (default: both)" },
+                        "title_threshold": { "type": "number", "description": "Title similarity threshold 0-1 (default: 0.7)" },
+                        "similarity_threshold": { "type": "number", "description": "Semantic similarity threshold 0-1 (default: 0.85)" }
+                    }
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "batch_merge",
+                "Merge duplicate tasks into a canonical task. Archives merged tasks with superseded_by, unions tags/deps, reparents children, updates backlinks.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "canonical": { "type": "string", "description": "ID of the task to keep" },
+                        "merge_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of duplicates to merge into canonical" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["canonical", "merge_ids"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "merge_node",
+                "Merge source nodes into a canonical node. Redirects all references (parent, depends_on, blocks, wikilinks, etc.) from each source ID to the canonical ID across the entire PKB, then archives each source node (status=done, superseded_by=canonical). Unlike batch_merge, preserves source node files as archived records and performs complete reference updates including wikilinks.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "canonical_id": { "type": "string", "description": "ID of the node to merge into (must already exist)" },
+                        "source_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of nodes to merge into canonical and archive" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["canonical_id", "source_ids"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "batch_create_epics",
+                "Create multiple epic containers and reparent existing tasks under them. Primary tool for structuring a flat task list into organized groups.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "parent": { "type": "string", "description": "Parent for all new epics" },
+                        "epics": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": { "type": "string" },
+                                    "id": { "type": "string" },
+                                    "priority": { "type": "integer" },
+                                    "task_ids": { "type": "array", "items": { "type": "string" } },
+                                    "depends_on": { "type": "array", "items": { "type": "string" } },
+                                    "body": { "type": "string" }
+                                },
+                                "required": ["title", "task_ids"]
+                            },
+                            "description": "Array of epic definitions with title and task_ids to reparent"
+                        },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["epics"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "batch_reclassify",
+                "Change the type field of matching tasks and move files to the correct subdirectory. Use for fixing memories filed as tasks and vice versa.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
+                        "status": { "type": "string", "description": "Filter by status" },
+                        "type": { "type": "string", "description": "Filter by current type" },
+                        "title_contains": { "type": "string", "description": "Filter by title substring" },
+                        "new_type": { "type": "string", "description": "New document type (task, memory, note, knowledge, project, epic, goal)" },
+                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                    },
+                    "required": ["new_type"]
                 }))
                 .unwrap(),
             ),
         ];
 
-        std::future::ready(Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-        }))
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
 
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation {
-                name: "pkb".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-            },
-            instructions: Some(
-                "PKB Search — semantic search + task graph over personal knowledge base. \
-                 27 tools: search, get_document, list_documents, reindex, \
-                 task_search, get_network_metrics, create_task, create_memory, \
-                 create, append, delete, complete_task, list_tasks, \
-                 get_task, update_task, retrieve_memory, search_by_tag, \
-                 list_memories, delete_memory, decompose_task, \
-                 get_dependency_tree, get_task_children, \
-                 pkb_context, pkb_trace, pkb_orphans, \
-                 graph_json, graph_stats."
-                    .to_string(),
-            ),
+        let mut instructions = String::from(
+            "PKB Search — semantic search + task graph over personal knowledge base. \
+             26 tools: search, get_document, list_documents, \
+             task_search, get_network_metrics, create_task, create_memory, \
+             create, append, delete, complete_task, list_tasks, \
+             get_task, update_task, bulk_reparent, retrieve_memory, search_by_tag, \
+             list_memories, delete_memory, decompose_task, \
+             get_dependency_tree, get_task_children, \
+             pkb_context, pkb_trace, pkb_orphans, task_summary.",
+        );
+        if self.stale_count > 0 {
+            instructions.push_str(&format!(
+                " WARNING: Index is stale — {} document(s) need re-indexing. \
+                 Search results may be incomplete or outdated. \
+                 Run `pkb reindex` to update.",
+                self.stale_count
+            ));
         }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
+            .with_instructions(instructions)
     }
 }

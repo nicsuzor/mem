@@ -1,0 +1,36 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag (e.g. v0.1.12 or v0.2.0-rc.1)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as pre-release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ inputs.tag }}"
+          git push origin "${{ inputs.tag }}"
+
+  build-release:
+    needs: create-tag
+    uses: ./.github/workflows/build-release.yml
+    with:
+      tag: ${{ inputs.tag }}
+      prerelease: ${{ inputs.prerelease }}

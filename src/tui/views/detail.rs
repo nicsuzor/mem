@@ -175,14 +175,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    // Project
-    if let Some(ref project) = node.project {
-        left_lines.push(Line::from(vec![
-            Span::styled("  Project: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(project.clone(), Style::default().fg(Color::Cyan)),
-        ]));
-    }
-
     // Assignee
     if let Some(ref assignee) = node.assignee {
         left_lines.push(Line::from(vec![

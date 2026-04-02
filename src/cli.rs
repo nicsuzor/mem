@@ -1,22 +1,23 @@
-//! PKB CLI — interactive search and task management for the PKB vector store
+//! PKB — semantic search, task management, and MCP server for your knowledge base
 //!
-//! Provides subcommands: search, add, reindex, status, tasks, task, deps, ...
+//! Provides subcommands: search, reindex, tasks, focus, mcp, ...
 
 mod tui;
 
-use mem::{document_crud, embeddings, graph, graph_display, graph_store, metrics, pkb, task_index, vectordb};
+use mem::{document_crud, embeddings, eval, graph, graph_display, graph_store, lint, mcp_server, metrics, pkb, task_index, vectordb};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use parking_lot::RwLock;
+use rmcp::ServiceExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
-    name = "aops",
+    name = "pkb",
     version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_GIT_HASH"), ")"),
-    about = "AcademicOps — semantic search and task management for your knowledge base"
+    about = "PKB — semantic search, task management, and MCP server for your knowledge base"
 )]
 struct Cli {
     /// Path to the PKB root directory
@@ -27,12 +28,8 @@ struct Cli {
     #[arg(long, global = true, default_value_t = default_db_path())]
     db_path: String,
 
-    /// Path to layout.toml for graph layout parameters
-    #[arg(long, global = true)]
-    layout_config: Option<String>,
-
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -80,6 +77,41 @@ enum Commands {
     /// Reindex all PKB files
     Reindex {
         /// Force reindex even if files unchanged
+        #[arg(short, long)]
+        force: bool,
+
+        /// Max ONNX sessions (default: auto from CPU count)
+        #[arg(short, long)]
+        sessions: Option<usize>,
+
+        /// Threads per ONNX session (default: 2)
+        #[arg(short, long)]
+        threads: Option<usize>,
+
+        /// Chunks per sub-batch (default: 32)
+        #[arg(short, long)]
+        batch_size: Option<usize>,
+    },
+
+    /// Benchmark reindex: process a few stale docs with tunable parallelism
+    BenchReindex {
+        /// Number of stale documents to process (default 4)
+        #[arg(short = 'n', long, default_value_t = 4)]
+        count: usize,
+
+        /// Max ONNX sessions (default: auto from CPU count)
+        #[arg(short, long)]
+        sessions: Option<usize>,
+
+        /// Threads per ONNX session (default: 2)
+        #[arg(short, long)]
+        threads: Option<usize>,
+
+        /// Chunks per sub-batch (default: 32)
+        #[arg(short, long)]
+        batch_size: Option<usize>,
+
+        /// Force re-embed even if docs are up-to-date (picks random docs)
         #[arg(short, long)]
         force: bool,
     },
@@ -145,7 +177,7 @@ enum Commands {
         #[arg(long)]
         parent: Option<String>,
 
-        /// Priority (0=critical, 1=high, 2=medium, 3=low, 4=someday)
+        /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
         #[arg(short, long)]
         priority: Option<i32>,
 
@@ -174,6 +206,19 @@ enum Commands {
         body: Option<String>,
     },
 
+    /// Create a sub-task attached to a parent task (dot-notation ID, e.g. proj-deadbeef.1)
+    Subtask {
+        /// Parent task ID
+        parent_id: String,
+
+        /// Sub-task title
+        title: Vec<String>,
+
+        /// Body text / description
+        #[arg(short, long)]
+        body: Option<String>,
+    },
+
     /// Create a new document (note, knowledge, memory, or any type)
     Remember {
         /// Document title
@@ -191,7 +236,7 @@ enum Commands {
         #[arg(short, long)]
         status: Option<String>,
 
-        /// Priority (0=critical, 1=high, 2=medium, 3=low, 4=someday)
+        /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
         #[arg(short, long)]
         priority: Option<i32>,
 
@@ -250,7 +295,7 @@ enum Commands {
         #[arg(short, long)]
         status: Option<String>,
 
-        /// Priority (0=critical, 1=high, 2=medium, 3=low, 4=someday)
+        /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
         #[arg(short, long)]
         priority: Option<i32>,
 
@@ -290,7 +335,7 @@ enum Commands {
         max_paths: usize,
     },
 
-    /// Find disconnected (orphan) nodes with no edges
+    /// Find orphan nodes with no valid parent
     Orphans {
         /// Filter by node type (e.g. task, project, note)
         #[arg(short = 'T', long = "type")]
@@ -303,17 +348,13 @@ enum Commands {
 
     /// Export knowledge graph
     Graph {
-        /// Output format: json, graphml, dot, mcp-index, all
-        #[arg(short, long, default_value = "json")]
+        /// Output format: json, graphml, mcp-index, all
+        #[arg(short, long, default_value = "all")]
         format: String,
 
-        /// Output file (default: stdout; for 'all' format, used as base name)
+        /// Output file base name (for 'all' format) or path (for single format)
         #[arg(short, long)]
         output: Option<String>,
-
-        /// Skip precomputed layout (ForceAtlas2 x,y coordinates)
-        #[arg(long)]
-        no_layout: bool,
     },
 
     /// Search memories by semantic similarity
@@ -372,23 +413,322 @@ enum Commands {
         tree: bool,
     },
 
-    /// Launch the interactive planning TUI
-    Tui,
+    /// Rename an ID across the entire PKB (updates all references)
+    RenameId {
+        /// The old ID to find
+        old: String,
+
+        /// The new ID to replace it with
+        new: String,
+    },
+
+    /// Merge source nodes into a canonical node, reparenting all their children
+    ///
+    /// Redirects all references (parent, depends_on, blocks, wikilinks, etc.) from
+    /// each source ID to the canonical ID, then archives the source nodes
+    /// (status=done, superseded_by=canonical). Unlike rename-id, the source file
+    /// is preserved as an archived record.
+    MergeNode {
+        /// ID of the canonical node to merge into (must already exist)
+        canonical_id: String,
+
+        /// One or more source node IDs to merge and archive
+        #[arg(long = "source", required = true)]
+        source_ids: Vec<String>,
+
+        /// Preview changes without writing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Lint and format PKB files (frontmatter validation, markdown hygiene, reference checks)
+    Lint {
+        /// Specific files to lint (omit to lint entire PKB)
+        files: Vec<PathBuf>,
+
+        /// Auto-fix fixable issues in place
+        #[arg(long)]
+        fix: bool,
+
+        /// Check cross-references (parent, depends_on) — slower, requires full scan
+        #[arg(long)]
+        refs: bool,
+
+        /// Only show errors (suppress warnings and style)
+        #[arg(long)]
+        errors_only: bool,
+
+        /// Output format: text (default), json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Launch the interactive planning dashboard
+    #[command(alias = "tui")]
+    Dash,
+
+    /// Run search evaluation with golden queries
+    Eval {
+        /// Number of results per query (default: 10)
+        #[arg(short = 'k', long, default_value_t = 10)]
+        top_k: usize,
+    },
+
+    /// Batch operations on the task graph
+    #[command(subcommand)]
+    Batch(BatchCommands),
+
+    /// Show graph health statistics
+    GraphStats {
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+
+    /// Start the MCP server on stdio (for Claude, Cursor, etc.)
+    Mcp {
+        /// Serve over HTTP/SSE instead of stdio
+        #[arg(long)]
+        http: bool,
+
+        /// HTTP listen port (default: 8026)
+        #[arg(long, default_value_t = 8026)]
+        port: u16,
+
+        /// HTTP listen address (default: 127.0.0.1)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+    },
+
+    /// Find potential duplicate tasks
+    Duplicates {
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Detection mode: title, semantic, or both
+        #[arg(long, default_value = "title")]
+        mode: String,
+
+        /// Title similarity threshold (0.0-1.0, default: 0.7)
+        #[arg(long, default_value_t = 0.7)]
+        title_threshold: f64,
+
+        /// Semantic similarity threshold (0.0-1.0, default: 0.85)
+        #[arg(long, default_value_t = 0.85)]
+        semantic_threshold: f64,
+
+        /// Maximum clusters to show
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum BatchCommands {
+    /// Update frontmatter fields across multiple tasks
+    Update {
+        /// Set a field: key=value (repeatable)
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        set_fields: Option<Vec<String>>,
+
+        /// Remove a field (repeatable)
+        #[arg(long = "unset", value_name = "KEY")]
+        unset_fields: Option<Vec<String>>,
+
+        /// Add a tag (repeatable)
+        #[arg(long = "add-tag", value_name = "TAG")]
+        add_tags: Option<Vec<String>>,
+
+        /// Remove a tag (repeatable)
+        #[arg(long = "remove-tag", value_name = "TAG")]
+        remove_tags: Option<Vec<String>>,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+
+        #[command(flatten)]
+        filters: BatchFilterArgs,
+    },
+
+    /// Move multiple tasks to a new parent
+    Reparent {
+        /// ID of new parent (flexible resolution)
+        #[arg(long)]
+        new_parent: String,
+
+        /// Don't cascade parent's project field
+        #[arg(long)]
+        no_cascade: bool,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+
+        #[command(flatten)]
+        filters: BatchFilterArgs,
+    },
+
+    /// Archive tasks (set status to done). Dry-run by default.
+    Archive {
+        /// Actually execute (archive is dry-run by default)
+        #[arg(long)]
+        execute: bool,
+
+        /// Archive reason (appended to task body)
+        #[arg(long)]
+        reason: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+
+        #[command(flatten)]
+        filters: BatchFilterArgs,
+    },
+
+    /// Merge duplicate tasks into a canonical task
+    Merge {
+        /// ID of the canonical task to keep
+        #[arg(long)]
+        canonical: String,
+
+        /// IDs of tasks to merge into canonical (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        merge: Vec<String>,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Create epic containers and reparent tasks under them
+    CreateEpics {
+        /// Load epic definitions from YAML file
+        #[arg(long)]
+        from: String,
+
+        /// Parent for all new epics
+        #[arg(long)]
+        parent: Option<String>,
+
+        /// Project for all new epics
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Change document type and move to correct directory
+    Reclassify {
+        /// New document type (task, memory, note, knowledge, project, epic, goal)
+        #[arg(long)]
+        new_type: String,
+
+        /// Dry run — preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+
+        #[command(flatten)]
+        filters: BatchFilterArgs,
+    },
+}
+
+/// Shared filter arguments for batch commands.
+#[derive(clap::Args, Debug, Clone)]
+struct BatchFilterArgs {
+    /// Explicit task IDs (comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    ids: Option<Vec<String>>,
+
+    /// Filter by project
+    #[arg(long)]
+    project: Option<String>,
+
+    /// Filter by parent (direct children)
+    #[arg(long)]
+    parent: Option<String>,
+
+    /// Filter by subtree (all descendants)
+    #[arg(long)]
+    subtree: Option<String>,
+
+    /// Filter by status
+    #[arg(long)]
+    status: Option<String>,
+
+    /// Filter by exact priority
+    #[arg(long)]
+    priority: Option<i32>,
+
+    /// Filter by minimum priority (>=)
+    #[arg(long)]
+    priority_gte: Option<i32>,
+
+    /// Filter by tags (must have ALL, comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    tags: Option<Vec<String>>,
+
+    /// Filter by document type
+    #[arg(long = "type")]
+    doc_type: Option<String>,
+
+    /// Filter by age: older than N days (format: "90d")
+    #[arg(long)]
+    older_than: Option<String>,
+
+    /// Filter by staleness: not modified in N days (format: "60d")
+    #[arg(long)]
+    stale: Option<String>,
+
+    /// Filter orphan tasks (no parent, no project)
+    #[arg(long)]
+    orphan: bool,
+
+    /// Filter by title substring (case-insensitive)
+    #[arg(long)]
+    title_contains: Option<String>,
+
+    /// Filter by complexity
+    #[arg(long)]
+    complexity: Option<String>,
+
+    /// Filter by directory path
+    #[arg(long)]
+    directory: Option<String>,
+
+    /// Filter by minimum downstream weight
+    #[arg(long)]
+    weight_gte: Option<u32>,
 }
 
 fn default_pkb_root() -> String {
-    std::env::var("ACA_DATA").unwrap_or_else(|_| ".".to_string())
+    std::env::var("ACA_DATA").unwrap_or_else(|_| {
+        eprintln!("error: ACA_DATA environment variable is not set");
+        std::process::exit(1);
+    })
 }
 
 fn default_db_path() -> String {
-    std::env::var("ACA_DATA")
-        .map(|d| {
-            PathBuf::from(d)
-                .join("pkb_vectors.bin")
-                .to_string_lossy()
-                .to_string()
-        })
-        .unwrap_or_else(|_| "pkb_vectors.bin".to_string())
+    let root = std::env::var("ACA_DATA").unwrap_or_else(|_| {
+        eprintln!("error: ACA_DATA environment variable is not set");
+        std::process::exit(1);
+    });
+    PathBuf::from(root)
+        .join("pkb_vectors.bin")
+        .to_string_lossy()
+        .to_string()
 }
 
 fn load_store(db_path: &PathBuf, dim: usize) -> Result<Arc<RwLock<vectordb::VectorStore>>> {
@@ -402,42 +742,87 @@ fn load_graph(pkb_root: &std::path::Path, _db_path: &std::path::Path) -> graph_s
     graph_store::GraphStore::build_from_directory(pkb_root)
 }
 
-fn main() -> Result<()> {
-    // Quiet logging for CLI mode — only warnings
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let command = cli.command.unwrap_or(Commands::Focus { limit: 20 });
+    let is_mcp = matches!(command, Commands::Mcp { .. });
+
+    // MCP mode: info-level logging to stderr (stdout is protocol).
+    // CLI mode: only warnings.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(if is_mcp { "info" } else { "warn" })),
         )
         .with_writer(std::io::stderr)
         .init();
 
-    let cli = Cli::parse();
-    let pkb_root = PathBuf::from(&cli.pkb_root);
+    let pkb_root = PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root));
     let db_path = PathBuf::from(&cli.db_path);
 
-    if let Some(ref lc) = cli.layout_config {
-        mem::layout::set_config_path(PathBuf::from(lc));
-    }
+    // Exclusive lock for index updates
+    let needs_exclusive_lock = matches!(
+        command,
+        Commands::Reindex { .. }
+            | Commands::BenchReindex { .. }
+            | Commands::Add { .. }
+            | Commands::Forget { .. }
+    );
+
+    let mut _index_lock = if needs_exclusive_lock {
+        Some(vectordb::VectorStore::acquire_lock(&db_path)?)
+    } else {
+        None
+    };
+    let _lock_guard = if let Some(ref mut l) = _index_lock {
+        Some(l.try_write().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                anyhow::anyhow!("Index is locked by another process. Try again later.")
+            } else {
+                anyhow::anyhow!("Failed to acquire index lock: {e}")
+            }
+        })?)
+    } else {
+        None
+    };
 
     // Only load embedder + vector store for commands that need them
     let needs_embedder = matches!(
-        cli.command,
+        command,
         Commands::Search { .. }
             | Commands::Add { .. }
             | Commands::Reindex { .. }
+            | Commands::BenchReindex { .. }
             | Commands::Status
             | Commands::Recall { .. }
+            | Commands::Eval { .. }
+            | Commands::Mcp { .. }
     );
 
     // Some commands need the store but not the embedder
     let needs_store_only = matches!(
-        cli.command,
-        Commands::Tags { .. } | Commands::Memories { .. } | Commands::Forget { .. }
+        command,
+        Commands::Tags { .. }
+            | Commands::Memories { .. }
+            | Commands::Forget { .. }
+            | Commands::Duplicates { .. }
     );
 
     let (embedder, store) = if needs_embedder {
-        let e = Arc::new(embeddings::Embedder::new()?);
+        let mut e = embeddings::Embedder::new()?;
+        // Apply parallelism overrides for reindex/bench-reindex
+        let overrides = match &command {
+            Commands::Reindex { sessions, threads, batch_size, .. }
+            | Commands::BenchReindex { sessions, threads, batch_size, .. } => {
+                Some((sessions.unwrap_or(0), threads.unwrap_or(0), batch_size.unwrap_or(0)))
+            }
+            _ => None,
+        };
+        if let Some((s, t, b)) = overrides {
+            e = e.with_overrides(s, t, b);
+        }
+        let e = Arc::new(e);
         let s = load_store(&db_path, e.dimension())?;
         (Some(e), Some(s))
     } else if needs_store_only {
@@ -447,7 +832,7 @@ fn main() -> Result<()> {
         (None, None)
     };
 
-    match cli.command {
+    match command {
         Commands::Search { query, limit, full } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
@@ -495,20 +880,22 @@ fn main() -> Result<()> {
                     println!("     \x1b[2m{}\x1b[0m", result.path.display());
                 }
 
-                if !result.snippet.is_empty() {
+                if !result.snippet.is_empty() || !result.chunk_text.is_empty() {
                     let snippet = if full {
-                        result.snippet.clone()
+                        result.chunk_text.clone()
                     } else {
                         truncate_snippet(&result.snippet, 120)
                     };
-                    println!("     {snippet}");
+                    if !snippet.is_empty() {
+                        println!("     {snippet}");
+                    }
                 }
                 println!();
             }
 
             // Navigation hint
             if !first_id.is_empty() {
-                println!("  \x1b[2mTip: aops task {first_id}  — show full details\x1b[0m");
+                println!("  \x1b[2mTip: pkb task {first_id}  — show full details\x1b[0m");
             }
         }
 
@@ -565,7 +952,7 @@ fn main() -> Result<()> {
             );
         }
 
-        Commands::Reindex { force } => {
+        Commands::Reindex { force, sessions: _, threads: _, batch_size: _ } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
             let (indexed, removed, total) = index_pkb(&pkb_root, &db_path, store, embedder, force);
@@ -574,21 +961,52 @@ fn main() -> Result<()> {
             println!("✓ {total} documents ({indexed} indexed, {removed} removed)");
         }
 
+        Commands::BenchReindex {
+            count,
+            sessions: _,
+            threads: _,
+            batch_size: _,
+            force,
+        } => {
+            let embedder = embedder.as_ref().unwrap();
+            let store = store.as_ref().unwrap();
+            bench_reindex(&pkb_root, &db_path, store, embedder, count, force)?;
+        }
+
         Commands::Status => {
+            let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
             let s = store.read();
             let total = s.len();
             let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
-            println!("PKB root:  {}", pkb_root.display());
-            println!("DB path:   {}", db_path.display());
-            println!("Documents: {total}");
-            println!("DB size:   {:.1} MB", db_size as f64 / 1_048_576.0);
+            println!("PKB root:    {}", pkb_root.display());
+            println!("DB path:     {}", db_path.display());
+            println!("Embeddings:  BGE-M3 ONNX ({}-dim)", embedder.dimension());
+            println!("Documents:   {total}");
+            println!("DB size:     {:.1} MB", db_size as f64 / 1_048_576.0);
+
+            // Index freshness
+            let num_stale_documents = mem::check_index_staleness(&pkb_root, &store);
+            if num_stale_documents > 0 {
+                println!("Index:       {}⚠ stale — {} document(s) need re-indexing{}", colors::YELLOW, num_stale_documents, colors::RESET);
+            } else {
+                println!("Index:       {}✓ fresh{}", colors::GREEN, colors::RESET);
+            }
+
+            // Graph stats
+            let gs = load_graph(&pkb_root, &db_path);
+            println!("Graph:       {} nodes, {} edges", gs.node_count(), gs.edge_count());
+
+            let ready = gs.ready_tasks().len();
+            let blocked = gs.blocked_tasks().len();
+            let all = gs.all_tasks().len();
+            println!("Tasks:       {} open ({} ready, {} blocked)", all, ready, blocked);
         }
 
         Commands::Tasks {
             filter,
-            project,
+            project: _,
             flat,
             sort,
         } => {
@@ -600,17 +1018,8 @@ fn main() -> Result<()> {
                 TaskFilter::Ready => gs.ready_tasks(),
             };
 
-            // Filter by project
-            let mut tasks: Vec<&graph::GraphNode> = if let Some(ref proj) = project {
-                tasks
-                    .into_iter()
-                    .filter(|t| t.project.as_deref() == Some(proj))
-                    .collect()
-            } else {
-                tasks
-            };
-
             // Apply --sort if specified
+            let mut tasks: Vec<&graph::GraphNode> = tasks;
             if let Some(ref sort_key) = sort {
                 match sort_key.as_str() {
                     "weight" => {
@@ -695,7 +1104,7 @@ fn main() -> Result<()> {
                 );
             } else {
                 // ── Tree view (default) ──
-                use std::collections::{HashMap, HashSet};
+                use std::collections::HashSet;
                 let width = term_width();
 
                 // Build set of visible task IDs for filtering
@@ -734,23 +1143,6 @@ fn main() -> Result<()> {
                     visible.insert(cid.as_str());
                 }
 
-                // Group by project
-                let mut by_proj: HashMap<&str, Vec<&graph::GraphNode>> = HashMap::new();
-                for task in &tasks {
-                    let proj = task.project.as_deref().unwrap_or("_no_project");
-                    by_proj.entry(proj).or_default().push(task);
-                }
-
-                let mut proj_names: Vec<&str> = by_proj.keys().copied().collect();
-                proj_names.sort_by(|a, b| {
-                    if *a == "_no_project" {
-                        std::cmp::Ordering::Greater
-                    } else if *b == "_no_project" {
-                        std::cmp::Ordering::Less
-                    } else {
-                        a.cmp(b)
-                    }
-                });
 
                 // Sort siblings — context nodes first, then tasks by priority/weight
                 fn sort_siblings(nodes: &mut [&graph::GraphNode], context_ids: &HashSet<String>) {
@@ -846,7 +1238,7 @@ fn main() -> Result<()> {
                 print_dashboard(&tasks, &filter);
 
                 // ── Focus picks (only for default ready view) ──
-                if matches!(filter, TaskFilter::Ready) && project.is_none() {
+                if matches!(filter, TaskFilter::Ready) {
                     let picks = select_focus_picks(&tasks, 5);
                     if !picks.is_empty() {
                         println!();
@@ -869,88 +1261,42 @@ fn main() -> Result<()> {
                     }
                 }
 
-                // ── Project trees ──
-                let mut total = 0;
+                // ── Task tree ──
+                let total = tasks.len();
                 println!();
-                for (pi, proj_name) in proj_names.iter().enumerate() {
-                    let proj_tasks = by_proj.get(proj_name).unwrap();
-                    let count = proj_tasks.len();
-                    total += count;
 
-                    let proj_task_ids: HashSet<&str> =
-                        proj_tasks.iter().map(|t| t.id.as_str()).collect();
+                let mut roots: Vec<&graph::GraphNode> = visible
+                    .iter()
+                    .filter_map(|id| gs.get_node(id))
+                    .filter(|n| match &n.parent {
+                        None => true,
+                        Some(pid) => !visible.contains(pid.as_str()),
+                    })
+                    .collect();
+                sort_siblings(&mut roots, &context_ids);
 
-                    let proj_context: HashSet<&str> = context_ids
-                        .iter()
-                        .filter(|cid| {
-                            gs.get_node(cid)
-                                .map(|n| n.project.as_deref() == proj_tasks[0].project.as_deref())
-                                .unwrap_or(false)
-                        })
-                        .map(|s| s.as_str())
-                        .collect();
-
-                    let proj_visible: HashSet<&str> = proj_task_ids
-                        .iter()
-                        .chain(proj_context.iter())
-                        .copied()
-                        .collect();
-
-                    let mut roots: Vec<&graph::GraphNode> = proj_visible
-                        .iter()
-                        .filter_map(|id| gs.get_node(id))
-                        .filter(|n| match &n.parent {
-                            None => true,
-                            Some(pid) => !proj_visible.contains(pid.as_str()),
-                        })
-                        .collect();
-                    sort_siblings(&mut roots, &context_ids);
-
-                    // Project header
-                    let display_name = if *proj_name == "_no_project" {
-                        "ungrouped"
-                    } else {
-                        proj_name
-                    };
-                    println!(
-                        "  {}{}{} {}({} {}){}",
-                        colors::BOLD_CYAN,
-                        display_name,
-                        colors::RESET,
-                        colors::DIM,
-                        count,
-                        filter,
-                        colors::RESET
+                let mut lines: Vec<String> = Vec::new();
+                for (i, root) in roots.iter().enumerate() {
+                    let is_last = i == roots.len() - 1;
+                    render_tree(
+                        &gs,
+                        root,
+                        &visible,
+                        &context_ids,
+                        "",
+                        is_last,
+                        &mut lines,
+                        width,
                     );
-
-                    let mut lines: Vec<String> = Vec::new();
-                    for (i, root) in roots.iter().enumerate() {
-                        let is_last = i == roots.len() - 1;
-                        render_tree(
-                            &gs,
-                            root,
-                            &proj_visible,
-                            &context_ids,
-                            "",
-                            is_last,
-                            &mut lines,
-                            width,
-                        );
-                    }
-                    for line in &lines {
-                        println!("{line}");
-                    }
-
-                    if pi < proj_names.len() - 1 {
-                        println!();
-                    }
+                }
+                for line in &lines {
+                    println!("{line}");
                 }
                 println!(
-                    "\n  {}{} {} tasks across {} projects{}",
+                    "\n  {}{} {} tasks{}",
                     colors::DIM,
                     total,
                     filter,
-                    proj_names.len(),
                     colors::RESET
                 );
             }
@@ -998,9 +1344,6 @@ fn main() -> Result<()> {
                     if let Some(p) = node.priority {
                         println!("  Priority: {p}");
                     }
-                    if let Some(ref proj) = node.project {
-                        println!("  Project:  {proj}");
-                    }
                     if let Some(ref due) = node.due {
                         println!("  Due:      {due}");
                     }
@@ -1021,10 +1364,15 @@ fn main() -> Result<()> {
                         println!("    {line}");
                     }
 
-                    // --- Parent Chain ---
+                    // --- Parent Chain (with cycle detection) ---
                     let mut parents = Vec::new();
                     let mut curr = node.parent.as_deref();
+                    let mut visited = std::collections::HashSet::new();
+                    visited.insert(node.id.clone());
                     while let Some(pid) = curr {
+                        if !visited.insert(pid.to_string()) {
+                            break; // cycle detected
+                        }
                         if let Some(p) = gs.get_node(pid) {
                             parents.push(format!("{} ({})", p.label, pid));
                             curr = p.parent.as_deref();
@@ -1076,7 +1424,7 @@ fn main() -> Result<()> {
                     // Navigation hints
                     let node_id = node.task_id.as_deref().unwrap_or(&node.id);
                     println!();
-                    println!("  \x1b[2mTip: aops context {node_id}  — show full knowledge neighbourhood\x1b[0m");
+                    println!("  \x1b[2mTip: pkb context {node_id}  — show full knowledge neighbourhood\x1b[0m");
                 }
                 None => {
                     eprintln!("Document not found: {id}");
@@ -1149,26 +1497,81 @@ fn main() -> Result<()> {
                     }
                 }
                 None => {
-                    // Summary: top 10 by pagerank
                     let pr = metrics::compute_pagerank(&node_ids, edges);
-                    let mut ranked: Vec<_> = pr.iter().collect();
-                    ranked
-                        .sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    let bc = metrics::compute_betweenness_centrality(&node_ids, edges);
+                    let degrees = metrics::compute_degrees(&node_ids, edges);
 
-                    println!();
-                    println!("  \x1b[1m{:<30} {:>10}\x1b[0m", "NODE", "PAGERANK");
-                    println!("  {}", "-".repeat(42));
-
-                    for (id, score) in ranked.iter().take(20) {
-                        let label = gs.get_node(id).map(|n| n.label.as_str()).unwrap_or("?");
-                        let display = if label.len() > 28 {
-                            format!("{}...", &label[..25])
+                    let trunc = |s: &str, max: usize| -> String {
+                        if s.chars().count() > max {
+                            let t: String = s.chars().take(max - 3).collect();
+                            format!("{}...", t)
                         } else {
-                            label.to_string()
-                        };
-                        println!("  {:<30} {:>10.4}", display, score);
-                    }
-                    println!("\n  {} nodes, {} edges", gs.node_count(), gs.edge_count());
+                            s.to_string()
+                        }
+                    };
+
+                    // Helper: print a centrality table (top 15 nodes)
+                    let print_centrality = |title: &str,
+                                            primary_hdr: &str,
+                                            secondary_hdr: &str,
+                                            primary: &std::collections::HashMap<String, f64>,
+                                            secondary: &std::collections::HashMap<String, f64>| {
+                        let mut sorted: Vec<_> = primary.iter().collect();
+                        sorted.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+                        println!();
+                        println!("  \x1b[1m=== Top 15 by {} ===\x1b[0m", title);
+                        println!("  {:<35} {:>8} {:>8} {:>6} {:>6}", "NODE", primary_hdr, secondary_hdr, "IN", "OUT");
+                        println!("  {}", "-".repeat(67));
+                        for (id, score) in sorted.iter().take(15) {
+                            let id_str: &str = id;
+                            let label = gs.get_node(id_str).map(|n| n.label.as_str()).unwrap_or("?");
+                            let sec = secondary.get(id_str).copied().unwrap_or(0.0);
+                            let (ind, outd) = degrees.get(id_str).copied().unwrap_or((0, 0));
+                            println!("  {:<35} {:>8.4} {:>8.4} {:>6} {:>6}", trunc(label, 35), score, sec, ind, outd);
+                        }
+                    };
+
+                    print_centrality("PageRank", "PAGERANK", "BETWEEN", &pr, &bc);
+                    print_centrality("Betweenness", "BETWEEN", "PAGERANK", &bc, &pr);
+
+                    // Helper: print a ready-tasks table (top 20)
+                    let print_ready = |title: &str, nodes: &[&graph::GraphNode]| {
+                        println!();
+                        println!("  \x1b[1m=== Top 20 {} ===\x1b[0m", title);
+                        println!("  {:<35} {:>4} {:>6} {:>8} {:>8}", "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN");
+                        println!("  {}", "-".repeat(65));
+                        for node in nodes.iter().take(20) {
+                            let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
+                            let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
+                            let exposure = if node.stakeholder_exposure { "!" } else { "" };
+                            println!("  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
+                                trunc(&node.label, 35),
+                                node.priority.unwrap_or(2),
+                                node.downstream_weight,
+                                exposure,
+                                p, b);
+                        }
+                    };
+
+                    let mut ready_nodes = gs.ready_tasks();
+                    ready_nodes.sort_by(|a, b| {
+                        b.downstream_weight.partial_cmp(&a.downstream_weight)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    print_ready("Ready Tasks by Downstream Weight", &ready_nodes);
+
+                    let mut ready_by_pr: Vec<_> = ready_nodes.iter()
+                        .map(|node| {
+                            let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
+                            (*node, p)
+                        })
+                        .collect();
+                    ready_by_pr.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    let sorted_by_pr: Vec<_> = ready_by_pr.iter().map(|(n, _)| *n).collect();
+                    print_ready("Ready Tasks by PageRank", &sorted_by_pr);
+
+                    println!("\n  {} nodes, {} edges, {} ready tasks",
+                        gs.node_count(), gs.edge_count(), ready_nodes.len());
                     println!();
                 }
             }
@@ -1178,7 +1581,7 @@ fn main() -> Result<()> {
             title,
             parent,
             priority,
-            project,
+            project: _,
             tags,
             depends_on,
             assignee,
@@ -1195,7 +1598,6 @@ fn main() -> Result<()> {
                 title: title_str,
                 parent,
                 priority,
-                project,
                 tags: tags.unwrap_or_default(),
                 depends_on: depends_on.unwrap_or_default(),
                 assignee,
@@ -1223,6 +1625,39 @@ fn main() -> Result<()> {
             }
         }
 
+        Commands::Subtask {
+            parent_id,
+            title,
+            body,
+        } => {
+            let title_str = title.join(" ");
+            if title_str.is_empty() {
+                eprintln!("Error: title cannot be empty");
+                std::process::exit(1);
+            }
+
+            let fields = document_crud::SubtaskFields {
+                parent_id,
+                title: title_str,
+                body,
+            };
+
+            match document_crud::create_subtask(&pkb_root, fields) {
+                Ok(path) => {
+                    let id = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.display().to_string());
+                    println!("Created sub-task \x1b[1m{id}\x1b[0m");
+                    println!("  \x1b[2m{}\x1b[0m", path.display());
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
         Commands::Remember {
             title,
             doc_type,
@@ -1230,7 +1665,7 @@ fn main() -> Result<()> {
             status,
             priority,
             parent,
-            project,
+            project: _,
             source,
             body,
             dir,
@@ -1248,7 +1683,6 @@ fn main() -> Result<()> {
                 status,
                 priority,
                 parent,
-                project,
                 source,
                 body,
                 dir,
@@ -1420,7 +1854,7 @@ fn main() -> Result<()> {
                     }
 
                     if updates.is_empty() {
-                        eprintln!("No updates specified. Use --status, --priority, --project, --assignee, or --tags.");
+                        eprintln!("No updates specified. Use --status, --priority, --assignee, or --tags.");
                         std::process::exit(1);
                     }
 
@@ -1456,9 +1890,6 @@ fn main() -> Result<()> {
                     }
                     if let Some(p) = node.priority {
                         println!("  Priority: {p}");
-                    }
-                    if let Some(ref proj) = node.project {
-                        println!("  Project:  {proj}");
                     }
                     if let Some(ref due) = node.due {
                         println!("  Due:      {due}");
@@ -1593,7 +2024,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Orphans { node_type, project } => {
+        Commands::Orphans { node_type, project: _ } => {
             let gs = load_graph(&pkb_root, &db_path);
             let mut orphans = gs.orphans();
 
@@ -1604,10 +2035,6 @@ fn main() -> Result<()> {
                         .map(|nt| nt.eq_ignore_ascii_case(t))
                         .unwrap_or(false)
                 });
-            }
-
-            if let Some(ref proj) = project {
-                orphans.retain(|n| n.project.as_deref() == Some(proj.as_str()));
             }
 
             if orphans.is_empty() {
@@ -1624,7 +2051,7 @@ fn main() -> Result<()> {
 
             println!();
             println!(
-                "  \x1b[1m{} orphan nodes{type_desc}\x1b[0m (no incoming or outgoing edges)\n",
+                "  \x1b[1m{} orphan nodes{type_desc}\x1b[0m (no valid parent)\n",
                 orphans.len()
             );
 
@@ -1642,36 +2069,26 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Graph { format, output, no_layout } => {
-            let mut gs = load_graph(&pkb_root, &db_path);
-            if no_layout {
-                gs.strip_layout();
-            }
+        Commands::Graph { format, output } => {
+            let gs = load_graph(&pkb_root, &db_path);
 
             match format.to_lowercase().as_str() {
                 "all" => {
-                    let base = output.as_deref().unwrap_or("graph");
+                    let sessions_default = std::env::var("AOPS_SESSIONS").ok().map(|s| format!("{s}/graph"));
+                    let base = output.as_deref().unwrap_or_else(|| sessions_default.as_deref().unwrap_or("graph"));
                     let base = base
                         .trim_end_matches(".json")
-                        .trim_end_matches(".graphml")
-                        .trim_end_matches(".dot");
+                        .trim_end_matches(".graphml");
 
-                    let json_path = format!("{base}.json");
-                    std::fs::write(&json_path, gs.output_json()?)?;
-                    println!("  Saved {json_path}");
-
-                    let graphml_path = format!("{base}.graphml");
-                    std::fs::write(&graphml_path, gs.output_graphml())?;
-                    println!("  Saved {graphml_path}");
-
-                    let dot_path = format!("{base}.dot");
-                    std::fs::write(&dot_path, gs.output_dot())?;
-                    println!("  Saved {dot_path}");
-
+                    let written = gs.output_all_files(base)?;
+                    for path in &written {
+                        println!("  Saved {path}");
+                    }
                     println!(
-                        "Graph: {} nodes, {} edges (3 formats)",
+                        "Graph: {} nodes, {} edges ({} files)",
                         gs.node_count(),
                         gs.edge_count(),
+                        written.len(),
                     );
                 }
                 "mcp-index" => {
@@ -1692,13 +2109,8 @@ fn main() -> Result<()> {
                         None => print!("{json}"),
                     }
                 }
-                _ => {
-                    let content = match format.as_str() {
-                        "graphml" => gs.output_graphml(),
-                        "dot" => gs.output_dot(),
-                        _ => gs.output_json()?,
-                    };
-
+                "json" => {
+                    let content = gs.output_json()?;
                     match output {
                         Some(path) => {
                             std::fs::write(&path, &content)?;
@@ -1711,6 +2123,25 @@ fn main() -> Result<()> {
                         }
                         None => print!("{content}"),
                     }
+                }
+                "graphml" => {
+                    let content = gs.output_graphml();
+                    match output {
+                        Some(path) => {
+                            std::fs::write(&path, &content)?;
+                            println!(
+                                "Graph: {} nodes, {} edges -> {}",
+                                gs.node_count(),
+                                gs.edge_count(),
+                                path
+                            );
+                        }
+                        None => print!("{content}"),
+                    }
+                }
+                other => {
+                    eprintln!("Unknown format: {other}. Use: all, json, graphml, mcp-index");
+                    std::process::exit(1);
                 }
             }
         }
@@ -1825,7 +2256,7 @@ fn main() -> Result<()> {
                 Some(ref tags_list) => {
                     // Search for documents with these tags
                     let s = store.read();
-                    let all = s.list_documents(None, doc_type.as_deref(), None, None, &pkb_root);
+                    let all = s.list_documents(None, doc_type.as_deref(), None, &pkb_root);
                     let matching: Vec<_> = all
                         .into_iter()
                         .filter(|r| {
@@ -1884,7 +2315,7 @@ fn main() -> Result<()> {
                             "Not a memory document: {id} (type: {})",
                             node.node_type.as_deref().unwrap_or("unknown")
                         );
-                        eprintln!("Use 'aops delete' for non-memory documents.");
+                        eprintln!("Use 'pkb delete' for non-memory documents.");
                         std::process::exit(1);
                     }
 
@@ -1922,7 +2353,7 @@ fn main() -> Result<()> {
             let memory_types = ["memory", "note", "insight", "observation"];
 
             let s = store.read();
-            let all = s.list_documents(None, None, None, None, &pkb_root);
+            let all = s.list_documents(None, None, None, &pkb_root);
             let mut memories: Vec<_> = all
                 .into_iter()
                 .filter(|r| {
@@ -1966,7 +2397,7 @@ fn main() -> Result<()> {
             println!("  {} memories", memories.len());
         }
 
-        Commands::Blocks { id, tree } => {
+        Commands::Blocks { id, tree: _ } => {
             let gs = load_graph(&pkb_root, &db_path);
 
             if gs.get_node(&id).is_none() {
@@ -1982,11 +2413,7 @@ fn main() -> Result<()> {
 
             println!();
             for (blocked_id, depth) in &blocks {
-                let indent = if tree {
-                    "  ".repeat(*depth)
-                } else {
-                    "  ".to_string()
-                };
+                let indent = "  ".repeat(*depth);
                 let label = gs
                     .get_node(blocked_id)
                     .map(|n| n.label.as_str())
@@ -2000,8 +2427,604 @@ fn main() -> Result<()> {
             println!();
         }
 
-        Commands::Tui => {
+        Commands::RenameId { old, new } => {
+            let (files, refs) = lint::rename_id(&pkb_root, &old, &new)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!("Renamed '{}' → '{}': {} files modified, {} references updated", old, new, files, refs);
+        }
+
+        Commands::MergeNode { canonical_id, source_ids, dry_run } => {
+            let summary = document_crud::merge_node(&pkb_root, &source_ids, &canonical_id, dry_run)?;
+            if dry_run {
+                println!(
+                    "Dry run — merge '{}' → '{}':",
+                    source_ids.join(", "), canonical_id
+                );
+                println!("  {} files would be updated", summary.files_updated);
+                println!("  {} references would be redirected", summary.refs_redirected);
+                println!("  {} node(s) would be archived", summary.nodes_archived);
+            } else {
+                println!(
+                    "Merged '{}' → '{}':",
+                    source_ids.join(", "), canonical_id
+                );
+                println!("  {} files updated", summary.files_updated);
+                println!("  {} references redirected", summary.refs_redirected);
+                println!("  {} node(s) archived", summary.nodes_archived);
+            }
+        }
+
+        Commands::Lint {
+            files,
+            fix,
+            refs,
+            errors_only,
+            format,
+        } => {
+            let start = std::time::Instant::now();
+
+            let (results, summary) = if files.is_empty() {
+                // Lint entire PKB
+                lint::lint_directory(&pkb_root, fix, refs)
+            } else {
+                // Lint specific files
+                let known_ids = None; // single-file mode skips ref checks
+                let results: Vec<lint::FileResult> = files
+                    .iter()
+                    .map(|f| lint::lint_file(f, fix, known_ids.as_ref(), None))
+                    .collect();
+                let summary = lint::LintSummary::from_results(&results);
+                (results, summary)
+            };
+
+            // Write fixes
+            if fix {
+                let written = lint::write_fixes(&results);
+                if written > 0 {
+                    eprintln!("Fixed {} files", written);
+                }
+            }
+
+            let elapsed = start.elapsed();
+
+            if format == "json" {
+                // JSON output for tooling integration
+                let json_results: Vec<serde_json::Value> = results
+                    .iter()
+                    .filter(|r| !r.diagnostics.is_empty())
+                    .map(|r| {
+                        serde_json::json!({
+                            "file": r.path.display().to_string(),
+                            "diagnostics": r.diagnostics.iter()
+                                .filter(|d| !errors_only || d.severity == lint::Severity::Error)
+                                .map(|d| serde_json::json!({
+                                    "severity": d.severity.to_string(),
+                                    "rule": d.rule,
+                                    "message": d.message,
+                                    "line": d.line,
+                                    "fixable": d.fixable,
+                                }))
+                                .collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&json_results)?);
+            } else {
+                // Human-readable text output
+                for r in &results {
+                    let diags: Vec<&lint::Diagnostic> = r
+                        .diagnostics
+                        .iter()
+                        .filter(|d| !errors_only || d.severity == lint::Severity::Error)
+                        .collect();
+                    if diags.is_empty() {
+                        continue;
+                    }
+
+                    let rel_path = r
+                        .path
+                        .strip_prefix(&pkb_root)
+                        .unwrap_or(&r.path);
+                    println!("\x1b[1m{}\x1b[0m", rel_path.display());
+                    for d in &diags {
+                        let color = match d.severity {
+                            lint::Severity::Error => "\x1b[31m",   // red
+                            lint::Severity::Warning => "\x1b[33m", // yellow
+                            lint::Severity::Style => "\x1b[36m",   // cyan
+                        };
+                        let fix_mark = if d.fixable { " [fixable]" } else { "" };
+                        if let Some(line) = d.line {
+                            println!(
+                                "  {}{}:{}\x1b[0m {} {}{fix_mark}",
+                                color, d.severity, line, d.rule, d.message
+                            );
+                        } else {
+                            println!(
+                                "  {}{}\x1b[0m {} {}{fix_mark}",
+                                color, d.severity, d.rule, d.message
+                            );
+                        }
+                    }
+                    println!();
+                }
+
+                // Summary line
+                eprintln!(
+                    "Checked {} files in {:.1}s — {} errors, {} warnings, {} style ({} files with issues)",
+                    summary.files_checked,
+                    elapsed.as_secs_f64(),
+                    summary.errors,
+                    summary.warnings,
+                    summary.style,
+                    summary.files_with_issues,
+                );
+            }
+
+            // Exit with non-zero if there are errors
+            if summary.errors > 0 {
+                std::process::exit(1);
+            }
+        }
+
+        Commands::Eval { top_k } => {
+            let embedder = embedder.as_ref().unwrap();
+            let store = store.as_ref().unwrap();
+            let store_read = store.read();
+
+            // Golden queries — representative searches that LLMs commonly make
+            let queries = vec![
+                eval::GoldenQuery {
+                    query: "semantic chunking paragraph-level embedding",
+                    expected_hits: vec!["mem-d1435767"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                eval::GoldenQuery {
+                    query: "PKB search evaluation metrics quality",
+                    expected_hits: vec!["mem-958bc6b2"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                eval::GoldenQuery {
+                    query: "reindex startup performance timeout",
+                    expected_hits: vec!["aops-1caa3b2f"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                eval::GoldenQuery {
+                    query: "TUI keyboard shortcut keybinding",
+                    expected_hits: vec!["mem-a54c550f"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                eval::GoldenQuery {
+                    query: "claim task atomic locking concurrency",
+                    expected_hits: vec!["mem-7cbb684e"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                // Entity queries
+                eval::GoldenQuery {
+                    query: "Nicolas Suzor research interests",
+                    expected_hits: vec!["Nic Suzor"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                eval::GoldenQuery {
+                    query: "Oversight Board Suzor",
+                    expected_hits: vec!["osb-edcb04e8"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                // Technical exact-match queries
+                eval::GoldenQuery {
+                    query: "BGE-M3 embedding model ONNX quantization",
+                    expected_hits: vec!["task-cbc9ee38"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                eval::GoldenQuery {
+                    query: "ratatui crossterm event loop",
+                    expected_hits: vec!["aops-tui-epic-c9be7f5e"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                // Conceptual/semantic bridge queries
+                eval::GoldenQuery {
+                    query: "fail-fast philosophy",
+                    expected_hits: vec!["aops-f2c06247"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                eval::GoldenQuery {
+                    query: "how documents reference each other wikilinks",
+                    expected_hits: vec!["aops-tui-phase2-d29538f9"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                // Workflow queries
+                eval::GoldenQuery {
+                    query: "daily note template structure briefing",
+                    expected_hits: vec!["academicOps-d1d56ab6"],
+                    expected_misses: vec![],
+                    max_rank: 5,
+                },
+                // Archive noise detection
+                eval::GoldenQuery {
+                    query: "how do agents handle errors",
+                    expected_hits: vec!["aops-f2c06247"],
+                    expected_misses: vec!["MADUGALLA", "Dectection of Interpretive"],
+                    max_rank: 5,
+                },
+            ];
+
+            let summary = eval::evaluate(&store_read, embedder, &queries, &pkb_root, top_k);
+            print!("{}", eval::format_report(&summary, "current index"));
+        }
+
+        Commands::Dash => {
             tui::run(&pkb_root, &db_path)?;
+        }
+
+        Commands::Batch(batch_cmd) => {
+            let graph = load_graph(&pkb_root, &db_path);
+            handle_batch_command(batch_cmd, &graph, &pkb_root)?;
+        }
+
+        Commands::GraphStats { project: _ } => {
+            let graph = load_graph(&pkb_root, &db_path);
+            let stats = mem::batch_ops::stats::graph_stats(&graph);
+            print!("{}", stats.display());
+        }
+
+        Commands::Duplicates {
+            project: _,
+            mode,
+            title_threshold,
+            semantic_threshold,
+            limit,
+        } => {
+            let graph = load_graph(&pkb_root, &db_path);
+            let store = load_store(&db_path, embeddings::EMBEDDING_DIM)?;
+
+            let filters = mem::batch_ops::filters::FilterSet::default();
+
+            let dup_mode = mem::batch_ops::duplicates::DuplicateMode::from_str(&mode);
+            let report = mem::batch_ops::duplicates::find_duplicates(
+                &graph,
+                &store.read(),
+                &filters,
+                dup_mode,
+                title_threshold,
+                semantic_threshold,
+            );
+
+            if report.clusters.is_empty() {
+                println!("No duplicates found.");
+            } else {
+                println!(
+                    "Found {} duplicate clusters ({} total duplicates)\n",
+                    report.total_clusters, report.total_duplicates
+                );
+                for (i, cluster) in report.clusters.iter().take(limit).enumerate() {
+                    println!(
+                        "Cluster {} (confidence: {:.2}, title: {:.2}, semantic: {:.2}):",
+                        i + 1,
+                        cluster.confidence,
+                        cluster.similarity_scores.title,
+                        cluster.similarity_scores.semantic,
+                    );
+                    for task in &cluster.tasks {
+                        let marker = if task.id == cluster.canonical {
+                            "★"
+                        } else {
+                            " "
+                        };
+                        println!("  {marker} {:<24} {}", task.id, task.title);
+                    }
+                    println!();
+                }
+            }
+        }
+
+        Commands::Mcp { http, port, host } => {
+            let embedder = embedder.unwrap();
+            let store = store.unwrap();
+
+            eprintln!("🔍 PKB Search MCP Server starting...");
+            eprintln!("   PKB root: {}", pkb_root.display());
+            eprintln!("   DB path:  {}", db_path.display());
+
+            // Check index freshness
+            eprintln!("   Checking index freshness...");
+            let stale_count = mem::check_index_staleness(&pkb_root, &store);
+            let total = store.read().len();
+            if stale_count > 0 {
+                eprintln!("   ⚠ Index is stale: {stale_count} document(s) need re-indexing.");
+                eprintln!("   Run `pkb reindex` to update the search index.");
+            } else {
+                eprintln!("   ✓ Index is fresh ({total} documents)");
+            }
+
+            // Build graph store
+            eprintln!("   Building knowledge graph...");
+            let graph_store = graph_store::GraphStore::build_from_directory(&pkb_root);
+            let graph = Arc::new(RwLock::new(graph_store));
+            eprintln!(
+                "   {} nodes, {} edges",
+                graph.read().node_count(),
+                graph.read().edge_count()
+            );
+
+            // Create MCP server
+            let server = mcp_server::PkbSearchServer::new(
+                store,
+                embedder,
+                pkb_root.clone(),
+                db_path.clone(),
+                graph,
+            )
+            .with_stale_count(stale_count);
+
+            if http {
+                // HTTP/SSE mode
+                use rmcp::transport::streamable_http_server::{
+                    session::local::LocalSessionManager,
+                    StreamableHttpServerConfig, StreamableHttpService,
+                };
+
+                let ct = tokio_util::sync::CancellationToken::new();
+                let config = StreamableHttpServerConfig::default()
+                    .with_sse_keep_alive(Some(std::time::Duration::from_secs(30)))
+                    .with_stateful_mode(true)
+                    .with_cancellation_token(ct.clone());
+
+                let session_manager = std::sync::Arc::new(LocalSessionManager::default());
+
+                let mcp_service = StreamableHttpService::new(
+                    move || Ok(server.clone()),
+                    session_manager,
+                    config,
+                );
+
+                let app = axum::Router::new()
+                    .route("/mcp", axum::routing::any_service(mcp_service));
+
+                let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
+                eprintln!("   Starting MCP HTTP/SSE server on http://{addr}/mcp");
+
+                let listener = tokio::net::TcpListener::bind(addr).await?;
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async move { ct.cancelled().await })
+                    .await?;
+                eprintln!("   ✓ Shutdown complete");
+            } else {
+                // Stdio mode (existing)
+                eprintln!("   Starting MCP server on stdio...");
+                let service = server.serve(rmcp::transport::stdio()).await?;
+                eprintln!("   ✓ MCP server ready");
+
+                // Wait for client to disconnect
+                service.waiting().await?;
+                eprintln!("   ✓ Shutdown complete");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert CLI filter args to a FilterSet.
+fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
+    mem::batch_ops::filters::FilterSet {
+        ids: args.ids.clone(),
+        parent: args.parent.clone(),
+        subtree: args.subtree.clone(),
+        status: args.status.clone(),
+        priority: args.priority,
+        priority_gte: args.priority_gte,
+        tags: args.tags.clone(),
+        doc_type: args.doc_type.clone(),
+        older_than_days: args.older_than.as_ref().and_then(parse_duration_days),
+        stale_days: args.stale.as_ref().and_then(parse_duration_days),
+        orphan: if args.orphan { Some(true) } else { None },
+        title_contains: args.title_contains.clone(),
+        complexity: args.complexity.clone(),
+        directory: args.directory.clone(),
+        weight_gte: args.weight_gte,
+    }
+}
+
+/// Parse duration like "90d" into days.
+fn parse_duration_days(s: &String) -> Option<u64> {
+    let s = s.trim();
+    if s.ends_with('d') {
+        s[..s.len() - 1].parse().ok()
+    } else {
+        s.parse().ok()
+    }
+}
+
+/// Handle batch subcommands.
+fn handle_batch_command(
+    cmd: BatchCommands,
+    graph: &graph_store::GraphStore,
+    pkb_root: &std::path::Path,
+) -> Result<()> {
+    match cmd {
+        BatchCommands::Update {
+            set_fields,
+            unset_fields,
+            add_tags,
+            remove_tags,
+            dry_run,
+            yes: _,
+            filters,
+        } => {
+            let filter_set = to_filter_set(&filters);
+            if filter_set.is_empty() {
+                eprintln!("Error: at least one filter is required for batch update");
+                std::process::exit(1);
+            }
+
+            // Build updates JSON
+            let mut updates = serde_json::Map::new();
+            if let Some(set_fields) = set_fields {
+                for field in set_fields {
+                    if let Some((key, value)) = field.split_once('=') {
+                        // Try to parse as number or bool, fall back to string
+                        let json_val = if let Ok(n) = value.parse::<i64>() {
+                            serde_json::Value::Number(n.into())
+                        } else if value == "true" {
+                            serde_json::Value::Bool(true)
+                        } else if value == "false" {
+                            serde_json::Value::Bool(false)
+                        } else {
+                            serde_json::Value::String(value.to_string())
+                        };
+                        updates.insert(key.to_string(), json_val);
+                    } else {
+                        eprintln!("Warning: ignoring malformed --set: {field}");
+                    }
+                }
+            }
+            if let Some(unset_fields) = unset_fields {
+                for field in unset_fields {
+                    updates.insert(field, serde_json::Value::Null);
+                }
+            }
+            if let Some(tags) = add_tags {
+                updates.insert(
+                    "_add_tags".to_string(),
+                    serde_json::Value::Array(tags.into_iter().map(serde_json::Value::String).collect()),
+                );
+            }
+            if let Some(tags) = remove_tags {
+                updates.insert(
+                    "_remove_tags".to_string(),
+                    serde_json::Value::Array(tags.into_iter().map(serde_json::Value::String).collect()),
+                );
+            }
+
+            if updates.is_empty() {
+                eprintln!("Error: no updates specified (use --set, --unset, --add-tag, or --remove-tag)");
+                std::process::exit(1);
+            }
+
+            let updates_val = serde_json::Value::Object(updates);
+            let summary = mem::batch_ops::update::batch_update(graph, pkb_root, &filter_set, &updates_val, dry_run);
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::Reparent {
+            new_parent,
+            no_cascade: _,
+            dry_run,
+            yes: _,
+            filters,
+        } => {
+            let filter_set = to_filter_set(&filters);
+            if filter_set.is_empty() {
+                eprintln!("Error: at least one filter is required for batch reparent");
+                std::process::exit(1);
+            }
+
+            let summary = mem::batch_ops::reparent::batch_reparent(
+                graph,
+                pkb_root,
+                &filter_set,
+                &new_parent,
+                dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::Archive {
+            execute,
+            reason,
+            yes: _,
+            filters,
+        } => {
+            let filter_set = to_filter_set(&filters);
+            if filter_set.is_empty() {
+                eprintln!("Error: at least one filter is required for batch archive");
+                std::process::exit(1);
+            }
+
+            let dry_run = !execute;
+            let summary = mem::batch_ops::update::batch_archive(
+                graph,
+                pkb_root,
+                &filter_set,
+                reason.as_deref(),
+                dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::Merge {
+            canonical,
+            merge,
+            dry_run,
+        } => {
+            if merge.is_empty() {
+                eprintln!("Error: at least one --merge ID is required");
+                std::process::exit(1);
+            }
+            let summary = mem::batch_ops::duplicates::batch_merge(
+                graph, pkb_root, &canonical, &merge, dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::CreateEpics {
+            from,
+            parent,
+            project: _,
+            dry_run,
+        } => {
+            let content = std::fs::read_to_string(&from)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error reading {from}: {e}");
+                    std::process::exit(1);
+                });
+
+            #[derive(serde::Deserialize)]
+            struct EpicsFile {
+                #[serde(default)]
+                parent: Option<String>,
+                epics: Vec<mem::batch_ops::epics::EpicDef>,
+            }
+
+            let file: EpicsFile = serde_yaml::from_str(&content)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error parsing YAML: {e}");
+                    std::process::exit(1);
+                });
+
+            // CLI args override file-level defaults
+            let parent = parent.as_deref().or(file.parent.as_deref());
+
+            let summary = mem::batch_ops::epics::batch_create_epics(
+                graph, pkb_root, parent, &file.epics, dry_run,
+            );
+            print!("{}", summary.display());
+        }
+
+        BatchCommands::Reclassify {
+            new_type,
+            dry_run,
+            filters,
+        } => {
+            let filter_set = to_filter_set(&filters);
+            if filter_set.is_empty() {
+                eprintln!("Error: at least one filter is required for batch reclassify");
+                std::process::exit(1);
+            }
+            let summary = mem::batch_ops::reclassify::batch_reclassify(
+                graph, pkb_root, &filter_set, &new_type, dry_run,
+            );
+            print!("{}", summary.display());
         }
     }
 
@@ -2068,17 +3091,7 @@ fn index_pkb(
         return (0, removed, total);
     }
 
-    let pb = ProgressBar::new(to_process.len() as u64);
-    pb.set_style(
-        ProgressStyle::with_template(
-            "  {bar:30.cyan/dim} {pos}/{len} [{elapsed_precise}] {per_sec} {msg}",
-        )
-        .unwrap()
-        .progress_chars("━╸─"),
-    );
-
-    // Parse all files in parallel with rayon (relative paths for portable storage)
-    pb.set_message("parsing...");
+    // Parse all files in parallel (fast — no progress bar needed)
     let parsed: Vec<_> = to_process
         .par_iter()
         .filter_map(|path| {
@@ -2090,12 +3103,25 @@ fn index_pkb(
         })
         .collect();
 
-    // Batch embed and store — batches of 200 docs with progressive saves.
-    // 200 docs × ~3 chunks = ~600 chunks / 32 per sub-batch = ~19 sub-batches,
-    // enough to saturate all ONNX sessions across available cores.
+    let total_chunks: usize = parsed.iter().map(|(_, c)| c.len()).sum();
+    eprintln!("  {} chunks across {} docs", total_chunks, parsed.len());
+
+    // Embed and store — batches of 20 docs with progressive saves.
+    // Smaller batches give more granular progress and better recoverability.
+    let pb = ProgressBar::new(parsed.len() as u64);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "  {bar:30.cyan/dim} {pos}/{len} [{elapsed}<{eta}] {msg}",
+        )
+        .unwrap()
+        .progress_chars("━╸─"),
+    );
+    pb.set_message("embedding");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
     let mut indexed = 0;
 
-    for batch in parsed.chunks(200) {
+    for batch in parsed.chunks(20) {
         // Collect all chunks from this batch
         let mut all_chunks: Vec<&str> = Vec::new();
         let mut chunk_counts: Vec<usize> = Vec::new();
@@ -2107,7 +3133,6 @@ fn index_pkb(
             }
         }
 
-        pb.set_message("embedding...");
         match embedder.encode_batch(&all_chunks) {
             Ok(all_embeddings) => {
                 let mut emb_offset = 0;
@@ -2136,6 +3161,160 @@ fn index_pkb(
 
     let total = store.read().len();
     (indexed, removed, total)
+}
+
+/// Benchmark reindex: process a small number of stale (or random) docs with timing stats.
+fn bench_reindex(
+    pkb_root: &std::path::Path,
+    db_path: &std::path::Path,
+    store: &Arc<RwLock<vectordb::VectorStore>>,
+    embedder: &embeddings::Embedder,
+    count: usize,
+    force: bool,
+) -> anyhow::Result<()> {
+    use std::time::Instant;
+
+    let (eff_sessions, eff_threads, eff_batch) = embedder.effective_config();
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
+
+    println!("bench-reindex config:");
+    println!("  cpu cores:    {cores}");
+    println!("  sessions:     {eff_sessions}");
+    println!("  threads/sess: {eff_threads}");
+    println!("  batch size:   {eff_batch}");
+    println!("  docs to run:  {count}");
+    println!();
+
+    let files = pkb::scan_directory(pkb_root);
+
+    // Select documents to process
+    let to_process: Vec<_> = if force {
+        // Force mode: pick first N files (deterministic for reproducibility)
+        files.into_iter().take(count).collect()
+    } else {
+        // Normal mode: find stale files (single lock for all checks)
+        {
+            let s = store.read();
+            let mut stale = Vec::with_capacity(count);
+            for file_path in files {
+                if stale.len() >= count {
+                    break;
+                }
+                let path_str = file_path
+                    .strip_prefix(pkb_root)
+                    .unwrap_or(&file_path)
+                    .to_string_lossy()
+                    .to_string();
+                let content_hash = std::fs::read(&file_path)
+                    .ok()
+                    .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+                    .unwrap_or_default();
+                if s.needs_update(&path_str, &content_hash) {
+                    stale.push(file_path);
+                }
+            }
+            stale
+        }
+    };
+
+    if to_process.is_empty() {
+        println!("No stale documents found. Use --force to benchmark with up-to-date docs.");
+        return Ok(());
+    }
+
+    println!("Selected {} documents:", to_process.len());
+
+    // Parse
+    let parse_start = Instant::now();
+    let parsed: Vec<_> = to_process
+        .iter()
+        .filter_map(|path| {
+            pkb::parse_file_relative(path, pkb_root).map(|doc| {
+                let text = doc.embedding_text();
+                let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
+                (doc, chunks)
+            })
+        })
+        .collect();
+    let parse_elapsed = parse_start.elapsed();
+
+    let total_chunks: usize = parsed.iter().map(|(_, c)| c.len()).sum();
+    for (doc, chunks) in &parsed {
+        let rel = doc
+            .path
+            .strip_prefix(pkb_root)
+            .unwrap_or(&doc.path);
+        println!("  {} ({} chunks)", rel.display(), chunks.len());
+    }
+    println!();
+    println!("parse:   {:>8.1}ms  ({} docs, {} chunks)", parse_elapsed.as_secs_f64() * 1000.0, parsed.len(), total_chunks);
+
+    // Embed all chunks in a single batch (mirrors real reindex behavior)
+    let mut all_chunks: Vec<&str> = Vec::new();
+    let mut chunk_counts: Vec<usize> = Vec::new();
+    for (_doc, chunks) in &parsed {
+        chunk_counts.push(chunks.len());
+        for chunk in chunks {
+            all_chunks.push(chunk.as_str());
+        }
+    }
+
+    // Warmup: force session scaling + one inference to eliminate cold-start from timing
+    let warmup_start = Instant::now();
+    embedder.encode("warmup sentence for benchmarking")?;
+    let warmup_elapsed = warmup_start.elapsed();
+    println!("warmup:  {:>8.1}ms  (session init + 1 inference)", warmup_elapsed.as_secs_f64() * 1000.0);
+
+    let embed_start = Instant::now();
+    let all_embeddings = embedder.encode_batch(&all_chunks)?;
+    let embed_elapsed = embed_start.elapsed();
+
+    // Store results
+    let store_start = Instant::now();
+    let mut emb_offset = 0;
+    {
+        let mut s = store.write();
+        for (i, (doc, chunks)) in parsed.iter().enumerate() {
+            let c = chunk_counts[i];
+            let doc_embeddings = all_embeddings[emb_offset..emb_offset + c].to_vec();
+            emb_offset += c;
+            s.insert_precomputed(doc, chunks.clone(), doc_embeddings);
+        }
+    }
+    store.read().save(db_path)?;
+    let store_elapsed = store_start.elapsed();
+
+    let total_elapsed = parse_elapsed + embed_elapsed + store_elapsed;
+
+    // Stats
+    let embed_ms = embed_elapsed.as_secs_f64() * 1000.0;
+    let total_ms = total_elapsed.as_secs_f64() * 1000.0;
+    let docs_per_sec = if total_elapsed.as_secs_f64() > 0.0 {
+        parsed.len() as f64 / total_elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+    let chunks_per_sec = if embed_elapsed.as_secs_f64() > 0.0 {
+        total_chunks as f64 / embed_elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+    let ms_per_chunk = if total_chunks > 0 {
+        embed_ms / total_chunks as f64
+    } else {
+        0.0
+    };
+
+    println!("embed:   {:>8.1}ms  ({} chunks)", embed_ms, total_chunks);
+    println!("store:   {:>8.1}ms", store_elapsed.as_secs_f64() * 1000.0);
+    println!("total:   {:>8.1}ms", total_ms);
+    println!();
+    println!("throughput:");
+    println!("  {:.1} docs/s", docs_per_sec);
+    println!("  {:.1} chunks/s", chunks_per_sec);
+    println!("  {:.1} ms/chunk", ms_per_chunk);
+
+    Ok(())
 }
 
 /// Reconstruct an absolute path from a (possibly relative) node path.
@@ -2188,6 +3367,7 @@ mod colors {
     pub const P2: &str = "\x1b[36m"; // cyan
     pub const P3: &str = "\x1b[2m"; // dim
     pub const RED: &str = "\x1b[31m";
+    pub const GREEN: &str = "\x1b[32m";
     pub const YELLOW: &str = "\x1b[33m";
     pub const CYAN: &str = "\x1b[36m";
     pub const BOLD_CYAN: &str = "\x1b[1;36m";

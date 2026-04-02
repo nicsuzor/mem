@@ -5,7 +5,6 @@
 //! the various accessor methods.
 
 use crate::graph::{self, deduplicate_vec, Edge, EdgeType, GraphNode};
-use crate::layout;
 use crate::metrics;
 use crate::pkb::PkbDocument;
 use anyhow::Result;
@@ -26,10 +25,11 @@ pub struct OutputGraph {
     pub ready: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked: Vec<String>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub by_project: HashMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roots: Vec<String>,
+    /// Top focus picks: ready tasks ranked by priority + deadline + staleness + downstream weight.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub focus: Vec<String>,
 }
 
 // ===========================================================================
@@ -47,7 +47,6 @@ pub struct GraphStore {
     ready: Vec<String>,
     blocked: Vec<String>,
     roots: Vec<String>,
-    by_project: HashMap<String, Vec<String>>,
     /// Lowercase (id | filename stem | title | permalink) → canonical node ID
     resolution_map: HashMap<String, String>,
 }
@@ -56,6 +55,10 @@ pub struct GraphStore {
 pub const ACTIONABLE_TYPES: &[&str] = &[
     "task", "bug", "feature", "project", "goal", "epic", "learn", "subproject",
 ];
+
+/// Document types that represent claimable work items — leaf tasks a worker can actually do.
+/// Excludes containers (epic, project, goal, subproject) and observational types (learn).
+pub const CLAIMABLE_TYPES: &[&str] = &["task", "bug", "feature"];
 
 impl GraphStore {
     /// Build a complete graph from parsed PKB documents.
@@ -125,15 +128,25 @@ impl GraphStore {
         // 7. Compute downstream metrics (BFS through blocks/soft_blocks)
         compute_downstream_metrics(&mut nodes);
 
-        // 8. Compute force-directed layout (ForceAtlas2)
-        layout::compute_layout(&mut nodes, &edges);
+        // 8. Compute focus scores
+        Self::compute_focus_scores(&mut nodes);
 
-        // 9. Build node map and classify tasks
+        // 9. Compute project field (nearest ancestor with node_type == "project")
+        compute_project_field(&mut nodes);
+
+        // 9. Compute reachable set (upstream BFS from active leaves)
+        //    Mark nodes reachable from active leaves via BFS.
+        let reachable_set = find_reachable_set(&nodes, &edges);
+        for node in &mut nodes {
+            node.reachable = reachable_set.contains(&node.id);
+        }
+
+        // 10. Build node map and classify tasks
         let node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
-        let (ready, blocked, roots, by_project) = classify_tasks(&node_map);
+        let (ready, blocked, roots) = classify_tasks(&node_map);
 
-        // 8. Build resolution map for flexible node lookup
+        // 12. Build resolution map for flexible node lookup
         let resolution_map = build_resolution_map(&node_map);
 
         GraphStore {
@@ -142,8 +155,8 @@ impl GraphStore {
             ready,
             blocked,
             roots,
-            by_project,
             resolution_map,
+
         }
     }
 
@@ -157,12 +170,95 @@ impl GraphStore {
         Self::build(&docs, root)
     }
 
+    /// Rebuild graph from existing nodes (avoids re-scanning/re-parsing all files).
+    ///
+    /// Takes the current node map, rebuilds all edges, metrics, and indices.
+    /// Use after updating/inserting/removing a single node to avoid a full
+    /// directory walk.
+    pub fn rebuild_from_nodes(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
+        let mut nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
+
+        // Build lookup maps (same as build() steps 2-3)
+        let mut id_map: HashMap<String, String> = HashMap::new();
+        let mut path_to_id: HashMap<String, String> = HashMap::new();
+
+        for n in &nodes_vec {
+            let full_path = if n.path.is_absolute() {
+                n.path.clone()
+            } else {
+                pkb_root.join(&n.path)
+            };
+            let abs_path = full_path
+                .canonicalize()
+                .unwrap_or(full_path)
+                .to_string_lossy()
+                .to_string();
+            path_to_id.insert(abs_path.clone(), n.id.clone());
+            for key in &n.permalinks {
+                id_map.insert(key.clone(), abs_path.clone());
+            }
+        }
+
+        // Rebuild edges
+        let edges: Vec<Edge> = nodes_vec
+            .par_iter()
+            .flat_map(|n| build_node_edges(n, &id_map, &path_to_id, pkb_root))
+            .collect();
+
+        let mut seen: HashSet<(String, String, String)> = HashSet::new();
+        let edges: Vec<Edge> = edges
+            .into_iter()
+            .filter(|e| {
+                let key = (
+                    e.source.clone(),
+                    e.target.clone(),
+                    format!("{:?}", e.edge_type),
+                );
+                seen.insert(key)
+            })
+            .collect();
+
+        // Recompute all metrics (steps 4-9)
+        compute_inverses(&mut nodes_vec, &edges);
+        compute_degree_metrics(&mut nodes_vec, &edges);
+        compute_centrality_metrics(&mut nodes_vec, &edges);
+        compute_downstream_metrics(&mut nodes_vec);
+        Self::compute_focus_scores(&mut nodes_vec);
+        compute_project_field(&mut nodes_vec);
+
+        let reachable_set = find_reachable_set(&nodes_vec, &edges);
+        for node in &mut nodes_vec {
+            node.reachable = reachable_set.contains(&node.id);
+        }
+
+        let node_map: HashMap<String, GraphNode> =
+            nodes_vec.into_iter().map(|n| (n.id.clone(), n)).collect();
+        let (ready, blocked, roots) = classify_tasks(&node_map);
+        let resolution_map = build_resolution_map(&node_map);
+
+        GraphStore {
+            nodes: node_map,
+            edges,
+            ready,
+            blocked,
+            roots,
+            resolution_map,
+
+        }
+    }
+
+
     // -----------------------------------------------------------------------
     // Query API
     // -----------------------------------------------------------------------
 
     pub fn get_node(&self, id: &str) -> Option<&GraphNode> {
         self.nodes.get(id)
+    }
+
+    /// Clone the full node map (for incremental rebuilds).
+    pub fn nodes_cloned(&self) -> HashMap<String, GraphNode> {
+        self.nodes.clone()
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &GraphNode> {
@@ -250,10 +346,6 @@ impl GraphStore {
         &self.roots
     }
 
-    pub fn by_project(&self) -> &HashMap<String, Vec<String>> {
-        &self.by_project
-    }
-
     /// Get the dependency tree for a node (BFS through depends_on).
     /// Returns (node_id, depth) pairs.
     pub fn dependency_tree(&self, id: &str) -> Vec<(String, usize)> {
@@ -313,15 +405,40 @@ impl GraphStore {
     /// Resolve a query to a node using flexible matching.
     ///
     /// Tries (in order): exact ID → resolution map (case-insensitive match on
-    /// ID, task_id, filename stem, title, permalink).
+    /// ID, task_id, filename stem, title, permalink) → path-based fallbacks
+    /// (strip .md extension, extract filename stem from full paths).
     pub fn resolve(&self, query: &str) -> Option<&GraphNode> {
         // 1. Exact ID match
         if let Some(node) = self.nodes.get(query) {
             return Some(node);
         }
         // 2. Resolution map (case-insensitive)
-        if let Some(canonical_id) = self.resolution_map.get(&query.to_lowercase()) {
+        let lower = query.to_lowercase();
+        if let Some(canonical_id) = self.resolution_map.get(&lower) {
             return self.nodes.get(canonical_id);
+        }
+        // 3. Strip .md extension and retry
+        if let Some(stripped) = lower.strip_suffix(".md") {
+            if let Some(canonical_id) = self.resolution_map.get(stripped) {
+                return self.nodes.get(canonical_id);
+            }
+        }
+        // 4. Extract filename stem from path-like queries (e.g. "/abs/path/to/task-abc.md")
+        let as_path = std::path::Path::new(query);
+        if let Some(stem) = as_path.file_stem() {
+            let stem_lower = stem.to_string_lossy().to_lowercase();
+            if stem_lower != lower {
+                if let Some(canonical_id) = self.resolution_map.get(&stem_lower) {
+                    return self.nodes.get(canonical_id);
+                }
+            }
+        }
+        // 5. Match by absolute path directly against node paths
+        for node in self.nodes.values() {
+            let node_path_str = node.path.to_string_lossy();
+            if node_path_str == query || node_path_str.to_lowercase() == lower {
+                return Some(node);
+            }
         }
         None
     }
@@ -514,17 +631,17 @@ impl GraphStore {
     // Analysis tools
     // -----------------------------------------------------------------------
 
-    /// Find orphan nodes (nodes with zero edges — no incoming or outgoing).
+    /// Find orphan nodes (nodes with no valid parent).
+    ///
+    /// A node is an orphan if its `parent` field is either absent or references
+    /// an ID that doesn't exist in the graph.
     pub fn orphans(&self) -> Vec<&GraphNode> {
-        // Build set of all node IDs that appear in any edge
-        let mut connected: HashSet<&str> = HashSet::new();
-        for edge in &self.edges {
-            connected.insert(&edge.source);
-            connected.insert(&edge.target);
-        }
         self.nodes
             .values()
-            .filter(|n| !connected.contains(n.id.as_str()))
+            .filter(|n| match &n.parent {
+                None => true,
+                Some(pid) => !self.nodes.contains_key(pid.as_str()),
+            })
             .collect()
     }
 
@@ -589,35 +706,114 @@ impl GraphStore {
     // Output formats
     // -----------------------------------------------------------------------
 
-    /// Build an `OutputGraph` suitable for JSON/GraphML/DOT export.
-    pub fn to_output_graph(&self) -> OutputGraph {
+    /// Produce all export files. Returns list of written file paths.
+    pub fn output_all_files(&self, base: &str) -> Result<Vec<String>> {
+        let mut written = Vec::new();
+
+        // Full graph JSON (dashboard views compute layouts client-side)
+        let json_path = format!("{base}.json");
+        std::fs::write(&json_path, self.output_json()?)?;
+        written.push(json_path);
+
+        // GraphML
+        let graphml_path = format!("{base}.graphml");
+        std::fs::write(&graphml_path, self.output_graphml())?;
+        written.push(graphml_path);
+
+        Ok(written)
+    }
+
+/// Compute focus scores for all nodes.
+///
+/// Score based on priority, deadline urgency, staleness, and downstream weight.
+/// Results are stored in node.focus_score.
+fn compute_focus_scores(nodes: &mut [GraphNode]) {
+    let today = chrono::Utc::now().date_naive();
+    for node in nodes.iter_mut() {
+        let pri = node.priority.unwrap_or(2);
+        let mut score: i64 = match pri {
+            0 => 10000,
+            1 => 5000,
+            _ => 0,
+        };
+        if let Some(ref due) = node.due {
+            let len = std::cmp::min(10, due.len());
+            if let Ok(due_date) =
+                chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+            {
+                let days_until = (due_date - today).num_days();
+                if days_until < 0 {
+                    score += 8000;
+                } else if days_until <= 7 {
+                    score += 3000 + (7 - days_until) * 100;
+                } else if days_until <= 30 {
+                    score += 1000;
+                }
+            }
+        }
+        if pri >= 2 {
+            if let Some(ref created) = node.created {
+                if created.len() >= 10 {
+                    if let Ok(created_dt) =
+                        chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d")
+                    {
+                        let days = (today - created_dt).num_days();
+                        score += std::cmp::min(days.max(0), 200);
+                    }
+                }
+            }
+        }
+        score += (node.downstream_weight * 10.0) as i64;
+        node.focus_score = Some(score);
+    }
+}
+
+/// Compute focus picks: top ready tasks ranked by pre-computed focus_score.
+pub fn focus_picks(&self, max: usize) -> Vec<String> {
+    let mut scored: Vec<(&GraphNode, i64)> = self.ready
+        .iter()
+        .filter_map(|id| self.nodes.get(id))
+        .map(|t| (t, t.focus_score.unwrap_or(0)))
+        .collect();
+
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.into_iter().take(max).map(|(t, _)| t.id.clone()).collect()
+}
+
+    /// Full graph as JSON — all task nodes and their edges.
+    pub fn output_json(&self) -> Result<String> {
         let mut nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
         nodes.sort_by(|a, b| a.label.cmp(&b.label));
-        OutputGraph {
+        // Only include nodes with explicit task_id (real tasks, not bare notes)
+        nodes.retain(|n| n.task_id.is_some());
+        let placed_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        let edges: Vec<_> = self.edges.iter()
+            .filter(|e| placed_ids.contains(e.source.as_str()) && placed_ids.contains(e.target.as_str()))
+            .cloned()
+            .collect();
+        let focus = self.focus_picks(50);
+        let graph = OutputGraph {
             nodes,
-            edges: self.edges.clone(),
+            edges,
             ready: self.ready.clone(),
             blocked: self.blocked.clone(),
-            by_project: self.by_project.clone(),
             roots: self.roots.clone(),
-        }
-    }
-
-    /// Remove precomputed layout coordinates from all nodes.
-    pub fn strip_layout(&mut self) {
-        for node in self.nodes.values_mut() {
-            node.x = None;
-            node.y = None;
-        }
-    }
-
-    pub fn output_json(&self) -> Result<String> {
-        let graph = self.to_output_graph();
+            focus,
+        };
         Ok(serde_json::to_string_pretty(&graph)?)
     }
 
     pub fn output_graphml(&self) -> String {
-        let graph = self.to_output_graph();
+        let mut nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
+        nodes.sort_by(|a, b| a.label.cmp(&b.label));
+        let graph = OutputGraph {
+            nodes,
+            edges: self.edges.clone(),
+            ready: self.ready.clone(),
+            blocked: self.blocked.clone(),
+            roots: self.roots.clone(),
+            focus: vec![],
+        };
         let mut xml = String::from(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns"
@@ -671,7 +867,7 @@ impl GraphStore {
             if let Some(p) = node.priority {
                 ns.push_str(&format!("      <data key=\"d5\">{}</data>\n", p));
             }
-            append(&mut ns, "d6", node.project.as_deref().unwrap_or(""));
+            append(&mut ns, "d6", "");
             append(&mut ns, "d7", node.assignee.as_deref().unwrap_or(""));
             append(&mut ns, "d8", node.complexity.as_deref().unwrap_or(""));
             append(&mut ns, "d9", &node.depends_on.join(","));
@@ -695,36 +891,6 @@ impl GraphStore {
 
         xml.push_str("  </graph>\n</graphml>\n");
         xml
-    }
-
-    pub fn output_dot(&self) -> String {
-        let graph = self.to_output_graph();
-        let mut dot = String::from(
-            "digraph G {\n    rankdir=TB;\n    node [shape=box, style=filled, fillcolor=\"#e9ecef\"];\n\n",
-        );
-
-        for node in &graph.nodes {
-            let label = node.label.replace('"', "\\\"");
-            dot.push_str(&format!("    \"{}\" [label=\"{}\"];\n", node.id, label));
-        }
-        dot.push('\n');
-
-        for edge in &graph.edges {
-            let style = match edge.edge_type {
-                EdgeType::DependsOn => "style=bold, color=\"#dc3545\", penwidth=2",
-                EdgeType::SoftDependsOn => "style=dashed, color=\"#6c757d\", penwidth=1.5",
-                EdgeType::Parent => "style=solid, color=\"#0d6efd\", penwidth=3",
-                EdgeType::Link => "style=dotted, color=\"#adb5bd\", penwidth=1",
-                EdgeType::Supersedes => "style=dashed, color=\"#fd7e14\", penwidth=2, label=\"supersedes\"",
-            };
-            dot.push_str(&format!(
-                "    \"{}\" -> \"{}\" [{}];\n",
-                edge.source, edge.target, style
-            ));
-        }
-
-        dot.push_str("}\n");
-        dot
     }
 
 }
@@ -842,19 +1008,6 @@ fn build_node_edges(
         }
     }
 
-    // project -> Link edge (this -> project node)
-    if let Some(ref proj) = n.project {
-        if let Some(target_id) = graph::resolve_ref(proj, id_map, path_to_id) {
-            if n.id != target_id {
-                edges.push(Edge {
-                    source: n.id.clone(),
-                    target: target_id,
-                    edge_type: EdgeType::Link,
-                });
-            }
-        }
-    }
-
     // supersedes -> Supersedes edge (this -> old memory)
     if let Some(ref old_id_ref) = n.supersedes {
         if let Some(target_id) = graph::resolve_ref(old_id_ref, id_map, path_to_id) {
@@ -886,10 +1039,20 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
+    // Pre-build a set of subtask IDs (type == "subtask") for O(1) lookup
+    let subtask_ids: HashSet<String> = nodes
+        .iter()
+        .filter(|n| n.node_type.as_deref() == Some("subtask"))
+        .map(|n| n.id.clone())
+        .collect();
+
     // Collect updates to avoid borrow issues
     let mut block_updates: Vec<(usize, String)> = Vec::new(); // (target_idx, source_id)
     let mut soft_block_updates: Vec<(usize, String)> = Vec::new();
     let mut children_updates: Vec<(usize, String)> = Vec::new();
+    let mut subtask_updates: Vec<(usize, String)> = Vec::new();
+    // Resolve parent field: raw frontmatter value → actual node ID
+    let mut parent_updates: Vec<(usize, String)> = Vec::new(); // (child_idx, resolved_parent_id)
 
     for edge in edges {
         match edge.edge_type {
@@ -905,9 +1068,17 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
                 }
             }
             EdgeType::Parent => {
-                // source is child of target -> target.children += source
+                // source is child of target; route to subtasks or children
                 if let Some(&idx) = id_to_idx.get(&edge.target) {
-                    children_updates.push((idx, edge.source.clone()));
+                    if subtask_ids.contains(edge.source.as_str()) {
+                        subtask_updates.push((idx, edge.source.clone()));
+                    } else {
+                        children_updates.push((idx, edge.source.clone()));
+                    }
+                }
+                // Resolve the child's parent field to the actual target node ID
+                if let Some(&child_idx) = id_to_idx.get(&edge.source) {
+                    parent_updates.push((child_idx, edge.target.clone()));
                 }
             }
             EdgeType::Link | EdgeType::Supersedes => {}
@@ -929,12 +1100,24 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
             nodes[idx].children.push(child_id);
         }
     }
+    for (idx, subtask_id) in subtask_updates {
+        if !nodes[idx].subtasks.contains(&subtask_id) {
+            nodes[idx].subtasks.push(subtask_id);
+        }
+    }
+    // Resolve parent fields: replace raw frontmatter references with actual node IDs.
+    // This ensures node.parent matches node.id values throughout the graph,
+    // so treemap hierarchy, project computation, and frontend lookups all work correctly.
+    for (idx, resolved_parent_id) in parent_updates {
+        nodes[idx].parent = Some(resolved_parent_id);
+    }
 
-    // Deduplicate and update leaf status
+    // Deduplicate and update leaf status (subtasks do not affect leaf status)
     for node in nodes.iter_mut() {
         deduplicate_vec(&mut node.blocks);
         deduplicate_vec(&mut node.soft_blocks);
         deduplicate_vec(&mut node.children);
+        deduplicate_vec(&mut node.subtasks);
         deduplicate_vec(&mut node.depends_on);
         deduplicate_vec(&mut node.soft_depends_on);
         node.leaf = node.children.is_empty();
@@ -978,10 +1161,68 @@ fn compute_centrality_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
     }
 }
 
+/// Compute the `project` field for each node by walking up the parent chain
+/// to find the nearest ancestor with `node_type == "project"` OR an explicit `project` field.
+fn compute_project_field(nodes: &mut [GraphNode]) {
+    // Build id -> (parent, node_type, label, explicit_project) lookup
+    let info: HashMap<String, (Option<String>, Option<String>, String, Option<String>)> = nodes
+        .iter()
+        .map(|n| {
+            (
+                n.id.clone(),
+                (
+                    n.parent.clone(),
+                    n.node_type.clone(),
+                    n.label.clone(),
+                    n.project.clone(),
+                ),
+            )
+        })
+        .collect();
+
+    for node in nodes.iter_mut() {
+        // 1. If this node IS a project, its own project is its own label (overrides any explicit project field)
+        if node.node_type.as_deref() == Some("project") {
+            node.project = Some(node.label.clone());
+            continue;
+        }
+
+        // 2. If it already has an explicit project field from frontmatter, keep it
+        if node.project.is_some() {
+            continue;
+        }
+
+        // 3. Walk up parent chain
+        let mut current = node.parent.clone();
+        let mut depth = 0;
+        while let Some(ref pid) = current {
+            if depth > 50 {
+                break; // cycle guard
+            }
+            if let Some((parent, ntype, label, explicit_project)) = info.get(pid) {
+                // Ancestor is a project node
+                if ntype.as_deref() == Some("project") {
+                    node.project = Some(label.clone());
+                    break;
+                }
+                // Ancestor has its own project field (inherited or explicit)
+                if let Some(ref proj) = explicit_project {
+                    node.project = Some(proj.clone());
+                    break;
+                }
+                current = parent.clone();
+            } else {
+                break;
+            }
+            depth += 1;
+        }
+    }
+}
+
 /// Compute downstream_weight and stakeholder_exposure via BFS through
 /// blocks/soft_blocks. Mirrors the logic from fast-indexer main.rs.
 fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
-    let excluded: HashSet<&str> = ["done", "cancelled"].into_iter().collect();
+    let excluded: HashSet<&str> = graph::COMPLETED_STATUSES.iter().copied().collect();
 
     let id_to_idx: HashMap<String, usize> = nodes
         .iter()
@@ -1102,53 +1343,62 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
     }
 }
 
-/// Classify tasks into ready/blocked lists, compute roots and by_project.
+/// Classify tasks into ready/blocked lists and compute roots.
 fn classify_tasks(
     nodes: &HashMap<String, GraphNode>,
-) -> (
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    HashMap<String, Vec<String>>,
-) {
-    let completed: HashSet<&str> = ["done", "cancelled"].into_iter().collect();
-
+) -> (Vec<String>, Vec<String>, Vec<String>) {
     let completed_ids: HashSet<String> = nodes
         .iter()
-        .filter(|(_, n)| {
-            n.status
-                .as_deref()
-                .map(|s| completed.contains(s))
-                .unwrap_or(false)
-        })
+        .filter(|(_, n)| graph::is_completed(n.status.as_deref()))
         .map(|(id, _)| id.clone())
         .collect();
+
+    // Phase 1: identify directly blocked tasks (unmet deps or explicit status)
+    let mut directly_blocked: HashSet<String> = HashSet::new();
+    let mut task_ids: Vec<String> = Vec::new();
+
+    for (id, node) in nodes {
+        if node.task_id.is_none() {
+            continue;
+        }
+        let status = node.status.as_deref().unwrap_or("active");
+        if graph::is_completed(Some(status)) {
+            continue;
+        }
+        task_ids.push(id.clone());
+
+        let has_unmet = node.depends_on.iter().any(|d| !completed_ids.contains(d));
+        if has_unmet || status == "blocked" {
+            directly_blocked.insert(id.clone());
+        }
+    }
+
+    // Phase 2: transitively propagate blocked status via BFS through blocks edges.
+    let effectively_blocked = {
+        let mut blocked_set = directly_blocked.clone();
+        let mut queue: std::collections::VecDeque<String> = directly_blocked.into_iter().collect();
+        while let Some(blocked_id) = queue.pop_front() {
+            if let Some(node) = nodes.get(&blocked_id) {
+                for downstream_id in &node.blocks {
+                    if blocked_set.insert(downstream_id.clone()) {
+                        queue.push_back(downstream_id.clone());
+                    }
+                }
+            }
+        }
+        blocked_set
+    };
 
     let mut ready: Vec<String> = Vec::new();
     let mut blocked: Vec<String> = Vec::new();
 
-    for (id, node) in nodes {
-        // Only classify nodes that have a task_id
-        if node.task_id.is_none() {
-            continue;
-        }
-
-        let status = node.status.as_deref().unwrap_or("active");
-        if completed.contains(status) {
-            continue;
-        }
-
-        let unmet_deps: Vec<&String> = node
-            .depends_on
-            .iter()
-            .filter(|d| !completed_ids.contains(*d))
-            .collect();
-
-        if !unmet_deps.is_empty() || status == "blocked" {
+    for id in &task_ids {
+        let node = nodes.get(id).unwrap();
+        if effectively_blocked.contains(id) {
             blocked.push(id.clone());
-        } else if node.leaf && status == "active" {
-            // Learn tasks are observational, not actionable
-            if node.node_type.as_deref() != Some("learn") {
+        } else if node.leaf && node.status.as_deref().unwrap_or("active") == "active" {
+            // Only claimable types — epics/projects/goals/containers are graph structure, not work items
+            if CLAIMABLE_TYPES.contains(&node.node_type.as_deref().unwrap_or("")) {
                 ready.push(id.clone());
             }
         }
@@ -1181,19 +1431,111 @@ fn classify_tasks(
         .map(|(id, _)| id.clone())
         .collect();
 
-    // By project
-    let mut by_project: HashMap<String, Vec<String>> = HashMap::new();
-    for (id, node) in nodes {
-        if node.task_id.is_some() {
-            let proj = node
-                .project
-                .clone()
-                .unwrap_or_else(|| "_no_project".to_string());
-            by_project.entry(proj).or_default().push(id.clone());
+    (ready, blocked, roots)
+}
+
+/// Mark nodes reachable from active leaf tasks via upstream BFS.
+///
+/// Algorithm (matches Python `filter_reachable` in `scripts/task_graph.py`):
+/// 1. Identify leaves: unfinished actionable-type nodes with explicit status
+///    and no unfinished children.
+/// 2. BFS upstream through parent, depends_on, soft_depends_on edges
+///    (ignoring link/wikilink to prevent false positives).
+/// 3. Set `reachable = true` on all visited nodes.
+/// Compute the reachable set: BFS upstream from active leaf tasks.
+///
+/// Works on a node slice (used before layout in the build pipeline).
+/// Returns the set of reachable node IDs so the caller can both mark nodes
+/// and pass the set to layout algorithms.
+fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
+    let all_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+
+    let unfinished_ids: HashSet<&str> = nodes
+        .iter()
+        .filter(|n| !graph::is_completed(n.status.as_deref()))
+        .map(|n| n.id.as_str())
+        .collect();
+
+    // Build children mapping
+    let mut children_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    for node in nodes {
+        // From node.parent (child → parent)
+        if let Some(ref parent) = node.parent {
+            if all_ids.contains(parent.as_str()) {
+                children_of
+                    .entry(parent.as_str())
+                    .or_default()
+                    .push(node.id.as_str());
+            }
+        }
+        // From node.children (parent → child)
+        for child_id in &node.children {
+            if all_ids.contains(child_id.as_str()) {
+                children_of
+                    .entry(node.id.as_str())
+                    .or_default()
+                    .push(child_id.as_str());
+            }
         }
     }
 
-    (ready, blocked, roots, by_project)
+    // Identify leaves: unfinished, actionable type, explicit status,
+    // no unfinished children
+    let mut leaf_ids: Vec<&str> = Vec::new();
+    for node in nodes {
+        if !unfinished_ids.contains(node.id.as_str()) {
+            continue;
+        }
+        if node.status.is_none() {
+            continue;
+        }
+        let is_actionable = node
+            .node_type
+            .as_deref()
+            .map(|t| ACTIONABLE_TYPES.contains(&t))
+            .unwrap_or(false);
+        if !is_actionable {
+            continue;
+        }
+        let has_unfinished_child = children_of
+            .get(node.id.as_str())
+            .map(|kids| kids.iter().any(|c| unfinished_ids.contains(c)))
+            .unwrap_or(false);
+        if !has_unfinished_child {
+            leaf_ids.push(node.id.as_str());
+        }
+    }
+
+    // Build upstream adjacency from edges (parent, depends_on, soft_depends_on only)
+    let mut upstream_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    for edge in edges {
+        match edge.edge_type {
+            EdgeType::Parent | EdgeType::DependsOn | EdgeType::SoftDependsOn => {
+                if all_ids.contains(edge.target.as_str()) {
+                    upstream_of
+                        .entry(edge.source.as_str())
+                        .or_default()
+                        .push(edge.target.as_str());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // BFS upstream from leaves
+    let mut reachable: HashSet<String> = leaf_ids.into_iter().map(|s| s.to_string()).collect();
+    let mut frontier: VecDeque<String> = reachable.iter().cloned().collect();
+    while let Some(nid) = frontier.pop_front() {
+        if let Some(upstreams) = upstream_of.get(nid.as_str()) {
+            for &upstream_id in upstreams {
+                if reachable.insert(upstream_id.to_string()) {
+                    frontier.push_back(upstream_id.to_string());
+                }
+            }
+        }
+    }
+
+    reachable
 }
 
 /// Build a resolution map for flexible node lookup.
@@ -1455,11 +1797,166 @@ mod tests {
     }
 
     #[test]
+    fn test_ready_excludes_container_types() {
+        // Epics, projects, goals are graph structure — not claimable work items.
+        // Even if they are leaves with active status, they must NOT appear in ready.
+        let docs = vec![
+            make_doc("tasks/epic-1.md", "Lone Epic", "epic", "active", "epic-1", None, &[]),
+            make_doc("tasks/proj-1.md", "Lone Project", "project", "active", "proj-1", None, &[]),
+            make_doc("tasks/task-1.md", "Task One", "task", "active", "task-1", None, &[]),
+            make_doc("tasks/bug-1.md", "Bug One", "bug", "active", "bug-1", None, &[]),
+            make_doc("tasks/feat-1.md", "Feature One", "feature", "active", "feat-1", None, &[]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let ready = graph.ready_tasks();
+        let ready_ids: Vec<&str> = ready.iter().map(|n| n.id.as_str()).collect();
+        assert!(!ready_ids.contains(&"epic-1"), "epics must not appear in ready");
+        assert!(!ready_ids.contains(&"proj-1"), "projects must not appear in ready");
+        assert!(ready_ids.contains(&"task-1"), "task must be in ready");
+        assert!(ready_ids.contains(&"bug-1"), "bug must be in ready");
+        assert!(ready_ids.contains(&"feat-1"), "feature must be in ready");
+    }
+
+    #[test]
     fn test_blocked_tasks() {
         let graph = build_test_graph();
         let blocked = graph.blocked_tasks();
         // task-a should be blocked (depends on task-b which isn't done)
         let task_a_id = graph.resolve("task-a").unwrap().id.clone();
         assert!(blocked.iter().any(|n| n.id == task_a_id));
+    }
+
+    // ── reachable ──
+
+    #[test]
+    fn test_reachable_marks_leaves_and_ancestors() {
+        let graph = build_test_graph();
+        // Test graph: epic-1 (parent of task-a, task-b)
+        //   task-b is a leaf (active, no deps, no unfinished children)
+        //   task-a depends on task-b, so task-a is blocked but still unfinished
+        //   task-c depends on task-a, no parent
+        //   All are active task-type nodes → all are reachable seeds or upstream
+
+        let task_b = graph.resolve("task-b").unwrap();
+        assert!(task_b.reachable, "task-b should be reachable (leaf)");
+
+        let task_a = graph.resolve("task-a").unwrap();
+        assert!(task_a.reachable, "task-a should be reachable (leaf with unmet dep)");
+
+        let epic_1 = graph.resolve("epic-1").unwrap();
+        assert!(epic_1.reachable, "epic-1 should be reachable (parent of leaves)");
+
+        let task_c = graph.resolve("task-c").unwrap();
+        assert!(task_c.reachable, "task-c should be reachable (leaf with dep)");
+    }
+
+    #[test]
+    fn test_reachable_excludes_done_orphans() {
+        // A completed node with no active descendants should NOT be reachable
+        let docs = vec![
+            make_doc("tasks/done-task.md", "Done Task", "task", "done", "done-task", None, &[]),
+            make_doc("tasks/active-task.md", "Active Task", "task", "active", "active-task", None, &[]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let done = graph.resolve("done-task").unwrap();
+        assert!(!done.reachable, "completed orphan should not be reachable");
+
+        let active = graph.resolve("active-task").unwrap();
+        assert!(active.reachable, "active leaf should be reachable");
+    }
+
+    #[test]
+    fn test_reachable_includes_done_ancestor() {
+        // A completed node that is parent of an active leaf SHOULD be reachable
+        let docs = vec![
+            make_doc("tasks/done-parent.md", "Done Parent", "project", "done", "done-parent", None, &[]),
+            make_doc("tasks/active-child.md", "Active Child", "task", "active", "active-child", Some("done-parent"), &[]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let parent = graph.resolve("done-parent").unwrap();
+        assert!(parent.reachable, "done parent of active leaf should be reachable");
+    }
+
+    #[test]
+    fn test_reachable_excludes_notes() {
+        // Notes without status should not seed BFS
+        let docs = vec![
+            make_doc("notes/my-note.md", "My Note", "note", "", "my-note", None, &[]),
+            make_doc("tasks/my-task.md", "My Task", "task", "active", "my-task", None, &[]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let note = graph.resolve("my-note").unwrap();
+        assert!(!note.reachable, "note without status should not be reachable");
+    }
+
+    // ── subtask relationships ──
+
+    #[test]
+    fn test_subtasks_separate_from_children() {
+        // A parent task with both a regular child and a subtask:
+        // - the subtask must appear in parent.subtasks, NOT in parent.children
+        // - parent.leaf must remain true (subtasks don't affect leaf status)
+        let docs = vec![
+            make_doc("tasks/parent.md", "Parent Task", "task", "active", "parent-abc", None, &[]),
+            make_doc(
+                "tasks/parent-abc.1.md",
+                "Subtask One",
+                "subtask",
+                "active",
+                "parent-abc.1",
+                Some("parent-abc"),
+                &[],
+            ),
+            make_doc(
+                "tasks/child.md",
+                "Child Task",
+                "task",
+                "active",
+                "child-xyz",
+                Some("parent-abc"),
+                &[],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let parent = graph.resolve("parent-abc").expect("parent not found");
+        let subtask = graph.resolve("parent-abc.1").expect("subtask not found");
+
+        // Subtask must be in parent.subtasks, not parent.children
+        assert!(
+            parent.subtasks.contains(&subtask.id),
+            "parent.subtasks should contain the subtask"
+        );
+        assert!(
+            !parent.children.contains(&subtask.id),
+            "parent.children must not contain the subtask"
+        );
+
+        // Regular child must be in parent.children
+        let child = graph.resolve("child-xyz").expect("child not found");
+        assert!(
+            parent.children.contains(&child.id),
+            "parent.children should contain the regular child"
+        );
+
+        // Parent with only subtasks (no regular children) should remain a leaf
+        let docs_subtask_only = vec![
+            make_doc("tasks/parent2.md", "Parent 2", "task", "active", "parent-def", None, &[]),
+            make_doc(
+                "tasks/parent-def.1.md",
+                "Only Subtask",
+                "subtask",
+                "active",
+                "parent-def.1",
+                Some("parent-def"),
+                &[],
+            ),
+        ];
+        let graph2 = GraphStore::build(&docs_subtask_only, Path::new("/tmp/test-pkb"));
+        let parent2 = graph2.resolve("parent-def").expect("parent2 not found");
+        assert!(parent2.leaf, "parent with only subtasks should still be a leaf");
     }
 }

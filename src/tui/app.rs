@@ -1,7 +1,8 @@
-//! Application state for the Planning Web TUI.
+//! Application state for the Planning Web dashboard.
 
-use mem::graph::GraphNode;
+use mem::graph::{self, GraphNode};
 use mem::graph_store::{self, GraphStore};
+use ratatui::style::Color;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -45,7 +46,6 @@ pub struct TreeRow {
     pub priority: Option<i32>,
     pub status: Option<String>,
     pub node_type: Option<String>,
-    pub project: Option<String>,
     pub depth: usize,
     pub is_last_at_depth: Vec<bool>,
     pub is_context: bool,
@@ -57,6 +57,31 @@ pub struct TreeRow {
     pub task_id: Option<String>,
     pub expanded: bool,
     pub has_children: bool,
+}
+
+/// A stable palette of colors assigned to projects.
+pub const PROJECT_COLORS: [Color; 12] = [
+    Color::Rgb(86, 182, 194),  // teal
+    Color::Rgb(198, 120, 221), // purple
+    Color::Rgb(209, 154, 102), // orange
+    Color::Rgb(152, 195, 121), // green
+    Color::Rgb(224, 108, 117), // rose
+    Color::Rgb(97, 175, 239),  // blue
+    Color::Rgb(229, 192, 123), // gold
+    Color::Rgb(190, 80, 70),   // rust
+    Color::Rgb(126, 156, 216), // periwinkle
+    Color::Rgb(255, 135, 157), // pink
+    Color::Rgb(79, 193, 148),  // mint
+    Color::Rgb(172, 128, 255), // lavender
+];
+
+/// Legend filter state — which legend items are active (None = show all).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegendFilter {
+    Status(String),
+    Priority(i32),
+    Project(String),
+    NodeType(String),
 }
 
 /// Main application state.
@@ -109,10 +134,17 @@ pub struct App {
     // Filters
     pub show_completed: bool,
     pub type_filter: Option<String>,
+    pub legend_filter: Option<LegendFilter>,
 
     // Reparenting state
     pub reparent_mode: bool,
     pub reparent_node_id: Option<String>,
+
+    // Project colors: project label -> index into PROJECT_COLORS
+    pub project_color_map: HashMap<String, usize>,
+
+    // Legend state: scroll offset for project list when too many
+    pub legend_project_scroll: usize,
 
     // Stats
     pub total_tasks: usize,
@@ -161,8 +193,11 @@ impl App {
             synergies: Vec::new(),
             show_completed: false,
             type_filter: None,
+            legend_filter: None,
             reparent_mode: false,
             reparent_node_id: None,
+            project_color_map: HashMap::new(),
+            legend_project_scroll: 0,
             untested_assumptions: Vec::new(),
             total_tasks: 0,
             ready_count: 0,
@@ -182,7 +217,6 @@ impl App {
         self.ready_count = ready.len();
         self.blocked_count = blocked.len();
         self.total_tasks = all.len();
-        self.project_count = gs.by_project().len();
 
         // Compute focus picks with reasons
         let picks_with_reasons = select_focus_picks(&ready);
@@ -221,37 +255,23 @@ impl App {
         self.untested_assumptions = untested_list;
         self.assumption_counts = (untested, confirmed, invalidated);
 
-        // Detect cross-project synergies (nodes from different projects sharing tags)
-        let active_nodes: Vec<&GraphNode> = gs
-            .nodes()
-            .filter(|n| !matches!(n.status.as_deref(), Some("done") | Some("dead")))
-            .filter(|n| !n.tags.is_empty() && n.project.is_some())
-            .collect();
-        let mut synergy_pairs: Vec<(String, String, usize)> = Vec::new();
-        for (i, a) in active_nodes.iter().enumerate() {
-            for b in active_nodes.iter().skip(i + 1) {
-                if a.project == b.project {
-                    continue;
-                }
-                let a_tags: HashSet<&str> = a.tags.iter().map(|t| t.as_str()).collect();
-                let shared = b
-                    .tags
-                    .iter()
-                    .filter(|t| a_tags.contains(t.as_str()))
-                    .count();
-                if shared >= 2 {
-                    synergy_pairs.push((a.label.clone(), b.label.clone(), shared));
-                }
+        self.synergies = Vec::new();
+
+        // Collect projects and assign colors
+        let mut proj_names: Vec<String> = Vec::new();
+        for node in gs.nodes() {
+            if node.node_type.as_deref() == Some("project") {
+                proj_names.push(node.label.clone());
             }
         }
-        synergy_pairs.sort_by(|a, b| b.2.cmp(&a.2));
-        synergy_pairs.truncate(5);
-        self.synergies = synergy_pairs;
-
-        // Collect project names for quick capture
-        let by_proj = gs.by_project();
-        let mut proj_names: Vec<String> = by_proj.keys().cloned().collect();
         proj_names.sort();
+        proj_names.dedup();
+        self.project_color_map.clear();
+        for (i, name) in proj_names.iter().enumerate() {
+            self.project_color_map
+                .insert(name.clone(), i % PROJECT_COLORS.len());
+        }
+        self.project_count = proj_names.len();
         self.project_names = proj_names;
 
         self.graph = Some(gs);
@@ -306,10 +326,7 @@ impl App {
             .filter(|n| {
                 // Filter completed
                 if !self.show_completed {
-                    if matches!(
-                        n.status.as_deref(),
-                        Some("done") | Some("cancelled") | Some("dead")
-                    ) {
+                    if graph::is_completed(n.status.as_deref()) {
                         return false;
                     }
                 }
@@ -398,75 +415,62 @@ impl App {
             }
         }
 
-        // Group by project
-        let mut by_proj: HashMap<String, Vec<&GraphNode>> = HashMap::new();
-        for task in &tasks {
-            let proj = task.project.as_deref().unwrap_or("_no_project").to_string();
-            by_proj.entry(proj).or_default().push(task);
-        }
-
-        let mut proj_names: Vec<String> = by_proj.keys().cloned().collect();
-        proj_names.sort_by(|a, b| {
-            if a == "_no_project" {
-                std::cmp::Ordering::Greater
-            } else if b == "_no_project" {
-                std::cmp::Ordering::Less
-            } else {
-                a.cmp(b)
-            }
-        });
-
         let mut rows: Vec<TreeRow> = Vec::new();
 
-        for proj_name in &proj_names {
-            let proj_tasks = by_proj.get(proj_name).unwrap();
+        // Find roots: nodes whose parent is not in the visible set
+        let mut roots: Vec<&GraphNode> = visible
+            .iter()
+            .filter_map(|id| gs.get_node(id))
+            .filter(|n| match &n.parent {
+                None => true,
+                Some(pid) => !visible.contains(pid),
+            })
+            .collect();
 
-            let proj_context: HashSet<String> = context_ids
-                .iter()
-                .filter(|cid| {
-                    gs.get_node(cid)
-                        .map(|n| n.project.as_deref() == proj_tasks[0].project.as_deref())
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
+        sort_siblings(&mut roots, &context_ids);
 
-            let proj_visible: HashSet<String> = proj_tasks
-                .iter()
-                .map(|t| t.id.clone())
-                .chain(proj_context.iter().cloned())
-                .collect();
-
-            // Find roots: nodes whose parent is not in this project's visible set
-            let mut roots: Vec<&GraphNode> = proj_visible
-                .iter()
-                .filter_map(|id| gs.get_node(id))
-                .filter(|n| match &n.parent {
-                    None => true,
-                    Some(pid) => !proj_visible.contains(pid),
-                })
-                .collect();
-
-            sort_siblings(&mut roots, &context_ids);
-
-            // Flatten tree
-            for (i, root) in roots.iter().enumerate() {
-                let is_last = i == roots.len() - 1;
-                self.flatten_node(
-                    gs,
-                    root,
-                    &proj_visible,
-                    &context_ids,
-                    0,
-                    vec![is_last],
-                    &mut rows,
-                );
-            }
+        // Flatten tree
+        for (i, root) in roots.iter().enumerate() {
+            let is_last = i == roots.len() - 1;
+            self.flatten_node(
+                gs,
+                root,
+                &visible,
+                &context_ids,
+                0,
+                vec![is_last],
+                &mut rows,
+            );
         }
 
         // Apply priority filter
         if let Some(max_pri) = self.priority_filter {
             rows.retain(|r| r.is_context || r.priority.map(|p| p <= max_pri).unwrap_or(true));
+        }
+
+        // Apply legend filter
+        if let Some(ref lf) = self.legend_filter {
+            rows.retain(|r| {
+                if r.is_context {
+                    return true; // always keep context nodes
+                }
+                match lf {
+                    LegendFilter::Status(s) => r.status.as_deref() == Some(s.as_str()),
+                    LegendFilter::Priority(p) => r.priority == Some(*p),
+                    LegendFilter::Project(proj) => {
+                        // Check if the node belongs to this project
+                        if let Some(ref gs) = self.graph {
+                            gs.get_node(&r.node_id)
+                                .and_then(|n| n.project.as_ref())
+                                .map(|p| p == proj)
+                                .unwrap_or(false)
+                        } else {
+                            false
+                        }
+                    }
+                    LegendFilter::NodeType(t) => r.node_type.as_deref() == Some(t.as_str()),
+                }
+            });
         }
 
         self.tree_rows = rows;
@@ -509,7 +513,6 @@ impl App {
             priority: node.priority,
             status: node.status.clone(),
             node_type: node.node_type.clone(),
-            project: node.project.clone(),
             depth,
             is_last_at_depth: is_last_at_depth.clone(),
             is_context,
@@ -661,13 +664,8 @@ impl App {
         let mut hits: Vec<SearchHit> = gs
             .nodes()
             .filter(|n| {
-                if !self.show_completed {
-                    if matches!(
-                        n.status.as_deref(),
-                        Some("done") | Some("dead") | Some("cancelled")
-                    ) {
-                        return false;
-                    }
+                if !self.show_completed && graph::is_completed(n.status.as_deref()) {
+                    return false;
                 }
                 true
             })
@@ -721,6 +719,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn open_capture(&mut self) {
         self.show_capture = true;
         self.capture_title.clear();
@@ -730,13 +729,13 @@ impl App {
     }
 
     /// Create a new task markdown file from capture fields and reload graph.
+    #[allow(dead_code)]
     pub fn submit_capture(&mut self) -> bool {
         let title = self.capture_title.trim().to_string();
         if title.is_empty() {
             return false;
         }
 
-        let project = self.project_names.get(self.capture_project_idx).cloned();
         let priority = self.capture_priority;
 
         // Generate a filename-safe slug
@@ -769,9 +768,6 @@ impl App {
             priority,
             today,
         );
-        if let Some(ref proj) = project {
-            frontmatter.push_str(&format!("project: {proj}\n"));
-        }
         frontmatter.push_str("---\n\n");
 
         // Write the file
@@ -788,6 +784,7 @@ impl App {
         true
     }
 
+    #[allow(dead_code)]
     pub fn change_priority(&mut self, delta: i32) {
         let node_id = match self.current_view {
             View::EpicTree | View::Graph => self
@@ -806,6 +803,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_status(&mut self, id: &str, status: &str) {
         if let Some(node) = self.get_node(id) {
             let path = &node.path;
@@ -820,6 +818,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_priority(&mut self, id: &str, priority: i32) {
         if let Some(node) = self.get_node(id) {
             let path = &node.path;
@@ -834,6 +833,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_parent(&mut self, child_id: &str, parent_id: Option<&str>) {
         if let Some(node) = self.get_node(child_id) {
             let path = &node.path;
@@ -855,6 +855,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn enter_reparent_mode(&mut self) {
         let node_id = match self.current_view {
             View::EpicTree | View::Graph => self
@@ -871,6 +872,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn confirm_reparent(&mut self) {
         if !self.reparent_mode {
             return;
@@ -894,6 +896,46 @@ impl App {
         self.reparent_mode = false;
         self.reparent_node_id = None;
     }
+    /// Toggle a legend filter. If the same filter is already active, clears it.
+    pub fn toggle_legend_filter(&mut self, filter: LegendFilter) {
+        if self.legend_filter.as_ref() == Some(&filter) {
+            self.legend_filter = None;
+        } else {
+            self.legend_filter = Some(filter);
+        }
+        self.rebuild_tree();
+    }
+
+    /// Get the project color for a project label.
+    pub fn project_color(&self, project: &str) -> Color {
+        self.project_color_map
+            .get(project)
+            .map(|&idx| PROJECT_COLORS[idx])
+            .unwrap_or(Color::Cyan)
+    }
+
+    /// Mark the currently selected node for refiling (adds `refile: true` to frontmatter).
+    pub fn mark_for_refile(&mut self) {
+        let node_id = self.detail_node_id.clone().or_else(|| match self.current_view {
+            View::EpicTree | View::Graph => self
+                .tree_rows
+                .get(self.selected_index)
+                .map(|r| r.node_id.clone()),
+            View::Focus => self.focus_picks.get(self.selected_index).cloned(),
+            _ => None,
+        });
+        if let Some(id) = node_id {
+            if let Some(node) = self.get_node(&id) {
+                let path = node.path.clone();
+                let mut updates = HashMap::new();
+                updates.insert("refile".to_string(), serde_json::json!(true));
+                if crate::document_crud::update_document(&path, updates).is_ok() {
+                    self.load_graph();
+                }
+            }
+        }
+    }
+
     pub fn poll_worker(&mut self) {
         // Placeholder for future background task polling
     }
