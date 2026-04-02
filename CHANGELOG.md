@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8](https://github.com/nicsuzor/mem/compare/v0.3.7...v0.3.8) - 2026-04-02
+
+### Added
+
+- *(mcp)* add graph_json tool and update overwhelm-dashboard ([#164](https://github.com/nicsuzor/mem/pull/164))
+- *(dashboard)* manhattan routing, red dep edges, project-colored epics, overlap fixes
+- switch dashboard to HTTP MCP transport ([#161](https://github.com/nicsuzor/mem/pull/161))
+- *(dashboard)* project colors, grouped sessions, clickable tasks, curved edges ([#160](https://github.com/nicsuzor/mem/pull/160))
+- *(dashboard)* legend filters, project colors, refile button, lineage tree, metro priority
+- *(dashboard)* project colors, grouped sessions, clickable tasks, curved edges ([#158](https://github.com/nicsuzor/mem/pull/158))
+- *(dashboard)* unified label sizing, tighter packing, and type error fixes
+- *(dashboard)* task editor action buttons ([#157](https://github.com/nicsuzor/mem/pull/157))
+
+### Fixed
+
+- *(dashboard)* QA audit fixes and spec compliance ([#163](https://github.com/nicsuzor/mem/pull/163))
+- *(dashboard)* restore projectHue definition removed by circular import
+
+### Other
+
+- "Claude PR Assistant workflow" ([#165](https://github.com/nicsuzor/mem/pull/165))
+- *(dashboard)* address PR 158 review comments ([#159](https://github.com/nicsuzor/mem/pull/159))
+- graph improvements
+
 ## [0.3.7](https://github.com/nicsuzor/mem/compare/v0.3.6...v0.3.7) - 2026-03-28
 
 ### Added
