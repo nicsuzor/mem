@@ -2596,6 +2596,17 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
+    fn handle_graph_json(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let graph = self.graph.read();
+        let json = graph.output_json().map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to generate graph JSON: {e}")),
+            data: None,
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
     fn handle_graph_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
         let graph = self.graph.read();
         let stats = crate::batch_ops::stats::graph_stats(&graph);
@@ -2797,6 +2808,7 @@ impl ServerHandler for PkbSearchServer {
             "batch_reparent" => self.handle_batch_reparent(&args),
             "batch_archive" => self.handle_batch_archive(&args),
             "graph_stats" => self.handle_graph_stats(&args),
+            "graph_json" => self.handle_graph_json(&args),
             "task_summary" => self.handle_task_summary(&args),
             "find_duplicates" => self.handle_find_duplicates(&args),
             "batch_merge" => self.handle_batch_merge(&args),
@@ -3289,6 +3301,15 @@ impl ServerHandler for PkbSearchServer {
                     "type": "object",
                     "properties": {
                     }
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
+                "graph_json",
+                "Get the full knowledge graph as JSON for visualizations.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
                 }))
                 .unwrap(),
             ),
