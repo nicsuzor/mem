@@ -56,6 +56,8 @@ pub struct DocumentFields {
     pub due: Option<String>,
     pub confidence: Option<f64>,
     pub supersedes: Option<String>,
+    pub stakeholder: Option<String>,
+    pub waiting_since: Option<String>,
     /// Override subdirectory placement (e.g. "notes", "projects")
     pub dir: Option<String>,
 }
@@ -72,6 +74,8 @@ pub struct TaskFields {
     pub assignee: Option<String>,
     pub complexity: Option<String>,
     pub body: Option<String>,
+    pub stakeholder: Option<String>,
+    pub waiting_since: Option<String>,
 }
 
 /// Fields for creating a new memory.
@@ -230,6 +234,14 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     if let Some(ref due) = fields.due {
         fm.push_str(&format!("due: {}\n", due));
+    }
+
+    if let Some(ref stakeholder) = fields.stakeholder {
+        fm.push_str(&format!("stakeholder: \"{}\"\n", stakeholder.replace('"', "\\\"")));
+    }
+
+    if let Some(ref waiting_since) = fields.waiting_since {
+        fm.push_str(&format!("waiting_since: {}\n", waiting_since));
     }
 
     fm.push_str("---\n\n");
@@ -403,6 +415,14 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     if let Some(ref complexity) = fields.complexity {
         fm.push_str(&format!("complexity: {}\n", complexity));
+    }
+
+    if let Some(ref stakeholder) = fields.stakeholder {
+        fm.push_str(&format!("stakeholder: \"{}\"\n", stakeholder.replace('"', "\\\"")));
+    }
+
+    if let Some(ref waiting_since) = fields.waiting_since {
+        fm.push_str(&format!("waiting_since: {}\n", waiting_since));
     }
 
     fm.push_str("---\n\n");

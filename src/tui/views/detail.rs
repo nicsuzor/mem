@@ -183,6 +183,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
+    // Stakeholder waiting
+    if let Some(ref stakeholder) = node.stakeholder {
+        left_lines.push(Line::from(vec![
+            Span::styled("  Waiting: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(stakeholder.clone(), Style::default().fg(Color::Yellow)),
+        ]));
+    }
+
     // Tags
     if !node.tags.is_empty() {
         left_lines.push(Line::from(vec![

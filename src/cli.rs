@@ -3473,6 +3473,25 @@ fn select_focus_picks<'a>(tasks: &[&'a graph::GraphNode], max: usize) -> Vec<&'a
 
             score += (t.downstream_weight * 10.0) as i64;
 
+            // Stakeholder waiting urgency
+            if t.stakeholder.is_some() {
+                let anchor = t.waiting_since.as_ref().or(t.created.as_ref());
+                if let Some(anchor_str) = anchor {
+                    let len = std::cmp::min(10, anchor_str.len());
+                    if let Ok(anchor_date) = chrono::NaiveDate::parse_from_str(
+                        &anchor_str[..anchor_str.floor_char_boundary(len)],
+                        "%Y-%m-%d",
+                    ) {
+                        let days = (today - anchor_date).num_days().max(0);
+                        score += 2000 + std::cmp::min(days * 200, 6000);
+                    } else {
+                        score += 2000;
+                    }
+                } else {
+                    score += 2000;
+                }
+            }
+
             (t, score)
         })
         .collect();

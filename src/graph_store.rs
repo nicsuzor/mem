@@ -764,6 +764,25 @@ fn compute_focus_scores(nodes: &mut [GraphNode]) {
             }
         }
         score += (node.downstream_weight * 10.0) as i64;
+        // Stakeholder waiting urgency: someone external is waiting on this task.
+        // Base +2000 (someone is waiting at all), growing +200/day, capped at +8000 total.
+        if node.stakeholder.is_some() {
+            let anchor = node.waiting_since.as_ref().or(node.created.as_ref());
+            if let Some(anchor_str) = anchor {
+                let len = std::cmp::min(10, anchor_str.len());
+                if let Ok(anchor_date) = chrono::NaiveDate::parse_from_str(
+                    &anchor_str[..anchor_str.floor_char_boundary(len)],
+                    "%Y-%m-%d",
+                ) {
+                    let days = (today - anchor_date).num_days().max(0);
+                    score += 2000 + std::cmp::min(days * 200, 6000);
+                } else {
+                    score += 2000; // stakeholder set but unparseable date
+                }
+            } else {
+                score += 2000; // stakeholder set but no date at all
+            }
+        }
         node.focus_score = Some(score);
     }
 }
@@ -1338,7 +1357,10 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
 
         if let Some(&idx) = id_to_idx.get(start_id) {
             nodes[idx].downstream_weight = (total_weight * 100.0).round() / 100.0;
-            nodes[idx].stakeholder_exposure = has_stakeholder;
+            // stakeholder_exposure: true if downstream has due-dated tasks OR this task
+            // has an explicit stakeholder (someone external is waiting)
+            nodes[idx].stakeholder_exposure =
+                has_stakeholder || nodes[idx].stakeholder.is_some();
         }
     }
 }
