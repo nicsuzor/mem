@@ -449,6 +449,14 @@ impl PkbSearchServer {
                 .and_then(|v| v.as_str())
                 .map(String::from),
             body: args.get("body").and_then(|v| v.as_str()).map(String::from),
+            stakeholder: args
+                .get("stakeholder")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            waiting_since: args
+                .get("waiting_since")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         };
 
         // Hierarchy validation: tasks must have a parent
@@ -1092,6 +1100,9 @@ impl PkbSearchServer {
             "parent": parent,
             "downstream_weight": node.downstream_weight,
             "stakeholder_exposure": node.stakeholder_exposure,
+            "stakeholder": node.stakeholder,
+            "waiting_since": node.waiting_since,
+            "focus_score": node.focus_score,
         });
 
         let json = serde_json::to_string_pretty(&result).unwrap_or_default();
@@ -1234,6 +1245,14 @@ impl PkbSearchServer {
                 .and_then(|v| v.as_str())
                 .map(String::from),
             dir: args.get("dir").and_then(|v| v.as_str()).map(String::from),
+            stakeholder: args
+                .get("stakeholder")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            waiting_since: args
+                .get("waiting_since")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         };
 
         // Hierarchy validation: warn if task-like type without parent
@@ -1888,6 +1907,8 @@ impl PkbSearchServer {
                     .get("body")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                stakeholder: None,
+                waiting_since: None,
             };
 
             let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
@@ -2912,7 +2933,9 @@ impl ServerHandler for PkbSearchServer {
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
                         "complexity": { "type": "string" },
-                        "body": { "type": "string", "description": "Markdown body" }
+                        "body": { "type": "string", "description": "Markdown body" },
+                        "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
+                        "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." }
                     },
                     "required": ["title"]
                 }))
@@ -2972,7 +2995,9 @@ impl ServerHandler for PkbSearchServer {
                         "due": { "type": "string", "description": "Due date" },
                         "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
                         "supersedes": { "type": "string", "description": "ID of document this one replaces" },
-                        "dir": { "type": "string", "description": "Override subdirectory placement" }
+                        "dir": { "type": "string", "description": "Override subdirectory placement" },
+                        "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
+                        "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." }
                     },
                     "required": ["title", "type"]
                 }))
@@ -3036,7 +3061,7 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "get_task",
-                "Retrieve a task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, subtasks, parent with titles/statuses, downstream_weight, stakeholder_exposure). Sub-tasks (type=subtask) are injected as a markdown checkbox checklist in the body and listed in the 'subtasks' field.",
+                "Retrieve a task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, subtasks, parent with titles/statuses, downstream_weight, stakeholder_exposure, stakeholder, waiting_since, focus_score). Sub-tasks (type=subtask) are injected as a markdown checkbox checklist in the body and listed in the 'subtasks' field.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {

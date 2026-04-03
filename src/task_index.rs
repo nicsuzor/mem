@@ -38,10 +38,16 @@ pub struct McpIndexEntry {
     pub assignee: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stakeholder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_since: Option<String>,
     #[serde(default)]
     pub downstream_weight: f64,
     #[serde(default)]
     pub stakeholder_exposure: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus_score: Option<i64>,
 }
 
 /// The full MCP task index.
@@ -97,8 +103,11 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
                 tags: node.tags.clone(),
                 assignee: node.assignee.clone(),
                 complexity: node.complexity.clone(),
+                stakeholder: node.stakeholder.clone(),
+                waiting_since: node.waiting_since.clone(),
                 downstream_weight: node.downstream_weight,
                 stakeholder_exposure: node.stakeholder_exposure,
+                focus_score: node.focus_score,
             },
         );
     }

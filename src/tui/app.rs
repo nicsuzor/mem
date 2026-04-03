@@ -963,6 +963,11 @@ fn select_focus_picks<'a>(tasks: &[&'a GraphNode]) -> Vec<(&'a GraphNode, String
                 score += 50.0;
                 reasons.push("stakeholder visibility");
             }
+            // Explicit stakeholder waiting
+            if t.stakeholder.is_some() {
+                score += 200.0;
+                reasons.push("stakeholder waiting");
+            }
             // Due date urgency
             if t.due.is_some() {
                 score += 30.0;

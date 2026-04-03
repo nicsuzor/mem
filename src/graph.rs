@@ -98,6 +98,13 @@ pub struct GraphNode {
     pub modified: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Who is waiting on this task (e.g. "Jacob", "funding-committee").
+    /// Drives waiting urgency in focus scoring — the longer since waiting_since, the higher the score.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stakeholder: Option<String>,
+    /// When the stakeholder started waiting (ISO date). Falls back to `created` if absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_since: Option<String>,
     /// Computed: label of nearest ancestor with node_type == "project"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -417,6 +424,12 @@ impl GraphNode {
         let assignee = fm
             .as_ref()
             .and_then(|f| f.get("assignee").and_then(|v| v.as_str()).map(String::from));
+        let stakeholder = fm
+            .as_ref()
+            .and_then(|f| f.get("stakeholder").and_then(|v| v.as_str()).map(String::from));
+        let waiting_since = fm
+            .as_ref()
+            .and_then(|f| f.get("waiting_since").and_then(|v| v.as_str()).map(String::from));
         let complexity = fm.as_ref().and_then(|f| {
             f.get("complexity")
                 .and_then(|v| v.as_str())
@@ -543,6 +556,8 @@ impl GraphNode {
             created,
             modified: doc.modified.clone(),
             assignee,
+            stakeholder,
+            waiting_since,
             project,
             complexity,
             source,
