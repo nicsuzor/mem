@@ -19,6 +19,8 @@
     let hullLayer: SVGGElement;
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
+    // Container nodes that have a Cola group box — their hexagon is hidden (box replaces it)
+    let containerGroupNodeIds = new Set<string>();
     // Track cleanup and frame loop
     let frameId = 0;
 
@@ -217,16 +219,25 @@
             .call(
                 d3
                     .drag<SVGGElement, GraphNode>()
-                    .on("start", (e, d: any) => {
-                        cola.Layout.dragStart(d);
+                    .clickDistance(4) // px threshold — prevents clicks from triggering drag
+                    .on("start", () => {
+                        // Defer dragStart to first real drag movement (see "drag" handler)
                     })
                     .on("drag", (e, d: any) => {
+                        // Lazy init: only pin/wake Cola once actual movement occurs
+                        if (!(d as any)._dragging) {
+                            cola.Layout.dragStart(d);
+                            (d as any)._dragging = true;
+                        }
                         d.x = e.x;
                         d.y = e.y;
                         if (colaLayout) colaLayout.resume();
                     })
                     .on("end", (e, d: any) => {
-                        d.fixed = 0;
+                        if ((d as any)._dragging) {
+                            d.fixed = 0;
+                            (d as any)._dragging = false;
+                        }
                     }),
             );
     }
@@ -237,7 +248,7 @@
             const nodeMap = new Map<string, any>();
             $graphData.nodes.forEach((n: any) => nodeMap.set(n.id, n));
 
-            const CONTAINER_TYPES = new Set(['epic', 'project', 'goal']);
+            const CONTAINER_TYPES = new Set(['epic']);
 
             $graphData.nodes.forEach((n: any) => {
                 if (CONTAINER_TYPES.has(n.type)) return;
@@ -259,8 +270,23 @@
                     const dx = targetContainer.x - n.x;
                     const dy = targetContainer.y - n.y;
                     // Apply a strong attractive spring force towards the container centre
-                    n.x += dx * 0.08;
-                    n.y += dy * 0.08;
+                    n.x += dx * 0.25;
+                    n.y += dy * 0.25;
+                }
+            });
+        }
+
+        // Anchor epic nodes to the center of their group bounding box
+        if (colaLayout) {
+            const groups = colaLayout.groups() || [];
+            groups.forEach((g: any) => {
+                if (!g.containerId || !g.bounds) return;
+                const nodeMap = new Map<string, any>();
+                $graphData?.nodes.forEach((n: any) => nodeMap.set(n.id, n));
+                const epicNode = nodeMap.get(g.containerId);
+                if (epicNode) {
+                    epicNode.x = (g.bounds.x + g.bounds.X) / 2;
+                    epicNode.y = (g.bounds.y + g.bounds.Y) / 2;
                 }
             });
         }
@@ -279,24 +305,90 @@
                 Y: g.bounds.Y,
                 containerId: g.containerId || g.label || '',
             }));
-            // Build node → group map so edges skip their own group's obstacles
-            const nodeGroupMap = new Map<string, string>();
+            // Build node → ALL ancestor group IDs so edges between nodes in the
+            // same container (or nested child containers) skip all enclosing boxes.
+            const nodeGroupSets = new Map<string, Set<string>>();
+
+            // Helper: register a node as belonging to a group
+            function addNodeToGroup(nodeId: string, gId: string) {
+                if (!nodeGroupSets.has(nodeId)) nodeGroupSets.set(nodeId, new Set());
+                nodeGroupSets.get(nodeId)!.add(gId);
+            }
+
+            // Direct leaf membership
             groups.forEach((g: any) => {
                 const gId = g.containerId || g.label || '';
                 (g.leaves || []).forEach((leaf: any) => {
-                    // Cola leaves are node objects after layout resolves them
                     const nodeId = typeof leaf === 'number'
                         ? $graphData?.nodes[leaf]?.id
                         : (leaf.id || leaf);
-                    if (nodeId) nodeGroupMap.set(nodeId, gId);
+                    if (nodeId) addNodeToGroup(nodeId, gId);
                 });
             });
-            setEdgeObstacles(obstacles, nodeGroupMap);
+
+            // Propagate: nodes in child groups also belong to all ancestor groups.
+            // Walk the group nesting tree and propagate membership upward.
+            function propagateGroupMembership(g: any, ancestorIds: string[]) {
+                const gId = g.containerId || g.label || '';
+                // All nodes directly in this group get all ancestor group IDs too
+                (g.leaves || []).forEach((leaf: any) => {
+                    const nodeId = typeof leaf === 'number'
+                        ? $graphData?.nodes[leaf]?.id
+                        : (leaf.id || leaf);
+                    if (nodeId) {
+                        for (const aid of ancestorIds) addNodeToGroup(nodeId, aid);
+                    }
+                });
+                // Recurse into child groups
+                (g.groups || []).forEach((childGroup: any) => {
+                    propagateGroupMembership(childGroup, [...ancestorIds, gId]);
+                });
+            }
+            // Start from top-level groups (those not nested in any other)
+            const nestedSet = new Set<any>();
+            groups.forEach((g: any) => (g.groups || []).forEach((c: any) => nestedSet.add(c)));
+            groups.forEach((g: any) => {
+                if (!nestedSet.has(g)) {
+                    propagateGroupMembership(g, []);
+                }
+            });
+
+            setEdgeObstacles(obstacles, nodeGroupSets);
         }
 
         const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
         routeSfdpEdges(eEls);
         applyEdgeVisibility(eEls);
+
+        // P0/P1 edge glow: highlight edges along ancestor/descendant paths of high-priority nodes
+        if ($graphData && parentOf && childrenOf) {
+            const INCOMPLETE = new Set(['inbox', 'active', 'in_progress', 'blocked', 'waiting', 'todo', 'pending']);
+            const highPriIds = new Set<string>();
+            $graphData.nodes.forEach(n => {
+                if (n.priority <= 1 && INCOMPLETE.has(n.status)) highPriIds.add(n.id);
+            });
+            // Walk ancestors + descendants of each P0/P1 node
+            const relatedIds = new Set<string>(highPriIds);
+            for (const id of highPriIds) {
+                // Ancestors
+                let cur = id;
+                while (parentOf.has(cur)) { cur = parentOf.get(cur)!; relatedIds.add(cur); }
+                // Descendants (BFS)
+                const queue = [id];
+                while (queue.length > 0) {
+                    const nid = queue.shift()!;
+                    const kids = childrenOf.get(nid);
+                    if (kids) for (const kid of kids) {
+                        if (!relatedIds.has(kid)) { relatedIds.add(kid); queue.push(kid); }
+                    }
+                }
+            }
+            eEls.classed("high-priority-edge", (l: any) => {
+                const sid = l.source?.id || l.source;
+                const tid = l.target?.id || l.target;
+                return relatedIds.has(sid) && relatedIds.has(tid);
+            });
+        }
 
         // Render group bounding boxes from WebCola (skip unlabelled catch-all group)
         if (hullLayer && colaLayout) {
@@ -305,24 +397,47 @@
                 .selectAll<SVGRectElement, any>("rect.cola-group")
                 .data(groups);
 
+            // Detect which groups are nested (have a parent group)
+            const nestedGroupSet = new Set<any>();
+            groups.forEach((g: any) => {
+                (g.groups || []).forEach((child: any) => nestedGroupSet.add(child));
+            });
+
             groupEls.join("rect")
                 .attr("class", "cola-group")
-                .attr("rx", 8).attr("ry", 8)
+                .attr("rx", (d: any) => nestedGroupSet.has(d) ? 6 : 10)
+                .attr("ry", (d: any) => nestedGroupSet.has(d) ? 6 : 10)
                 .attr("x", (d: any) => d.bounds?.x ?? 0)
                 .attr("y", (d: any) => d.bounds?.y ?? 0)
                 .attr("width", (d: any) => d.bounds?.width() ?? 0)
                 .attr("height", (d: any) => d.bounds?.height() ?? 0)
                 .attr("fill", (d: any) => {
                     const hue = projectHue(d.containerId || d.label || '');
-                    return `hsla(${hue}, 40%, 50%, 0.08)`;
+                    const isNested = nestedGroupSet.has(d);
+                    return isNested
+                        ? `hsla(${hue}, 40%, 50%, 0.05)`
+                        : `hsla(${hue}, 40%, 50%, 0.08)`;
                 })
                 .attr("stroke", (d: any) => {
                     const hue = projectHue(d.containerId || d.label || '');
-                    return `hsla(${hue}, 40%, 50%, 0.3)`;
+                    const isNested = nestedGroupSet.has(d);
+                    return isNested
+                        ? `hsla(${hue}, 50%, 55%, 0.25)`
+                        : `hsla(${hue}, 40%, 50%, 0.3)`;
                 })
-                .attr("stroke-width", 1.5)
-                .attr("stroke-dasharray", "6,3")
-                .style("pointer-events", "none");
+                .attr("stroke-width", (d: any) => nestedGroupSet.has(d) ? 1 : 2)
+                .attr("stroke-dasharray", (d: any) => nestedGroupSet.has(d) ? "4,2" : "6,3")
+                .style("cursor", "crosshair")
+                .on("click", (e: any, d: any) => {
+                    e.stopPropagation();
+                    if (d.containerId) toggleSelection(d.containerId);
+                })
+                .on("mouseenter", (e: any, d: any) => {
+                    if (d.containerId) selection.update(s => ({ ...s, hoveredNodeId: d.containerId }));
+                })
+                .on("mouseleave", () => {
+                    selection.update(s => ({ ...s, hoveredNodeId: null }));
+                });
 
             // Epic group labels
             const labelEls = d3.select(hullLayer)
@@ -331,9 +446,6 @@
 
             labelEls.join("text")
                 .attr("class", "cola-group-label")
-                .attr("x", (d: any) => (d.bounds?.x ?? 0) + 12)
-                .attr("y", (d: any) => (d.bounds?.y ?? 0) + 24)
-                .text((d: any) => d.label || "")
                 .attr("font-size", 18)
                 .attr("font-weight", 700)
                 .attr("fill", (d: any) => {
@@ -342,7 +454,42 @@
                 })
                 .style("pointer-events", "none")
                 .style("text-transform", "uppercase")
-                .style("letter-spacing", "0.05em");
+                .style("letter-spacing", "0.05em")
+                .each(function (d: any) {
+                    const el = d3.select(this);
+                    el.selectAll("tspan").remove();
+                    const label = (d.label || "").toUpperCase();
+                    const bx = (d.bounds?.x ?? 0) + 12;
+                    const by = (d.bounds?.y ?? 0) + 24;
+                    const availW = Math.max(40, (d.bounds?.width() ?? 200) - 24);
+                    const charW = 10; // approximate char width at font-size 18
+                    const charsPerLine = Math.max(4, Math.floor(availW / charW));
+                    const words = label.split(/\s+/);
+                    const lines: string[] = [];
+                    let current = "";
+                    for (const word of words) {
+                        const test = current ? `${current} ${word}` : word;
+                        if (test.length > charsPerLine && current) {
+                            lines.push(current);
+                            current = word;
+                        } else {
+                            current = test;
+                        }
+                    }
+                    if (current) lines.push(current);
+                    // Cap at 2 lines with ellipsis
+                    const maxLines = 2;
+                    const display = lines.slice(0, maxLines);
+                    if (lines.length > maxLines) {
+                        display[maxLines - 1] = display[maxLines - 1].slice(0, -1) + "…";
+                    }
+                    display.forEach((line, i) => {
+                        el.append("tspan")
+                            .attr("x", bx)
+                            .attr("y", by + i * 22)
+                            .text(line);
+                    });
+                });
         }
     }
 
@@ -353,8 +500,221 @@
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
 
         const data = $graphData;
-        const cw = 5000, ch = 3000;
+        // Match canvas aspect ratio to viewport so the layout fills the screen naturally.
+        // Read viewport once at layout start — resize is handled by ZoomContainer's fit-to-view.
+        const svg = containerGroup?.ownerSVGElement;
+        const vw = svg?.clientWidth || window.innerWidth || 1400;
+        const vh = svg?.clientHeight || window.innerHeight || 900;
+        const aspect = vw / vh;
+        const canvasArea = 12_000_000; // total canvas pixels (constant area regardless of ratio)
+        const ch = Math.round(Math.sqrt(canvasArea / aspect));
+        const cw = Math.round(ch * aspect);
 
+        // --- Phase 1: Resolve IDs and build groups FIRST so we know which nodes are containers ---
+        const fc = FORCE_CONFIG;
+        const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
+        const nodeIndex = new Map($graphData.nodes.map((n, i) => [n.id, i]));
+        $graphData.links.forEach((l: any) => {
+            if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
+            if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
+        });
+
+        const CONTAINER_TYPES = new Set(['epic']);
+
+        // Set width/height on nodes for avoidOverlaps — account for epic scaling.
+        // IMPORTANT: Cola's overlap solver pushes nodes apart by the minimum displacement.
+        // If nodes are wide+short, it always pushes vertically → vertical stacking.
+        // We inflate height padding so the collision box is closer to square,
+        // making overlap resolution direction-neutral.
+        const CONTAINER_SCALE = 1.3;
+        $graphData.nodes.forEach((n: any) => {
+            if (CONTAINER_TYPES.has(n.type)) {
+                // Epic nodes: full-size collision box, anchored to group center in tickVisuals
+                const scale = CONTAINER_SCALE;
+                n.width = n.w * scale + 40;
+                n.height = n.h * scale + 40;
+                return;
+            }
+            const rawW = n.w;
+            const rawH = n.h;
+            // Use natural dimensions + generous padding.
+            // Wide+short boxes → overlap resolution pushes vertically within groups,
+            // creating compact 2D packing. Global horizontal layout from seeding.
+            // Extra padding for high-priority nodes (glow rings, thicker borders)
+            const priPad = n.priority <= 1 ? 20 : 0;
+            n.width = rawW + 40 + priPad;
+            n.height = rawH + 40 + priPad;
+        });
+
+        // Build hierarchical nested groups — epics inside projects, sub-epics inside epics, etc.
+        // WebCola supports nested groups via the `groups` property on parent groups.
+        const parentLinks = $graphData.links.filter((l: any) => l.type === 'parent');
+
+        // Build parent lookup: child ID → parent node
+        const parentOf = new Map<string, GraphNode>();
+        for (const l of parentLinks) {
+            const pid = typeof l.source === 'object' ? l.source.id : l.source;
+            const cid = typeof l.target === 'object' ? l.target.id : l.target;
+            const pNode = nodeById.get(pid);
+            if (pNode) parentOf.set(cid, pNode);
+        }
+
+        // Find nearest container ancestor for a node
+        function findContainer(nodeId: string): string | null {
+            let cur = nodeId;
+            let depth = 0;
+            while (depth < 20) {
+                const p = parentOf.get(cur);
+                if (!p) break;
+                if (CONTAINER_TYPES.has(p.type)) return p.id;
+                cur = p.id;
+                depth++;
+            }
+            return null;
+        }
+
+        // Identify all container nodes
+        const containerNodeIds = new Set<string>();
+        $graphData.nodes.forEach(n => {
+            if (CONTAINER_TYPES.has(n.type)) containerNodeIds.add(n.id);
+        });
+
+        // For each container, find its parent container (for nesting)
+        const containerParent = new Map<string, string | null>();
+        for (const cid of containerNodeIds) {
+            containerParent.set(cid, findContainer(cid));
+        }
+
+        // Direct leaves per container: non-container nodes whose nearest container is this one
+        // PLUS the container node itself (so it stays inside its own group box)
+        const containerLeaves = new Map<string, number[]>();
+        const containerChildGroups = new Map<string, string[]>();
+        for (const cid of containerNodeIds) {
+            containerLeaves.set(cid, []);
+            containerChildGroups.set(cid, []);
+        }
+
+        // Register container→container parent relationships
+        for (const cid of containerNodeIds) {
+            const pcid = containerParent.get(cid);
+            if (pcid && containerChildGroups.has(pcid)) {
+                containerChildGroups.get(pcid)!.push(cid);
+            }
+        }
+
+        // Assign each node to its nearest container
+        const ungroupedIndices: number[] = [];
+        $graphData.nodes.forEach((n, i) => {
+            if (containerNodeIds.has(n.id)) {
+                // Container node is a leaf in its own group
+                containerLeaves.get(n.id)!.push(i);
+                return;
+            }
+            const containerId = findContainer(n.id);
+            if (containerId && containerLeaves.has(containerId)) {
+                containerLeaves.get(containerId)!.push(i);
+            } else {
+                ungroupedIndices.push(i);
+            }
+        });
+
+        const groupPadding = $viewSettings.colaGroupPadding;
+        const colaGroups: any[] = [];
+        const groupIndexMap = new Map<string, number>(); // containerId → index in colaGroups
+
+        // Pass 1: Create all container groups (leaves only, groups wired in pass 2)
+        for (const cid of containerNodeIds) {
+            const leaves = containerLeaves.get(cid) || [];
+            const childContainers = containerChildGroups.get(cid) || [];
+            // Skip empty containers (no leaves beyond itself, no child containers)
+            if (leaves.length <= 1 && childContainers.length === 0) {
+                // Just the container node alone with no children — treat as ungrouped
+                ungroupedIndices.push(...leaves);
+                continue;
+            }
+            const containerNode = nodeById.get(cid);
+            const label = containerNode?.label || containerNode?.fullTitle || cid;
+            // Nested groups get slightly more padding so the visual hierarchy is clear
+            const isNested = containerParent.get(cid) !== null;
+            const nestPadding = isNested ? groupPadding : groupPadding + 4;
+            const groupIdx = colaGroups.length;
+            groupIndexMap.set(cid, groupIdx);
+            colaGroups.push({
+                leaves,
+                groups: [],  // filled in pass 2
+                padding: nestPadding,
+                label,
+                containerId: cid
+            });
+        }
+
+        // Pass 2: Wire up nested group references (child container groups → parent group)
+        for (const cid of containerNodeIds) {
+            const pcid = containerParent.get(cid);
+            if (pcid && groupIndexMap.has(pcid) && groupIndexMap.has(cid)) {
+                const parentGroupIdx = groupIndexMap.get(pcid)!;
+                const childGroupIdx = groupIndexMap.get(cid)!;
+                colaGroups[parentGroupIdx].groups.push(childGroupIdx);
+            }
+        }
+
+        // Mark which container nodes have a group box — their node visual will be hidden
+        containerGroupNodeIds = new Set(groupIndexMap.keys());
+
+        // Put ungrouped nodes in a catch-all group so Cola keeps them outside epic containers
+        if (ungroupedIndices.length > 0) {
+            colaGroups.push({ leaves: ungroupedIndices, groups: [], padding: groupPadding, label: '' });
+        }
+
+        // Initial positions: lay out top-level groups in a wide horizontal grid,
+        // then scatter child groups and leaves near their parent's center.
+        // Bias toward horizontal spread so the graph doesn't stack vertically.
+        const pad = 200;
+        const groupSeeded = new Set<number>();
+
+        function seedGroupPositions(groupIdx: number, cx: number, cy: number, spreadX: number, spreadY: number) {
+            if (groupSeeded.has(groupIdx)) return;
+            groupSeeded.add(groupIdx);
+            const group = colaGroups[groupIdx];
+            // Place direct leaf nodes near group center — wider horizontal scatter
+            (group.leaves as number[]).forEach((idx: number) => {
+                const n = data.nodes[idx] as any;
+                n.x = cx + (Math.random() - 0.5) * spreadX * 0.4;
+                n.y = cy + (Math.random() - 0.5) * spreadY * 0.3;
+            });
+            // Recursively seed child groups near this center
+            (group.groups as number[]).forEach((childIdx: number) => {
+                const childCx = cx + (Math.random() - 0.5) * spreadX * 0.5;
+                const childCy = cy + (Math.random() - 0.5) * spreadY * 0.4;
+                seedGroupPositions(childIdx, childCx, childCy, spreadX * 0.6, spreadY * 0.6);
+            });
+        }
+
+        // Find top-level groups (not nested inside any other group)
+        const nestedGroupIndices = new Set<number>();
+        colaGroups.forEach(g => (g.groups as number[]).forEach((ci: number) => nestedGroupIndices.add(ci)));
+
+        const topGroups = colaGroups.map((g, i) => i).filter(i => !nestedGroupIndices.has(i));
+        // Arrange top-level groups in a horizontal row with wrapping
+        const cols = Math.max(1, Math.ceil(Math.sqrt(topGroups.length * (cw / ch))));
+        const rows = Math.ceil(topGroups.length / cols);
+        const cellW = (cw - pad * 2) / cols;
+        const cellH = (ch - pad * 2) / rows;
+
+        topGroups.forEach((groupIdx, i) => {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const cx = pad + cellW * (col + 0.5) + (Math.random() - 0.5) * cellW * 0.3;
+            const cy = pad + cellH * (row + 0.5) + (Math.random() - 0.5) * cellH * 0.3;
+            seedGroupPositions(groupIdx, cx, cy, cellW * 0.7, cellH * 0.6);
+        });
+        // Any nodes not in any group (shouldn't happen, but safety)
+        data.nodes.forEach((d: any) => {
+            if (typeof d.x !== 'number') d.x = pad + Math.random() * (cw - pad * 2);
+            if (typeof d.y !== 'number') d.y = ch / 2 + (Math.random() - 0.5) * cellH;
+        });
+
+        // --- Phase 2: Render nodes and edges (now that containerGroupNodeIds is populated) ---
         const nEls = d3
             .select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
@@ -378,10 +738,18 @@
 
         bindDragAndClick(nEls);
 
+        // Filter out parent edges involving container-group nodes — the box shows hierarchy.
+        const visualLinks = data.links.filter((l: any) => {
+            if (l.type !== 'parent') return true;
+            const sid = typeof l.source === 'object' ? l.source.id : l.source;
+            const tid = typeof l.target === 'object' ? l.target.id : l.target;
+            return !containerGroupNodeIds.has(sid) && !containerGroupNodeIds.has(tid);
+        });
+
         const eEls = d3
             .select(edgesLayer)
             .selectAll<SVGPathElement, GraphEdge>("path")
-            .data(data.links)
+            .data(visualLinks)
             .join("path")
             .attr("fill", "none")
             .attr("stroke", (d: any) => d.color)
@@ -396,112 +764,15 @@
         routeSfdpEdges(eEls);
         updateHulls();
 
-        // Start WebCola layout with hierarchical grouping
-        const fc = FORCE_CONFIG;
-
-        // Resolve string IDs to node references for all edges
-        const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
-        const nodeIndex = new Map($graphData.nodes.map((n, i) => [n.id, i]));
-        $graphData.links.forEach((l: any) => {
-            if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
-            if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
-        });
-
-        const CONTAINER_TYPES = new Set(['epic', 'project', 'goal']);
-
-        // Set width/height on nodes for avoidOverlaps — account for epic scaling
-        const CONTAINER_SCALE = 1.3; // Must match EPIC_SCALE in NodeShapes.ts
-        $graphData.nodes.forEach((n: any) => {
-            const isContainer = CONTAINER_TYPES.has(n.type);
-            const scale = isContainer ? CONTAINER_SCALE : 1.0;
-            n.width = n.w * scale + 40;
-            n.height = n.h * scale + 30;
-        });
-
-        // Build flat groups by project — one group per project containing all its nodes.
-        // No nesting, so Cola treats this as a force layout with non-overlapping clusters.
-        const parentLinks = $graphData.links.filter((l: any) => l.type === 'parent');
-
-        // Build parent lookup: child ID → parent node
-        const parentOf = new Map<string, GraphNode>();
-        for (const l of parentLinks) {
-            const pid = typeof l.source === 'object' ? l.source.id : l.source;
-            const cid = typeof l.target === 'object' ? l.target.id : l.target;
-            const pNode = nodeById.get(pid);
-            if (pNode) parentOf.set(cid, pNode);
-        }
-
-        // Group by nearest epic/project ancestor — ALL nodes must belong to a group
-        // so that avoidOverlaps prevents non-descendants from entering epic containers
-        function findContainer(nodeId: string): string | null {
-            let cur = nodeId;
-            let depth = 0;
-            while (depth < 20) {
-                const p = parentOf.get(cur);
-                if (!p) break;
-                if (CONTAINER_TYPES.has(p.type)) return p.id;
-                cur = p.id;
-                depth++;
-            }
-            return null;
-        }
-
-        const containerMembers = new Map<string, number[]>();
-        const ungroupedIndices: number[] = [];
-        $graphData.nodes.forEach((n, i) => {
-            const containerId = CONTAINER_TYPES.has(n.type) ? n.id : findContainer(n.id);
-            if (containerId === null) {
-                ungroupedIndices.push(i);
-                return;
-            }
-            if (!containerMembers.has(containerId)) containerMembers.set(containerId, []);
-            containerMembers.get(containerId)!.push(i);
-        });
-
-        const groupPadding = $viewSettings.colaGroupPadding;
-        const colaGroups: any[] = [];
-        for (const [containerId, members] of containerMembers) {
-            if (members.length >= 2) {
-                const containerNode = nodeById.get(containerId);
-                const label = containerNode?.label || containerNode?.fullTitle || containerId;
-                colaGroups.push({ leaves: members, padding: groupPadding, label, containerId });
-            } else {
-                // Single-member groups: add members to ungrouped
-                ungroupedIndices.push(...members);
-            }
-        }
-        // Put ungrouped nodes in a catch-all group so Cola keeps them outside epic containers
-        if (ungroupedIndices.length > 0) {
-            colaGroups.push({ leaves: ungroupedIndices, padding: groupPadding, label: '' });
-        }
-
-        // Initial positions: randomize group centers, place all members at their group center.
-        // This lets Cola's overlap avoidance expand each cluster outward from a shared origin,
-        // producing cleaner separation than fully random initial positions.
-        const pad = 200;
-        colaGroups.forEach(group => {
-            const cx = pad + Math.random() * (cw - 2 * pad);
-            const cy = pad + Math.random() * (ch - 2 * pad);
-            (group.leaves as number[]).forEach(idx => {
-                const n = data.nodes[idx] as any;
-                n.x = cx;
-                n.y = cy;
-            });
-        });
-        // Any nodes not in any group (shouldn't happen, but safety)
-        data.nodes.forEach((d: any) => {
-            if (typeof d.x !== 'number') d.x = cw / 2;
-            if (typeof d.y !== 'number') d.y = ch / 2;
-        });
-
-        // Build cola links from parent edges (index-based)
+        // --- Phase 3: Start Cola layout ---
         const colaLinks = parentLinks.map((l: any) => {
             const si = nodeIndex.get(typeof l.source === 'object' ? l.source.id : l.source)!;
             const ti = nodeIndex.get(typeof l.target === 'object' ? l.target.id : l.target)!;
             return { source: si, target: ti };
         }).filter((l: any) => l.source !== undefined && l.target !== undefined);
 
-        console.log(`[Cola] ${$graphData.nodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups`, colaGroups.map(g => g.leaves.length));
+        const nestedCount = colaGroups.filter(g => (g.groups || []).length > 0).length;
+        console.log(`[Cola] ${$graphData.nodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups (${nestedCount} with children)`, colaGroups.map(g => `${g.leaves.length}L${(g.groups||[]).length ? '+' + (g.groups||[]).length + 'G' : ''}`));
 
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
@@ -512,7 +783,7 @@
             .handleDisconnected(true)
             .symmetricDiffLinkLengths($viewSettings.colaLinkLength, 0.7)
             .on("tick", tickVisuals)
-            .start(80, 80, 80);
+            .start(30, 30, 30);
     }
 
     onDestroy(() => {
@@ -563,5 +834,11 @@
     }
     :global(path.force-edge.intent-edge-dim) {
         opacity: 0.15;
+    }
+    /* P0/P1 ancestry/descendancy edge glow */
+    :global(path.force-edge.high-priority-edge) {
+        filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.5));
+        stroke-width: 3px !important;
+        opacity: 0.9 !important;
     }
 </style>

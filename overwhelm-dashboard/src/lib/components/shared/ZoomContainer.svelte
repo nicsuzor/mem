@@ -155,6 +155,20 @@
         <path d="M0,-3L8,0L0,3" fill="#a3a3a3"/>
       </marker>
 
+      <!-- Priority glow filters for P0/P1 nodes -->
+      <filter id="glow-p0" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+        <feFlood flood-color="#dc3545" flood-opacity="0.5" result="color"/>
+        <feComposite in="color" in2="blur" operator="in" result="glow"/>
+        <feMerge><feMergeNode in="glow"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+      <filter id="glow-p1" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+        <feFlood flood-color="#f59e0b" flood-opacity="0.4" result="color"/>
+        <feComposite in="color" in2="blur" operator="in" result="glow"/>
+        <feMerge><feMergeNode in="glow"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+
       <!-- Holographic/Spectral Patterns -->
       <pattern id="holographic-grid" width="10" height="10" patternUnits="userSpaceOnUse">
         <rect width="10" height="10" fill="none" />

@@ -42,6 +42,22 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
         g.classed("selected-node", false);
     }
 
+    // P0/P1 priority glow ring for incomplete nodes
+    const isIncomplete = !['done', 'completed', 'cancelled'].includes(d.status);
+    if (d.priority <= 1 && isIncomplete) {
+        const glowPad = d.priority === 0 ? 6 : 5;
+        const glowFilter = d.priority === 0 ? 'url(#glow-p0)' : 'url(#glow-p1)';
+        const glowColor = d.priority === 0 ? '#dc3545' : '#f59e0b';
+        const rx = d.shape === 'pill' ? hh + glowPad : (d.shape === 'rounded' ? 14 : 6);
+        g.insert("rect", ":first-child")
+            .attr("x", -hw - glowPad).attr("y", -hh - glowPad)
+            .attr("width", d.w + glowPad * 2).attr("height", d.h + glowPad * 2)
+            .attr("rx", rx).attr("fill", "none")
+            .attr("stroke", glowColor).attr("stroke-width", 2)
+            .attr("stroke-opacity", 0.6)
+            .attr("filter", glowFilter);
+    }
+
     if (d.spotlight && d.isLeaf) {
         const pad = 9;
         const rx = d.shape === 'pill' ? hh + pad : (d.shape === 'rounded' ? 14 : 8);
