@@ -5,3 +5,6 @@ mem
 *.png
 .playwright-mcp
 graph.json
+
+.gemini/
+gha-creds-*.json
