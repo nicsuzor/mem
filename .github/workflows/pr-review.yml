@@ -112,7 +112,7 @@ jobs:
         if: steps.loop-check.outputs.skip != 'true'
         id: prompt
         run: |
-          PROMPT=$(cat .github/agents/enforcer.agent.md)
+          PROMPT=$(git show origin/main:.github/agents/enforcer.agent.md)
           { echo "prompt<<AGENT_EOF"; echo "$PROMPT"; echo "AGENT_EOF"; } >> "$GITHUB_OUTPUT"
 
       - name: Run Enforcer
@@ -184,7 +184,7 @@ jobs:
         if: steps.loop-check.outputs.skip != 'true'
         id: prompt
         run: |
-          PROMPT=$(cat .github/agents/custodiet.agent.md)
+          PROMPT=$(git show origin/main:.github/agents/custodiet.agent.md)
           { echo "prompt<<AGENT_EOF"; echo "$PROMPT"; echo "AGENT_EOF"; } >> "$GITHUB_OUTPUT"
 
       - name: Run Custodiet
@@ -256,7 +256,7 @@ jobs:
         if: steps.loop-check.outputs.skip != 'true'
         id: prompt
         run: |
-          PROMPT=$(cat .github/agents/qa.agent.md)
+          PROMPT=$(git show origin/main:.github/agents/qa.agent.md)
           { echo "prompt<<AGENT_EOF"; echo "$PROMPT"; echo "AGENT_EOF"; } >> "$GITHUB_OUTPUT"
 
       - name: Run QA
