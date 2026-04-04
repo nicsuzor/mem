@@ -52,13 +52,11 @@ pub struct GraphStore {
 }
 
 /// Document types considered actionable work items in task trees and dashboards.
-pub const ACTIONABLE_TYPES: &[&str] = &[
-    "task", "bug", "feature", "project", "goal", "epic", "learn", "subproject",
-];
+pub const ACTIONABLE_TYPES: &[&str] = &["project", "epic", "task", "learn"];
 
 /// Document types that represent claimable work items — leaf tasks a worker can actually do.
-/// Excludes containers (epic, project, goal, subproject) and observational types (learn).
-pub const CLAIMABLE_TYPES: &[&str] = &["task", "bug", "feature"];
+/// Excludes containers (epic, project) and observational types (learn).
+pub const CLAIMABLE_TYPES: &[&str] = &["task"];
 
 impl GraphStore {
     /// Build a complete graph from parsed PKB documents.
@@ -1820,23 +1818,24 @@ mod tests {
 
     #[test]
     fn test_ready_excludes_container_types() {
-        // Epics, projects, goals are graph structure — not claimable work items.
-        // Even if they are leaves with active status, they must NOT appear in ready.
+        // Epics, projects are containers — not claimable work items.
+        // With unified type system: only "task" is claimable; bug/feature/action
+        // are now type=task with a classification field.
         let docs = vec![
             make_doc("tasks/epic-1.md", "Lone Epic", "epic", "active", "epic-1", None, &[]),
             make_doc("tasks/proj-1.md", "Lone Project", "project", "active", "proj-1", None, &[]),
             make_doc("tasks/task-1.md", "Task One", "task", "active", "task-1", None, &[]),
-            make_doc("tasks/bug-1.md", "Bug One", "bug", "active", "bug-1", None, &[]),
-            make_doc("tasks/feat-1.md", "Feature One", "feature", "active", "feat-1", None, &[]),
+            make_doc("tasks/task-2.md", "Task Two", "task", "active", "task-2", None, &[]),
+            make_doc("tasks/learn-1.md", "Learn One", "learn", "active", "learn-1", None, &[]),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let ready = graph.ready_tasks();
         let ready_ids: Vec<&str> = ready.iter().map(|n| n.id.as_str()).collect();
         assert!(!ready_ids.contains(&"epic-1"), "epics must not appear in ready");
         assert!(!ready_ids.contains(&"proj-1"), "projects must not appear in ready");
+        assert!(!ready_ids.contains(&"learn-1"), "learn must not appear in ready");
         assert!(ready_ids.contains(&"task-1"), "task must be in ready");
-        assert!(ready_ids.contains(&"bug-1"), "bug must be in ready");
-        assert!(ready_ids.contains(&"feat-1"), "feature must be in ready");
+        assert!(ready_ids.contains(&"task-2"), "task must be in ready");
     }
 
     #[test]

@@ -281,7 +281,7 @@ impl App {
             for node in gs.nodes() {
                 let is_context = matches!(
                     node.node_type.as_deref(),
-                    Some("project") | Some("epic") | Some("goal") | Some("subproject")
+                    Some("project") | Some("epic")
                 );
                 if is_context {
                     self.expanded_nodes.insert(node.id.clone());
@@ -304,8 +304,7 @@ impl App {
             None,
             Some("task".to_string()),
             Some("project".to_string()),
-            Some("bug".to_string()),
-            Some("feature".to_string()),
+            Some("epic".to_string()),
             Some("learn".to_string()),
             Some("memory".to_string()),
         ];
@@ -379,7 +378,7 @@ impl App {
         }
 
         // Build visible set: tasks + ancestor context nodes
-        let context_types = ["project", "epic", "goal", "subproject"];
+        let context_types = ["project", "epic"];
         let mut visible: HashSet<String> = tasks.iter().map(|t| t.id.clone()).collect();
         let mut context_ids: HashSet<String> = HashSet::new();
 

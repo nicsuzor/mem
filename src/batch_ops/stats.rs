@@ -5,7 +5,7 @@ use crate::graph_store::{GraphStore, ACTIONABLE_TYPES};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
-const ACTIONABLE_FLAT_TYPES: &[&str] = &["task", "bug", "feature", "action", "epic"];
+const ACTIONABLE_FLAT_TYPES: &[&str] = &["task", "epic"];
 
 /// Walk the parent chain looking for an ancestor whose type is in `types`.
 fn has_ancestor_of_type(graph: &GraphStore, node: &crate::graph::GraphNode, types: &[&str]) -> bool {

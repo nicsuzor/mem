@@ -309,10 +309,11 @@ impl PkbSearchServer {
             if count >= limit {
                 break;
             }
-            let is_task = r.doc_type.as_deref() == Some("task")
-                || r.doc_type.as_deref() == Some("project")
-                || r.doc_type.as_deref() == Some("goal")
-                || r.doc_type.as_deref() == Some("subtask");
+            let is_task = r
+                .doc_type
+                .as_deref()
+                .map(|t| crate::graph_store::ACTIONABLE_TYPES.contains(&t))
+                .unwrap_or(false);
 
             if !is_task {
                 continue;
@@ -917,17 +918,13 @@ impl PkbSearchServer {
                     .unwrap_or(false)
             });
         } else if !include_all {
-            // Default: only show actionable types (task, bug, feature, action, epic, project, goal)
-            // and exclude completed nodes — matches graph_stats orphan_count definition
-            let actionable: std::collections::HashSet<&str> =
-                ["task", "bug", "feature", "action", "epic", "project", "goal"]
-                    .into_iter()
-                    .collect();
+            // Default: only show actionable types and exclude completed nodes
+            // — matches graph_stats orphan_count definition
             orphans.retain(|n| {
                 let is_actionable = n
                     .node_type
                     .as_deref()
-                    .map(|t| actionable.contains(t))
+                    .map(|t| crate::graph_store::ACTIONABLE_TYPES.contains(&t))
                     .unwrap_or(false);
                 let is_completed = crate::graph::is_completed(n.status.as_deref());
                 is_actionable && !is_completed
@@ -1257,8 +1254,8 @@ impl PkbSearchServer {
 
         // Hierarchy validation: warn if task-like type without parent
         let mut warnings = Vec::new();
-        let root_allowed = ["goal", "learn", "project"];
-        let task_like = ["task", "epic", "action", "bug", "feature"];
+        let root_allowed = ["learn", "project"];
+        let task_like = ["task", "epic"];
         if task_like.contains(&doc_type) && fields.parent.is_none() {
             warnings.push(format!(
                 "Hierarchy warning: Type '{}' should have a parent. \

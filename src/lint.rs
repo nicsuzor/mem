@@ -191,9 +191,12 @@ const KNOWN_KEYS: &[&str] = &[
 /// Map unknown type values to the nearest canonical type.
 fn resolve_type_alias(t: &str) -> &'static str {
     match t {
+        // Collapsed actionable types → task
+        "bug" | "feature" | "action" | "milestone" | "subproject" => "task",
+        // Reference aliases
         "article" | "reading-guide" | "talk" => "reference",
         "observation" | "insight" | "exploration" => "note",
-        "session-log" => "session-log", // already valid now
+        "session-log" => "session-log",
         "review" | "review-notes" | "peer-review" => "review",
         "daily" => "daily",
         "case" => "case",
@@ -201,6 +204,7 @@ fn resolve_type_alias(t: &str) -> &'static str {
         "spec" | "design" => "spec",
         "audit" | "audit-report" => "audit-report",
         "reference" => "reference",
+        "goal" => "goal",
         "instructions" | "role" | "agent" | "bundle" => "document",
         _ => "document",
     }

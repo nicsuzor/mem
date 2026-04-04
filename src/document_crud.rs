@@ -115,9 +115,8 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     let type_prefix = match fields.doc_type.as_str() {
-        "task" | "bug" | "epic" | "feature" => "task",
+        "task" | "epic" => "task",
         "project" => "proj",
-        "goal" => "goal",
         "memory" => "mem",
         "note" => "note",
         "knowledge" => "kb",
@@ -148,9 +147,8 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         .dir
         .map(|d| expand_env_vars(&d))
         .unwrap_or_else(|| match fields.doc_type.as_str() {
-            "task" | "bug" | "epic" | "feature" => "tasks".to_string(),
+            "task" | "epic" | "learn" => "tasks".to_string(),
             "project" => "projects".to_string(),
-            "goal" => "goals".to_string(),
             "memory" => "memories".to_string(),
             _ => "notes".to_string(),
         });
