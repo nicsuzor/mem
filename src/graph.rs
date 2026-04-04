@@ -159,6 +159,22 @@ pub struct GraphNode {
     /// Display/filter only — does not affect graph behaviour.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classification: Option<String>,
+    /// True if the body contains acceptance criteria (## Acceptance Criteria, done when, etc.).
+    /// Detected during parsing; used as an uncertainty input.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_acceptance_criteria: bool,
+    /// Subtree size: recursive count of all descendants via parent-child edges.
+    /// Computed during graph build (after inverse relationships are resolved).
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub scope: i32,
+    /// Residual ambiguity score [0.0–1.0]. Composite of: no acceptance criteria,
+    /// unresolved scope (has children), unresolved deps, sparse body, confidence override.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub uncertainty: f64,
+    /// Normalized impact score [0.0–1.0]. Derived from downstream_weight, pagerank,
+    /// and stakeholder_exposure, normalized across all nodes in the graph.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub criticality: f64,
 }
 
 /// An assumption attached to a planning node.
@@ -374,6 +390,23 @@ pub fn deduplicate_vec(vec: &mut Vec<String>) {
 }
 
 // ===========================================================================
+// Acceptance criteria detection
+// ===========================================================================
+
+/// Return true if the body contains signals indicating acceptance criteria are specified.
+///
+/// Checks for common patterns: "Acceptance Criteria" headers, "done when" clauses,
+/// and "definition of done" sections.
+pub fn detect_acceptance_criteria(body: &str) -> bool {
+    let lower = body.to_lowercase();
+    lower.contains("acceptance criteria")
+        || lower.contains("done when")
+        || lower.contains("definition of done")
+        || lower.contains("## ac\n")
+        || lower.contains("## ac\r")
+}
+
+// ===========================================================================
 // GraphNode construction
 // ===========================================================================
 
@@ -451,6 +484,7 @@ impl GraphNode {
         });
 
         let word_count = doc.body.split_whitespace().count() as i32;
+        let has_acceptance_criteria = detect_acceptance_criteria(&doc.body);
 
         let (depends_on, soft_depends_on, children, blocks, soft_blocks) = match fm {
             Some(f) => (
@@ -587,6 +621,10 @@ impl GraphNode {
             assumptions,
             focus_score: None,
             classification,
+            has_acceptance_criteria,
+            scope: 0,
+            uncertainty: 0.0,
+            criticality: 0.0,
         }
     }
 }
