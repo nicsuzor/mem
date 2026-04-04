@@ -9,7 +9,7 @@
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
     import { routeSfdpEdges, setEdgeObstacles } from "../shared/EdgeRenderer";
-    import { FORCE_CONFIG } from "../../data/constants";
+    import { FORCE_CONFIG, INCOMPLETE_STATUSES } from "../../data/constants";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
     export let containerGroup: SVGGElement;
@@ -23,6 +23,11 @@
     let containerGroupNodeIds = new Set<string>();
     // Track cleanup and frame loop
     let frameId = 0;
+
+    // Pre-computed per-layout data — rebuilt in drawForceAndStartPhysics(), stable across ticks
+    let layoutNodeMap: Map<string, any> = new Map();
+    let layoutNodeGroupSets: Map<string, Set<string>> = new Map();
+    let layoutNodes: GraphNode[] = [];
 
     // Full physics rebuild only when structure (node/link set) or Cola params change
     let lastStructureKey = '';
@@ -245,20 +250,17 @@
     function tickVisuals() {
         // --- Custom Force: Keep epics and child tasks closely packed ---
         if ($graphData && parentOf) {
-            const nodeMap = new Map<string, any>();
-            $graphData.nodes.forEach((n: any) => nodeMap.set(n.id, n));
-
             const CONTAINER_TYPES = new Set(['epic']);
 
-            $graphData.nodes.forEach((n: any) => {
+            layoutNodes.forEach((n: any) => {
                 if (CONTAINER_TYPES.has(n.type)) return;
-                
+
                 let cur = n.id;
                 let targetContainer = null;
                 for (let i = 0; i < 20; i++) {
                     const pid = parentOf.get(cur);
                     if (!pid) break;
-                    const pNode = nodeMap.get(pid);
+                    const pNode = layoutNodeMap.get(pid);
                     if (pNode && CONTAINER_TYPES.has(pNode.type)) {
                         targetContainer = pNode;
                         break;
@@ -281,9 +283,7 @@
             const groups = colaLayout.groups() || [];
             groups.forEach((g: any) => {
                 if (!g.containerId || !g.bounds) return;
-                const nodeMap = new Map<string, any>();
-                $graphData?.nodes.forEach((n: any) => nodeMap.set(n.id, n));
-                const epicNode = nodeMap.get(g.containerId);
+                const epicNode = layoutNodeMap.get(g.containerId);
                 if (epicNode) {
                     epicNode.x = (g.bounds.x + g.bounds.X) / 2;
                     epicNode.y = (g.bounds.y + g.bounds.Y) / 2;
@@ -295,7 +295,8 @@
             .selectAll<SVGGElement, GraphNode>("g.node")
             .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
 
-        // Update obstacle data for edge routing from Cola group bounding boxes
+        // Update obstacle data for edge routing from Cola group bounding boxes.
+        // Node→group membership is pre-computed in drawForceAndStartPhysics (layoutNodeGroupSets).
         if (colaLayout) {
             const groups = (colaLayout.groups() || []).filter((g: any) => g.label && g.bounds);
             const obstacles = groups.map((g: any) => ({
@@ -305,55 +306,7 @@
                 Y: g.bounds.Y,
                 containerId: g.containerId || g.label || '',
             }));
-            // Build node → ALL ancestor group IDs so edges between nodes in the
-            // same container (or nested child containers) skip all enclosing boxes.
-            const nodeGroupSets = new Map<string, Set<string>>();
-
-            // Helper: register a node as belonging to a group
-            function addNodeToGroup(nodeId: string, gId: string) {
-                if (!nodeGroupSets.has(nodeId)) nodeGroupSets.set(nodeId, new Set());
-                nodeGroupSets.get(nodeId)!.add(gId);
-            }
-
-            // Direct leaf membership
-            groups.forEach((g: any) => {
-                const gId = g.containerId || g.label || '';
-                (g.leaves || []).forEach((leaf: any) => {
-                    const nodeId = typeof leaf === 'number'
-                        ? $graphData?.nodes[leaf]?.id
-                        : (leaf.id || leaf);
-                    if (nodeId) addNodeToGroup(nodeId, gId);
-                });
-            });
-
-            // Propagate: nodes in child groups also belong to all ancestor groups.
-            // Walk the group nesting tree and propagate membership upward.
-            function propagateGroupMembership(g: any, ancestorIds: string[]) {
-                const gId = g.containerId || g.label || '';
-                // All nodes directly in this group get all ancestor group IDs too
-                (g.leaves || []).forEach((leaf: any) => {
-                    const nodeId = typeof leaf === 'number'
-                        ? $graphData?.nodes[leaf]?.id
-                        : (leaf.id || leaf);
-                    if (nodeId) {
-                        for (const aid of ancestorIds) addNodeToGroup(nodeId, aid);
-                    }
-                });
-                // Recurse into child groups
-                (g.groups || []).forEach((childGroup: any) => {
-                    propagateGroupMembership(childGroup, [...ancestorIds, gId]);
-                });
-            }
-            // Start from top-level groups (those not nested in any other)
-            const nestedSet = new Set<any>();
-            groups.forEach((g: any) => (g.groups || []).forEach((c: any) => nestedSet.add(c)));
-            groups.forEach((g: any) => {
-                if (!nestedSet.has(g)) {
-                    propagateGroupMembership(g, []);
-                }
-            });
-
-            setEdgeObstacles(obstacles, nodeGroupSets);
+            setEdgeObstacles(obstacles, layoutNodeGroupSets);
         }
 
         const eEls = d3.select(edgesLayer).selectAll<SVGPathElement, GraphEdge>("path");
@@ -362,10 +315,9 @@
 
         // P0/P1 edge glow: highlight edges along ancestor/descendant paths of high-priority nodes
         if ($graphData && parentOf && childrenOf) {
-            const INCOMPLETE = new Set(['inbox', 'active', 'in_progress', 'blocked', 'waiting', 'todo', 'pending']);
             const highPriIds = new Set<string>();
-            $graphData.nodes.forEach(n => {
-                if (n.priority <= 1 && INCOMPLETE.has(n.status)) highPriIds.add(n.id);
+            layoutNodes.forEach(n => {
+                if (n.priority <= 1 && INCOMPLETE_STATUSES.has(n.status)) highPriIds.add(n.id);
             });
             // Walk ancestors + descendants of each P0/P1 node
             const relatedIds = new Set<string>(highPriIds);
@@ -500,6 +452,36 @@
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
 
         const data = $graphData;
+
+        // ForceView-local: strip project nodes — epic group boxes handle visual hierarchy.
+        // Reparent children of removed projects to the project's own parent (if any).
+        const forceProjectIds = new Set(data.nodes.filter(n => n.type === 'project').map(n => n.id));
+        let activeNodes: GraphNode[] = data.nodes;
+        let activeLinks: GraphEdge[] = data.links;
+        if (forceProjectIds.size > 0) {
+            const projParentMap = new Map<string, string | null>(
+                data.nodes.filter(n => forceProjectIds.has(n.id)).map(n => [n.id, n.parent])
+            );
+            activeNodes = data.nodes.map(n => {
+                if (forceProjectIds.has(n.id)) return n; // will be removed
+                let cur = n.parent;
+                const seen = new Set<string>();
+                while (cur && forceProjectIds.has(cur)) {
+                    if (seen.has(cur)) break;
+                    seen.add(cur);
+                    cur = projParentMap.get(cur) ?? null;
+                }
+                return cur !== n.parent ? { ...n, parent: cur } : n;
+            }).filter(n => !forceProjectIds.has(n.id));
+            activeLinks = data.links.filter((l: any) => {
+                const sid = typeof l.source === 'object' ? l.source.id : l.source;
+                const tid = typeof l.target === 'object' ? l.target.id : l.target;
+                return !forceProjectIds.has(sid) && !forceProjectIds.has(tid);
+            });
+        }
+
+        layoutNodes = activeNodes;
+        layoutNodeMap = new Map(activeNodes.map((n: any) => [n.id, n]));
         // Match canvas aspect ratio to viewport so the layout fills the screen naturally.
         // Read viewport once at layout start — resize is handled by ZoomContainer's fit-to-view.
         const svg = containerGroup?.ownerSVGElement;
@@ -512,9 +494,9 @@
 
         // --- Phase 1: Resolve IDs and build groups FIRST so we know which nodes are containers ---
         const fc = FORCE_CONFIG;
-        const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
-        const nodeIndex = new Map($graphData.nodes.map((n, i) => [n.id, i]));
-        $graphData.links.forEach((l: any) => {
+        const nodeById = new Map(activeNodes.map(n => [n.id, n]));
+        const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
+        activeLinks.forEach((l: any) => {
             if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
@@ -527,7 +509,7 @@
         // We inflate height padding so the collision box is closer to square,
         // making overlap resolution direction-neutral.
         const CONTAINER_SCALE = 1.3;
-        $graphData.nodes.forEach((n: any) => {
+        activeNodes.forEach((n: any) => {
             if (CONTAINER_TYPES.has(n.type)) {
                 // Epic nodes: full-size collision box, anchored to group center in tickVisuals
                 const scale = CONTAINER_SCALE;
@@ -548,7 +530,7 @@
 
         // Build hierarchical nested groups — epics inside projects, sub-epics inside epics, etc.
         // WebCola supports nested groups via the `groups` property on parent groups.
-        const parentLinks = $graphData.links.filter((l: any) => l.type === 'parent');
+        const parentLinks = activeLinks.filter((l: any) => l.type === 'parent');
 
         // Build parent lookup: child ID → parent node
         const parentOf = new Map<string, GraphNode>();
@@ -575,7 +557,7 @@
 
         // Identify all container nodes
         const containerNodeIds = new Set<string>();
-        $graphData.nodes.forEach(n => {
+        activeNodes.forEach(n => {
             if (CONTAINER_TYPES.has(n.type)) containerNodeIds.add(n.id);
         });
 
@@ -604,7 +586,7 @@
 
         // Assign each node to its nearest container
         const ungroupedIndices: number[] = [];
-        $graphData.nodes.forEach((n, i) => {
+        activeNodes.forEach((n, i) => {
             if (containerNodeIds.has(n.id)) {
                 // Container node is a leaf in its own group
                 containerLeaves.get(n.id)!.push(i);
@@ -634,7 +616,7 @@
             }
             const containerNode = nodeById.get(cid);
             const label = containerNode?.label || containerNode?.fullTitle || cid;
-            // Nested groups get slightly more padding so the visual hierarchy is clear
+            // Top-level groups get extra padding; nested groups are tighter to keep epics compact
             const isNested = containerParent.get(cid) !== null;
             const nestPadding = isNested ? groupPadding : groupPadding + 4;
             const groupIdx = colaGroups.length;
@@ -666,6 +648,38 @@
             colaGroups.push({ leaves: ungroupedIndices, groups: [], padding: groupPadding, label: '' });
         }
 
+        // Pre-compute node→group membership for edge routing (avoids per-tick allocation).
+        // Resolve numeric child-group indices to actual group objects first, then walk the tree.
+        layoutNodeGroupSets = new Map();
+        {
+            const resolvedGroups = colaGroups.map(g => ({
+                ...g,
+                groups: (g.groups as number[]).map(idx => colaGroups[idx])
+            }));
+            function addNGS(nodeId: string, gId: string) {
+                if (!layoutNodeGroupSets.has(nodeId)) layoutNodeGroupSets.set(nodeId, new Set());
+                layoutNodeGroupSets.get(nodeId)!.add(gId);
+            }
+            function buildGroupMembership(g: any, ancestorIds: string[]) {
+                const gId = g.containerId || g.label || '';
+                (g.leaves || []).forEach((leaf: any) => {
+                    const nodeId = typeof leaf === 'number' ? activeNodes[leaf]?.id : (leaf.id || leaf);
+                    if (nodeId) {
+                        addNGS(nodeId, gId);
+                        for (const aid of ancestorIds) addNGS(nodeId, aid);
+                    }
+                });
+                (g.groups || []).forEach((childGroup: any) => {
+                    buildGroupMembership(childGroup, [...ancestorIds, gId]);
+                });
+            }
+            const nestedResolved = new Set<any>();
+            resolvedGroups.forEach(g => (g.groups || []).forEach((c: any) => nestedResolved.add(c)));
+            resolvedGroups.forEach(g => {
+                if (!nestedResolved.has(g) && g.label) buildGroupMembership(g, []);
+            });
+        }
+
         // Initial positions: lay out top-level groups in a wide horizontal grid,
         // then scatter child groups and leaves near their parent's center.
         // Bias toward horizontal spread so the graph doesn't stack vertically.
@@ -678,7 +692,7 @@
             const group = colaGroups[groupIdx];
             // Place direct leaf nodes near group center — wider horizontal scatter
             (group.leaves as number[]).forEach((idx: number) => {
-                const n = data.nodes[idx] as any;
+                const n = activeNodes[idx] as any;
                 n.x = cx + (Math.random() - 0.5) * spreadX * 0.4;
                 n.y = cy + (Math.random() - 0.5) * spreadY * 0.3;
             });
@@ -709,7 +723,7 @@
             seedGroupPositions(groupIdx, cx, cy, cellW * 0.7, cellH * 0.6);
         });
         // Any nodes not in any group (shouldn't happen, but safety)
-        data.nodes.forEach((d: any) => {
+        activeNodes.forEach((d: any) => {
             if (typeof d.x !== 'number') d.x = pad + Math.random() * (cw - pad * 2);
             if (typeof d.y !== 'number') d.y = ch / 2 + (Math.random() - 0.5) * cellH;
         });
@@ -718,7 +732,7 @@
         const nEls = d3
             .select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
-            .data(data.nodes, (d) => d.id)
+            .data(activeNodes, (d) => d.id)
             .join("g")
             .attr("class", "node")
             .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
@@ -739,7 +753,7 @@
         bindDragAndClick(nEls);
 
         // Filter out parent edges involving container-group nodes — the box shows hierarchy.
-        const visualLinks = data.links.filter((l: any) => {
+        const visualLinks = activeLinks.filter((l: any) => {
             if (l.type !== 'parent') return true;
             const sid = typeof l.source === 'object' ? l.source.id : l.source;
             const tid = typeof l.target === 'object' ? l.target.id : l.target;
@@ -772,11 +786,11 @@
         }).filter((l: any) => l.source !== undefined && l.target !== undefined);
 
         const nestedCount = colaGroups.filter(g => (g.groups || []).length > 0).length;
-        console.log(`[Cola] ${$graphData.nodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups (${nestedCount} with children)`, colaGroups.map(g => `${g.leaves.length}L${(g.groups||[]).length ? '+' + (g.groups||[]).length + 'G' : ''}`));
+        console.log(`[Cola] ${activeNodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups (${nestedCount} with children)`, colaGroups.map(g => `${g.leaves.length}L${(g.groups||[]).length ? '+' + (g.groups||[]).length + 'G' : ''}`));
 
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
-            .nodes($graphData.nodes as any)
+            .nodes(activeNodes as any)
             .links(colaLinks)
             .groups(colaGroups)
             .avoidOverlaps(true)
