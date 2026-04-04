@@ -12,6 +12,9 @@
     import { FORCE_CONFIG, INCOMPLETE_STATUSES } from "../../data/constants";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
+    // Module-level constant — avoids allocating a new Set on every tick
+    const CONTAINER_TYPES = new Set(['epic']);
+
     export let containerGroup: SVGGElement;
 
     let nodesLayer: SVGGElement;
@@ -28,6 +31,8 @@
     let layoutNodeMap: Map<string, any> = new Map();
     let layoutNodeGroupSets: Map<string, Set<string>> = new Map();
     let layoutNodes: GraphNode[] = [];
+    let layoutHighPriRelatedIds: Set<string> = new Set();
+    let layoutNestedGroupSet: Set<any> = new Set();
 
     // Full physics rebuild only when structure (node/link set) or Cola params change
     let lastStructureKey = '';
@@ -250,8 +255,6 @@
     function tickVisuals() {
         // --- Custom Force: Keep epics and child tasks closely packed ---
         if ($graphData && parentOf) {
-            const CONTAINER_TYPES = new Set(['epic']);
-
             layoutNodes.forEach((n: any) => {
                 if (CONTAINER_TYPES.has(n.type)) return;
 
@@ -313,32 +316,13 @@
         routeSfdpEdges(eEls);
         applyEdgeVisibility(eEls);
 
-        // P0/P1 edge glow: highlight edges along ancestor/descendant paths of high-priority nodes
-        if ($graphData && parentOf && childrenOf) {
-            const highPriIds = new Set<string>();
-            layoutNodes.forEach(n => {
-                if (n.priority <= 1 && INCOMPLETE_STATUSES.has(n.status)) highPriIds.add(n.id);
-            });
-            // Walk ancestors + descendants of each P0/P1 node
-            const relatedIds = new Set<string>(highPriIds);
-            for (const id of highPriIds) {
-                // Ancestors
-                let cur = id;
-                while (parentOf.has(cur)) { cur = parentOf.get(cur)!; relatedIds.add(cur); }
-                // Descendants (BFS)
-                const queue = [id];
-                while (queue.length > 0) {
-                    const nid = queue.shift()!;
-                    const kids = childrenOf.get(nid);
-                    if (kids) for (const kid of kids) {
-                        if (!relatedIds.has(kid)) { relatedIds.add(kid); queue.push(kid); }
-                    }
-                }
-            }
+        // P0/P1 edge glow: highlight edges along ancestor/descendant paths of high-priority nodes.
+        // layoutHighPriRelatedIds is pre-computed in drawForceAndStartPhysics — stable per layout.
+        if (layoutHighPriRelatedIds.size > 0) {
             eEls.classed("high-priority-edge", (l: any) => {
                 const sid = l.source?.id || l.source;
                 const tid = l.target?.id || l.target;
-                return relatedIds.has(sid) && relatedIds.has(tid);
+                return layoutHighPriRelatedIds.has(sid) && layoutHighPriRelatedIds.has(tid);
             });
         }
 
@@ -349,36 +333,29 @@
                 .selectAll<SVGRectElement, any>("rect.cola-group")
                 .data(groups);
 
-            // Detect which groups are nested (have a parent group)
-            const nestedGroupSet = new Set<any>();
-            groups.forEach((g: any) => {
-                (g.groups || []).forEach((child: any) => nestedGroupSet.add(child));
-            });
-
+            // layoutNestedGroupSet is pre-computed in drawForceAndStartPhysics — stable per layout.
             groupEls.join("rect")
                 .attr("class", "cola-group")
-                .attr("rx", (d: any) => nestedGroupSet.has(d) ? 6 : 10)
-                .attr("ry", (d: any) => nestedGroupSet.has(d) ? 6 : 10)
+                .attr("rx", (d: any) => layoutNestedGroupSet.has(d) ? 6 : 10)
+                .attr("ry", (d: any) => layoutNestedGroupSet.has(d) ? 6 : 10)
                 .attr("x", (d: any) => d.bounds?.x ?? 0)
                 .attr("y", (d: any) => d.bounds?.y ?? 0)
                 .attr("width", (d: any) => d.bounds?.width() ?? 0)
                 .attr("height", (d: any) => d.bounds?.height() ?? 0)
                 .attr("fill", (d: any) => {
                     const hue = projectHue(d.containerId || d.label || '');
-                    const isNested = nestedGroupSet.has(d);
-                    return isNested
+                    return layoutNestedGroupSet.has(d)
                         ? `hsla(${hue}, 40%, 50%, 0.05)`
                         : `hsla(${hue}, 40%, 50%, 0.08)`;
                 })
                 .attr("stroke", (d: any) => {
                     const hue = projectHue(d.containerId || d.label || '');
-                    const isNested = nestedGroupSet.has(d);
-                    return isNested
+                    return layoutNestedGroupSet.has(d)
                         ? `hsla(${hue}, 50%, 55%, 0.25)`
                         : `hsla(${hue}, 40%, 50%, 0.3)`;
                 })
-                .attr("stroke-width", (d: any) => nestedGroupSet.has(d) ? 1 : 2)
-                .attr("stroke-dasharray", (d: any) => nestedGroupSet.has(d) ? "4,2" : "6,3")
+                .attr("stroke-width", (d: any) => layoutNestedGroupSet.has(d) ? 1 : 2)
+                .attr("stroke-dasharray", (d: any) => layoutNestedGroupSet.has(d) ? "4,2" : "6,3")
                 .style("cursor", "crosshair")
                 .on("click", (e: any, d: any) => {
                     e.stopPropagation();
@@ -500,8 +477,6 @@
             if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
-
-        const CONTAINER_TYPES = new Set(['epic']);
 
         // Set width/height on nodes for avoidOverlaps — account for epic scaling.
         // IMPORTANT: Cola's overlap solver pushes nodes apart by the minimum displacement.
@@ -679,6 +654,41 @@
                 if (!nestedResolved.has(g) && g.label) buildGroupMembership(g, []);
             });
         }
+
+        // Pre-compute P0/P1 ancestor+descendant related IDs for edge glow — stable per layout.
+        // NOTE: inside drawForceAndStartPhysics, local `parentOf` maps child ID → GraphNode (not string).
+        layoutHighPriRelatedIds = new Set<string>();
+        {
+            const highPriIds = new Set<string>();
+            activeNodes.forEach(n => {
+                if (n.priority <= 1 && INCOMPLETE_STATUSES.has(n.status)) highPriIds.add(n.id);
+            });
+            for (const id of highPriIds) {
+                layoutHighPriRelatedIds.add(id);
+                // Ancestors — parentOf maps child → GraphNode here
+                let cur = id;
+                let pNode = parentOf.get(cur);
+                while (pNode) { cur = pNode.id; layoutHighPriRelatedIds.add(cur); pNode = parentOf.get(cur); }
+                // Descendants (BFS) using component-level childrenOf (string → Set<string>)
+                const queue = [id];
+                while (queue.length > 0) {
+                    const nid = queue.shift()!;
+                    const kids = childrenOf.get(nid);
+                    if (kids) for (const kid of kids) {
+                        if (!layoutHighPriRelatedIds.has(kid)) { layoutHighPriRelatedIds.add(kid); queue.push(kid); }
+                    }
+                }
+            }
+        }
+
+        // Pre-compute nested-group set for hull rendering — group topology is stable per layout.
+        // Only bounds change per tick; nesting structure is fixed after colaGroups is built.
+        layoutNestedGroupSet = new Set<any>();
+        colaGroups.forEach((g: any) => {
+            (g.groups as number[]).forEach((childIdx: number) => {
+                layoutNestedGroupSet.add(colaGroups[childIdx]);
+            });
+        });
 
         // Initial positions: lay out top-level groups in a wide horizontal grid,
         // then scatter child groups and leaves near their parent's center.
