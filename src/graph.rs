@@ -398,12 +398,10 @@ pub fn deduplicate_vec(vec: &mut Vec<String>) {
 /// Checks for common patterns: "Acceptance Criteria" headers, "done when" clauses,
 /// and "definition of done" sections.
 pub fn detect_acceptance_criteria(body: &str) -> bool {
-    let lower = body.to_lowercase();
-    lower.contains("acceptance criteria")
-        || lower.contains("done when")
-        || lower.contains("definition of done")
-        || lower.contains("## ac\n")
-        || lower.contains("## ac\r")
+    static AC_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(acceptance criteria|done when|definition of done|## ac\r?\n)").unwrap()
+    });
+    AC_REGEX.is_match(body)
 }
 
 // ===========================================================================

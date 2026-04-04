@@ -1376,30 +1376,37 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
 /// Called after `compute_inverses` so `node.children` is fully populated.
 /// Handles cycles in the parent-child graph gracefully via a visited set.
 fn compute_scope(nodes: &mut [GraphNode]) {
-    let children_map: HashMap<String, Vec<String>> = nodes
+    let children_map: HashMap<&str, &[String]> = nodes
         .iter()
-        .map(|n| (n.id.clone(), n.children.clone()))
+        .map(|n| (n.id.as_str(), n.children.as_slice()))
         .collect();
 
-    for node in nodes.iter_mut() {
-        let mut visited = HashSet::new();
-        node.scope = count_descendants(&node.id, &children_map, &mut visited) as i32;
+    let mut scopes = Vec::with_capacity(nodes.len());
+    let mut visited = HashSet::new();
+    
+    for node in nodes.iter() {
+        visited.clear();
+        scopes.push(count_descendants(&node.id, &children_map, &mut visited) as i32);
+    }
+    
+    for (node, scope) in nodes.iter_mut().zip(scopes) {
+        node.scope = scope;
     }
 }
 
-fn count_descendants(
+fn count_descendants<'a>(
     id: &str,
-    children_map: &HashMap<String, Vec<String>>,
-    visited: &mut HashSet<String>,
+    children_map: &HashMap<&str, &'a [String]>,
+    visited: &mut HashSet<&'a str>,
 ) -> usize {
     let children = match children_map.get(id) {
-        Some(c) if !c.is_empty() => c.clone(),
+        Some(c) if !c.is_empty() => *c,
         _ => return 0,
     };
     let mut count = 0;
-    for child_id in &children {
-        if visited.insert(child_id.clone()) {
-            count += 1 + count_descendants(child_id, children_map, visited);
+    for child_id in children {
+        if visited.insert(child_id.as_str()) {
+            count += 1 + count_descendants(child_id.as_str(), children_map, visited);
         }
     }
     count
@@ -1414,15 +1421,17 @@ fn count_descendants(
 /// Called after `compute_inverses` (children populated) and node statuses are final.
 fn compute_uncertainty(nodes: &mut [GraphNode]) {
     // Snapshot dep statuses to avoid borrow conflict
-    let status_map: HashMap<String, Option<String>> = nodes
+    let status_map: HashMap<&str, Option<&str>> = nodes
         .iter()
-        .map(|n| (n.id.clone(), n.status.clone()))
+        .map(|n| (n.id.as_str(), n.status.as_deref()))
         .collect();
 
-    for node in nodes.iter_mut() {
+    let mut uncertainties = Vec::with_capacity(nodes.len());
+
+    for node in nodes.iter() {
         // Confidence override: user explicitly rated confidence
         if let Some(conf) = node.confidence {
-            node.uncertainty = (1.0 - conf).clamp(0.0, 1.0);
+            uncertainties.push((1.0 - conf).clamp(0.0, 1.0));
             continue;
         }
 
@@ -1444,11 +1453,8 @@ fn compute_uncertainty(nodes: &mut [GraphNode]) {
                 .depends_on
                 .iter()
                 .filter(|dep_id| {
-                    status_map
-                        .get(*dep_id)
-                        .and_then(|s| s.as_deref())
-                        .map(|s| graph::is_completed(Some(s)))
-                        .unwrap_or(false)
+                    let status = status_map.get(dep_id.as_str()).copied().flatten();
+                    graph::is_completed(status)
                 })
                 .count();
             let ratio = resolved as f64 / node.depends_on.len() as f64;
@@ -1459,7 +1465,11 @@ fn compute_uncertainty(nodes: &mut [GraphNode]) {
         let body_score = (node.word_count as f64 / 100.0).min(1.0);
         u += (1.0 - body_score) * 0.10;
 
-        node.uncertainty = u.clamp(0.0, 1.0);
+        uncertainties.push(u.clamp(0.0, 1.0));
+    }
+
+    for (node, u) in nodes.iter_mut().zip(uncertainties) {
+        node.uncertainty = u;
     }
 }
 
