@@ -81,14 +81,16 @@ interface Rect {
 
 // Obstacle-aware routing state — set by ForceView before each tick
 let _obstacles: Rect[] = [];
-let _nodeGroupMap: Map<string, string> = new Map();
+let _nodeGroupSets: Map<string, Set<string>> = new Map();
 
-/** Called by ForceView to provide obstacle data for edge routing */
-export function setEdgeObstacles(obstacles: Rect[], nodeGroupMap: Map<string, string>) {
+/** Called by ForceView to provide obstacle data for edge routing.
+ *  nodeGroupSets maps each node ID → Set of ALL enclosing group container IDs
+ *  (including ancestor groups for nested hierarchies). */
+export function setEdgeObstacles(obstacles: Rect[], nodeGroupSets: Map<string, Set<string>>) {
     _obstacles = obstacles;
-    _nodeGroupMap = nodeGroupMap;
+    _nodeGroupSets = nodeGroupSets;
     if (obstacles.length > 0 && !_loggedOnce) {
-        console.log(`[EdgeRouter] ${obstacles.length} obstacles, ${nodeGroupMap.size} nodes mapped`);
+        console.log(`[EdgeRouter] ${obstacles.length} obstacles, ${nodeGroupSets.size} nodes mapped`);
         _loggedOnce = true;
     }
 }
@@ -120,14 +122,20 @@ function routeAroundObstacles(
     sx: number, sy: number, tx: number, ty: number,
     sourceId: string, targetId: string
 ): string {
-    // Groups that the source and target belong to — we don't avoid those
-    const sourceGroup = _nodeGroupMap.get(sourceId);
-    const targetGroup = _nodeGroupMap.get(targetId);
+    // All groups that enclose the source or target — skip those obstacles.
+    // With nested groups, both nodes share all ancestor containers, so edges
+    // between siblings in the same epic won't route around their own container.
+    const sourceGroups = _nodeGroupSets.get(sourceId);
+    const targetGroups = _nodeGroupSets.get(targetId);
 
-    // Filter to obstacles that are NOT the source/target's own groups
-    const obstacles = _obstacles.filter(r =>
-        r.containerId !== sourceGroup && r.containerId !== targetGroup
-    );
+    const obstacles = _obstacles.filter(r => {
+        const cid = r.containerId;
+        if (!cid) return true;
+        // Skip any obstacle that encloses either endpoint
+        if (sourceGroups?.has(cid)) return false;
+        if (targetGroups?.has(cid)) return false;
+        return true;
+    });
 
     if (obstacles.length === 0) {
         // No obstacles to avoid — simple Manhattan

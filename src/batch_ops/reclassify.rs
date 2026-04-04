@@ -9,8 +9,8 @@ use std::path::Path;
 /// Map document type to target subdirectory.
 fn type_to_dir(doc_type: &str) -> &str {
     match doc_type {
-        "task" | "bug" | "epic" | "feature" | "action" | "learn" => "tasks",
-        "project" | "subproject" => "projects",
+        "task" | "epic" | "learn" => "tasks",
+        "project" => "projects",
         "goal" => "goals",
         "memory" | "note" | "insight" | "observation" => "memories",
         "knowledge" => "notes",

@@ -1111,7 +1111,7 @@ async fn main() -> Result<()> {
                 let mut visible: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
 
                 // Collect ancestor context nodes (projects, epics, goals)
-                let context_types = ["project", "epic", "goal", "subproject"];
+                let context_types = ["project", "epic"];
                 let mut context_ids: HashSet<String> = HashSet::new();
 
                 for task in &tasks {

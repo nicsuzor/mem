@@ -5,7 +5,7 @@
  */
 
 export const EDGE_FORCE = {
-    parent:         { strength: 0.1,  distance: 200 },
+    parent:         { strength: 0.1,  distance: 120 },
     depends_on:     { strength: 0.02, distance: 400 },
     soft_depends_on:{ strength: 0.01, distance: 500 },
     ref:            { strength: 0.01, distance: 500 },

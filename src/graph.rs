@@ -155,6 +155,10 @@ pub struct GraphNode {
     pub reachable: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assumptions: Vec<Assumption>,
+    /// Optional content classification (e.g. "bug", "feature", "action", "milestone").
+    /// Display/filter only — does not affect graph behaviour.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification: Option<String>,
 }
 
 /// An assumption attached to a planning node.
@@ -275,17 +279,14 @@ pub fn status_group(status: Option<&str>) -> &'static str {
 }
 
 /// Node types that represent actionable work items (shown in dashboards).
-pub const TASK_TYPES: &[&str] = &["task", "goal", "project", "epic"];
+pub const TASK_TYPES: &[&str] = &["task", "project", "epic", "learn"];
 
 /// All recognized canonical node type values.
 pub const VALID_NODE_TYPES: &[&str] = &[
-    // Hierarchy / planning
-    "goal", "project", "subproject", "epic",
-    // Work items
-    "task", "action", "bug", "feature",
-    "milestone", "learn",
-    // Knowledge / reference
-    "note", "knowledge", "memory", "contact",
+    // Actionable
+    "project", "epic", "task", "learn",
+    // Reference
+    "goal", "note", "knowledge", "memory", "contact",
     "document", "reference", "review", "case", "spec",
     // Structural / log
     "index", "daily", "session-log", "audit-report",
@@ -533,6 +534,11 @@ impl GraphNode {
                 .and_then(|v| v.as_str())
                 .map(String::from)
         });
+        let classification = fm.as_ref().and_then(|f| {
+            f.get("classification")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
 
         let sg = status.as_deref().map(|s| status_group(Some(s)).to_string());
 
@@ -580,6 +586,7 @@ impl GraphNode {
             reachable: false,
             assumptions,
             focus_score: None,
+            classification,
         }
     }
 }
