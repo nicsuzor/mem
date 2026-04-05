@@ -1179,6 +1179,72 @@ pub fn lint_directory(
         })
         .collect();
 
+    // ── Hard cycle detection ─────────────────────────────────────────────────
+    // Scan all files for `parent` + `depends_on` references to build a directed
+    // adjacency map, then run Tarjan's SCC to find hard dependency cycles.
+    // Files that participate in a cycle receive an error-severity diagnostic.
+    let cycle_diags: HashMap<PathBuf, Diagnostic> = {
+        let raw: Vec<(String, Vec<String>, PathBuf)> = files
+            .par_iter()
+            .filter_map(|p| {
+                let content = std::fs::read_to_string(p).ok()?;
+                let matter = Matter::<YAML>::new();
+                let parsed = matter.parse(&content);
+                let fm = parsed
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
+                let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
+                let mut deps: Vec<String> = Vec::new();
+                if let Some(parent) = fm.get("parent").and_then(|v| v.as_str()) {
+                    deps.push(parent.to_string());
+                }
+                if let Some(arr) = fm.get("depends_on").and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            deps.push(s.to_string());
+                        }
+                    }
+                }
+                Some((id, deps, p.clone()))
+            })
+            .collect();
+
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        let mut id_to_path: HashMap<String, PathBuf> = HashMap::new();
+        for (id, deps, path) in raw {
+            id_to_path.insert(id.clone(), path);
+            if !deps.is_empty() {
+                adj.insert(id, deps);
+            }
+        }
+
+        let cycles: Vec<Vec<String>> = crate::graph_store::tarjan_scc(&adj)
+            .into_iter()
+            .filter(|scc| scc.len() > 1)
+            .collect();
+
+        let mut diag_map: HashMap<PathBuf, Diagnostic> = HashMap::new();
+        for cycle in &cycles {
+            let cycle_ids = cycle.join(", ");
+            for node_id in cycle {
+                if let Some(path) = id_to_path.get(node_id.as_str()) {
+                    diag_map.entry(path.clone()).or_insert_with(|| Diagnostic {
+                        severity: Severity::Error,
+                        rule: "dep-hard-cycle",
+                        message: format!(
+                            "Node '{}' is part of a hard dependency cycle: [{}]",
+                            node_id, cycle_ids
+                        ),
+                        line: None,
+                        fixable: false,
+                    });
+                }
+            }
+        }
+        diag_map
+    };
+
     // Pre-fix pass: collect ID renames needed (old_id → new_id) before per-file fixes
     // Only IDs that genuinely don't match the prefix-hexhash pattern are renamed.
     // Prefix may contain uppercase letters (e.g. "academicOps-b5d43955").
@@ -1208,10 +1274,17 @@ pub fn lint_directory(
         Vec::new()
     };
 
-    let results: Vec<FileResult> = files
+    let mut results: Vec<FileResult> = files
         .par_iter()
         .map(|p| lint_file(p, fix, known_ids.as_ref(), Some(&ancestor_map)))
         .collect();
+
+    // Merge cycle diagnostics into per-file results
+    for r in &mut results {
+        if let Some(diag) = cycle_diags.get(&r.path) {
+            r.diagnostics.push(diag.clone());
+        }
+    }
 
     let summary = LintSummary::from_results(&results);
 
@@ -1225,11 +1298,16 @@ pub fn lint_directory(
             let _ = rename_id(pkb_root, old_id, new_id);
         }
 
-        // Return fresh results after renames
-        let results: Vec<FileResult> = files
+        // Return fresh results after renames (cycle diagnostics still apply)
+        let mut results: Vec<FileResult> = files
             .par_iter()
             .map(|p| lint_file(p, false, known_ids.as_ref(), Some(&ancestor_map)))
             .collect();
+        for r in &mut results {
+            if let Some(diag) = cycle_diags.get(&r.path) {
+                r.diagnostics.push(diag.clone());
+            }
+        }
         let summary = LintSummary::from_results(&results);
         return (results, summary);
     }

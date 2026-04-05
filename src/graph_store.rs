@@ -689,6 +689,52 @@ impl GraphStore {
     }
 
     // -----------------------------------------------------------------------
+    // Cycle detection
+    // -----------------------------------------------------------------------
+
+    /// Detect hard dependency cycles using Tarjan's SCC.
+    ///
+    /// Runs Tarjan's SCC on the subgraph of `DependsOn` + `Parent` edges.
+    /// Returns SCCs with size > 1 — these are actual hard cycles.
+    /// Each inner `Vec` contains the node IDs in one cycle.
+    pub fn find_hard_cycles(&self) -> Vec<Vec<String>> {
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+        for edge in &self.edges {
+            if matches!(edge.edge_type, EdgeType::DependsOn | EdgeType::Parent) {
+                adjacency
+                    .entry(edge.source.clone())
+                    .or_default()
+                    .push(edge.target.clone());
+            }
+        }
+        tarjan_scc(&adjacency)
+            .into_iter()
+            .filter(|scc| scc.len() > 1)
+            .collect()
+    }
+
+    /// Count soft dependency cycles using Tarjan's SCC.
+    ///
+    /// Runs Tarjan's SCC on the `SoftDependsOn` edge subgraph.
+    /// Returns the count of SCCs with size > 1. Soft cycles are considered healthy
+    /// (mutual reinforcement) and are counted but not flagged as errors.
+    pub fn find_soft_cycle_count(&self) -> usize {
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+        for edge in &self.edges {
+            if matches!(edge.edge_type, EdgeType::SoftDependsOn) {
+                adjacency
+                    .entry(edge.source.clone())
+                    .or_default()
+                    .push(edge.target.clone());
+            }
+        }
+        tarjan_scc(&adjacency)
+            .into_iter()
+            .filter(|scc| scc.len() > 1)
+            .count()
+    }
+
+    // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
@@ -1730,6 +1776,126 @@ fn build_resolution_map(nodes: &HashMap<String, GraphNode>) -> HashMap<String, S
     map
 }
 
+// ===========================================================================
+// Tarjan's SCC algorithm
+// ===========================================================================
+
+/// Run Tarjan's strongly connected components (SCC) algorithm on a directed graph.
+///
+/// `adjacency` maps node_id → list of successor node_ids.
+/// Returns all SCCs as `Vec<Vec<node_id>>`. SCCs of size 1 are non-cycling nodes;
+/// SCCs of size > 1 represent actual cycles.
+///
+/// Uses an iterative implementation to avoid stack overflow on large graphs.
+pub fn tarjan_scc(adjacency: &HashMap<String, Vec<String>>) -> Vec<Vec<String>> {
+    // Collect all node IDs (sources and targets)
+    let mut all_node_ids: HashSet<String> = HashSet::new();
+    for (k, vs) in adjacency {
+        all_node_ids.insert(k.clone());
+        for v in vs {
+            all_node_ids.insert(v.clone());
+        }
+    }
+    let mut all_nodes: Vec<String> = all_node_ids.into_iter().collect();
+    all_nodes.sort(); // deterministic ordering
+
+    let n = all_nodes.len();
+    let node_to_idx: HashMap<&str, usize> = all_nodes
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.as_str(), i))
+        .collect();
+
+    // Convert adjacency to integer form
+    let adj: Vec<Vec<usize>> = all_nodes
+        .iter()
+        .map(|v| {
+            adjacency
+                .get(v.as_str())
+                .map(|ws| {
+                    ws.iter()
+                        .filter_map(|w| node_to_idx.get(w.as_str()).copied())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+        .collect();
+
+    let undef = usize::MAX;
+    let mut index_counter = 0usize;
+    let mut stack: Vec<usize> = Vec::new();
+    let mut on_stack = vec![false; n];
+    let mut index = vec![undef; n];
+    let mut lowlink = vec![0usize; n];
+    let mut sccs: Vec<Vec<String>> = Vec::new();
+
+    // Iterative Tarjan's: work stack entries = (node_idx, next_neighbor_to_process)
+    let mut call_stack: Vec<(usize, usize)> = Vec::new();
+
+    for start in 0..n {
+        if index[start] != undef {
+            continue;
+        }
+        call_stack.push((start, 0));
+
+        'outer: while !call_stack.is_empty() {
+            let (v, ni) = *call_stack.last().unwrap();
+
+            // First visit: assign index/lowlink, push onto SCC stack
+            if ni == 0 {
+                index[v] = index_counter;
+                lowlink[v] = index_counter;
+                index_counter += 1;
+                stack.push(v);
+                on_stack[v] = true;
+            }
+
+            // Advance through neighbors starting at ni
+            let mut cursor = ni;
+            while cursor < adj[v].len() {
+                let w = adj[v][cursor];
+                cursor += 1;
+                // Update the position for when we resume v
+                call_stack.last_mut().unwrap().1 = cursor;
+
+                if index[w] == undef {
+                    // Unvisited neighbor — recurse into it
+                    call_stack.push((w, 0));
+                    continue 'outer;
+                } else if on_stack[w] {
+                    // Back edge — update lowlink
+                    lowlink[v] = lowlink[v].min(index[w]);
+                }
+                // Already in a completed SCC — skip
+            }
+
+            // All neighbors processed — pop v
+            call_stack.pop();
+
+            // Propagate lowlink to parent
+            if let Some(&(parent, _)) = call_stack.last() {
+                lowlink[parent] = lowlink[parent].min(lowlink[v]);
+            }
+
+            // If v is an SCC root, pop the SCC from the stack
+            if lowlink[v] == index[v] {
+                let mut scc = Vec::new();
+                loop {
+                    let w = stack.pop().unwrap();
+                    on_stack[w] = false;
+                    scc.push(all_nodes[w].clone());
+                    if w == v {
+                        break;
+                    }
+                }
+                sccs.push(scc);
+            }
+        }
+    }
+
+    sccs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2116,5 +2282,124 @@ mod tests {
         let graph2 = GraphStore::build(&docs_subtask_only, Path::new("/tmp/test-pkb"));
         let parent2 = graph2.resolve("parent-def").expect("parent2 not found");
         assert!(parent2.leaf, "parent with only subtasks should still be a leaf");
+    }
+
+    /// Helper: create a PkbDocument with soft_depends_on frontmatter.
+    fn make_doc_with_soft_dep(path: &str, title: &str, id: &str, soft_deps: &[&str]) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), serde_json::json!(title));
+        fm.insert("type".to_string(), serde_json::json!("task"));
+        fm.insert("status".to_string(), serde_json::json!("active"));
+        fm.insert("id".to_string(), serde_json::json!(id));
+        if !soft_deps.is_empty() {
+            fm.insert("soft_depends_on".to_string(), serde_json::json!(soft_deps));
+        }
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_tarjan_scc_no_cycles() {
+        // A → B → C (linear chain, no cycles)
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        adj.insert("A".to_string(), vec!["B".to_string()]);
+        adj.insert("B".to_string(), vec!["C".to_string()]);
+
+        let sccs = tarjan_scc(&adj);
+        let cycles: Vec<_> = sccs.into_iter().filter(|s| s.len() > 1).collect();
+        assert!(cycles.is_empty(), "linear chain should have no cycles");
+    }
+
+    #[test]
+    fn test_tarjan_scc_simple_cycle() {
+        // A → B → A (2-node cycle)
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        adj.insert("A".to_string(), vec!["B".to_string()]);
+        adj.insert("B".to_string(), vec!["A".to_string()]);
+
+        let sccs = tarjan_scc(&adj);
+        let cycles: Vec<_> = sccs.into_iter().filter(|s| s.len() > 1).collect();
+        assert_eq!(cycles.len(), 1, "should detect exactly one cycle");
+        let cycle_ids: HashSet<_> = cycles[0].iter().collect();
+        assert!(cycle_ids.contains(&"A".to_string()));
+        assert!(cycle_ids.contains(&"B".to_string()));
+    }
+
+    #[test]
+    fn test_tarjan_scc_three_node_cycle() {
+        // A → B → C → A
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        adj.insert("A".to_string(), vec!["B".to_string()]);
+        adj.insert("B".to_string(), vec!["C".to_string()]);
+        adj.insert("C".to_string(), vec!["A".to_string()]);
+
+        let sccs = tarjan_scc(&adj);
+        let cycles: Vec<_> = sccs.into_iter().filter(|s| s.len() > 1).collect();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 3);
+    }
+
+    #[test]
+    fn test_tarjan_scc_disjoint_cycle_and_chain() {
+        // A ↔ B (cycle), C → D (no cycle)
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        adj.insert("A".to_string(), vec!["B".to_string()]);
+        adj.insert("B".to_string(), vec!["A".to_string()]);
+        adj.insert("C".to_string(), vec!["D".to_string()]);
+
+        let sccs = tarjan_scc(&adj);
+        let cycles: Vec<_> = sccs.into_iter().filter(|s| s.len() > 1).collect();
+        assert_eq!(cycles.len(), 1, "only one cycle among the two components");
+    }
+
+    #[test]
+    fn test_find_hard_cycles_on_graph() {
+        // task-a depends on task-b; task-b depends on task-a → hard cycle
+        let docs = vec![
+            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &["task-b"]),
+            make_doc("tasks/b.md", "Task B", "task", "active", "task-b", None, &["task-a"]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let hard_cycles = graph.find_hard_cycles();
+        assert_eq!(hard_cycles.len(), 1, "should detect one hard cycle");
+        let cycle_ids: HashSet<_> = hard_cycles[0].iter().cloned().collect();
+        assert!(cycle_ids.contains("task-a"));
+        assert!(cycle_ids.contains("task-b"));
+    }
+
+    #[test]
+    fn test_find_hard_cycles_no_cycle() {
+        // task-a depends on task-b (linear, no cycle)
+        let docs = vec![
+            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &["task-b"]),
+            make_doc("tasks/b.md", "Task B", "task", "active", "task-b", None, &[]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        assert!(
+            graph.find_hard_cycles().is_empty(),
+            "linear dependency should have no hard cycles"
+        );
+    }
+
+    #[test]
+    fn test_find_soft_cycle_count() {
+        // soft_depends_on cycle: task-soft-a ↔ task-soft-b
+        let docs = vec![
+            make_doc_with_soft_dep("tasks/a.md", "Task A", "task-soft-a", &["task-soft-b"]),
+            make_doc_with_soft_dep("tasks/b.md", "Task B", "task-soft-b", &["task-soft-a"]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        assert_eq!(graph.find_soft_cycle_count(), 1, "soft mutual dependency = one soft cycle");
+        // Must not appear in hard cycles
+        assert!(graph.find_hard_cycles().is_empty());
     }
 }

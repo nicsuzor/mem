@@ -52,6 +52,13 @@ pub struct GraphStats {
     pub disconnected_epics: usize,
     /// Projects not linked to any goal
     pub projects_without_goals: usize,
+    /// Hard cycles detected in the DependsOn+Parent subgraph via Tarjan's SCC.
+    /// Each inner Vec contains the node IDs forming one cycle.
+    /// An empty outer Vec means no hard cycles exist.
+    pub hard_cycles: Vec<Vec<String>>,
+    /// Count of SCCs with size > 1 in the SoftDependsOn subgraph.
+    /// Soft cycles are healthy (mutual reinforcement) — counted but not flagged.
+    pub soft_cycle_count: usize,
     /// Deterministic hash of health metrics for convergence detection.
     /// Compare with previous run's hash — if equal, the graph has stabilized.
     pub metrics_hash: String,
@@ -114,6 +121,19 @@ impl GraphStats {
         out.push_str(&format!(
             "  Projects w/o goals:   {}\n",
             self.projects_without_goals
+        ));
+        out.push_str(&format!(
+            "  Hard cycles:          {}\n",
+            self.hard_cycles.len()
+        ));
+        if !self.hard_cycles.is_empty() {
+            for cycle in &self.hard_cycles {
+                out.push_str(&format!("    - [{}]\n", cycle.join(", ")));
+            }
+        }
+        out.push_str(&format!(
+            "  Soft cycle count:     {}\n",
+            self.soft_cycle_count
         ));
         out.push_str(&format!(
             "  Metrics hash:         {}\n",
@@ -232,11 +252,16 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         }
     }
 
+    // Detect dependency cycles via Tarjan's SCC
+    let hard_cycles = graph.find_hard_cycles();
+    let soft_cycle_count = graph.find_soft_cycle_count();
+
     // Compute deterministic hash for convergence detection.
     // Uses health indicators (not counts that change with normal work like done/active).
     let hash_input = format!(
-        "orphan={},flat={},disconnected_epics={},projects_wo_goals={},max_depth={},stale={}",
-        orphan_count, flat_tasks, disconnected_epics, projects_without_goals, max_depth, stale_count
+        "orphan={},flat={},disconnected_epics={},projects_wo_goals={},max_depth={},stale={},hard_cycles={}",
+        orphan_count, flat_tasks, disconnected_epics, projects_without_goals, max_depth, stale_count,
+        hard_cycles.len()
     );
     let metrics_hash = format!("{:x}", {
         // Simple FNV-1a hash for deterministic, lightweight hashing
@@ -259,6 +284,8 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         type_distribution,
         disconnected_epics,
         projects_without_goals,
+        hard_cycles,
+        soft_cycle_count,
         metrics_hash,
     }
 }
