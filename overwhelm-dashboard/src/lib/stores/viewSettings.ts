@@ -9,9 +9,9 @@ export const viewSettings = writable({
     topNLeaves: 80,
     chargeStrength: 1.0,  // unused (legacy d3 force)
     linkDistance: 1.0,     // unused (legacy d3 force)
-    colaLinkLength: 60,    // ideal link length (symmetricDiffLinkLengths)
-    colaFlowSep: 40,       // min vertical separation between linked nodes
-    colaGroupPadding: 8,   // padding inside epic group hulls — keeps non-descendants out
+    colaLinkLength: 35,    // ideal link length (symmetricDiffLinkLengths)
+    colaFlowSep: 30,       // min vertical separation between linked nodes
+    colaGroupPadding: 6,   // padding inside epic group hulls — keeps non-descendants out
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',

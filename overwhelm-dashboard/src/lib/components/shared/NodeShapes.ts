@@ -86,7 +86,7 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
         const epicFill = `hsl(${hue}, 35%, 85%)`;
         const epicStroke = `hsl(${hue}, 45%, 45%)`;
 
-        const sw = d.w * EPIC_SCALE, sh = d.h * EPIC_SCALE;
+        const sw = d.w, sh = d.h;
         const shw = sw / 2, shh = sh / 2;
         const c = Math.min(shh * 0.5, EPIC_CORNER_RADIUS);
         const pts = `${-shw + c},${-shh} ${shw - c},${-shh} ${shw},${0} ${shw - c},${shh} ${-shw + c},${shh} ${-shw},${0}`;

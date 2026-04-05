@@ -206,6 +206,13 @@
                         'overlay-opacity': 0.12,
                     } as any,
                 },
+                // Filter-dimmed nodes
+                {
+                    selector: 'node[?filter_dimmed]',
+                    style: {
+                        'opacity': 0.15,
+                    } as any,
+                },
                 // High-priority container stations — extra prominent
                 {
                     selector: 'node[?isHighPriority][?isContainer]',

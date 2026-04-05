@@ -247,15 +247,16 @@
             }
         });
 
-        // Gentle dimming: non-focus leaves slightly faded
+        // Gentle dimming: non-focus leaves slightly faded, and filter-dimmed nodes heavily faded
         if (showFocus) {
             nEls.style("opacity", (d: any) => {
+                if (d.filter_dimmed) return 0.2;
                 if (!d._isLeaf) return null;
                 if (focusIds.has(d.id)) return 1;
                 return 0.6;
             });
         } else {
-            nEls.style("opacity", null);
+            nEls.style("opacity", (d: any) => d.filter_dimmed ? 0.2 : null);
         }
 
         const eEls = d3

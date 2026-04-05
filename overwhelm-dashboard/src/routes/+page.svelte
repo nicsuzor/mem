@@ -89,32 +89,42 @@
             return n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "" && n.status !== "inbox";
         });
 
-        if (!$filters.showActive) {
-            fNodes = fNodes.filter(
-                (n) => !["active", "inbox", "todo", "in_progress", "review", "waiting", "decomposing", "dormant"].includes(n.status),
-            );
-        }
-        if (!$filters.showBlocked) {
-            fNodes = fNodes.filter((n) => n.status !== "blocked");
-        }
-        if (!$filters.showCompleted) {
-            fNodes = fNodes.filter(
-                (n) => !["done", "completed", "cancelled", "historical", "deferred", "paused", "seed", "early-scaffold"].includes(n.status),
-            );
-        }
-        // Priority filter from legend
-        if ($filters.priorityFilter !== null) {
-            const pf = $filters.priorityFilter;
-            fNodes = fNodes.filter(
-                (n) => STRUCTURAL_TYPES.has(n.type) || n.priority === pf,
-            );
-        }
-        if (isForce && $filters.project !== "ALL") {
-            fNodes = fNodes.filter(
-                (n) => n.project === $filters.project || n.type === "project" || n.type === "goal",
-            );
-        }
-        if ($viewSettings.viewMode === "Force" && !$filters.showOrphans) {
+        // Tri-state Visibility Filters
+        fNodes = fNodes.filter(n => {
+            // Projects are still boolean
+            if (($filters.hiddenProjects?.length ?? 0) > 0 && $filters.hiddenProjects.includes(n.project || "")) {
+                return false;
+            }
+
+            let visState = 'bright';
+
+            // Determine status visibility
+            let statusVis = 'bright';
+            const isActive = ["active", "inbox", "todo", "in_progress", "review", "waiting", "decomposing", "dormant"].includes(n.status);
+            const isBlocked = n.status === "blocked";
+            const isCompleted = ["done", "completed", "cancelled", "historical", "deferred", "paused", "seed", "early-scaffold"].includes(n.status);
+            
+            if (isActive) statusVis = $filters.statusActive;
+            else if (isBlocked) statusVis = $filters.statusBlocked;
+            else if (isCompleted) statusVis = $filters.statusCompleted;
+
+            let priVis = 'bright';
+            if (!STRUCTURAL_TYPES.has(n.type)) {
+                if (n.priority === 0) priVis = $filters.priority0;
+                else if (n.priority === 1) priVis = $filters.priority1;
+                else if (n.priority === 2) priVis = $filters.priority2;
+                else if (n.priority === 3) priVis = $filters.priority3;
+                else if (n.priority === 4) priVis = $filters.priority4;
+            }
+
+            if (statusVis === 'hidden' || priVis === 'hidden') return false;
+            if (statusVis === 'half' || priVis === 'half') visState = 'half';
+            
+            (n as any).filter_dimmed = (visState === 'half');
+            return true;
+        });
+
+        if ($viewSettings.viewMode === "Force" && $filters.statusOrphans === 'hidden') {
             const nodesWithEdges = new Set<string>();
             fLinks.forEach((l) => {
                 const sid = typeof l.source === "object" ? l.source.id : l.source;

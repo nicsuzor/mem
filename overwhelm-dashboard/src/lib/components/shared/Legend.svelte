@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { filters, cycleEdgeVisibility, type EdgeVisibility } from '../../stores/filters';
+    import { filters, cycleVisibility, type VisibilityState } from '../../stores/filters';
     import { graphData } from '../../stores/graph';
     import { PRIORITIES } from '../../data/constants';
     import { projectColor } from '../../data/projectUtils';
@@ -10,13 +10,14 @@
 
     // Status = fill color (muted defaults, saturated for attention)
     const statusGroups = [
-        { key: 'showActive', label: 'ACTIVE', statuses: ['active', 'inbox', 'todo', 'in_progress', 'review'], color: '#2C4A88' },
-        { key: 'showBlocked', label: 'BLOCKED', statuses: ['blocked'], color: '#6B3A3A' },
-        { key: 'showCompleted', label: 'COMPLETED', statuses: ['done', 'completed', 'cancelled'], color: '#1E1E24' },
+        { key: 'statusActive', label: 'ACTIVE', color: '#2C4A88' },
+        { key: 'statusBlocked', label: 'BLOCKED', color: '#6B3A3A' },
+        { key: 'statusCompleted', label: 'COMPLETED', color: '#1E1E24' },
     ] as const;
 
-    // Priority = border color — now interactive (click to filter)
+    // Priority = border color — now interactive (click to cycle)
     const priorityItems = PRIORITIES.map(p => ({
+        key: `priority${p.value}`,
         value: p.value,
         label: `P${p.value} ${p.label}`,
         color: p.color,
@@ -28,35 +29,35 @@
         { key: 'edgeReferences', label: 'REFERENCES', color: '#a3a3a3', dash: true },
     ] as const;
 
-    function toggleStatus(key: string) {
-        filters.update(f => ({ ...f, [key]: !f[key as keyof typeof f] }));
-    }
-
-    function togglePriority(value: number) {
-        filters.update(f => {
-            const current = f.priorityFilter;
-            return { ...f, priorityFilter: current === value ? null : value };
-        });
-    }
-
-    function setProjectFilter(project: string) {
-        filters.update(f => ({ ...f, project }));
-    }
-
-    function cycleEdge(key: string) {
+    function cycleFilter(key: string) {
         filters.update(f => ({
             ...f,
-            [key]: cycleEdgeVisibility(f[key as keyof typeof f] as EdgeVisibility),
+            [key]: cycleVisibility(f[key as keyof typeof f] as VisibilityState),
         }));
     }
 
-    function edgeOpacityForLegend(vis: EdgeVisibility): number {
+    function toggleProject(project: string) {
+        filters.update(f => {
+            const hidden = f.hiddenProjects || [];
+            if (hidden.includes(project)) {
+                return { ...f, hiddenProjects: hidden.filter(p => p !== project) };
+            } else {
+                return { ...f, hiddenProjects: [...hidden, project] };
+            }
+        });
+    }
+
+    function toggleAllProjects() {
+        filters.update(f => ({ ...f, hiddenProjects: [] }));
+    }
+
+    function edgeOpacityForLegend(vis: VisibilityState): number {
         if (vis === 'bright') return 1;
         if (vis === 'half') return 0.4;
         return 0.1;
     }
 
-    function edgeStateLabel(vis: EdgeVisibility): string {
+    function stateLabel(vis: VisibilityState): string {
         if (vis === 'bright') return '●';
         if (vis === 'half') return '◐';
         return '○';
@@ -83,36 +84,38 @@
             </button>
         </div>
 
-        <!-- Status filters -->
+        <!-- Status filters (click to cycle: bright → half → hidden) -->
         <div class="legend-section">
+            <span class="legend-section-title">STATUS</span>
             {#each statusGroups as group}
+                {@const vis = $filters[group.key as keyof typeof $filters] as VisibilityState}
                 <button
                     class="legend-item"
-                    class:dimmed={!$filters[group.key]}
-                    on:click={() => toggleStatus(group.key)}
+                    class:dimmed={vis === 'hidden'}
+                    on:click={() => cycleFilter(group.key)}
+                    title="Click to cycle: bright → half → hidden"
                 >
-                    <div class="legend-box" style="background:{group.color}; opacity:{$filters[group.key] ? 1 : 0.2}"></div>
+                    <div class="legend-box" style="background:{group.color}; opacity:{edgeOpacityForLegend(vis)};"></div>
                     <span class="legend-label">{group.label}</span>
+                    <span class="edge-state">{stateLabel(vis)}</span>
                 </button>
             {/each}
         </div>
 
-        <!-- Priority filter (click to isolate a priority level) -->
+        <!-- Priority filter (click to cycle: bright → half → hidden) -->
         <div class="legend-section">
-            <span class="legend-section-title">PRIORITY (CLICK TO FILTER)</span>
+            <span class="legend-section-title">PRIORITY</span>
             {#each priorityItems as p}
+                {@const vis = $filters[p.key as keyof typeof $filters] as VisibilityState}
                 <button
                     class="legend-item"
-                    class:active-filter={$filters.priorityFilter === p.value}
-                    class:dimmed={$filters.priorityFilter !== null && $filters.priorityFilter !== p.value}
-                    on:click={() => togglePriority(p.value)}
-                    title="Click to show only P{p.value} tasks"
+                    class:dimmed={vis === 'hidden'}
+                    on:click={() => cycleFilter(p.key)}
+                    title="Click to cycle: bright → half → hidden"
                 >
-                    <div class="legend-box" style="background:transparent; border: 2px solid {p.color};"></div>
+                    <div class="legend-box" style="background:transparent; border: 2px solid {p.color}; opacity:{edgeOpacityForLegend(vis)};"></div>
                     <span class="legend-label">{p.label}</span>
-                    {#if $filters.priorityFilter === p.value}
-                        <span class="filter-badge">ON</span>
-                    {/if}
+                    <span class="edge-state">{stateLabel(vis)}</span>
                 </button>
             {/each}
         </div>
@@ -121,32 +124,32 @@
         <div class="legend-section">
             <span class="legend-section-title">EDGES</span>
             {#each edgeTypes as edge}
-                {@const vis = $filters[edge.key]}
+                {@const vis = $filters[edge.key as keyof typeof $filters] as VisibilityState}
                 <button
                     class="legend-item"
                     class:dimmed={vis === 'hidden'}
-                    on:click={() => cycleEdge(edge.key)}
+                    on:click={() => cycleFilter(edge.key)}
                     title="Click to cycle: bright → half → hidden"
                 >
                     <div class="legend-line" style="background:{edge.color}; opacity:{edgeOpacityForLegend(vis)};"
                         class:dashed={edge.dash}></div>
                     <span class="legend-label">{edge.label}</span>
-                    <span class="edge-state">{edgeStateLabel(vis)}</span>
+                    <span class="edge-state">{stateLabel(vis)}</span>
                 </button>
             {/each}
         </div>
 
         <!-- Project filter with color swatches -->
         <div class="legend-section">
-            <span class="legend-section-title">PROJECTS</span>
+            <span class="legend-section-title">PROJECTS (CLICK TO TOGGLE)</span>
             <button
                 class="legend-item"
-                class:active-filter={$filters.project === 'ALL'}
-                on:click={() => setProjectFilter('ALL')}
+                class:dimmed={($filters.hiddenProjects?.length ?? 0) > 0}
+                on:click={toggleAllProjects}
             >
                 <div class="legend-box" style="background: #666; border-radius: 50%;"></div>
                 <span class="legend-label">ALL PROJECTS</span>
-                {#if $filters.project === 'ALL'}
+                {#if ($filters.hiddenProjects?.length ?? 0) === 0}
                     <span class="filter-badge">ON</span>
                 {/if}
             </button>
@@ -154,14 +157,13 @@
                 {#each visibleProjects as proj}
                     <button
                         class="legend-item"
-                        class:active-filter={$filters.project === proj}
-                        class:dimmed={$filters.project !== 'ALL' && $filters.project !== proj}
-                        on:click={() => setProjectFilter(proj)}
-                        title="Filter to {proj}"
+                        class:dimmed={$filters.hiddenProjects?.includes(proj)}
+                        on:click={() => toggleProject(proj)}
+                        title="Toggle {proj}"
                     >
                         <div class="legend-box project-swatch" style="background: {projectColor(proj)};"></div>
                         <span class="legend-label">{(proj || '').toUpperCase()}</span>
-                        {#if $filters.project === proj}
+                        {#if !($filters.hiddenProjects?.includes(proj))}
                             <span class="filter-badge">ON</span>
                         {/if}
                     </button>
