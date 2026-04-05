@@ -1,6 +1,5 @@
 <script lang="ts">
     import * as d3 from "d3";
-    import * as cola from "webcola";
     import { onMount, onDestroy } from "svelte";
     import { graphData, graphStructureKey } from "../../stores/graph";
     import { viewSettings } from "../../stores/viewSettings";
@@ -21,8 +20,8 @@
     let edgesLayer: SVGGElement;
     let hullLayer: SVGGElement;
 
-    let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
-    let colaGroups: any[] = [];
+    let simulation: d3.Simulation<d3.SimulationNodeDatum, undefined> | null = null;
+    let layoutGroups: any[] = [];
     // Container nodes that have a Cola group box — their hexagon is hidden (box replaces it)
     let containerGroupNodeIds = new Set<string>();
     // Track cleanup and frame loop
@@ -237,16 +236,17 @@
                     .on("drag", (e, d: any) => {
                         // Lazy init: only pin/wake Cola once actual movement occurs
                         if (!(d as any)._dragging) {
-                            cola.Layout.dragStart(d);
+                            if (simulation) simulation.alphaTarget(0.3).restart();
                             (d as any)._dragging = true;
                         }
-                        d.x = e.x;
-                        d.y = e.y;
-                        if (colaLayout) colaLayout.resume();
+                        d.fx = e.x;
+                        d.fy = e.y;
                     })
                     .on("end", (e, d: any) => {
                         if ((d as any)._dragging) {
-                            d.fixed = 0;
+                            d.fx = null;
+                            d.fy = null;
+                            if (simulation) simulation.alphaTarget(0);
                             (d as any)._dragging = false;
                         }
                     }),
@@ -254,15 +254,66 @@
     }
 
     function tickVisuals() {
-        if (!colaLayout) return;
+        if (!simulation) return;
+
+        // Compute group bounding boxes manually bottom-up
+        if (layoutGroups && layoutGroups.length > 0) {
+            const computed = new Set();
+            function getBounds(g: any) {
+                if (computed.has(g)) return g.bounds;
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                
+                (g.leaves || []).forEach((idx: number) => {
+                    const n = layoutNodes[idx];
+                    if (!n) return;
+                    const halfW = (n.w || 0) / 2;
+                    const halfH = (n.h || 0) / 2;
+                    const nx = n.x ?? 0;
+                    const ny = n.y ?? 0;
+                    if (nx - halfW < minX) minX = nx - halfW;
+                    if (ny - halfH < minY) minY = ny - halfH;
+                    if (nx + halfW > maxX) maxX = nx + halfW;
+                    if (ny + halfH > maxY) maxY = ny + halfH;
+                });
+                
+                (g.groups || []).forEach((child: any) => {
+                    const cb = getBounds(child);
+                    if (cb) {
+                        if (cb.x < minX) minX = cb.x;
+                        if (cb.y < minY) minY = cb.y;
+                        if (cb.X > maxX) maxX = cb.X;
+                        if (cb.Y > maxY) maxY = cb.Y;
+                    }
+                });
+
+                if (minX !== Infinity) {
+                    const pad = g.padding || 0;
+                    minX -= pad;
+                    minY -= pad;
+                    maxX += pad;
+                    maxY += pad;
+                    g.bounds = {
+                        x: minX, y: minY, X: maxX, Y: maxY,
+                        width: () => maxX - minX,
+                        height: () => maxY - minY
+                    };
+                } else {
+                    g.bounds = null;
+                }
+                computed.add(g);
+                return g.bounds;
+            }
+
+            layoutGroups.forEach((g: any) => getBounds(g));
+        }
 
         d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
             .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
 
         // Update obstacle data for edge routing from group bounding boxes.
-        if (colaLayout) {
-            const groups = (colaLayout.groups() || []).filter((g: any) => g.label && g.bounds);
+        if (layoutGroups) {
+            const groups = layoutGroups.filter((g: any) => g.label && g.bounds);
             const obstacles = groups.map((g: any) => ({
                 x: g.bounds.x,
                 y: g.bounds.y,
@@ -287,7 +338,7 @@
         }
 
         // Render group bounding boxes
-        if (hullLayer && colaLayout) {
+        if (hullLayer && layoutGroups) {
             const allGroups: any[] = [];
             function extractGroups(gList: any[]) {
                 for (const g of gList) {
@@ -295,7 +346,7 @@
                     if (g.groups && g.groups.length > 0) extractGroups(g.groups);
                 }
             }
-            extractGroups(colaLayout.groups() || []);
+            extractGroups(layoutGroups);
             
             // Deduplicate by containerId or label
             const uniqueGroups = Array.from(new Map(allGroups.map(g => [g.containerId || g.label, g])).values());
@@ -419,7 +470,7 @@
         if (!$graphData) return;
 
         // Setup DOM elements
-        if (colaLayout) { colaLayout.stop(); colaLayout = null; }
+        if (simulation) { simulation.stop(); simulation = null; }
 
         const data = $graphData;
 
@@ -593,10 +644,10 @@
             }
         }
 
-        // Convert group indices to actual object references for colaGroups
-        colaGroups = d3Groups.map(g => ({ ...g, groups: [] })); // shadow copy
+        // Convert group indices to actual object references for layoutGroups
+        layoutGroups = d3Groups.map(g => ({ ...g, groups: [] })); // shadow copy
         d3Groups.forEach((g, i) => {
-            colaGroups[i].groups = (g.groups as number[]).map(idx => colaGroups[idx]);
+            layoutGroups[i].groups = (g.groups as number[]).map(idx => layoutGroups[idx]);
         });
 
         // Mark which container nodes have a group box — their node visual will be hidden
@@ -604,7 +655,7 @@
 
         // Put ungrouped nodes in a catch-all group
         if (ungroupedIndices.length > 0) {
-            colaGroups.push({ leaves: ungroupedIndices, groups: [], padding: groupPadding, label: '' });
+            layoutGroups.push({ leaves: ungroupedIndices, groups: [], padding: groupPadding, label: '' });
         }
 
         // Pre-compute node→group membership for edge routing (avoids per-tick allocation).
@@ -628,8 +679,8 @@
                 });
             }
             const nestedResolved = new Set<any>();
-            colaGroups.forEach(g => (g.groups || []).forEach((c: any) => nestedResolved.add(c)));
-            colaGroups.forEach(g => {
+            layoutGroups.forEach(g => (g.groups || []).forEach((c: any) => nestedResolved.add(c)));
+            layoutGroups.forEach(g => {
                 if (!nestedResolved.has(g) && g.label) buildGroupMembership(g, []);
             });
         }
@@ -662,7 +713,7 @@
 
         // Pre-compute nested-group set for hull rendering
         layoutNestedGroupSet = new Set<any>();
-        colaGroups.forEach((g: any) => {
+        layoutGroups.forEach((g: any) => {
             (g.groups as any[]).forEach((child: any) => {
                 layoutNestedGroupSet.add(child);
             });
@@ -706,7 +757,7 @@
             }
         }
 
-        const topGroups = colaGroups.filter(g => !layoutNestedGroupSet.has(g));
+        const topGroups = layoutGroups.filter(g => !layoutNestedGroupSet.has(g));
         // Arrange top-level groups in a horizontal row with wrapping
         const cols = Math.max(1, Math.ceil(Math.sqrt(topGroups.length * (cw / ch))));
         const rows = Math.ceil(topGroups.length / cols);
@@ -771,47 +822,41 @@
         routeSfdpEdges(eEls);
         updateHulls();
 
-        // --- Phase 3: Start Cola layout ---
-        // By relying purely on WebCola's group bounding boxes to keep nodes together, 
-        // we prevent children from being pulled into a tight overlapping cluster at the center,
-        // allowing them to remain in their wide 2D grid seed layout without vertical stacking.
-        const colaLinks = activeLinks.map((l: any) => {
-            if (l.type === 'parent') return null; // Omit parent links from physics!
-
-            const si = nodeIndex.get(typeof l.source === 'object' ? l.source.id : l.source);
-            const ti = nodeIndex.get(typeof l.target === 'object' ? l.target.id : l.target);
-            if (si === undefined || ti === undefined) return null;
+        // --- Phase 3: Start D3 layout ---
+        const d3Links = activeLinks.map((l: any) => {
+            const sid = typeof l.source === 'object' ? l.source.id : l.source;
+            const tid = typeof l.target === 'object' ? l.target.id : l.target;
+            if (!sid || !tid) return null;
             
             let length = $viewSettings.colaLinkLength || 35;
-            let weight = 1.0;
+            let strength = 1.0;
             
-            if (l.type === 'depends_on') {
-                length = length * 1.2; // Flow dependencies slightly looser, but not harsh
-                weight = 1.0;
+            if (l.type === 'parent') {
+                length = length * 0.8;
+                strength = 2.0; 
+            } else if (l.type === 'depends_on') {
+                length = length * 1.2; 
+                strength = 0.5;
             } else {
-                length = length * 1.4; // References looser, but evens out the forces
-                weight = 0.5; // Weakest weight
+                length = length * 1.4; 
+                strength = 0.2; 
             }
-            return { source: si, target: ti, length, weight };
+            return { source: sid, target: tid, length, strength, type: l.type };
         }).filter((l: any) => l !== null) as any[];
 
-        const nestedCount = colaGroups.filter(g => (g.groups || []).length > 0).length;
-        console.log(`[Cola] ${activeNodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups (${nestedCount} with children)`, colaGroups.map(g => `${g.leaves.length}L${(g.groups||[]).length ? '+' + (g.groups||[]).length + 'G' : ''}`));
+        const nestedCount = layoutGroups.filter(g => (g.groups || []).length > 0).length;
+        console.log(`[D3 Force] ${activeNodes.length} nodes, ${d3Links.length} links, ${layoutGroups.length} groups (${nestedCount} with children)`);
 
-        colaLayout = cola.d3adaptor(d3)
-            .size([cw, ch])
-            .nodes(activeNodes as any)
-            .links(colaLinks)
-            .groups(colaGroups)
-            .avoidOverlaps(true)
-            .handleDisconnected(true)
-            .linkDistance((d: any) => d.length)
-            .on("tick", tickVisuals)
-            .start(100, 100, 200);
+        simulation = d3.forceSimulation(activeNodes as any)
+            .force("link", d3.forceLink(d3Links).id((d: any) => d.id).distance((d: any) => d.length).strength((d: any) => d.strength))
+            .force("charge", d3.forceManyBody().strength(-300))
+            .force("center", d3.forceCenter(cw / 2, ch / 2))
+            .force("collide", d3.forceCollide().radius((d: any) => Math.max(d.w || 0, d.h || 0) / 2 + 10))
+            .on("tick", tickVisuals);
     }
 
     onDestroy(() => {
-        if (colaLayout) colaLayout.stop();
+        if (simulation) simulation.stop();
         cancelAnimationFrame(frameId);
     });
 </script>
