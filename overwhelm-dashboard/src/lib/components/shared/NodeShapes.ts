@@ -1,6 +1,7 @@
 import * as d3 from 'd3';
 import type { GraphNode } from '../../data/prepareGraphData';
 import { projectHue } from '../../data/projectUtils';
+import { INCOMPLETE_STATUSES } from '../../data/constants';
 
 function escapeHtml(str: string): string {
     return str
@@ -43,7 +44,7 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
     }
 
     // P0/P1 priority glow ring for incomplete nodes
-    const isIncomplete = !['done', 'completed', 'cancelled'].includes(d.status);
+    const isIncomplete = INCOMPLETE_STATUSES.has(d.status);
     if (d.priority <= 1 && isIncomplete) {
         const glowPad = d.priority === 0 ? 6 : 5;
         const glowFilter = d.priority === 0 ? 'url(#glow-p0)' : 'url(#glow-p1)';

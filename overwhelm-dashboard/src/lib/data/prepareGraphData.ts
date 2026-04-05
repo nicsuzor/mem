@@ -231,30 +231,6 @@ export function prepareGraphData(
     });
     rawEdges = Array.from(uniqueEdges.values());
 
-    // Remove project nodes entirely — epic group boxes handle visual hierarchy.
-    // Reparent children of removed projects to the project's own parent (if any).
-    const projectIds = new Set(rawNodes.filter(n => (n.node_type || '').toLowerCase() === 'project').map(n => n.id));
-    if (projectIds.size > 0) {
-        const projParentMap = new Map<string, string | null>();
-        rawNodes.forEach(n => {
-            if (projectIds.has(n.id)) projParentMap.set(n.id, n.parent || null);
-        });
-        // Reparent children: skip through project ancestors
-        rawNodes.forEach(n => {
-            let cur = n.parent;
-            const seen = new Set<string>();
-            while (cur && projectIds.has(cur)) {
-                if (seen.has(cur)) break;
-                seen.add(cur);
-                cur = projParentMap.get(cur) ?? null;
-            }
-            n.parent = cur;
-        });
-        // Remove project nodes and their edges
-        rawNodes = rawNodes.filter(n => !projectIds.has(n.id));
-        rawEdges = rawEdges.filter(e => !projectIds.has(e.source) && !projectIds.has(e.target));
-    }
-
     const nodeById = new Map<string, any>(rawNodes.map(n => [n.id, n]));
     const nodeIds = new Set(rawNodes.map(n => n.id));
 
