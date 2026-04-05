@@ -126,7 +126,12 @@ impl GraphStore {
         // 7. Compute downstream metrics (BFS through blocks/soft_blocks)
         compute_downstream_metrics(&mut nodes);
 
-        // 8. Compute focus scores
+        // 8. Compute derived properties: scope, uncertainty, criticality
+        compute_scope(&mut nodes);
+        compute_uncertainty(&mut nodes);
+        compute_criticality(&mut nodes);
+
+        // 9. Compute focus scores
         Self::compute_focus_scores(&mut nodes);
 
         // 9. Compute project field (nearest ancestor with node_type == "project")
@@ -221,6 +226,9 @@ impl GraphStore {
         compute_degree_metrics(&mut nodes_vec, &edges);
         compute_centrality_metrics(&mut nodes_vec, &edges);
         compute_downstream_metrics(&mut nodes_vec);
+        compute_scope(&mut nodes_vec);
+        compute_uncertainty(&mut nodes_vec);
+        compute_criticality(&mut nodes_vec);
         Self::compute_focus_scores(&mut nodes_vec);
         compute_project_field(&mut nodes_vec);
 
@@ -1406,6 +1414,135 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
             nodes[idx].stakeholder_exposure =
                 has_stakeholder || nodes[idx].stakeholder.is_some();
         }
+    }
+}
+
+/// Compute scope (subtree size) for each node via recursive descendant count.
+///
+/// Called after `compute_inverses` so `node.children` is fully populated.
+/// Handles cycles in the parent-child graph gracefully via a visited set.
+fn compute_scope(nodes: &mut [GraphNode]) {
+    let children_map: HashMap<&str, &[String]> = nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.children.as_slice()))
+        .collect();
+
+    let mut scopes = Vec::with_capacity(nodes.len());
+    let mut visited = HashSet::new();
+    
+    for node in nodes.iter() {
+        visited.clear();
+        scopes.push(count_descendants(&node.id, &children_map, &mut visited) as i32);
+    }
+    
+    for (node, scope) in nodes.iter_mut().zip(scopes) {
+        node.scope = scope;
+    }
+}
+
+fn count_descendants<'a>(
+    id: &str,
+    children_map: &HashMap<&str, &'a [String]>,
+    visited: &mut HashSet<&'a str>,
+) -> usize {
+    let children = match children_map.get(id) {
+        Some(c) if !c.is_empty() => *c,
+        _ => return 0,
+    };
+    let mut count = 0;
+    for child_id in children {
+        if visited.insert(child_id.as_str()) {
+            count += 1 + count_descendants(child_id.as_str(), children_map, visited);
+        }
+    }
+    count
+}
+
+/// Compute uncertainty [0.0–1.0] for each node.
+///
+/// Composite of: missing acceptance criteria, unresolved scope (has children),
+/// unresolved hard dependencies, and sparse body content.
+/// If `node.confidence` is set, it overrides: uncertainty = 1.0 - confidence.
+///
+/// Called after `compute_inverses` (children populated) and node statuses are final.
+fn compute_uncertainty(nodes: &mut [GraphNode]) {
+    // Snapshot dep statuses to avoid borrow conflict
+    let status_map: HashMap<&str, Option<&str>> = nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.status.as_deref()))
+        .collect();
+
+    let mut uncertainties = Vec::with_capacity(nodes.len());
+
+    for node in nodes.iter() {
+        // Confidence override: user explicitly rated confidence
+        if let Some(conf) = node.confidence {
+            uncertainties.push((1.0 - conf).clamp(0.0, 1.0));
+            continue;
+        }
+
+        let mut u = 0.0_f64;
+
+        // No acceptance criteria → unclear completion condition
+        if !node.has_acceptance_criteria {
+            u += 0.30;
+        }
+
+        // Has children → scope not yet fully resolved
+        if !node.children.is_empty() {
+            u += 0.15;
+        }
+
+        // Unresolved hard dependencies → completion path still open
+        if !node.depends_on.is_empty() {
+            let resolved = node
+                .depends_on
+                .iter()
+                .filter(|dep_id| {
+                    let status = status_map.get(dep_id.as_str()).copied().flatten();
+                    graph::is_completed(status)
+                })
+                .count();
+            let ratio = resolved as f64 / node.depends_on.len() as f64;
+            u += (1.0 - ratio) * 0.25;
+        }
+
+        // Sparse body → little context available
+        let body_score = (node.word_count as f64 / 100.0).min(1.0);
+        u += (1.0 - body_score) * 0.10;
+
+        uncertainties.push(u.clamp(0.0, 1.0));
+    }
+
+    for (node, u) in nodes.iter_mut().zip(uncertainties) {
+        node.uncertainty = u;
+    }
+}
+
+/// Compute criticality [0.0–1.0] for each node, normalized across the graph.
+///
+/// Raw score = downstream_weight + (pagerank × 10) + stakeholder_exposure bonus.
+/// Divides each raw score by the graph-wide maximum to get a normalized value.
+///
+/// Called after `compute_downstream_metrics` and `compute_centrality_metrics`.
+fn compute_criticality(nodes: &mut [GraphNode]) {
+    let raws: Vec<f64> = nodes
+        .iter()
+        .map(|n| {
+            n.downstream_weight
+                + n.pagerank * 10.0
+                + if n.stakeholder_exposure { 3.0 } else { 0.0 }
+        })
+        .collect();
+
+    let max = raws.iter().cloned().fold(0.0_f64, f64::max);
+
+    for (node, &raw) in nodes.iter_mut().zip(raws.iter()) {
+        node.criticality = if max > 0.0 {
+            (raw / max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     }
 }
 

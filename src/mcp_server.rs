@@ -344,6 +344,12 @@ impl PkbSearchServer {
                 if !node.depends_on.is_empty() {
                     output.push_str(&format!("**Depends on:** {}\n", node.depends_on.join(", ")));
                 }
+                if node.uncertainty > 0.0 || node.criticality > 0.0 || node.scope > 0 {
+                    output.push_str(&format!(
+                        "**Metrics:** scope={} uncertainty={:.2} criticality={:.2}\n",
+                        node.scope, node.uncertainty, node.criticality
+                    ));
+                }
             }
             output.push('\n');
         }
@@ -1100,6 +1106,9 @@ impl PkbSearchServer {
             "stakeholder": node.stakeholder,
             "waiting_since": node.waiting_since,
             "focus_score": node.focus_score,
+            "scope": node.scope,
+            "uncertainty": node.uncertainty,
+            "criticality": node.criticality,
         });
 
         let json = serde_json::to_string_pretty(&result).unwrap_or_default();
@@ -2206,6 +2215,9 @@ impl PkbSearchServer {
                         "parent": t.parent,
                         "depends_on": t.depends_on,
                         "node_type": t.node_type,
+                        "scope": t.scope,
+                        "uncertainty": t.uncertainty,
+                        "criticality": t.criticality,
                     })
                 })
                 .collect();
@@ -2249,7 +2261,7 @@ impl PkbSearchServer {
                 "**{total} ready tasks** (showing {}, sorted by priority + downstream weight)\n\n",
                 tasks.len()
             );
-            out.push_str("| # | ID | Pri | Weight | Title |\n|---|---|---|---|---|\n");
+            out.push_str("| # | ID | Pri | Weight | Crit | U | Title |\n|---|---|---|---|---|---|---|\n");
             for (i, t) in tasks.iter().enumerate() {
                 let id = t.task_id.as_deref().unwrap_or(&t.id);
                 let weight = if t.downstream_weight > 0.0 {
@@ -2261,12 +2273,24 @@ impl PkbSearchServer {
                 } else {
                     "-".to_string()
                 };
+                let crit = if t.criticality > 0.0 {
+                    format!("{:.2}", t.criticality)
+                } else {
+                    "-".to_string()
+                };
+                let unc = if t.uncertainty > 0.0 {
+                    format!("{:.2}", t.uncertainty)
+                } else {
+                    "-".to_string()
+                };
                 out.push_str(&format!(
-                    "| {} | {} | {} | {} | {} |\n",
+                    "| {} | {} | {} | {} | {} | {} | {} |\n",
                     i + 1,
                     id,
                     t.priority.unwrap_or(2),
                     weight,
+                    crit,
+                    unc,
                     t.label
                 ));
             }
