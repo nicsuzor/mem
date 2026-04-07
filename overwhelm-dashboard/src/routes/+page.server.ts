@@ -29,88 +29,109 @@ async function loadSynthesis(): Promise<any | null> {
     return data;
 }
 
+/**
+ * Find active sessions from $AOPS_SESSIONS/summaries/.
+ * A session is "current" if: it has a summary file, no outcome (not finished via /dump),
+ * and was written to in the last `hours` hours.
+ */
 async function findActiveSessions(hours = 4): Promise<any[]> {
-    const claudeProjects = join(env.HOME || os.homedir(), '.claude', 'projects');
+    if (!AOPS_SESSIONS) return [];
+    const summariesDir = join(AOPS_SESSIONS, 'summaries');
     const cutoff = Date.now() - hours * 3600 * 1000;
     const results: any[] = [];
 
-    let projectDirs: string[];
+    let files: string[];
     try {
-        projectDirs = await readdir(claudeProjects);
+        files = await readdir(summariesDir);
     } catch {
         return results;
     }
 
-    for (const projName of projectDirs) {
-        if (projName.includes('-tmp') || projName.includes('-var-folders') || projName.endsWith('-hooks')) continue;
+    // Only consider today's files (YYYYMMDD prefix)
+    const todayPrefix = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const candidates = files.filter(f => f.endsWith('.json') && f.startsWith(todayPrefix));
 
-        const projPath = join(claudeProjects, projName);
-        let sessionDirs: string[];
+    for (const filename of candidates) {
+        const filePath = join(summariesDir, filename);
+        let st;
         try {
-            sessionDirs = await readdir(projPath);
+            st = await stat(filePath);
         } catch {
             continue;
         }
+        if (st.mtimeMs < cutoff) continue;
 
-        for (const sessName of sessionDirs) {
-            if (!/^\d/.test(sessName)) continue;
-            const stateFile = join(projPath, sessName, 'session-state.json');
-            let st;
-            try {
-                st = await stat(stateFile);
-            } catch {
-                continue;
+        const data = await readJson(filePath);
+        if (!data) continue;
+
+        // Sessions with an outcome have finished — skip them
+        if (data.outcome) continue;
+
+        const project = data.project || 'unknown';
+        const minutesAgo = (Date.now() - st.mtimeMs) / 60000;
+        const hoursAgo = minutesAgo / 60;
+
+        // Classify session type from filename
+        const stem = filename.replace('.json', '');
+        const isPolecat = stem.includes('polecat');
+        const isCrew = stem.includes('crew');
+        const isScheduled = stem.includes('scheduled');
+        const sessionType: 'polecat' | 'crew' | 'scheduled' | 'interactive' =
+            isPolecat ? 'polecat' : isCrew ? 'crew' : isScheduled ? 'scheduled' : 'interactive';
+
+        // Extract the first meaningful user prompt from timeline as description
+        // This is the best context for "what was this session about?"
+        const timeline: any[] = data.timeline_events || [];
+        let firstPrompt = '';
+        for (const evt of timeline) {
+            if (evt.type !== 'user_prompt') continue;
+            const desc = evt.description || '';
+            // Skip bash I/O noise and slash commands
+            if (desc.includes('<bash-input>') || desc.includes('<bash-stdout>') || desc.startsWith('/clear')) continue;
+            // Clean up scheduled task preamble
+            if (desc.includes('<scheduled-task')) {
+                firstPrompt = 'Scheduled: ' + (desc.match(/name="([^"]+)"/)?.[1] || 'task');
+                break;
             }
-            if (st.mtimeMs < cutoff) continue;
-
-            const stateData = await readJson(stateFile);
-            if (!stateData) continue;
-
-            const insights = stateData.insights || {};
-            const project = insights.project || stateData.project || formatProjectName(projName);
-            const minutesAgo = (Date.now() - st.mtimeMs) / 60000;
-
-            // Determine session status for badges
-            const hoursAgo = minutesAgo / 60;
-            let bucket: 'active' | 'paused' | 'stale';
-            if (hoursAgo < 4) bucket = 'active';
-            else if (hoursAgo < 24) bucket = 'paused';
-            else bucket = 'stale';
-
-            // Detect "needs you" — errored, waiting for input, or completed awaiting review
-            const sessionStatus = stateData.status || insights.status || '';
-            const hasError = sessionStatus === 'error' || sessionStatus === 'errored' || !!stateData.error;
-            const waitingForInput = sessionStatus === 'waiting' || sessionStatus === 'needs_input';
-            const completedAwaitingReview = (sessionStatus === 'completed' || sessionStatus === 'done') && minutesAgo < 240;
-            const needsYou = hasError || waitingForInput || completedAwaitingReview;
-
-            let statusBadge: 'running' | 'needs_you' | 'errored' | 'completed' | 'paused' | 'idle';
-            if (hasError) statusBadge = 'errored';
-            else if (waitingForInput) statusBadge = 'needs_you';
-            else if (minutesAgo < 10) statusBadge = 'running';
-            else if (completedAwaitingReview) statusBadge = 'completed';
-            else if (bucket === 'paused') statusBadge = 'paused';
-            else statusBadge = 'idle';
-
-            results.push({
-                session_id: stateData.session_id || sessName.split('-').pop(),
-                project,
-                description: insights.summary || stateData.summary || stateData.current_task || '',
-                goal: insights.goal || '',
-                started_at: new Date(st.mtimeMs - (stateData.duration_ms || 0)).toISOString(),
-                time_display: minutesAgo < 60 ? `${Math.round(minutesAgo)}m ago` : `${Math.round(minutesAgo / 60)}h ago`,
-                now_task: insights.current_task || stateData.current_task || '',
-                next_task: insights.next_task || '',
-                progress_done: insights.progress_done ?? 0,
-                progress_total: insights.progress_total ?? 0,
-                outcome_text: insights.outcome || '',
-                is_active: minutesAgo < 10,
-                last_modified: st.mtimeMs,
-                bucket,
-                status_badge: statusBadge,
-                needs_you: needsYou,
-            });
+            firstPrompt = desc.slice(0, 150);
+            break;
         }
+        const description = data.summary || firstPrompt || '';
+
+        // Duration: use time since first event (the cron snapshot of token_metrics is stale for running sessions)
+        const firstEvent = timeline[0]?.timestamp;
+        const durationMin = firstEvent
+            ? (Date.now() - new Date(firstEvent).getTime()) / 60000
+            : data.token_metrics?.efficiency?.session_duration_minutes;
+        // Prompt count: only what the cron captured — may be incomplete for running sessions
+        const promptCount = timeline.filter((e: any) => e.type === 'user_prompt').length;
+
+        let bucket: 'active' | 'paused' | 'stale';
+        if (hoursAgo < 4) bucket = 'active';
+        else if (hoursAgo < 24) bucket = 'paused';
+        else bucket = 'stale';
+
+        let statusBadge: string;
+        if (minutesAgo < 10) statusBadge = 'running';
+        else if (hoursAgo < 1) statusBadge = 'idle';
+        else statusBadge = 'paused';
+
+        results.push({
+            session_id: data.session_id || '',
+            project,
+            description,
+            session_type: sessionType,
+            started_at: data.date || new Date(st.mtimeMs).toISOString(),
+            time_display: minutesAgo < 60 ? `${Math.round(minutesAgo)}m ago` : `${Math.round(hoursAgo)}h ago`,
+            duration_min: durationMin,
+            prompt_count: promptCount,
+            is_active: minutesAgo < 10,
+            last_modified: st.mtimeMs,
+            bucket,
+            status_badge: statusBadge,
+            needs_you: false,
+            source: 'summaries',
+        });
     }
 
     results.sort((a, b) => b.last_modified - a.last_modified);
@@ -264,26 +285,28 @@ export const load = async () => {
             : [];
     }
 
+    // Pipeline health — fail fast and loud when data sources are missing
+    const synthesisPipelineOk = synthesis !== null;
+    const dailyStoryOk = synthesis?.daily_story != null;
+    const summariesDirOk = AOPS_SESSIONS !== '';
+
     return {
         dashboardData: {
+            pipeline_errors: [
+                ...(!summariesDirOk ? ['$AOPS_SESSIONS not set — session discovery disabled'] : []),
+                ...(!synthesisPipelineOk ? ['synthesis.json not found or unreadable — is /daily running?'] : []),
+                ...(synthesisPipelineOk && !dailyStoryOk ? ['synthesis.json has no daily_story — run /daily to generate'] : []),
+            ],
             // Bucketed sessions for triage display
             active_agents: activeSessions,
             paused_sessions: pausedSessions,
             stale_sessions: staleSessions,
             needs_you: needsYouSessions,
             synthesis: synthesis ? {
-                alignment: synthesis.alignment,
-                recent_context: synthesis.context?.recent_threads?.join(', ') || '',
-                blockers: synthesis.waiting_on?.length ? synthesis.waiting_on : null,
                 _age_minutes: synthesis._age_minutes,
                 sessions: synthesis.sessions,
-                narrative: synthesis.narrative,
-                daily_narrative: synthesis.daily_narrative,
             } : null,
-            // Prefer LLM-generated daily_narrative from /daily skill; fall back to mechanical narrative
-            daily_story: synthesis?.daily_narrative ? { story: synthesis.daily_narrative }
-                : synthesis?.narrative ? { story: synthesis.narrative }
-                : null,
+            daily_story: synthesis?.daily_story ? { story: synthesis.daily_story } : null,
             
             project_projects: projectProjects,
             project_data: projectData,
