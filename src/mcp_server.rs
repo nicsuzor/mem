@@ -2890,7 +2890,11 @@ impl ServerHandler for PkbSearchServer {
                     "properties": {
                         "id": { "type": "string", "description": "Document ID, filename stem, title, or permalink (preferred — uses flexible resolution)" },
                         "path": { "type": "string", "description": "Path to document (legacy — use id instead)" }
-                    }
+                    },
+                    "anyOf": [
+                        { "required": ["id"] },
+                        { "required": ["path"] }
+                    ]
                 }))
                 .unwrap(),
             ),
