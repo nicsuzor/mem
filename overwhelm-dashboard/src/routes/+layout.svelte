@@ -3,10 +3,12 @@
 	import "../app.css";
 	import { viewSettings, VIEW_MODES } from "$lib/stores/viewSettings";
 	import QuickCapture from "$lib/components/dashboard/QuickCapture.svelte";
+	import Toast from "$lib/components/shared/Toast.svelte";
 
 	let { children } = $props();
 </script>
 
+<Toast />
 <svelte:head>
 	<link rel="icon" href={favicon} />
 </svelte:head>

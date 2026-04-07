@@ -4,7 +4,7 @@
     import { onMount, onDestroy } from "svelte";
     import { graphData, graphStructureKey } from "../../stores/graph";
     import { viewSettings } from "../../stores/viewSettings";
-    import { filters, type EdgeVisibility } from "../../stores/filters";
+    import { filters, type VisibilityState } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
@@ -22,6 +22,7 @@
     let hullLayer: SVGGElement;
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
+    let colaGroups: any[] = [];
     // Container nodes that have a Cola group box — their hexagon is hidden (box replaces it)
     let containerGroupNodeIds = new Set<string>();
     // Track cleanup and frame loop
@@ -155,7 +156,7 @@
             const adj = adjacencyMap.get(hoveredId);
             if (adj) adj.forEach(id => neighbors.add(id));
 
-            nEls.classed("dimmed", (d: any) => !neighbors.has(d.id) && !selectedNeighbors.has(d.id))
+            nEls.classed("dimmed", (d: any) => (!neighbors.has(d.id) && !selectedNeighbors.has(d.id)) || d.filter_dimmed)
                 .classed("illuminated", (d: any) => neighbors.has(d.id) || selectedNeighbors.has(d.id));
 
             eEls.classed("dimmed", (l: any) => {
@@ -175,18 +176,18 @@
                 return hoverMatch || selMatch || activeMatch;
             });
         } else {
-            nEls.classed("dimmed", false).classed("illuminated", false);
+            nEls.classed("dimmed", (d: any) => d.filter_dimmed).classed("illuminated", false);
             eEls.classed("dimmed", false).classed("illuminated", false);
         }
     }
 
-    function edgeVisForType(type: string): EdgeVisibility {
+    function edgeVisForType(type: string): VisibilityState {
         if (type === 'parent') return $filters.edgeParent;
         if (type === 'depends_on') return $filters.edgeDependencies;
         return $filters.edgeReferences; // ref, soft_depends_on, etc.
     }
 
-    function edgeOpacity(vis: EdgeVisibility): number {
+    function edgeOpacity(vis: VisibilityState): number {
         if (vis === 'bright') return 0.85;
         if (vis === 'half') return 0.25;
         return 0;
@@ -253,53 +254,13 @@
     }
 
     function tickVisuals() {
-        // --- Custom Force: Keep epics and child tasks closely packed ---
-        if ($graphData && parentOf) {
-            layoutNodes.forEach((n: any) => {
-                if (CONTAINER_TYPES.has(n.type)) return;
-
-                let cur = n.id;
-                let targetContainer = null;
-                for (let i = 0; i < 20; i++) {
-                    const pid = parentOf.get(cur);
-                    if (!pid) break;
-                    const pNode = layoutNodeMap.get(pid);
-                    if (pNode && CONTAINER_TYPES.has(pNode.type)) {
-                        targetContainer = pNode;
-                        break;
-                    }
-                    cur = pid;
-                }
-
-                if (targetContainer && typeof targetContainer.x === 'number' && typeof targetContainer.y === 'number') {
-                    const dx = targetContainer.x - n.x;
-                    const dy = targetContainer.y - n.y;
-                    // Apply a strong attractive spring force towards the container centre
-                    n.x += dx * 0.25;
-                    n.y += dy * 0.25;
-                }
-            });
-        }
-
-        // Anchor epic nodes to the center of their group bounding box
-        if (colaLayout) {
-            const groups = colaLayout.groups() || [];
-            groups.forEach((g: any) => {
-                if (!g.containerId || !g.bounds) return;
-                const epicNode = layoutNodeMap.get(g.containerId);
-                if (epicNode) {
-                    epicNode.x = (g.bounds.x + g.bounds.X) / 2;
-                    epicNode.y = (g.bounds.y + g.bounds.Y) / 2;
-                }
-            });
-        }
+        if (!colaLayout) return;
 
         d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
             .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
 
-        // Update obstacle data for edge routing from Cola group bounding boxes.
-        // Node→group membership is pre-computed in drawForceAndStartPhysics (layoutNodeGroupSets).
+        // Update obstacle data for edge routing from group bounding boxes.
         if (colaLayout) {
             const groups = (colaLayout.groups() || []).filter((g: any) => g.label && g.bounds);
             const obstacles = groups.map((g: any) => ({
@@ -317,7 +278,6 @@
         applyEdgeVisibility(eEls);
 
         // P0/P1 edge glow: highlight edges along ancestor/descendant paths of high-priority nodes.
-        // layoutHighPriRelatedIds is pre-computed in drawForceAndStartPhysics — stable per layout.
         if (layoutHighPriRelatedIds.size > 0) {
             eEls.classed("high-priority-edge", (l: any) => {
                 const sid = l.source?.id || l.source;
@@ -326,12 +286,25 @@
             });
         }
 
-        // Render group bounding boxes from WebCola (skip unlabelled catch-all group)
+        // Render group bounding boxes
         if (hullLayer && colaLayout) {
-            const groups = (colaLayout.groups() || []).filter((g: any) => g.label);
+            const allGroups: any[] = [];
+            function extractGroups(gList: any[]) {
+                for (const g of gList) {
+                    if (g.label) allGroups.push(g);
+                    if (g.groups && g.groups.length > 0) extractGroups(g.groups);
+                }
+            }
+            extractGroups(colaLayout.groups() || []);
+            
+            // Deduplicate by containerId or label
+            const uniqueGroups = Array.from(new Map(allGroups.map(g => [g.containerId || g.label, g])).values());
+            
+            const TOP_PAD = 60; // Extra visual padding extending upwards for titles
+
             const groupEls = d3.select(hullLayer)
                 .selectAll<SVGRectElement, any>("rect.cola-group")
-                .data(groups);
+                .data(uniqueGroups, (d: any) => d.containerId || d.label);
 
             // layoutNestedGroupSet is pre-computed in drawForceAndStartPhysics — stable per layout.
             groupEls.join("rect")
@@ -339,9 +312,9 @@
                 .attr("rx", (d: any) => layoutNestedGroupSet.has(d) ? 6 : 10)
                 .attr("ry", (d: any) => layoutNestedGroupSet.has(d) ? 6 : 10)
                 .attr("x", (d: any) => d.bounds?.x ?? 0)
-                .attr("y", (d: any) => d.bounds?.y ?? 0)
+                .attr("y", (d: any) => (d.bounds?.y ?? 0) - TOP_PAD)
                 .attr("width", (d: any) => d.bounds?.width() ?? 0)
-                .attr("height", (d: any) => d.bounds?.height() ?? 0)
+                .attr("height", (d: any) => (d.bounds?.height() ?? 0) + TOP_PAD)
                 .attr("fill", (d: any) => {
                     const hue = projectHue(d.containerId || d.label || '');
                     return layoutNestedGroupSet.has(d)
@@ -368,10 +341,30 @@
                     selection.update(s => ({ ...s, hoveredNodeId: null }));
                 });
 
+            // Header shading rect
+            const headerEls = d3.select(hullLayer)
+                .selectAll<SVGRectElement, any>("rect.cola-group-header")
+                .data(uniqueGroups, (d: any) => d.containerId || d.label);
+
+            headerEls.join("rect")
+                .attr("class", "cola-group-header")
+                .style("pointer-events", "none")
+                .attr("rx", (d: any) => layoutNestedGroupSet.has(d) ? 6 : 10)
+                .attr("ry", (d: any) => layoutNestedGroupSet.has(d) ? 6 : 10)
+                // Draw a rectangle covering just the top section of the group
+                .attr("x", (d: any) => d.bounds?.x ?? 0)
+                .attr("y", (d: any) => (d.bounds?.y ?? 0) - TOP_PAD)
+                .attr("width", (d: any) => d.bounds?.width() ?? 0)
+                .attr("height", Math.max(TOP_PAD + 10, 0))
+                .attr("fill", (d: any) => {
+                    const hue = projectHue(d.containerId || d.label || '');
+                    return `hsla(${hue}, 40%, 15%, 0.6)`; // Darker semi-transparent header
+                });
+
             // Epic group labels
             const labelEls = d3.select(hullLayer)
                 .selectAll<SVGTextElement, any>("text.cola-group-label")
-                .data(groups);
+                .data(uniqueGroups, (d: any) => d.containerId || d.label);
 
             labelEls.join("text")
                 .attr("class", "cola-group-label")
@@ -379,7 +372,7 @@
                 .attr("font-weight", 700)
                 .attr("fill", (d: any) => {
                     const hue = projectHue(d.containerId || d.label || '');
-                    return `hsla(${hue}, 40%, 35%, 0.7)`;
+                    return `hsla(${hue}, 60%, 80%, 0.9)`; // Brighter text over the dark header
                 })
                 .style("pointer-events", "none")
                 .style("text-transform", "uppercase")
@@ -389,7 +382,7 @@
                     el.selectAll("tspan").remove();
                     const label = (d.label || "").toUpperCase();
                     const bx = (d.bounds?.x ?? 0) + 12;
-                    const by = (d.bounds?.y ?? 0) + 24;
+                    const by = (d.bounds?.y ?? 0) - TOP_PAD + 22;
                     const availW = Math.max(40, (d.bounds?.width() ?? 200) - 24);
                     const charW = 10; // approximate char width at font-size 18
                     const charsPerLine = Math.max(4, Math.floor(availW / charW));
@@ -483,24 +476,9 @@
         // If nodes are wide+short, it always pushes vertically → vertical stacking.
         // We inflate height padding so the collision box is closer to square,
         // making overlap resolution direction-neutral.
-        const CONTAINER_SCALE = 1.3;
         activeNodes.forEach((n: any) => {
-            if (CONTAINER_TYPES.has(n.type)) {
-                // Epic nodes: full-size collision box, anchored to group center in tickVisuals
-                const scale = CONTAINER_SCALE;
-                n.width = n.w * scale + 40;
-                n.height = n.h * scale + 40;
-                return;
-            }
-            const rawW = n.w;
-            const rawH = n.h;
-            // Use natural dimensions + generous padding.
-            // Wide+short boxes → overlap resolution pushes vertically within groups,
-            // creating compact 2D packing. Global horizontal layout from seeding.
-            // Extra padding for high-priority nodes (glow rings, thicker borders)
-            const priPad = n.priority <= 1 ? 20 : 0;
-            n.width = rawW + 40 + priPad;
-            n.height = rawH + 40 + priPad;
+            n.width = n.w;
+            n.height = n.h;
         });
 
         // Build hierarchical nested groups — epics inside projects, sub-epics inside epics, etc.
@@ -576,8 +554,8 @@
         });
 
         const groupPadding = $viewSettings.colaGroupPadding;
-        const colaGroups: any[] = [];
-        const groupIndexMap = new Map<string, number>(); // containerId → index in colaGroups
+        const d3Groups: any[] = [];
+        const groupIndexMap = new Map<string, number>(); // containerId → index in d3Groups
 
         // Pass 1: Create all container groups (leaves only, groups wired in pass 2)
         for (const cid of containerNodeIds) {
@@ -591,12 +569,12 @@
             }
             const containerNode = nodeById.get(cid);
             const label = containerNode?.label || containerNode?.fullTitle || cid;
-            // Top-level groups get extra padding; nested groups are tighter to keep epics compact
+            // Add extra padding to containers so the top few lines of wrapped text have room
             const isNested = containerParent.get(cid) !== null;
-            const nestPadding = isNested ? groupPadding : groupPadding + 4;
-            const groupIdx = colaGroups.length;
+            const nestPadding = isNested ? Math.max(18, groupPadding + 8) : Math.max(28, groupPadding + 16);
+            const groupIdx = d3Groups.length;
             groupIndexMap.set(cid, groupIdx);
-            colaGroups.push({
+            d3Groups.push({
                 leaves,
                 groups: [],  // filled in pass 2
                 padding: nestPadding,
@@ -611,26 +589,27 @@
             if (pcid && groupIndexMap.has(pcid) && groupIndexMap.has(cid)) {
                 const parentGroupIdx = groupIndexMap.get(pcid)!;
                 const childGroupIdx = groupIndexMap.get(cid)!;
-                colaGroups[parentGroupIdx].groups.push(childGroupIdx);
+                d3Groups[parentGroupIdx].groups.push(childGroupIdx);
             }
         }
+
+        // Convert group indices to actual object references for colaGroups
+        colaGroups = d3Groups.map(g => ({ ...g, groups: [] })); // shadow copy
+        d3Groups.forEach((g, i) => {
+            colaGroups[i].groups = (g.groups as number[]).map(idx => colaGroups[idx]);
+        });
 
         // Mark which container nodes have a group box — their node visual will be hidden
         containerGroupNodeIds = new Set(groupIndexMap.keys());
 
-        // Put ungrouped nodes in a catch-all group so Cola keeps them outside epic containers
+        // Put ungrouped nodes in a catch-all group
         if (ungroupedIndices.length > 0) {
             colaGroups.push({ leaves: ungroupedIndices, groups: [], padding: groupPadding, label: '' });
         }
 
         // Pre-compute node→group membership for edge routing (avoids per-tick allocation).
-        // Resolve numeric child-group indices to actual group objects first, then walk the tree.
         layoutNodeGroupSets = new Map();
         {
-            const resolvedGroups = colaGroups.map(g => ({
-                ...g,
-                groups: (g.groups as number[]).map(idx => colaGroups[idx])
-            }));
             function addNGS(nodeId: string, gId: string) {
                 if (!layoutNodeGroupSets.has(nodeId)) layoutNodeGroupSets.set(nodeId, new Set());
                 layoutNodeGroupSets.get(nodeId)!.add(gId);
@@ -649,8 +628,8 @@
                 });
             }
             const nestedResolved = new Set<any>();
-            resolvedGroups.forEach(g => (g.groups || []).forEach((c: any) => nestedResolved.add(c)));
-            resolvedGroups.forEach(g => {
+            colaGroups.forEach(g => (g.groups || []).forEach((c: any) => nestedResolved.add(c)));
+            colaGroups.forEach(g => {
                 if (!nestedResolved.has(g) && g.label) buildGroupMembership(g, []);
             });
         }
@@ -681,56 +660,65 @@
             }
         }
 
-        // Pre-compute nested-group set for hull rendering — group topology is stable per layout.
-        // Only bounds change per tick; nesting structure is fixed after colaGroups is built.
+        // Pre-compute nested-group set for hull rendering
         layoutNestedGroupSet = new Set<any>();
         colaGroups.forEach((g: any) => {
-            (g.groups as number[]).forEach((childIdx: number) => {
-                layoutNestedGroupSet.add(colaGroups[childIdx]);
+            (g.groups as any[]).forEach((child: any) => {
+                layoutNestedGroupSet.add(child);
             });
         });
 
         // Initial positions: lay out top-level groups in a wide horizontal grid,
         // then scatter child groups and leaves near their parent's center.
-        // Bias toward horizontal spread so the graph doesn't stack vertically.
         const pad = 200;
-        const groupSeeded = new Set<number>();
+        const groupSeeded = new Set<any>();
 
-        function seedGroupPositions(groupIdx: number, cx: number, cy: number, spreadX: number, spreadY: number) {
-            if (groupSeeded.has(groupIdx)) return;
-            groupSeeded.add(groupIdx);
-            const group = colaGroups[groupIdx];
-            // Place direct leaf nodes near group center — wider horizontal scatter
-            (group.leaves as number[]).forEach((idx: number) => {
+        function seedGroupPositions(group: any, cx: number, cy: number, spreadX: number, spreadY: number) {
+            if (groupSeeded.has(group)) return;
+            groupSeeded.add(group);
+            
+            // Place the container node exactly at the center
+            const leaves = group.leaves as number[];
+            const containerIdx = leaves.find((idx: number) => activeNodes[idx].id === group.containerId);
+            if (containerIdx !== undefined) {
+                const n = activeNodes[containerIdx] as any;
+                n.x = cx;
+                n.y = cy;
+            }
+
+            const childLeaves = leaves.filter((idx: number) => activeNodes[idx].id !== group.containerId);
+            childLeaves.forEach((idx: number) => {
                 const n = activeNodes[idx] as any;
-                n.x = cx + (Math.random() - 0.5) * spreadX * 0.4;
-                n.y = cy + (Math.random() - 0.5) * spreadY * 0.3;
+                n.x = cx + (Math.random() - 0.5) * 5;
+                n.y = cy + (Math.random() - 0.5) * 5;
             });
-            // Recursively seed child groups near this center
-            (group.groups as number[]).forEach((childIdx: number) => {
-                const childCx = cx + (Math.random() - 0.5) * spreadX * 0.5;
-                const childCy = cy + (Math.random() - 0.5) * spreadY * 0.4;
-                seedGroupPositions(childIdx, childCx, childCy, spreadX * 0.6, spreadY * 0.6);
-            });
+
+            const childGroupCount = (group.groups as any[]).length;
+            if (childGroupCount > 0) {
+                const angleStep = (Math.PI * 2) / childGroupCount;
+                const radius = Math.max(spreadX, spreadY) * 1.5; 
+                (group.groups as any[]).forEach((child: any, i: number) => {
+                    const angle = i * angleStep;
+                    const childCx = cx + Math.cos(angle) * radius;
+                    const childCy = cy + Math.sin(angle) * radius;
+                    seedGroupPositions(child, childCx, childCy, spreadX * 0.8, spreadY * 0.8);
+                });
+            }
         }
 
-        // Find top-level groups (not nested inside any other group)
-        const nestedGroupIndices = new Set<number>();
-        colaGroups.forEach(g => (g.groups as number[]).forEach((ci: number) => nestedGroupIndices.add(ci)));
-
-        const topGroups = colaGroups.map((g, i) => i).filter(i => !nestedGroupIndices.has(i));
+        const topGroups = colaGroups.filter(g => !layoutNestedGroupSet.has(g));
         // Arrange top-level groups in a horizontal row with wrapping
         const cols = Math.max(1, Math.ceil(Math.sqrt(topGroups.length * (cw / ch))));
         const rows = Math.ceil(topGroups.length / cols);
         const cellW = (cw - pad * 2) / cols;
         const cellH = (ch - pad * 2) / rows;
 
-        topGroups.forEach((groupIdx, i) => {
+        topGroups.forEach((group, i) => {
             const col = i % cols;
             const row = Math.floor(i / cols);
             const cx = pad + cellW * (col + 0.5) + (Math.random() - 0.5) * cellW * 0.3;
             const cy = pad + cellH * (row + 0.5) + (Math.random() - 0.5) * cellH * 0.3;
-            seedGroupPositions(groupIdx, cx, cy, cellW * 0.7, cellH * 0.6);
+            seedGroupPositions(group, cx, cy, cellW * 0.7, cellH * 0.6);
         });
         // Any nodes not in any group (shouldn't happen, but safety)
         activeNodes.forEach((d: any) => {
@@ -762,13 +750,8 @@
 
         bindDragAndClick(nEls);
 
-        // Filter out parent edges involving container-group nodes — the box shows hierarchy.
-        const visualLinks = activeLinks.filter((l: any) => {
-            if (l.type !== 'parent') return true;
-            const sid = typeof l.source === 'object' ? l.source.id : l.source;
-            const tid = typeof l.target === 'object' ? l.target.id : l.target;
-            return !containerGroupNodeIds.has(sid) && !containerGroupNodeIds.has(tid);
-        });
+        // Filter out parent edges — the bounding boxes show the hierarchy.
+        const visualLinks = activeLinks.filter((l: any) => l.type !== 'parent');
 
         const eEls = d3
             .select(edgesLayer)
@@ -789,11 +772,28 @@
         updateHulls();
 
         // --- Phase 3: Start Cola layout ---
-        const colaLinks = parentLinks.map((l: any) => {
-            const si = nodeIndex.get(typeof l.source === 'object' ? l.source.id : l.source)!;
-            const ti = nodeIndex.get(typeof l.target === 'object' ? l.target.id : l.target)!;
-            return { source: si, target: ti };
-        }).filter((l: any) => l.source !== undefined && l.target !== undefined);
+        // By relying purely on WebCola's group bounding boxes to keep nodes together, 
+        // we prevent children from being pulled into a tight overlapping cluster at the center,
+        // allowing them to remain in their wide 2D grid seed layout without vertical stacking.
+        const colaLinks = activeLinks.map((l: any) => {
+            if (l.type === 'parent') return null; // Omit parent links from physics!
+
+            const si = nodeIndex.get(typeof l.source === 'object' ? l.source.id : l.source);
+            const ti = nodeIndex.get(typeof l.target === 'object' ? l.target.id : l.target);
+            if (si === undefined || ti === undefined) return null;
+            
+            let length = $viewSettings.colaLinkLength || 35;
+            let weight = 1.0;
+            
+            if (l.type === 'depends_on') {
+                length = length * 1.2; // Flow dependencies slightly looser, but not harsh
+                weight = 1.0;
+            } else {
+                length = length * 1.4; // References looser, but evens out the forces
+                weight = 0.5; // Weakest weight
+            }
+            return { source: si, target: ti, length, weight };
+        }).filter((l: any) => l !== null) as any[];
 
         const nestedCount = colaGroups.filter(g => (g.groups || []).length > 0).length;
         console.log(`[Cola] ${activeNodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups (${nestedCount} with children)`, colaGroups.map(g => `${g.leaves.length}L${(g.groups||[]).length ? '+' + (g.groups||[]).length + 'G' : ''}`));
@@ -805,9 +805,9 @@
             .groups(colaGroups)
             .avoidOverlaps(true)
             .handleDisconnected(true)
-            .symmetricDiffLinkLengths($viewSettings.colaLinkLength, 0.7)
+            .linkDistance((d: any) => d.length)
             .on("tick", tickVisuals)
-            .start(30, 30, 30);
+            .start(100, 100, 200);
     }
 
     onDestroy(() => {

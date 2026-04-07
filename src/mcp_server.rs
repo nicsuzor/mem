@@ -171,31 +171,26 @@ impl PkbSearchServer {
     // =========================================================================
 
     fn handle_get_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let path_str = args
-            .get("path")
+        // Accept `id` (preferred) or `path` (legacy) — both resolve via the graph
+        let query = args
+            .get("id")
             .and_then(|v| v.as_str())
+            .or_else(|| args.get("path").and_then(|v| v.as_str()))
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: path"),
+                message: Cow::from("Missing required parameter: id (or path)"),
                 data: None,
             })?;
 
-        let path = self.resolve_path(path_str);
-
-        // If the path doesn't exist on disk, try flexible ID resolution via the graph
-        let path = if !path.exists() {
+        // Try ID/flexible resolution first (covers IDs, filename stems, titles, permalinks)
+        let path = {
             let graph = self.graph.read();
-            if let Some(node) = graph.resolve(path_str) {
+            if let Some(node) = graph.resolve(query) {
                 self.abs_path(&node.path)
             } else {
-                return Err(McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!("File not found: {}", path.display())),
-                    data: None,
-                });
+                // Fall back to treating the value as a literal path
+                self.resolve_path(query)
             }
-        } else {
-            path
         };
 
         if !path.exists() {
@@ -2889,13 +2884,17 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "get_document",
-                "Read the full contents of a specific PKB document.",
+                "Read the full contents of a specific PKB document. Accepts an ID (preferred), filename stem, title, permalink, or path — uses flexible resolution.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Path to document" }
+                        "id": { "type": "string", "description": "Document ID, filename stem, title, or permalink (preferred — uses flexible resolution)" },
+                        "path": { "type": "string", "description": "Path to document (legacy — use id instead)" }
                     },
-                    "required": ["path"]
+                    "anyOf": [
+                        { "required": ["id"] },
+                        { "required": ["path"] }
+                    ]
                 }))
                 .unwrap(),
             ),

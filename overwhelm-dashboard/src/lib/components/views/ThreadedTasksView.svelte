@@ -2,6 +2,7 @@
     import { graphData } from "../../stores/graph";
     import { selection } from "../../stores/selection";
     import { filters } from "../../stores/filters";
+    import { toast } from "../../stores/toast";
     import { PRIORITIES } from "../../data/constants";
     import { projectHue } from "../../data/projectUtils";
     import TaskEditorView from "./TaskEditorView.svelte";
@@ -21,8 +22,22 @@
     }
 
     function selectProject(p: string | 'ALL') {
-        filters.update(f => ({ ...f, project: p }));
+        filters.update(f => {
+            if (p === 'ALL') {
+                return { ...f, hiddenProjects: [] };
+            } else {
+                return { ...f, hiddenProjects: projects.filter(proj => proj !== p) };
+            }
+        });
     }
+
+    $: isAllProjects = ($filters.hiddenProjects?.length ?? 0) === 0;
+    // Determine which project is active in the sidebar. 
+    // If exactly one project is visible (all others are hidden), consider it active.
+    $: activeProject = isAllProjects ? 'ALL' : 
+        (projects.length > 0 && ($filters.hiddenProjects?.length ?? 0) === projects.length - 1) 
+        ? projects.find(p => !($filters.hiddenProjects?.includes(p))) 
+        : 'MIXED';
 
     function toggleSort(field: string) {
         if (sortField === field) {
@@ -50,13 +65,19 @@
 
         // Persist
         try {
-            await fetch('/api/task/status', {
+            const res = await fetch('/api/task/status', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id: task.id, status: newStatus })
             });
-        } catch (e) {
+            if (res.ok) {
+                toast.show(`Marked as ${newStatus}`, 'success');
+            } else {
+                toast.show(`Failed to update status`, 'error');
+            }
+        } catch (e: any) {
             console.error("Failed to update task status", e);
+            toast.show(`Error: ${e.message}`, 'error');
         }
     }
 
@@ -64,7 +85,7 @@
 
     $: tasks = $graphData ? $graphData.nodes.filter(n => {
         const matchesType = n.type === 'task';
-        const matchesProject = $filters.project === 'ALL' || n.project === $filters.project;
+        const matchesProject = !($filters.hiddenProjects?.includes(n.project || ''));
 
         let matchesTab = false;
         if (currentTab === 'ACTIVE_TASKS') {
@@ -122,7 +143,7 @@
             <div class="mb-2">
                 <button
                     class="flex items-center gap-2 p-2 w-full text-left rounded transition-colors group
-                    {$filters.project === 'ALL' ? 'text-primary bg-primary/20 border-l-2 border-primary' : 'text-primary/60 hover:bg-primary/10'}"
+                    {activeProject === 'ALL' ? 'text-primary bg-primary/20 border-l-2 border-primary' : 'text-primary/60 hover:bg-primary/10'}"
                     onclick={() => selectProject('ALL')}
                 >
                     <span class="material-symbols-outlined text-lg">target</span>
@@ -134,16 +155,21 @@
                             <div class="flex items-center gap-1 group">
                                 <button
                                     class="flex-1 flex items-center gap-2 p-1.5 text-left rounded cursor-pointer transition-colors
-                                    {$filters.project === project ? 'text-primary bg-primary/20' : 'text-primary/80 hover:bg-primary/10'}"
+                                    {activeProject === project ? 'text-primary bg-primary/20' : 'text-primary/80 hover:bg-primary/10'}"
                                     style="border-left: 3px solid hsl({projectHue(project)}, 45%, 45%);"
                                     onclick={() => selectProject(project)}
                                 >
-                                    <span class="material-symbols-outlined text-base">{$filters.project === project || expandedProjects[project] ? 'folder_open' : 'folder'}</span>
+                                    <span class="material-symbols-outlined text-base">{activeProject === project || expandedProjects[project] ? 'folder_open' : 'folder'}</span>
                                     <span class="truncate">{project}</span>
                                 </button>
                                 <button
                                     class="p-1 text-primary/40 hover:text-primary transition-colors"
-                                    onclick={(e) => { e.stopPropagation(); toggleProject(project); }}
+                                    onclick={(e) => { e.stopPropagation(); filters.update(f => {
+                                        const hidden = f.hiddenProjects || [];
+                                        return hidden.includes(project) 
+                                            ? { ...f, hiddenProjects: hidden.filter(p => p !== project) }
+                                            : { ...f, hiddenProjects: [...hidden, project] };
+                                    }); }}
                                 >
                                     <span class="material-symbols-outlined text-sm">{expandedProjects[project] ? 'expand_more' : 'chevron_right'}</span>
                                 </button>
@@ -176,7 +202,7 @@
             <div class="flex items-center gap-2 text-primary/60 text-sm font-mono">
                 <button class="hover:text-primary transition-colors cursor-pointer" onclick={() => selectProject('ALL')}>WORKSPACE</button>
                 <span class="material-symbols-outlined text-xs">chevron_right</span>
-                <span class="text-primary font-bold">{$filters.project === 'ALL' ? 'ALL_TASKS' : $filters.project.toUpperCase()}</span>
+                <span class="text-primary font-bold">{activeProject === 'ALL' ? 'ALL_TASKS' : (activeProject || '').toUpperCase()}</span>
             </div>
             
             <div class="ml-4 flex-1">

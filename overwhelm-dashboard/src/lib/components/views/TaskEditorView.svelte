@@ -1,6 +1,7 @@
 <script lang="ts">
     import { graphData } from "../../stores/graph";
     import HierarchyTree from "./HierarchyTree.svelte";
+    import { toast } from "../../stores/toast";
     import {
         TYPE_CHARGE,
         STATUS_FILLS,
@@ -62,15 +63,15 @@
     const statusOptions = Object.keys(STATUS_FILLS).sort();
     const typeOptions = Object.keys(TYPE_CHARGE).sort();
 
-    async function updateTask(updates: Record<string, any>) {
-        if (!taskId || !task) return;
+    async function updateTask(updates: Record<string, any>, targetId: string | null = taskId) {
+        if (!targetId) return;
 
         // Optimistic local update — mutate the existing node in place so Cola's
         // internal references stay valid and graphStructureKey doesn't change.
         // This avoids a full physics rebuild for property-only edits.
         graphData.update(gd => {
             if (!gd) return gd;
-            const node = gd.nodes.find(n => n.id === taskId);
+            const node = gd.nodes.find(n => n.id === targetId);
             if (node) {
                 Object.assign(node, updates);
                 if (updates.status) {
@@ -85,7 +86,7 @@
         });
 
         // Persist via API — send any fields that the endpoint accepts
-        const apiPayload: Record<string, unknown> = { id: taskId };
+        const apiPayload: Record<string, unknown> = { id: targetId };
         if (updates.status) apiPayload.status = updates.status;
         if (updates.priority !== undefined) apiPayload.priority = updates.priority;
         if (updates.assignee !== undefined) apiPayload.assignee = updates.assignee;
@@ -102,9 +103,13 @@
                 if (!res.ok) {
                     const data = await res.json().catch(() => ({}));
                     updateError = data.error ?? `HTTP ${res.status}`;
+                    toast.show(`Failed to update ${targetId}: ${updateError}`, 'error');
+                } else {
+                    toast.show(`Successfully updated ${targetId}`, 'success');
                 }
             } catch (e: any) {
                 updateError = e.message ?? 'Network error';
+                toast.show(`Error: ${updateError}`, 'error');
             } finally {
                 updating = false;
             }
@@ -152,13 +157,29 @@
     function priorityUp() {
         if (!task) return;
         const current = task.priority ?? 2;
-        if (current > 0) setPriority(current - 1);
+        if (current > 0) {
+            setPriority(current - 1);
+            if (task.type === 'epic') {
+                activeChildren.forEach(child => {
+                    const cPri = child.priority ?? 2;
+                    if (cPri > 0) updateTask({ priority: cPri - 1 }, child.id);
+                });
+            }
+        }
     }
 
     function priorityDown() {
         if (!task) return;
         const current = task.priority ?? 2;
-        if (current < 4) setPriority(current + 1);
+        if (current < 4) {
+            setPriority(current + 1);
+            if (task.type === 'epic') {
+                activeChildren.forEach(child => {
+                    const cPri = child.priority ?? 2;
+                    if (cPri < 4) updateTask({ priority: cPri + 1 }, child.id);
+                });
+            }
+        }
     }
 
     function handleArchive() {
@@ -183,6 +204,7 @@
             });
             if (res.ok) {
                 refileMarked = true;
+                toast.show(`Task ${taskId} marked for refile`, 'success');
                 // Also optimistically mark it in-graph
                 graphData.update(gd => {
                     if (!gd) return gd;
@@ -195,9 +217,11 @@
             } else {
                 const data = await res.json().catch(() => ({}));
                 updateError = data.error ?? `HTTP ${res.status}`;
+                toast.show(`Failed to mark refile: ${updateError}`, 'error');
             }
         } catch (e: any) {
             updateError = e.message ?? 'Network error';
+            toast.show(`Error: ${updateError}`, 'error');
         } finally {
             updating = false;
         }
