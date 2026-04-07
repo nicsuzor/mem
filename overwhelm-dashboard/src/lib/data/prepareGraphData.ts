@@ -332,7 +332,19 @@ export function prepareGraphData(
         } else {
             const weightNorm = Math.min(Math.log1p(dw) / Math.log1p(maxWeight), 1.0);
             const baseFill = STATUS_FILLS[status] || "#f1f5f9";
-            const desaturation = Math.max(0, 0.4 - weightNorm * 0.4);
+            // Weight-based desaturation: low-weight nodes slightly muted
+            let desaturation = Math.max(0, 0.4 - weightNorm * 0.4);
+            // Recency emphasis: stale nodes desaturate further
+            if (modified) {
+                const daysSinceModified = (Date.now() - modified) / 86400000;
+                if (daysSinceModified > 30) {
+                    desaturation = Math.min(1.0, desaturation + 0.5);
+                } else if (daysSinceModified > 14) {
+                    desaturation = Math.min(1.0, desaturation + 0.3);
+                } else if (daysSinceModified > 7) {
+                    desaturation = Math.min(1.0, desaturation + 0.1);
+                }
+            }
             fill = interpolateColor(baseFill, MUTED_FILL, desaturation);
             const baseText = STATUS_TEXT[status] || "#475569";
             textCol = interpolateColor(baseText, MUTED_TEXT, desaturation);

@@ -58,13 +58,21 @@ The task map exists because Nic's brain can't hold the whole project graph. He n
 
 ## Layout Options
 
-Top-Down, Left-Right, Radial, Force-directed (ForceAtlas2)
+Force, Metro, Treemap, Circle Pack, Arc Diagram
 
 ### How to Read Each Layout
 
-#### ForceAtlas2 — "Where does everything live?"
+#### Force — "Where does everything live?"
 
 Force-directed layout where connected nodes pull together and unconnected nodes push apart. You should see **project clusters** — groups of related tasks huddled together. The core shows your most interconnected work; the periphery shows isolated items.
+
+Force shows **pure topology only** — no priority path highlighting. Use Metro for priority paths.
+
+#### Metro — "What are the priority paths?"
+
+Subway-map style rendering showing dependency chains leading to P0/P1 outcomes. Each priority chain is a named "metro line" colored by project. Interchange stations (where chains cross) reveal shared blockers. See [[view-metro]] for full spec.
+
+All nodes are shown as stations, but non-priority stations render at or below track width — the priority paths visually dominate while the full network provides context.
 
 #### Treemap — "How big is everything?"
 
