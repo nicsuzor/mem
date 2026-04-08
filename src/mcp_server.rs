@@ -629,6 +629,9 @@ impl PkbSearchServer {
         if !node.tags.is_empty() {
             output.push_str(&format!("**Tags:** {}\n", node.tags.join(", ")));
         }
+        if !node.goals.is_empty() {
+            output.push_str(&format!("**Goals:** {}\n", node.goals.join(", ")));
+        }
 
         // Direct relationships
         if !node.depends_on.is_empty() {
@@ -1096,6 +1099,7 @@ impl PkbSearchServer {
             "children": children,
             "subtasks": subtask_nodes_sorted,
             "parent": parent,
+            "goals": node.goals,
             "downstream_weight": node.downstream_weight,
             "stakeholder_exposure": node.stakeholder_exposure,
             "stakeholder": node.stakeholder,
