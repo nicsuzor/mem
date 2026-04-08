@@ -108,6 +108,8 @@ pub struct GraphNode {
     /// Computed: label of nearest ancestor with node_type == "project"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub goals: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -442,6 +444,16 @@ impl GraphNode {
         let due = fm
             .as_ref()
             .and_then(|f| f.get("due").and_then(|v| v.as_str()).map(String::from));
+        let complexity = fm
+            .as_ref()
+            .and_then(|f| f.get("complexity").and_then(|v| v.as_str()).map(String::from));
+        let goals = fm
+            .as_ref()
+            .map(|f| parse_string_array(f, "goals"))
+            .unwrap_or_default();
+        let source = fm
+            .as_ref()
+            .and_then(|f| f.get("source").and_then(|v| v.as_str()).map(String::from));
         let created = fm
             .as_ref()
             .and_then(|f| f.get("created").and_then(|v| v.as_str()).map(String::from));
@@ -462,16 +474,6 @@ impl GraphNode {
         let waiting_since = fm
             .as_ref()
             .and_then(|f| f.get("waiting_since").and_then(|v| v.as_str()).map(String::from));
-        let complexity = fm.as_ref().and_then(|f| {
-            f.get("complexity")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
-        let source = fm.as_ref().and_then(|f| {
-            f.get("source")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
         let confidence = fm
             .as_ref()
             .and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
@@ -597,6 +599,7 @@ impl GraphNode {
             stakeholder,
             waiting_since,
             project,
+            goals,
             complexity,
             source,
             confidence,
