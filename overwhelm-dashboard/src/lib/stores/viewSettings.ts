@@ -7,11 +7,14 @@ export const viewSettings = writable({
     mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph'
     viewMode: 'Treemap',  // "Treemap", "Circle Pack", "Force", "Arc Diagram"
     topNLeaves: 80,
-    chargeStrength: 1.0,  // unused (legacy d3 force)
-    linkDistance: 1.0,     // unused (legacy d3 force)
     colaLinkLength: 35,    // ideal link length (symmetricDiffLinkLengths)
     colaFlowSep: 30,       // min vertical separation between linked nodes
     colaGroupPadding: 6,   // padding inside epic group hulls — keeps non-descendants out
+    // Cola debug toggles — turn on one at a time to isolate layout issues
+    colaAvoidOverlaps: true,
+    colaGroups: true,
+    colaLinks: true,
+    colaHandleDisconnected: true,
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',

@@ -65,6 +65,27 @@
                         </div>
                         <input type="range" min="10" max="2000" step="10" bind:value={$viewSettings.topNLeaves} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
                     </div>
+
+                    <div class="space-y-2 pt-2 border-t border-primary/5">
+                        <span class="text-[9px] text-primary/50 uppercase font-bold">Cola_Constraints</span>
+                        <label class="flex items-center justify-between cursor-pointer">
+                            <span class="text-[10px] text-primary/60 uppercase">Avoid_Overlaps</span>
+                            <input type="checkbox" bind:checked={$viewSettings.colaAvoidOverlaps} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
+                        </label>
+                        <label class="flex items-center justify-between cursor-pointer">
+                            <span class="text-[10px] text-primary/60 uppercase">Groups</span>
+                            <input type="checkbox" bind:checked={$viewSettings.colaGroups} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
+                        </label>
+                        <label class="flex items-center justify-between cursor-pointer">
+                            <span class="text-[10px] text-primary/60 uppercase">Links</span>
+                            <input type="checkbox" bind:checked={$viewSettings.colaLinks} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
+                        </label>
+                        <label class="flex items-center justify-between cursor-pointer">
+                            <span class="text-[10px] text-primary/60 uppercase">Handle_Disconnected</span>
+                            <input type="checkbox" bind:checked={$viewSettings.colaHandleDisconnected} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
+                        </label>
+                    </div>
+
                 {/if}
 
                 {#if isCircle}

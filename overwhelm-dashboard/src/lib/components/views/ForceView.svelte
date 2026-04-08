@@ -9,7 +9,6 @@
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
     import { routeSfdpEdges, setEdgeObstacles } from "../shared/EdgeRenderer";
-    import { FORCE_CONFIG } from "../../data/constants";
     import { zoomScale } from "../../stores/zoom";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
@@ -41,7 +40,7 @@
     let lastColaParams = '';
     $: {
         const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaFlowSep}|${$viewSettings.colaGroupPadding}`;
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaFlowSep}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaAvoidOverlaps}|${$viewSettings.colaGroups}|${$viewSettings.colaLinks}|${$viewSettings.colaHandleDisconnected}`;
         if (
             containerGroup &&
             $graphData &&
@@ -469,7 +468,6 @@
         const cw = Math.round(ch * aspect);
 
         // --- Phase 1: Resolve IDs and build groups FIRST so we know which nodes are containers ---
-        const fc = FORCE_CONFIG;
         const nodeById = new Map(activeNodes.map(n => [n.id, n]));
         const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
         activeLinks.forEach((l: any) => {
@@ -477,11 +475,7 @@
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
 
-        // Set width/height on nodes for avoidOverlaps — account for epic scaling.
-        // IMPORTANT: Cola's overlap solver pushes nodes apart by the minimum displacement.
-        // If nodes are wide+short, it always pushes vertically → vertical stacking.
-        // We inflate height padding so the collision box is closer to square,
-        // making overlap resolution direction-neutral.
+        // Set width/height on nodes for avoidOverlaps.
         activeNodes.forEach((n: any) => {
             n.width = n.w;
             n.height = n.h;
@@ -575,9 +569,11 @@
             }
             const containerNode = nodeById.get(cid);
             const label = containerNode?.label || containerNode?.fullTitle || cid;
-            // Add extra padding to containers so the top few lines of wrapped text have room
+            // Cola padding is symmetric — must be large enough to cover the visual header
+            // (TOP_PAD=60) extending above g.bounds.y. Without this, Cola places non-member
+            // nodes in the header zone, causing visual overlap.
             const isNested = containerParent.get(cid) !== null;
-            const nestPadding = isNested ? Math.max(18, groupPadding + 8) : Math.max(28, groupPadding + 16);
+            const nestPadding = isNested ? Math.max(40, groupPadding + 30) : Math.max(65, groupPadding + 55);
             const groupIdx = d3Groups.length;
             groupIndexMap.set(cid, groupIdx);
             d3Groups.push({
@@ -608,10 +604,7 @@
         // Mark which container nodes have a group box — their node visual will be hidden
         containerGroupNodeIds = new Set(groupIndexMap.keys());
 
-        // Put ungrouped nodes in a catch-all group
-        if (ungroupedIndices.length > 0) {
-            colaGroups.push({ leaves: ungroupedIndices, groups: [], padding: groupPadding, label: '' });
-        }
+        // Ungrouped nodes are left as root-level leaves — no catch-all group needed.
 
         // Pre-compute node→group membership for edge routing (avoids per-tick allocation).
         layoutNodeGroupSets = new Map();
@@ -777,19 +770,29 @@
             return { source: si, target: ti, length, weight };
         }).filter((l: any) => l !== null) as any[];
 
+        // Debug toggles — turn constraints on/off to isolate layout issues
+        const useGroups = $viewSettings.colaGroups;
+        const useLinks = $viewSettings.colaLinks;
+        const useOverlaps = $viewSettings.colaAvoidOverlaps;
+        const useDisconnected = $viewSettings.colaHandleDisconnected;
+
+        const effectiveGroups = useGroups ? colaGroups : [];
+        const effectiveLinks = useLinks ? colaLinks : [];
+
         const nestedCount = colaGroups.filter(g => (g.groups || []).length > 0).length;
-        console.log(`[Cola] ${activeNodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups (${nestedCount} with children)`, colaGroups.map(g => `${g.leaves.length}L${(g.groups||[]).length ? '+' + (g.groups||[]).length + 'G' : ''}`));
+        console.log(`[Cola] ${activeNodes.length} nodes, ${effectiveLinks.length}/${colaLinks.length} links, ${effectiveGroups.length}/${colaGroups.length} groups (${nestedCount} nested) | overlaps=${useOverlaps} disconnected=${useDisconnected}`);
 
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
             .nodes(activeNodes as any)
-            .links(colaLinks)
-            .groups(colaGroups)
-            .avoidOverlaps(true)
-            .handleDisconnected(true)
+            .links(effectiveLinks)
+            .groups(effectiveGroups)
+            .avoidOverlaps(useOverlaps)
+            .handleDisconnected(useDisconnected)
             .linkDistance((d: any) => d.length)
             .on("tick", tickVisuals)
-            .start(100, 100, 200);
+            .start(100, 100, 100, 0, false); // keepRunning=false — compute synchronously, no async oscillation
+        tickVisuals(); // render final state
     }
 
     onDestroy(() => {

@@ -1,49 +1,13 @@
 /**
  * Graph visualization constants.
- *
- * Mirrored from lib/overwhelm/task_graph_d3.py — keep in sync.
  */
 
-export const EDGE_FORCE = {
-    parent:         { strength: 0.1,  distance: 120 },
-    depends_on:     { strength: 0.02, distance: 400 },
-    soft_depends_on:{ strength: 0.01, distance: 500 },
-    ref:            { strength: 0.01, distance: 500 },
-} as const;
-
-export const FORCE_CONFIG = {
-    // Charge (repulsion) — repels all nodes from each other
-    chargeDistanceMax: 800,
-    chargeMult: 2.0,
-
-    // Link distance multiplier (applied to EDGE_FORCE distances)
-    linkDistMult: 0.75,
-
-    // Radial layout (concentric rings by hierarchy depth, replaces center gravity)
-    radialStrength: 0.15,
-
-    // Simulation dynamics
-    alphaDecay: 0.02,
-    velocityDecay: 0.7,
-    warmupTicks: 300,
-} as const;
-
-export const TYPE_CHARGE: Record<string, number> = {
-    goal: -500,
-    project: -350,
-    epic: -250,
-    task: -150,
-    action: -100,
-    bug: -150,
-    feature: -180,
-    learn: -100,
-    daily: -70,
-    knowledge: -100,
-    person: -100,
-    context: -70,
-    template: -60,
-    note: -70,
-};
+/** Known node types — used for type dropdowns and validation. */
+export const NODE_TYPES = [
+    'goal', 'project', 'epic', 'task', 'action',
+    'bug', 'feature', 'learn', 'daily',
+    'knowledge', 'person', 'context', 'template', 'note',
+] as const;
 
 export const TYPE_BASE_SCALE: Record<string, number> = {
     goal: 1.5,

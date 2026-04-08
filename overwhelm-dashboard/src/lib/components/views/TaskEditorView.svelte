@@ -3,7 +3,7 @@
     import HierarchyTree from "./HierarchyTree.svelte";
     import { toast } from "../../stores/toast";
     import {
-        TYPE_CHARGE,
+        NODE_TYPES,
         STATUS_FILLS,
         STATUS_TEXT
     } from "../../data/constants";
@@ -61,7 +61,7 @@
     ));
 
     const statusOptions = Object.keys(STATUS_FILLS).sort();
-    const typeOptions = Object.keys(TYPE_CHARGE).sort();
+    const typeOptions = [...NODE_TYPES].sort();
 
     async function updateTask(updates: Record<string, any>, targetId: string | null = taskId) {
         if (!targetId) return;
