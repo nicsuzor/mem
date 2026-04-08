@@ -9,7 +9,7 @@
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
     import { routeSfdpEdges, setEdgeObstacles } from "../shared/EdgeRenderer";
-    import { FORCE_CONFIG } from "../../data/constants";
+
     import { zoomScale } from "../../stores/zoom";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
