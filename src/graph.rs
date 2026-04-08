@@ -438,6 +438,12 @@ impl GraphNode {
             .as_ref()
             .and_then(|f| f.get("order").and_then(|v| v.as_i64()).map(|v| v as i32))
             .unwrap_or(0);
+        let parent = fm
+            .as_ref()
+            .and_then(|f| f.get("parent").and_then(|v| v.as_str()).map(String::from));
+        let due = fm
+            .as_ref()
+            .and_then(|f| f.get("due").and_then(|v| v.as_str()).map(String::from));
         let complexity = fm
             .as_ref()
             .and_then(|f| f.get("complexity").and_then(|v| v.as_str()).map(String::from));
