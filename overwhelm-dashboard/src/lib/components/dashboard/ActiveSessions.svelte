@@ -95,6 +95,12 @@
                 <span class="text-xs text-primary/90 truncate flex-1" title={session.description}>
                     {session.description}
                 </span>
+                {#if session.prompt_count != null}
+                    <span class="text-[10px] text-primary/40 shrink-0" title="User prompts">{session.prompt_count}p</span>
+                {/if}
+                {#if session.duration_min != null}
+                    <span class="text-[10px] text-primary/40 shrink-0" title="Session duration">{Math.round(session.duration_min)}m</span>
+                {/if}
                 {#if session.status_badge}
                     {@const badge = BADGE_STYLES[session.status_badge] || BADGE_STYLES.idle}
                     <span class="text-[10px] font-bold px-1.5 py-0.5 {badge.class} shrink-0">{badge.label}</span>

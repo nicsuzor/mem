@@ -28,17 +28,25 @@
         return map;
     })();
 
-    $: hasData = mergedProjects && mergedProjects.length > 0;
+    // Only show projects that have at least one epic with an outstanding P0/P1 task
+    $: priorityProjects = mergedProjects.filter(project => {
+        const members = projectMembers.get(project) || [project];
+        const allEpics = members.flatMap(p => (projectData.meta?.[p] || {}).epics || []);
+        return allEpics.some(e => e.hasPriorityTask);
+    });
 
-    // Sort projects by activity: sessions + active tasks count (spec: "Sorted by activity score")
-    $: sortedProjects = [...mergedProjects].sort((a, b) => {
+    $: hasData = priorityProjects.length > 0;
+
+    // Sort by number of priority epics, then by active task count
+    $: sortedProjects = [...priorityProjects].sort((a, b) => {
         const aMembers = projectMembers.get(a) || [a];
         const bMembers = projectMembers.get(b) || [b];
-        const aSessions = aMembers.reduce((s, p) => s + (projectData.sessions?.[p] || []).length, 0);
-        const bSessions = bMembers.reduce((s, p) => s + (projectData.sessions?.[p] || []).length, 0);
+        const aPriEpics = aMembers.flatMap(p => (projectData.meta?.[p] || {}).epics || []).filter(e => e.hasPriorityTask).length;
+        const bPriEpics = bMembers.flatMap(p => (projectData.meta?.[p] || {}).epics || []).filter(e => e.hasPriorityTask).length;
+        if (bPriEpics !== aPriEpics) return bPriEpics - aPriEpics;
         const aTaskNodes = $graphData ? $graphData.nodes.filter(n => aMembers.includes(n.project || '') && ['active', 'in_progress', 'blocked'].includes(n.status)).length : 0;
         const bTaskNodes = $graphData ? $graphData.nodes.filter(n => bMembers.includes(n.project || '') && ['active', 'in_progress', 'blocked'].includes(n.status)).length : 0;
-        return (bSessions + bTaskNodes) - (aSessions + aTaskNodes);
+        return bTaskNodes - aTaskNodes;
     });
 
     function dedup(items: any[]): any[] {
@@ -51,7 +59,7 @@
         {#each sortedProjects as project}
             {@const members = projectMembers.get(project) || [project]}
             {@const meta = members.reduce((acc, p) => ({ ...acc, ...(projectData.meta?.[p] || {}) }), {} as any)}
-            {@const allEpics = members.flatMap(p => (projectData.meta?.[p] || {}).epics || [])}
+            {@const allEpics = members.flatMap(p => (projectData.meta?.[p] || {}).epics || []).filter(e => e.hasPriorityTask)}
             {@const storeTasks = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && members.includes(n.project || '') && ['active', 'in_progress', 'blocked'].includes(n.status)) : []}
             {@const tasks = storeTasks.length > 0 ? storeTasks : members.flatMap(p => projectData.tasks?.[p] || [])}
             {@const accomplishments = members.flatMap(p => projectData.accomplishments?.[p] || [])}

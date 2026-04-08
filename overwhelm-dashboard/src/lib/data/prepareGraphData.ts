@@ -10,9 +10,6 @@ import {
     ASSIGNEE_DEFAULT,
     TYPE_SHAPE,
     TYPE_BADGE,
-    TYPE_CHARGE,
-    EDGE_FORCE,
-    FORCE_CONFIG
 } from './constants';
 
 export interface GraphNode {
@@ -38,7 +35,6 @@ export interface GraphNode {
     totalLeafCount: number;
     modified: number | null;
     badge: string;
-    charge: number;
     parent: string | null;
     project: string | null;
     assignee: string | null;
@@ -75,14 +71,11 @@ export interface GraphEdge {
     color: string;
     width: number;
     dash: string;
-    strength: number;
-    distance: number;
 }
 
 export interface PreparedGraph {
     nodes: GraphNode[];
     links: GraphEdge[];
-    forceConfig: typeof FORCE_CONFIG;
     hasLayout: boolean;
     availableLayouts: string[];
     readyIds: Set<string>;
@@ -332,7 +325,19 @@ export function prepareGraphData(
         } else {
             const weightNorm = Math.min(Math.log1p(dw) / Math.log1p(maxWeight), 1.0);
             const baseFill = STATUS_FILLS[status] || "#f1f5f9";
-            const desaturation = Math.max(0, 0.4 - weightNorm * 0.4);
+            // Weight-based desaturation: low-weight nodes slightly muted
+            let desaturation = Math.max(0, 0.4 - weightNorm * 0.4);
+            // Recency emphasis: stale nodes desaturate further
+            if (modified) {
+                const daysSinceModified = (Date.now() - modified) / 86400000;
+                if (daysSinceModified > 30) {
+                    desaturation = Math.min(1.0, desaturation + 0.5);
+                } else if (daysSinceModified > 14) {
+                    desaturation = Math.min(1.0, desaturation + 0.3);
+                } else if (daysSinceModified > 7) {
+                    desaturation = Math.min(1.0, desaturation + 0.1);
+                }
+            }
             fill = interpolateColor(baseFill, MUTED_FILL, desaturation);
             const baseText = STATUS_TEXT[status] || "#475569";
             textCol = interpolateColor(baseText, MUTED_TEXT, desaturation);
@@ -385,7 +390,6 @@ export function prepareGraphData(
             totalLeafCount: parentIdsInGraph.has(nid) ? (totalLeafCountCache.get(nid) || 0) : 0,
             modified,
             badge,
-            charge: TYPE_CHARGE[nodeType] ?? -100,
             parent: node.parent || null,
             project: node.project || null,
             assignee,
@@ -407,8 +411,6 @@ export function prepareGraphData(
         if (['link', 'wikilink'].includes(etype)) {
             etype = 'ref';
         }
-
-        const force = EDGE_FORCE[etype as keyof typeof EDGE_FORCE] || EDGE_FORCE.ref;
 
         let color: string;
         let width: number;
@@ -454,8 +456,6 @@ export function prepareGraphData(
             color,
             width: Math.round(width * 10) / 10,
             dash,
-            strength: force.strength,
-            distance: force.distance
         });
     }
 
@@ -474,7 +474,6 @@ export function prepareGraphData(
     return {
         nodes: d3Nodes,
         links: d3Links,
-        forceConfig: FORCE_CONFIG,
         hasLayout,
         availableLayouts: Array.from(availableLayouts).sort(),
         readyIds: new Set(graph.ready || []),

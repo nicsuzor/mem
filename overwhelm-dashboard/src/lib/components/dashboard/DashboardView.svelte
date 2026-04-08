@@ -10,65 +10,14 @@
     // Extract dynamic project list from graph data
     $: projects = $graphData ? Array.from(new Set($graphData.nodes.map(n => n.project).filter(p => !!p))).sort() : [];
 
-    // Derive sessions from graph data
-    $: derivedSessions = $graphData ? $graphData.nodes.filter(n => ['in_progress', 'active', 'todo'].includes(n.status)).map(n => {
-            const modified = (n as any)._raw?.modified ? new Date((n as any)._raw.modified).getTime() : Date.now();
-            const hoursAgo = (Date.now() - modified) / 3600000;
-            const minutesAgo = (Date.now() - modified) / 60000;
-            
-            let status_badge = 'running';
-            let bucket = 'active';
-            if (hoursAgo > 24) { status_badge = 'idle'; bucket = 'stale'; }
-            else if (hoursAgo > 12) { status_badge = 'paused'; bucket = 'paused'; }
-            
-            return {
-                id: n.id, // Keep ID for actions
-                project: n.project || 'Uncategorized',
-                description: n.label,
-                started_at: (n as any)._raw?.modified || new Date().toISOString(),
-                time_display: minutesAgo < 60 ? `${Math.round(minutesAgo)}m ago` : `${Math.round(hoursAgo)}h ago`,
-                status_badge,
-                needs_you: false,
-                bucket,
-                source: 'pkb' // Mark source for UI handling
-            };
-        }) : [];
-
-    // Deduplicate and merge server sessions and derived PKB sessions
-    function dedupeById(items: any[]): any[] {
-        return items.filter((s, i, arr) => arr.findIndex(x => x.id === s.id) === i);
-    }
-    $: activeSessionsData = dedupeById([...(data?.dashboardData?.active_agents || []), ...derivedSessions.filter(s => s.bucket === 'active')]);
-    $: pausedSessionsData = dedupeById([...(data?.dashboardData?.paused_sessions || []), ...derivedSessions.filter(s => s.bucket === 'paused')]);
-    $: staleSessionsData = dedupeById([...(data?.dashboardData?.stale_sessions || []), ...derivedSessions.filter(s => s.bucket === 'stale')]);
-
-    // Build dropped threads from graph data when path reconstruction has none
-    $: droppedFromGraph = $graphData ? $graphData.nodes
-        .filter(n => n.type === 'task' && ['active', 'in_progress'].includes(n.status) && n._raw?.created)
-        .filter(n => {
-            const created = new Date(n._raw.created).getTime();
-            const modified = n._raw?.modified ? new Date(n._raw.modified).getTime() : created;
-            const daysSinceModified = (Date.now() - modified) / 86400000;
-            return daysSinceModified > 3;
-        })
-        .sort((a, b) => (a.priority ?? 5) - (b.priority ?? 5))
-        .slice(0, 10)
-        .map(n => ({
-            project: n.project || 'unknown',
-            description: n.label,
-            time_ago: (() => {
-                const mod = n._raw?.modified ? new Date(n._raw.modified).getTime() : Date.now();
-                const days = Math.round((Date.now() - mod) / 86400000);
-                return days > 0 ? `${days}d ago` : 'recently';
-            })(),
-        })) : [];
+    // Session data comes exclusively from server-side sources (synthesis.json / session-state files).
+    // No client-side fallback — if the pipeline isn't producing data, the UI shows errors.
+    $: activeSessionsData = data?.dashboardData?.active_agents || [];
+    $: pausedSessionsData = data?.dashboardData?.paused_sessions || [];
+    $: staleSessionsData = data?.dashboardData?.stale_sessions || [];
+    $: pipelineErrors = data?.dashboardData?.pipeline_errors || [];
 
     $: pathData = data?.dashboardData?.path || { threads: [], abandoned_work: [] };
-    $: {
-        if (pathData.abandoned_work.length === 0 && droppedFromGraph.length > 0) {
-            pathData = { ...pathData, abandoned_work: droppedFromGraph };
-        }
-    }
 
     // Build enriched project data from graph store (primary) + server data (enrichment)
     $: graphProjectData = (() => {
@@ -96,7 +45,9 @@
                 result.meta[p].epics = projEpics.map((e: any) => {
                     const children = gd.nodes.filter((n: any) => n.parent === e.id);
                     const done = children.filter((n: any) => ['done', 'completed'].includes(n.status)).length;
-                    return { title: e.label, progress: { completed: done, total: children.length } };
+                    const outstandingChildren = children.filter((n: any) => !['done', 'completed', 'cancelled'].includes(n.status));
+                    const hasPriorityTask = outstandingChildren.some((n: any) => n.priority === 0 || n.priority === 1);
+                    return { id: e.id, title: e.label, progress: { completed: done, total: children.length }, hasPriorityTask };
                 });
             }
 
@@ -152,14 +103,20 @@
                 <span class="text-yellow-500/70">dropped threads</span>
             </div>
         {/if}
+        {#each pipelineErrors as err}
+            <div class="flex items-center gap-2 bg-red-900/20 border border-red-500/40 px-3 py-2 text-red-400">
+                <span class="material-symbols-outlined text-[14px]">error</span>
+                <span>{err}</span>
+            </div>
+        {/each}
     </div>
 
     <!-- PRIORITY 1: What's running + what needs you (above the fold) -->
     <div class="border border-primary/30 bg-surface p-4">
         <ActiveSessions
             sessions={activeSessionsData}
-            pausedSessions={data?.dashboardData?.paused_sessions || []}
-            staleSessions={data?.dashboardData?.stale_sessions || []}
+            pausedSessions={pausedSessionsData}
+            staleSessions={staleSessionsData}
             needsYou={data?.dashboardData?.needs_you || []}
         />
     </div>

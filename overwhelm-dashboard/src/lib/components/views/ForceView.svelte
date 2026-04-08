@@ -9,7 +9,7 @@
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
     import { routeSfdpEdges, setEdgeObstacles } from "../shared/EdgeRenderer";
-    import { FORCE_CONFIG, INCOMPLETE_STATUSES } from "../../data/constants";
+    import { zoomScale } from "../../stores/zoom";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
     // Module-level constant — avoids allocating a new Set on every tick
@@ -32,7 +32,7 @@
     let layoutNodeMap: Map<string, any> = new Map();
     let layoutNodeGroupSets: Map<string, Set<string>> = new Map();
     let layoutNodes: GraphNode[] = [];
-    let layoutHighPriRelatedIds: Set<string> = new Set();
+    // layoutHighPriRelatedIds removed — Metro view owns priority paths.
     let layoutNestedGroupSet: Set<any> = new Set();
 
     // Full physics rebuild only when structure (node/link set) or Cola params change
@@ -40,7 +40,7 @@
     let lastColaParams = '';
     $: {
         const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaFlowSep}|${$viewSettings.colaGroupPadding}`;
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaFlowSep}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaAvoidOverlaps}|${$viewSettings.colaGroups}|${$viewSettings.colaLinks}|${$viewSettings.colaHandleDisconnected}`;
         if (
             containerGroup &&
             $graphData &&
@@ -256,9 +256,20 @@
     function tickVisuals() {
         if (!colaLayout) return;
 
+        const scale = $zoomScale;
         d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
-            .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
+            .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`)
+            .each(function (d) {
+                // Progressive label reveal: hide text at low zoom, show at high zoom.
+                // Epic group labels (rendered separately) are always visible.
+                // P0/P1 nodes show labels at moderate zoom; others only when zoomed in.
+                const texts = d3.select(this).selectAll("text, tspan");
+                if (texts.empty()) return;
+                const isHighPri = d.priority <= 1;
+                const showLabel = scale > 0.4 || (isHighPri && scale > 0.2);
+                texts.attr("opacity", showLabel ? null : 0);
+            });
 
         // Update obstacle data for edge routing from group bounding boxes.
         if (colaLayout) {
@@ -277,14 +288,8 @@
         routeSfdpEdges(eEls);
         applyEdgeVisibility(eEls);
 
-        // P0/P1 edge glow: highlight edges along ancestor/descendant paths of high-priority nodes.
-        if (layoutHighPriRelatedIds.size > 0) {
-            eEls.classed("high-priority-edge", (l: any) => {
-                const sid = l.source?.id || l.source;
-                const tid = l.target?.id || l.target;
-                return layoutHighPriRelatedIds.has(sid) && layoutHighPriRelatedIds.has(tid);
-            });
-        }
+        // Priority path highlighting removed — Metro view owns "what are the priority paths?"
+        // Force view shows pure topology only.
 
         // Render group bounding boxes
         if (hullLayer && colaLayout) {
@@ -463,7 +468,6 @@
         const cw = Math.round(ch * aspect);
 
         // --- Phase 1: Resolve IDs and build groups FIRST so we know which nodes are containers ---
-        const fc = FORCE_CONFIG;
         const nodeById = new Map(activeNodes.map(n => [n.id, n]));
         const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
         activeLinks.forEach((l: any) => {
@@ -471,11 +475,7 @@
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
 
-        // Set width/height on nodes for avoidOverlaps — account for epic scaling.
-        // IMPORTANT: Cola's overlap solver pushes nodes apart by the minimum displacement.
-        // If nodes are wide+short, it always pushes vertically → vertical stacking.
-        // We inflate height padding so the collision box is closer to square,
-        // making overlap resolution direction-neutral.
+        // Set width/height on nodes for avoidOverlaps.
         activeNodes.forEach((n: any) => {
             n.width = n.w;
             n.height = n.h;
@@ -569,9 +569,11 @@
             }
             const containerNode = nodeById.get(cid);
             const label = containerNode?.label || containerNode?.fullTitle || cid;
-            // Add extra padding to containers so the top few lines of wrapped text have room
+            // Cola padding is symmetric — must be large enough to cover the visual header
+            // (TOP_PAD=60) extending above g.bounds.y. Without this, Cola places non-member
+            // nodes in the header zone, causing visual overlap.
             const isNested = containerParent.get(cid) !== null;
-            const nestPadding = isNested ? Math.max(18, groupPadding + 8) : Math.max(28, groupPadding + 16);
+            const nestPadding = isNested ? Math.max(40, groupPadding + 30) : Math.max(65, groupPadding + 55);
             const groupIdx = d3Groups.length;
             groupIndexMap.set(cid, groupIdx);
             d3Groups.push({
@@ -602,10 +604,7 @@
         // Mark which container nodes have a group box — their node visual will be hidden
         containerGroupNodeIds = new Set(groupIndexMap.keys());
 
-        // Put ungrouped nodes in a catch-all group
-        if (ungroupedIndices.length > 0) {
-            colaGroups.push({ leaves: ungroupedIndices, groups: [], padding: groupPadding, label: '' });
-        }
+        // Ungrouped nodes are left as root-level leaves — no catch-all group needed.
 
         // Pre-compute node→group membership for edge routing (avoids per-tick allocation).
         layoutNodeGroupSets = new Map();
@@ -634,31 +633,7 @@
             });
         }
 
-        // Pre-compute P0/P1 ancestor+descendant related IDs for edge glow — stable per layout.
-        // NOTE: inside drawForceAndStartPhysics, local `parentOf` maps child ID → GraphNode (not string).
-        layoutHighPriRelatedIds = new Set<string>();
-        {
-            const highPriIds = new Set<string>();
-            activeNodes.forEach(n => {
-                if (n.priority <= 1 && INCOMPLETE_STATUSES.has(n.status)) highPriIds.add(n.id);
-            });
-            for (const id of highPriIds) {
-                layoutHighPriRelatedIds.add(id);
-                // Ancestors — parentOf maps child → GraphNode here
-                let cur = id;
-                let pNode = parentOf.get(cur);
-                while (pNode) { cur = pNode.id; layoutHighPriRelatedIds.add(cur); pNode = parentOf.get(cur); }
-                // Descendants (BFS) using component-level childrenOf (string → Set<string>)
-                const queue = [id];
-                while (queue.length > 0) {
-                    const nid = queue.shift()!;
-                    const kids = childrenOf.get(nid);
-                    if (kids) for (const kid of kids) {
-                        if (!layoutHighPriRelatedIds.has(kid)) { layoutHighPriRelatedIds.add(kid); queue.push(kid); }
-                    }
-                }
-            }
-        }
+        // Priority path computation removed — Metro view owns priority paths.
 
         // Pre-compute nested-group set for hull rendering
         layoutNestedGroupSet = new Set<any>();
@@ -795,19 +770,29 @@
             return { source: si, target: ti, length, weight };
         }).filter((l: any) => l !== null) as any[];
 
+        // Debug toggles — turn constraints on/off to isolate layout issues
+        const useGroups = $viewSettings.colaGroups;
+        const useLinks = $viewSettings.colaLinks;
+        const useOverlaps = $viewSettings.colaAvoidOverlaps;
+        const useDisconnected = $viewSettings.colaHandleDisconnected;
+
+        const effectiveGroups = useGroups ? colaGroups : [];
+        const effectiveLinks = useLinks ? colaLinks : [];
+
         const nestedCount = colaGroups.filter(g => (g.groups || []).length > 0).length;
-        console.log(`[Cola] ${activeNodes.length} nodes, ${colaLinks.length} links, ${colaGroups.length} groups (${nestedCount} with children)`, colaGroups.map(g => `${g.leaves.length}L${(g.groups||[]).length ? '+' + (g.groups||[]).length + 'G' : ''}`));
+        console.log(`[Cola] ${activeNodes.length} nodes, ${effectiveLinks.length}/${colaLinks.length} links, ${effectiveGroups.length}/${colaGroups.length} groups (${nestedCount} nested) | overlaps=${useOverlaps} disconnected=${useDisconnected}`);
 
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
             .nodes(activeNodes as any)
-            .links(colaLinks)
-            .groups(colaGroups)
-            .avoidOverlaps(true)
-            .handleDisconnected(true)
+            .links(effectiveLinks)
+            .groups(effectiveGroups)
+            .avoidOverlaps(useOverlaps)
+            .handleDisconnected(useDisconnected)
             .linkDistance((d: any) => d.length)
             .on("tick", tickVisuals)
-            .start(100, 100, 200);
+            .start(100, 100, 100, 0, false); // keepRunning=false — compute synchronously, no async oscillation
+        tickVisuals(); // render final state
     }
 
     onDestroy(() => {
@@ -858,11 +843,5 @@
     }
     :global(path.force-edge.intent-edge-dim) {
         opacity: 0.15;
-    }
-    /* P0/P1 ancestry/descendancy edge glow */
-    :global(path.force-edge.high-priority-edge) {
-        filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.5));
-        stroke-width: 3px !important;
-        opacity: 0.9 !important;
     }
 </style>

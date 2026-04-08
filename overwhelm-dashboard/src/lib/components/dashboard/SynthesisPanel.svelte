@@ -2,8 +2,7 @@
     export let synthesis: any;
     export let dailyStory: any;
 
-    $: hasSynthesis = synthesis && Object.keys(synthesis).length > 0;
-    $: rawStoryParagraphs = dailyStory?.story || synthesis?.daily_narrative || synthesis?.narrative || [];
+    $: rawStoryParagraphs = dailyStory?.story || [];
 
     // Group story entries by project prefix and deduplicate
     $: storyByProject = (() => {
@@ -81,35 +80,4 @@
         </div>
     {/if}
 
-    <!-- Inline insight badges -->
-    {#if hasSynthesis}
-        <div class="flex flex-wrap gap-3 mt-1">
-            {#if synthesis.alignment}
-                {@const align = synthesis.alignment}
-                {@const alignStatus = typeof align === 'string' ? align : (align.status || align.assessment || 'unknown')}
-                <div class="flex items-center gap-2">
-                    <span class="text-[10px] text-primary/50">ALIGNMENT:</span>
-                    <span class="text-[10px] font-bold px-1.5 py-0.5 border {alignStatus === 'on_track' ? 'bg-green-900/30 text-green-400 border-green-500/40' : alignStatus === 'drifting' ? 'bg-yellow-900/30 text-yellow-400 border-yellow-500/40' : 'bg-primary/10 text-primary/70 border-primary/30'}">
-                        {alignStatus.toUpperCase().replace('_', ' ')}
-                    </span>
-                </div>
-            {/if}
-
-            {#if synthesis.blockers}
-                <div class="flex items-center gap-2">
-                    <span class="text-[10px] text-red-500/70">BLOCKERS:</span>
-                    <span class="text-[10px] text-red-400">
-                        {Array.isArray(synthesis.blockers) ? synthesis.blockers.length : 1}
-                    </span>
-                </div>
-            {/if}
-
-            {#if synthesis.recent_context}
-                <div class="flex items-center gap-2">
-                    <span class="text-[10px] text-primary/50">CONTEXT:</span>
-                    <span class="text-[10px] text-primary/60 truncate max-w-[300px]">{synthesis.recent_context}</span>
-                </div>
-            {/if}
-        </div>
-    {/if}
 </div>

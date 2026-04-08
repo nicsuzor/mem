@@ -3,6 +3,7 @@
   import * as d3 from 'd3';
   import { graphData } from '../../stores/graph';
   import { viewSettings } from '../../stores/viewSettings';
+  import { zoomScale } from '../../stores/zoom';
   import { selection, clearSelection } from '../../stores/selection';
   import type { GraphNode } from '../../data/prepareGraphData';
 
@@ -29,6 +30,7 @@
       .scaleExtent([0.02, 10])
       .on("zoom", (e) => {
         d3.select(containerGroup).attr("transform", e.transform);
+        zoomScale.set(e.transform.k);
       });
 
     svgSelection.call(zoomBehavior);
