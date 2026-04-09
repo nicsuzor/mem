@@ -13,7 +13,11 @@
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
     const CONTAINER_TYPES = new Set(['epic']);
-    const TOP_PAD = 60; // Visual padding above group boxes for title area
+    const TOP_PAD = 60;              // Visual padding above group boxes for title area
+    const MAX_ANCESTOR_DEPTH = 20;   // Cycle guard for parent-chain traversal
+    const CHILD_GROUP_SPREAD = 1.5;  // Multiplier for radial spread of nested child groups
+    const APPROX_CHAR_WIDTH = 10;    // Approximate char width at font-size 18 for label wrapping
+    const CANVAS_AREA = 12_000_000;  // Total canvas pixels (constant area regardless of aspect ratio)
 
     export let containerGroup: SVGGElement;
 
@@ -110,7 +114,10 @@
             const id = queue.shift()!;
             const kids = childrenOf.get(id);
             if (kids) for (const kid of kids) {
-                if (!result.has(kid)) { result.add(kid); queue.push(kid); }
+                if (!result.has(kid)) {
+                    result.add(kid);
+                    queue.push(kid);
+                }
             }
         }
         return result;
@@ -143,15 +150,17 @@
             eEls.classed("dimmed", (l: any) => {
                 const sid = l.source.id || l.source;
                 const tid = l.target.id || l.target;
-                return !(sid === hoveredId || tid === hoveredId) &&
-                    !(selectedNeighbors.has(sid) && selectedNeighbors.has(tid)) &&
-                    !(activeId && (sid === activeId || tid === activeId));
+                const hoverMatch = sid === hoveredId || tid === hoveredId;
+                const selMatch = selectedNeighbors.has(sid) && selectedNeighbors.has(tid);
+                const activeMatch = activeId && (sid === activeId || tid === activeId);
+                return !hoverMatch && !selMatch && !activeMatch;
             }).classed("illuminated", (l: any) => {
                 const sid = l.source.id || l.source;
                 const tid = l.target.id || l.target;
-                return (sid === hoveredId || tid === hoveredId) ||
-                    (selectedNeighbors.has(sid) && selectedNeighbors.has(tid)) ||
-                    !!(activeId && (sid === activeId || tid === activeId));
+                const hoverMatch = sid === hoveredId || tid === hoveredId;
+                const selMatch = selectedNeighbors.has(sid) && selectedNeighbors.has(tid);
+                const activeMatch = !!(activeId && (sid === activeId || tid === activeId));
+                return hoverMatch || selMatch || activeMatch;
             });
         } else {
             nEls.classed("dimmed", (d: any) => d.filter_dimmed).classed("illuminated", false);
@@ -215,7 +224,7 @@
 
         function findContainer(nodeId: string): string | null {
             let cur = nodeId;
-            for (let depth = 0; depth < 20; depth++) {
+            for (let depth = 0; depth < MAX_ANCESTOR_DEPTH; depth++) {
                 const p = parentOfNode.get(cur);
                 if (!p) break;
                 if (CONTAINER_TYPES.has(p.type)) return p.id;
@@ -359,7 +368,7 @@
             const childGroupCount = (group.groups as any[]).length;
             if (childGroupCount > 0) {
                 const angleStep = (Math.PI * 2) / childGroupCount;
-                const radius = Math.max(spreadX, spreadY) * 1.5;
+                const radius = Math.max(spreadX, spreadY) * CHILD_GROUP_SPREAD;
                 (group.groups as any[]).forEach((child: any, i: number) => {
                     const angle = i * angleStep;
                     seedGroup(child, cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius, spreadX * 0.8, spreadY * 0.8);
@@ -497,7 +506,7 @@
                 const bx = (d.bounds?.x ?? 0) + 12;
                 const by = (d.bounds?.y ?? 0) - TOP_PAD + 22;
                 const availW = Math.max(40, (d.bounds?.width() ?? 200) - 24);
-                const charW = 10;
+                const charW = APPROX_CHAR_WIDTH;
                 const charsPerLine = Math.max(4, Math.floor(availW / charW));
                 const words = label.split(/\s+/);
                 const lines: string[] = [];
@@ -603,7 +612,7 @@
         const vw = svg?.clientWidth || window.innerWidth || 1400;
         const vh = svg?.clientHeight || window.innerHeight || 900;
         const aspect = vw / vh;
-        const ch = Math.round(Math.sqrt(12_000_000 / aspect));
+        const ch = Math.round(Math.sqrt(CANVAS_AREA / aspect));
         const cw = Math.round(ch * aspect);
 
         seedPositions(colaGroups, activeNodes, layoutNestedGroupSet, cw, ch);
