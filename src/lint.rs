@@ -1534,8 +1534,8 @@ mod tests {
     #[test]
     fn fixes_unknown_status_to_active() {
         let fixed = fix_str("---\ntitle: Test\ntype: note\nstatus: merge_ready\n---\n\nBody.\n");
-        // merge_ready → review (via alias), which is valid, so should become review
-        assert!(fixed.contains("status: review"), "merge_ready should become review, got: {}", fixed);
+        // merge_ready is now a canonical status, so it should stay as-is
+        assert!(fixed.contains("status: merge_ready"), "merge_ready should stay merge_ready (canonical status), got: {}", fixed);
     }
 
     #[test]

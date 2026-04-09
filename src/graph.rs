@@ -232,7 +232,8 @@ pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         "inbox" | "todo" | "open" => "active",
         "in-progress" => "in_progress",
-        "in_review" | "in-review" | "ready-for-review" | "merge_ready" | "ISSUES_FOUND" => "review",
+        "in_review" | "in-review" | "ready-for-review" | "ISSUES_FOUND" => "review",
+        "merge_ready" | "merge-ready" => "merge_ready",
         "complete" | "completed" | "closed" | "archived" | "resolved" | "published-spir" => "done",
         "dead" => "cancelled",
         "deferred" => "paused",
@@ -254,6 +255,7 @@ pub fn resolve_status_alias(status: &str) -> &str {
 /// - **in_progress**: currently being worked on
 /// - **blocked**: waiting on dependencies
 /// - **review**: in review / awaiting feedback
+/// - **merge_ready**: work complete, PR filed, awaiting merge
 /// - **paused**: intentionally deferred
 /// - **someday**: low priority / maybe later
 /// - **draft**: early / incomplete / seed content
@@ -263,7 +265,7 @@ pub fn resolve_status_alias(status: &str) -> &str {
 /// - **done**: completed successfully
 /// - **cancelled**: abandoned / no longer relevant
 pub const VALID_STATUSES: &[&str] = &[
-    "active", "in_progress", "blocked", "review",
+    "active", "in_progress", "blocked", "review", "merge_ready",
     "paused", "someday", "draft", "waiting",
     "submitted", "accepted",
     "done", "cancelled",
@@ -274,7 +276,7 @@ pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled"];
 
 /// Statuses that represent active/open work items.
 pub const ACTIVE_STATUSES: &[&str] = &[
-    "active", "in_progress", "review", "waiting",
+    "active", "in_progress", "review", "merge_ready", "waiting",
     "draft", "submitted", "accepted",
     "paused", "someday",
 ];

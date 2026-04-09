@@ -1464,6 +1464,182 @@ impl PkbSearchServer {
         ))]))
     }
 
+    /// Release a task to a handoff/terminal status with required summary.
+    fn handle_release_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let status = args
+            .get("status")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Missing required parameter: status. Must be one of: merge_ready, done, review, blocked, cancelled.",
+                ),
+                data: None,
+            })?;
+
+        // Validate status enum with helpful suggestions
+        let valid_statuses = ["merge_ready", "done", "review", "blocked", "cancelled"];
+        if !valid_statuses.contains(&status) {
+            let suggestion = match status {
+                "complete" | "completed" => " Did you mean \"done\"?",
+                "ready" | "merge-ready" => " Did you mean \"merge_ready\"?",
+                "cancel" => " Did you mean \"cancelled\"?",
+                _ => "",
+            };
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "Invalid status \"{status}\". Must be one of: merge_ready, done, review, blocked, cancelled.{suggestion}\n\
+                     For non-terminal updates (priority, tags, assignee), use update_task instead."
+                )),
+                data: None,
+            });
+        }
+
+        let summary = args
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Missing required parameter: summary. Describe what was done before releasing this task.\n\
+                     Example: release_task(id=\"task-abc\", status=\"merge_ready\", summary=\"Implemented X with Y\", pr_url=\"https://...\")",
+                ),
+                data: None,
+            })?;
+        if summary.trim().is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "summary cannot be empty. Describe what was done before releasing this task.",
+                ),
+                data: None,
+            });
+        }
+
+        let pr_url = args.get("pr_url").and_then(|v| v.as_str());
+        let branch = args.get("branch").and_then(|v| v.as_str());
+        let blocker = args.get("blocker").and_then(|v| v.as_str());
+        let reason = args.get("reason").and_then(|v| v.as_str());
+
+        // Resolve task
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Task not found: {id}")),
+            data: None,
+        })?;
+
+        // Check task is not already terminal
+        let current_status = node.status.as_deref().unwrap_or("active");
+        if current_status == "done" || current_status == "cancelled" {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "Task \"{id}\" is already \"{current_status}\". Cannot release a completed task.\n\
+                     To update a completed task's fields, use update_task."
+                )),
+                data: None,
+            });
+        }
+
+        let abs_path = self.abs_path(&node.path);
+        let label = node.label.clone();
+        drop(graph);
+
+        // Build frontmatter updates
+        let mut updates = std::collections::HashMap::new();
+        updates.insert(
+            "status".to_string(),
+            serde_json::Value::String(status.to_string()),
+        );
+        if let Some(url) = pr_url {
+            updates.insert(
+                "pr_url".to_string(),
+                serde_json::Value::String(url.to_string()),
+            );
+        }
+        if let Some(b) = branch {
+            updates.insert(
+                "branch".to_string(),
+                serde_json::Value::String(b.to_string()),
+            );
+        }
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        updates.insert(
+            "released_at".to_string(),
+            serde_json::Value::String(now.clone()),
+        );
+
+        crate::document_crud::update_document(&abs_path, updates).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to update task: {e}")),
+            data: None,
+        })?;
+
+        // Build and append release evidence block
+        let mut evidence_block = format!("\n\n## Release: {status}\n\n**{now}**\n\n{}", summary.trim());
+        if let Some(url) = pr_url {
+            evidence_block.push_str(&format!("\n\nPR: {url}"));
+        }
+        if let Some(b) = branch {
+            evidence_block.push_str(&format!("\nBranch: {b}"));
+        }
+        if let Some(blk) = blocker {
+            if !blk.trim().is_empty() {
+                evidence_block.push_str(&format!("\n\nBlocker: {}", blk.trim()));
+            }
+        }
+        if let Some(r) = reason {
+            if !r.trim().is_empty() {
+                evidence_block.push_str(&format!("\n\nReason: {}", r.trim()));
+            }
+        }
+        evidence_block.push('\n');
+
+        crate::document_crud::append_to_document(&abs_path, &evidence_block, None).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to append release evidence: {e}")),
+            data: None,
+        })?;
+
+        // Re-index
+        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            let _ = self.store.write().upsert(&doc, &self.embedder);
+            self.save_store();
+        }
+
+        self.rebuild_graph_for_file(&abs_path);
+
+        // Build response with soft warnings
+        let mut warnings = Vec::new();
+        if status == "merge_ready" && pr_url.is_none() {
+            warnings.push("WARNING: No pr_url for merge_ready. Update the task with the PR URL when available.");
+        }
+        if status == "blocked" && blocker.map_or(true, |b| b.trim().is_empty()) {
+            warnings.push("WARNING: No blocker description. Consider updating with what's blocking this task.");
+        }
+        if (status == "cancelled" || status == "review") && reason.map_or(true, |r| r.trim().is_empty()) {
+            warnings.push("WARNING: No reason provided. Future you will want to know why.");
+        }
+
+        let mut response = format!("Released: {} → {} (`{}`)", label, status, id);
+        for w in &warnings {
+            response.push_str(&format!("\n{w}"));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(response)]))
+    }
+
     // =========================================================================
     // NEW TOOLS: Memory CRUD, decompose, dependency tree, children
     // =========================================================================
@@ -2497,8 +2673,20 @@ impl PkbSearchServer {
         // Incremental graph update for the changed file
         self.rebuild_graph_for_file(&path);
 
+        // Soft warning if setting a terminal status via update_task instead of release_task
+        let terminal_statuses = ["merge_ready", "done", "review", "blocked", "cancelled"];
+        let hint = updates
+            .get("status")
+            .and_then(|v| v.as_str())
+            .filter(|s| terminal_statuses.contains(s))
+            .map(|s| format!(
+                "\nHINT: Use release_task(id=\"...\", status=\"{s}\", summary=\"...\") instead of \
+                 update_task for status transitions. release_task captures work history."
+            ))
+            .unwrap_or_default();
+
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Task updated: `{}`",
+            "Task updated: `{}`{hint}",
             path.display()
         ))]))
     }
@@ -2831,6 +3019,7 @@ impl ServerHandler for PkbSearchServer {
             "append" => self.handle_append_to_document(&args),
             "delete" => self.handle_delete_document(&args),
             "complete_task" => self.handle_complete_task(&args),
+            "release_task" => self.handle_release_task(&args),
             "list_tasks" => self.handle_list_tasks(&args),
             "get_task" => self.handle_get_task(&args),
             "update_task" => self.handle_update_task(&args),
@@ -3068,6 +3257,32 @@ impl ServerHandler for PkbSearchServer {
                 .unwrap(),
             ),
             Tool::new(
+                "release_task",
+                "Release a task after work is done. Use instead of update_task when transitioning to a handoff status \
+                 (merge_ready, done, review, blocked, cancelled). Captures what was done so work history is never lost. \
+                 All params are flat strings — no nested objects. \
+                 For merge_ready: summary + pr_url. For done: summary of completion. \
+                 For blocked: summary + blocker. For cancelled/review: summary + reason.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title)" },
+                        "status": {
+                            "type": "string",
+                            "enum": ["merge_ready", "done", "review", "blocked", "cancelled"],
+                            "description": "Target status"
+                        },
+                        "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum." },
+                        "pr_url": { "type": "string", "description": "Pull request or commit URL (recommended for merge_ready)" },
+                        "branch": { "type": "string", "description": "Git branch name (optional)" },
+                        "blocker": { "type": "string", "description": "What is blocking this task (for status=blocked)" },
+                        "reason": { "type": "string", "description": "Why cancelled or needs review (for status=cancelled/review)" }
+                    },
+                    "required": ["id", "status", "summary"]
+                }))
+                .unwrap(),
+            ),
+            Tool::new(
                 "list_tasks",
                 "List tasks with filtering by project, status, priority, and assignee. Use status='ready' for actionable tasks sorted by priority + downstream weight, or status='blocked' to see blocked tasks with their blockers.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -3097,7 +3312,10 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "update_task",
-                "Update frontmatter fields on an existing task file. Auto-sets modified timestamp. When setting status to 'done', completion_evidence is required inside updates. Example: update_task(id=\"task-abc\", updates={\"status\": \"merge_ready\", \"body\": \"summary of work\"}). IMPORTANT: `updates` must be a JSON object, NOT a string.",
+                "Update frontmatter fields on an existing task file. Use for non-terminal changes (priority, tags, assignee, body, etc.). \
+                 For status transitions to merge_ready/done/review/blocked/cancelled, prefer release_task instead — it captures work history. \
+                 IMPORTANT: `updates` must be a JSON object, NOT a string. \
+                 Example: update_task(id=\"task-abc\", updates={\"priority\": 1, \"assignee\": \"polecat\"})",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3468,9 +3686,9 @@ impl ServerHandler for PkbSearchServer {
     fn get_info(&self) -> ServerInfo {
         let mut instructions = String::from(
             "PKB Search — semantic search + task graph over personal knowledge base. \
-             26 tools: search, get_document, list_documents, \
+             27 tools: search, get_document, list_documents, \
              task_search, get_network_metrics, create_task, create_memory, \
-             create, append, delete, complete_task, list_tasks, \
+             create, append, delete, complete_task, release_task, list_tasks, \
              get_task, update_task, bulk_reparent, retrieve_memory, search_by_tag, \
              list_memories, delete_memory, decompose_task, \
              get_dependency_tree, get_task_children, \
