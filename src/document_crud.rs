@@ -519,11 +519,18 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Keys that belong in the markdown body, not YAML frontmatter.
+/// If any of these appear in `updates`, they update the body section instead of frontmatter.
+const FRONTMATTER_EXCLUDED_KEYS: &[&str] = &["body", "content"];
+
 /// Update frontmatter fields in an existing document file.
 ///
 /// Reads the file, patches the YAML frontmatter, and rewrites it.
 /// Auto-sets `modified` timestamp on every update.
 /// Works for tasks, memories, and all document types.
+///
+/// Special handling: if `updates` contains a `body` or `content` key, the value
+/// is written to the markdown body section (after `---`) rather than frontmatter.
 pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>) -> Result<()> {
     use gray_matter::engine::YAML;
     use gray_matter::Matter;
@@ -541,8 +548,16 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
 
-    // Apply updates
+    // Apply updates, routing body/content keys to the markdown body instead of frontmatter
+    let mut new_body_text: Option<String> = None;
     for (key, value) in updates {
+        if FRONTMATTER_EXCLUDED_KEYS.contains(&key.as_str()) {
+            // Prefer "body" over "content" if both are provided
+            if key == "body" || new_body_text.is_none() {
+                new_body_text = value.as_str().map(|s| s.to_string());
+            }
+            continue;
+        }
         if value.is_null() {
             fm.remove(&key);
         } else {
@@ -558,7 +573,9 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
 
     // Rebuild the file
     let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
-    let body = result.content.trim();
+    let body = new_body_text
+        .as_deref()
+        .unwrap_or_else(|| result.content.trim());
 
     let new_content = format!("---\n{}---\n\n{}\n", yaml, body);
     std::fs::write(path, &new_content)
