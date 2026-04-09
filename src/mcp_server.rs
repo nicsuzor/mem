@@ -3097,13 +3097,13 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "update_task",
-                "Update frontmatter fields on an existing task file. Auto-sets modified timestamp. When setting status to 'done', completion_evidence is required inside updates.",
+                "Update frontmatter fields on an existing task file. Auto-sets modified timestamp. When setting status to 'done', completion_evidence is required inside updates. Example: update_task(id=\"task-abc\", updates={\"status\": \"merge_ready\", \"body\": \"summary of work\"}). IMPORTANT: `updates` must be a JSON object, NOT a string.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Path to task file" },
                         "id": { "type": "string", "description": "Document ID (alternative to path — uses flexible resolution)" },
-                        "updates": { "type": "object", "description": "Fields to update (null to remove). When status='done', include completion_evidence (string) describing what was done." }
+                        "updates": { "type": "object", "description": "JSON object of fields to update (null to remove a field). Common fields: status, assignee, body, pr_url, priority. When status='done', include completion_evidence (string). MUST be a JSON object like {\"status\": \"done\", \"completion_evidence\": \"what was done\"}, NOT a JSON string." }
                     },
                     "required": ["updates"]
                 }))
