@@ -7,12 +7,10 @@
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
-    import { writable } from "svelte/store";
     import { zoomScale } from "../../stores/zoom";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
-    const TOP_PAD = 60;
-    const CANVAS_AREA = 12_000_000;
+    const CANVAS_AREA = 30_000_000;
 
     export let containerGroup: SVGGElement;
 
@@ -21,51 +19,24 @@
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
-    let groupMembers: Map<string, string[]> = new Map(); // containerId -> member node IDs
+    let groupMembers: Map<string, string[]> = new Map();
 
-    // Layout control state
-    const tickCount = writable(0);
-    const running = writable(false);
-    let controlsEl: HTMLDivElement;
-
-    function toggleRunning() {
-        if (!colaLayout) return;
-        if ($running) {
-            colaLayout.stop();
-            $running = false;
-        } else {
-            $running = true;
-            colaLayout.resume();
-        }
-    }
-
-    // Portal: mount HTML controls outside SVG so they render at screen coordinates
-    function portalControls(node: HTMLDivElement) {
-        const target = document.querySelector('main') || document.body;
-        target.appendChild(node);
-        return { destroy() { node.remove(); } };
-    }
-
-    // Full physics rebuild only when structure (node/link set) or Cola params change
+    // Rebuild when structure or Cola params change (debounced)
     let lastStructureKey = '';
     let lastColaParams = '';
+    let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
     $: {
         const sk = $graphStructureKey;
         const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaAvoidOverlaps}|${$viewSettings.colaHandleDisconnected}`;
-        if (
-            containerGroup &&
-            $graphData &&
-            nodesLayer &&
-            hullLayer &&
-            (sk !== lastStructureKey || cp !== lastColaParams)
-        ) {
+        if (containerGroup && $graphData && nodesLayer && hullLayer && (sk !== lastStructureKey || cp !== lastColaParams)) {
             lastStructureKey = sk;
             lastColaParams = cp;
-            drawForceAndStartPhysics();
+            if (rebuildTimer) clearTimeout(rebuildTimer);
+            rebuildTimer = setTimeout(() => { rebuildTimer = null; drawForceAndStartPhysics(); }, 100);
         }
     }
 
-    // Property-only updates (status, priority, etc.) — patch node visuals without restarting physics
+    // Patch node visuals on property-only updates (no physics restart)
     $: if ($graphData && nodesLayer && lastStructureKey && lastStructureKey === $graphStructureKey) {
         const activeId = $selection.activeNodeId;
         d3.select(nodesLayer)
@@ -77,14 +48,13 @@
                     Object.assign(d, fresh);
                     const g = d3.select(this) as any;
                     g.selectAll("*").remove();
-                    const isSelected = d.id === activeId;
-                    buildTaskCardNode(g, d, isSelected);
-                    (d as any)._lastSelected = isSelected;
+                    buildTaskCardNode(g, d, d.id === activeId);
+                    (d as any)._lastSelected = d.id === activeId;
                 }
             });
     }
 
-    // Simple dimming for filtered nodes + selection highlight
+    // Dimming + selection highlight
     $: if (nodesLayer && $graphData) {
         const activeId = $selection.activeNodeId;
         d3.select(nodesLayer).selectAll<SVGGElement, GraphNode>("g.node")
@@ -94,15 +64,11 @@
 
     // ─── Group building ────────────────────────────────────────────────────────
 
-    function buildColaGroups(
-        activeNodes: GraphNode[],
-        activeLinks: GraphEdge[],
-        groupPadding: number,
-    ): any[] {
+    function buildColaGroups(activeNodes: GraphNode[], activeLinks: GraphEdge[], groupPadding: number): any[] {
         const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
         const nodeById = new Map(activeNodes.map(n => [n.id, n]));
 
-        // Build parent -> children map from parent links
+        // Build parent -> child indices from parent links
         const childrenOf = new Map<string, Set<number>>();
         for (const l of activeLinks) {
             if ((l as any).type !== 'parent') continue;
@@ -115,44 +81,33 @@
             childrenOf.get(pid)!.add(cidx);
         }
 
-        // Create a group for every parent that has children
+        // Flat group for every parent with children (no nesting — Cola's recursive
+        // constraint generation explodes with nested groups)
         const groups: any[] = [];
-        const groupIndexOf = new Map<string, number>();
-        const members = new Map<string, string[]>(); // containerId -> node IDs
-
         for (const [pid, childIdxs] of childrenOf) {
             const pidx = nodeIndex.get(pid);
-            if (pidx === undefined) continue;
-            if (childIdxs.size === 0) continue;
-
+            if (pidx === undefined || childIdxs.size === 0) continue;
             const pNode = nodeById.get(pid);
-            const label = pNode?.label || (pNode as any)?.fullTitle || pid;
-            groupIndexOf.set(pid, groups.length);
-
-            const leafIndices = [pidx, ...childIdxs];
             groups.push({
-                leaves: leafIndices,
-                groups: [],
+                leaves: [pidx, ...childIdxs],
                 padding: groupPadding + 55,
-                label,
+                label: pNode?.label || (pNode as any)?.fullTitle || pid,
                 containerId: pid,
             });
-
-            // Track member node IDs for position-based bounds
-            members.set(pid, leafIndices.map(i => activeNodes[i].id));
         }
 
-        // Wire nesting: if a group's parent node is itself in another group, nest it
-        for (const [pid] of groupIndexOf) {
-            const pNode = nodeById.get(pid);
-            if (!pNode?.parent) continue;
-            const parentGroupIdx = groupIndexOf.get(pNode.parent);
-            if (parentGroupIdx === undefined) continue;
-            const thisGroupIdx = groupIndexOf.get(pid)!;
-            groups[parentGroupIdx].groups.push(groups[thisGroupIdx]);
-            groups[thisGroupIdx].padding = groupPadding + 30;
+        // Each node in at most one group — group parents stay in their own group only
+        const groupParentIdxs = new Set(groups.map((g: any) => nodeIndex.get(g.containerId)!));
+        for (const g of groups) {
+            const ownIdx = nodeIndex.get(g.containerId);
+            g.leaves = g.leaves.filter((l: number) => !groupParentIdxs.has(l) || l === ownIdx);
         }
 
+        // Build member map after dedup for accurate visual boxes
+        const members = new Map<string, string[]>();
+        for (const g of groups) {
+            members.set(g.containerId, g.leaves.map((i: number) => activeNodes[i].id));
+        }
         groupMembers = members;
         return groups;
     }
@@ -166,10 +121,7 @@
                 d3.drag<SVGGElement, GraphNode>()
                     .clickDistance(4)
                     .on("start", (_e, d: any) => { d.fixed = 1; })
-                    .on("drag", (e, d: any) => {
-                        d.x = e.x; d.y = e.y;
-                        tickVisuals();
-                    })
+                    .on("drag", (e, d: any) => { d.x = e.x; d.y = e.y; tickVisuals(); })
                     .on("end", (_e, d: any) => { d.fixed = 0; }),
             );
     }
@@ -177,126 +129,73 @@
     // ─── Group box rendering ──────────────────────────────────────────────────
 
     function renderGroupBoxes() {
-        if (!hullLayer || !colaLayout) return;
+        if (!hullLayer) return;
 
-        // Build node position lookup from actual DOM positions
         const nodePos = new Map<string, { x: number; y: number; w: number; h: number }>();
         d3.select(nodesLayer).selectAll<SVGGElement, GraphNode>("g.node")
-            .each(function (d) {
-                nodePos.set(d.id, { x: d.x ?? 0, y: d.y ?? 0, w: d.w ?? 0, h: d.h ?? 0 });
-            });
+            .each(function (d) { nodePos.set(d.id, { x: d.x ?? 0, y: d.y ?? 0, w: d.w ?? 0, h: d.h ?? 0 }); });
 
-        // Compute bounds from actual member node positions (not Cola's stale bounds)
-        type GroupBounds = { x: number; y: number; w: number; h: number; label: string; containerId: string; nested: boolean };
-        const groupBoundsData: GroupBounds[] = [];
+        type GB = { x: number; y: number; w: number; h: number; label: string; containerId: string };
+        const data: GB[] = [];
         const PAD = 30;
 
         for (const [containerId, memberIds] of groupMembers) {
             const positions = memberIds.map(id => nodePos.get(id)).filter(Boolean) as { x: number; y: number; w: number; h: number }[];
             if (positions.length === 0) continue;
-
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             for (const p of positions) {
-                minX = Math.min(minX, p.x - PAD);
-                minY = Math.min(minY, p.y - PAD);
-                maxX = Math.max(maxX, p.x + p.w + PAD);
-                maxY = Math.max(maxY, p.y + p.h + PAD);
+                const hw = p.w / 2, hh = p.h / 2;
+                minX = Math.min(minX, p.x - hw - PAD); minY = Math.min(minY, p.y - hh - PAD);
+                maxX = Math.max(maxX, p.x + hw + PAD); maxY = Math.max(maxY, p.y + hh + PAD);
             }
-
-            const colaGroup = colaGroups.find((g: any) => g.containerId === containerId);
-            const label = colaGroup?.label || containerId;
-            const nested = !!colaGroup?.parent;
-
-            groupBoundsData.push({
-                x: minX, y: minY - TOP_PAD, w: maxX - minX, h: maxY - minY + TOP_PAD,
-                label, containerId, nested,
-            });
+            const cg = colaGroups.find((g: any) => g.containerId === containerId);
+            data.push({ x: minX, y: minY, w: maxX - minX, h: maxY - minY,
+                label: cg?.label || containerId, containerId });
         }
 
-        // Background rectangles
-        d3.select(hullLayer)
-            .selectAll<SVGRectElement, GroupBounds>("rect.cola-group")
-            .data(groupBoundsData, (d) => d.containerId)
-            .join("rect")
+        d3.select(hullLayer).selectAll<SVGRectElement, GB>("rect.cola-group")
+            .data(data, d => d.containerId).join("rect")
             .attr("class", "cola-group")
-            .attr("rx", (d) => d.nested ? 6 : 10)
-            .attr("ry", (d) => d.nested ? 6 : 10)
-            .attr("x", (d) => d.x)
-            .attr("y", (d) => d.y)
-            .attr("width", (d) => d.w)
-            .attr("height", (d) => d.h)
-            .attr("fill", (d) => {
-                const hue = projectHue(d.containerId);
-                return d.nested
-                    ? `hsla(${hue}, 40%, 50%, 0.05)`
-                    : `hsla(${hue}, 40%, 50%, 0.08)`;
-            })
-            .attr("stroke", (d) => {
-                const hue = projectHue(d.containerId);
-                return d.nested
-                    ? `hsla(${hue}, 50%, 55%, 0.25)`
-                    : `hsla(${hue}, 40%, 50%, 0.3)`;
-            })
-            .attr("stroke-width", (d) => d.nested ? 1 : 2)
-            .attr("stroke-dasharray", (d) => d.nested ? "4,2" : "6,3")
+            .attr("rx", 10).attr("ry", 10)
+            .attr("x", d => d.x).attr("y", d => d.y)
+            .attr("width", d => d.w).attr("height", d => d.h)
+            .attr("fill", d => `hsla(${projectHue(d.containerId)},40%,50%,0.08)`)
+            .attr("stroke", d => `hsla(${projectHue(d.containerId)},40%,50%,0.3)`)
+            .attr("stroke-width", 2)
+            .attr("stroke-dasharray", "6,3")
             .style("cursor", "crosshair")
             .on("click", (e: any, d) => { e.stopPropagation(); toggleSelection(d.containerId); });
 
-        // Group labels (simple truncated text)
-        d3.select(hullLayer)
-            .selectAll<SVGTextElement, GroupBounds>("text.cola-group-label")
-            .data(groupBoundsData, (d) => d.containerId)
-            .join("text")
+        d3.select(hullLayer).selectAll<SVGTextElement, GB>("text.cola-group-label")
+            .data(data, d => d.containerId).join("text")
             .attr("class", "cola-group-label")
-            .attr("x", (d) => d.x + 12)
-            .attr("y", (d) => d.y + 22)
-            .attr("font-size", 18)
-            .attr("font-weight", 700)
-            .attr("fill", (d) => {
-                const hue = projectHue(d.containerId);
-                return `hsla(${hue}, 60%, 80%, 0.9)`;
-            })
-            .style("pointer-events", "none")
-            .style("text-transform", "uppercase")
-            .style("letter-spacing", "0.05em")
-            .text((d) => {
-                const label = (d.label || '').toUpperCase();
-                const maxChars = Math.max(10, Math.floor(d.w / 10));
-                return label.length > maxChars ? label.slice(0, maxChars - 1) + '\u2026' : label;
-            });
+            .attr("x", d => d.x + 12).attr("y", d => d.y + 22)
+            .attr("font-size", 18).attr("font-weight", 700)
+            .attr("fill", d => `hsla(${projectHue(d.containerId)},60%,80%,0.9)`)
+            .style("pointer-events", "none").style("text-transform", "uppercase").style("letter-spacing", "0.05em")
+            .text(d => { const l = (d.label || '').toUpperCase(); const mc = Math.max(10, Math.floor(d.w / 10)); return l.length > mc ? l.slice(0, mc - 1) + '\u2026' : l; });
     }
 
-    // ─── Tick ─────────────────────────────────────────────────────────────────
+    // ─── Tick + Main draw ─────────────────────────────────────────────────────
 
     function tickVisuals() {
-        if (!colaLayout) return;
-        $tickCount++;
-
         const scale = $zoomScale;
-        d3.select(nodesLayer)
-            .selectAll<SVGGElement, GraphNode>("g.node")
-            .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`)
+        d3.select(nodesLayer).selectAll<SVGGElement, GraphNode>("g.node")
+            .attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`)
             .each(function (d) {
                 const texts = d3.select(this).selectAll("text, tspan");
-                if (texts.empty()) return;
-                const isHighPri = d.priority <= 1;
-                texts.attr("opacity", (scale > 0.4 || (isHighPri && scale > 0.2)) ? null : 0);
+                if (!texts.empty()) texts.attr("opacity", (scale > 0.4 || (d.priority <= 1 && scale > 0.2)) ? null : 0);
             });
-
         renderGroupBoxes();
     }
-
-    // ─── Main draw ────────────────────────────────────────────────────────────
 
     function drawForceAndStartPhysics() {
         if (!$graphData) return;
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
-        $tickCount = 0;
-        $running = false;
 
         const data = $graphData;
 
-        // Strip project nodes — epic group boxes handle visual hierarchy
+        // Strip project nodes
         const projectIds = new Set(data.nodes.filter(n => n.type === 'project').map(n => n.id));
         let activeNodes: GraphNode[] = data.nodes;
         let activeLinks: GraphEdge[] = data.links;
@@ -308,11 +207,7 @@
                 if (projectIds.has(n.id)) return n;
                 let cur = n.parent;
                 const seen = new Set<string>();
-                while (cur && projectIds.has(cur)) {
-                    if (seen.has(cur)) break;
-                    seen.add(cur);
-                    cur = projParentMap.get(cur) ?? null;
-                }
+                while (cur && projectIds.has(cur)) { if (seen.has(cur)) break; seen.add(cur); cur = projParentMap.get(cur) ?? null; }
                 return cur !== n.parent ? { ...n, parent: cur } : n;
             }).filter(n => !projectIds.has(n.id));
             activeLinks = data.links.filter((l: any) => {
@@ -322,16 +217,18 @@
             });
         }
 
-        // Resolve link IDs to node references
+        // Resolve links + set node dimensions for Cola
         const nodeById = new Map(activeNodes.map(n => [n.id, n]));
         const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
         activeLinks.forEach((l: any) => {
             if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
-        activeNodes.forEach((n: any) => { n.width = n.w; n.height = n.h; });
+        // Inflate dimensions for Cola so constraints account for visual extras
+        // (border strokes up to 4px, priority glow rings up to 6px, badges below)
+        const COLA_PAD = 14;
+        activeNodes.forEach((n: any) => { n.width = n.w + COLA_PAD; n.height = n.h + COLA_PAD; });
 
-        // Build groups
         colaGroups = buildColaGroups(activeNodes, activeLinks, $viewSettings.colaGroupPadding);
 
         const svg = containerGroup?.ownerSVGElement;
@@ -341,7 +238,7 @@
         const ch = Math.round(Math.sqrt(CANVAS_AREA / aspect));
         const cw = Math.round(ch * aspect);
 
-        // Scatter nodes randomly so Cola has something to work with
+        // Random initial scatter
         const pad = 200;
         activeNodes.forEach((n: any) => {
             if (typeof n.x !== 'number') n.x = pad + Math.random() * (cw - pad * 2);
@@ -351,55 +248,43 @@
         // Render nodes
         const nEls = d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
-            .data(activeNodes, (d) => d.id)
-            .join("g")
-            .attr("class", "node")
-            .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
-
+            .data(activeNodes, d => d.id)
+            .join("g").attr("class", "node")
+            .attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
         const activeId = $selection.activeNodeId;
         nEls.each(function (d) {
             const g = d3.select(this) as any;
-            const isSelected = d.id === activeId;
-            if (g.selectAll("*").empty() || (d as any)._lastSelected !== isSelected) {
-                g.selectAll("*").remove();
-                buildTaskCardNode(g, d, isSelected);
-                (d as any)._lastSelected = isSelected;
+            const sel = d.id === activeId;
+            if (g.selectAll("*").empty() || (d as any)._lastSelected !== sel) {
+                g.selectAll("*").remove(); buildTaskCardNode(g, d, sel); (d as any)._lastSelected = sel;
             }
         });
         bindDragAndClick(nEls);
 
-        // Build Cola links (parent links omitted — groups handle hierarchy)
-        const colaLinks = activeLinks
-            .filter((l: any) => l.type !== 'parent')
-            .map((l: any) => {
-                const si = nodeIndex.get(typeof l.source === 'object' ? l.source.id : l.source);
-                const ti = nodeIndex.get(typeof l.target === 'object' ? l.target.id : l.target);
-                if (si === undefined || ti === undefined) return null;
-                const length = ($viewSettings.colaLinkLength || 35) *
-                    (l.type === 'depends_on' ? 1.2 : 1.4);
-                const weight = l.type === 'depends_on' ? 1.0 : 0.5;
-                return { source: si, target: ti, length, weight };
-            })
-            .filter((l: any) => l !== null) as any[];
+        // Parent links give Cola graph structure for stress majorization
+        const colaLinks = activeLinks.filter((l: any) =>
+            l.type === 'parent' && typeof l.source === 'object' && typeof l.target === 'object');
 
-        // Start Cola layout — sync only, no async ticks (5th param = false)
+        // Save parent field — Cola overwrites it with internal group objects
+        const savedParents = new Map(activeNodes.map(n => [n.id, n.parent]));
+
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
             .nodes(activeNodes as any)
-            .links(colaLinks)
+            .links(colaLinks as any)
             .groups(colaGroups)
             .avoidOverlaps(true)
             .handleDisconnected(true)
-            .linkDistance((d: any) => d.length)
-            .on("tick", tickVisuals)
-            .on("end", () => { $running = false; })
-            .start(10, 15, 20, 0, false);
+            .start(10, 30, 200, 0, false);
 
-        // Render final positions
+        // Restore parent field after Cola finishes sync iterations
+        activeNodes.forEach(n => { (n as any).parent = savedParents.get(n.id); });
+
         tickVisuals();
     }
 
     onDestroy(() => {
+        if (rebuildTimer) clearTimeout(rebuildTimer);
         if (colaLayout) colaLayout.stop();
     });
 </script>
@@ -409,57 +294,8 @@
     <g bind:this={nodesLayer}></g>
 {/if}
 
-<!-- Layout controls portaled outside SVG -->
-<div use:portalControls class="layout-controls">
-    <button class="ctrl-btn" on:click={toggleRunning}>
-        {$running ? 'STOP' : 'RUN'}
-    </button>
-    <span class="tick-count">{$tickCount} ticks</span>
-</div>
-
 <style>
-    .layout-controls {
-        position: fixed;
-        bottom: 80px;
-        right: 20px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        z-index: 50;
-        font-family: monospace;
-    }
-    .ctrl-btn {
-        background: hsla(40, 100%, 50%, 0.15);
-        border: 1px solid hsla(40, 100%, 50%, 0.5);
-        color: hsla(40, 100%, 50%, 0.9);
-        padding: 4px 12px;
-        font-size: 11px;
-        font-weight: 700;
-        font-family: monospace;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        cursor: pointer;
-        transition: background 0.2s;
-    }
-    .ctrl-btn:hover {
-        background: hsla(40, 100%, 50%, 0.3);
-    }
-    .tick-count {
-        color: hsla(40, 100%, 50%, 0.7);
-        font-size: 11px;
-        letter-spacing: 0.05em;
-    }
-    :global(g.node) {
-        transition:
-            opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-            filter 0.3s ease;
-    }
-    :global(g.node.dimmed) {
-        opacity: 0.6;
-        filter: grayscale(0.5) brightness(0.75);
-    }
-    :global(g.node.selected-node) {
-        opacity: 1 !important;
-        filter: none !important;
-    }
+    :global(g.node) { transition: opacity 0.3s ease, filter 0.3s ease; }
+    :global(g.node.dimmed) { opacity: 0.6; filter: grayscale(0.5) brightness(0.75); }
+    :global(g.node.selected-node) { opacity: 1 !important; filter: none !important; }
 </style>
