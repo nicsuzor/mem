@@ -7,6 +7,7 @@
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
+    import { writable } from "svelte/store";
     import { zoomScale } from "../../stores/zoom";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
@@ -21,12 +22,35 @@
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
 
+    // Layout control state
+    const tickCount = writable(0);
+    const running = writable(false);
+    let controlsEl: HTMLDivElement;
+
+    function toggleRunning() {
+        if (!colaLayout) return;
+        if ($running) {
+            colaLayout.stop();
+            $running = false;
+        } else {
+            $running = true;
+            colaLayout.resume();
+        }
+    }
+
+    // Portal: mount HTML controls outside SVG so they render at screen coordinates
+    function portalControls(node: HTMLDivElement) {
+        const target = document.querySelector('main') || document.body;
+        target.appendChild(node);
+        return { destroy() { node.remove(); } };
+    }
+
     // Full physics rebuild only when structure (node/link set) or Cola params change
     let lastStructureKey = '';
     let lastColaParams = '';
     $: {
         const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaGroupPadding}`;
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaAvoidOverlaps}|${$viewSettings.colaHandleDisconnected}`;
         if (
             containerGroup &&
             $graphData &&
@@ -102,6 +126,7 @@
             const pNode = nodeById.get(pid);
             const label = pNode?.label || pNode?.fullTitle || pid;
             groupIndexOf.set(pid, groups.length);
+
             groups.push({
                 leaves: [pidx, ...childIdxs],
                 groups: [],
@@ -113,14 +138,12 @@
 
         // Wire nesting: if a group's parent node is itself in another group, nest it
         for (const [pid] of groupIndexOf) {
-            // Find pid's parent
             const pNode = nodeById.get(pid);
             if (!pNode?.parent) continue;
             const parentGroupIdx = groupIndexOf.get(pNode.parent);
             if (parentGroupIdx === undefined) continue;
             const thisGroupIdx = groupIndexOf.get(pid)!;
             groups[parentGroupIdx].groups.push(groups[thisGroupIdx]);
-            // Nested groups get tighter padding
             groups[thisGroupIdx].padding = groupPadding + 30;
         }
 
@@ -135,21 +158,12 @@
             .call(
                 d3.drag<SVGGElement, GraphNode>()
                     .clickDistance(4)
-                    .on("start", () => { /* defer until actual movement */ })
+                    .on("start", (_e, d: any) => { d.fixed = 1; })
                     .on("drag", (e, d: any) => {
-                        if (!(d as any)._dragging) {
-                            cola.Layout.dragStart(d);
-                            (d as any)._dragging = true;
-                        }
                         d.x = e.x; d.y = e.y;
-                        if (colaLayout) colaLayout.resume();
+                        tickVisuals();
                     })
-                    .on("end", (_e, d: any) => {
-                        if ((d as any)._dragging) {
-                            d.fixed = 0;
-                            (d as any)._dragging = false;
-                        }
-                    }),
+                    .on("end", (_e, d: any) => { d.fixed = 0; }),
             );
     }
 
@@ -227,6 +241,7 @@
 
     function tickVisuals() {
         if (!colaLayout) return;
+        $tickCount++;
 
         const scale = $zoomScale;
         d3.select(nodesLayer)
@@ -247,6 +262,8 @@
     function drawForceAndStartPhysics() {
         if (!$graphData) return;
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
+        $tickCount = 0;
+        $running = false;
 
         const data = $graphData;
 
@@ -336,7 +353,7 @@
             })
             .filter((l: any) => l !== null) as any[];
 
-        // Start Cola layout
+        // Start Cola layout — sync only, no async ticks (5th param = false)
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
             .nodes(activeNodes as any)
@@ -345,9 +362,12 @@
             .avoidOverlaps(true)
             .handleDisconnected(true)
             .linkDistance((d: any) => d.length)
-            .convergenceThreshold(0.1)
             .on("tick", tickVisuals)
-            .start(50, 50, 50);
+            .on("end", () => { $running = false; })
+            .start(50, 50, 50, 0, false);
+
+        // Render final positions
+        tickVisuals();
     }
 
     onDestroy(() => {
@@ -360,7 +380,46 @@
     <g bind:this={nodesLayer}></g>
 {/if}
 
+<!-- Layout controls portaled outside SVG -->
+<div use:portalControls class="layout-controls">
+    <button class="ctrl-btn" on:click={toggleRunning}>
+        {$running ? 'STOP' : 'RUN'}
+    </button>
+    <span class="tick-count">{$tickCount} ticks</span>
+</div>
+
 <style>
+    .layout-controls {
+        position: fixed;
+        bottom: 80px;
+        right: 20px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        z-index: 50;
+        font-family: monospace;
+    }
+    .ctrl-btn {
+        background: hsla(40, 100%, 50%, 0.15);
+        border: 1px solid hsla(40, 100%, 50%, 0.5);
+        color: hsla(40, 100%, 50%, 0.9);
+        padding: 4px 12px;
+        font-size: 11px;
+        font-weight: 700;
+        font-family: monospace;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        cursor: pointer;
+        transition: background 0.2s;
+    }
+    .ctrl-btn:hover {
+        background: hsla(40, 100%, 50%, 0.3);
+    }
+    .tick-count {
+        color: hsla(40, 100%, 50%, 0.7);
+        font-size: 11px;
+        letter-spacing: 0.05em;
+    }
     :global(g.node) {
         transition:
             opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
