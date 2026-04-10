@@ -45,38 +45,20 @@
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
-    export let running = false;
-    let ticks = 0;
 
-    export function toggleRunning() {
-        if (!colaLayout) return;
-        if (running) {
-            colaLayout.stop();
-            running = false;
-        } else {
-            ticks = 0;
-            // Add a tiny jitter to unstick nodes that perfectly hit local constraint minima
-            if ($graphData && $graphData.nodes) {
-                $graphData.nodes.forEach((n: any) => {
-                    if (!n.fixed) {
-                        n.x = (n.x || 0) + (Math.random() * 10 - 5);
-                        n.y = (n.y || 0) + (Math.random() * 10 - 5);
-                    }
-                });
-            }
-            // Just resume the async loop rather than completely rebuilding the physics solver
-            colaLayout.resume();
-            running = true;
-        }
-    }
-
-    // Rebuild when graph structure changes
+    // Full physics rebuild only when structure (node/link set) or Cola params change
     let lastStructureKey = '';
     let lastColaParams = '';
     $: {
         const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}|${$viewSettings.colaHandleDisconnected}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaLinkDistIntraParent}|${$viewSettings.colaLinkWeightIntraParent}|${$viewSettings.colaLinkDistInterParent}|${$viewSettings.colaLinkWeightInterParent}|${$viewSettings.colaLinkDistDependsOn}|${$viewSettings.colaLinkWeightDependsOn}|${$viewSettings.colaLinkDistRef}|${$viewSettings.colaLinkWeightRef}|${$filters.edgeDependencies}|${$filters.edgeReferences}|${$filters.edgeParent}`;
-        if (containerGroup && $graphData && nodesLayer && hullLayer && (sk !== lastStructureKey || cp !== lastColaParams)) {
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaGroupPadding}`;
+        if (
+            containerGroup &&
+            $graphData &&
+            nodesLayer &&
+            hullLayer &&
+            (sk !== lastStructureKey || cp !== lastColaParams)
+        ) {
             lastStructureKey = sk;
             lastColaParams = cp;
             rebuild();
@@ -104,14 +86,14 @@
     function buildColaGroups(activeNodes: GraphNode[], _activeLinks: GraphEdge[]): any[] {
         const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
         const childrenOf = new Map<string, Set<number>>();
-        
+
         for (const n of activeNodes) {
             const pid = (n as any)._safe_parent;
             if (!pid) continue;
             const pidx = nodeIndex.get(pid);
             const cidx = nodeIndex.get(n.id);
             if (pidx === undefined || cidx === undefined) continue;
-            
+
             if (!childrenOf.has(pid)) childrenOf.set(pid, new Set());
             childrenOf.get(pid)!.add(cidx);
         }
@@ -122,7 +104,7 @@
         for (const pid of parentIds) {
             const pidx = nodeIndex.get(pid);
             if (pidx === undefined) continue;
-            
+
             // Collect leaves for this group:
             // 1. The parent node itself
             // 2. Direct children that are NOT parents themselves (to satisfy Single Group Membership)
@@ -132,12 +114,12 @@
                     leafIndices.push(cidx);
                 }
             }
-            
-            if (leafIndices.length <= 1) continue; 
+
+            if (leafIndices.length <= 1) continue;
 
             groups.push({
                 leaves: leafIndices,
-                groups: [], 
+                groups: [],
                 padding: $viewSettings.colaGroupPadding,
                 containerId: pid,
             });
@@ -154,26 +136,21 @@
             .call(
                 d3.drag<SVGGElement, GraphNode>()
                     .clickDistance(4)
-                    .on("start", (_e, d: any) => { 
-                        d.fixed = 1; 
+                    .on("start", (_e, d: any) => {
+                        d.fixed = 1;
                     })
-                    .on("drag", (e, d: any) => { 
-                        d.x = e.x; 
-                        d.y = e.y; 
-                        
+                    .on("drag", (e, d: any) => {
+                        d.x = e.x;
+                        d.y = e.y;
+
                         // Resume layout on drag so bounding boxes follow the node
-                        if (colaLayout && !running) {
-                            ticks = 0;
-                            colaLayout.resume();
-                            running = true;
-                        } else if (colaLayout) {
-                            ticks = 0;
+                        if (colaLayout) {
                             colaLayout.resume();
                         }
-                        tickVisuals(); 
+                        tickVisuals();
                     })
-                    .on("end", (_e, d: any) => { 
-                        d.fixed = 0; 
+                    .on("end", (_e, d: any) => {
+                        d.fixed = 0;
                     }),
             );
     }
@@ -205,6 +182,7 @@
             .attr("stroke-width", 1.5)
             .style("cursor", "crosshair")
             .on("click", (e: any, d) => { e.stopPropagation(); toggleSelection(d.containerId); });
+    }
     }
 
     // ─── Tick + rebuild ──────────────────────────────────────────────────────
@@ -273,11 +251,6 @@
         // Physics links: apply visibility filters and physics settings per link type
         const colaLinks = links.filter((l: any) => {
             if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
-            
-            // Check visibility filters from the legend
-            if (l.type === 'parent' && $filters.edgeParent === 'hidden') return false;
-            if (l.type === 'depends_on' && $filters.edgeDependencies === 'hidden') return false;
-            if (l.type === 'ref' && $filters.edgeReferences === 'hidden') return false;
 
             return true;
         }).map((l: any) => {
@@ -289,18 +262,18 @@
                 // If it's not a parent, it's inside the source's group (intra-group link).
                 const isChildParent = nodes.some((n: any) => n._safe_parent === l.target.id);
                 if (isChildParent) {
-                    length = $viewSettings.colaLinkDistInterParent;
-                    weight = $viewSettings.colaLinkWeightInterParent;
+                    length = 500;
+                    weight = 0.8;
                 } else {
-                    length = $viewSettings.colaLinkDistIntraParent;
-                    weight = $viewSettings.colaLinkWeightIntraParent;
+                    length = 300;
+                    weight = 1.0;
                 }
             } else if (l.type === 'depends_on') {
-                length = $viewSettings.colaLinkDistDependsOn;
-                weight = $viewSettings.colaLinkWeightDependsOn;
+                length = 400;
+                weight = 1.0;
             } else if (l.type === 'ref') {
-                length = $viewSettings.colaLinkDistRef;
-                weight = $viewSettings.colaLinkWeightRef;
+                length = 600;
+                weight = 0.6;
             }
             return { ...l, length, weight };
         });
@@ -315,36 +288,26 @@
                 .attr("opacity", 0.6);
         }
 
-        ticks = 0;
-
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
             .nodes(nodes as any)
             .links(colaLinks as any)
             .groups(colaGroups)
             .linkDistance((l: any) => l.length)
-            .convergenceThreshold($viewSettings.colaConvergence)
+            .convergenceThreshold(0.5)
             .avoidOverlaps(true)
-            .handleDisconnected($viewSettings.colaHandleDisconnected)
-            .on("tick", () => {
-                ticks++;
-                if (ticks > 300) {
-                    if (colaLayout) colaLayout.stop();
-                    running = false;
-                }
-                tickVisuals();
-            })
-            .on("end", () => { running = false; })
-            .start(0, 0, 0); 
-        running = true;
+            .handleDisconnected(true)
+            .on("tick", tickVisuals)
+            .start(30, 30, 30);
 
         // Force initial render
         tickVisuals();
     }
+    }
 
     export function randomize() {
         if (!$graphData || !colaLayout) return;
-        
+
         $graphData.nodes.forEach((n: any) => {
             if (!n.fixed) {
                 // Strong jitter rather than complete random repositioning
@@ -355,14 +318,8 @@
             }
         });
         tickVisuals();
-        
-        if (running) {
-            ticks = 0;
-            colaLayout.alpha(1); // Inject high heat instead of the standard 0.1 from resume()
-        } else {
-            colaLayout.alpha(1);
-            running = true;
-        }
+
+        colaLayout.alpha(1); // Inject high heat instead of the standard 0.1 from resume()
     }
 
     onDestroy(() => {
