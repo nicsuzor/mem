@@ -21,6 +21,7 @@
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
+    let groupMembers: Map<string, string[]> = new Map(); // containerId -> member node IDs
 
     // Layout control state
     const tickCount = writable(0);
@@ -93,8 +94,6 @@
 
     // ─── Group building ────────────────────────────────────────────────────────
 
-    const GROUP_TYPES = new Set(['epic']);
-
     function buildColaGroups(
         activeNodes: GraphNode[],
         activeLinks: GraphEdge[],
@@ -116,9 +115,10 @@
             childrenOf.get(pid)!.add(cidx);
         }
 
-        // Create groups only for epic-type parents (not regular tasks with subtasks)
+        // Create a group for every parent that has children
         const groups: any[] = [];
         const groupIndexOf = new Map<string, number>();
+        const members = new Map<string, string[]>(); // containerId -> node IDs
 
         for (const [pid, childIdxs] of childrenOf) {
             const pidx = nodeIndex.get(pid);
@@ -126,18 +126,20 @@
             if (childIdxs.size === 0) continue;
 
             const pNode = nodeById.get(pid);
-            if (!pNode || !GROUP_TYPES.has(pNode.type)) continue;
-
             const label = pNode?.label || (pNode as any)?.fullTitle || pid;
             groupIndexOf.set(pid, groups.length);
 
+            const leafIndices = [pidx, ...childIdxs];
             groups.push({
-                leaves: [pidx, ...childIdxs],
+                leaves: leafIndices,
                 groups: [],
                 padding: groupPadding + 55,
                 label,
                 containerId: pid,
             });
+
+            // Track member node IDs for position-based bounds
+            members.set(pid, leafIndices.map(i => activeNodes[i].id));
         }
 
         // Wire nesting: if a group's parent node is itself in another group, nest it
@@ -151,6 +153,7 @@
             groups[thisGroupIdx].padding = groupPadding + 30;
         }
 
+        groupMembers = members;
         return groups;
     }
 
@@ -176,67 +179,89 @@
     function renderGroupBoxes() {
         if (!hullLayer || !colaLayout) return;
 
-        const allGroups: any[] = [];
-        function extractGroups(gList: any[]) {
-            for (const g of gList) {
-                if (g.label) allGroups.push(g);
-                if (g.groups?.length > 0) extractGroups(g.groups);
+        // Build node position lookup from actual DOM positions
+        const nodePos = new Map<string, { x: number; y: number; w: number; h: number }>();
+        d3.select(nodesLayer).selectAll<SVGGElement, GraphNode>("g.node")
+            .each(function (d) {
+                nodePos.set(d.id, { x: d.x ?? 0, y: d.y ?? 0, w: d.w ?? 0, h: d.h ?? 0 });
+            });
+
+        // Compute bounds from actual member node positions (not Cola's stale bounds)
+        type GroupBounds = { x: number; y: number; w: number; h: number; label: string; containerId: string; nested: boolean };
+        const groupBoundsData: GroupBounds[] = [];
+        const PAD = 30;
+
+        for (const [containerId, memberIds] of groupMembers) {
+            const positions = memberIds.map(id => nodePos.get(id)).filter(Boolean) as { x: number; y: number; w: number; h: number }[];
+            if (positions.length === 0) continue;
+
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const p of positions) {
+                minX = Math.min(minX, p.x - PAD);
+                minY = Math.min(minY, p.y - PAD);
+                maxX = Math.max(maxX, p.x + p.w + PAD);
+                maxY = Math.max(maxY, p.y + p.h + PAD);
             }
+
+            const colaGroup = colaGroups.find((g: any) => g.containerId === containerId);
+            const label = colaGroup?.label || containerId;
+            const nested = !!colaGroup?.parent;
+
+            groupBoundsData.push({
+                x: minX, y: minY - TOP_PAD, w: maxX - minX, h: maxY - minY + TOP_PAD,
+                label, containerId, nested,
+            });
         }
-        extractGroups(colaLayout.groups() || []);
-        const uniqueGroups = Array.from(
-            new Map(allGroups.map(g => [g.containerId || g.label, g])).values()
-        );
 
         // Background rectangles
         d3.select(hullLayer)
-            .selectAll<SVGRectElement, any>("rect.cola-group")
-            .data(uniqueGroups, (d: any) => d.containerId || d.label)
+            .selectAll<SVGRectElement, GroupBounds>("rect.cola-group")
+            .data(groupBoundsData, (d) => d.containerId)
             .join("rect")
             .attr("class", "cola-group")
-            .attr("rx", (d: any) => d.parent ? 6 : 10)
-            .attr("ry", (d: any) => d.parent ? 6 : 10)
-            .attr("x", (d: any) => d.bounds?.x ?? 0)
-            .attr("y", (d: any) => (d.bounds?.y ?? 0) - TOP_PAD)
-            .attr("width", (d: any) => d.bounds?.width() ?? 0)
-            .attr("height", (d: any) => (d.bounds?.height() ?? 0) + TOP_PAD)
-            .attr("fill", (d: any) => {
-                const hue = projectHue(d.containerId || d.label || '');
-                return d.parent
+            .attr("rx", (d) => d.nested ? 6 : 10)
+            .attr("ry", (d) => d.nested ? 6 : 10)
+            .attr("x", (d) => d.x)
+            .attr("y", (d) => d.y)
+            .attr("width", (d) => d.w)
+            .attr("height", (d) => d.h)
+            .attr("fill", (d) => {
+                const hue = projectHue(d.containerId);
+                return d.nested
                     ? `hsla(${hue}, 40%, 50%, 0.05)`
                     : `hsla(${hue}, 40%, 50%, 0.08)`;
             })
-            .attr("stroke", (d: any) => {
-                const hue = projectHue(d.containerId || d.label || '');
-                return d.parent
+            .attr("stroke", (d) => {
+                const hue = projectHue(d.containerId);
+                return d.nested
                     ? `hsla(${hue}, 50%, 55%, 0.25)`
                     : `hsla(${hue}, 40%, 50%, 0.3)`;
             })
-            .attr("stroke-width", (d: any) => d.parent ? 1 : 2)
-            .attr("stroke-dasharray", (d: any) => d.parent ? "4,2" : "6,3")
+            .attr("stroke-width", (d) => d.nested ? 1 : 2)
+            .attr("stroke-dasharray", (d) => d.nested ? "4,2" : "6,3")
             .style("cursor", "crosshair")
-            .on("click", (e: any, d: any) => { e.stopPropagation(); if (d.containerId) toggleSelection(d.containerId); });
+            .on("click", (e: any, d) => { e.stopPropagation(); toggleSelection(d.containerId); });
 
         // Group labels (simple truncated text)
         d3.select(hullLayer)
-            .selectAll<SVGTextElement, any>("text.cola-group-label")
-            .data(uniqueGroups, (d: any) => d.containerId || d.label)
+            .selectAll<SVGTextElement, GroupBounds>("text.cola-group-label")
+            .data(groupBoundsData, (d) => d.containerId)
             .join("text")
             .attr("class", "cola-group-label")
-            .attr("x", (d: any) => (d.bounds?.x ?? 0) + 12)
-            .attr("y", (d: any) => (d.bounds?.y ?? 0) - TOP_PAD + 22)
+            .attr("x", (d) => d.x + 12)
+            .attr("y", (d) => d.y + 22)
             .attr("font-size", 18)
             .attr("font-weight", 700)
-            .attr("fill", (d: any) => {
-                const hue = projectHue(d.containerId || d.label || '');
+            .attr("fill", (d) => {
+                const hue = projectHue(d.containerId);
                 return `hsla(${hue}, 60%, 80%, 0.9)`;
             })
             .style("pointer-events", "none")
             .style("text-transform", "uppercase")
             .style("letter-spacing", "0.05em")
-            .text((d: any) => {
+            .text((d) => {
                 const label = (d.label || '').toUpperCase();
-                const maxChars = Math.max(10, Math.floor((d.bounds?.width() ?? 200) / 10));
+                const maxChars = Math.max(10, Math.floor(d.w / 10));
                 return label.length > maxChars ? label.slice(0, maxChars - 1) + '\u2026' : label;
             });
     }
@@ -368,7 +393,7 @@
             .linkDistance((d: any) => d.length)
             .on("tick", tickVisuals)
             .on("end", () => { $running = false; })
-            .start(50, 50, 50, 0, false);
+            .start(10, 15, 20, 0, false);
 
         // Render final positions
         tickVisuals();
