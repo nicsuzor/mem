@@ -295,6 +295,13 @@
         const ch = Math.round(Math.sqrt(CANVAS_AREA / aspect));
         const cw = Math.round(ch * aspect);
 
+        // Scatter nodes randomly so Cola has something to work with
+        const pad = 200;
+        activeNodes.forEach((n: any) => {
+            if (typeof n.x !== 'number') n.x = pad + Math.random() * (cw - pad * 2);
+            if (typeof n.y !== 'number') n.y = pad + Math.random() * (ch - pad * 2);
+        });
+
         // Render nodes
         const nEls = d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
@@ -338,9 +345,9 @@
             .avoidOverlaps(true)
             .handleDisconnected(true)
             .linkDistance((d: any) => d.length)
-            .convergenceThreshold(0.5)
+            .convergenceThreshold(0.1)
             .on("tick", tickVisuals)
-            .start(30, 30, 30);
+            .start(50, 50, 50);
     }
 
     onDestroy(() => {
