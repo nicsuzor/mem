@@ -93,6 +93,8 @@
 
     // ─── Group building ────────────────────────────────────────────────────────
 
+    const GROUP_TYPES = new Set(['epic']);
+
     function buildColaGroups(
         activeNodes: GraphNode[],
         activeLinks: GraphEdge[],
@@ -114,7 +116,7 @@
             childrenOf.get(pid)!.add(cidx);
         }
 
-        // Create a group for every parent that has children
+        // Create groups only for epic-type parents (not regular tasks with subtasks)
         const groups: any[] = [];
         const groupIndexOf = new Map<string, number>();
 
@@ -124,7 +126,9 @@
             if (childIdxs.size === 0) continue;
 
             const pNode = nodeById.get(pid);
-            const label = pNode?.label || pNode?.fullTitle || pid;
+            if (!pNode || !GROUP_TYPES.has(pNode.type)) continue;
+
+            const label = pNode?.label || (pNode as any)?.fullTitle || pid;
             groupIndexOf.set(pid, groups.length);
 
             groups.push({
