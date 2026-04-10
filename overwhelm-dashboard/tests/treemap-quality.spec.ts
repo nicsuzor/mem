@@ -6,16 +6,10 @@ test('treemap quality metric: text visibility', async ({ page }) => {
   await page.goto('http://localhost:5173/');
 
   // Wait for the app to initialize
-  await page.waitForSelector('text=SYSTEM READY', { timeout: 10000 });
+  await page.waitForSelector('text=OPERATOR SYSTEM', { timeout: 15000 });
 
-  // Open the TASK GRAPH view
-  await page.getByRole('button', { name: 'TASK GRAPH' }).click();
-
-  // Ensure Treemap is active
-  const treemapBtn = page.getByRole('button', { name: 'TREEMAP' });
-  if (await treemapBtn.isVisible()) {
-    await treemapBtn.click();
-  }
+  // Open the Treemap view directly (it's a top-level nav button)
+  await page.getByRole('button', { name: 'Treemap' }).click();
 
   // Wait for nodes to render
   await page.waitForSelector('g.node rect', { state: 'visible', timeout: 10000 });
