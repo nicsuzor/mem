@@ -31,6 +31,8 @@
 
     export let data: any;
 
+    let forceViewRef: ForceView;
+    let forceRunning = false;
     let rawGraph: any = null;
     let loading = true;
     let errorMsg = "";
@@ -342,7 +344,7 @@
                             {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
                                 <CirclePackView {containerGroup} />
                             {:else if activeLayout === "force" || activeLayout === "sfdp"}
-                                <ForceView {containerGroup} />
+                                <ForceView {containerGroup} bind:this={forceViewRef} bind:running={forceRunning} />
                             {:else if activeLayout === "arc"}
                                 <ArcView {containerGroup} />
                             {/if}
@@ -353,6 +355,17 @@
 
             <!-- Legend -->
             <Legend />
+
+            <!-- Force layout start/stop -->
+            {#if activeLayout === "force" || activeLayout === "sfdp"}
+                <button
+                    class="absolute bottom-4 left-4 z-30 px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider
+                           bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors"
+                    onclick={() => forceViewRef?.toggleRunning()}
+                >
+                    {forceRunning ? '⏸ Stop' : '▶ Start'} Layout
+                </button>
+            {/if}
 
             <!-- Graph Configuration Overlay -->
             <ViewConfigOverlay />

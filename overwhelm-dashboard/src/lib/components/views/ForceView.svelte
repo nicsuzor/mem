@@ -3,14 +3,13 @@
     import * as cola from "webcola";
     import { onDestroy } from "svelte";
     import { graphData, graphStructureKey } from "../../stores/graph";
-    import { viewSettings } from "../../stores/viewSettings";
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
-    import { zoomScale } from "../../stores/zoom";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
     const CANVAS_AREA = 30_000_000;
+    const GROUP_PADDING = 60;
 
     export let containerGroup: SVGGElement;
 
@@ -19,55 +18,35 @@
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
+    export let running = false;
 
-    // Rebuild when structure or Cola params change (debounced)
-    let lastStructureKey = '';
-    let lastColaParams = '';
-    let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
-    $: {
-        const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaAvoidOverlaps}|${$viewSettings.colaHandleDisconnected}`;
-        if (containerGroup && $graphData && nodesLayer && hullLayer && (sk !== lastStructureKey || cp !== lastColaParams)) {
-            lastStructureKey = sk;
-            lastColaParams = cp;
-            if (rebuildTimer) clearTimeout(rebuildTimer);
-            rebuildTimer = setTimeout(() => { rebuildTimer = null; drawForceAndStartPhysics(); }, 100);
+    export function toggleRunning() {
+        if (!colaLayout) return;
+        if (running) {
+            colaLayout.stop();
+            running = false;
+        } else {
+            colaLayout.resume();
+            running = true;
         }
     }
 
-    // Patch node visuals on property-only updates (no physics restart)
-    $: if ($graphData && nodesLayer && lastStructureKey && lastStructureKey === $graphStructureKey) {
-        const activeId = $selection.activeNodeId;
-        d3.select(nodesLayer)
-            .selectAll<SVGGElement, GraphNode>("g.node")
-            .each(function (d) {
-                const fresh = $graphData!.nodes.find(n => n.id === d.id);
-                if (!fresh) return;
-                if (d.status !== fresh.status || d.fill !== fresh.fill || d.opacity !== fresh.opacity) {
-                    Object.assign(d, fresh);
-                    const g = d3.select(this) as any;
-                    g.selectAll("*").remove();
-                    buildTaskCardNode(g, d, d.id === activeId);
-                    (d as any)._lastSelected = d.id === activeId;
-                }
-            });
-    }
-
-    // Dimming + selection highlight
-    $: if (nodesLayer && $graphData) {
-        const activeId = $selection.activeNodeId;
-        d3.select(nodesLayer).selectAll<SVGGElement, GraphNode>("g.node")
-            .classed("dimmed", (d: any) => d.filter_dimmed)
-            .classed("selected-node", (d: any) => d.id === activeId);
+    // Rebuild when graph structure changes
+    let lastStructureKey = '';
+    $: {
+        const sk = $graphStructureKey;
+        if (containerGroup && $graphData && nodesLayer && hullLayer && sk !== lastStructureKey) {
+            lastStructureKey = sk;
+            rebuild();
+        }
     }
 
     // ─── Group building ────────────────────────────────────────────────────────
 
-    function buildColaGroups(activeNodes: GraphNode[], activeLinks: GraphEdge[], groupPadding: number): any[] {
+    function buildColaGroups(activeNodes: GraphNode[], activeLinks: GraphEdge[]): any[] {
         const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
         const nodeById = new Map(activeNodes.map(n => [n.id, n]));
 
-        // Build parent -> child indices from parent links
         const childrenOf = new Map<string, Set<number>>();
         for (const l of activeLinks) {
             if ((l as any).type !== 'parent') continue;
@@ -80,25 +59,21 @@
             childrenOf.get(pid)!.add(cidx);
         }
 
-        // Create a group for every parent with children
         const groups: any[] = [];
         const groupIndexOf = new Map<string, number>();
         for (const [pid, childIdxs] of childrenOf) {
             const pidx = nodeIndex.get(pid);
             if (pidx === undefined || childIdxs.size === 0) continue;
-            const pNode = nodeById.get(pid);
             groupIndexOf.set(pid, groups.length);
             groups.push({
                 leaves: [pidx, ...childIdxs],
                 groups: [],
-                padding: groupPadding,
-                label: pNode?.label || (pNode as any)?.fullTitle || pid,
+                padding: GROUP_PADDING,
                 containerId: pid,
             });
         }
 
-        // Wire nesting: if a group's container node is itself a child of another
-        // group's container, nest it using Cola's native hierarchy support
+        // Wire nesting
         for (const [pid] of groupIndexOf) {
             const pNode = nodeById.get(pid);
             if (!pNode?.parent) continue;
@@ -106,12 +81,9 @@
             if (parentGroupIdx === undefined) continue;
             const thisGroupIdx = groupIndexOf.get(pid)!;
             groups[parentGroupIdx].groups.push(groups[thisGroupIdx]);
-            groups[thisGroupIdx].padding = groupPadding;
-            groups[thisGroupIdx].nested = true;
         }
 
-        // Remove nested group members from parent leaves — Cola requires
-        // each node index in exactly one group's leaves array
+        // Deduplicate leaves across nested groups
         for (const g of groups) {
             if (g.groups.length === 0) continue;
             const nested = new Set<number>();
@@ -141,95 +113,57 @@
     function renderGroupBoxes() {
         if (!hullLayer) return;
 
-        type GB = { x: number; y: number; w: number; h: number; label: string; containerId: string; nested: boolean };
+        type GB = { x: number; y: number; w: number; h: number; containerId: string };
         const data: GB[] = [];
 
-        // Use Cola's computed group.bounds directly — these are guaranteed
-        // non-overlapping by Cola's constraint solver
         for (const cg of colaGroups) {
             if (!cg.bounds) continue;
             const b = cg.bounds;
-            data.push({
-                x: b.x, y: b.y, w: b.X - b.x, h: b.Y - b.y,
-                label: cg.label || cg.containerId, containerId: cg.containerId,
-                nested: !!cg.nested,
-            });
+            data.push({ x: b.x, y: b.y, w: b.X - b.x, h: b.Y - b.y, containerId: cg.containerId });
         }
 
         d3.select(hullLayer).selectAll<SVGRectElement, GB>("rect.cola-group")
             .data(data, d => d.containerId).join("rect")
             .attr("class", "cola-group")
-            .attr("rx", d => d.nested ? 6 : 10).attr("ry", d => d.nested ? 6 : 10)
+            .attr("rx", 8).attr("ry", 8)
             .attr("x", d => d.x).attr("y", d => d.y)
             .attr("width", d => d.w).attr("height", d => d.h)
-            .attr("fill", d => { const h = projectHue(d.containerId); return d.nested ? `hsla(${h},40%,50%,0.05)` : `hsla(${h},40%,50%,0.08)`; })
-            .attr("stroke", d => { const h = projectHue(d.containerId); return d.nested ? `hsla(${h},50%,55%,0.25)` : `hsla(${h},40%,50%,0.3)`; })
-            .attr("stroke-width", d => d.nested ? 1 : 2)
-            .attr("stroke-dasharray", d => d.nested ? "4,2" : "6,3")
+            .attr("fill", d => `hsla(${projectHue(d.containerId)},40%,50%,0.08)`)
+            .attr("stroke", d => `hsla(${projectHue(d.containerId)},40%,50%,0.3)`)
+            .attr("stroke-width", 1.5)
             .style("cursor", "crosshair")
             .on("click", (e: any, d) => { e.stopPropagation(); toggleSelection(d.containerId); });
-
-        d3.select(hullLayer).selectAll<SVGTextElement, GB>("text.cola-group-label")
-            .data(data, d => d.containerId).join("text")
-            .attr("class", "cola-group-label")
-            .attr("x", d => d.x + 12).attr("y", d => d.y + 22)
-            .attr("font-size", 18).attr("font-weight", 700)
-            .attr("fill", d => `hsla(${projectHue(d.containerId)},60%,80%,0.9)`)
-            .style("pointer-events", "none").style("text-transform", "uppercase").style("letter-spacing", "0.05em")
-            .text(d => { const l = (d.label || '').toUpperCase(); const mc = Math.max(10, Math.floor(d.w / 10)); return l.length > mc ? l.slice(0, mc - 1) + '\u2026' : l; });
     }
 
-    // ─── Tick + Main draw ─────────────────────────────────────────────────────
+    // ─── Tick + rebuild ──────────────────────────────────────────────────────
 
     function tickVisuals() {
-        const scale = $zoomScale;
         d3.select(nodesLayer).selectAll<SVGGElement, GraphNode>("g.node")
-            .attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`)
-            .each(function (d) {
-                const texts = d3.select(this).selectAll("text, tspan");
-                if (!texts.empty()) texts.attr("opacity", (scale > 0.4 || (d.priority <= 1 && scale > 0.2)) ? null : 0);
-            });
+            .attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
         renderGroupBoxes();
     }
 
-    function drawForceAndStartPhysics() {
+    function rebuild() {
         if (!$graphData) return;
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
 
-        const data = $graphData;
+        const nodes: GraphNode[] = $graphData.nodes;
+        const links: GraphEdge[] = $graphData.links;
 
-        // Strip project nodes
-        const projectIds = new Set(data.nodes.filter(n => n.type === 'project').map(n => n.id));
-        let activeNodes: GraphNode[] = data.nodes;
-        let activeLinks: GraphEdge[] = data.links;
-        if (projectIds.size > 0) {
-            const projParentMap = new Map<string, string | null>(
-                data.nodes.filter(n => projectIds.has(n.id)).map(n => [n.id, n.parent])
-            );
-            activeNodes = data.nodes.map(n => {
-                if (projectIds.has(n.id)) return n;
-                let cur = n.parent;
-                const seen = new Set<string>();
-                while (cur && projectIds.has(cur)) { if (seen.has(cur)) break; seen.add(cur); cur = projParentMap.get(cur) ?? null; }
-                return cur !== n.parent ? { ...n, parent: cur } : n;
-            }).filter(n => !projectIds.has(n.id));
-            activeLinks = data.links.filter((l: any) => {
-                const sid = typeof l.source === 'object' ? l.source.id : l.source;
-                const tid = typeof l.target === 'object' ? l.target.id : l.target;
-                return !projectIds.has(sid) && !projectIds.has(tid);
-            });
-        }
-
-        // Resolve links + set node dimensions for Cola
-        const nodeById = new Map(activeNodes.map(n => [n.id, n]));
-        activeLinks.forEach((l: any) => {
+        // Resolve link references to node objects
+        const nodeById = new Map(nodes.map(n => [n.id, n]));
+        links.forEach((l: any) => {
             if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
-        activeNodes.forEach((n: any) => { n.width = n.w; n.height = n.h; });
 
-        colaGroups = buildColaGroups(activeNodes, activeLinks, $viewSettings.colaGroupPadding);
+        // Set Cola dimensions = actual card size
+        nodes.forEach((n: any) => { n.width = n.w; n.height = n.h; });
 
+        // Build hierarchical groups
+        colaGroups = buildColaGroups(nodes, links);
+
+        // Canvas from CANVAS_AREA
         const svg = containerGroup?.ownerSVGElement;
         const vw = svg?.clientWidth || window.innerWidth || 1400;
         const vh = svg?.clientHeight || window.innerHeight || 900;
@@ -237,47 +171,46 @@
         const ch = Math.round(Math.sqrt(CANVAS_AREA / aspect));
         const cw = Math.round(ch * aspect);
 
-        // Random initial scatter
-        const pad = 200;
-        activeNodes.forEach((n: any) => {
-            if (typeof n.x !== 'number') n.x = pad + Math.random() * (cw - pad * 2);
-            if (typeof n.y !== 'number') n.y = pad + Math.random() * (ch - pad * 2);
+        // Random initial positions
+        nodes.forEach((n: any) => {
+            if (typeof n.x !== 'number') n.x = Math.random() * cw;
+            if (typeof n.y !== 'number') n.y = Math.random() * ch;
         });
 
         // Render nodes
+        const activeId = $selection.activeNodeId;
         const nEls = d3.select(nodesLayer)
             .selectAll<SVGGElement, GraphNode>("g.node")
-            .data(activeNodes, d => d.id)
+            .data(nodes, d => d.id)
             .join("g").attr("class", "node")
             .attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
-        const activeId = $selection.activeNodeId;
         nEls.each(function (d) {
             const g = d3.select(this) as any;
-            const sel = d.id === activeId;
-            if (g.selectAll("*").empty() || (d as any)._lastSelected !== sel) {
-                g.selectAll("*").remove(); buildTaskCardNode(g, d, sel); (d as any)._lastSelected = sel;
-            }
+            g.selectAll("*").remove();
+            buildTaskCardNode(g, d, d.id === activeId);
         });
         bindDragAndClick(nEls);
 
-        // Parent links give Cola graph structure for stress majorization
-        const colaLinks = activeLinks.filter((l: any) =>
+        // Parent links for Cola structure
+        const colaLinks = links.filter((l: any) =>
             l.type === 'parent' && typeof l.source === 'object' && typeof l.target === 'object');
 
+        // Bare Cola — async tick
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
-            .nodes(activeNodes as any)
+            .nodes(nodes as any)
             .links(colaLinks as any)
             .groups(colaGroups)
+            .linkDistance(40)
             .avoidOverlaps(true)
             .handleDisconnected(true)
-            .start(10, 30, 200, 0, false);
-
-        tickVisuals();
+            .on("tick", tickVisuals)
+            .on("end", () => { running = false; })
+            .start();
+        running = true;
     }
 
     onDestroy(() => {
-        if (rebuildTimer) clearTimeout(rebuildTimer);
         if (colaLayout) colaLayout.stop();
     });
 </script>
@@ -286,9 +219,3 @@
     <g bind:this={hullLayer} class="hull-layer"></g>
     <g bind:this={nodesLayer}></g>
 {/if}
-
-<style>
-    :global(g.node) { transition: opacity 0.3s ease, filter 0.3s ease; }
-    :global(g.node.dimmed) { opacity: 0.6; filter: grayscale(0.5) brightness(0.75); }
-    :global(g.node.selected-node) { opacity: 1 !important; filter: none !important; }
-</style>
