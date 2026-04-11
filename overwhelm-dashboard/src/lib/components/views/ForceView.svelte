@@ -71,7 +71,7 @@
             if (pidx === undefined || childIdxs.size === 0) continue;
             groupIndexOf.set(pid, groups.length);
             groups.push({
-                leaves: [...childIdxs],
+                leaves: [pidx, ...childIdxs], // PUT PARENT BACK IN GROUP
                 groups: [],
                 padding: GROUP_PADDING,
                 containerId: pid,
@@ -222,7 +222,13 @@
             .nodes(nodes as any)
             .links(colaLinks as any)
             .groups(colaGroups)
-            .linkDistance($viewSettings.colaLinkLength)
+            .linkDistance((d: any) => {
+                // ACTUAL COLA API: Checks if nodes share the same group object
+                if (d.source.parent && d.target.parent && d.source.parent === d.target.parent) {
+                    return 50; // Short intra-group links
+                }
+                return $viewSettings.colaLinkLength; // Long inter-group links
+            })
             .convergenceThreshold($viewSettings.colaConvergence) // Keep < 0.1 to avoid immediate abort
             .avoidOverlaps(true)
             .handleDisconnected(true)
@@ -235,7 +241,7 @@
                 tickVisuals();
             })
             .on("end", () => { running = false; })
-            .start(5, 10, 15);
+            .start(20, 20, 50); // Higher iteration count to allow convergence
         running = true;
     }
 
