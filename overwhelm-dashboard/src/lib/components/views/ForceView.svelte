@@ -66,34 +66,59 @@
 
         const groups: any[] = [];
         const groupIndexOf = new Map<string, number>();
+
+        // 1. Create a group for every parent
         for (const [pid, childIdxs] of childrenOf) {
             const pidx = nodeIndex.get(pid);
             if (pidx === undefined || childIdxs.size === 0) continue;
             groupIndexOf.set(pid, groups.length);
             groups.push({
-                leaves: [pidx, ...childIdxs], // PUT PARENT BACK IN GROUP
-                groups: [],
+                leaves: [pidx, ...childIdxs], // Parent stays inside
+                groups: [], // Will hold references to child groups
                 padding: GROUP_PADDING,
                 containerId: pid,
             });
         }
 
-        // Wire nesting
-        for (const [pid] of groupIndexOf) {
+        // 2. Wire up the actual hierarchical nesting!
+        // This is what makes a grand-parent's box expand to cover grandchildren.
+        for (const [pid, groupIdx] of groupIndexOf) {
             const pNode = nodeById.get(pid);
-            if (!pNode?.parent) continue;
+            if (!pNode?.parent) continue; // It's a root group
+
             const parentGroupIdx = groupIndexOf.get(pNode.parent);
-            if (parentGroupIdx === undefined) continue;
-            const thisGroupIdx = groupIndexOf.get(pid)!;
-            groups[parentGroupIdx].groups.push(groups[thisGroupIdx]);
+            if (parentGroupIdx !== undefined) {
+                // Tell the parent group that this group is nested inside it
+                groups[parentGroupIdx].groups.push(groupIdx);
+            }
         }
 
-        // Deduplicate leaves across nested groups
+        // 3. Cola requires that a leaf cannot be in multiple groups if they are nested.
+        // If node X is inside ChildGroup, it must NOT also be in ParentGroup.leaves.
+        // It is implicitly in ParentGroup because ChildGroup is in ParentGroup.groups.
         for (const g of groups) {
             if (g.groups.length === 0) continue;
-            const nested = new Set<number>();
-            for (const child of g.groups) for (const l of child.leaves) nested.add(l);
-            g.leaves = g.leaves.filter((l: number) => !nested.has(l));
+            
+            const nestedLeaves = new Set<number>();
+            // Recursively find all leaves in all nested child groups
+            function collectLeaves(gIdx: number) {
+                const childG = groups[gIdx];
+                for (const l of childG.leaves) nestedLeaves.add(l);
+                for (const nestedG of childG.groups) collectLeaves(nestedG);
+            }
+            
+            for (const childGIdx of g.groups) {
+                collectLeaves(childGIdx);
+            }
+
+            // Remove any leaves from this group that are already claimed by a child group
+            g.leaves = g.leaves.filter((l: number) => !nestedLeaves.has(l));
+        }
+
+        // 4. Important: Cola expects nested groups to be object references, not index numbers.
+        // We used indices above to avoid circular reference headaches while building.
+        for (const g of groups) {
+            g.groups = g.groups.map((idx: number) => groups[idx]);
         }
 
         return groups;
@@ -241,7 +266,7 @@
                 tickVisuals();
             })
             .on("end", () => { running = false; })
-            .start(20, 20, 50); // Higher iteration count to allow convergence
+            .start(5, 10, 15); // Lighter iteration count to avoid blocking main thread
         running = true;
     }
 
