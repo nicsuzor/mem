@@ -14,6 +14,7 @@
 
     export let containerGroup: SVGGElement;
 
+    let linksLayer: SVGGElement;
     let nodesLayer: SVGGElement;
     let hullLayer: SVGGElement;
 
@@ -70,7 +71,7 @@
             if (pidx === undefined || childIdxs.size === 0) continue;
             groupIndexOf.set(pid, groups.length);
             groups.push({
-                leaves: [pidx, ...childIdxs],
+                leaves: [...childIdxs],
                 groups: [],
                 padding: GROUP_PADDING,
                 containerId: pid,
@@ -142,6 +143,11 @@
     // ─── Tick + rebuild ──────────────────────────────────────────────────────
 
     function tickVisuals() {
+        if (linksLayer) {
+            d3.select(linksLayer).selectAll<SVGLineElement, any>("line.link")
+                .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+        }
         d3.select(nodesLayer).selectAll<SVGGElement, GraphNode>("g.node")
             .attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
         renderGroupBoxes();
@@ -161,8 +167,8 @@
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
 
-        // Set Cola dimensions = actual card size
-        nodes.forEach((n: any) => { n.width = n.w; n.height = n.h; });
+        // Set Cola dimensions = actual card size + visual buffer for badges/glows
+        nodes.forEach((n: any) => { n.width = n.w + 12; n.height = n.h + 24; });
 
         // Build hierarchical groups
         colaGroups = buildColaGroups(nodes, links);
@@ -199,6 +205,16 @@
         const colaLinks = links.filter((l: any) =>
             l.type === 'parent' && typeof l.source === 'object' && typeof l.target === 'object');
 
+        if (linksLayer) {
+            d3.select(linksLayer).selectAll("line.link")
+                .data(colaLinks)
+                .join("line").attr("class", "link")
+                .attr("stroke", (d: any) => d.color || "#cbd5e1")
+                .attr("stroke-width", (d: any) => d.width || 1.5)
+                .attr("stroke-dasharray", (d: any) => d.dash || null)
+                .attr("opacity", 0.6);
+        }
+
         let ticks = 0;
 
         colaLayout = cola.d3adaptor(d3)
@@ -230,5 +246,6 @@
 
 {#if containerGroup}
     <g bind:this={hullLayer} class="hull-layer"></g>
+    <g bind:this={linksLayer} class="links-layer"></g>
     <g bind:this={nodesLayer}></g>
 {/if}
