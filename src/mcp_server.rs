@@ -143,6 +143,18 @@ impl PkbSearchServer {
         *self.graph.write() = new_graph;
     }
 
+    /// Check whether the index file lock is available (no reindex in progress).
+    fn index_lock_available(&self) -> bool {
+        match VectorStore::acquire_lock(&self.db_path) {
+            Ok(mut lock) => match lock.try_write() {
+                Ok(_guard) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => false,
+                Err(_) => false,
+            },
+            Err(_) => false,
+        }
+    }
+
     /// Save the vector store to disk with a non-blocking lock.
     /// If another process holds the lock, logs a warning and skips the save.
     fn save_store(&self) {
@@ -164,6 +176,34 @@ impl PkbSearchServer {
                 tracing::error!("Failed to open lock file for save: {e}");
             }
         }
+    }
+
+    /// Index a document into the vector store if the index is not locked by a
+    /// reindex. When a reindex is in progress the markdown file is already
+    /// written and the graph already updated — the reindex will pick up the
+    /// new/changed file, so we can safely skip the expensive embedding step.
+    fn try_upsert_document(&self, doc: &crate::pkb::PkbDocument) {
+        if !self.index_lock_available() {
+            tracing::info!(
+                "Index locked by another process — skipping in-memory upsert for {}",
+                doc.path.display()
+            );
+            return;
+        }
+        let _ = self.store.write().upsert(doc, &self.embedder);
+        self.save_store();
+    }
+
+    /// Remove a document from the vector store if the index is not locked.
+    fn try_remove_document(&self, rel_path: &str) {
+        if !self.index_lock_available() {
+            tracing::info!(
+                "Index locked by another process — skipping in-memory remove for {rel_path}"
+            );
+            return;
+        }
+        self.store.write().remove(rel_path);
+        self.save_store();
     }
 
     // =========================================================================
@@ -499,14 +539,13 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        // Index the new file (with relative path for portable storage)
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
-            let _ = self.store.write().upsert(&doc, &self.embedder);
-            self.save_store();
-        }
-
         // Incremental graph update for the new file
         self.rebuild_graph_for_file(&path);
+
+        // Index the new file (skipped if reindex holds the lock)
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.try_upsert_document(&doc);
+        }
 
         let mut msg = format!("Task created: `{}`", path.display());
         if !warnings.is_empty() {
@@ -562,11 +601,10 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
-            let _ = self.store.write().upsert(&doc, &self.embedder);
-            self.save_store();
-        }
         self.rebuild_graph_for_file(&path);
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.try_upsert_document(&doc);
+        }
 
         let id = path
             .file_stem()
@@ -1163,13 +1201,12 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        // Index the new file
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
-            let _ = self.store.write().upsert(&doc, &self.embedder);
-            self.save_store();
-        }
-
         self.rebuild_graph_for_file(&path);
+
+        // Index the new file (skipped if reindex holds the lock)
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.try_upsert_document(&doc);
+        }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Memory created: `{}`",
@@ -1282,13 +1319,12 @@ impl PkbSearchServer {
             }
         })?;
 
-        // Index the new file
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
-            let _ = self.store.write().upsert(&doc, &self.embedder);
-            self.save_store();
-        }
-
         self.rebuild_graph_for_file(&path);
+
+        // Index the new file (skipped if reindex holds the lock)
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.try_upsert_document(&doc);
+        }
 
         let mut msg = format!("Document created: `{}`", path.display());
         if !warnings.is_empty() {
@@ -1342,13 +1378,12 @@ impl PkbSearchServer {
             }
         })?;
 
-        // Re-index the updated file
-        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
-            let _ = self.store.write().upsert(&doc, &self.embedder);
-            self.save_store();
-        }
-
         self.rebuild_graph_for_file(&abs_path);
+
+        // Re-index the updated file (skipped if reindex holds the lock)
+        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.try_upsert_document(&doc);
+        }
 
         let section_msg = section
             .map(|s| format!(" under ## {s}"))
@@ -1388,12 +1423,11 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        // Remove from vector store
-        self.store.write().remove(&rel_path);
-        self.save_store();
-
         // Incremental graph update — remove the deleted node
         self.rebuild_graph_remove(&node_id);
+
+        // Remove from vector store (skipped if reindex holds the lock)
+        self.try_remove_document(&rel_path);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Deleted: {} (`{}`)",
@@ -1450,13 +1484,12 @@ impl PkbSearchServer {
         // Append completion evidence to the document body
         Self::append_evidence(&abs_path, evidence, pr_url)?;
 
-        // Re-index
-        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
-            let _ = self.store.write().upsert(&doc, &self.embedder);
-            self.save_store();
-        }
-
         self.rebuild_graph_for_file(&abs_path);
+
+        // Re-index (skipped if reindex holds the lock)
+        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.try_upsert_document(&doc);
+        }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Completed: {} (`{}`)",
@@ -1612,13 +1645,12 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        // Re-index
-        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
-            let _ = self.store.write().upsert(&doc, &self.embedder);
-            self.save_store();
-        }
-
         self.rebuild_graph_for_file(&abs_path);
+
+        // Re-index (skipped if reindex holds the lock)
+        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.try_upsert_document(&doc);
+        }
 
         // Build response with soft warnings
         let mut warnings = Vec::new();
@@ -2100,10 +2132,6 @@ impl PkbSearchServer {
                 }
             })?;
 
-            if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
-                let _ = self.store.write().upsert(&doc, &self.embedder);
-            }
-
             let id_str = path
                 .file_stem()
                 .map(|s| {
@@ -2117,8 +2145,20 @@ impl PkbSearchServer {
             created.push((id_str, path.display().to_string()));
         }
 
-        self.save_store();
         self.rebuild_graph();
+
+        // Index all created subtasks (skipped entirely if reindex holds the lock)
+        if self.index_lock_available() {
+            for (_, path_str) in &created {
+                let path = std::path::Path::new(path_str);
+                if let Some(doc) = crate::pkb::parse_file_relative(path, &self.pkb_root) {
+                    let _ = self.store.write().upsert(&doc, &self.embedder);
+                }
+            }
+            self.save_store();
+        } else {
+            tracing::info!("Index locked by another process — skipping upsert for {} decomposed subtasks", created.len());
+        }
 
         let mut output = format!(
             "**Created {} subtasks under `{parent_id}`:**\n\n",
@@ -2666,14 +2706,13 @@ impl PkbSearchServer {
             }
         }
 
-        // Re-index the updated file (with relative path for portable storage)
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
-            let _ = self.store.write().upsert(&doc, &self.embedder);
-            self.save_store();
-        }
-
         // Incremental graph update for the changed file
         self.rebuild_graph_for_file(&path);
+
+        // Re-index the updated file (skipped if reindex holds the lock)
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.try_upsert_document(&doc);
+        }
 
         // Soft warning if setting a terminal status via update_task instead of release_task
         let terminal_statuses = ["merge_ready", "done", "review", "blocked", "cancelled"];
