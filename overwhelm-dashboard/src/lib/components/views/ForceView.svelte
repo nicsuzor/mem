@@ -19,7 +19,6 @@
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
-    let groupMembers: Map<string, string[]> = new Map();
 
     // Rebuild when structure or Cola params change (debounced)
     let lastStructureKey = '';
@@ -81,34 +80,45 @@
             childrenOf.get(pid)!.add(cidx);
         }
 
-        // Flat group for every parent with children (no nesting — Cola's recursive
-        // constraint generation explodes with nested groups)
+        // Create a group for every parent with children
         const groups: any[] = [];
+        const groupIndexOf = new Map<string, number>();
         for (const [pid, childIdxs] of childrenOf) {
             const pidx = nodeIndex.get(pid);
             if (pidx === undefined || childIdxs.size === 0) continue;
             const pNode = nodeById.get(pid);
+            groupIndexOf.set(pid, groups.length);
             groups.push({
                 leaves: [pidx, ...childIdxs],
-                padding: groupPadding + 55,
+                groups: [],
+                padding: groupPadding,
                 label: pNode?.label || (pNode as any)?.fullTitle || pid,
                 containerId: pid,
             });
         }
 
-        // Each node in at most one group — group parents stay in their own group only
-        const groupParentIdxs = new Set(groups.map((g: any) => nodeIndex.get(g.containerId)!));
-        for (const g of groups) {
-            const ownIdx = nodeIndex.get(g.containerId);
-            g.leaves = g.leaves.filter((l: number) => !groupParentIdxs.has(l) || l === ownIdx);
+        // Wire nesting: if a group's container node is itself a child of another
+        // group's container, nest it using Cola's native hierarchy support
+        for (const [pid] of groupIndexOf) {
+            const pNode = nodeById.get(pid);
+            if (!pNode?.parent) continue;
+            const parentGroupIdx = groupIndexOf.get(pNode.parent);
+            if (parentGroupIdx === undefined) continue;
+            const thisGroupIdx = groupIndexOf.get(pid)!;
+            groups[parentGroupIdx].groups.push(groups[thisGroupIdx]);
+            groups[thisGroupIdx].padding = groupPadding;
+            groups[thisGroupIdx].nested = true;
         }
 
-        // Build member map after dedup for accurate visual boxes
-        const members = new Map<string, string[]>();
+        // Remove nested group members from parent leaves — Cola requires
+        // each node index in exactly one group's leaves array
         for (const g of groups) {
-            members.set(g.containerId, g.leaves.map((i: number) => activeNodes[i].id));
+            if (g.groups.length === 0) continue;
+            const nested = new Set<number>();
+            for (const child of g.groups) for (const l of child.leaves) nested.add(l);
+            g.leaves = g.leaves.filter((l: number) => !nested.has(l));
         }
-        groupMembers = members;
+
         return groups;
     }
 
@@ -131,38 +141,31 @@
     function renderGroupBoxes() {
         if (!hullLayer) return;
 
-        const nodePos = new Map<string, { x: number; y: number; w: number; h: number }>();
-        d3.select(nodesLayer).selectAll<SVGGElement, GraphNode>("g.node")
-            .each(function (d) { nodePos.set(d.id, { x: d.x ?? 0, y: d.y ?? 0, w: d.w ?? 0, h: d.h ?? 0 }); });
-
-        type GB = { x: number; y: number; w: number; h: number; label: string; containerId: string };
+        type GB = { x: number; y: number; w: number; h: number; label: string; containerId: string; nested: boolean };
         const data: GB[] = [];
-        const PAD = 30;
 
-        for (const [containerId, memberIds] of groupMembers) {
-            const positions = memberIds.map(id => nodePos.get(id)).filter(Boolean) as { x: number; y: number; w: number; h: number }[];
-            if (positions.length === 0) continue;
-            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-            for (const p of positions) {
-                const hw = p.w / 2, hh = p.h / 2;
-                minX = Math.min(minX, p.x - hw - PAD); minY = Math.min(minY, p.y - hh - PAD);
-                maxX = Math.max(maxX, p.x + hw + PAD); maxY = Math.max(maxY, p.y + hh + PAD);
-            }
-            const cg = colaGroups.find((g: any) => g.containerId === containerId);
-            data.push({ x: minX, y: minY, w: maxX - minX, h: maxY - minY,
-                label: cg?.label || containerId, containerId });
+        // Use Cola's computed group.bounds directly — these are guaranteed
+        // non-overlapping by Cola's constraint solver
+        for (const cg of colaGroups) {
+            if (!cg.bounds) continue;
+            const b = cg.bounds;
+            data.push({
+                x: b.x, y: b.y, w: b.X - b.x, h: b.Y - b.y,
+                label: cg.label || cg.containerId, containerId: cg.containerId,
+                nested: !!cg.nested,
+            });
         }
 
         d3.select(hullLayer).selectAll<SVGRectElement, GB>("rect.cola-group")
             .data(data, d => d.containerId).join("rect")
             .attr("class", "cola-group")
-            .attr("rx", 10).attr("ry", 10)
+            .attr("rx", d => d.nested ? 6 : 10).attr("ry", d => d.nested ? 6 : 10)
             .attr("x", d => d.x).attr("y", d => d.y)
             .attr("width", d => d.w).attr("height", d => d.h)
-            .attr("fill", d => `hsla(${projectHue(d.containerId)},40%,50%,0.08)`)
-            .attr("stroke", d => `hsla(${projectHue(d.containerId)},40%,50%,0.3)`)
-            .attr("stroke-width", 2)
-            .attr("stroke-dasharray", "6,3")
+            .attr("fill", d => { const h = projectHue(d.containerId); return d.nested ? `hsla(${h},40%,50%,0.05)` : `hsla(${h},40%,50%,0.08)`; })
+            .attr("stroke", d => { const h = projectHue(d.containerId); return d.nested ? `hsla(${h},50%,55%,0.25)` : `hsla(${h},40%,50%,0.3)`; })
+            .attr("stroke-width", d => d.nested ? 1 : 2)
+            .attr("stroke-dasharray", d => d.nested ? "4,2" : "6,3")
             .style("cursor", "crosshair")
             .on("click", (e: any, d) => { e.stopPropagation(); toggleSelection(d.containerId); });
 
@@ -219,15 +222,11 @@
 
         // Resolve links + set node dimensions for Cola
         const nodeById = new Map(activeNodes.map(n => [n.id, n]));
-        const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
         activeLinks.forEach((l: any) => {
             if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
             if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
         });
-        // Inflate dimensions for Cola so constraints account for visual extras
-        // (border strokes up to 4px, priority glow rings up to 6px, badges below)
-        const COLA_PAD = 14;
-        activeNodes.forEach((n: any) => { n.width = n.w + COLA_PAD; n.height = n.h + COLA_PAD; });
+        activeNodes.forEach((n: any) => { n.width = n.w; n.height = n.h; });
 
         colaGroups = buildColaGroups(activeNodes, activeLinks, $viewSettings.colaGroupPadding);
 
@@ -265,9 +264,6 @@
         const colaLinks = activeLinks.filter((l: any) =>
             l.type === 'parent' && typeof l.source === 'object' && typeof l.target === 'object');
 
-        // Save parent field — Cola overwrites it with internal group objects
-        const savedParents = new Map(activeNodes.map(n => [n.id, n.parent]));
-
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
             .nodes(activeNodes as any)
@@ -276,9 +272,6 @@
             .avoidOverlaps(true)
             .handleDisconnected(true)
             .start(10, 30, 200, 0, false);
-
-        // Restore parent field after Cola finishes sync iterations
-        activeNodes.forEach(n => { (n as any).parent = savedParents.get(n.id); });
 
         tickVisuals();
     }
