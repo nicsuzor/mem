@@ -2635,7 +2635,9 @@ impl PkbSearchServer {
             }
         }
 
-        // Build update map, filtering out completion_evidence (stored in body, not frontmatter)
+        // Build update map, filtering out completion_evidence (stored in body, not frontmatter).
+        // The "body" key is intentionally passed through: update_document() routes it to the
+        // markdown body section instead of frontmatter (see FRONTMATTER_EXCLUDED_KEYS).
         let evidence_text = updates
             .get("completion_evidence")
             .and_then(|v| v.as_str())
