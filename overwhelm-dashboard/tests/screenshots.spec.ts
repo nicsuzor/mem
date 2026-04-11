@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 
 test('capture screenshots of major components', async ({ page }) => {
+  test.setTimeout(90_000);
   // Set viewport to a good standard size for desktop dashboards
   await page.setViewportSize({ width: 1920, height: 1080 });
 
@@ -27,7 +28,7 @@ test('capture screenshots of major components', async ({ page }) => {
 
   // 1. Dashboard Tab (Default view)
   console.log('Capturing Dashboard view...');
-  await page.getByRole('button', { name: 'DASHBOARD' }).click();
+  await page.getByRole('button', { name: 'DASHBOARD', exact: true }).click();
   await page.waitForTimeout(1000); 
   await page.screenshot({ path: path.join(screenshotsDir, '01-dashboard.png'), fullPage: true });
 
@@ -52,24 +53,31 @@ test('capture screenshots of major components', async ({ page }) => {
   await page.waitForTimeout(4000); // Force layout takes longer to settle
   await page.screenshot({ path: path.join(screenshotsDir, '04-force-directed.png') });
 
-  // 5. Task Graph - Arc Diagram
+  // 5. Task Graph - Metro
+  console.log('Capturing Metro view...');
+  await page.getByRole('button', { name: 'Metro' }).click();
+  await page.waitForSelector('[data-component="metro-map"] canvas', { state: 'visible', timeout: 15000 });
+  await page.waitForTimeout(2000);
+  await page.screenshot({ path: path.join(screenshotsDir, '05-metro.png') });
+
+  // 6. Task Graph - Arc Diagram
   console.log('Capturing Arc Diagram view...');
   await page.getByRole('button', { name: 'Arc Diagram' }).click();
   await page.waitForSelector('g.node', { state: 'visible', timeout: 15000 });
   await page.waitForTimeout(2000);
-  await page.screenshot({ path: path.join(screenshotsDir, '05-arc-diagram.png') });
+  await page.screenshot({ path: path.join(screenshotsDir, '06-arc-diagram.png') });
 
-  // 6. Threaded Tasks
+  // 7. Threaded Tasks
   console.log('Capturing Threaded Tasks view...');
   await page.getByRole('button', { name: 'THREADED TASKS' }).click();
   await page.waitForTimeout(1500);
-  await page.screenshot({ path: path.join(screenshotsDir, '06-threaded-tasks.png'), fullPage: true });
+  await page.screenshot({ path: path.join(screenshotsDir, '07-threaded-tasks.png'), fullPage: true });
 
-  // 7. View Config Overlay (Open it in Treemap and screenshot)
+  // 8. View Config Overlay (Open it in Treemap and screenshot)
   console.log('Capturing Config Overlay...');
   await page.getByRole('button', { name: 'Treemap' }).click();
   await page.waitForTimeout(1000);
   await page.locator('.config-toggle').click();
   await page.waitForTimeout(500); // Wait for panel to open
-  await page.screenshot({ path: path.join(screenshotsDir, '07-config-overlay.png') });
+  await page.screenshot({ path: path.join(screenshotsDir, '08-config-overlay.png') });
 });
