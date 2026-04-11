@@ -199,18 +199,27 @@
         const colaLinks = links.filter((l: any) =>
             l.type === 'parent' && typeof l.source === 'object' && typeof l.target === 'object');
 
+        let ticks = 0;
+
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
             .nodes(nodes as any)
             .links(colaLinks as any)
             .groups(colaGroups)
             .linkDistance($viewSettings.colaLinkLength)
-            .convergenceThreshold($viewSettings.colaConvergence)
+            .convergenceThreshold($viewSettings.colaConvergence) // Keep < 0.1 to avoid immediate abort
             .avoidOverlaps(true)
             .handleDisconnected(true)
-            .on("tick", tickVisuals)
+            .on("tick", () => {
+                ticks++;
+                if (ticks > 300) {
+                    if (colaLayout) colaLayout.stop();
+                    running = false;
+                }
+                tickVisuals();
+            })
             .on("end", () => { running = false; })
-            .start();
+            .start(5, 10, 15);
         running = true;
     }
 
