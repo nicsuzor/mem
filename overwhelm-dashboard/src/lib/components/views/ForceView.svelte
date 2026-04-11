@@ -3,6 +3,7 @@
     import * as cola from "webcola";
     import { onDestroy } from "svelte";
     import { graphData, graphStructureKey } from "../../stores/graph";
+    import { viewSettings } from "../../stores/viewSettings";
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
@@ -33,10 +34,13 @@
 
     // Rebuild when graph structure changes
     let lastStructureKey = '';
+    let lastColaParams = '';
     $: {
         const sk = $graphStructureKey;
-        if (containerGroup && $graphData && nodesLayer && hullLayer && sk !== lastStructureKey) {
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}`;
+        if (containerGroup && $graphData && nodesLayer && hullLayer && (sk !== lastStructureKey || cp !== lastColaParams)) {
             lastStructureKey = sk;
+            lastColaParams = cp;
             rebuild();
         }
     }
@@ -195,13 +199,13 @@
         const colaLinks = links.filter((l: any) =>
             l.type === 'parent' && typeof l.source === 'object' && typeof l.target === 'object');
 
-        // Bare Cola — async tick
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
             .nodes(nodes as any)
             .links(colaLinks as any)
             .groups(colaGroups)
-            .linkDistance(40)
+            .linkDistance($viewSettings.colaLinkLength)
+            .convergenceThreshold($viewSettings.colaConvergence)
             .avoidOverlaps(true)
             .handleDisconnected(true)
             .on("tick", tickVisuals)

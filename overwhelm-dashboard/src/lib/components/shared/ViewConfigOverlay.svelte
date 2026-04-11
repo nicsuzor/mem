@@ -40,7 +40,14 @@
                                 <span>Link_Length</span>
                                 <span>{$viewSettings.colaLinkLength}</span>
                             </div>
-                            <input type="range" min="30" max="400" step="10" bind:value={$viewSettings.colaLinkLength} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                            <input type="range" min="30" max="1000" step="10" bind:value={$viewSettings.colaLinkLength} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Convergence</span>
+                                <span>{$viewSettings.colaConvergence}</span>
+                            </div>
+                            <input type="range" min="0.001" max="0.09" step="0.001" bind:value={$viewSettings.colaConvergence} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
                         </div>
                         <div class="space-y-1">
                             <div class="flex justify-between text-[9px] text-primary/50 uppercase">
