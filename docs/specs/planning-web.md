@@ -47,6 +47,15 @@ The Planning Web is the human-facing surface of the academicOps framework (see `
 5. **Uncertainty-aware.** The effectual lifecycle and assumption tracking are first-class UI citizens.
 6. **ADHD-accommodating.** Zero-friction, clear boundaries, scannable not studyable, directive framing, collapsible density.
 
+### User Expectations
+
+1. **Immediacy and Orientation.** The user expects to answer "What should I do now?" and "Where did I leave off?" within 30 seconds of opening the application. The Focus View and Dashboard must provide immediate entry points without requiring manual data sorting.
+2. **ADHD-Centric Design.** The interface must be scannable, not studyable. Visual hierarchy (size, colour, shape) must communicate priority and status before text is read. Dropped threads and active sessions must be prioritised to support context recovery.
+3. **Graph Fidelity.** The Planning Web must be a high-fidelity projection of the underlying PKB. Changes made in the web interface (status, priority, relationships) must reflect in the markdown files near-instantly, and vice versa.
+4. **Zero-Friction Capture.** The user expects to capture thoughts in under 5 seconds from any view. The Quick Capture mechanism must be omnipresent and require minimal metadata to succeed.
+5. **Knowledge Integration.** Tasks should never appear in isolation. The user expects relevant knowledge (notes, citations, previous decisions) to be surfaced automatically based on the current task's context.
+6. **Agency and Suggestion.** While the system provides focus scoring and agent-suggested actions, the user expects to maintain final authority over all task transitions and prioritisations. The UI should present "options for judgment," not "directives for compliance."
+
 ---
 
 ## Target Platform
