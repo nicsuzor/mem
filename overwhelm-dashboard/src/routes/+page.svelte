@@ -33,6 +33,8 @@
 
     let forceViewRef: ForceView;
     let forceRunning = false;
+    let metroViewRef: MetroView;
+    let metroRunning = false;
     let rawGraph: any = null;
     let loading = true;
     let errorMsg = "";
@@ -178,6 +180,76 @@
                     return (childCount.get(n.id) || 0) > 0;
                 });
                 if (fNodes.length < before) changed = true;
+            }
+        }
+
+        // Collapse single-child structural containers
+        {
+            const collapseMap = new Map<string, string>();
+            let changed = true;
+            while (changed) {
+                changed = false;
+                const childrenMap = new Map<string, string[]>();
+                for (const n of fNodes) {
+                    if (n.parent) {
+                        const kids = childrenMap.get(n.parent) || [];
+                        kids.push(n.id);
+                        childrenMap.set(n.parent, kids);
+                    }
+                }
+                for (const n of fNodes) {
+                    if (STRUCTURAL_TYPES.has(n.type)) {
+                        const kids = childrenMap.get(n.id) || [];
+                        if (kids.length === 1) {
+                            const childId = kids[0];
+                            if (!collapseMap.has(n.id)) {
+                                collapseMap.set(n.id, childId);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                for (const [k, v] of collapseMap.entries()) {
+                    if (collapseMap.has(v)) {
+                        collapseMap.set(k, collapseMap.get(v)!);
+                        changed = true;
+                    }
+                }
+            }
+
+            if (collapseMap.size > 0) {
+                const initialNodeById = new Map(fNodes.map(n => [n.id, n]));
+                fNodes = fNodes.filter(n => !collapseMap.has(n.id));
+                fNodes.forEach(n => {
+                    let curParent = n.parent;
+                    const seen = new Set<string>();
+                    while (curParent && collapseMap.has(curParent)) {
+                        if (seen.has(curParent)) break;
+                        seen.add(curParent);
+                        const pNode = initialNodeById.get(curParent);
+                        curParent = pNode ? pNode.parent : null;
+                    }
+                    n.parent = curParent;
+                });
+
+                fLinks = fLinks.map(l => {
+                    const sid = typeof l.source === "object" ? (l.source as any).id : l.source;
+                    const tid = typeof l.target === "object" ? (l.target as any).id : l.target;
+                    const newSid = collapseMap.get(sid) || sid;
+                    const newTid = collapseMap.get(tid) || tid;
+                    return {
+                        ...l,
+                        source: newSid,
+                        target: newTid
+                    };
+                }).filter(l => l.source !== l.target);
+                
+                const uniqueEdges = new Map<string, any>();
+                fLinks.forEach(e => {
+                    const key = `${e.source}-${e.target}-${e.type || ''}`;
+                    uniqueEdges.set(key, e);
+                });
+                fLinks = Array.from(uniqueEdges.values());
             }
         }
 
@@ -331,7 +403,7 @@
             <!-- The Graph Area -->
             <div class="flex-1 relative z-0 h-full">
                 {#if activeLayout === "metro"}
-                    <MetroView />
+                    <MetroView bind:this={metroViewRef} bind:running={metroRunning} />
                 {:else}
                     <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
                         {#if containerGroup}
@@ -357,13 +429,13 @@
             <Legend />
 
             <!-- Force layout start/stop -->
-            {#if activeLayout === "force" || activeLayout === "sfdp"}
+            {#if activeLayout === "force" || activeLayout === "sfdp" || activeLayout === "metro"}
                 <button
                     class="absolute bottom-4 left-4 z-30 px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider
                            bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors"
-                    onclick={() => forceViewRef?.toggleRunning()}
+                    onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : forceViewRef?.toggleRunning()}
                 >
-                    {forceRunning ? '⏸ Stop' : '▶ Start'} Layout
+                    {(activeLayout === "metro" ? metroRunning : forceRunning) ? '⏸ Stop' : '▶ Start'} Layout
                 </button>
             {/if}
 

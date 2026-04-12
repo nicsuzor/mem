@@ -48,20 +48,21 @@
 
     // ─── Group building ────────────────────────────────────────────────────────
 
-    function buildColaGroups(activeNodes: GraphNode[], activeLinks: GraphEdge[]): any[] {
+    function buildColaGroups(activeNodes: GraphNode[], _activeLinks: GraphEdge[]): any[] {
         const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
         const nodeById = new Map(activeNodes.map(n => [n.id, n]));
 
         const childrenOf = new Map<string, Set<number>>();
-        for (const l of activeLinks) {
-            if ((l as any).type !== 'parent') continue;
-            const pid = typeof l.source === 'object' ? (l.source as any).id : l.source;
-            const cid = typeof l.target === 'object' ? (l.target as any).id : l.target;
-            const pidx = nodeIndex.get(pid);
-            const cidx = nodeIndex.get(cid);
+        
+        // Use n.parent as the single source of truth for group hierarchies
+        for (const n of activeNodes) {
+            if (!n.parent) continue;
+            const pidx = nodeIndex.get(n.parent);
+            const cidx = nodeIndex.get(n.id);
             if (pidx === undefined || cidx === undefined) continue;
-            if (!childrenOf.has(pid)) childrenOf.set(pid, new Set());
-            childrenOf.get(pid)!.add(cidx);
+            
+            if (!childrenOf.has(n.parent)) childrenOf.set(n.parent, new Set());
+            childrenOf.get(n.parent)!.add(cidx);
         }
 
         const groups: any[] = [];
@@ -70,7 +71,8 @@
         // 1. Create empty groups for valid parents
         for (const [pid, childIdxs] of childrenOf) {
             const pidx = nodeIndex.get(pid);
-            if (pidx === undefined || childIdxs.size <= 1 || childIdxs.size >= 20) continue;
+            if (pidx === undefined) continue;
+            
             groupIndexOf.set(pid, groups.length);
             groups.push({
                 leaves: [], 

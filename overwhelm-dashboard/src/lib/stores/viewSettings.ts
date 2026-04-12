@@ -7,7 +7,7 @@ export const viewSettings = writable({
     mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph'
     viewMode: 'Treemap',  // "Treemap", "Circle Pack", "Force", "Arc Diagram"
     topNLeaves: 80,
-    colaLinkLength: 300,   // ideal link length
+    colaLinkLength: 600,   // ideal link length
     colaConvergence: 0.01, // convergence threshold — must be < 0.1 (Cola's initial alpha)
     colaFlowSep: 30,       // min vertical separation between linked nodes
     colaGroupPadding: 6,   // padding inside epic group hulls — keeps non-descendants out

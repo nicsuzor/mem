@@ -79,7 +79,7 @@
         <div class="legend-header">
             <span class="legend-title">VISIBILITY</span>
             <span class="component-name">filter-panel</span>
-            <button class="legend-close" on:click={() => viewSettings.update(s => ({ ...s, activeOverlay: 'none' }))}>
+            <button class="legend-close" on:click={() => showLegend = false}>
                 <span class="material-symbols-outlined" style="font-size: 14px;">close</span>
             </button>
         </div>

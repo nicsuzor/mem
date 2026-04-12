@@ -2,7 +2,7 @@
     import { viewSettings, getLayoutFromViewSettings } from "../../stores/viewSettings";
 
     $: layout = getLayoutFromViewSettings($viewSettings);
-    $: isForce = layout === "force";
+    $: isForce = layout === "force" || layout === "sfdp" || layout === "metro";
     $: isCircle = layout === "circle_pack";
     $: isArc = layout === "arc";
     $: isTreemap = layout === "treemap";

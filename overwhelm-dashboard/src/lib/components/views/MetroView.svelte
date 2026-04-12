@@ -3,11 +3,48 @@
     import cytoscape from "cytoscape";
     import { graphData, graphStructureKey } from "../../stores/graph";
     import { selection, toggleSelection } from "../../stores/selection";
+    import { viewSettings } from "../../stores/viewSettings";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
     import { INCOMPLETE_STATUSES } from "../../data/constants";
 
     let containerEl: HTMLDivElement;
     let cy: cytoscape.Core | null = null;
+
+    export let running = false;
+
+    function getLayoutConfig() {
+        return {
+            name: 'cose',
+            animate: true,
+            boundingBox: {
+                x1: 0, y1: 0,
+                w: containerEl?.clientWidth || 1200,
+                h: containerEl?.clientHeight || 800,
+            },
+            nodeRepulsion: () => 20000,
+            idealEdgeLength: () => $viewSettings.colaLinkLength,
+            edgeElasticity: () => 80,
+            gravity: 0.5,
+            numIter: 1000,
+            padding: 60,
+            nodeDimensionsIncludeLabels: true,
+            nodeOverlap: 12,
+            randomize: false,
+        };
+    }
+
+    export function toggleRunning() {
+        if (!cy) return;
+        if (running) {
+            cy.stop();
+            running = false;
+        } else {
+            const layout = cy.layout(getLayoutConfig() as any);
+            layout.on('layoutstop', () => { running = false; });
+            layout.run();
+            running = true;
+        }
+    }
 
     const CONTAINER_TYPES = new Set(['epic', 'project', 'goal']);
 
@@ -194,21 +231,21 @@
                     selector: 'node[?isInterchange]',
                     style: {
                         'shape': 'round-rectangle',
-                        'width': 28,
-                        'height': 28,
+                        'width': 20,
+                        'height': 20,
                         'background-color': 'data(statusColor)',
                         'background-opacity': 0.95,
-                        'border-width': 3,
+                        'border-width': 2,
                         'border-color': '#fff',
                         'label': 'data(label)',
                         'text-valign': 'top',
                         'text-halign': 'center',
-                        'text-margin-y': -8,
-                        'font-size': '11px',
-                        'font-weight': 'bold',
+                        'text-margin-y': -6,
+                        'font-size': '10px',
+                        'font-weight': '500',
                         'color': '#fff',
                         'text-outline-color': '#0a0a14',
-                        'text-outline-width': 2.5,
+                        'text-outline-width': 2,
                         'text-max-width': '180px',
                         'text-wrap': 'wrap',
                         'min-zoomed-font-size': 4,
@@ -222,20 +259,20 @@
                     selector: 'node[?isHighPriority][?isOnChain][!isInterchange]',
                     style: {
                         'shape': 'ellipse',
-                        'width': 18,
-                        'height': 18,
+                        'width': 14,
+                        'height': 14,
                         'background-color': 'data(statusColor)',
-                        'border-width': 2,
+                        'border-width': 1.5,
                         'border-color': 'data(priorityColor)',
                         'label': 'data(label)',
                         'text-valign': 'bottom',
                         'text-halign': 'center',
-                        'text-margin-y': 6,
-                        'font-size': '9px',
-                        'font-weight': 'bold',
+                        'text-margin-y': 4,
+                        'font-size': '8px',
+                        'font-weight': '500',
                         'color': 'data(priorityColor)',
                         'text-outline-color': '#0a0a14',
-                        'text-outline-width': 2,
+                        'text-outline-width': 1.5,
                         'text-max-width': '140px',
                         'text-wrap': 'wrap',
                         'min-zoomed-font-size': 5,
@@ -249,21 +286,21 @@
                     selector: 'node[?isContainer][?isOnChain][!isInterchange][!isHighPriority]',
                     style: {
                         'shape': 'round-rectangle',
-                        'width': 20,
-                        'height': 20,
+                        'width': 16,
+                        'height': 16,
                         'background-color': 'data(lineColor)',
                         'background-opacity': 0.85,
-                        'border-width': 2,
+                        'border-width': 1.5,
                         'border-color': '#ccc',
                         'label': 'data(label)',
                         'text-valign': 'top',
                         'text-halign': 'center',
-                        'text-margin-y': -8,
-                        'font-size': '10px',
-                        'font-weight': 'bold',
+                        'text-margin-y': -6,
+                        'font-size': '9px',
+                        'font-weight': '500',
                         'color': '#e5e5e5',
                         'text-outline-color': '#0a0a14',
-                        'text-outline-width': 2,
+                        'text-outline-width': 1.5,
                         'text-max-width': '160px',
                         'text-wrap': 'wrap',
                         'min-zoomed-font-size': 5,
@@ -274,10 +311,10 @@
                     selector: 'node[?isOnChain][!isContainer][!isHighPriority][!isInterchange]',
                     style: {
                         'shape': 'ellipse',
-                        'width': 12,
-                        'height': 12,
+                        'width': 8,
+                        'height': 8,
                         'background-color': 'data(statusColor)',
-                        'border-width': 1.5,
+                        'border-width': 1,
                         'border-color': 'data(lineColor)',
                         'label': 'data(label)',
                         'text-valign': 'bottom',
@@ -286,7 +323,7 @@
                         'font-size': '8px',
                         'color': '#aaa',
                         'text-outline-color': '#0a0a14',
-                        'text-outline-width': 2,
+                        'text-outline-width': 1.5,
                         'text-max-width': '120px',
                         'text-wrap': 'wrap',
                         'min-zoomed-font-size': 7,
@@ -297,8 +334,8 @@
                     selector: 'node[!isOnChain]',
                     style: {
                         'shape': 'ellipse',
-                        'width': 6,
-                        'height': 6,
+                        'width': 4,
+                        'height': 4,
                         'background-color': 'data(statusColor)',
                         'background-opacity': 0.4,
                         'border-width': 1,
@@ -314,8 +351,8 @@
                     selector: 'node[?isCompleted]',
                     style: {
                         'opacity': 0.25,
-                        'width': 4,
-                        'height': 4,
+                        'width': 3,
+                        'height': 3,
                         'border-width': 0.5,
                     } as any,
                 },
@@ -323,24 +360,24 @@
                 {
                     selector: 'edge[type="parent"][?isOnChain]',
                     style: {
-                        'width': 8,
+                        'width': 4,
                         'line-color': 'data(lineColor)',
                         'line-opacity': 0.9,
                         'curve-style': 'taxi',
                         'taxi-direction': 'downward',
-                        'taxi-turn': '30px',
+                        'taxi-turn': '20px',
                     } as any,
                 },
                 // Priority chain dependency edges — dashed amber
                 {
                     selector: 'edge[type="depends_on"][?isOnChain]',
                     style: {
-                        'width': 3,
+                        'width': 2,
                         'line-color': '#f59e0b',
                         'line-opacity': 0.7,
                         'curve-style': 'taxi',
                         'taxi-direction': 'downward',
-                        'taxi-turn': '25px',
+                        'taxi-turn': '15px',
                         'line-style': 'dashed',
                         'target-arrow-shape': 'triangle',
                         'target-arrow-color': '#f59e0b',
@@ -389,24 +426,7 @@
                     } as any,
                 },
             ],
-            layout: {
-                name: 'cose',
-                animate: false,
-                boundingBox: {
-                    x1: 0, y1: 0,
-                    w: containerEl.clientWidth || 1200,
-                    h: containerEl.clientHeight || 800,
-                },
-                nodeRepulsion: () => 20000,
-                idealEdgeLength: () => 100,
-                edgeElasticity: () => 80,
-                gravity: 0.5,
-                numIter: 1000,
-                padding: 60,
-                nodeDimensionsIncludeLabels: true,
-                nodeOverlap: 12,
-                randomize: false,
-            } as any,
+            layout: getLayoutConfig() as any,
             wheelSensitivity: 0.3,
             minZoom: 0.03,
             maxZoom: 5,
@@ -440,8 +460,10 @@
     }
 
     let lastMetroStructureKey = '';
-    $: if (containerEl && $graphData && $graphStructureKey !== lastMetroStructureKey) {
+    let lastColaLinkLength = 0;
+    $: if (containerEl && $graphData && ($graphStructureKey !== lastMetroStructureKey || $viewSettings.colaLinkLength !== lastColaLinkLength)) {
         lastMetroStructureKey = $graphStructureKey;
+        lastColaLinkLength = $viewSettings.colaLinkLength;
         initCytoscape();
     }
 
