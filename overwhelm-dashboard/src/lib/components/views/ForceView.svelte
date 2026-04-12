@@ -67,56 +67,53 @@
         const groups: any[] = [];
         const groupIndexOf = new Map<string, number>();
 
-        // 1. Create a group for every parent
+        // 1. Create empty groups for valid parents
         for (const [pid, childIdxs] of childrenOf) {
             const pidx = nodeIndex.get(pid);
-            if (pidx === undefined || childIdxs.size === 0) continue;
+            if (pidx === undefined || childIdxs.size <= 1 || childIdxs.size >= 20) continue;
             groupIndexOf.set(pid, groups.length);
             groups.push({
-                leaves: [pidx, ...childIdxs], // Parent stays inside
+                leaves: [], 
                 groups: [], // Will hold references to child groups
                 padding: GROUP_PADDING,
                 containerId: pid,
             });
         }
 
-        // 2. Wire up the actual hierarchical nesting!
-        // This is what makes a grand-parent's box expand to cover grandchildren.
-        for (const [pid, groupIdx] of groupIndexOf) {
-            const pNode = nodeById.get(pid);
-            if (!pNode?.parent) continue; // It's a root group
+        // 2. Assign every active node to the nearest ancestor group (or its own group)
+        for (const n of activeNodes) {
+            const idx = nodeIndex.get(n.id);
+            if (idx === undefined) continue;
 
-            const parentGroupIdx = groupIndexOf.get(pNode.parent);
-            if (parentGroupIdx !== undefined) {
-                // Tell the parent group that this group is nested inside it
-                groups[parentGroupIdx].groups.push(groupIdx);
+            let curr: string | null | undefined = n.id;
+            while (curr) {
+                const gIdx = groupIndexOf.get(curr);
+                if (gIdx !== undefined) {
+                    groups[gIdx].leaves.push(idx);
+                    break;
+                }
+                const currNode = nodeById.get(curr);
+                curr = currNode?.parent;
             }
         }
 
-        // 3. Cola requires that a leaf cannot be in multiple groups if they are nested.
-        // If node X is inside ChildGroup, it must NOT also be in ParentGroup.leaves.
-        // It is implicitly in ParentGroup because ChildGroup is in ParentGroup.groups.
-        for (const g of groups) {
-            if (g.groups.length === 0) continue;
-            
-            const nestedLeaves = new Set<number>();
-            // Recursively find all leaves in all nested child groups
-            function collectLeaves(gIdx: number) {
-                const childG = groups[gIdx];
-                for (const l of childG.leaves) nestedLeaves.add(l);
-                for (const nestedG of childG.groups) collectLeaves(nestedG);
+        // 3. Nest groups inside their nearest ancestor group
+        for (const [pid, groupIdx] of groupIndexOf) {
+            const pNode = nodeById.get(pid);
+            let curr = pNode?.parent;
+            while (curr) {
+                const parentGroupIdx = groupIndexOf.get(curr);
+                if (parentGroupIdx !== undefined) {
+                    // Tell the parent group that this group is nested inside it
+                    groups[parentGroupIdx].groups.push(groupIdx);
+                    break;
+                }
+                const currNode = nodeById.get(curr);
+                curr = currNode?.parent;
             }
-            
-            for (const childGIdx of g.groups) {
-                collectLeaves(childGIdx);
-            }
-
-            // Remove any leaves from this group that are already claimed by a child group
-            g.leaves = g.leaves.filter((l: number) => !nestedLeaves.has(l));
         }
 
         // 4. Important: Cola expects nested groups to be object references, not index numbers.
-        // We used indices above to avoid circular reference headaches while building.
         for (const g of groups) {
             g.groups = g.groups.map((idx: number) => groups[idx]);
         }
@@ -266,7 +263,7 @@
                 tickVisuals();
             })
             .on("end", () => { running = false; })
-            .start(5, 10, 15); // Lighter iteration count to avoid blocking main thread
+            .start(5, 5, 5); // Lighter iteration count to avoid blocking main thread
         running = true;
     }
 

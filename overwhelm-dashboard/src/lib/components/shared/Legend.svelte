@@ -279,11 +279,6 @@
         text-decoration: line-through;
     }
 
-    .legend-item.active-filter {
-        background: color-mix(in srgb, var(--color-primary) 8%, transparent);
-        border-left: 2px solid var(--color-primary);
-    }
-
     .legend-label {
         font-size: 10px;
         font-weight: 700;

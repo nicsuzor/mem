@@ -198,6 +198,3 @@
         box-shadow: 0 0 10px rgba(var(--color-primary-rgb), 0.5);
     }
 </style>
-);
-    }
-</style>
