@@ -79,7 +79,7 @@
         <div class="legend-header">
             <span class="legend-title">VISIBILITY</span>
             <span class="component-name">filter-panel</span>
-            <button class="legend-close" on:click={() => showLegend = false}>
+            <button class="legend-close" on:click={() => viewSettings.update(s => ({ ...s, activeOverlay: 'none' }))}>
                 <span class="material-symbols-outlined" style="font-size: 14px;">close</span>
             </button>
         </div>
@@ -378,4 +378,7 @@
         backdrop-filter: blur(12px);
     }
     .legend-toggle:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
+</style>
+e>
+le:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
 </style>

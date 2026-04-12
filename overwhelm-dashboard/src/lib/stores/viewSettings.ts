@@ -21,6 +21,7 @@ export const viewSettings = writable({
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',
     arcFocusedOnly: true,
     showFocusHighlight: true,
+    activeOverlay: null as string | null, // e.g., 'legend', 'config'
 });
 
 export const getLayoutFromViewSettings = ($settings: any) => {

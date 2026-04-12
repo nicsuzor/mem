@@ -70,7 +70,9 @@
             const rawProj = item.project || 'unknown';
             const major = summarizeProjectName(resolveMajorProject(rawProj, rollupMap), rollupMap);
             if (!map.has(major)) map.set(major, []);
-            map.get(major)!.push(item);
+            if (!map.get(major)!.some(existing => existing.description === item.description)) {
+                map.get(major)!.push(item);
+            }
         }
         return Array.from(map.entries());
     })();

@@ -449,10 +449,10 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // Only attempt to render text if we have enough space. Small nodes collapse to solid colored boxes.
     // Address tall-node symptom: Do not attempt to render text in narrow vertical slices
-    const MIN_TEXT_WIDTH = 8;
-    const MIN_TEXT_HEIGHT = 6;
+    const MIN_TEXT_WIDTH = 25;
+    const MIN_TEXT_HEIGHT = 12;
     const MIN_ASPECT_RATIO_FOR_TEXT = 0.3;
-    const MIN_ABS_WIDTH_FOR_TEXT = 20;
+    const MIN_ABS_WIDTH_FOR_TEXT = 30;
     if (w > MIN_TEXT_WIDTH && h > MIN_TEXT_HEIGHT && (w >= h * MIN_ASPECT_RATIO_FOR_TEXT || w > MIN_ABS_WIDTH_FOR_TEXT)) {
         const label = escapeHtml(d.label || '');
         const pad = 6;
@@ -473,7 +473,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                     .style("height", "100%")
                     .style("pointer-events", "none")
                     .html(`
-                        <div style="font-size: ${m.fs}px; font-weight: 700; color: #fff; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${m.lines}; -webkit-box-orient: vertical; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.25;">
+                        <div style="font-size: ${m.fs}px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: ${m.lines}; -webkit-box-orient: vertical; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.25;">
                             ${label}
                         </div>
                     `);
@@ -500,7 +500,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .html(`
                     ${isBlocked && h > 40 ? `<div style="display: flex; justify-content: flex-end; margin-bottom: 2px;"><span class="material-symbols-outlined" style="font-size: ${fs + 2}px; color: rgba(255,255,255,0.5); background: #6B3A3A; border-radius: 50%;">pause_circle</span></div>` : ''}
-                    <div style="font-size: ${fs}px; font-weight: 500; color: ${textColor}; line-height: 1.1; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${linesAvailable}; -webkit-box-orient: vertical; letter-spacing: -0.01em;">
+                    <div style="font-size: ${fs}px; font-weight: 500; color: ${textColor}; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: ${linesAvailable}; -webkit-box-orient: vertical; letter-spacing: -0.01em;">
                         ${label}
                     </div>
                 `);
@@ -764,8 +764,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
 
 
 export function buildArcNode(g: d3.Selection<SVGGElement, any, null, undefined>, d: any, isSelected = false) {
-    const r = Math.max(4, (d.dw || 1) * 0.5 + 3);
-
+    const r = Math.max(6, (d.dw || 1) * 0.8 + 4);
 
     // Add native tooltip
     g.append("title").text(`${d.label} (${d.status})`);
@@ -781,8 +780,9 @@ export function buildArcNode(g: d3.Selection<SVGGElement, any, null, undefined>,
         .attr("stroke", isSelected ? "#fff" : d.borderColor).attr("stroke-width", isSelected ? 4 : 1);
 
     g.append("text").attr("class", "node-text")
-        .attr("x", 0).attr("y", r + 12)
-        .attr("text-anchor", "middle").attr("font-size", "8px")
-        .attr("fill", "#a3a3a3").attr("opacity", 0.8)
-        .text((d.label || '').substring(0, 15));
+        .attr("x", r + 6).attr("y", r + 12)
+        .attr("text-anchor", "start").attr("font-size", "10px")
+        .attr("fill", "#d4d4d8").attr("opacity", 0.9)
+        .attr("transform", `rotate(45, ${r + 6}, ${r + 12})`)
+        .text((d.label || '').substring(0, 25) + ((d.label || '').length > 25 ? '...' : ''));
 }

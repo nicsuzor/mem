@@ -28,7 +28,7 @@
                     <h3 class="text-[10px] font-bold tracking-[0.2em] text-primary/80 uppercase">
                         {#if isForce}Simulation_Config{:else if isCircle}Circle_Pack_Config{:else if isArc}Arc_Diagram_Config{:else if isTreemap}Treemap_Config{/if}
                     </h3>
-                    <button class="text-primary/40 hover:text-primary transition-colors cursor-pointer" onclick={() => expanded = false}>
+                    <button class="text-primary/40 hover:text-primary transition-colors cursor-pointer" onclick={() => viewSettings.update(s => ({ ...s, activeOverlay: 'none' }))}>
                         <span class="material-symbols-outlined text-sm">close</span>
                     </button>
                 </div>
@@ -196,5 +196,8 @@
         cursor: pointer;
         border-radius: 50%;
         box-shadow: 0 0 10px rgba(var(--color-primary-rgb), 0.5);
+    }
+</style>
+);
     }
 </style>
