@@ -379,6 +379,3 @@
     }
     .legend-toggle:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
 </style>
-e>
-le:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
-</style>
