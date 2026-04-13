@@ -782,7 +782,7 @@ impl GraphStore {
 /// - 1w = 7
 /// - 2h = ceil(2/8) = 1 (8h workday)
 /// - 5 = 5 (bare number = days)
-fn parse_effort_days(effort: &str) -> Option<i64> {
+pub(crate) fn parse_effort_days(effort: &str) -> Option<i64> {
     let effort = effort.trim().to_lowercase();
     if effort.is_empty() {
         return None;
