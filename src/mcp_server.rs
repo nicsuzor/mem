@@ -490,6 +490,11 @@ impl PkbSearchServer {
                 .get("complexity")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            effort: args.get("effort").and_then(|v| v.as_str()).map(String::from),
+            consequence: args
+                .get("consequence")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             body: args.get("body").and_then(|v| v.as_str()).map(String::from),
             stakeholder: args
                 .get("stakeholder")
@@ -1132,6 +1137,23 @@ impl PkbSearchServer {
             body
         };
 
+        // Compute deadline metadata
+        let today = chrono::Utc::now().date_naive();
+        let days_until_due: Option<i64> = node.due.as_deref().and_then(|due| {
+            let len = std::cmp::min(10, due.len());
+            chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+                .ok()
+                .map(|due_date| (due_date - today).num_days())
+        });
+        let effort_days = node
+            .effort
+            .as_deref()
+            .and_then(crate::graph_store::parse_effort_days)
+            .unwrap_or(3);
+        let urgency_ratio: Option<f64> = days_until_due.map(|d| {
+            (effort_days as f64 / d.max(1) as f64).min(1.0)
+        });
+
         let result = serde_json::json!({
             "frontmatter": frontmatter,
             "body": body,
@@ -1148,6 +1170,10 @@ impl PkbSearchServer {
             "waiting_since": node.waiting_since,
             "due": node.due,
             "focus_score": node.focus_score,
+            "effort": node.effort,
+            "consequence": node.consequence,
+            "days_until_due": days_until_due,
+            "urgency_ratio": urgency_ratio,
             "scope": node.scope,
             "uncertainty": node.uncertainty,
             "criticality": node.criticality,
@@ -2448,6 +2474,10 @@ impl PkbSearchServer {
                         "scope": t.scope,
                         "uncertainty": t.uncertainty,
                         "criticality": t.criticality,
+                        "due": t.due,
+                        "effort": t.effort,
+                        "consequence": t.consequence,
+                        "focus_score": t.focus_score,
                     })
                 })
                 .collect();
@@ -2491,7 +2521,8 @@ impl PkbSearchServer {
                 "**{total} ready tasks** (showing {}, sorted by priority + downstream weight)\n\n",
                 tasks.len()
             );
-            out.push_str("| # | ID | Pri | Weight | Crit | U | Title |\n|---|---|---|---|---|---|---|\n");
+            let today = chrono::Utc::now().date_naive();
+            out.push_str("| # | ID | Pri | Weight | Crit | U | Due | Title |\n|---|---|---|---|---|---|---|---|\n");
             for (i, t) in tasks.iter().enumerate() {
                 let id = t.task_id.as_deref().unwrap_or(&t.id);
                 let weight = if t.downstream_weight > 0.0 {
@@ -2513,14 +2544,31 @@ impl PkbSearchServer {
                 } else {
                     "-".to_string()
                 };
+                let due_str = t.due.as_deref().map(|due| {
+                    let len = std::cmp::min(10, due.len());
+                    chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+                        .ok()
+                        .map(|due_date| {
+                            let d = (due_date - today).num_days();
+                            if d < 0 {
+                                format!("{}d overdue", -d)
+                            } else if d == 0 {
+                                "today".to_string()
+                            } else {
+                                format!("{}d", d)
+                            }
+                        })
+                        .unwrap_or_else(|| due[..due.floor_char_boundary(len)].to_string())
+                }).unwrap_or_else(|| "-".to_string());
                 out.push_str(&format!(
-                    "| {} | {} | {} | {} | {} | {} | {} |\n",
+                    "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
                     i + 1,
                     id,
                     t.priority.unwrap_or(2),
                     weight,
                     crit,
                     unc,
+                    due_str,
                     t.label
                 ));
             }
@@ -2905,12 +2953,37 @@ impl PkbSearchServer {
         let graph = self.graph.read();
         let ready = graph.ready_tasks();
         let blocked = graph.blocked_tasks();
+        let all_tasks = graph.all_tasks();
 
         let mut by_priority: std::collections::HashMap<i32, usize> =
             std::collections::HashMap::new();
         for task in &ready {
             let p = task.priority.unwrap_or(2);
             *by_priority.entry(p).or_insert(0) += 1;
+        }
+
+        // Compute deadline counts across all tasks
+        let today = chrono::Utc::now().date_naive();
+        let mut overdue: usize = 0;
+        let mut due_today: usize = 0;
+        let mut due_this_week: usize = 0;
+        for task in &all_tasks {
+            if let Some(ref due) = task.due {
+                let len = std::cmp::min(10, due.len());
+                if let Ok(due_date) = chrono::NaiveDate::parse_from_str(
+                    &due[..due.floor_char_boundary(len)],
+                    "%Y-%m-%d",
+                ) {
+                    let days_until = (due_date - today).num_days();
+                    if days_until < 0 {
+                        overdue += 1;
+                    } else if days_until == 0 {
+                        due_today += 1;
+                    } else if days_until <= 7 {
+                        due_this_week += 1;
+                    }
+                }
+            }
         }
 
         let summary = serde_json::json!({
@@ -2921,6 +2994,11 @@ impl PkbSearchServer {
                 "p1": by_priority.get(&1).copied().unwrap_or(0),
                 "p2": by_priority.get(&2).copied().unwrap_or(0),
                 "p3": by_priority.get(&3).copied().unwrap_or(0),
+            },
+            "deadlines": {
+                "overdue": overdue,
+                "due_today": due_today,
+                "due_this_week": due_this_week,
             }
         });
 
@@ -3202,6 +3280,8 @@ impl ServerHandler for PkbSearchServer {
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
                         "complexity": { "type": "string" },
+                        "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w'. Parser converts to days." },
+                        "consequence": { "type": "string", "description": "Narrative description of what happens if this task is not done or fails." },
                         "body": { "type": "string", "description": "Markdown body" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },

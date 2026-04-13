@@ -39,6 +39,10 @@ pub struct McpIndexEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consequence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stakeholder: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_since: Option<String>,
@@ -103,6 +107,8 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
                 tags: node.tags.clone(),
                 assignee: node.assignee.clone(),
                 complexity: node.complexity.clone(),
+                effort: node.effort.clone(),
+                consequence: node.consequence.clone(),
                 stakeholder: node.stakeholder.clone(),
                 waiting_since: node.waiting_since.clone(),
                 downstream_weight: node.downstream_weight,

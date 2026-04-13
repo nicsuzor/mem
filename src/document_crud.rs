@@ -73,6 +73,8 @@ pub struct TaskFields {
     pub depends_on: Vec<String>,
     pub assignee: Option<String>,
     pub complexity: Option<String>,
+    pub effort: Option<String>,
+    pub consequence: Option<String>,
     pub body: Option<String>,
     pub stakeholder: Option<String>,
     pub waiting_since: Option<String>,
@@ -414,6 +416,14 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     if let Some(ref complexity) = fields.complexity {
         fm.push_str(&format!("complexity: {}\n", complexity));
+    }
+
+    if let Some(ref effort) = fields.effort {
+        fm.push_str(&format!("effort: {}\n", effort));
+    }
+
+    if let Some(ref consequence) = fields.consequence {
+        fm.push_str(&format!("consequence: \"{}\"\n", consequence.replace('"', "\\\"")));
     }
 
     if let Some(ref stakeholder) = fields.stakeholder {

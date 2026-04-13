@@ -775,6 +775,39 @@ impl GraphStore {
         Ok(written)
     }
 
+/// Helper to parse duration strings into days.
+///
+/// Supports:
+/// - 1d = 1
+/// - 1w = 7
+/// - 2h = ceil(2/8) = 1 (8h workday)
+/// - 5 = 5 (bare number = days)
+pub(crate) fn parse_effort_days(effort: &str) -> Option<i64> {
+    let effort = effort.trim().to_lowercase();
+    if effort.is_empty() {
+        return None;
+    }
+
+    if effort.ends_with('w') {
+        effort[..effort.len() - 1]
+            .parse::<f64>()
+            .ok()
+            .map(|w| (w * 7.0).ceil() as i64)
+    } else if effort.ends_with('d') {
+        effort[..effort.len() - 1]
+            .parse::<f64>()
+            .ok()
+            .map(|d| d.ceil() as i64)
+    } else if effort.ends_with('h') {
+        effort[..effort.len() - 1]
+            .parse::<f64>()
+            .ok()
+            .map(|h| (h / 8.0).ceil() as i64)
+    } else {
+        effort.parse::<f64>().ok().map(|d| d.ceil() as i64)
+    }
+}
+
 /// Compute focus scores for all nodes.
 ///
 /// Score based on priority, deadline urgency, staleness, and downstream weight.
@@ -794,13 +827,32 @@ fn compute_focus_scores(nodes: &mut [GraphNode]) {
                 chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
             {
                 let days_until = (due_date - today).num_days();
-                if days_until < 0 {
-                    score += 8000;
-                } else if days_until <= 7 {
-                    score += 3000 + (7 - days_until) * 100;
-                } else if days_until <= 30 {
-                    score += 1000;
+                let effort_days = node
+                    .effort
+                    .as_deref()
+                    .and_then(parse_effort_days)
+                    .unwrap_or(3);
+
+                let mut deadline_score = if days_until < 0 {
+                    8000 + std::cmp::min((-days_until) * 200, 4000)
+                } else {
+                    let ratio = effort_days as f64 / (days_until.max(1) as f64);
+                    if ratio >= 1.0 {
+                        6000
+                    } else if ratio > 0.5 {
+                        // linear interpolation: 0.5 -> 2000, 1.0 -> 6000
+                        2000 + ((ratio - 0.5) * 8000.0) as i64
+                    } else if days_until <= 30 {
+                        1000
+                    } else {
+                        0
+                    }
+                };
+
+                if node.consequence.is_some() {
+                    deadline_score = (deadline_score as f64 * 1.5) as i64;
                 }
+                score += deadline_score;
             }
         }
         if pri >= 2 {
@@ -2305,6 +2357,102 @@ mod tests {
             frontmatter: Some(serde_json::Value::Object(fm)),
             content_hash: "test_hash".to_string(),
         }
+    }
+
+    #[test]
+    fn test_parse_effort_days() {
+        assert_eq!(parse_effort_days("1d"), Some(1));
+        assert_eq!(parse_effort_days("1w"), Some(7));
+        assert_eq!(parse_effort_days("2h"), Some(1));
+        assert_eq!(parse_effort_days("10h"), Some(2));
+        assert_eq!(parse_effort_days("5"), Some(5));
+        assert_eq!(parse_effort_days(""), None);
+    }
+
+    #[test]
+    fn test_focus_scoring_scenarios() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        let tomorrow = today + chrono::Duration::days(1);
+        let in_5d = today + chrono::Duration::days(5);
+        let in_7d = today + chrono::Duration::days(7);
+        let in_2w = today + chrono::Duration::days(14);
+        let in_4w = today + chrono::Duration::days(28);
+
+        // Scenario 1: Corporate card (effort=1d, due in 7d): ratio=1/7=0.14, +1000
+        let mut node1 = GraphNode::default();
+        node1.due = Some(in_7d.format("%Y-%m-%d").to_string());
+        node1.effort = Some("1d".to_string());
+
+        // Scenario 2: Corporate card (effort=1d, due tomorrow): ratio=1/1=1.0, +6000
+        let mut node2 = GraphNode::default();
+        node2.due = Some(tomorrow.format("%Y-%m-%d").to_string());
+        node2.effort = Some("1d".to_string());
+
+        // Scenario 3: Paper review (effort=3w, due in 4w): ratio=21/28=0.75, ~+4000
+        let mut node3 = GraphNode::default();
+        node3.due = Some(in_4w.format("%Y-%m-%d").to_string());
+        node3.effort = Some("3w".to_string());
+
+        // Scenario 4: Paper review (effort=3w, due in 2w): ratio=21/14=1.5 -> 1.0, +6000
+        let mut node4 = GraphNode::default();
+        node4.due = Some(in_2w.format("%Y-%m-%d").to_string());
+        node4.effort = Some("3w".to_string());
+
+        // Scenario 5: No effort, due in 5d: default 3d, ratio=3/5=0.6, ~+2800 (2000 + (0.6-0.5)*8000 = 2800)
+        let mut node5 = GraphNode::default();
+        node5.due = Some(in_5d.format("%Y-%m-%d").to_string());
+
+        // Scenario 6: No due date: unchanged (0 deadline component)
+        let mut node6 = GraphNode::default();
+
+        let mut nodes = vec![
+            node1,
+            node2,
+            node3.clone(),
+            node4.clone(),
+            node5.clone(),
+            node6,
+        ];
+        compute_focus_scores(&mut nodes);
+
+        // Verify scores
+        assert_eq!(nodes[0].focus_score.unwrap(), 1000);
+        assert_eq!(nodes[1].focus_score.unwrap(), 6000);
+        assert!(
+            nodes[2].focus_score.unwrap() >= 3900 && nodes[2].focus_score.unwrap() <= 4100,
+            "Scenario 3 failed: expected ~4000, got {}",
+            nodes[2].focus_score.unwrap()
+        );
+        assert_eq!(nodes[3].focus_score.unwrap(), 6000);
+        assert!(
+            nodes[4].focus_score.unwrap() >= 2700 && nodes[4].focus_score.unwrap() <= 2900,
+            "Scenario 5 failed: expected ~2800, got {}",
+            nodes[4].focus_score.unwrap()
+        );
+        assert_eq!(nodes[5].focus_score.unwrap(), 0);
+
+        // Consequence multiplier: +50% on deadline score
+        let mut node7 = GraphNode::default();
+        node7.due = Some(tomorrow.format("%Y-%m-%d").to_string());
+        node7.effort = Some("1d".to_string());
+        node7.consequence = Some("high".to_string());
+        let mut nodes7 = vec![node7];
+        compute_focus_scores(&mut nodes7);
+        assert_eq!(nodes7[0].focus_score.unwrap(), 9000);
+
+        // Scenario 8: Overdue by 2 days: +8000 + 2*200 = 8400
+        let mut node8 = GraphNode::default();
+        node8.due = Some(
+            (today - chrono::Duration::days(2))
+                .format("%Y-%m-%d")
+                .to_string(),
+        );
+        let mut nodes8 = vec![node8];
+        compute_focus_scores(&mut nodes8);
+        assert_eq!(nodes8[0].focus_score.unwrap(), 8400);
     }
 
     #[test]
