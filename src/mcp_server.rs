@@ -499,6 +499,10 @@ impl PkbSearchServer {
                 .get("waiting_since")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            due: args
+                .get("due")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         };
 
         // Hierarchy validation: tasks must have a parent
@@ -1142,6 +1146,7 @@ impl PkbSearchServer {
             "stakeholder_exposure": node.stakeholder_exposure,
             "stakeholder": node.stakeholder,
             "waiting_since": node.waiting_since,
+            "due": node.due,
             "focus_score": node.focus_score,
             "scope": node.scope,
             "uncertainty": node.uncertainty,
@@ -2120,8 +2125,18 @@ impl PkbSearchServer {
                     .get("body")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                stakeholder: None,
-                waiting_since: None,
+                stakeholder: subtask
+                    .get("stakeholder")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                waiting_since: subtask
+                    .get("waiting_since")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                due: subtask
+                    .get("due")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
             };
 
             let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
@@ -3189,7 +3204,8 @@ impl ServerHandler for PkbSearchServer {
                         "complexity": { "type": "string" },
                         "body": { "type": "string", "description": "Markdown body" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
-                        "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." }
+                        "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
+                        "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" }
                     },
                     "required": ["title"]
                 }))
@@ -3454,7 +3470,10 @@ impl ServerHandler for PkbSearchServer {
                                     "tags": { "type": "array", "items": { "type": "string" } },
                                     "assignee": { "type": "string" },
                                     "complexity": { "type": "string" },
-                                    "body": { "type": "string" }
+                                    "body": { "type": "string" },
+                                    "stakeholder": { "type": "string" },
+                                    "waiting_since": { "type": "string" },
+                                    "due": { "type": "string" }
                                 },
                                 "required": ["title"]
                             },

@@ -76,6 +76,7 @@ pub struct TaskFields {
     pub body: Option<String>,
     pub stakeholder: Option<String>,
     pub waiting_since: Option<String>,
+    pub due: Option<String>,
 }
 
 /// Fields for creating a new memory.
@@ -421,6 +422,10 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     if let Some(ref waiting_since) = fields.waiting_since {
         fm.push_str(&format!("waiting_since: {}\n", waiting_since));
+    }
+
+    if let Some(ref due) = fields.due {
+        fm.push_str(&format!("due: {}\n", due));
     }
 
     fm.push_str("---\n\n");
