@@ -113,6 +113,10 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consequence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
@@ -449,6 +453,12 @@ impl GraphNode {
         let complexity = fm
             .as_ref()
             .and_then(|f| f.get("complexity").and_then(|v| v.as_str()).map(String::from));
+        let effort = fm
+            .as_ref()
+            .and_then(|f| f.get("effort").and_then(|v| v.as_str()).map(String::from));
+        let consequence = fm
+            .as_ref()
+            .and_then(|f| f.get("consequence").and_then(|v| v.as_str()).map(String::from));
         let goals = fm
             .as_ref()
             .map(|f| parse_string_array(f, "goals"))
