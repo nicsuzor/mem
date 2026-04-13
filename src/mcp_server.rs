@@ -490,6 +490,11 @@ impl PkbSearchServer {
                 .get("complexity")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            effort: args.get("effort").and_then(|v| v.as_str()).map(String::from),
+            consequence: args
+                .get("consequence")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             body: args.get("body").and_then(|v| v.as_str()).map(String::from),
             stakeholder: args
                 .get("stakeholder")
@@ -3202,6 +3207,8 @@ impl ServerHandler for PkbSearchServer {
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
                         "complexity": { "type": "string" },
+                        "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w'. Parser converts to days." },
+                        "consequence": { "type": "string", "description": "Narrative description of what happens if this task is not done or fails." },
                         "body": { "type": "string", "description": "Markdown body" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
