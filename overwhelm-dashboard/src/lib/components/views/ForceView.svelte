@@ -84,27 +84,38 @@
         const groupIndexOf = new Map<string, number>();
 
         // 1. Create empty groups for valid parents
+        const members = new Map<string, string[]>();
         for (const [pid, childIdxs] of childrenOf) {
             const pidx = nodeIndex.get(pid);
             if (pidx === undefined) continue;
             
             groupIndexOf.set(pid, groups.length);
+            const leafIndices = [pidx, ...Array.from(childIdxs)];
             groups.push({
-                // Include both parent and children in the same group box
-                leaves: [pidx, ...Array.from(childIdxs)], 
+                leaves: leafIndices,
                 groups: [], 
                 padding: GROUP_PADDING,
                 containerId: pid,
             });
+
+            // Track member node IDs for immediate manual bounding box calculation
+            members.set(pid, leafIndices.map(i => activeNodes[i].id));
         }
 
-        // Simplified: NO NESTING. Every group is a standalone top-level group.
-        // This makes the layout much roomier and prevents overlapping parent containers.
+        // Simplified: NO NESTING.
+        // We keep the object reference conversion loop here even if nesting is currently 
+        // disabled to ensure the groups array is architecturally consistent for WebCola.
+        for (const g of groups) {
+            g.groups = g.groups.map((idx: number) => groups[idx]);
+        }
 
+        groupMembers = members;
         return groups;
     }
 
     // ─── Drag and click ───────────────────────────────────────────────────────
+
+    let groupMembers = new Map<string, string[]>();
 
     function bindDragAndClick(nEls: any) {
         nEls.style("cursor", "crosshair")
@@ -139,15 +150,53 @@
     // ─── Group box rendering ──────────────────────────────────────────────────
 
     function renderGroupBoxes() {
-        if (!hullLayer) return;
+        if (!hullLayer || !$graphData) return;
 
         type GB = { x: number; y: number; w: number; h: number; containerId: string };
         const data: GB[] = [];
+        const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
+        const PAD = GROUP_PADDING;
 
         for (const cg of colaGroups) {
-            if (!cg.bounds) continue;
-            const b = cg.bounds;
-            data.push({ x: b.x, y: b.y, w: b.X - b.x, h: b.Y - b.y, containerId: cg.containerId });
+            const cid = cg.containerId;
+            if (cg.bounds) {
+                // Use WebCola's authoritative physics-based bounds if available
+                const b = cg.bounds;
+                data.push({ x: b.x, y: b.y, w: b.X - b.x, h: b.Y - b.y, containerId: cid });
+            } else {
+                // FALLBACK: Manual bounds calculation.
+                // WebCola's bounds are null during the split second between .start() and the first tick.
+                // If we don't calculate them manually here, the boxes will "flicker" out of existence
+                // every time a config setting is changed.
+                const memberIds = groupMembers.get(cid);
+                if (!memberIds || memberIds.length === 0) continue;
+
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                let foundAny = false;
+
+                for (const id of memberIds) {
+                    const n = nodeById.get(id);
+                    if (n && typeof n.x === 'number' && typeof n.y === 'number') {
+                        const halfW = (n.w || 160) / 2;
+                        const halfH = (n.h || 40) / 2;
+                        minX = Math.min(minX, n.x - halfW);
+                        minY = Math.min(minY, n.y - halfH);
+                        maxX = Math.max(maxX, n.x + halfW);
+                        maxY = Math.max(maxY, n.y + halfH);
+                        foundAny = true;
+                    }
+                }
+
+                if (foundAny) {
+                    data.push({ 
+                        x: minX - PAD, 
+                        y: minY - PAD, 
+                        w: (maxX - minX) + PAD * 2, 
+                        h: (maxY - minY) + PAD * 2, 
+                        containerId: cid 
+                    });
+                }
+            }
         }
 
         d3.select(hullLayer).selectAll<SVGRectElement, GB>("rect.cola-group")
@@ -288,6 +337,9 @@
             .on("end", () => { running = false; })
             .start(5, 5, 5); 
         running = true;
+
+        // Render initial state immediately so UI feels responsive
+        tickVisuals();
     }
 
     onDestroy(() => {
