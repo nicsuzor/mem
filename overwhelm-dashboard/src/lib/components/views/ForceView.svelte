@@ -7,6 +7,7 @@
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
+    import { zoomScale } from "../../stores/zoom";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
     const CANVAS_AREA = 30_000_000;
@@ -21,6 +22,7 @@
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
     export let running = false;
+    let ticks = 0;
 
     export function toggleRunning() {
         if (!colaLayout) return;
@@ -28,6 +30,7 @@
             colaLayout.stop();
             running = false;
         } else {
+            ticks = 0;
             colaLayout.resume();
             running = true;
         }
@@ -38,7 +41,7 @@
     let lastColaParams = '';
     $: {
         const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}`;
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}|${$viewSettings.colaHandleDisconnected}`;
         if (containerGroup && $graphData && nodesLayer && hullLayer && (sk !== lastStructureKey || cp !== lastColaParams)) {
             lastStructureKey = sk;
             lastColaParams = cp;
@@ -48,21 +51,33 @@
 
     // ─── Group building ────────────────────────────────────────────────────────
 
+    /**
+     * Builds WebCola hierarchical groups.
+     * 
+     * ARCHITECTURE NOTES:
+     * 1. Source of Truth: We MUST use `_safe_parent` from the node objects. The 
+     *    `n.parent` string is mutated by WebCola into a circular Group object reference 
+     *    during the first physics tick, which destroys Svelte's ability to rebuild the hierarchy.
+     * 
+     * 2. Integer Array Indices: WebCola strictly requires `leaves` to be integer 
+     *    indices into the `activeNodes` array, NOT object references.
+     */
     function buildColaGroups(activeNodes: GraphNode[], _activeLinks: GraphEdge[]): any[] {
         const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
         const nodeById = new Map(activeNodes.map(n => [n.id, n]));
 
         const childrenOf = new Map<string, Set<number>>();
         
-        // Use n.parent as the single source of truth for group hierarchies
+        // Use n._safe_parent as the single source of truth for group hierarchies
         for (const n of activeNodes) {
-            if (!n.parent) continue;
-            const pidx = nodeIndex.get(n.parent);
+            const pid = (n as any)._safe_parent;
+            if (!pid) continue;
+            const pidx = nodeIndex.get(pid);
             const cidx = nodeIndex.get(n.id);
             if (pidx === undefined || cidx === undefined) continue;
             
-            if (!childrenOf.has(n.parent)) childrenOf.set(n.parent, new Set());
-            childrenOf.get(n.parent)!.add(cidx);
+            if (!childrenOf.has(pid)) childrenOf.set(pid, new Set());
+            childrenOf.get(pid)!.add(cidx);
         }
 
         const groups: any[] = [];
@@ -75,34 +90,18 @@
             
             groupIndexOf.set(pid, groups.length);
             groups.push({
-                leaves: [], 
+                // Include both parent and children in the same group box
+                leaves: [pidx, ...Array.from(childIdxs)], 
                 groups: [], // Will hold references to child groups
                 padding: GROUP_PADDING,
                 containerId: pid,
             });
         }
 
-        // 2. Assign every active node to the nearest ancestor group (or its own group)
-        for (const n of activeNodes) {
-            const idx = nodeIndex.get(n.id);
-            if (idx === undefined) continue;
-
-            let curr: string | null | undefined = n.id;
-            while (curr) {
-                const gIdx = groupIndexOf.get(curr);
-                if (gIdx !== undefined) {
-                    groups[gIdx].leaves.push(idx);
-                    break;
-                }
-                const currNode = nodeById.get(curr);
-                curr = currNode?.parent;
-            }
-        }
-
-        // 3. Nest groups inside their nearest ancestor group
+        // 2. Nest groups inside their nearest ancestor group
         for (const [pid, groupIdx] of groupIndexOf) {
             const pNode = nodeById.get(pid);
-            let curr = pNode?.parent;
+            let curr = (pNode as any)?._safe_parent;
             while (curr) {
                 const parentGroupIdx = groupIndexOf.get(curr);
                 if (parentGroupIdx !== undefined) {
@@ -111,11 +110,11 @@
                     break;
                 }
                 const currNode = nodeById.get(curr);
-                curr = currNode?.parent;
+                curr = (currNode as any)?._safe_parent;
             }
         }
 
-        // 4. Important: Cola expects nested groups to be object references, not index numbers.
+        // 3. Important: Cola expects nested groups to be object references, not index numbers.
         for (const g of groups) {
             g.groups = g.groups.map((idx: number) => groups[idx]);
         }
@@ -131,9 +130,27 @@
             .call(
                 d3.drag<SVGGElement, GraphNode>()
                     .clickDistance(4)
-                    .on("start", (_e, d: any) => { d.fixed = 1; })
-                    .on("drag", (e, d: any) => { d.x = e.x; d.y = e.y; tickVisuals(); })
-                    .on("end", (_e, d: any) => { d.fixed = 0; }),
+                    .on("start", (_e, d: any) => { 
+                        d.fixed = 1; 
+                    })
+                    .on("drag", (e, d: any) => { 
+                        d.x = e.x; 
+                        d.y = e.y; 
+                        
+                        // Resume layout on drag so bounding boxes follow the node
+                        if (colaLayout && !running) {
+                            ticks = 0;
+                            colaLayout.resume();
+                            running = true;
+                        } else if (colaLayout) {
+                            ticks = 0;
+                            colaLayout.resume();
+                        }
+                        tickVisuals(); 
+                    })
+                    .on("end", (_e, d: any) => { 
+                        d.fixed = 0; 
+                    }),
             );
     }
 
@@ -205,10 +222,32 @@
         const ch = Math.round(Math.sqrt(CANVAS_AREA / aspect));
         const cw = Math.round(ch * aspect);
 
-        // Random initial positions
+        // ARCHITECTURE NOTE (Physics Timeout & Disconnected Components):
+        // Assign each root container (e.g. Project) a random center point on the canvas, 
+        // and spawn all its descendants tightly around that point.
+        const rootCenters = new Map<string, {x: number, y: number}>();
+        
         nodes.forEach((n: any) => {
-            if (typeof n.x !== 'number') n.x = Math.random() * cw;
-            if (typeof n.y !== 'number') n.y = Math.random() * ch;
+            if (typeof n.x !== 'number' || n.x < -9000) {
+                let rootId = n.id;
+                let curr = n._safe_parent;
+                while (curr) {
+                    rootId = curr;
+                    const parentNode = nodeById.get(curr);
+                    curr = parentNode ? parentNode._safe_parent : null;
+                }
+                
+                if (!rootCenters.has(rootId)) {
+                    rootCenters.set(rootId, {
+                        x: (cw * 0.1) + Math.random() * (cw * 0.8),
+                        y: (ch * 0.1) + Math.random() * (ch * 0.8)
+                    });
+                }
+                
+                const center = rootCenters.get(rootId)!;
+                n.x = center.x + (Math.random() * 200 - 100);
+                n.y = center.y + (Math.random() * 200 - 100);
+            }
         });
 
         // Render nodes
@@ -225,9 +264,9 @@
         });
         bindDragAndClick(nEls);
 
-        // Parent links for Cola structure
+        // Physics links (EXCLUDING parent links as per user instruction)
         const colaLinks = links.filter((l: any) =>
-            l.type === 'parent' && typeof l.source === 'object' && typeof l.target === 'object');
+            l.type !== 'parent' && typeof l.source === 'object' && typeof l.target === 'object');
 
         if (linksLayer) {
             d3.select(linksLayer).selectAll("line.link")
@@ -239,7 +278,7 @@
                 .attr("opacity", 0.6);
         }
 
-        let ticks = 0;
+        ticks = 0;
 
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])
@@ -247,15 +286,15 @@
             .links(colaLinks as any)
             .groups(colaGroups)
             .linkDistance((d: any) => {
-                // ACTUAL COLA API: Checks if nodes share the same group object
-                if (d.source.parent && d.target.parent && d.source.parent === d.target.parent) {
-                    return 50; // Short intra-group links
+                // Use _safe_parent to check if nodes share the same structural parent
+                if (d.source._safe_parent && d.target._safe_parent && d.source._safe_parent === d.target._safe_parent) {
+                    return 50; // Short intra-group dependency links
                 }
-                return $viewSettings.colaLinkLength; // Long inter-group links
+                return $viewSettings.colaLinkLength; // Long inter-group dependency links
             })
-            .convergenceThreshold($viewSettings.colaConvergence) // Keep < 0.1 to avoid immediate abort
+            .convergenceThreshold($viewSettings.colaConvergence)
             .avoidOverlaps(true)
-            .handleDisconnected(true)
+            .handleDisconnected($viewSettings.colaHandleDisconnected)
             .on("tick", () => {
                 ticks++;
                 if (ticks > 300) {
@@ -265,7 +304,7 @@
                 tickVisuals();
             })
             .on("end", () => { running = false; })
-            .start(5, 5, 5); // Lighter iteration count to avoid blocking main thread
+            .start(5, 5, 5); 
         running = true;
     }
 
@@ -279,3 +318,13 @@
     <g bind:this={linksLayer} class="links-layer"></g>
     <g bind:this={nodesLayer}></g>
 {/if}
+
+<style>
+    :global(rect.cola-group) {
+        transition: fill 0.3s, stroke 0.3s;
+    }
+    :global(rect.cola-group:hover) {
+        fill-opacity: 0.15;
+        stroke-opacity: 0.6;
+    }
+</style>

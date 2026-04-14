@@ -9,13 +9,13 @@ export const viewSettings = writable({
     topNLeaves: 80,
     colaLinkLength: 600,   // ideal link length
     colaConvergence: 0.01, // convergence threshold — must be < 0.1 (Cola's initial alpha)
-    colaFlowSep: 30,       // min vertical separation between linked nodes
-    colaGroupPadding: 6,   // padding inside epic group hulls — keeps non-descendants out
+    colaFlowSep: 40,       // min vertical separation between linked nodes
+    colaGroupPadding: 15,  // padding inside epic group hulls — keeps non-descendants out
     // Cola debug toggles — turn on one at a time to isolate layout issues
     colaAvoidOverlaps: true,
     colaGroups: true,
     colaLinks: true,
-    colaHandleDisconnected: true,
+    colaHandleDisconnected: false,
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',
