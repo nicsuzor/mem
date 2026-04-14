@@ -10,6 +10,34 @@
     import { zoomScale } from "../../stores/zoom";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 
+    /**
+     * COLA PHYSICS ENGINE: ARCHITECTURAL OVERVIEW
+     * The physical position of every node is determined by the balance of these forces:
+     * 
+     * 1. GROUP CONTAINMENT (Hard Constraint):
+     *    Every node assigned to a group's `leaves` MUST be contained within that group's
+     *    bounding box. The box expands/stretches to wrap its nodes.
+     * 
+     * 2. GLOBAL REPULSION (Spring Force):
+     *    Every node on the canvas pushes away from every other node (like magnets).
+     *    This is the primary force that untangles the graph and fills the canvas area.
+     * 
+     * 3. DEPENDENCY LINKS (Spring Force) - [CURRENTLY DISABLED]:
+     *    Tries to maintain nodes at exactly `colaLinkLength` distance.
+     * 
+     * 4. INTRA-GROUP SHORT-CIRCUIT (Spring Force) - [CURRENTLY DISABLED]:
+     *    Tries to keep sibling nodes within the same epic clustered tightly at 50px.
+     * 
+     * 5. NON-OVERLAP (Hard Constraint):
+     *    Nodes are treated as solid blocks based on their width/height. They can NEVER overlap.
+     * 
+     * 6. 300-TICK FRICTION (Killswitch):
+     *    Simulation automatically stops after 300 iterations to save CPU.
+     * 
+     * 7. USER ANCHOR (Manual Constraint):
+     *    Dragging a node sets `fixed = 1`, overriding all physics for that node.
+     */
+
     const CANVAS_AREA = 30_000_000;
     const GROUP_PADDING = 60;
 
@@ -277,13 +305,7 @@
             .nodes(nodes as any)
             .links(colaLinks as any)
             .groups(colaGroups)
-            .linkDistance((d: any) => {
-                // Use _safe_parent to check if nodes share the same structural parent
-                if (d.source._safe_parent && d.target._safe_parent && d.source._safe_parent === d.target._safe_parent) {
-                    return 50; // Short intra-group dependency links
-                }
-                return $viewSettings.colaLinkLength; // Long inter-group dependency links
-            })
+            .linkDistance(1000) // Effectively disable link pull by setting target distance very high (allows repulsion to take over)
             .convergenceThreshold($viewSettings.colaConvergence)
             .avoidOverlaps(true)
             .handleDisconnected($viewSettings.colaHandleDisconnected)
