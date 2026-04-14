@@ -92,32 +92,14 @@
             groups.push({
                 // Include both parent and children in the same group box
                 leaves: [pidx, ...Array.from(childIdxs)], 
-                groups: [], // Will hold references to child groups
+                groups: [], 
                 padding: GROUP_PADDING,
                 containerId: pid,
             });
         }
 
-        // 2. Nest groups inside their nearest ancestor group
-        for (const [pid, groupIdx] of groupIndexOf) {
-            const pNode = nodeById.get(pid);
-            let curr = (pNode as any)?._safe_parent;
-            while (curr) {
-                const parentGroupIdx = groupIndexOf.get(curr);
-                if (parentGroupIdx !== undefined) {
-                    // Tell the parent group that this group is nested inside it
-                    groups[parentGroupIdx].groups.push(groupIdx);
-                    break;
-                }
-                const currNode = nodeById.get(curr);
-                curr = (currNode as any)?._safe_parent;
-            }
-        }
-
-        // 3. Important: Cola expects nested groups to be object references, not index numbers.
-        for (const g of groups) {
-            g.groups = g.groups.map((idx: number) => groups[idx]);
-        }
+        // Simplified: NO NESTING. Every group is a standalone top-level group.
+        // This makes the layout much roomier and prevents overlapping parent containers.
 
         return groups;
     }
