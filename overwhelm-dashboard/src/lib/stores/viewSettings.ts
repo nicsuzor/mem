@@ -7,8 +7,19 @@ export const viewSettings = writable({
     mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph'
     viewMode: 'Treemap',  // "Treemap", "Circle Pack", "Force", "Arc Diagram"
     topNLeaves: 80,
-    colaLinkLength: 600,   // ideal link length
-    colaConvergence: 0.01, // convergence threshold — must be < 0.1 (Cola's initial alpha)
+    colaLinkLength: 600,   // ideal link length (general, used by Metro)
+    
+    // Link-specific forces
+    colaLinkDistIntraParent: 60,
+    colaLinkWeightIntraParent: 1.0,
+    colaLinkDistInterParent: 150,
+    colaLinkWeightInterParent: 0.8,
+    colaLinkDistDependsOn: 150,
+    colaLinkWeightDependsOn: 0.5,
+    colaLinkDistRef: 300,
+    colaLinkWeightRef: 0.2,
+
+    colaConvergence: 0.005, // convergence threshold — must be < 0.1 (Cola's initial alpha)
     colaFlowSep: 40,       // min vertical separation between linked nodes
     colaGroupPadding: 15,  // padding inside epic group hulls — keeps non-descendants out
     // Cola debug toggles — turn on one at a time to isolate layout issues

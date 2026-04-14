@@ -384,9 +384,16 @@
             </div>
             <Legend />
             {#if activeLayout === "force" || activeLayout === "sfdp" || activeLayout === "metro"}
-                <button class="absolute bottom-4 left-4 z-30 px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors" onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : forceViewRef?.toggleRunning()}>
-                    {(activeLayout === "metro" ? metroRunning : forceRunning) ? '⏸ Stop' : '▶ Start'} Layout
-                </button>
+                <div class="absolute bottom-4 left-4 z-30 flex items-center gap-2">
+                    <button class="px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors" onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : forceViewRef?.toggleRunning()}>
+                        {(activeLayout === "metro" ? metroRunning : forceRunning) ? '⏸ Stop' : '▶ Start'} Layout
+                    </button>
+                    {#if activeLayout === "force"}
+                        <button class="px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors" onclick={() => forceViewRef?.randomize()}>
+                            🎲 Randomise
+                        </button>
+                    {/if}
+                </div>
             {/if}
             <ViewConfigOverlay />
             <div class="absolute inset-0 z-50 bg-background/90 backdrop-blur-lg overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab !== "Dashboard"}><DashboardView {data} /></div>

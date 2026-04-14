@@ -4,6 +4,7 @@
     import { onDestroy } from "svelte";
     import { graphData, graphStructureKey } from "../../stores/graph";
     import { viewSettings } from "../../stores/viewSettings";
+    import { filters } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
     import { projectHue } from "../../data/projectUtils";
@@ -12,34 +13,29 @@
 
     /**
      * COLA PHYSICS ENGINE: ARCHITECTURAL OVERVIEW
-     * The physical position of every node is determined by the balance of these forces:
+     * The physical position of every node is determined by the balance of these constraints and forces:
      * 
      * 1. GROUP CONTAINMENT (Hard Constraint):
      *    Every node assigned to a group's `leaves` MUST be contained within that group's
      *    bounding box. The box expands/stretches to wrap its nodes.
      * 
-     * 2. GLOBAL REPULSION (Spring Force):
-     *    Every node on the canvas pushes away from every other node (like magnets).
-     *    This is the primary force that untangles the graph and fills the canvas area.
-     * 
-     * 3. DEPENDENCY LINKS (Spring Force) - [CURRENTLY DISABLED]:
-     *    Tries to maintain nodes at exactly `colaLinkLength` distance.
-     * 
-     * 4. INTRA-GROUP SHORT-CIRCUIT (Spring Force) - [CURRENTLY DISABLED]:
-     *    Tries to keep sibling nodes within the same epic clustered tightly at 50px.
-     * 
-     * 5. NON-OVERLAP (Hard Constraint):
+     * 2. NON-OVERLAP (Hard Constraint):
      *    Nodes are treated as solid blocks based on their width/height. They can NEVER overlap.
+     *    Note: Because nodes (task cards) are wider than they are tall, resolving initial overlaps
+     *    typically results in vertical stacking (the shortest path to clear the overlap). Unlike d3-force,
+     *    WebCola does NOT have a continuous global repulsive "magnetic" force pushing nodes apart.
      * 
-     * 6. 300-TICK FRICTION (Killswitch):
+     * 3. DEPENDENCY LINKS (Spring Force):
+     *    Tries to maintain nodes at exactly the `dist` distance with `weight` strength.
+     * 
+     * 4. 300-TICK FRICTION (Killswitch):
      *    Simulation automatically stops after 300 iterations to save CPU.
      * 
-     * 7. USER ANCHOR (Manual Constraint):
+     * 5. USER ANCHOR (Manual Constraint):
      *    Dragging a node sets `fixed = 1`, overriding all physics for that node.
      */
 
     const CANVAS_AREA = 30_000_000;
-    const GROUP_PADDING = 60;
 
     export let containerGroup: SVGGElement;
 
@@ -59,6 +55,16 @@
             running = false;
         } else {
             ticks = 0;
+            // Add a tiny jitter to unstick nodes that perfectly hit local constraint minima
+            if ($graphData && $graphData.nodes) {
+                $graphData.nodes.forEach((n: any) => {
+                    if (!n.fixed) {
+                        n.x = (n.x || 0) + (Math.random() * 10 - 5);
+                        n.y = (n.y || 0) + (Math.random() * 10 - 5);
+                    }
+                });
+            }
+            // Just resume the async loop rather than completely rebuilding the physics solver
             colaLayout.resume();
             running = true;
         }
@@ -69,7 +75,7 @@
     let lastColaParams = '';
     $: {
         const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}|${$viewSettings.colaHandleDisconnected}`;
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}|${$viewSettings.colaHandleDisconnected}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaLinkDistIntraParent}|${$viewSettings.colaLinkWeightIntraParent}|${$viewSettings.colaLinkDistInterParent}|${$viewSettings.colaLinkWeightInterParent}|${$viewSettings.colaLinkDistDependsOn}|${$viewSettings.colaLinkWeightDependsOn}|${$viewSettings.colaLinkDistRef}|${$viewSettings.colaLinkWeightRef}|${$filters.edgeDependencies}|${$filters.edgeReferences}|${$filters.edgeParent}`;
         if (containerGroup && $graphData && nodesLayer && hullLayer && (sk !== lastStructureKey || cp !== lastColaParams)) {
             lastStructureKey = sk;
             lastColaParams = cp;
@@ -132,7 +138,7 @@
             groups.push({
                 leaves: leafIndices,
                 groups: [], 
-                padding: GROUP_PADDING,
+                padding: $viewSettings.colaGroupPadding,
                 containerId: pid,
             });
         }
@@ -242,31 +248,11 @@
         const ch = Math.round(Math.sqrt(CANVAS_AREA / aspect));
         const cw = Math.round(ch * aspect);
 
-        // ARCHITECTURE NOTE (Physics Timeout & Disconnected Components):
-        // Assign each root container (e.g. Project) a random center point on the canvas, 
-        // and spawn all its descendants tightly around that point.
-        const rootCenters = new Map<string, {x: number, y: number}>();
-        
+        // Simple random distribution across the canvas area for initial unconstrained layout
         nodes.forEach((n: any) => {
             if (typeof n.x !== 'number' || n.x < -9000) {
-                let rootId = n.id;
-                let curr = (n as any)._safe_parent;
-                while (curr) {
-                    rootId = curr;
-                    const parentNode = nodeById.get(curr);
-                    curr = (parentNode as any) ? (parentNode as any)._safe_parent : null;
-                }
-                
-                if (!rootCenters.has(rootId)) {
-                    rootCenters.set(rootId, {
-                        x: (cw * 0.1) + Math.random() * (cw * 0.8),
-                        y: (ch * 0.1) + Math.random() * (ch * 0.8)
-                    });
-                }
-                
-                const center = rootCenters.get(rootId)!;
-                n.x = center.x + (Math.random() * 200 - 100);
-                n.y = center.y + (Math.random() * 200 - 100);
+                n.x = (Math.random() * cw * 0.8) + (cw * 0.1);
+                n.y = (Math.random() * ch * 0.8) + (ch * 0.1);
             }
         });
 
@@ -284,9 +270,40 @@
         });
         bindDragAndClick(nEls);
 
-        // Physics links (EXCLUDING parent links as per user instruction)
-        const colaLinks = links.filter((l: any) =>
-            l.type !== 'parent' && typeof l.source === 'object' && typeof l.target === 'object');
+        // Physics links: apply visibility filters and physics settings per link type
+        const colaLinks = links.filter((l: any) => {
+            if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
+            
+            // Check visibility filters from the legend
+            if (l.type === 'parent' && $filters.edgeParent === 'hidden') return false;
+            if (l.type === 'depends_on' && $filters.edgeDependencies === 'hidden') return false;
+            if (l.type === 'ref' && $filters.edgeReferences === 'hidden') return false;
+
+            return true;
+        }).map((l: any) => {
+            // Apply physics settings
+            let length = 1000;
+            let weight = 1.0;
+            if (l.type === 'parent') {
+                // If the target (child) is a parent itself, it's in its own group (inter-group link).
+                // If it's not a parent, it's inside the source's group (intra-group link).
+                const isChildParent = nodes.some((n: any) => n._safe_parent === l.target.id);
+                if (isChildParent) {
+                    length = $viewSettings.colaLinkDistInterParent;
+                    weight = $viewSettings.colaLinkWeightInterParent;
+                } else {
+                    length = $viewSettings.colaLinkDistIntraParent;
+                    weight = $viewSettings.colaLinkWeightIntraParent;
+                }
+            } else if (l.type === 'depends_on') {
+                length = $viewSettings.colaLinkDistDependsOn;
+                weight = $viewSettings.colaLinkWeightDependsOn;
+            } else if (l.type === 'ref') {
+                length = $viewSettings.colaLinkDistRef;
+                weight = $viewSettings.colaLinkWeightRef;
+            }
+            return { ...l, length, weight };
+        });
 
         if (linksLayer) {
             d3.select(linksLayer).selectAll("line.link")
@@ -305,7 +322,7 @@
             .nodes(nodes as any)
             .links(colaLinks as any)
             .groups(colaGroups)
-            .linkDistance(1000) // Effectively disable link pull by setting target distance very high (allows repulsion to take over)
+            .linkDistance((l: any) => l.length)
             .convergenceThreshold($viewSettings.colaConvergence)
             .avoidOverlaps(true)
             .handleDisconnected($viewSettings.colaHandleDisconnected)
@@ -318,11 +335,34 @@
                 tickVisuals();
             })
             .on("end", () => { running = false; })
-            .start(5, 5, 5); 
+            .start(0, 0, 0); 
         running = true;
 
         // Force initial render
         tickVisuals();
+    }
+
+    export function randomize() {
+        if (!$graphData || !colaLayout) return;
+        
+        $graphData.nodes.forEach((n: any) => {
+            if (!n.fixed) {
+                // Strong jitter rather than complete random repositioning
+                n.x = (n.x || 0) + (Math.random() * 200 - 100);
+                n.y = (n.y || 0) + (Math.random() * 200 - 100);
+                n.px = n.x;
+                n.py = n.y;
+            }
+        });
+        tickVisuals();
+        
+        if (running) {
+            ticks = 0;
+            colaLayout.alpha(1); // Inject high heat instead of the standard 0.1 from resume()
+        } else {
+            colaLayout.alpha(1);
+            running = true;
+        }
     }
 
     onDestroy(() => {

@@ -49,6 +49,30 @@
         return map;
     })();
 
+    // Upstream (Blockers - what this task depends on)
+    $: upstream = (() => {
+        if (!$graphData || !taskId) return [];
+        return $graphData.links
+            .filter(l => l.type === 'depends_on' && (typeof l.source === 'object' ? l.source.id : l.source) === taskId)
+            .map(l => {
+                const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+                return $graphData.nodes.find(n => n.id === targetId);
+            })
+            .filter(n => !!n);
+    })();
+
+    // Downstream (Blocked by this - what depends on this task)
+    $: downstream = (() => {
+        if (!$graphData || !taskId) return [];
+        return $graphData.links
+            .filter(l => l.type === 'depends_on' && (typeof l.target === 'object' ? l.target.id : l.target) === taskId)
+            .map(l => {
+                const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+                return $graphData.nodes.find(n => n.id === sourceId);
+            })
+            .filter(n => !!n);
+    })();
+
     function select(id: string) {
         selection.update(s => ({ ...s, activeNodeId: id }));
     }
@@ -113,6 +137,46 @@
         <span class="current-marker">★</span>
         <span class="current-label">{task?.label || taskId}</span>
     </div>
+
+    <!-- Upstream (Blockers) -->
+    {#if upstream.length > 0}
+        <div class="dependency-section">
+            <span class="dependency-header">Depends On (Blockers)</span>
+            {#each upstream as dep}
+                <div class="child-row">
+                    <span class="tree-connector">↑ </span>
+                    <span class="status-icon {statusColor(dep.status)}">{statusIcon(dep.status)}</span>
+                    <button
+                        class="child-label"
+                        class:completed={['done', 'completed'].includes(dep.status)}
+                        onclick={() => select(dep.id)}
+                    >
+                        {dep.label}
+                    </button>
+                </div>
+            {/each}
+        </div>
+    {/if}
+
+    <!-- Downstream (Blocked by this) -->
+    {#if downstream.length > 0}
+        <div class="dependency-section">
+            <span class="dependency-header">Blocks (Downstream)</span>
+            {#each downstream as dep}
+                <div class="child-row">
+                    <span class="tree-connector">↓ </span>
+                    <span class="status-icon {statusColor(dep.status)}">{statusIcon(dep.status)}</span>
+                    <button
+                        class="child-label"
+                        class:completed={['done', 'completed'].includes(dep.status)}
+                        onclick={() => select(dep.id)}
+                    >
+                        {dep.label}
+                    </button>
+                </div>
+            {/each}
+        </div>
+    {/if}
 
     <!-- Children tree -->
     {#if children.length > 0}
@@ -234,6 +298,23 @@
         flex-direction: column;
         max-height: 280px;
         overflow-y: auto;
+    }
+
+    .dependency-section {
+        display: flex;
+        flex-direction: column;
+        margin-bottom: 6px;
+        margin-left: 8px;
+        padding-left: 6px;
+        border-left: 1px solid color-mix(in srgb, var(--color-primary) 10%, transparent);
+    }
+
+    .dependency-header {
+        font-size: 8px;
+        font-weight: bold;
+        text-transform: uppercase;
+        color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+        margin-bottom: 2px;
     }
 
     .child-row {

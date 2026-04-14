@@ -456,7 +456,7 @@
                         </div>
 
                         <div class="space-y-2">
-                            <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Lineage_Map</span>
+                            <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Local_Context</span>
                             <div class="bg-primary/2 rounded p-1">
                                 <HierarchyTree {taskId} />
                             </div>
@@ -499,23 +499,9 @@
                 </div>
 
                 <div class="space-y-2">
-                    <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Lineage_Map</span>
+                    <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Local_Context</span>
                     <div class="bg-primary/2 rounded p-1">
                         <HierarchyTree {taskId} />
-                    </div>
-                </div>
-
-                <div class="space-y-2">
-                    <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Dependencies</span>
-                    <div class="space-y-1 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
-                        {#each ($graphData?.links || []).filter(l => (typeof l.source === 'object' ? l.source.id : l.source) === t.id && l.type === 'depends_on') as dep}
-                            <div class="flex items-center justify-between px-2 py-1.5 border border-primary/10 bg-primary/5 rounded-sm">
-                                <span class="text-[9px] font-mono text-primary/70 truncate">{typeof dep.target === 'object' ? dep.target.id : String(dep.target)}</span>
-                                <span class="material-symbols-outlined text-[10px] text-primary/30 hover:text-primary cursor-pointer">close</span>
-                            </div>
-                        {:else}
-                            <div class="text-[9px] text-primary/30 italic px-1">No active blockers.</div>
-                        {/each}
                     </div>
                 </div>
 
