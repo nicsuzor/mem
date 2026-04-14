@@ -146,8 +146,7 @@
             fNodes = [...parents, ...leaves];
         }
 
-        // Restore parent containers needed by surviving children — even if the parent
-        // was filtered out by status (e.g. a cancelled project with active children)
+        // Restore parent containers needed by surviving children
         {
             const allNodeMap = new Map(prepared.nodes.map(n => [n.id, n]));
             const survivingIds = new Set(fNodes.map(n => n.id));
@@ -165,7 +164,7 @@
             if (toRestore.length > 0) fNodes = [...fNodes, ...toRestore];
         }
 
-        // Prune empty structural containers — remove epics/projects/goals with no surviving children
+        // Prune empty structural containers
         {
             let changed = true;
             while (changed) {
@@ -255,12 +254,13 @@
 
         const survivingNodeIds = new Set(fNodes.map((n) => n.id));
 
-        // Sanitize parent references after filtering — prevents stratify failures in tree/circle views
-        // 1. Remove parents not in surviving set
+        // Save safe parent reference before physics engines destroy n.parent strings
+        fNodes.forEach(n => { n._safe_parent = n.parent; });
+
+        // Sanitize parent references
         fNodes.forEach(n => {
             if (n.parent && !survivingNodeIds.has(n.parent)) n.parent = null;
         });
-        // 2. Break parent cycles (A→B→A) — stratify requires a strict tree
         const parentMap = new Map(fNodes.map(n => [n.id, n.parent]));
         for (const n of fNodes) {
             if (!n.parent) continue;
@@ -292,11 +292,9 @@
         const focusSet = $selection.focusNeighborSet;
         const layout = getLayoutFromViewSettings($viewSettings);
 
-        // Pre-build maps once instead of iterating per-node
         const parentMap = new Map<string, string>();
         nodes.forEach(n => { if (n.parent) parentMap.set(n.id, n.parent); });
 
-        // Pre-build adjacency set for the active node (O(E) once, not O(N*E))
         const activeNeighbors = new Set<string>();
         if (active) {
             activeNeighbors.add(active);
@@ -306,15 +304,12 @@
                 if (sid === active) activeNeighbors.add(tid);
                 if (tid === active) activeNeighbors.add(sid);
             });
-            // Add ancestors and descendants of active node
             let curr = parentMap.get(active);
             while (curr) { activeNeighbors.add(curr); curr = parentMap.get(curr); }
-            // Add descendants: nodes whose ancestor chain includes active
             nodes.forEach(n => {
                 let c = parentMap.get(n.id);
                 while (c) { if (c === active) { activeNeighbors.add(n.id); break; } c = parentMap.get(c); }
             });
-            // Sibling logic for force/arc layouts
             const activeParent = parentMap.get(active);
             if (activeParent && ["force", "arc"].includes(layout)) {
                 nodes.forEach(n => { if (n.parent === activeParent) activeNeighbors.add(n.id); });
@@ -322,22 +317,15 @@
         }
 
         nodes.forEach((n) => {
-            if (["done", "completed", "cancelled"].includes(n.status)) {
-                n.opacity = 0.4;
-            } else if (n.status === "active") {
-                n.opacity = 0.8;
-            } else {
-                n.opacity = 0.6;
-            }
+            if (["done", "completed", "cancelled"].includes(n.status)) n.opacity = 0.4;
+            else if (n.status === "active") n.opacity = 0.8;
+            else n.opacity = 0.6;
 
             if (isFocus && focusSet) {
                 if (!focusSet.has(n.id)) n.opacity = 0.05;
                 return;
             }
-
-            if (active && !activeNeighbors.has(n.id)) {
-                n.opacity = 0.05;
-            }
+            if (active && !activeNeighbors.has(n.id)) n.opacity = 0.05;
         });
 
         if (isFocus && focusSet) {
@@ -353,54 +341,28 @@
 </script>
 
 {#if loading}
-    <div class="col-span-12 flex items-center justify-center h-full text-primary font-mono text-xl animate-pulse">
-        Initializing System...
-    </div>
+    <div class="col-span-12 flex items-center justify-center h-full text-primary font-mono text-xl animate-pulse">Initializing System...</div>
 {:else if errorMsg}
-    <div class="col-span-12 flex items-center justify-center h-full text-destructive font-mono text-lg">
-        {errorMsg}
-    </div>
+    <div class="col-span-12 flex items-center justify-center h-full text-destructive font-mono text-lg">{errorMsg}</div>
 {:else}
-    <!-- OPERATOR LAYOUT (12-Column Bento Grid) -->
     {#if $viewSettings.mainTab === "Threaded Tasks"}
-        <!-- THREADED TASKS & EDITOR OVERRIDE -->
-        <section class="col-span-12 flex flex-col h-full bg-background overflow-hidden transition-all" class:hidden={$viewSettings.mainTab !== "Threaded Tasks"}>
-            <ThreadedTasksView />
-        </section>
+        <section class="col-span-12 flex flex-col h-full bg-background overflow-hidden transition-all"><ThreadedTasksView /></section>
     {:else if $viewSettings.mainTab === "Dashboard"}
-        <!-- DASHBOARD: with optional detail drawer -->
-        <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} bg-background overflow-y-auto custom-scrollbar transition-all">
-            <DashboardView {data} />
-        </section>
+        <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} bg-background overflow-y-auto custom-scrollbar transition-all"><DashboardView {data} /></section>
         {#if $selection.activeNodeId}
         <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar">
             <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
         </aside>
         {/if}
-
     {:else}
-    <!-- MAIN CONTENT: Graph or Dashboard -->
-    <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" class:hidden={$viewSettings.mainTab === "Threaded Tasks"} data-component="graph-canvas">
+    <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" data-component="graph-canvas">
         <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
-
-            <!-- Focus banner (Absolute Over Graph) -->
             {#if $selection.focusNodeId}
                 <div class="absolute top-4 left-4 z-20 flex items-center gap-3">
-                    <button
-                        class="px-3 py-1.5 bg-black/80 border border-primary/40 text-primary font-mono text-xs hover:bg-primary/20 transition-colors backdrop-blur-md cursor-pointer"
-                        onclick={() =>
-                            selection.update((s) => ({
-                                ...s,
-                                focusNodeId: null,
-                                focusNeighborSet: null,
-                            }))}>← FULL VIEW</button>
-                    <span class="px-3 py-1.5 bg-black/60 border border-primary/20 text-primary/70 font-mono text-xs backdrop-blur-md">
-                        FOCUS: {focusNode?.fullTitle || $selection.focusNodeId}
-                    </span>
+                    <button class="px-3 py-1.5 bg-black/80 border border-primary/40 text-primary font-mono text-xs hover:bg-primary/20 transition-colors backdrop-blur-md cursor-pointer" onclick={() => selection.update((s) => ({ ...s, focusNodeId: null, focusNeighborSet: null, }))}>← FULL VIEW</button>
+                    <span class="px-3 py-1.5 bg-black/60 border border-primary/20 text-primary/70 font-mono text-xs backdrop-blur-md">FOCUS: {focusNode?.fullTitle || $selection.focusNodeId}</span>
                 </div>
             {/if}
-
-            <!-- The Graph Area -->
             <div class="flex-1 relative z-0 h-full">
                 {#if activeLayout === "metro"}
                     <MetroView bind:this={metroViewRef} bind:running={metroRunning} />
@@ -408,11 +370,7 @@
                     <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
                         {#if containerGroup}
                             {#if activeLayout === "treemap" || activeLayout === "tree"}
-                                <TreemapView
-                                    {containerGroup}
-                                    width={innerWidth}
-                                    height={innerHeight}
-                                />
+                                <TreemapView {containerGroup} width={innerWidth} height={innerHeight} />
                             {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
                                 <CirclePackView {containerGroup} />
                             {:else if activeLayout === "force" || activeLayout === "sfdp"}
@@ -424,33 +382,17 @@
                     </ZoomContainer>
                 {/if}
             </div>
-
-            <!-- Legend -->
             <Legend />
-
-            <!-- Force layout start/stop -->
             {#if activeLayout === "force" || activeLayout === "sfdp" || activeLayout === "metro"}
-                <button
-                    class="absolute bottom-4 left-4 z-30 px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider
-                           bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors"
-                    onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : forceViewRef?.toggleRunning()}
-                >
+                <button class="absolute bottom-4 left-4 z-30 px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors" onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : forceViewRef?.toggleRunning()}>
                     {(activeLayout === "metro" ? metroRunning : forceRunning) ? '⏸ Stop' : '▶ Start'} Layout
                 </button>
             {/if}
-
-            <!-- Graph Configuration Overlay -->
             <ViewConfigOverlay />
-
-            <!-- Overlay Dashboard -->
-            <div class="absolute inset-0 z-50 bg-background/90 backdrop-blur-lg overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab !== "Dashboard"}>
-                <DashboardView {data} />
-            </div>
+            <div class="absolute inset-0 z-50 bg-background/90 backdrop-blur-lg overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab !== "Dashboard"}><DashboardView {data} /></div>
     </section>
-
-    <!-- RIGHT SIDEBAR: Details / Editor (only when a task is selected) -->
     {#if $selection.activeNodeId}
-    <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar" class:hidden={$viewSettings.mainTab === "Threaded Tasks"} data-component="detail-sidebar">
+    <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar" data-component="detail-sidebar">
         <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
     </aside>
     {/if}
@@ -458,9 +400,5 @@
 {/if}
 
 <style>
-    :global(body) {
-        margin: 0;
-        padding: 0;
-        overflow: hidden;
-    }
+    :global(body) { margin: 0; padding: 0; overflow: hidden; }
 </style>
