@@ -33,6 +33,8 @@
 
     let forceViewRef: ForceView;
     let forceRunning = false;
+    let forceRestartNonce = 0;
+    let forceRandomizeNonce = 0;
     let metroViewRef: MetroView;
     let metroRunning = false;
     let rawGraph: any = null;
@@ -371,7 +373,7 @@
                             {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
                                 <CirclePackView {containerGroup} />
                             {:else if activeLayout === "force" || activeLayout === "sfdp"}
-                                <ForceView {containerGroup} bind:this={forceViewRef} bind:running={forceRunning} />
+                                <ForceView {containerGroup} bind:this={forceViewRef} bind:running={forceRunning} restartNonce={forceRestartNonce} randomizeNonce={forceRandomizeNonce} />
                             {:else if activeLayout === "arc"}
                                 <ArcView {containerGroup} />
                             {/if}
@@ -382,11 +384,11 @@
             <Legend />
             {#if activeLayout === "force" || activeLayout === "sfdp" || activeLayout === "metro"}
                 <div class="absolute bottom-4 left-4 z-30 flex items-center gap-2">
-                    <button class="px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors" onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : forceViewRef?.toggleRunning()}>
+                    <button class="px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors" onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : (forceRunning ? forceRunning = false : forceRestartNonce += 1)}>
                         {(activeLayout === "metro" ? metroRunning : forceRunning) ? '⏸ Stop' : '▶ Start'} Layout
                     </button>
                     {#if activeLayout === "force"}
-                        <button class="px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors" onclick={() => forceViewRef?.randomize()}>
+                        <button class="px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors" onclick={() => forceRandomizeNonce += 1}>
                             🎲 Randomise
                         </button>
                     {/if}

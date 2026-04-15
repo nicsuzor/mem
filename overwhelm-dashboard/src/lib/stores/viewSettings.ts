@@ -8,7 +8,7 @@ export const viewSettings = writable({
     viewMode: 'Treemap',  // "Treemap", "Circle Pack", "Force", "Arc Diagram"
     topNLeaves: 80,
     colaLinkLength: 600,   // ideal link length (general, used by Metro)
-    
+
     // Link-specific forces
     colaLinkDistIntraParent: 60,
     colaLinkWeightIntraParent: 1.0,
@@ -19,14 +19,14 @@ export const viewSettings = writable({
     colaLinkDistRef: 300,
     colaLinkWeightRef: 0.2,
 
-    colaConvergence: 0.005, // convergence threshold — must be < 0.1 (Cola's initial alpha)
+    colaConvergence: 0.005, // convergence threshold - must be < 0.1 (Cola's initial alpha)
     colaFlowSep: 40,       // min vertical separation between linked nodes
-    colaGroupPadding: 15,  // padding inside epic group hulls — keeps non-descendants out
-    // Cola debug toggles — turn on one at a time to isolate layout issues
+    colaGroupPadding: 15,  // padding inside epic group hulls - keeps non-descendants out
+    // Cola debug toggles - turn on one at a time to isolate layout issues
     colaAvoidOverlaps: true,
     colaGroups: true,
     colaLinks: true,
-    colaHandleDisconnected: false,
+    colaHandleDisconnected: true,
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',
@@ -52,5 +52,5 @@ export const getLayoutFromViewSettings = ($settings: any) => {
     }
 }
 
-/** Graph layout key — all views use one graph file since layouts are computed client-side */
+/** Graph layout key - all views use one graph file since layouts are computed client-side */
 export const getGraphLayoutKey = (_$settings: any): string => 'graph';

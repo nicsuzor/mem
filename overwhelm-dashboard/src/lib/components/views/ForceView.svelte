@@ -1,7 +1,7 @@
 <script lang="ts">
     import * as d3 from "d3";
     import * as cola from "webcola";
-    import { onDestroy } from "svelte";
+    import { getContext, onDestroy } from "svelte";
     import { graphData, graphStructureKey } from "../../stores/graph";
     import { viewSettings } from "../../stores/viewSettings";
     import { filters } from "../../stores/filters";
@@ -36,9 +36,17 @@
      */
 
     const CANVAS_AREA = 30_000_000;
+    const DEFAULT_JIGGLE_RADIUS = 320;
+    const DRAG_REHEAT = 0.35;
+    const FULL_START_ITERATIONS: readonly [number, number, number] = [30, 30, 30];
+    const RESTART_START_ITERATIONS: readonly [number, number, number] = [5, 5, 5];
 
     export let containerGroup: SVGGElement;
     export let running = false;
+    export let restartNonce = 0;
+    export let randomizeNonce = 0;
+
+    const zoomContext = getContext<{ autoZoomToFit?: (nodesToFit?: GraphNode[], delay?: number, trimOutliers?: boolean) => void }>("zoom");
 
     let linksLayer: SVGGElement;
     let nodesLayer: SVGGElement;
@@ -46,18 +54,72 @@
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
+    let lastRestartNonce = 0;
+    let lastRandomizeNonce = 0;
+    let lastRunning = running;
 
-    export function toggleRunning() {
+    function reheatLayout(heat = 1) {
         if (!colaLayout) return;
 
+        // WebCola resume() only sets alpha to 0.1, which is often too cold to create
+        // noticeable motion once the graph has already converged.
+        colaLayout.alpha(heat);
+        running = true;
+    }
+
+    function jiggleNodes(radius = 24) {
+        if (!$graphData) return;
+
+        const halfRadius = radius / 2;
+        for (const n of $graphData.nodes as any[]) {
+            if (n.fixed) continue;
+
+            n.x = (n.x ?? 0) + (Math.random() * radius - halfRadius);
+            n.y = (n.y ?? 0) + (Math.random() * radius - halfRadius);
+            n.px = n.x;
+            n.py = n.y;
+        }
+    }
+
+    function fitGraph(delay = 150, trimOutliers = false) {
+        zoomContext?.autoZoomToFit?.($graphData?.nodes, delay, trimOutliers);
+    }
+
+    function seedNodesAcrossCanvas(nodes: GraphNode[], width: number, height: number) {
+        if (!nodes.length) return;
+
+        const aspect = width / Math.max(height, 1);
+        const columns = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
+        const rows = Math.max(1, Math.ceil(nodes.length / columns));
+        const cellWidth = width / columns;
+        const cellHeight = height / rows;
+        const marginX = Math.max(24, cellWidth * 0.18);
+        const marginY = Math.max(24, cellHeight * 0.18);
+
+        nodes.forEach((node: any, index) => {
+            if (node.fixed) return;
+
+            const column = index % columns;
+            const row = Math.floor(index / columns);
+            const jitterX = (Math.random() - 0.5) * Math.max(12, cellWidth * 0.25);
+            const jitterY = (Math.random() - 0.5) * Math.max(12, cellHeight * 0.25);
+
+            node.x = column * cellWidth + marginX + jitterX;
+            node.y = row * cellHeight + marginY + jitterY;
+            node.px = node.x;
+            node.py = node.y;
+        });
+    }
+
+    export function toggleRunning() {
         if (running) {
-            colaLayout.stop();
+            if (colaLayout) colaLayout.stop();
             running = false;
             return;
         }
 
-        colaLayout.resume();
-        running = true;
+        jiggleNodes(DEFAULT_JIGGLE_RADIUS);
+        rebuild(RESTART_START_ITERATIONS, 1);
     }
 
     // Full physics rebuild only when structure (node/link set) or Cola params change
@@ -65,7 +127,22 @@
     let lastColaParams = '';
     $: {
         const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaGroupPadding}`;
+        const cp = [
+            $viewSettings.colaLinkDistIntraParent,
+            $viewSettings.colaLinkWeightIntraParent,
+            $viewSettings.colaLinkDistInterParent,
+            $viewSettings.colaLinkWeightInterParent,
+            $viewSettings.colaLinkDistDependsOn,
+            $viewSettings.colaLinkWeightDependsOn,
+            $viewSettings.colaLinkDistRef,
+            $viewSettings.colaLinkWeightRef,
+            $viewSettings.colaConvergence,
+            $viewSettings.colaGroupPadding,
+            $viewSettings.colaAvoidOverlaps,
+            $viewSettings.colaGroups,
+            $viewSettings.colaLinks,
+            $viewSettings.colaHandleDisconnected,
+        ].join('|');
         if (
             containerGroup &&
             $graphData &&
@@ -75,7 +152,7 @@
         ) {
             lastStructureKey = sk;
             lastColaParams = cp;
-            rebuild();
+            rebuild(FULL_START_ITERATIONS, 0.1, true);
         }
     }
 
@@ -158,9 +235,7 @@
                         d.y = e.y;
 
                         // Resume layout on drag so bounding boxes follow the node
-                        if (colaLayout) {
-                            colaLayout.resume();
-                        }
+                        reheatLayout(DRAG_REHEAT);
                         tickVisuals();
                     })
                     .on("end", (_e, d: any) => {
@@ -173,6 +248,11 @@
 
     function renderGroupBoxes() {
         if (!hullLayer) return;
+
+        if (!$viewSettings.colaGroups) {
+            d3.select(hullLayer).selectAll<SVGRectElement, unknown>("rect.cola-group").remove();
+            return;
+        }
 
         type GB = { x: number; y: number; w: number; h: number; containerId: string };
         const data: GB[] = [];
@@ -211,10 +291,12 @@
         renderGroupBoxes();
     }
 
-    function rebuild() {
+    function rebuild(startIterations: readonly [number, number, number] = FULL_START_ITERATIONS, restartHeat = 0.1, resetPositions = false) {
         if (!$graphData) return;
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
         running = false;
+
+        const [initialUnconstrainedIterations, initialUserConstraintIterations, initialAllConstraintsIterations] = startIterations;
 
         const nodes: GraphNode[] = $graphData.nodes;
         const links: GraphEdge[] = $graphData.links;
@@ -230,7 +312,7 @@
         nodes.forEach((n: any) => { n.width = n.w + 12; n.height = n.h + 24; });
 
         // Build flat groups
-        colaGroups = buildColaGroups(nodes, links);
+        colaGroups = $viewSettings.colaGroups ? buildColaGroups(nodes, links) : [];
 
         // Canvas from CANVAS_AREA
         const svg = containerGroup?.ownerSVGElement;
@@ -240,13 +322,17 @@
         const ch = Math.round(Math.sqrt(CANVAS_AREA / aspect));
         const cw = Math.round(ch * aspect);
 
-        // Simple random distribution across the canvas area for initial unconstrained layout
-        nodes.forEach((n: any) => {
-            if (typeof n.x !== 'number' || n.x < -9000) {
-                n.x = (Math.random() * cw * 0.8) + (cw * 0.1);
-                n.y = (Math.random() * ch * 0.8) + (ch * 0.1);
-            }
-        });
+        if (resetPositions) {
+            seedNodesAcrossCanvas(nodes, cw, ch);
+        } else {
+            // Simple random distribution across the canvas area for initial unconstrained layout
+            nodes.forEach((n: any) => {
+                if (typeof n.x !== 'number' || n.x < -9000) {
+                    n.x = (Math.random() * cw * 0.8) + (cw * 0.1);
+                    n.y = (Math.random() * ch * 0.8) + (ch * 0.1);
+                }
+            });
+        }
 
         // Render nodes
         const activeId = $selection.activeNodeId;
@@ -263,8 +349,10 @@
         bindDragAndClick(nEls);
 
         // Physics links: apply visibility filters and physics settings per link type
-        const colaLinks = links.filter((l: any) => {
+        const includeParentLinks = !$viewSettings.colaGroups;
+        const colaLinks = ($viewSettings.colaLinks ? links : []).filter((l: any) => {
             if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
+            if (l.type === 'parent' && !includeParentLinks) return false;
 
             return true;
         }).map((l: any) => {
@@ -280,7 +368,7 @@
                     weight = $viewSettings.colaLinkWeightInterParent;
                 } else {
                     length = $viewSettings.colaLinkDistIntraParent;
-                    weight = $viewSettings.colaLinkWeightInterParent;
+                    weight = $viewSettings.colaLinkWeightIntraParent;
                 }
             } else if (l.type === 'depends_on') {
                 length = $viewSettings.colaLinkDistDependsOn;
@@ -309,36 +397,53 @@
             .groups(colaGroups)
             .linkDistance((l: any) => l.length)
             .convergenceThreshold($viewSettings.colaConvergence)
-            .avoidOverlaps(true)
-            .handleDisconnected(true)
+            .avoidOverlaps($viewSettings.colaAvoidOverlaps)
+            .handleDisconnected($viewSettings.colaHandleDisconnected)
             .on("tick", tickVisuals)
             .on("end", () => {
                 running = false;
+                fitGraph(0, false);
             })
-            .start(30, 30, 30);
+            .start(initialUnconstrainedIterations, initialUserConstraintIterations, initialAllConstraintsIterations);
+
+        colaLayout.alpha(restartHeat);
 
         running = true;
 
         // Force initial render
         tickVisuals();
+        fitGraph();
     }
 
     export function randomize() {
-        if (!$graphData || !colaLayout) return;
+        if (!$graphData) return;
 
-        $graphData.nodes.forEach((n: any) => {
-            if (!n.fixed) {
-                // Strong jitter rather than complete random repositioning
-                n.x = (n.x || 0) + (Math.random() * 200 - 100);
-                n.y = (n.y || 0) + (Math.random() * 200 - 100);
-                n.px = n.x;
-                n.py = n.y;
-            }
-        });
-        tickVisuals();
+        jiggleNodes(DEFAULT_JIGGLE_RADIUS);
+        rebuild(RESTART_START_ITERATIONS, 1);
+    }
 
-        colaLayout.alpha(1); // Inject high heat instead of the standard 0.1 from resume()
-        running = true;
+    $: if (restartNonce !== lastRestartNonce) {
+        lastRestartNonce = restartNonce;
+        if (restartNonce > 0 && $graphData) {
+            jiggleNodes(DEFAULT_JIGGLE_RADIUS);
+            rebuild(RESTART_START_ITERATIONS, 1);
+        }
+    }
+
+    $: if (randomizeNonce !== lastRandomizeNonce) {
+        lastRandomizeNonce = randomizeNonce;
+        if (randomizeNonce > 0 && $graphData) {
+            randomize();
+        }
+    }
+
+    $: if (running !== lastRunning) {
+        const nextRunning = running;
+        lastRunning = running;
+
+        if (!nextRunning && colaLayout) {
+            colaLayout.stop();
+        }
     }
 
     onDestroy(() => {
