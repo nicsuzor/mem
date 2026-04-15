@@ -107,7 +107,7 @@
             const isActive = ["active", "inbox", "todo", "in_progress", "review", "waiting", "decomposing", "dormant"].includes(n.status);
             const isBlocked = n.status === "blocked";
             const isCompleted = ["done", "completed", "cancelled", "historical", "deferred", "paused", "seed", "early-scaffold"].includes(n.status);
-            
+
             if (isActive) statusVis = $filters.statusActive;
             else if (isBlocked) statusVis = $filters.statusBlocked;
             else if (isCompleted) statusVis = $filters.statusCompleted;
@@ -123,7 +123,7 @@
 
             if (statusVis === 'hidden' || priVis === 'hidden') return false;
             if (statusVis === 'half' || priVis === 'half') visState = 'half';
-            
+
             (n as any).filter_dimmed = (visState === 'half');
             return true;
         });
@@ -239,7 +239,7 @@
                         target: newTid
                     };
                 }).filter(l => l.source !== l.target);
-                
+
                 const uniqueEdges = new Map<string, any>();
                 fLinks.forEach(e => {
                     const key = `${e.source}-${e.target}-${e.type || ''}`;
@@ -250,9 +250,6 @@
         }
 
         const survivingNodeIds = new Set(fNodes.map((n) => n.id));
-
-        // Save safe parent reference before physics engines destroy n.parent strings
-        fNodes.forEach(n => { n._safe_parent = n.parent; });
 
         // Sanitize parent references
         fNodes.forEach(n => {
@@ -269,6 +266,9 @@
                 cur = parentMap.get(cur) || null;
             }
         }
+
+        // Save safe parent reference only after invalid and cyclic parents are removed.
+        fNodes.forEach(n => { n._safe_parent = n.parent; });
 
         fLinks = fLinks.filter((l) => {
             const sid = typeof l.source === "object" ? l.source.id : l.source;

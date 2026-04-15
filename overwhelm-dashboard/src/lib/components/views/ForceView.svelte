@@ -14,23 +14,23 @@
     /**
      * COLA PHYSICS ENGINE: ARCHITECTURAL OVERVIEW
      * The physical position of every node is determined by the balance of these constraints and forces:
-     * 
+     *
      * 1. GROUP CONTAINMENT (Hard Constraint):
      *    Every node assigned to a group's `leaves` MUST be contained within that group's
      *    bounding box. The box expands/stretches to wrap its nodes.
-     * 
+     *
      * 2. NON-OVERLAP (Hard Constraint):
      *    Nodes are treated as solid blocks based on their width/height. They can NEVER overlap.
      *    Note: Because nodes (task cards) are wider than they are tall, resolving initial overlaps
      *    typically results in vertical stacking (the shortest path to clear the overlap). Unlike d3-force,
      *    WebCola does NOT have a continuous global repulsive "magnetic" force pushing nodes apart.
-     * 
+     *
      * 3. DEPENDENCY LINKS (Spring Force):
      *    Tries to maintain nodes at exactly the `dist` distance with `weight` strength.
-     * 
+     *
      * 4. 300-TICK FRICTION (Killswitch):
      *    Simulation automatically stops after 300 iterations to save CPU.
-     * 
+     *
      * 5. USER ANCHOR (Manual Constraint):
      *    Dragging a node sets `fixed = 1`, overriding all physics for that node.
      */
@@ -38,6 +38,7 @@
     const CANVAS_AREA = 30_000_000;
 
     export let containerGroup: SVGGElement;
+    export let running = false;
 
     let linksLayer: SVGGElement;
     let nodesLayer: SVGGElement;
@@ -45,6 +46,19 @@
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
+
+    export function toggleRunning() {
+        if (!colaLayout) return;
+
+        if (running) {
+            colaLayout.stop();
+            running = false;
+            return;
+        }
+
+        colaLayout.resume();
+        running = true;
+    }
 
     // Full physics rebuild only when structure (node/link set) or Cola params change
     let lastStructureKey = '';
@@ -69,15 +83,15 @@
 
     /**
      * Builds WebCola flat groups (no nesting).
-     * 
+     *
      * ARCHITECTURE NOTES:
-     * 1. Source of Truth: We MUST use `_safe_parent` from the node objects. The 
-     *    `n.parent` string is mutated by WebCola into a circular Group object reference 
+     * 1. Source of Truth: We MUST use `_safe_parent` from the node objects. The
+     *    `n.parent` string is mutated by WebCola into a circular Group object reference
      *    during the first physics tick, which destroys Svelte's ability to rebuild the hierarchy.
-     * 
-     * 2. Integer Array Indices: WebCola strictly requires `leaves` to be integer 
+     *
+     * 2. Integer Array Indices: WebCola strictly requires `leaves` to be integer
      *    indices into the `activeNodes` array, NOT object references.
-     * 
+     *
      * 3. Single Group Membership: A leaf node can only be a member of AT MOST one group.
      *    To simplify and prevent impossible constraints, we assign every node to exactly one group:
      *    - If a node is a parent -> it is a leaf in its OWN group.
@@ -200,6 +214,7 @@
     function rebuild() {
         if (!$graphData) return;
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
+        running = false;
 
         const nodes: GraphNode[] = $graphData.nodes;
         const links: GraphEdge[] = $graphData.links;
@@ -254,25 +269,25 @@
             return true;
         }).map((l: any) => {
             // Apply physics settings
-            let length = 1000;
-            let weight = 1.0;
+            let length = 1;
+            let weight = 0.05;
             if (l.type === 'parent') {
                 // If the target (child) is a parent itself, it's in its own group (inter-group link).
                 // If it's not a parent, it's inside the source's group (intra-group link).
                 const isChildParent = nodes.some(n => n._safe_parent === l.target.id);
                 if (isChildParent) {
-                    length = 500;
-                    weight = 0.8;
+                    length = $viewSettings.colaLinkDistInterParent;
+                    weight = $viewSettings.colaLinkWeightInterParent;
                 } else {
-                    length = 300;
-                    weight = 1.0;
+                    length = $viewSettings.colaLinkDistIntraParent;
+                    weight = $viewSettings.colaLinkWeightInterParent;
                 }
             } else if (l.type === 'depends_on') {
-                length = 400;
-                weight = 1.0;
+                length = $viewSettings.colaLinkDistDependsOn;
+                weight = $viewSettings.colaLinkWeightDependsOn;
             } else if (l.type === 'ref') {
-                length = 600;
-                weight = 0.6;
+                length = $viewSettings.colaLinkDistRef;
+                weight = $viewSettings.colaLinkWeightRef;
             }
             return { ...l, length, weight };
         });
@@ -293,11 +308,16 @@
             .links(colaLinks as any)
             .groups(colaGroups)
             .linkDistance((l: any) => l.length)
-            .convergenceThreshold(0.5)
+            .convergenceThreshold($viewSettings.colaConvergence)
             .avoidOverlaps(true)
             .handleDisconnected(true)
             .on("tick", tickVisuals)
+            .on("end", () => {
+                running = false;
+            })
             .start(30, 30, 30);
+
+        running = true;
 
         // Force initial render
         tickVisuals();
@@ -318,10 +338,12 @@
         tickVisuals();
 
         colaLayout.alpha(1); // Inject high heat instead of the standard 0.1 from resume()
+        running = true;
     }
 
     onDestroy(() => {
         if (colaLayout) colaLayout.stop();
+        running = false;
     });
 </script>
 
