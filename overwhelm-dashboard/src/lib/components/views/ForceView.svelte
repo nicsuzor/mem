@@ -183,7 +183,6 @@
             .style("cursor", "crosshair")
             .on("click", (e: any, d) => { e.stopPropagation(); toggleSelection(d.containerId); });
     }
-    }
 
     // ─── Tick + rebuild ──────────────────────────────────────────────────────
 
@@ -260,7 +259,7 @@
             if (l.type === 'parent') {
                 // If the target (child) is a parent itself, it's in its own group (inter-group link).
                 // If it's not a parent, it's inside the source's group (intra-group link).
-                const isChildParent = nodes.some((n: any) => n._safe_parent === l.target.id);
+                const isChildParent = nodes.some(n => n._safe_parent === l.target.id);
                 if (isChildParent) {
                     length = 500;
                     weight = 0.8;
@@ -302,7 +301,6 @@
 
         // Force initial render
         tickVisuals();
-    }
     }
 
     export function randomize() {

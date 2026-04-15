@@ -36,6 +36,7 @@ export interface GraphNode {
     modified: number | null;
     badge: string;
     parent: string | null;
+    _safe_parent?: string | null;
     project: string | null;
     assignee: string | null;
     path: string | null;

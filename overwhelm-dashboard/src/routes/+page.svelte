@@ -185,29 +185,26 @@
         // Collapse single-child structural containers
         {
             const collapseMap = new Map<string, string>();
+            const childrenMap = new Map<string, string[]>();
+            for (const n of fNodes) {
+                if (n.parent) {
+                    const kids = childrenMap.get(n.parent) || [];
+                    kids.push(n.id);
+                    childrenMap.set(n.parent, kids);
+                }
+            }
+            for (const n of fNodes) {
+                if (STRUCTURAL_TYPES.has(n.type)) {
+                    const kids = childrenMap.get(n.id) || [];
+                    if (kids.length === 1) {
+                        collapseMap.set(n.id, kids[0]);
+                    }
+                }
+            }
+
             let changed = true;
             while (changed) {
                 changed = false;
-                const childrenMap = new Map<string, string[]>();
-                for (const n of fNodes) {
-                    if (n.parent) {
-                        const kids = childrenMap.get(n.parent) || [];
-                        kids.push(n.id);
-                        childrenMap.set(n.parent, kids);
-                    }
-                }
-                for (const n of fNodes) {
-                    if (STRUCTURAL_TYPES.has(n.type)) {
-                        const kids = childrenMap.get(n.id) || [];
-                        if (kids.length === 1) {
-                            const childId = kids[0];
-                            if (!collapseMap.has(n.id)) {
-                                collapseMap.set(n.id, childId);
-                                changed = true;
-                            }
-                        }
-                    }
-                }
                 for (const [k, v] of collapseMap.entries()) {
                     if (collapseMap.has(v)) {
                         collapseMap.set(k, collapseMap.get(v)!);
