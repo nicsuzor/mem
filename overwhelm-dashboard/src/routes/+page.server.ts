@@ -47,9 +47,15 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
         return results;
     }
 
-    // Only consider today's files (YYYYMMDD prefix)
-    const todayPrefix = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const candidates = files.filter(f => f.endsWith('.json') && f.startsWith(todayPrefix));
+    // Generate prefixes for today, yesterday, and the day before to handle 48h cutoff and local timezones
+    const prefixes = [0, 1, 2, 3].map(days => {
+        const d = new Date(Date.now() - days * 86400000);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}${m}${day}`;
+    });
+    const candidates = files.filter(f => f.endsWith('.json') && prefixes.some(p => f.startsWith(p)));
 
     for (const filename of candidates) {
         const filePath = join(summariesDir, filename);
@@ -287,7 +293,7 @@ export const load = async () => {
 
     // Pipeline health — fail fast and loud when data sources are missing
     const synthesisPipelineOk = synthesis !== null;
-    const dailyStoryOk = synthesis?.daily_story != null;
+    const dailyStoryOk = synthesis?.narrative != null;
     const summariesDirOk = AOPS_SESSIONS !== '';
 
     return {
@@ -295,7 +301,7 @@ export const load = async () => {
             pipeline_errors: [
                 ...(!summariesDirOk ? ['$AOPS_SESSIONS not set — session discovery disabled'] : []),
                 ...(!synthesisPipelineOk ? ['synthesis.json not found or unreadable — is /daily running?'] : []),
-                ...(synthesisPipelineOk && !dailyStoryOk ? ['synthesis.json has no daily_story — run /daily to generate'] : []),
+                ...(synthesisPipelineOk && !dailyStoryOk ? ['synthesis.json has no narrative — run /daily to generate'] : []),
             ],
             // Bucketed sessions for triage display
             active_agents: activeSessions,
@@ -306,7 +312,7 @@ export const load = async () => {
                 _age_minutes: synthesis._age_minutes,
                 sessions: synthesis.sessions,
             } : null,
-            daily_story: synthesis?.daily_story ? { story: synthesis.daily_story } : null,
+            daily_story: synthesis?.narrative ? { story: synthesis.narrative } : null,
             
             project_projects: projectProjects,
             project_data: projectData,

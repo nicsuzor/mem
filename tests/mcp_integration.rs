@@ -168,12 +168,18 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
 // ── HTTP/SSE helpers ─────────────────────────────────────────────────────
 
 struct HttpServer {
-    child: Child,
+    child: Option<Child>,
     port: u16,
 }
 
 impl HttpServer {
     fn start() -> Self {
+        if let Ok(url) = std::env::var("PKB_MCP_URL") {
+            let port_str = url.split(':').last().unwrap_or("8026");
+            let port = port_str.split('/').next().unwrap_or("8026").parse().unwrap_or(8026);
+            return HttpServer { child: None, port };
+        }
+
         let aca = skip_if_no_aca_data();
         let port = free_port();
 
@@ -186,12 +192,15 @@ impl HttpServer {
             .spawn()
             .expect("failed to spawn pkb mcp --http");
 
-        let server = HttpServer { child, port };
+        let server = HttpServer { child: Some(child), port };
         server.wait_ready();
         server
     }
 
     fn wait_ready(&self) {
+        if self.child.is_none() {
+            return;
+        }
         let start = Instant::now();
         let timeout = Duration::from_secs(30);
         while start.elapsed() < timeout {
@@ -215,14 +224,20 @@ impl HttpServer {
     }
 
     fn is_alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        if let Some(child) = &mut self.child {
+            matches!(child.try_wait(), Ok(None))
+        } else {
+            true
+        }
     }
 }
 
 impl Drop for HttpServer {
     fn drop(&mut self) {
-        self.child.kill().ok();
-        self.child.wait().ok();
+        if let Some(child) = &mut self.child {
+            child.kill().ok();
+            child.wait().ok();
+        }
     }
 }
 
@@ -232,7 +247,18 @@ fn http_post(
     body: &str,
     session_id: Option<&str>,
 ) -> (u16, HashMap<String, String>, String) {
-    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+    let (host, actual_port) = if let Ok(url) = std::env::var("PKB_MCP_URL") {
+        let url = url.trim_start_matches("http://");
+        let mut parts = url.split(':');
+        let h = parts.next().unwrap().to_string();
+        let p_str = parts.next().unwrap_or("80");
+        let p = p_str.split('/').next().unwrap_or("80").parse().unwrap_or(80);
+        (h, p)
+    } else {
+        ("127.0.0.1".to_string(), port)
+    };
+
+    let mut stream = std::net::TcpStream::connect(format!("{host}:{actual_port}"))
         .expect("failed to connect to HTTP server");
     stream
         .set_read_timeout(Some(Duration::from_secs(15)))
@@ -240,7 +266,7 @@ fn http_post(
 
     let mut request = format!(
         "POST /mcp HTTP/1.1\r\n\
-         Host: 127.0.0.1:{port}\r\n\
+         Host: {host}:{actual_port}\r\n\
          Content-Type: application/json\r\n\
          Accept: application/json, text/event-stream\r\n\
          Content-Length: {}\r\n",

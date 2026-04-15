@@ -2,7 +2,7 @@
     import { viewSettings, getLayoutFromViewSettings } from "../../stores/viewSettings";
 
     $: layout = getLayoutFromViewSettings($viewSettings);
-    $: isForce = layout === "force";
+    $: isForce = layout === "force" || layout === "sfdp" || layout === "metro";
     $: isCircle = layout === "circle_pack";
     $: isArc = layout === "arc";
     $: isTreemap = layout === "treemap";
@@ -37,17 +37,70 @@
                     <div class="space-y-3 pt-1 border-t border-primary/5">
                         <div class="space-y-1">
                             <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                                <span>Link_Length</span>
-                                <span>{$viewSettings.colaLinkLength}</span>
+                                <span>Dist_Intra_Parent</span>
+                                <span>{$viewSettings.colaLinkDistIntraParent}</span>
                             </div>
-                            <input type="range" min="30" max="400" step="10" bind:value={$viewSettings.colaLinkLength} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                            <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistIntraParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
                         </div>
                         <div class="space-y-1">
                             <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                                <span>Flow_Separation</span>
-                                <span>{$viewSettings.colaFlowSep}</span>
+                                <span>Weight_Intra_Parent</span>
+                                <span>{$viewSettings.colaLinkWeightIntraParent.toFixed(1)}</span>
                             </div>
-                            <input type="range" min="10" max="200" step="5" bind:value={$viewSettings.colaFlowSep} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                            <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightIntraParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Dist_Inter_Parent</span>
+                                <span>{$viewSettings.colaLinkDistInterParent}</span>
+                            </div>
+                            <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistInterParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Weight_Inter_Parent</span>
+                                <span>{$viewSettings.colaLinkWeightInterParent.toFixed(1)}</span>
+                            </div>
+                            <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightInterParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Dist_DependsOn</span>
+                                <span>{$viewSettings.colaLinkDistDependsOn}</span>
+                            </div>
+                            <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistDependsOn} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Weight_DependsOn</span>
+                                <span>{$viewSettings.colaLinkWeightDependsOn.toFixed(1)}</span>
+                            </div>
+                            <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightDependsOn} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Dist_Refs</span>
+                                <span>{$viewSettings.colaLinkDistRef}</span>
+                            </div>
+                            <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistRef} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Weight_Refs</span>
+                                <span>{$viewSettings.colaLinkWeightRef.toFixed(1)}</span>
+                            </div>
+                            <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightRef} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+
+                        <div class="space-y-1 pt-2 border-t border-primary/5">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Convergence</span>
+                                <span>{$viewSettings.colaConvergence}</span>
+                            </div>
+                            <input type="range" min="0.001" max="0.09" step="0.001" bind:value={$viewSettings.colaConvergence} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
                         </div>
                         <div class="space-y-1">
                             <div class="flex justify-between text-[9px] text-primary/50 uppercase">

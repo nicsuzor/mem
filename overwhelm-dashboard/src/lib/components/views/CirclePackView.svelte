@@ -148,8 +148,8 @@
         const pack = d3.pack<any>()
             .radius((d: any) => BASE_RADIUS * Math.sqrt(leafWeight(d.data)))
             .padding((d: any) => {
-                if (!d.children) return 1;
-                return d.depth <= 2 ? 14 : 6;
+                if (!d.children) return 0.5;
+                return d.depth <= 2 ? 6 : 2;
             });
 
         pack(root);

@@ -171,7 +171,7 @@
             .filter((n: any) => {
                 const l = layoutMap.get(n.id);
                 if (l) {
-                    n.x = l.x; n.y = l.y; n.w = l.w; n.h = l.h;
+                    n.x = l.x; n.y = l.y; n._lw = l.w; n._lh = l.h;
                     n.depth = l.depth;
                     n._isLeaf = l.isLeaf;
                     n._leafCount = l.leafCount;

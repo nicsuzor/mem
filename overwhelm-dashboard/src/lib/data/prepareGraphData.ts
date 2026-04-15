@@ -250,8 +250,12 @@ export function prepareGraphData(
     });
 
     const totalLeafCountCache = new Map<string, number>();
+    const countingSeen = new Set<string>();
     function countLeaves(id: string): number {
         if (totalLeafCountCache.has(id)) return totalLeafCountCache.get(id)!;
+        if (countingSeen.has(id)) return 0; // cycle detection
+        countingSeen.add(id);
+
         const kids = childrenMap.get(id);
         if (!kids || kids.length === 0) {
             totalLeafCountCache.set(id, 1); // leaf counts as 1
