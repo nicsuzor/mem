@@ -130,6 +130,25 @@
             return true;
         });
 
+        const edgeVisibilityFor = (edge: GraphEdge) => {
+            if (edge.type === 'parent') return $filters.edgeParent;
+            if (edge.type === 'depends_on' || edge.type === 'soft_depends_on') return $filters.edgeDependencies;
+            if (edge.type === 'ref') return $filters.edgeReferences;
+            return 'bright';
+        };
+
+        const edgeOpacityFor = (visibility: string) => {
+            if (visibility === 'half') return 0.2;
+            return 0.6;
+        };
+
+        fLinks = fLinks
+            .filter((edge) => edgeVisibilityFor(edge) !== 'hidden')
+            .map((edge) => ({
+                ...edge,
+                opacity: edgeOpacityFor(edgeVisibilityFor(edge)),
+            }));
+
         if ($viewSettings.viewMode === "Force" && $filters.statusOrphans === 'hidden') {
             const nodesWithEdges = new Set<string>();
             fLinks.forEach((l) => {

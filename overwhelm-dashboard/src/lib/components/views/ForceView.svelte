@@ -54,6 +54,7 @@
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
+    let groupMembers = new Map<string, string[]>();
     let lastRestartNonce = 0;
     let lastRandomizeNonce = 0;
     let lastRunning = running;
@@ -88,6 +89,74 @@
     function seedNodesAcrossCanvas(nodes: GraphNode[], width: number, height: number) {
         if (!nodes.length) return;
 
+        const childrenByParent = new Map<string, GraphNode[]>();
+        for (const node of nodes) {
+            const parentId = (node as any)._safe_parent;
+            if (!parentId) continue;
+            if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+            childrenByParent.get(parentId)!.push(node);
+        }
+
+        const parentIds = new Set(childrenByParent.keys());
+        const roots = nodes.filter((node) => !(node as any)._safe_parent).sort((left, right) => left.id.localeCompare(right.id));
+        const placedNodeIds = new Set<string>();
+        const horizontalGap = Math.max($viewSettings.colaLinkDistInterParent * 1.15, 220);
+        const verticalGap = Math.max(height / Math.max(roots.length + 1, 2), 140);
+        const localLeafXGap = Math.max($viewSettings.colaLinkDistIntraParent * 0.7, 80);
+        const localLeafYGap = 78;
+        const rootStartX = Math.max(120, horizontalGap * 0.7);
+        const rootStartY = Math.max(140, verticalGap * 0.7);
+
+        const setNodePosition = (node: GraphNode, x: number, y: number, jitterScale = 1) => {
+            const mutableNode = node as GraphNode & { fixed?: number; px?: number; py?: number };
+            if (mutableNode.fixed) return;
+
+            const jitterX = (Math.random() - 0.5) * 36 * jitterScale;
+            const jitterY = (Math.random() - 0.5) * 36 * jitterScale;
+            mutableNode.x = x + jitterX;
+            mutableNode.y = y + jitterY;
+            mutableNode.px = mutableNode.x;
+            mutableNode.py = mutableNode.y;
+            placedNodeIds.add(node.id);
+        };
+
+        const placeSubtree = (node: GraphNode, depth: number, centerY: number) => {
+            const nodeX = Math.min(width - 140, rootStartX + depth * horizontalGap);
+            const nodeY = Math.max(80, Math.min(height - 80, centerY));
+            setNodePosition(node, nodeX, nodeY, 1);
+
+            const children = (childrenByParent.get(node.id) || []).slice().sort((left, right) => left.id.localeCompare(right.id));
+            const childParents = children.filter((child) => parentIds.has(child.id));
+            const leafChildren = children.filter((child) => !parentIds.has(child.id));
+
+            if (leafChildren.length > 0) {
+                const columns = Math.max(1, Math.ceil(Math.sqrt(leafChildren.length)));
+                leafChildren.forEach((leafChild, index) => {
+                    const column = index % columns;
+                    const row = Math.floor(index / columns);
+                    const offsetX = ((column - (columns - 1) / 2) * localLeafXGap) + localLeafXGap;
+                    const offsetY = (row - (Math.ceil(leafChildren.length / columns) - 1) / 2) * localLeafYGap;
+                    setNodePosition(leafChild, nodeX + offsetX, nodeY + offsetY, 0.6);
+                });
+            }
+
+            if (childParents.length > 0) {
+                const subtreeHeight = Math.max(verticalGap, childParents.length * 120);
+                const startY = nodeY - subtreeHeight / 2;
+                const stepY = childParents.length === 1 ? 0 : subtreeHeight / (childParents.length - 1);
+
+                childParents.forEach((childParent, index) => {
+                    placeSubtree(childParent, depth + 1, startY + stepY * index);
+                });
+            }
+        };
+
+        if (roots.length > 0) {
+            roots.forEach((root, index) => {
+                placeSubtree(root, 0, rootStartY + index * verticalGap);
+            });
+        }
+
         const aspect = width / Math.max(height, 1);
         const columns = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
         const rows = Math.max(1, Math.ceil(nodes.length / columns));
@@ -97,7 +166,7 @@
         const marginY = Math.max(24, cellHeight * 0.18);
 
         nodes.forEach((node: any, index) => {
-            if (node.fixed) return;
+            if (placedNodeIds.has(node.id) || node.fixed) return;
 
             const column = index % columns;
             const row = Math.floor(index / columns);
@@ -142,6 +211,9 @@
             $viewSettings.colaGroups,
             $viewSettings.colaLinks,
             $viewSettings.colaHandleDisconnected,
+            $filters.edgeParent,
+            $filters.edgeDependencies,
+            $filters.edgeReferences,
         ].join('|');
         if (
             containerGroup &&
@@ -158,25 +230,10 @@
 
     // ─── Group building ────────────────────────────────────────────────────────
 
-    /**
-     * Builds WebCola flat groups (no nesting).
-     *
-     * ARCHITECTURE NOTES:
-     * 1. Source of Truth: We MUST use `_safe_parent` from the node objects. The
-     *    `n.parent` string is mutated by WebCola into a circular Group object reference
-     *    during the first physics tick, which destroys Svelte's ability to rebuild the hierarchy.
-     *
-     * 2. Integer Array Indices: WebCola strictly requires `leaves` to be integer
-     *    indices into the `activeNodes` array, NOT object references.
-     *
-     * 3. Single Group Membership: A leaf node can only be a member of AT MOST one group.
-     *    To simplify and prevent impossible constraints, we assign every node to exactly one group:
-     *    - If a node is a parent -> it is a leaf in its OWN group.
-     *    - If a node is NOT a parent -> it is a leaf in its DIRECT parent's group.
-     */
     function buildColaGroups(activeNodes: GraphNode[], _activeLinks: GraphEdge[]): any[] {
         const nodeIndex = new Map(activeNodes.map((n, i) => [n.id, i]));
         const childrenOf = new Map<string, Set<number>>();
+        const childIdsOf = new Map<string, string[]>();
 
         for (const n of activeNodes) {
             const pid = (n as any)._safe_parent;
@@ -187,18 +244,40 @@
 
             if (!childrenOf.has(pid)) childrenOf.set(pid, new Set());
             childrenOf.get(pid)!.add(cidx);
+
+            if (!childIdsOf.has(pid)) childIdsOf.set(pid, []);
+            childIdsOf.get(pid)!.push(n.id);
         }
 
         const groups: any[] = [];
         const parentIds = new Set(childrenOf.keys());
+        const descendantCache = new Map<string, string[]>();
+
+        const collectDescendants = (parentId: string): string[] => {
+            const cached = descendantCache.get(parentId);
+            if (cached) return cached;
+
+            const descendants = new Set<string>([parentId]);
+            for (const childId of childIdsOf.get(parentId) || []) {
+                descendants.add(childId);
+                for (const nestedId of collectDescendants(childId)) {
+                    descendants.add(nestedId);
+                }
+            }
+
+            const result = Array.from(descendants);
+            descendantCache.set(parentId, result);
+            return result;
+        };
+
+        groupMembers = new Map();
 
         for (const pid of parentIds) {
             const pidx = nodeIndex.get(pid);
             if (pidx === undefined) continue;
 
-            // Collect leaves for this group:
-            // 1. The parent node itself
-            // 2. Direct children that are NOT parents themselves (to satisfy Single Group Membership)
+            groupMembers.set(pid, collectDescendants(pid));
+
             const leafIndices = [pidx];
             for (const cidx of childrenOf.get(pid)!) {
                 if (!parentIds.has(activeNodes[cidx].id)) {
@@ -256,13 +335,47 @@
 
         type GB = { x: number; y: number; w: number; h: number; containerId: string };
         const data: GB[] = [];
+        const nodeBounds = new Map<string, { left: number; right: number; top: number; bottom: number }>();
 
-        for (const cg of colaGroups) {
-            // WebCola's bounds are calculated asynchronously during the simulation.
-            // If they are missing, we skip drawing until the next tick.
-            if (!cg.bounds) continue;
-            const b = cg.bounds;
-            data.push({ x: b.x, y: b.y, w: b.X - b.x, h: b.Y - b.y, containerId: cg.containerId });
+        for (const node of $graphData?.nodes || []) {
+            const width = (node as any).width ?? (node.w + 12);
+            const height = (node as any).height ?? (node.h + 24);
+            const x = node.x ?? 0;
+            const y = node.y ?? 0;
+
+            nodeBounds.set(node.id, {
+                left: x - width / 2,
+                right: x + width / 2,
+                top: y - height / 2,
+                bottom: y + height / 2,
+            });
+        }
+
+        const padding = $viewSettings.colaGroupPadding + 10;
+
+        for (const [containerId, memberIds] of groupMembers) {
+            const bounds = memberIds.map((memberId) => nodeBounds.get(memberId)).filter(Boolean) as Array<{ left: number; right: number; top: number; bottom: number }>;
+            if (bounds.length <= 1) continue;
+
+            let left = Infinity;
+            let right = -Infinity;
+            let top = Infinity;
+            let bottom = -Infinity;
+
+            for (const bound of bounds) {
+                left = Math.min(left, bound.left);
+                right = Math.max(right, bound.right);
+                top = Math.min(top, bound.top);
+                bottom = Math.max(bottom, bound.bottom);
+            }
+
+            data.push({
+                x: left - padding,
+                y: top - padding,
+                w: (right - left) + padding * 2,
+                h: (bottom - top) + padding * 2,
+                containerId,
+            });
         }
 
         d3.select(hullLayer).selectAll<SVGRectElement, GB>("rect.cola-group")
@@ -349,20 +462,24 @@
         bindDragAndClick(nEls);
 
         // Physics links: apply visibility filters and physics settings per link type
-        const includeParentLinks = !$viewSettings.colaGroups;
+        const parentNodeIds = new Set(nodes.filter((candidate) => nodes.some((node) => (node as any)._safe_parent === candidate.id)).map((node) => node.id));
         const colaLinks = ($viewSettings.colaLinks ? links : []).filter((l: any) => {
             if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
-            if (l.type === 'parent' && !includeParentLinks) return false;
+
+            if (l.type === 'parent' && $viewSettings.colaGroups) {
+                return parentNodeIds.has(l.target.id);
+            }
 
             return true;
         }).map((l: any) => {
             // Apply physics settings
             let length = 1;
             let weight = 0.05;
+            let opacity = l.opacity ?? 0.6;
             if (l.type === 'parent') {
                 // If the target (child) is a parent itself, it's in its own group (inter-group link).
                 // If it's not a parent, it's inside the source's group (intra-group link).
-                const isChildParent = nodes.some(n => n._safe_parent === l.target.id);
+                const isChildParent = parentNodeIds.has(l.target.id);
                 if (isChildParent) {
                     length = $viewSettings.colaLinkDistInterParent;
                     weight = $viewSettings.colaLinkWeightInterParent;
@@ -370,14 +487,14 @@
                     length = $viewSettings.colaLinkDistIntraParent;
                     weight = $viewSettings.colaLinkWeightIntraParent;
                 }
-            } else if (l.type === 'depends_on') {
+            } else if (l.type === 'depends_on' || l.type === 'soft_depends_on') {
                 length = $viewSettings.colaLinkDistDependsOn;
                 weight = $viewSettings.colaLinkWeightDependsOn;
             } else if (l.type === 'ref') {
                 length = $viewSettings.colaLinkDistRef;
                 weight = $viewSettings.colaLinkWeightRef;
             }
-            return { ...l, length, weight };
+            return { ...l, length, weight, opacity };
         });
 
         if (linksLayer) {
@@ -387,7 +504,7 @@
                 .attr("stroke", (d: any) => d.color || "#cbd5e1")
                 .attr("stroke-width", (d: any) => d.width || 1.5)
                 .attr("stroke-dasharray", (d: any) => d.dash || null)
-                .attr("opacity", 0.6);
+                .attr("opacity", (d: any) => d.opacity ?? 0.6);
         }
 
         colaLayout = cola.d3adaptor(d3)
