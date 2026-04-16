@@ -205,7 +205,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     // expects d._lw and d._lh to be populated by the layout algo if using true sizes, else uses d.w/d.h
     const w = d._lw || d.w;
     const h = d._lh || d.h;
-    const isParent = !d.isLeaf;
+    const isParent = !(d._isLeaf ?? d.isLeaf);
 
 
     if (isSelected) {
@@ -323,7 +323,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             .attr("stroke", "rgba(255,255,255,0.15)").attr("stroke-width", 1)
             .attr("stroke-dasharray", "4,4")
             .style("transition", "all 0.2s ease");
-            
+
         if (w > 40 && h > 15) {
             g.append("text")
                 .attr("x", 0).attr("y", 0)

@@ -2,6 +2,7 @@
     import { onDestroy } from "svelte";
     import cytoscape from "cytoscape";
     import { graphData, graphStructureKey } from "../../stores/graph";
+    import { filters, type VisibilityState } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
     import { viewSettings } from "../../stores/viewSettings";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
@@ -63,6 +64,24 @@
         return LINE_PALETTE[Math.abs(hash) % LINE_PALETTE.length];
     }
 
+    function priorityVisibility(priority: number | undefined): VisibilityState {
+        if (priority === 0) return $filters.priority0;
+        if (priority === 1) return $filters.priority1;
+        if (priority === 2) return $filters.priority2;
+        if (priority === 3) return $filters.priority3;
+        return $filters.priority4;
+    }
+
+    function isMetroChainNode(node: GraphNode): boolean {
+        const isContainer = CONTAINER_TYPES.has(node.type.toLowerCase());
+        if (isContainer) {
+            return priorityVisibility(node.priority) !== 'hidden';
+        }
+
+        const isInterchange = node.totalLeafCount > 5 || node.dw > 10;
+        return node.priority <= 2 || isInterchange;
+    }
+
     function initCytoscape() {
         if (!containerEl || !$graphData) return;
 
@@ -70,8 +89,9 @@
 
         const cyNodes = $graphData.nodes.map((n: any) => {
             const isInterchange = CONTAINER_TYPES.has(n.type.toLowerCase()) && (n.totalLeafCount > 5 || n.dw > 10);
-            const isOnChain = n.priority <= 2 || isInterchange;
-            
+            const groupVisibility = CONTAINER_TYPES.has(n.type.toLowerCase()) ? priorityVisibility(n.priority) : 'bright';
+            const isOnChain = isMetroChainNode(n);
+
             return {
                 data: {
                     id: n.id,
@@ -82,6 +102,7 @@
                     isInterchange,
                     isOnChain,
                     isContainer: CONTAINER_TYPES.has(n.type.toLowerCase()),
+                    groupVisibility,
                     isHighPriority: n.priority <= 1 && INCOMPLETE_STATUSES.has(n.status),
                     isCompleted: !INCOMPLETE_STATUSES.has(n.status),
                     statusColor: n.fill,
@@ -96,14 +117,16 @@
             const source = typeof l.source === 'object' ? l.source.id : l.source;
             const target = typeof l.target === 'object' ? l.target.id : l.target;
             const sNode = $graphData.nodes.find(n => n.id === source);
-            
+            const tNode = $graphData.nodes.find(n => n.id === target);
+            const isChainEdge = (sNode ? isMetroChainNode(sNode) : false) || (tNode ? isMetroChainNode(tNode) : false);
+
             return {
                 data: {
                     id: `e${i}`,
                     source,
                     target,
                     type: l.type,
-                    isOnChain: (sNode?.priority || 5) <= 2,
+                    isOnChain: isChainEdge,
                     lineColor: getLineColor(sNode?.project || 'default')
                 }
             };
@@ -115,7 +138,7 @@
             style: [
                 // Interchange stations — largest, always labeled
                 {
-                    selector: 'node[?isInterchange]',
+                    selector: 'node[?isInterchange][groupVisibility = "bright"]',
                     style: {
                         'shape': 'round-rectangle',
                         'width': 20,
@@ -170,7 +193,7 @@
                 },
                 // On-chain container nodes (epics) — medium with label
                 {
-                    selector: 'node[?isContainer][?isOnChain][!isInterchange][!isHighPriority]',
+                    selector: 'node[?isContainer][groupVisibility = "bright"][!isInterchange][!isHighPriority]',
                     style: {
                         'shape': 'round-rectangle',
                         'width': 16,
@@ -191,6 +214,31 @@
                         'text-max-width': '160px',
                         'text-wrap': 'wrap',
                         'min-zoomed-font-size': 5,
+                    } as any,
+                },
+                // Half-visible groups — minor stations, no label
+                {
+                    selector: 'node[?isContainer][groupVisibility = "half"]',
+                    style: {
+                        'shape': 'ellipse',
+                        'width': 8,
+                        'height': 8,
+                        'background-color': 'data(lineColor)',
+                        'background-opacity': 0.7,
+                        'border-width': 1,
+                        'border-color': '#ccc',
+                        'label': '',
+                        'text-opacity': 0,
+                        'min-zoomed-font-size': 99,
+                        'opacity': 0.9,
+                    } as any,
+                },
+                // Hidden groups — remove station and label entirely
+                {
+                    selector: 'node[?isContainer][groupVisibility = "hidden"]',
+                    style: {
+                        'display': 'none',
+                        'label': '',
                     } as any,
                 },
                 // On-chain non-priority tasks — medium dots, labels on zoom
@@ -218,7 +266,7 @@
                 },
                 // Context stations — at or below track width
                 {
-                    selector: 'node[!isOnChain]',
+                    selector: 'node[!isOnChain][!isContainer]',
                     style: {
                         'shape': 'ellipse',
                         'width': 4,
@@ -302,12 +350,12 @@
         cy.one('layoutstop', () => { cy!.fit(undefined, 50); running = false; });
 
         cy.on('tap', 'node', (evt) => { toggleSelection(evt.target.id()); });
-        
+
         cy.on('mouseover', 'node', (evt) => {
             const node = evt.target;
             const id = node.id();
             selection.update(s => ({ ...s, hoveredNodeId: id }));
-            
+
             // Dim everything else
             cy!.elements().addClass('dimmed');
             node.removeClass('dimmed').addClass('highlighted');
@@ -339,11 +387,25 @@
         for (const n of $graphData.nodes) {
             const cyNode = cy.getElementById(n.id);
             if (!cyNode.length) continue;
+            const groupVisibility = CONTAINER_TYPES.has(n.type.toLowerCase()) ? priorityVisibility(n.priority) : 'bright';
             cyNode.data('statusColor', n.fill);
+            cyNode.data('groupVisibility', groupVisibility);
+            cyNode.data('isOnChain', isMetroChainNode(n));
             cyNode.data('isCompleted', !INCOMPLETE_STATUSES.has(n.status));
             cyNode.data('isHighPriority', n.priority <= 1 && INCOMPLETE_STATUSES.has(n.status));
             cyNode.data('status', n.status);
             cyNode.data('priority', n.priority);
+        }
+
+        for (const edge of $graphData.links) {
+            const source = typeof edge.source === 'object' ? edge.source.id : edge.source;
+            const target = typeof edge.target === 'object' ? edge.target.id : edge.target;
+            const cyEdge = cy.getElementById(`e${$graphData.links.indexOf(edge)}`);
+            if (!cyEdge.length) continue;
+
+            const sNode = $graphData.nodes.find(n => n.id === source);
+            const tNode = $graphData.nodes.find(n => n.id === target);
+            cyEdge.data('isOnChain', (sNode ? isMetroChainNode(sNode) : false) || (tNode ? isMetroChainNode(tNode) : false));
         }
     }
 
@@ -352,8 +414,8 @@
     });
 </script>
 
-<div 
-    bind:this={containerEl} 
+<div
+    bind:this={containerEl}
     class="w-full h-full bg-background/50"
 ></div>
 

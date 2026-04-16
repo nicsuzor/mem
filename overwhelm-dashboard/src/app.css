@@ -36,6 +36,30 @@
     stroke-width: 5px;
     stroke-opacity: 1;
   }
+
+  .mobile-nav-link {
+    @apply w-full border border-primary/15 bg-primary/5 px-3 py-3 text-left text-xs font-bold uppercase tracking-[0.18em] text-primary/80 transition-colors hover:bg-primary/12 hover:text-primary;
+  }
+
+  .mobile-nav-link-active {
+    @apply border-primary/50 bg-primary/14 text-primary;
+  }
+
+  .graph-control-panel {
+    @apply rounded-xl border border-primary/20 bg-black/85 text-primary shadow-xl shadow-black/50 backdrop-blur-md;
+  }
+
+  .graph-control-button {
+    @apply inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-black/70 px-3 py-2 font-mono text-[10px] font-black uppercase tracking-[0.18em] text-primary/80 transition-colors hover:bg-primary/12 hover:text-primary;
+  }
+
+  .graph-control-button-active {
+    @apply border-primary/50 bg-primary/14 text-primary;
+  }
+
+  .graph-control-icon-button {
+    @apply inline-flex items-center justify-center rounded-lg border border-transparent p-2 text-primary/70 transition-colors hover:border-primary/25 hover:bg-primary/20 hover:text-primary;
+  }
 }
 
 /* CRT Scanline Effect */

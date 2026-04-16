@@ -14,16 +14,16 @@ export const filters = writable({
     statusBlocked: 'bright' as VisibilityState,
     statusCompleted: 'hidden' as VisibilityState,
     statusOrphans: 'hidden' as VisibilityState,
-    
-    // Default all priorities to bright
+
+    // Default critical priorities to full visibility; the rest start half-visible.
     priority0: 'bright' as VisibilityState,
     priority1: 'bright' as VisibilityState,
-    priority2: 'bright' as VisibilityState,
-    priority3: 'bright' as VisibilityState,
-    priority4: 'bright' as VisibilityState,
+    priority2: 'half' as VisibilityState,
+    priority3: 'half' as VisibilityState,
+    priority4: 'half' as VisibilityState,
 
     hiddenProjects: [] as string[],
-    
+
     edgeDependencies: 'half' as VisibilityState,
     edgeReferences: 'hidden' as VisibilityState,
     edgeParent: 'bright' as VisibilityState,

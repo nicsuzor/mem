@@ -1,9 +1,21 @@
 <script lang="ts">
+    import { viewSettings } from '../../stores/viewSettings';
+
     let captureText = "";
     let isSubmitting = false;
     let lastCreatedId: string | null = null;
     let errorMsg: string | null = null;
     let isOpen = false;
+
+    $: isGraphView = $viewSettings.mainTab === 'Task Graph';
+
+    $: triggerClass = isGraphView
+        ? `fixed bottom-4 right-24 z-50 graph-control-button ${isOpen ? 'graph-control-button-active' : ''}`
+        : `fixed bottom-6 right-6 z-50 w-12 h-12 bg-primary/20 border border-primary text-primary hover:bg-primary hover:text-black transition-all font-mono text-lg flex items-center justify-center shadow-lg shadow-black/50 ${isOpen ? 'rotate-45' : ''}`;
+
+    $: panelClass = isGraphView
+        ? 'fixed bottom-20 right-24 z-50 w-[min(20rem,calc(100vw-7rem))] graph-control-panel font-mono'
+        : 'fixed bottom-20 right-6 z-50 w-80 bg-black border border-primary shadow-xl shadow-black/80 font-mono';
 
     function handleKeydown(e: KeyboardEvent) {
         if (e.altKey && e.key === 'c') {
@@ -46,20 +58,23 @@
 
 <!-- Floating trigger button -->
 <button
-    class="fixed bottom-6 right-6 z-50 w-12 h-12 bg-primary/20 border border-primary text-primary hover:bg-primary hover:text-black transition-all font-mono text-lg flex items-center justify-center shadow-lg shadow-black/50 {isOpen ? 'rotate-45' : ''}"
+    class={triggerClass}
     on:click={() => isOpen = !isOpen}
-    title="Quick Capture (Alt+C)"
+    title="Quick Add (Alt+C)"
 >
     <span class="material-symbols-outlined text-[20px]">{isOpen ? 'close' : 'edit_note'}</span>
+    {#if isGraphView}
+        <span>Quick Add</span>
+    {/if}
 </button>
 
 <!-- Floating capture panel -->
 {#if isOpen}
-    <div class="fixed bottom-20 right-6 z-50 w-80 bg-black border border-primary shadow-xl shadow-black/80 font-mono">
+    <div class={panelClass}>
         <div class="p-4 flex flex-col gap-3">
             <h3 class="text-xs font-bold tracking-[0.2em] text-primary/80 flex items-center gap-2">
                 <span class="material-symbols-outlined text-[16px]">edit_note</span>
-                QUICK CAPTURE
+                QUICK ADD
                 <span class="text-[10px] text-primary/30 ml-auto">Alt+C</span>
             </h3>
 

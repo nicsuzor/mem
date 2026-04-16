@@ -16,19 +16,17 @@
         { value: 'dw-bucket', label: 'DW BUCKET' },
         { value: 'equal', label: 'EQUAL' },
     ] as const;
-
-    let expanded = false;
 </script>
 
 {#if hasLiveControls}
     <div class="absolute bottom-4 left-[200px] z-30 flex flex-col items-start gap-2 font-mono">
-        {#if expanded}
-            <div class="config-panel">
+        {#if $viewSettings.showGraphConfig}
+            <div class="config-panel graph-control-panel">
                 <div class="flex items-center justify-between border-b border-primary/10 pb-2">
                     <h3 class="text-[10px] font-bold tracking-[0.2em] text-primary/80 uppercase">
                         {#if isForce}Simulation_Config{:else if isCircle}Circle_Pack_Config{:else if isArc}Arc_Diagram_Config{:else if isTreemap}Treemap_Config{/if}
                     </h3>
-                    <button class="text-primary/40 hover:text-primary transition-colors cursor-pointer" onclick={() => expanded = false}>
+                    <button class="graph-control-icon-button" onclick={() => viewSettings.update(s => ({ ...s, showGraphConfig: false }))}>
                         <span class="material-symbols-outlined text-sm">close</span>
                     </button>
                 </div>
@@ -187,10 +185,10 @@
         {/if}
 
         <button
-            class="config-toggle"
-            onclick={() => expanded = !expanded}
+            class="config-toggle graph-control-button {$viewSettings.showGraphConfig ? 'graph-control-button-active' : ''}"
+            onclick={() => viewSettings.update(s => ({ ...s, showGraphConfig: !s.showGraphConfig }))}
         >
-            <span class="material-symbols-outlined text-primary group-hover:rotate-90 transition-transform duration-300">
+            <span class="material-symbols-outlined text-primary transition-transform duration-300" class:rotate-90={$viewSettings.showGraphConfig}>
                 {#if isForce}settings_input_component{:else if isCircle}radio_button_checked{:else if isArc}architecture{:else if isTreemap}grid_view{/if}
             </span>
             <span class="text-[10px] font-black uppercase tracking-widest text-primary">
@@ -202,11 +200,8 @@
 
 <style>
     .config-panel {
-        background: rgba(10, 10, 10, 0.92);
-        border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
         border-radius: 12px;
         padding: 16px;
-        backdrop-filter: blur(12px);
         display: flex;
         flex-direction: column;
         gap: 16px;
@@ -217,20 +212,8 @@
     }
 
     .config-toggle {
-        background: rgba(10, 10, 10, 0.92);
-        border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
-        border-radius: 8px;
-        padding: 6px 12px;
-        backdrop-filter: blur(12px);
-        display: flex;
-        align-items: center;
-        gap: 8px;
         cursor: pointer;
-        transition: background 0.15s;
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-    }
-    .config-toggle:hover {
-        background: color-mix(in srgb, var(--color-primary) 10%, transparent);
     }
 
     input[type=range]::-webkit-slider-thumb {

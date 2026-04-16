@@ -377,8 +377,8 @@
         <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
             {#if $selection.focusNodeId}
                 <div class="absolute top-4 left-4 z-20 flex items-center gap-3">
-                    <button class="px-3 py-1.5 bg-black/80 border border-primary/40 text-primary font-mono text-xs hover:bg-primary/20 transition-colors backdrop-blur-md cursor-pointer" onclick={() => selection.update((s) => ({ ...s, focusNodeId: null, focusNeighborSet: null, }))}>← FULL VIEW</button>
-                    <span class="px-3 py-1.5 bg-black/60 border border-primary/20 text-primary/70 font-mono text-xs backdrop-blur-md">FOCUS: {focusNode?.fullTitle || $selection.focusNodeId}</span>
+                    <button class="graph-control-button" onclick={() => selection.update((s) => ({ ...s, focusNodeId: null, focusNeighborSet: null, }))}>← Full View</button>
+                    <span class="graph-control-panel px-3 py-2 font-mono text-xs text-primary/70">FOCUS: {focusNode?.fullTitle || $selection.focusNodeId}</span>
                 </div>
             {/if}
             <div class="flex-1 relative z-0 h-full">
@@ -403,11 +403,11 @@
             <Legend />
             {#if activeLayout === "force" || activeLayout === "sfdp" || activeLayout === "metro"}
                 <div class="absolute bottom-4 left-4 z-30 flex items-center gap-2">
-                    <button class="px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors" onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : (forceRunning ? forceRunning = false : forceRestartNonce += 1)}>
+                    <button class="graph-control-button" onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : (forceRunning ? forceRunning = false : forceRestartNonce += 1)}>
                         {(activeLayout === "metro" ? metroRunning : forceRunning) ? '⏸ Stop' : '▶ Start'} Layout
                     </button>
                     {#if activeLayout === "force"}
-                        <button class="px-3 py-1.5 rounded border text-xs font-bold uppercase tracking-wider bg-background/80 border-primary/40 text-primary hover:bg-primary/20 transition-colors" onclick={() => forceRandomizeNonce += 1}>
+                        <button class="graph-control-button" onclick={() => forceRandomizeNonce += 1}>
                             🎲 Randomise
                         </button>
                     {/if}

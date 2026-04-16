@@ -1,10 +1,10 @@
 <script lang="ts">
     import { filters, cycleVisibility, type VisibilityState } from '../../stores/filters';
     import { graphData } from '../../stores/graph';
+    import { viewSettings } from '../../stores/viewSettings';
     import { PRIORITIES } from '../../data/constants';
     import { projectColor } from '../../data/projectUtils';
 
-    let showLegend = true;
     let showAllProjects = false;
     const MAX_VISIBLE_PROJECTS = 6;
 
@@ -74,12 +74,12 @@
     $: hasOverflow = availableProjects.length > MAX_VISIBLE_PROJECTS;
 </script>
 
-{#if showLegend}
-    <div class="legend" role="complementary" aria-label="Filters & Legend">
+{#if $viewSettings.showLegend}
+    <div class="legend graph-control-panel" role="complementary" aria-label="Filters & Legend">
         <div class="legend-header">
             <span class="legend-title">VISIBILITY</span>
             <span class="component-name">filter-panel</span>
-            <button class="legend-close" on:click={() => showLegend = false}>
+            <button class="legend-close graph-control-icon-button" on:click={() => viewSettings.update(s => ({ ...s, showLegend: false }))}>
                 <span class="material-symbols-outlined" style="font-size: 14px;">close</span>
             </button>
         </div>
@@ -182,9 +182,9 @@
         </div>
     </div>
 {:else}
-    <button class="legend-toggle" on:click={() => showLegend = true}>
+    <button class="legend-toggle graph-control-button graph-control-button-active" on:click={() => viewSettings.update(s => ({ ...s, showLegend: true }))}>
         <span class="material-symbols-outlined" style="font-size: 14px;">visibility</span>
-        <span>Filters</span>
+        <span>Legend</span>
     </button>
 {/if}
 
@@ -194,13 +194,10 @@
         bottom: 16px;
         left: 16px;
         z-index: 10;
-        background: rgba(10, 10, 10, 0.92);
-        border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
         border-radius: 12px;
         padding: 10px 12px;
         font-size: 10px;
         color: var(--color-primary);
-        backdrop-filter: blur(12px);
         display: flex;
         flex-direction: column;
         gap: 8px;
@@ -235,14 +232,9 @@
     }
 
     .legend-close {
-        color: color-mix(in srgb, var(--color-primary) 40%, transparent);
-        background: none;
-        border: none;
         cursor: pointer;
-        padding: 0;
         line-height: 1;
     }
-    .legend-close:hover { color: var(--color-primary); }
 
     .legend-section {
         display: flex;
@@ -356,21 +348,6 @@
         bottom: 16px;
         left: 16px;
         z-index: 10;
-        background: rgba(10, 10, 10, 0.92);
-        border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
-        border-radius: 8px;
-        padding: 6px 12px;
-        font-size: 10px;
         cursor: pointer;
-        color: var(--color-primary);
-        font-weight: 900;
-        font-family: var(--font-mono);
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        letter-spacing: 0.15em;
-        text-transform: uppercase;
-        backdrop-filter: blur(12px);
     }
-    .legend-toggle:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
 </style>

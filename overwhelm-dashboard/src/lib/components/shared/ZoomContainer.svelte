@@ -140,6 +140,7 @@
 <div class="zoom-wrapper" bind:clientWidth={innerWidth} bind:clientHeight={innerHeight}>
   <!-- svelte-ignore a11y-click-events-have-key-events // handled role in SVG -->
   <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <svg
     bind:this={svgElement}
     onclick={handleSvgClick}
@@ -188,15 +189,15 @@
       <slot {containerGroup} {innerWidth} {innerHeight}></slot>
     </g>
   </svg>
-  
-  <div class="absolute bottom-4 right-4 z-20 flex flex-col gap-2 glass-card p-1 rounded-xl border border-primary/20 shadow-xl bg-black/60 backdrop-blur">
-    <button class="p-2 text-primary/70 hover:text-primary hover:bg-primary/20 rounded-lg transition-colors cursor-pointer flex items-center justify-center" title="Zoom In" onclick={handleZoomIn}>
+
+  <div class="graph-control-panel absolute bottom-4 right-4 z-20 flex flex-col gap-2 p-1">
+    <button class="graph-control-icon-button" title="Zoom In" onclick={handleZoomIn}>
       <span class="material-symbols-outlined text-sm">zoom_in</span>
     </button>
-    <button class="p-2 text-primary/70 hover:text-primary hover:bg-primary/20 rounded-lg transition-colors cursor-pointer flex items-center justify-center" title="Zoom Out" onclick={handleZoomOut}>
+    <button class="graph-control-icon-button" title="Zoom Out" onclick={handleZoomOut}>
       <span class="material-symbols-outlined text-sm">zoom_out</span>
     </button>
-    <button class="p-2 text-primary/70 hover:text-primary hover:bg-primary/20 rounded-lg transition-colors cursor-pointer flex items-center justify-center" title="Fit to Screen" onclick={() => autoZoomToFit(undefined, 0, false)}>
+    <button class="graph-control-icon-button" title="Fit to Screen" onclick={() => autoZoomToFit(undefined, 0, false)}>
       <span class="material-symbols-outlined text-sm">fit_screen</span>
     </button>
   </div>

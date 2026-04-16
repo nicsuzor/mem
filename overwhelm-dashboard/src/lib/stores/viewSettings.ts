@@ -6,6 +6,8 @@ export type ViewMode = typeof VIEW_MODES[number];
 export const viewSettings = writable({
     mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph'
     viewMode: 'Treemap',  // "Treemap", "Circle Pack", "Force", "Arc Diagram"
+    showLegend: true,
+    showGraphConfig: false,
     topNLeaves: 80,
     colaLinkLength: 600,   // ideal link length (general, used by Metro)
 
@@ -32,7 +34,7 @@ export const viewSettings = writable({
     treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',
     arcFocusedOnly: true,
     showFocusHighlight: true,
-    activeOverlay: null as string | null, // e.g., 'legend', 'config'
+    activeOverlay: null as string | null, // legacy overlay field; keep until older callers are removed
 });
 
 export const getLayoutFromViewSettings = ($settings: any) => {
