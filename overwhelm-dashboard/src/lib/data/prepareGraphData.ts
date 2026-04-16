@@ -175,7 +175,7 @@ export function prepareGraphData(
 
     const CONTAINER_TYPES = new Set(['goal', 'project', 'epic', 'task']);
     const collapseMap = new Map<string, string>();
-    
+
     let changed = true;
     while (changed) {
         changed = false;
@@ -437,9 +437,9 @@ export function prepareGraphData(
                 }
             }
         } else if (etype === 'soft_depends_on') {
-            color = "#b91c1c"; // Muted red — softer version of dependency
-            width = 2.0;
-            dash = "6,3";
+            color = "#a3a3a3"; // Treat soft dependencies like references in the UI
+            width = 1.5;
+            dash = "4,3";
         } else {
             color = "#a3a3a3"; // Lighter grey for references
             width = 1.5;

@@ -466,10 +466,6 @@
         const colaLinks = ($viewSettings.colaLinks ? links : []).filter((l: any) => {
             if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
 
-            if (l.type === 'parent' && $viewSettings.colaGroups) {
-                return parentNodeIds.has(l.target.id);
-            }
-
             return true;
         }).map((l: any) => {
             // Apply physics settings
@@ -477,8 +473,8 @@
             let weight = 0.05;
             let opacity = l.opacity ?? 0.6;
             if (l.type === 'parent') {
-                // If the target (child) is a parent itself, it's in its own group (inter-group link).
-                // If it's not a parent, it's inside the source's group (intra-group link).
+                // Parent-child edges are always preserved. Children that have their own
+                // descendants use the inter-parent settings; leaf children use the intra-parent settings.
                 const isChildParent = parentNodeIds.has(l.target.id);
                 if (isChildParent) {
                     length = $viewSettings.colaLinkDistInterParent;
@@ -487,10 +483,10 @@
                     length = $viewSettings.colaLinkDistIntraParent;
                     weight = $viewSettings.colaLinkWeightIntraParent;
                 }
-            } else if (l.type === 'depends_on' || l.type === 'soft_depends_on') {
+            } else if (l.type === 'depends_on') {
                 length = $viewSettings.colaLinkDistDependsOn;
                 weight = $viewSettings.colaLinkWeightDependsOn;
-            } else if (l.type === 'ref') {
+            } else if (l.type === 'ref' || l.type === 'soft_depends_on') {
                 length = $viewSettings.colaLinkDistRef;
                 weight = $viewSettings.colaLinkWeightRef;
             }
