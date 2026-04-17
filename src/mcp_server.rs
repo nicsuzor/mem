@@ -2372,6 +2372,7 @@ impl PkbSearchServer {
             .and_then(|v| v.as_i64())
             .map(|v| v as i32);
         let assignee = args.get("assignee").and_then(|v| v.as_str());
+        let project = args.get("project").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
         let include_subtasks = args
             .get("include_subtasks")
@@ -2431,6 +2432,14 @@ impl PkbSearchServer {
                 t.assignee
                     .as_deref()
                     .map(|ag| ag.eq_ignore_ascii_case(a))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(p) = project {
+            tasks.retain(|t| {
+                t.project
+                    .as_deref()
+                    .map(|pr| pr.eq_ignore_ascii_case(p))
                     .unwrap_or(false)
             });
         }
@@ -3425,6 +3434,7 @@ impl ServerHandler for PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "project": { "type": "string", "description": "Filter by project name (case-insensitive). Returns tasks whose computed project field (nearest ancestor with node_type=project) matches." },
                         "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, done, etc." },
                         "priority": { "type": "integer", "description": "Filter by exact priority (0-4)" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
