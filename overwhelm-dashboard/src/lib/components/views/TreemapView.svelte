@@ -70,6 +70,13 @@
         const nodeIdSet = new Set(nodes.map((n: any) => n.id));
         const projectRootId = ($filters as any).projectFilter as string | undefined;
 
+        function overflowChipSize(label: string, regionWidth: number, regionHeight: number) {
+            const desiredWidth = Math.max(56, label.length * 7 + 18);
+            const width = Math.min(140, Math.max(Math.min(regionWidth, desiredWidth), 56));
+            const height = Math.min(24, Math.max(18, regionHeight));
+            return { width, height };
+        }
+
         let stratifyNodes: any[];
         let rootId: string;
 
@@ -210,11 +217,12 @@
                 hiddenNodeIds.add(descendant.data.id);
             });
 
-            const width = Math.max(16, branchRoot.x1 - branchRoot.x0);
-            const height = Math.max(12, branchRoot.y1 - branchRoot.y0);
             const summaryLabel = totalLeafCount <= 1
                 ? branchRoot.data.label
                 : `${branchRoot.data.label} +${totalLeafCount - 1}`;
+            const regionWidth = Math.max(16, branchRoot.x1 - branchRoot.x0);
+            const regionHeight = Math.max(12, branchRoot.y1 - branchRoot.y0);
+            const chipSize = overflowChipSize(summaryLabel, regionWidth, regionHeight);
 
             overflowNodes.push({
                 id: `__overflow_branch__${branchRootId}`,
@@ -224,10 +232,10 @@
                 project: branchRoot.data?.project || null,
                 parent: branchRoot.parent.data.id,
                 depth: branchRoot.depth,
-                x: branchRoot.x0 + width / 2,
-                y: branchRoot.y0 + height / 2,
-                _lw: width,
-                _lh: height,
+                x: branchRoot.x0 + regionWidth / 2,
+                y: branchRoot.y0 + regionHeight / 2,
+                _lw: chipSize.width,
+                _lh: chipSize.height,
                 _isLeaf: true,
                 _isOverflow: true,
                 _leafCount: totalLeafCount,
@@ -266,22 +274,24 @@
                 y1 = Math.max(y1, leaf.y1);
             }
 
-            const overflowWidth = Math.max(12, x1 - x0);
-            const overflowHeight = Math.max(10, y1 - y0);
             const labels = tinyLeaves.map((leaf: any) => leaf.data.label).filter(Boolean);
+            const overflowLabel = `+${tinyLeaves.length} more`;
+            const regionWidth = Math.max(12, x1 - x0);
+            const regionHeight = Math.max(10, y1 - y0);
+            const chipSize = overflowChipSize(overflowLabel, regionWidth, regionHeight);
 
             overflowNodes.push({
                 id: `__overflow__${parentId}`,
-                label: `+${tinyLeaves.length} more`,
+                label: overflowLabel,
                 status: 'overflow',
                 priority: 4,
                 project: tinyLeaves[0]?.data?.project || null,
                 parent: parentId,
                 depth: (layoutMap.get(parentId)?.depth || 0) + 1,
-                x: x0 + overflowWidth / 2,
-                y: y0 + overflowHeight / 2,
-                _lw: overflowWidth,
-                _lh: overflowHeight,
+                x: x0 + regionWidth / 2,
+                y: y0 + regionHeight / 2,
+                _lw: chipSize.width,
+                _lh: chipSize.height,
                 _isLeaf: true,
                 _isOverflow: true,
                 _leafCount: tinyLeaves.length,
@@ -289,6 +299,24 @@
                 hiddenLabels: labels,
             });
         }
+
+        const rollupHiddenLeafIds = new Set<string>([
+            ...hiddenNodeIds,
+            ...hiddenLeafIds,
+        ]);
+
+        root.descendants().forEach((node: any) => {
+            if (!node.children || node.data.id === rootId) return;
+            if (hiddenNodeIds.has(node.data.id)) return;
+
+            const descendantLeaves = node.leaves();
+            if (descendantLeaves.length === 0) return;
+
+            const allLeavesRolledUp = descendantLeaves.every((leaf: any) => rollupHiddenLeafIds.has(leaf.data.id));
+            if (!allLeavesRolledUp) return;
+
+            hiddenNodeIds.add(node.data.id);
+        });
 
         visibleNodes = nodes
             .filter((n: any) => {
