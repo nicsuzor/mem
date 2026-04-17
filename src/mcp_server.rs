@@ -511,6 +511,18 @@ impl PkbSearchServer {
                 .get("due")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            project: args
+                .get("project")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            task_type: args
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            status: args
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         };
 
         // Hierarchy validation: tasks must have a parent
@@ -560,15 +572,23 @@ impl PkbSearchServer {
             self.rebuild_graph();
         }
 
-        let mut msg = format!("Task created: `{}`", path.display());
-        if !warnings.is_empty() {
-            msg.push_str("\n\nHierarchy warnings:\n");
-            for w in &warnings {
-                msg.push_str(&format!("- {}\n", w));
-            }
-        }
+        // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4")
+        let task_id = path
+            .file_stem()
+            .map(|s| {
+                let stem = s.to_string_lossy();
+                // Match standard ID pattern: prefix-hexchars
+                static RE: std::sync::LazyLock<regex::Regex> =
+                    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]+").unwrap());
+                RE.find(&stem)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| stem.to_string())
+            })
+            .unwrap_or_default();
 
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        // Return structured JSON matching get_task shape
+        let get_args = serde_json::json!({ "id": task_id });
+        self.handle_get_task(&get_args)
     }
 
     fn handle_create_subtask(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -3386,7 +3406,7 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter.",
+                "Create a new task markdown file with YAML frontmatter. Returns structured JSON matching get_task shape (frontmatter, body, path, relationships).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3403,7 +3423,10 @@ impl ServerHandler for PkbSearchServer {
                         "body": { "type": "string", "description": "Markdown body" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
-                        "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" }
+                        "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
+                        "project": { "type": "string", "description": "Project identifier (e.g. 'aops')" },
+                        "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, project." },
+                        "status": { "type": "string", "description": "Task status (default: 'active'). Also accepts: blocked, done, merge_ready, in_progress, etc." }
                     },
                     "required": ["title"]
                 }))

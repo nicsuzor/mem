@@ -79,6 +79,9 @@ pub struct TaskFields {
     pub stakeholder: Option<String>,
     pub waiting_since: Option<String>,
     pub due: Option<String>,
+    pub project: Option<String>,
+    pub task_type: Option<String>,
+    pub status: Option<String>,
 }
 
 /// Fields for creating a new memory.
@@ -354,8 +357,8 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             (safe_id, filename)
         }
         None => {
-            // Use project as prefix when available, otherwise "task"
-            let prefix = "task";
+            // Use type as prefix when available, otherwise "task"
+            let prefix = fields.task_type.as_deref().unwrap_or("task");
             let id = generate_id(prefix);
             let slug = slugify(&fields.title);
             let filename = format!("{}-{}.md", id, slug);
@@ -383,8 +386,14 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         "title: \"{}\"\n",
         fields.title.replace('"', "\\\"")
     ));
-    fm.push_str("type: task\n");
-    fm.push_str("status: active\n");
+    fm.push_str(&format!(
+        "type: {}\n",
+        fields.task_type.as_deref().unwrap_or("task")
+    ));
+    fm.push_str(&format!(
+        "status: {}\n",
+        fields.status.as_deref().unwrap_or("active")
+    ));
 
     if let Some(p) = fields.priority {
         fm.push_str(&format!("priority: {}\n", p));
@@ -394,6 +403,10 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     if let Some(ref parent) = fields.parent {
         fm.push_str(&format!("parent: {}\n", parent));
+    }
+
+    if let Some(ref project) = fields.project {
+        fm.push_str(&format!("project: {}\n", project));
     }
 
     if !fields.tags.is_empty() {
@@ -1102,6 +1115,57 @@ mod tests {
         // IDs include random component, just check prefix
         assert!(id1.starts_with("task-"));
         assert!(id2.starts_with("task-"));
+    }
+
+    #[test]
+    fn create_task_writes_project_type_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        let fields = TaskFields {
+            title: "Test task with metadata".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            task_type: Some("epic".to_string()),
+            status: Some("in_progress".to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(content.contains("type: epic"), "type field should be written: {content}");
+        assert!(content.contains("status: in_progress"), "status field should be written: {content}");
+        assert!(content.contains("project: aops"), "project field should be written: {content}");
+        // ID should use the type as prefix
+        assert!(
+            path.file_name().unwrap().to_string_lossy().starts_with("epic-"),
+            "filename should use type prefix: {:?}",
+            path.file_name()
+        );
+    }
+
+    #[test]
+    fn create_task_defaults_type_and_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        let fields = TaskFields {
+            title: "Default metadata task".to_string(),
+            parent: Some("parent-001".to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(content.contains("type: task"), "default type should be 'task': {content}");
+        assert!(content.contains("status: active"), "default status should be 'active': {content}");
+        assert!(!content.contains("project:"), "project should not appear when None: {content}");
     }
 }
 
