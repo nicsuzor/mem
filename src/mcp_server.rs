@@ -3848,3 +3848,337 @@ impl ServerHandler for PkbSearchServer {
             .with_instructions(instructions)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embeddings::Embedder;
+    use crate::graph_store::GraphStore;
+    use crate::pkb::PkbDocument;
+    use crate::vectordb::VectorStore;
+    use serde_json::json;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    fn make_doc(
+        path: &str,
+        title: &str,
+        doc_type: &str,
+        status: &str,
+        id: &str,
+        parent: Option<&str>,
+        depends_on: &[&str],
+    ) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), json!(title));
+        fm.insert("type".to_string(), json!(doc_type));
+        fm.insert("status".to_string(), json!(status));
+        fm.insert("id".to_string(), json!(id));
+        if let Some(p) = parent {
+            fm.insert("parent".to_string(), json!(p));
+        }
+        if !depends_on.is_empty() {
+            fm.insert("depends_on".to_string(), json!(depends_on));
+        }
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some(doc_type.to_string()),
+            status: Some(status.to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+        }
+    }
+
+    fn make_doc_with_priority(
+        path: &str,
+        title: &str,
+        doc_type: &str,
+        status: &str,
+        id: &str,
+        parent: Option<&str>,
+        depends_on: &[&str],
+        priority: i32,
+        assignee: Option<&str>,
+    ) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), json!(title));
+        fm.insert("type".to_string(), json!(doc_type));
+        fm.insert("status".to_string(), json!(status));
+        fm.insert("id".to_string(), json!(id));
+        fm.insert("priority".to_string(), json!(priority));
+        if let Some(p) = parent {
+            fm.insert("parent".to_string(), json!(p));
+        }
+        if let Some(a) = assignee {
+            fm.insert("assignee".to_string(), json!(a));
+        }
+        if !depends_on.is_empty() {
+            fm.insert("depends_on".to_string(), json!(depends_on));
+        }
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some(doc_type.to_string()),
+            status: Some(status.to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+        }
+    }
+
+    /// Build a test graph with 3 projects and tasks under each, plus an orphan.
+    ///
+    /// ProjectAlpha:
+    ///   - task-a1: active, priority 1, assignee "alice"
+    ///   - task-a2: active, priority 2, assignee "bob" (depends on task-a1)
+    ///   - task-a3: done, priority 1
+    ///
+    /// ProjectBeta:
+    ///   - task-b1: active, priority 1 (leaf, no deps = ready)
+    ///   - task-b2: active, priority 2 (depends on task-b1 = blocked)
+    ///
+    /// ProjectGamma:
+    ///   - task-g1: active, priority 3
+    ///
+    /// Orphan (no project):
+    ///   - task-orphan: active, priority 1
+    fn build_project_test_graph() -> GraphStore {
+        let docs = vec![
+            // Project nodes
+            make_doc("projects/proj-alpha.md", "ProjectAlpha", "project", "active", "proj-alpha", None, &[]),
+            make_doc("projects/proj-beta.md", "ProjectBeta", "project", "active", "proj-beta", None, &[]),
+            make_doc("projects/proj-gamma.md", "ProjectGamma", "project", "active", "proj-gamma", None, &[]),
+            // ProjectAlpha tasks
+            make_doc_with_priority("tasks/task-a1.md", "Alpha Task 1", "task", "active", "task-a1", Some("proj-alpha"), &[], 1, Some("alice")),
+            make_doc_with_priority("tasks/task-a2.md", "Alpha Task 2", "task", "active", "task-a2", Some("proj-alpha"), &["task-a1"], 2, Some("bob")),
+            make_doc_with_priority("tasks/task-a3.md", "Alpha Task 3", "task", "done", "task-a3", Some("proj-alpha"), &[], 1, None),
+            // ProjectBeta tasks — task-b1 is a leaf with no deps (ready), task-b2 depends on task-b1
+            make_doc_with_priority("tasks/task-b1.md", "Beta Task 1", "task", "active", "task-b1", Some("proj-beta"), &[], 1, None),
+            make_doc_with_priority("tasks/task-b2.md", "Beta Task 2", "task", "active", "task-b2", Some("proj-beta"), &["task-b1"], 2, None),
+            // ProjectGamma task
+            make_doc_with_priority("tasks/task-g1.md", "Gamma Task 1", "task", "active", "task-g1", Some("proj-gamma"), &[], 3, None),
+            // Orphan task (no parent, no project)
+            make_doc_with_priority("tasks/task-orphan.md", "Orphan Task", "task", "active", "task-orphan", None, &[], 1, None),
+        ];
+        GraphStore::build(&docs, Path::new("/tmp/test-pkb-project"))
+    }
+
+    fn build_test_server() -> PkbSearchServer {
+        let graph = build_project_test_graph();
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            PathBuf::from("/tmp/test-pkb-project"),
+            PathBuf::from("/tmp/test-pkb-project/db"),
+            Arc::new(RwLock::new(graph)),
+        )
+    }
+
+    /// Helper to extract task IDs from a list_tasks call result.
+    fn extract_task_ids(result: &CallToolResult) -> Vec<String> {
+        // Use JSON format for easier parsing
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                Content::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        // Parse the JSON output
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(tasks) = val.get("tasks").and_then(|t| t.as_array()) {
+                return tasks
+                    .iter()
+                    .filter_map(|t| t.get("id").and_then(|id| id.as_str()).map(String::from))
+                    .collect();
+            }
+        }
+        vec![]
+    }
+
+    // ── AC1: project filter returns only matching tasks, no leakage ──
+
+    #[test]
+    fn test_list_tasks_project_filter_returns_only_matching() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"project": "ProjectAlpha", "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        // Should contain only alpha tasks
+        assert!(ids.contains(&"task-a1".to_string()), "should contain task-a1");
+        assert!(ids.contains(&"task-a2".to_string()), "should contain task-a2");
+        assert!(ids.contains(&"task-a3".to_string()), "should contain task-a3");
+        // Should NOT contain tasks from other projects
+        assert!(!ids.contains(&"task-b1".to_string()), "should not contain task-b1");
+        assert!(!ids.contains(&"task-b2".to_string()), "should not contain task-b2");
+        assert!(!ids.contains(&"task-g1".to_string()), "should not contain task-g1");
+        assert!(!ids.contains(&"task-orphan".to_string()), "should not contain orphan");
+    }
+
+    // ── AC2: case-insensitive matching ──
+
+    #[test]
+    fn test_list_tasks_project_filter_case_insensitive() {
+        let server = build_test_server();
+        let lower = server
+            .handle_list_tasks(&json!({"project": "projectalpha", "format": "json"}))
+            .unwrap();
+        let upper = server
+            .handle_list_tasks(&json!({"project": "PROJECTALPHA", "format": "json"}))
+            .unwrap();
+        let mixed = server
+            .handle_list_tasks(&json!({"project": "ProjectAlpha", "format": "json"}))
+            .unwrap();
+        let ids_lower = extract_task_ids(&lower);
+        let ids_upper = extract_task_ids(&upper);
+        let ids_mixed = extract_task_ids(&mixed);
+        assert_eq!(ids_lower, ids_mixed, "lowercase should match mixed case");
+        assert_eq!(ids_upper, ids_mixed, "uppercase should match mixed case");
+        assert!(!ids_lower.is_empty(), "should return results");
+    }
+
+    // ── AC3a: composes with status + priority + assignee ──
+
+    #[test]
+    fn test_list_tasks_project_composes_with_other_filters() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({
+                "project": "ProjectAlpha",
+                "status": "active",
+                "priority": 1,
+                "assignee": "alice",
+                "format": "json"
+            }))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        // Only task-a1 matches: ProjectAlpha + active + priority 1 + assignee alice
+        assert_eq!(ids, vec!["task-a1".to_string()]);
+    }
+
+    // ── AC3b: composes with status="ready" (different code path) ──
+
+    #[test]
+    fn test_list_tasks_project_composes_with_ready_status() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({
+                "project": "ProjectAlpha",
+                "status": "ready",
+                "format": "json"
+            }))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        // task-a1 has a dependent (task-a2 depends on it), so task-a1 is not a leaf
+        // task-a2 depends on task-a1 (unmet dep), so task-a2 is not ready
+        // task-a3 is done, so not ready
+        // The ready tasks in ProjectAlpha depend on the graph's ready_tasks() logic
+        // Key assertion: no beta/gamma/orphan tasks leak through
+        for id in &ids {
+            assert!(
+                id.starts_with("task-a"),
+                "ready+project=ProjectAlpha should only return alpha tasks, got {}",
+                id
+            );
+        }
+
+        // Also verify that beta ready tasks are excluded
+        let beta_result = server
+            .handle_list_tasks(&json!({
+                "project": "ProjectBeta",
+                "status": "ready",
+                "format": "json"
+            }))
+            .unwrap();
+        let beta_ids = extract_task_ids(&beta_result);
+        // task-b1 should be ready (leaf, no deps, active)
+        // task-b2 depends on task-b1, so blocked
+        for id in &beta_ids {
+            assert!(
+                id.starts_with("task-b"),
+                "ready+project=ProjectBeta should only return beta tasks, got {}",
+                id
+            );
+        }
+    }
+
+    // ── AC4: works for multiple distinct projects ──
+
+    #[test]
+    fn test_list_tasks_project_filter_multiple_projects() {
+        let server = build_test_server();
+
+        let alpha = server.handle_list_tasks(&json!({"project": "ProjectAlpha", "format": "json"})).unwrap();
+        let beta = server.handle_list_tasks(&json!({"project": "ProjectBeta", "format": "json"})).unwrap();
+        let gamma = server.handle_list_tasks(&json!({"project": "ProjectGamma", "format": "json"})).unwrap();
+
+        let alpha_ids = extract_task_ids(&alpha);
+        let beta_ids = extract_task_ids(&beta);
+        let gamma_ids = extract_task_ids(&gamma);
+
+        assert!(!alpha_ids.is_empty(), "ProjectAlpha should have tasks");
+        assert!(!beta_ids.is_empty(), "ProjectBeta should have tasks");
+        assert!(!gamma_ids.is_empty(), "ProjectGamma should have tasks");
+
+        // Verify no overlap
+        for id in &alpha_ids {
+            assert!(!beta_ids.contains(id), "alpha task {} should not be in beta", id);
+            assert!(!gamma_ids.contains(id), "alpha task {} should not be in gamma", id);
+        }
+        for id in &beta_ids {
+            assert!(!gamma_ids.contains(id), "beta task {} should not be in gamma", id);
+        }
+    }
+
+    // ── AC5: non-existent project returns empty, not error ──
+
+    #[test]
+    fn test_list_tasks_project_filter_nonexistent_returns_empty() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"project": "NonExistentProject", "format": "json"}))
+            .unwrap();
+        // Should succeed (not error), and return empty or "no tasks found" message
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                Content::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        // Either empty JSON tasks array or "No tasks found" message
+        let is_empty = text.contains("No tasks found") || text.contains("\"tasks\":[]") || text.contains("\"tasks\": []");
+        assert!(is_empty, "non-existent project should return empty: {}", text);
+    }
+
+    // ── AC6: tool schema includes project parameter ──
+
+    #[tokio::test]
+    async fn test_list_tasks_schema_includes_project_parameter() {
+        let server = build_test_server();
+        let ctx = rmcp::service::RequestContext::<rmcp::service::RoleServer>::default();
+        let tools_result = ServerHandler::list_tools(&server, None, ctx).await.unwrap();
+        let list_tasks_tool = tools_result
+            .tools
+            .iter()
+            .find(|t| t.name.as_ref() == "list_tasks")
+            .expect("list_tasks tool should exist");
+        let schema = serde_json::to_string(&list_tasks_tool.input_schema).unwrap();
+        assert!(
+            schema.contains("\"project\""),
+            "list_tasks schema should include 'project' parameter, got: {}",
+            schema
+        );
+    }
+}
