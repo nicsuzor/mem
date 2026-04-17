@@ -259,10 +259,10 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
  */
 export function treemapHeaderMetrics(w: number, h: number, label: string, depth: number) {
     const pad = 6;
-    const badgeReserve = w > 50 ? 36 : 0;
+    const badgeReserve = w > 56 ? 32 : 0;
     const textAvailW = Math.max(18, w - pad * 2 - badgeReserve);
-    const minReadableWidth = depth <= 1 ? 72 : 58;
-    const minReadableHeight = depth <= 1 ? 28 : 22;
+    const minReadableWidth = depth <= 1 ? 64 : 50;
+    const minReadableHeight = depth <= 1 ? 24 : 18;
     if (w < minReadableWidth || h < minReadableHeight) {
         return {
             headerH: 0,
@@ -275,14 +275,14 @@ export function treemapHeaderMetrics(w: number, h: number, label: string, depth:
         };
     }
 
-    const maxLines = depth <= 1 ? 2 : 2;
-    const maxFontSize = Math.max(8, Math.min(depth <= 1 ? 20 : 17, Math.min(w * 0.19, h * 0.24)));
-    const fitted = fitTreemapText(label, textAvailW, Math.max(20, Math.min(depth <= 1 ? 56 : 40, h * (depth <= 1 ? 0.34 : 0.22))), {
+    const maxLines = depth <= 1 ? 3 : 2;
+    const maxFontSize = Math.max(8, Math.min(depth <= 1 ? 22 : 18, Math.min(w * 0.21, h * 0.28)));
+    const fitted = fitTreemapText(label, textAvailW, Math.max(20, Math.min(depth <= 1 ? 64 : 44, h * (depth <= 1 ? 0.42 : 0.28))), {
         minFontSize: 6,
         maxFontSize,
         maxLines,
     });
-    if (fitted.fontSize < (depth <= 1 ? 9 : 7.5)) {
+    if (fitted.fontSize < (depth <= 1 ? 8 : 6.5)) {
         return {
             headerH: 0,
             fs: fitted.fontSize,
@@ -293,8 +293,8 @@ export function treemapHeaderMetrics(w: number, h: number, label: string, depth:
             pad,
         };
     }
-    const basePad = 10;
-    const headerH = Math.max(16, Math.min(58, fitted.lines.length * fitted.lineHeight + basePad));
+    const basePad = depth <= 1 ? 11 : 9;
+    const headerH = Math.max(15, Math.min(depth <= 1 ? 64 : 48, fitted.lines.length * fitted.lineHeight + basePad));
     return {
         headerH,
         fs: fitted.fontSize,
@@ -363,8 +363,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     // ── TIER 1: Project containers — explicit bounded regions ──
     if (d._isProjectContainer) {
         const bgTint = `hsl(${hue}, 24%, 12%)`;
-        const borderColor = `hsl(${hue}, 58%, 52%)`;
-        const labelColor = `hsl(${hue}, 78%, 86%)`;
+        const borderColor = `hsl(${hue}, 62%, 58%)`;
+        const labelColor = `hsl(${hue}, 88%, 92%)`;
 
         // Solid dark background — makes project region clearly distinct from canvas
         g.append("rect")
@@ -413,7 +413,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("pointer-events", "none")
-                .html(`<div style="font-size:${m.fs}px; font-weight:850; color:${labelColor}; text-transform:uppercase; letter-spacing:0.04em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal; font-family:var(--font-mono),monospace;">${labelHtml}</div>`);
+                .html(`<div style="font-size:${m.fs}px; font-weight:820; color:${labelColor}; text-transform:none; letter-spacing:0.01em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal; font-family:var(--font-display), sans-serif;">${labelHtml}</div>`);
 
             renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
         }
@@ -422,13 +422,13 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // ── TIER 2: Epics/Goals — medium tinted rectangles with all-caps titles ──
     if (isEpicTier) {
-        const epicTint = `hsl(${hue}, 30%, 20%)`;
+        const epicTint = `hsl(${hue}, 34%, 22%)`;
         g.append("rect")
             .attr("class", "node-surface")
             .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
             .attr("rx", 5)
-            .attr("fill", epicTint).attr("fill-opacity", 0.58)
-            .attr("stroke", `hsl(${hue}, 46%, 50%)`).attr("stroke-width", isSelected ? 3 : 1.4)
+            .attr("fill", epicTint).attr("fill-opacity", 0.72)
+            .attr("stroke", `hsl(${hue}, 54%, 58%)`).attr("stroke-width", isSelected ? 3 : 1.5)
             .style("transition", "all 0.2s ease");
 
         // Epic label — uses shared header metrics
@@ -456,7 +456,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("pointer-events", "none")
-                .html(`<div style="font-size:${m.fs}px; font-weight:780; color:hsl(${hue},74%,86%); text-transform:none; letter-spacing:0.01em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal;">${labelHtml}</div>`);
+                .html(`<div style="font-size:${m.fs}px; font-weight:780; color:hsl(${hue},82%,90%); text-transform:none; letter-spacing:0.005em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal; font-family:var(--font-display), sans-serif;">${labelHtml}</div>`);
 
             renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
         }
@@ -464,62 +464,170 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     }
 
     if (d._isOverflow) {
+        const rollupLabel = d.label || 'Other Tasks';
+        const rollupCount = d._rollupCount ?? d.totalLeafCount ?? d._leafCount ?? 0;
+        const bgTint = `hsl(${hue}, 28%, 14%)`;
+        const borderColor = `hsl(${hue}, 34%, 50%)`;
+        const labelColor = `hsl(${hue}, 68%, 88%)`;
+        const isRibbon = h < 30;
+
         g.append("rect")
             .attr("class", "node-surface")
             .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
-            .attr("rx", 4)
-            .attr("fill", "rgba(10,12,16,0.86)")
-            .attr("stroke", "rgba(255,255,255,0.22)").attr("stroke-width", 1)
-            .attr("stroke-dasharray", "4,4")
+            .attr("rx", 6)
+            .attr("fill", bgTint).attr("fill-opacity", 0.96)
+            .attr("stroke", isSelected ? "#fff" : borderColor)
+            .attr("stroke-width", isSelected ? 3 : 1.4)
+            .attr("stroke-dasharray", "5,3")
             .style("transition", "all 0.2s ease");
 
-        if (w > 40 && h > 15) {
-            const overflowTextFit = fitTreemapText(
-                d.label || '[...]',
-                Math.max(0, w - 10),
+        g.append("rect")
+            .attr("x", -w / 2 + 3).attr("y", -h / 2 + 3)
+            .attr("width", Math.max(0, w - 6)).attr("height", Math.max(0, h - 6))
+            .attr("rx", 4)
+            .attr("fill", "none")
+            .attr("stroke", borderColor)
+            .attr("stroke-width", 0.8)
+            .attr("stroke-opacity", 0.28);
+
+        if (isRibbon) {
+            const pillW = Math.max(34, Math.min(52, w * 0.18));
+            const labelFit = fitTreemapText(
+                rollupLabel,
+                Math.max(0, w - pillW - 18),
                 Math.max(0, h - 6),
-                {
-                    minFontSize: 6,
-                    maxFontSize: 11,
-                    maxLines: h > 22 ? 2 : 1,
-                },
+                { minFontSize: 5, maxFontSize: Math.max(7, Math.min(11, h * 0.52)), maxLines: 1 },
             );
-            const overflowHtml = overflowTextFit.lines.map((line: string) => escapeHtml(line)).join('<br/>');
+            const labelHtml = labelFit.lines.map((line: string) => escapeHtml(line)).join('<br/>');
 
             g.append("foreignObject")
-                .attr("x", -w / 2 + 5).attr("y", -h / 2 + 3)
-                .attr("width", Math.max(0, w - 10)).attr("height", Math.max(0, h - 6))
+                .attr("x", -w / 2 + 6)
+                .attr("y", -h / 2 + 2)
+                .attr("width", Math.max(0, w - pillW - 14))
+                .attr("height", Math.max(0, h - 4))
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("display", "flex")
                 .style("align-items", "center")
-                .style("justify-content", "center")
                 .style("width", "100%")
                 .style("height", "100%")
                 .style("overflow", "hidden")
                 .style("pointer-events", "none")
-                .html(`<div style="font-size:${overflowTextFit.fontSize}px; font-weight:800; font-family:var(--font-mono), monospace; color:rgba(255,255,255,0.82); line-height:${overflowTextFit.lineHeight}px; overflow:hidden; text-align:center; white-space:normal; word-break:normal; overflow-wrap:normal;">${overflowHtml}</div>`);
+                .html(`<div style="font-size:${labelFit.fontSize}px; font-weight:740; color:${labelColor}; text-transform:none; letter-spacing:0.01em; line-height:${labelFit.lineHeight}px; overflow:hidden; white-space:nowrap; font-family:var(--font-display), sans-serif;">${labelHtml}</div>`);
+
+            g.append("rect")
+                .attr("x", w / 2 - pillW - 6)
+                .attr("y", -h / 2 + 2)
+                .attr("width", pillW)
+                .attr("height", Math.max(0, h - 4))
+                .attr("rx", Math.max(8, (h - 4) / 2))
+                .attr("fill", `hsla(${hue}, 24%, 9%, 0.92)`)
+                .attr("stroke", `hsla(${hue}, 56%, 66%, 0.72)`)
+                .attr("stroke-width", 1);
+
+            g.append("text")
+                .attr("x", w / 2 - pillW / 2 - 6)
+                .attr("y", 0)
+                .attr("text-anchor", "middle")
+                .attr("dominant-baseline", "central")
+                .attr("font-size", `${Math.max(9, Math.min(13, h * 0.62))}px`)
+                .attr("font-weight", "800")
+                .attr("font-family", "var(--font-mono), monospace")
+                .attr("fill", "rgba(255,255,255,0.94)")
+                .text(String(rollupCount));
+        } else {
+            const headerFit = fitTreemapText(
+                rollupLabel,
+                Math.max(0, w - 12),
+                Math.max(18, Math.min(54, h * 0.34)),
+                { minFontSize: 5, maxFontSize: Math.max(8, Math.min(16, Math.min(w * 0.18, h * 0.18))), maxLines: 3 },
+            );
+            const headerH = headerFit.lines.length > 0 ? Math.max(16, Math.min(56, headerFit.lines.length * headerFit.lineHeight + 10)) : 0;
+            if (headerH > 0) {
+                const labelHtml = headerFit.lines.map((line: string) => escapeHtml(line)).join('<br/>');
+                g.append("rect")
+                    .attr("x", -w / 2).attr("y", -h / 2)
+                    .attr("width", w).attr("height", headerH)
+                    .attr("rx", 4)
+                    .attr("fill", bgTint)
+                    .attr("fill-opacity", 1);
+
+                g.append("line")
+                    .attr("x1", -w / 2 + 6).attr("x2", w / 2 - 6)
+                    .attr("y1", -h / 2 + headerH).attr("y2", -h / 2 + headerH)
+                    .attr("stroke", borderColor)
+                    .attr("stroke-width", 0.6)
+                    .attr("stroke-opacity", 0.55);
+
+                g.append("foreignObject")
+                    .attr("x", -w / 2 + 6).attr("y", -h / 2 + 1)
+                    .attr("width", Math.max(0, w - 12)).attr("height", headerH - 2)
+                    .style("pointer-events", "none")
+                    .append("xhtml:div")
+                    .style("pointer-events", "none")
+                    .html(`<div style="font-size:${headerFit.fontSize}px; font-weight:760; color:${labelColor}; text-transform:none; letter-spacing:0.01em; line-height:${headerFit.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal; font-family:var(--font-display), sans-serif;">${labelHtml}</div>`);
+            }
+
+            const countBadgeW = Math.max(42, Math.min(w * 0.45, 72));
+            const countBadgeH = Math.max(34, Math.min(h * 0.32, 54));
+            const countFontSize = Math.max(16, Math.min(28, Math.min(w, h) * 0.18));
+            const subFontSize = Math.max(8, Math.min(11, countFontSize * 0.42));
+            const centerY = (headerH > 0 ? -h / 2 + headerH : -h / 2) + Math.max(0, h - headerH) / 2;
+
+            g.append("rect")
+                .attr("x", -countBadgeW / 2)
+                .attr("y", centerY - countBadgeH / 2)
+                .attr("width", countBadgeW)
+                .attr("height", countBadgeH)
+                .attr("rx", countBadgeH / 2)
+                .attr("fill", `hsla(${hue}, 24%, 9%, 0.92)`)
+                .attr("stroke", `hsla(${hue}, 56%, 66%, 0.72)`)
+                .attr("stroke-width", 1.1);
+
+            g.append("text")
+                .attr("x", 0)
+                .attr("y", centerY - 3)
+                .attr("text-anchor", "middle")
+                .attr("dominant-baseline", "central")
+                .attr("font-size", `${countFontSize}px`)
+                .attr("font-weight", "800")
+                .attr("font-family", "var(--font-mono), monospace")
+                .attr("fill", "rgba(255,255,255,0.94)")
+                .text(String(rollupCount));
+
+            g.append("text")
+                .attr("x", 0)
+                .attr("y", centerY + countBadgeH * 0.22)
+                .attr("text-anchor", "middle")
+                .attr("dominant-baseline", "central")
+                .attr("font-size", `${subFontSize}px`)
+                .attr("font-weight", "700")
+                .attr("font-family", "var(--font-mono), monospace")
+                .attr("letter-spacing", "0.08em")
+                .attr("fill", "rgba(255,255,255,0.68)")
+                .text(rollupCount === 1 ? 'TASK' : 'TASKS');
         }
-        return; // Skip the rest of the drawing logic for overflow nodes
+
+        return;
     }
 
     // Status-based fill colors — muted by default, saturated only for attention states
     const STATUS_COLORS: Record<string, string> = {
-        active: '#2C4A88',       // Soft blue — calm, doesn't scream
-        in_progress: '#2C4A88',  // Soft blue
-        review: '#3A5A9E',       // Slightly lighter soft blue
-        waiting: '#1E3A6E',      // Darker muted blue
-        decomposing: '#1E3A6E',  // Darker muted blue
-        blocked: '#6B3A3A',      // Muted dark red — blocked but not urgent
-        ready: '#2D5A3D',        // Muted green
-        todo: '#2D5A3D',         // Muted green
-        inbox: '#1E4A2E',        // Dark green
-        dormant: '#2D2D35',      // Very dark grey
-        done: '#1E1E24',         // Near-black — greyed out
-        completed: '#1E1E24',    // Near-black
-        cancelled: '#18181C',    // Darkest grey
-        deferred: '#2D2D35',     // Dark grey
-        paused: '#4b5563',       // Grey
+        active: '#3D6BC3',
+        in_progress: '#3D6BC3',
+        review: '#557FD1',
+        waiting: '#31578F',
+        decomposing: '#31578F',
+        blocked: '#7C4050',
+        ready: '#31734D',
+        todo: '#31734D',
+        inbox: '#2A6746',
+        dormant: '#394253',
+        done: '#252B34',
+        completed: '#252B34',
+        cancelled: '#1D2128',
+        deferred: '#323846',
+        paused: '#505C6D',
     };
 
     // Priority border colors — only P0/P1 draw the eye
@@ -527,7 +635,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     let cellColor: string;
     if (isParent) {
         // Parents get a stable project hue (unchanged)
-        cellColor = `hsl(${hue}, 40%, 25%)`;
+        cellColor = `hsl(${hue}, 48%, 24%)`;
     } else {
         const status = (d.status || 'inbox').toLowerCase();
         cellColor = STATUS_COLORS[status] || '#4b5563';
@@ -595,9 +703,9 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         .attr("class", "node-surface")
         .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
         .attr("rx", 4)
-        .attr("fill", cellColor).attr("fill-opacity", isParent ? 0.36 : 0.94)
+        .attr("fill", cellColor).attr("fill-opacity", isParent ? 0.56 : 0.98)
         .attr("stroke", isSelected ? "#fff" : (isParent ? cellColor : priorityBorder))
-        .attr("stroke-width", isSelected ? 3 : (d.priority <= 1 ? 2.1 : 1.2))
+        .attr("stroke-width", isSelected ? 3 : (d.priority <= 1 ? 2.1 : 1.35))
         .style("transition", "all 0.2s ease");
 
     if (isParent && h > 20) {
@@ -609,7 +717,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .attr("x", -w / 2).attr("y", -h / 2)
                 .attr("width", w).attr("height", m.headerH)
                 .attr("rx", 4)
-                .attr("fill", cellColor).attr("fill-opacity", 0.9);
+                .attr("fill", cellColor).attr("fill-opacity", 0.96);
         }
     }
 
@@ -819,7 +927,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
 
     let cellColor: string;
     if (isParent) {
-        cellColor = `hsl(${hue}, 40%, 25%)`;
+        cellColor = `hsl(${hue}, 46%, 24%)`;
     } else {
         const status = (d.status || 'inbox').toLowerCase();
         cellColor = CIRCLE_STATUS_COLORS[status] || '#4b5563';
@@ -837,9 +945,9 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         const isEpic = depth === 2;
         // depth 3+ = sub-group
 
-        const fillOpacity = isProject ? 0.28 : isEpic ? 0.22 : 0.16;
-        const strokeSat = isProject ? 65 : isEpic ? 50 : 30;
-        const strokeLight = isProject ? 60 : isEpic ? 50 : 40;
+        const fillOpacity = isProject ? 0.42 : isEpic ? 0.3 : 0.22;
+        const strokeSat = isProject ? 72 : isEpic ? 58 : 42;
+        const strokeLight = isProject ? 68 : isEpic ? 58 : 48;
         const strokeWidth = isSelected
             ? Math.max(3, r * 0.02)
             : isProject
@@ -847,7 +955,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 : isEpic
                     ? Math.max(1.3, Math.min(3, r * 0.004))
                     : Math.max(0.8, Math.min(1.6, r * 0.0025));
-        const dashArray = isSelected ? "none" : isProject ? "none" : isEpic ? "8,3,2,3" : "3,2";
+        const dashArray = isSelected ? "none" : isProject ? "none" : isEpic ? "6,3" : "3,3";
         const strokeColor = isSelected ? "#fff" : `hsl(${hue}, ${strokeSat}%, ${strokeLight}%)`;
 
         // Main circle
@@ -861,16 +969,16 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         // Parent label — centered in container with background pill
         const MIN_RADIUS_FOR_LABEL = 14;
         if (r > MIN_RADIUS_FOR_LABEL) {
-            const minFs = isProject ? 12 : isEpic ? 9 : 7;
-            const maxFs = isProject ? 28 : isEpic ? 20 : 14;
-            const scaleFactor = isProject ? 0.06 : isEpic ? 0.055 : 0.045;
+            const minFs = isProject ? 11 : isEpic ? 9 : 7;
+            const maxFs = isProject ? 22 : isEpic ? 16 : 11;
+            const scaleFactor = isProject ? 0.047 : isEpic ? 0.038 : 0.03;
             const fs = Math.max(minFs, Math.min(maxFs, r * scaleFactor));
             const labelText = escapeHtml(d.label || '');
             const labelColor = isProject
-                ? `hsl(${hue}, 80%, 85%)`
+                ? `hsl(${hue}, 90%, 90%)`
                 : isEpic
-                    ? `hsl(${hue}, 55%, 75%)`
-                    : `hsl(${hue}, 40%, 65%)`;
+                    ? `hsl(${hue}, 72%, 84%)`
+                    : `hsl(${hue}, 54%, 76%)`;
 
             // Label dimensions — allow wrapping for legibility
             const lineH = fs * 1.25;
@@ -878,14 +986,14 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
             const labelH = lineH * maxLines;
 
             // Position label at top of circle, inset from edge
-            const labelY = -r + Math.max(10, r * 0.18);
+            const labelY = -r + Math.max(18, r * 0.28);
 
             // Use a generous width — the label sits at the top where the chord is narrower,
             // but we'd rather show the full name and let CSS clip than truncate aggressively
-            const labelW = Math.max(44, r * 1.35);
+            const labelW = Math.max(52, r * (isProject ? 1.2 : isEpic ? 1.08 : 0.94));
 
             // Type prefix for projects/epics
-            const displayLabel = isProject ? `▣ ${labelText}` : isEpic ? `◆ ${labelText}` : labelText;
+            const displayLabel = labelText;
 
             g.append("foreignObject")
                 .attr("x", -labelW / 2).attr("y", labelY)
@@ -900,7 +1008,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 .style("height", "100%")
                 .style("pointer-events", "none")
                 .html(`
-                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 800}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.06em' : '0.04em'}; text-align: center; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${maxLines}; -webkit-box-orient: vertical; line-height: ${lineH}px; background: rgba(8,10,12,0.72); border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; padding: 3px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.28);">
+                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 820 : isEpic ? 760 : 700}; color: ${labelColor}; text-transform: none; letter-spacing: ${isProject ? '0.01em' : '0'}; text-align: center; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${maxLines}; -webkit-box-orient: vertical; line-height: ${lineH}px; background: ${isProject ? 'rgba(8,10,12,0.82)' : isEpic ? 'rgba(8,10,12,0.74)' : 'rgba(8,10,12,0.62)'}; border: 1px solid ${isProject ? 'rgba(255,255,255,0.2)' : isEpic ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.1)'}; border-radius: 999px; padding: ${isProject ? '4px 10px' : '3px 8px'}; box-shadow: ${isProject ? '0 2px 12px rgba(0,0,0,0.34)' : '0 2px 8px rgba(0,0,0,0.22)'};">
                         ${displayLabel}
                     </div>
                 `);

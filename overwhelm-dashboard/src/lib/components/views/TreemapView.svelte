@@ -70,13 +70,6 @@
         const nodeIdSet = new Set(nodes.map((n: any) => n.id));
         const projectRootId = ($filters as any).projectFilter as string | undefined;
 
-        function overflowChipSize(label: string, regionWidth: number, regionHeight: number) {
-            const desiredWidth = Math.max(56, label.length * 7 + 18);
-            const width = Math.min(140, Math.max(Math.min(regionWidth, desiredWidth), 56));
-            const height = Math.min(24, Math.max(18, regionHeight));
-            return { width, height };
-        }
-
         let stratifyNodes: any[];
         let rootId: string;
 
@@ -230,27 +223,26 @@
                 hiddenNodeIds.add(descendant.data.id);
             });
 
-            const summaryLabel = totalLeafCount <= 1
-                ? branchRoot.data.label
-                : `${branchRoot.data.label} +${totalLeafCount - 1}`;
             const regionWidth = Math.max(16, branchRoot.x1 - branchRoot.x0);
             const regionHeight = Math.max(12, branchRoot.y1 - branchRoot.y0);
-            const chipSize = overflowChipSize(summaryLabel, regionWidth, regionHeight);
 
             overflowNodes.push({
                 id: `__overflow_branch__${branchRootId}`,
-                label: summaryLabel,
+                label: branchRoot.data.label,
                 status: 'overflow',
+                type: 'overflow',
                 priority: 4,
                 project: branchRoot.data?.project || null,
                 parent: branchRoot.parent.data.id,
                 depth: branchRoot.depth,
                 x: branchRoot.x0 + regionWidth / 2,
                 y: branchRoot.y0 + regionHeight / 2,
-                _lw: chipSize.width,
-                _lh: chipSize.height,
-                _isLeaf: true,
+                _lw: regionWidth,
+                _lh: regionHeight,
+                _isLeaf: false,
                 _isOverflow: true,
+                _rollupKind: 'branch',
+                _rollupCount: totalLeafCount,
                 _leafCount: totalLeafCount,
                 totalLeafCount,
                 hiddenLabels: descendantLabels,
@@ -288,25 +280,26 @@
             }
 
             const labels = tinyLeaves.map((leaf: any) => leaf.data.label).filter(Boolean);
-            const overflowLabel = `+${tinyLeaves.length} more`;
             const regionWidth = Math.max(12, x1 - x0);
             const regionHeight = Math.max(10, y1 - y0);
-            const chipSize = overflowChipSize(overflowLabel, regionWidth, regionHeight);
 
             overflowNodes.push({
                 id: `__overflow__${parentId}`,
-                label: overflowLabel,
+                label: tinyLeaves.length === 1 ? 'Other Task' : 'Other Tasks',
                 status: 'overflow',
+                type: 'overflow',
                 priority: 4,
                 project: tinyLeaves[0]?.data?.project || null,
                 parent: parentId,
                 depth: (layoutMap.get(parentId)?.depth || 0) + 1,
                 x: x0 + regionWidth / 2,
                 y: y0 + regionHeight / 2,
-                _lw: chipSize.width,
-                _lh: chipSize.height,
-                _isLeaf: true,
+                _lw: regionWidth,
+                _lh: regionHeight,
+                _isLeaf: false,
                 _isOverflow: true,
+                _rollupKind: 'leaf',
+                _rollupCount: tinyLeaves.length,
                 _leafCount: tinyLeaves.length,
                 totalLeafCount: tinyLeaves.length,
                 hiddenLabels: labels,
@@ -410,13 +403,13 @@
         // Gentle dimming: non-focus leaf nodes slightly faded, and filter-dimmed nodes heavily faded
         if (showFocus) {
             nEls.style("opacity", (d: any) => {
-                if (d.filter_dimmed) return 0.2;
+                if (d.filter_dimmed) return 0.65;
                 if (!d._isLeaf) return null; // Don't dim containers
                 if (focusIds.has(d.id)) return 1;
                 return 0.65;
             });
         } else {
-            nEls.style("opacity", (d: any) => d.filter_dimmed ? 0.2 : null);
+            nEls.style("opacity", (d: any) => d.filter_dimmed ? 0.65 : null);
         }
 
         const eEls = d3
