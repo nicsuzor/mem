@@ -261,13 +261,38 @@ export function treemapHeaderMetrics(w: number, h: number, label: string, depth:
     const pad = 6;
     const badgeReserve = w > 50 ? 36 : 0;
     const textAvailW = Math.max(18, w - pad * 2 - badgeReserve);
-    const maxLines = depth <= 1 ? 3 : 2;
-    const maxFontSize = Math.max(7, Math.min(depth <= 1 ? 18 : 16, Math.min(w * 0.17, h * 0.2)));
-    const fitted = fitTreemapText(label, textAvailW, Math.max(18, Math.min(depth <= 1 ? 64 : 48, h * (depth <= 1 ? 0.38 : 0.28))), {
+    const minReadableWidth = depth <= 1 ? 72 : 58;
+    const minReadableHeight = depth <= 1 ? 28 : 22;
+    if (w < minReadableWidth || h < minReadableHeight) {
+        return {
+            headerH: 0,
+            fs: 0,
+            lines: 0,
+            labelLines: [] as string[],
+            lineHeight: 0,
+            badgeReserve,
+            pad,
+        };
+    }
+
+    const maxLines = depth <= 1 ? 2 : 2;
+    const maxFontSize = Math.max(8, Math.min(depth <= 1 ? 20 : 17, Math.min(w * 0.19, h * 0.24)));
+    const fitted = fitTreemapText(label, textAvailW, Math.max(20, Math.min(depth <= 1 ? 56 : 40, h * (depth <= 1 ? 0.34 : 0.22))), {
         minFontSize: 6,
         maxFontSize,
         maxLines,
     });
+    if (fitted.fontSize < (depth <= 1 ? 9 : 7.5)) {
+        return {
+            headerH: 0,
+            fs: fitted.fontSize,
+            lines: 0,
+            labelLines: [] as string[],
+            lineHeight: fitted.lineHeight,
+            badgeReserve,
+            pad,
+        };
+    }
     const basePad = 10;
     const headerH = Math.max(16, Math.min(58, fitted.lines.length * fitted.lineHeight + basePad));
     return {
@@ -363,6 +388,9 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         if (w > 30 && h > 20) {
             const label = d.label || '';
             const m = treemapHeaderMetrics(w, h, label, d.depth || 0);
+            if (m.headerH <= 0 || m.labelLines.length === 0) {
+                return;
+            }
             const labelW = Math.max(0, w - m.pad * 2 - m.badgeReserve);
             const labelHtml = m.labelLines.map((line: string) => escapeHtml(line)).join('<br/>');
 
@@ -385,7 +413,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("pointer-events", "none")
-                .html(`<div style="font-size:${m.fs}px; font-weight:900; color:${labelColor}; text-transform:uppercase; letter-spacing:0.1em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal; font-family:var(--font-mono),monospace;">${labelHtml}</div>`);
+                .html(`<div style="font-size:${m.fs}px; font-weight:850; color:${labelColor}; text-transform:uppercase; letter-spacing:0.04em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal; font-family:var(--font-mono),monospace;">${labelHtml}</div>`);
 
             renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
         }
@@ -407,6 +435,9 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         if (w > 30 && h > 16) {
             const label = d.label || '';
             const m = treemapHeaderMetrics(w, h, label, d.depth || 0);
+            if (m.headerH <= 0 || m.labelLines.length === 0) {
+                return;
+            }
             const labelW = Math.max(0, w - m.pad * 2 - m.badgeReserve);
             const labelHtml = m.labelLines.map((line: string) => escapeHtml(line)).join('<br/>');
 
@@ -425,7 +456,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("pointer-events", "none")
-                .html(`<div style="font-size:${m.fs}px; font-weight:800; color:hsl(${hue},70%,82%); text-transform:uppercase; letter-spacing:0.06em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal;">${labelHtml}</div>`);
+                .html(`<div style="font-size:${m.fs}px; font-weight:780; color:hsl(${hue},74%,86%); text-transform:none; letter-spacing:0.01em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal;">${labelHtml}</div>`);
 
             renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
         }
@@ -573,11 +604,13 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         // Parent Header Bar — uses shared metrics for consistent height
         const label = d.label || '';
         const m = treemapHeaderMetrics(w, h, label, d.depth || 0);
-        g.append("rect")
-            .attr("x", -w / 2).attr("y", -h / 2)
-            .attr("width", w).attr("height", m.headerH)
-            .attr("rx", 4)
-            .attr("fill", cellColor).attr("fill-opacity", 0.9);
+        if (m.headerH > 0) {
+            g.append("rect")
+                .attr("x", -w / 2).attr("y", -h / 2)
+                .attr("width", w).attr("height", m.headerH)
+                .attr("rx", 4)
+                .attr("fill", cellColor).attr("fill-opacity", 0.9);
+        }
     }
 
     // Grid overlay removed — status colors provide sufficient visual distinction
@@ -626,6 +659,9 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         if (isParent) {
             // Parent nodes: Draw label in the header bar — shared metrics
             const m = treemapHeaderMetrics(w, h, d.label || '', d.depth || 0);
+            if (m.headerH <= 0 || m.labelLines.length === 0) {
+                return;
+            }
             const labelW = Math.max(0, w - m.pad * 2 - m.badgeReserve);
             const labelHtml = m.labelLines.map((line: string) => escapeHtml(line)).join('<br/>');
             if (w > 20 && h > 12) {
@@ -640,7 +676,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                     .style("height", "100%")
                     .style("pointer-events", "none")
                     .html(`
-                        <div style="font-size: ${m.fs}px; font-weight: 800; color: rgba(255,255,255,0.94); overflow: hidden; white-space: normal; word-break: normal; overflow-wrap: normal; text-transform: uppercase; letter-spacing: 0.05em; line-height: ${m.lineHeight}px;">
+                        <div style="font-size: ${m.fs}px; font-weight: 760; color: rgba(255,255,255,0.96); overflow: hidden; white-space: normal; word-break: normal; overflow-wrap: normal; text-transform: none; letter-spacing: 0.01em; line-height: ${m.lineHeight}px;">
                             ${labelHtml}
                         </div>
                     `);

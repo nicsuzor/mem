@@ -140,7 +140,15 @@
         root.sort((a, b) => (b.value || 0) - (a.value || 0) || a.id!.localeCompare(b.id!));
 
         const visibleLeafCount = root.leaves().length;
-        const densityScale = Math.max(0.72, Math.min(1, Math.sqrt(visibleLeafCount / 180)));
+        const densityScale = visibleLeafCount > 520
+            ? 0.72
+            : visibleLeafCount > 380
+                ? 0.78
+                : visibleLeafCount > 260
+                    ? 0.84
+                    : visibleLeafCount > 160
+                        ? 0.9
+                        : 0.96;
         const layoutCanvasW = Math.round(canvasW * densityScale);
         const layoutCanvasH = Math.round(canvasH * densityScale);
 
