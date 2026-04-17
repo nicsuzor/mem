@@ -190,7 +190,7 @@
     </g>
   </svg>
 
-  <div class="graph-control-panel absolute bottom-4 right-4 z-20 flex flex-col gap-2 p-1">
+  <div class="graph-control-panel absolute bottom-24 right-4 z-20 flex flex-col gap-2 p-1">
     <button class="graph-control-icon-button" title="Zoom In" onclick={handleZoomIn}>
       <span class="material-symbols-outlined text-sm">zoom_in</span>
     </button>

@@ -60,6 +60,118 @@
     let lastRandomizeNonce = 0;
     let lastRunning = running;
 
+    function resolveLinkReferences(nodes: GraphNode[], links: GraphEdge[]) {
+        const nodeById = new Map(nodes.map((node) => [node.id, node]));
+
+        links.forEach((link: any) => {
+            const sourceId = typeof link.source === 'object' ? link.source.id : link.source;
+            const targetId = typeof link.target === 'object' ? link.target.id : link.target;
+
+            link.source = nodeById.get(sourceId) || link.source;
+            link.target = nodeById.get(targetId) || link.target;
+        });
+    }
+
+    function syncNodeDimensions(nodes: GraphNode[]) {
+        nodes.forEach((node: any) => {
+            node.width = node.w + 12;
+            node.height = node.h + 24;
+        });
+    }
+
+    function buildPhysicsLinks(nodes: GraphNode[], links: GraphEdge[]) {
+        const parentNodeIds = new Set(nodes.filter((candidate) => nodes.some((node) => (node as any)._safe_parent === candidate.id)).map((node) => node.id));
+
+        return ($viewSettings.colaLinks ? links : []).filter((link: any) => {
+            if (typeof link.source !== 'object' || typeof link.target !== 'object') return false;
+            return true;
+        }).map((link: any) => {
+            let length = 1;
+            let weight = 0.05;
+            let opacity = link.opacity ?? 0.6;
+
+            if (link.type === 'parent') {
+                const isChildParent = parentNodeIds.has(link.target.id);
+                if (isChildParent) {
+                    length = $viewSettings.colaLinkDistInterParent;
+                    weight = $viewSettings.colaLinkWeightInterParent;
+                } else {
+                    length = $viewSettings.colaLinkDistIntraParent;
+                    weight = $viewSettings.colaLinkWeightIntraParent;
+                }
+            } else if (link.type === 'depends_on') {
+                length = $viewSettings.colaLinkDistDependsOn;
+                weight = $viewSettings.colaLinkWeightDependsOn;
+            } else if (link.type === 'ref' || link.type === 'soft_depends_on') {
+                length = $viewSettings.colaLinkDistRef;
+                weight = $viewSettings.colaLinkWeightRef;
+            }
+
+            link.length = length;
+            link.weight = weight;
+            link.opacity = opacity;
+            return link;
+        });
+    }
+
+    function renderNodes(nodes: GraphNode[]) {
+        const activeId = $selection.activeNodeId;
+        const nodeSelection = d3.select(nodesLayer)
+            .selectAll<SVGGElement, GraphNode>("g.node")
+            .data(nodes, (node) => node.id)
+            .join("g")
+            .attr("class", "node")
+            .attr("transform", (node) => `translate(${node.x ?? 0},${node.y ?? 0})`);
+
+        nodeSelection.each(function (node) {
+            const group = d3.select(this) as any;
+            group.selectAll("*").remove();
+            buildTaskCardNode(group, node, node.id === activeId);
+        });
+
+        bindDragAndClick(nodeSelection);
+    }
+
+    function renderLinks(colaLinks: GraphEdge[]) {
+        if (!linksLayer) return;
+
+        d3.select(linksLayer).selectAll("line.link")
+            .data(colaLinks)
+            .join("line")
+            .attr("class", "link")
+            .attr("stroke", (link: any) => link.color || "#cbd5e1")
+            .attr("stroke-width", (link: any) => link.width || 1.5)
+            .attr("stroke-dasharray", (link: any) => link.dash || null)
+            .attr("opacity", (link: any) => link.opacity ?? 0.6);
+    }
+
+    function applyLiveLayoutSettings(heat = 0.45) {
+        if (!$graphData || !colaLayout) return;
+
+        const nodes = $graphData.nodes;
+        const links = $graphData.links;
+
+        resolveLinkReferences(nodes, links);
+        syncNodeDimensions(nodes);
+        colaGroups = $viewSettings.colaGroups ? buildColaGroups(nodes, links) : [];
+
+        const colaLinks = buildPhysicsLinks(nodes, links);
+        renderNodes(nodes);
+        renderLinks(colaLinks);
+
+        colaLayout
+            .nodes(nodes as any)
+            .links(colaLinks as any)
+            .groups(colaGroups)
+            .linkDistance((link: any) => link.length)
+            .convergenceThreshold($viewSettings.colaConvergence)
+            .avoidOverlaps($viewSettings.colaAvoidOverlaps)
+            .handleDisconnected($viewSettings.colaHandleDisconnected);
+
+        tickVisuals();
+        reheatLayout(heat);
+    }
+
     function reheatLayout(heat = 1) {
         if (!colaLayout) return;
 
@@ -238,7 +350,7 @@
                 if (structureChanged) {
                     rebuild(FULL_START_ITERATIONS, isFirstBuild ? 0.18 : 0.35, isFirstBuild);
                 } else if (paramsChanged) {
-                    rebuild(SOFT_START_ITERATIONS, 0.45, false);
+                    applyLiveLayoutSettings(0.45);
                 }
             }
         }
@@ -430,15 +542,8 @@
         const nodes: GraphNode[] = $graphData.nodes;
         const links: GraphEdge[] = $graphData.links;
 
-        // Resolve link references to node objects
-        const nodeById = new Map(nodes.map(n => [n.id, n]));
-        links.forEach((l: any) => {
-            if (typeof l.source === 'string') l.source = nodeById.get(l.source) || l.source;
-            if (typeof l.target === 'string') l.target = nodeById.get(l.target) || l.target;
-        });
-
-        // Set Cola dimensions = actual card size + visual buffer for badges/glows
-        nodes.forEach((n: any) => { n.width = n.w + 12; n.height = n.h + 24; });
+        resolveLinkReferences(nodes, links);
+        syncNodeDimensions(nodes);
 
         // Build flat groups
         colaGroups = $viewSettings.colaGroups ? buildColaGroups(nodes, links) : [];
@@ -464,60 +569,10 @@
         }
 
         // Render nodes
-        const activeId = $selection.activeNodeId;
-        const nEls = d3.select(nodesLayer)
-            .selectAll<SVGGElement, GraphNode>("g.node")
-            .data(nodes, d => d.id)
-            .join("g").attr("class", "node")
-            .attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
-        nEls.each(function (d) {
-            const g = d3.select(this) as any;
-            g.selectAll("*").remove();
-            buildTaskCardNode(g, d, d.id === activeId);
-        });
-        bindDragAndClick(nEls);
+        renderNodes(nodes);
 
-        // Physics links: apply visibility filters and physics settings per link type
-        const parentNodeIds = new Set(nodes.filter((candidate) => nodes.some((node) => (node as any)._safe_parent === candidate.id)).map((node) => node.id));
-        const colaLinks = ($viewSettings.colaLinks ? links : []).filter((l: any) => {
-            if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
-
-            return true;
-        }).map((l: any) => {
-            // Apply physics settings
-            let length = 1;
-            let weight = 0.05;
-            let opacity = l.opacity ?? 0.6;
-            if (l.type === 'parent') {
-                // Parent-child edges are always preserved. Children that have their own
-                // descendants use the inter-parent settings; leaf children use the intra-parent settings.
-                const isChildParent = parentNodeIds.has(l.target.id);
-                if (isChildParent) {
-                    length = $viewSettings.colaLinkDistInterParent;
-                    weight = $viewSettings.colaLinkWeightInterParent;
-                } else {
-                    length = $viewSettings.colaLinkDistIntraParent;
-                    weight = $viewSettings.colaLinkWeightIntraParent;
-                }
-            } else if (l.type === 'depends_on') {
-                length = $viewSettings.colaLinkDistDependsOn;
-                weight = $viewSettings.colaLinkWeightDependsOn;
-            } else if (l.type === 'ref' || l.type === 'soft_depends_on') {
-                length = $viewSettings.colaLinkDistRef;
-                weight = $viewSettings.colaLinkWeightRef;
-            }
-            return { ...l, length, weight, opacity };
-        });
-
-        if (linksLayer) {
-            d3.select(linksLayer).selectAll("line.link")
-                .data(colaLinks)
-                .join("line").attr("class", "link")
-                .attr("stroke", (d: any) => d.color || "#cbd5e1")
-                .attr("stroke-width", (d: any) => d.width || 1.5)
-                .attr("stroke-dasharray", (d: any) => d.dash || null)
-                .attr("opacity", (d: any) => d.opacity ?? 0.6);
-        }
+        const colaLinks = buildPhysicsLinks(nodes, links);
+        renderLinks(colaLinks);
 
         colaLayout = cola.d3adaptor(d3)
             .size([cw, ch])

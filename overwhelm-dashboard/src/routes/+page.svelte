@@ -76,8 +76,55 @@
     }
     $: focusNode = $selection.focusNodeId ? $graphData?.nodes.find(n => n.id === $selection.focusNodeId) : null;
 
+    function edgeEndpointId(endpoint: GraphNode | string) {
+        return typeof endpoint === "object" ? endpoint.id : endpoint;
+    }
+
+    function edgeIdentity(edge: GraphEdge) {
+        return `${edgeEndpointId(edge.source)}>${edgeEndpointId(edge.target)}>${edge.type || ""}`;
+    }
+
+    function reuseGraphNode(nextNode: GraphNode, previousNode?: GraphNode) {
+        if (!previousNode) return nextNode;
+
+        const preserved = {
+            x: (previousNode as any).x,
+            y: (previousNode as any).y,
+            px: (previousNode as any).px,
+            py: (previousNode as any).py,
+            fixed: (previousNode as any).fixed,
+            vx: (previousNode as any).vx,
+            vy: (previousNode as any).vy,
+            width: (previousNode as any).width,
+            height: (previousNode as any).height,
+        };
+
+        Object.assign(previousNode, nextNode);
+
+        if (typeof preserved.x === "number") (previousNode as any).x = preserved.x;
+        if (typeof preserved.y === "number") (previousNode as any).y = preserved.y;
+        if (typeof preserved.px === "number") (previousNode as any).px = preserved.px;
+        if (typeof preserved.py === "number") (previousNode as any).py = preserved.py;
+        if (typeof preserved.fixed === "number") (previousNode as any).fixed = preserved.fixed;
+        if (typeof preserved.vx === "number") (previousNode as any).vx = preserved.vx;
+        if (typeof preserved.vy === "number") (previousNode as any).vy = preserved.vy;
+        if (typeof preserved.width === "number") (previousNode as any).width = preserved.width;
+        if (typeof preserved.height === "number") (previousNode as any).height = preserved.height;
+
+        return previousNode;
+    }
+
+    function reuseGraphLink(nextLink: GraphEdge, previousLink?: GraphEdge) {
+        if (!previousLink) return nextLink;
+        Object.assign(previousLink, nextLink);
+        return previousLink;
+    }
+
     function recomputeGraph() {
         if (!rawGraph) return;
+
+        const previousNodesById = new Map(($graphData?.nodes || []).map((node) => [node.id, node]));
+        const previousLinksByKey = new Map(($graphData?.links || []).map((link) => [edgeIdentity(link), link]));
 
         const prepared = prepareGraphData(rawGraph);
         let fNodes = [...prepared.nodes];
@@ -296,6 +343,9 @@
             const tid = typeof l.target === "object" ? l.target.id : l.target;
             return survivingNodeIds.has(sid) && survivingNodeIds.has(tid);
         });
+
+        fNodes = fNodes.map((node) => reuseGraphNode(node, previousNodesById.get(node.id)));
+        fLinks = fLinks.map((link) => reuseGraphLink(link, previousLinksByKey.get(edgeIdentity(link))));
 
         $graphData = {
             ...prepared,
