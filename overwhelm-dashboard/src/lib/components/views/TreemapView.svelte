@@ -37,7 +37,7 @@
         // Update Highlights ONLY when selection changes
         const activeNodeId = $selection.activeNodeId;
         const hoveredNodeId = $selection.hoveredNodeId;
-        
+
         if (nodesLayer) {
             d3.select(nodesLayer)
                 .selectAll<SVGGElement, any>("g.node")
@@ -46,7 +46,7 @@
                     const isSelected = d.id === activeNodeId;
                     const isHovered = d.id === hoveredNodeId;
                     const needsHighlight = isSelected || isHovered;
-                    
+
                     const lastState = (d as any)._lastHighlight;
                     if (g.selectAll("*").empty() || lastState !== needsHighlight) {
                         g.selectAll("*").remove();
@@ -138,10 +138,10 @@
 
         const treemap = d3.treemap<any>()
             .size([canvasW, canvasH])
-            .paddingInner((node: any) => node.depth <= 1 ? 14 : node.depth <= 2 ? 6 : 5)
-            .paddingBottom((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
-            .paddingLeft((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
-            .paddingRight((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
+            .paddingInner((node: any) => node.depth <= 1 ? 14 : node.depth <= 2 ? 6 : 2)
+            .paddingBottom((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 2)
+            .paddingLeft((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 2)
+            .paddingRight((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 2)
             .paddingTop((node: any) => estimateHeaderHeight(node))
             .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
@@ -181,7 +181,7 @@
                 return false;
             })
             .sort((a: any, b: any) => (a.depth || 0) - (b.depth || 0));
-            
+
         links = data.links;
 
         renderNodes();
@@ -225,9 +225,11 @@
 
             // Focus accent: gold left-border on priority focus tasks
             if (showFocus && d._isLeaf && focusIds.has(d.id)) {
+                const focusW = d._lw || d.w;
+                const focusH = d._lh || d.h;
                 g.append("rect")
-                    .attr("x", -d.w / 2).attr("y", -d.h / 2)
-                    .attr("width", 3).attr("height", d.h)
+                    .attr("x", -focusW / 2).attr("y", -focusH / 2)
+                    .attr("width", Math.min(3, focusW)).attr("height", focusH)
                     .attr("fill", "#f59e0b").attr("opacity", 0.9);
             }
         });

@@ -22,15 +22,15 @@
                 w: containerEl?.clientWidth || 1200,
                 h: containerEl?.clientHeight || 800,
             },
-            nodeRepulsion: () => 20000,
-            idealEdgeLength: () => $viewSettings.colaLinkLength,
-            edgeElasticity: () => 80,
-            gravity: 0.5,
+            nodeRepulsion: () => 60000,
+            idealEdgeLength: () => Math.max(220, $viewSettings.colaLinkLength * 0.5),
+            edgeElasticity: () => 120,
+            gravity: 0.28,
             numIter: 1000,
-            padding: 60,
+            padding: 100,
             nodeDimensionsIncludeLabels: true,
-            nodeOverlap: 12,
-            randomize: false,
+            nodeOverlap: 24,
+            randomize: true,
         };
     }
 
@@ -73,13 +73,19 @@
     }
 
     function isMetroChainNode(node: GraphNode): boolean {
+        const vis = priorityVisibility(node.priority);
+        if (vis === 'hidden') return false;
+
         const isContainer = CONTAINER_TYPES.has(node.type.toLowerCase());
         if (isContainer) {
-            return priorityVisibility(node.priority) !== 'hidden';
+            return true;
         }
 
-        const isInterchange = node.totalLeafCount > 5 || node.dw > 10;
-        return node.priority <= 2 || isInterchange;
+        if (node.priority <= 1 && INCOMPLETE_STATUSES.has(node.status)) {
+            return true;
+        }
+
+        return vis === 'bright';
     }
 
     function initCytoscape() {
@@ -89,7 +95,8 @@
 
         const cyNodes = $graphData.nodes.map((n: any) => {
             const isInterchange = CONTAINER_TYPES.has(n.type.toLowerCase()) && (n.totalLeafCount > 5 || n.dw > 10);
-            const groupVisibility = CONTAINER_TYPES.has(n.type.toLowerCase()) ? priorityVisibility(n.priority) : 'bright';
+            const priorityVis = priorityVisibility(n.priority);
+            const groupVisibility = CONTAINER_TYPES.has(n.type.toLowerCase()) ? priorityVis : 'bright';
             const isOnChain = isMetroChainNode(n);
 
             return {
@@ -102,6 +109,7 @@
                     isInterchange,
                     isOnChain,
                     isContainer: CONTAINER_TYPES.has(n.type.toLowerCase()),
+                    priorityVisibility: priorityVis,
                     groupVisibility,
                     isHighPriority: n.priority <= 1 && INCOMPLETE_STATUSES.has(n.status),
                     isCompleted: !INCOMPLETE_STATUSES.has(n.status),
@@ -109,7 +117,6 @@
                     priorityColor: n.borderColor,
                     lineColor: getLineColor(n.project || 'default')
                 },
-                position: n.x !== undefined ? { x: n.x, y: n.y } : undefined
             };
         });
 
@@ -136,7 +143,6 @@
             container: containerEl,
             elements: [...cyNodes, ...cyEdges],
             style: [
-                // Interchange stations — largest, always labeled
                 {
                     selector: 'node[?isInterchange][groupVisibility = "bright"]',
                     style: {
@@ -164,7 +170,6 @@
                         'overlay-opacity': 0.12,
                     } as any,
                 },
-                // High-priority stations on chain — prominent
                 {
                     selector: 'node[?isHighPriority][?isOnChain][!isInterchange]',
                     style: {
@@ -191,7 +196,6 @@
                         'overlay-opacity': 0.12,
                     } as any,
                 },
-                // On-chain container nodes (epics) — medium with label
                 {
                     selector: 'node[?isContainer][groupVisibility = "bright"][!isInterchange][!isHighPriority]',
                     style: {
@@ -216,7 +220,6 @@
                         'min-zoomed-font-size': 5,
                     } as any,
                 },
-                // Half-visible groups — minor stations, no label
                 {
                     selector: 'node[?isContainer][groupVisibility = "half"]',
                     style: {
@@ -233,7 +236,6 @@
                         'opacity': 0.9,
                     } as any,
                 },
-                // Hidden groups — remove station and label entirely
                 {
                     selector: 'node[?isContainer][groupVisibility = "hidden"]',
                     style: {
@@ -241,9 +243,8 @@
                         'label': '',
                     } as any,
                 },
-                // On-chain non-priority tasks — medium dots, labels on zoom
                 {
-                    selector: 'node[?isOnChain][!isContainer][!isHighPriority][!isInterchange]',
+                    selector: 'node[!isContainer][priorityVisibility = "bright"][?isOnChain][!isHighPriority][!isInterchange]',
                     style: {
                         'shape': 'ellipse',
                         'width': 8,
@@ -264,9 +265,23 @@
                         'min-zoomed-font-size': 7,
                     } as any,
                 },
-                // Context stations — at or below track width
                 {
-                    selector: 'node[!isOnChain][!isContainer]',
+                    selector: 'node[!isContainer][priorityVisibility = "half"]',
+                    style: {
+                        'shape': 'ellipse',
+                        'width': 5,
+                        'height': 5,
+                        'background-color': 'data(statusColor)',
+                        'background-opacity': 0.55,
+                        'border-width': 1,
+                        'border-color': 'data(lineColor)',
+                        'border-opacity': 0.45,
+                        'label': '',
+                        'opacity': 0.55,
+                    } as any,
+                },
+                {
+                    selector: 'node[!isOnChain][!isContainer][priorityVisibility != "half"]',
                     style: {
                         'shape': 'ellipse',
                         'width': 4,
@@ -281,7 +296,6 @@
                         'opacity': 0.4,
                     } as any,
                 },
-                // Completed — extra dimmed
                 {
                     selector: 'node[?isCompleted]',
                     style: {
@@ -291,7 +305,6 @@
                         'border-width': 0.5,
                     } as any,
                 },
-                // Priority chain parent edges — thick metro lines
                 {
                     selector: 'edge[type="parent"][?isOnChain]',
                     style: {
@@ -303,7 +316,6 @@
                         'taxi-turn': '20px',
                     } as any,
                 },
-                // Priority chain dependency edges — dashed amber
                 {
                     selector: 'edge[type="depends_on"][?isOnChain]',
                     style: {
@@ -319,7 +331,6 @@
                         'arrow-scale': 0.6,
                     } as any,
                 },
-                // General reference/link edges — thin grey
                 {
                     selector: 'edge[!isOnChain]',
                     style: {
@@ -329,7 +340,6 @@
                         'curve-style': 'haystack'
                     } as any,
                 },
-                // Selection / Focus state
                 {
                     selector: ':selected',
                     style: {
@@ -387,8 +397,10 @@
         for (const n of $graphData.nodes) {
             const cyNode = cy.getElementById(n.id);
             if (!cyNode.length) continue;
+            const priorityVis = priorityVisibility(n.priority);
             const groupVisibility = CONTAINER_TYPES.has(n.type.toLowerCase()) ? priorityVisibility(n.priority) : 'bright';
             cyNode.data('statusColor', n.fill);
+            cyNode.data('priorityVisibility', priorityVis);
             cyNode.data('groupVisibility', groupVisibility);
             cyNode.data('isOnChain', isMetroChainNode(n));
             cyNode.data('isCompleted', !INCOMPLETE_STATUSES.has(n.status));

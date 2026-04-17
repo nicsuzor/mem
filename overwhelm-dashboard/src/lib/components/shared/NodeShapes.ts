@@ -206,6 +206,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     const w = d._lw || d.w;
     const h = d._lh || d.h;
     const isParent = !(d._isLeaf ?? d.isLeaf);
+    const isMicroLeaf = !isParent && (w < 18 || h < 12 || w / Math.max(h, 1) < 0.22);
 
 
     if (isSelected) {
@@ -405,6 +406,32 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // Add native tooltip
     g.append("title").text(`${d.label} (${d.status})\nPriority: P${d.priority}\nProject: ${d.project || 'None'}`);
+
+    if (isMicroLeaf) {
+        const compactW = Math.max(2, Math.min(w, 8));
+        const compactH = Math.max(2, Math.min(h, 8));
+        g.append("rect")
+            .attr("x", -compactW / 2).attr("y", -compactH / 2)
+            .attr("width", compactW).attr("height", compactH)
+            .attr("rx", Math.min(2, compactH / 2))
+            .attr("fill", cellColor)
+            .attr("fill-opacity", 0.9)
+            .attr("stroke", isSelected ? "#fff" : priorityBorder)
+            .attr("stroke-width", isSelected ? 2 : 0.75);
+
+        if (d.status === "blocked" && compactW >= 4) {
+            g.append("rect")
+                .attr("x", -compactW / 2)
+                .attr("y", -compactH / 2)
+                .attr("width", Math.min(2, compactW))
+                .attr("height", compactH)
+                .attr("rx", 1)
+                .attr("fill", "#9B5555")
+                .attr("opacity", 0.75);
+        }
+
+        return;
+    }
 
     // Base solid background — status fill + priority border
     g.append("rect")
