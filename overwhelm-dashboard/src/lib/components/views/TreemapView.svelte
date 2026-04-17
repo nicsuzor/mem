@@ -63,6 +63,10 @@
         const TINY_LEAF_WIDTH = 18;
         const TINY_LEAF_HEIGHT = 12;
         const TINY_LEAF_ASPECT = 0.22;
+        const TINY_BRANCH_WIDTH = 34;
+        const TINY_BRANCH_HEIGHT = 18;
+        const TINY_BRANCH_ASPECT = 0.3;
+        const MAX_TINY_BRANCH_LEAVES = 3;
         const nodeIdSet = new Set(nodes.map((n: any) => n.id));
         const projectRootId = ($filters as any).projectFilter as string | undefined;
 
@@ -170,8 +174,71 @@
             });
         });
 
+        const hiddenNodeIds = new Set<string>();
+        const overflowNodes: any[] = [];
+
+        const tinyBranchRoots = new Set<string>();
+        root.descendants().forEach((node: any) => {
+            if (!node.children || node.depth <= 1) return;
+            if (!node.parent || !node.parent.data?.id) return;
+
+            const width = node.x1 - node.x0;
+            const height = node.y1 - node.y0;
+            const leafCount = node.leaves().length;
+            const isTinyBranch = width < TINY_BRANCH_WIDTH || height < TINY_BRANCH_HEIGHT || width / Math.max(height, 1) < TINY_BRANCH_ASPECT;
+            if (!isTinyBranch || leafCount > MAX_TINY_BRANCH_LEAVES) return;
+
+            let ancestor = node.parent;
+            while (ancestor) {
+                if (tinyBranchRoots.has(ancestor.data?.id)) {
+                    return;
+                }
+                ancestor = ancestor.parent;
+            }
+
+            tinyBranchRoots.add(node.data.id);
+        });
+
+        for (const branchRootId of tinyBranchRoots) {
+            const branchRoot = root.descendants().find((node: any) => node.data.id === branchRootId) as any;
+            if (!branchRoot || !branchRoot.parent?.data?.id) continue;
+
+            const descendantLabels = branchRoot.leaves().map((leaf: any) => leaf.data.label).filter(Boolean);
+            const totalLeafCount = branchRoot.leaves().length;
+
+            branchRoot.descendants().forEach((descendant: any) => {
+                hiddenNodeIds.add(descendant.data.id);
+            });
+
+            const width = Math.max(16, branchRoot.x1 - branchRoot.x0);
+            const height = Math.max(12, branchRoot.y1 - branchRoot.y0);
+            const summaryLabel = totalLeafCount <= 1
+                ? branchRoot.data.label
+                : `${branchRoot.data.label} +${totalLeafCount - 1}`;
+
+            overflowNodes.push({
+                id: `__overflow_branch__${branchRootId}`,
+                label: summaryLabel,
+                status: 'overflow',
+                priority: 4,
+                project: branchRoot.data?.project || null,
+                parent: branchRoot.parent.data.id,
+                depth: branchRoot.depth,
+                x: branchRoot.x0 + width / 2,
+                y: branchRoot.y0 + height / 2,
+                _lw: width,
+                _lh: height,
+                _isLeaf: true,
+                _isOverflow: true,
+                _leafCount: totalLeafCount,
+                totalLeafCount,
+                hiddenLabels: descendantLabels,
+            });
+        }
+
         const tinyLeavesByParent = new Map<string, any[]>();
         root.leaves().forEach((leaf: any) => {
+            if (hiddenNodeIds.has(leaf.data.id)) return;
             const width = leaf.x1 - leaf.x0;
             const height = leaf.y1 - leaf.y0;
             const isTiny = width < TINY_LEAF_WIDTH || height < TINY_LEAF_HEIGHT || width / Math.max(height, 1) < TINY_LEAF_ASPECT;
@@ -184,7 +251,6 @@
         });
 
         const hiddenLeafIds = new Set<string>();
-        const overflowNodes: any[] = [];
         for (const [parentId, tinyLeaves] of tinyLeavesByParent) {
             if (tinyLeaves.length < 2) continue;
 
@@ -226,6 +292,10 @@
 
         visibleNodes = nodes
             .filter((n: any) => {
+                if (hiddenNodeIds.has(n.id)) {
+                    n.x = -9999;
+                    return false;
+                }
                 if (hiddenLeafIds.has(n.id)) {
                     n.x = -9999;
                     return false;
