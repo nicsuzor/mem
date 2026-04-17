@@ -443,12 +443,31 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             .style("transition", "all 0.2s ease");
 
         if (w > 40 && h > 15) {
-            g.append("text")
-                .attr("x", 0).attr("y", 0)
-                .attr("text-anchor", "middle").attr("dominant-baseline", "central")
-                .attr("font-size", "10px").attr("font-weight", "800").attr("font-family", "monospace")
-                .attr("fill", "rgba(255,255,255,0.82)")
-                .text(d.label || '[...]');
+            const overflowTextFit = fitTreemapText(
+                d.label || '[...]',
+                Math.max(0, w - 10),
+                Math.max(0, h - 6),
+                {
+                    minFontSize: 6,
+                    maxFontSize: 11,
+                    maxLines: h > 22 ? 2 : 1,
+                },
+            );
+            const overflowHtml = overflowTextFit.lines.map((line: string) => escapeHtml(line)).join('<br/>');
+
+            g.append("foreignObject")
+                .attr("x", -w / 2 + 5).attr("y", -h / 2 + 3)
+                .attr("width", Math.max(0, w - 10)).attr("height", Math.max(0, h - 6))
+                .style("pointer-events", "none")
+                .append("xhtml:div")
+                .style("display", "flex")
+                .style("align-items", "center")
+                .style("justify-content", "center")
+                .style("width", "100%")
+                .style("height", "100%")
+                .style("overflow", "hidden")
+                .style("pointer-events", "none")
+                .html(`<div style="font-size:${overflowTextFit.fontSize}px; font-weight:800; font-family:var(--font-mono), monospace; color:rgba(255,255,255,0.82); line-height:${overflowTextFit.lineHeight}px; overflow:hidden; text-align:center; white-space:normal; word-break:normal; overflow-wrap:normal;">${overflowHtml}</div>`);
         }
         return; // Skip the rest of the drawing logic for overflow nodes
     }
