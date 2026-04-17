@@ -40,6 +40,7 @@
     const DRAG_REHEAT = 0.35;
     const FULL_START_ITERATIONS: readonly [number, number, number] = [30, 30, 30];
     const RESTART_START_ITERATIONS: readonly [number, number, number] = [5, 5, 5];
+    const SOFT_START_ITERATIONS: readonly [number, number, number] = [0, 10, 20];
 
     export let containerGroup: SVGGElement;
     export let running = false;
@@ -66,6 +67,15 @@
         // noticeable motion once the graph has already converged.
         colaLayout.alpha(heat);
         running = true;
+    }
+
+    function resumeLayout(heat = 0.45) {
+        if (colaLayout) {
+            reheatLayout(heat);
+            return;
+        }
+
+        rebuild(RESTART_START_ITERATIONS, heat, false);
     }
 
     function jiggleNodes(radius = 24) {
@@ -187,11 +197,10 @@
             return;
         }
 
-        jiggleNodes(DEFAULT_JIGGLE_RADIUS);
-        rebuild(RESTART_START_ITERATIONS, 1);
+        resumeLayout(0.55);
     }
 
-    // Full physics rebuild only when structure (node/link set) or Cola params change
+    // Preserve settled positions wherever possible. Only reseed on the first build.
     let lastStructureKey = '';
     let lastColaParams = '';
     $: {
@@ -215,16 +224,23 @@
             $filters.edgeDependencies,
             $filters.edgeReferences,
         ].join('|');
-        if (
-            containerGroup &&
-            $graphData &&
-            nodesLayer &&
-            hullLayer &&
-            (sk !== lastStructureKey || cp !== lastColaParams)
-        ) {
-            lastStructureKey = sk;
-            lastColaParams = cp;
-            rebuild(FULL_START_ITERATIONS, 0.1, true);
+
+        if (containerGroup && $graphData && nodesLayer && hullLayer) {
+            const structureChanged = sk !== lastStructureKey;
+            const paramsChanged = cp !== lastColaParams;
+
+            if (structureChanged || paramsChanged) {
+                const isFirstBuild = !colaLayout;
+
+                lastStructureKey = sk;
+                lastColaParams = cp;
+
+                if (structureChanged) {
+                    rebuild(FULL_START_ITERATIONS, isFirstBuild ? 0.18 : 0.35, isFirstBuild);
+                } else if (paramsChanged) {
+                    rebuild(SOFT_START_ITERATIONS, 0.45, false);
+                }
+            }
         }
     }
 
@@ -532,14 +548,14 @@
         if (!$graphData) return;
 
         jiggleNodes(DEFAULT_JIGGLE_RADIUS);
-        rebuild(RESTART_START_ITERATIONS, 1);
+        tickVisuals();
+        resumeLayout(1);
     }
 
     $: if (restartNonce !== lastRestartNonce) {
         lastRestartNonce = restartNonce;
         if (restartNonce > 0 && $graphData) {
-            jiggleNodes(DEFAULT_JIGGLE_RADIUS);
-            rebuild(RESTART_START_ITERATIONS, 1);
+            resumeLayout(0.7);
         }
     }
 

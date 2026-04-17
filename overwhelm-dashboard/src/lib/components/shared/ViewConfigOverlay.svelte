@@ -20,7 +20,7 @@
 </script>
 
 {#if hasLiveControls}
-    <div class="absolute bottom-4 left-[200px] z-30 flex flex-col items-start gap-2 font-mono">
+    <div class="graph-dock graph-dock-top-right font-mono">
         {#if $viewSettings.showGraphConfig}
             <div class="config-panel graph-control-panel">
                 <div class="flex items-center justify-between border-b border-primary/10 pb-2">
@@ -207,6 +207,7 @@
         flex-direction: column;
         gap: 16px;
         min-width: 280px;
+        max-width: min(24rem, calc(100vw - 2rem));
         max-height: 80vh;
         overflow-y: auto;
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);

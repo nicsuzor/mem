@@ -75,125 +75,125 @@
 </script>
 
 {#if $viewSettings.showLegend}
-    <div class="legend graph-control-panel" role="complementary" aria-label="Filters & Legend">
-        <div class="legend-header">
-            <span class="legend-title">VISIBILITY</span>
-            <span class="component-name">filter-panel</span>
-            <button class="legend-close graph-control-icon-button" on:click={() => viewSettings.update(s => ({ ...s, showLegend: false }))}>
-                <span class="material-symbols-outlined" style="font-size: 14px;">close</span>
-            </button>
-        </div>
-
-        <!-- Status filters (click to cycle: bright → half → hidden) -->
-        <div class="legend-section">
-            <span class="legend-section-title">STATUS</span>
-            {#each statusGroups as group}
-                {@const vis = $filters[group.key as keyof typeof $filters] as VisibilityState}
-                <button
-                    class="legend-item"
-                    class:dimmed={vis === 'hidden'}
-                    on:click={() => cycleFilter(group.key)}
-                    title="Click to cycle: bright → half → hidden"
-                >
-                    <div class="legend-box" style="background:{group.color}; opacity:{edgeOpacityForLegend(vis)};"></div>
-                    <span class="legend-label">{group.label}</span>
-                    <span class="edge-state">{stateLabel(vis)}</span>
+    <div class="graph-dock graph-dock-bottom-left">
+        <div class="legend graph-control-panel" role="complementary" aria-label="Filters & Legend">
+            <div class="legend-header">
+                <span class="legend-title">VISIBILITY</span>
+                <span class="component-name">filter-panel</span>
+                <button class="legend-close graph-control-icon-button" on:click={() => viewSettings.update(s => ({ ...s, showLegend: false }))}>
+                    <span class="material-symbols-outlined" style="font-size: 14px;">close</span>
                 </button>
-            {/each}
-        </div>
+            </div>
 
-        <!-- Priority filter (click to cycle: bright → half → hidden) -->
-        <div class="legend-section">
-            <span class="legend-section-title">PRIORITY</span>
-            {#each priorityItems as p}
-                {@const vis = $filters[p.key as keyof typeof $filters] as VisibilityState}
-                <button
-                    class="legend-item"
-                    class:dimmed={vis === 'hidden'}
-                    on:click={() => cycleFilter(p.key)}
-                    title="Click to cycle: bright → half → hidden"
-                >
-                    <div class="legend-box" style="background:transparent; border: 2px solid {p.color}; opacity:{edgeOpacityForLegend(vis)};"></div>
-                    <span class="legend-label">{p.label}</span>
-                    <span class="edge-state">{stateLabel(vis)}</span>
-                </button>
-            {/each}
-        </div>
-
-        <!-- Edge visibility (click to cycle: bright → half → hidden) -->
-        <div class="legend-section">
-            <span class="legend-section-title">EDGES</span>
-            {#each edgeTypes as edge}
-                {@const vis = $filters[edge.key as keyof typeof $filters] as VisibilityState}
-                <button
-                    class="legend-item"
-                    class:dimmed={vis === 'hidden'}
-                    on:click={() => cycleFilter(edge.key)}
-                    title="Click to cycle: bright → half → hidden"
-                >
-                    <div class="legend-line" style="background:{edge.color}; opacity:{edgeOpacityForLegend(vis)};"
-                        class:dashed={edge.dash}></div>
-                    <span class="legend-label">{edge.label}</span>
-                    <span class="edge-state">{stateLabel(vis)}</span>
-                </button>
-            {/each}
-        </div>
-
-        <!-- Project filter with color swatches -->
-        <div class="legend-section">
-            <span class="legend-section-title">PROJECTS (CLICK TO TOGGLE)</span>
-            <button
-                class="legend-item"
-                class:dimmed={($filters.hiddenProjects?.length ?? 0) > 0}
-                on:click={toggleAllProjects}
-            >
-                <div class="legend-box" style="background: #666; border-radius: 50%;"></div>
-                <span class="legend-label">ALL PROJECTS</span>
-                {#if ($filters.hiddenProjects?.length ?? 0) === 0}
-                    <span class="filter-badge">ON</span>
-                {/if}
-            </button>
-            <div class="project-list" class:expanded={showAllProjects}>
-                {#each visibleProjects as proj}
+            <!-- Status filters (click to cycle: bright → half → hidden) -->
+            <div class="legend-section">
+                <span class="legend-section-title">STATUS</span>
+                {#each statusGroups as group}
+                    {@const vis = $filters[group.key as keyof typeof $filters] as VisibilityState}
                     <button
                         class="legend-item"
-                        class:dimmed={$filters.hiddenProjects?.includes(proj)}
-                        on:click={() => toggleProject(proj)}
-                        title="Toggle {proj}"
+                        class:dimmed={vis === 'hidden'}
+                        on:click={() => cycleFilter(group.key)}
+                        title="Click to cycle: bright → half → hidden"
                     >
-                        <div class="legend-box project-swatch" style="background: {projectColor(proj)};"></div>
-                        <span class="legend-label">{(proj || '').toUpperCase()}</span>
-                        {#if !($filters.hiddenProjects?.includes(proj))}
-                            <span class="filter-badge">ON</span>
-                        {/if}
+                        <div class="legend-box" style="background:{group.color}; opacity:{edgeOpacityForLegend(vis)};"></div>
+                        <span class="legend-label">{group.label}</span>
+                        <span class="edge-state">{stateLabel(vis)}</span>
                     </button>
                 {/each}
             </div>
-            {#if hasOverflow}
+
+            <!-- Priority filter (click to cycle: bright → half → hidden) -->
+            <div class="legend-section">
+                <span class="legend-section-title">PRIORITY</span>
+                {#each priorityItems as p}
+                    {@const vis = $filters[p.key as keyof typeof $filters] as VisibilityState}
+                    <button
+                        class="legend-item"
+                        class:dimmed={vis === 'hidden'}
+                        on:click={() => cycleFilter(p.key)}
+                        title="Click to cycle: bright → half → hidden"
+                    >
+                        <div class="legend-box" style="background:transparent; border: 2px solid {p.color}; opacity:{edgeOpacityForLegend(vis)};"></div>
+                        <span class="legend-label">{p.label}</span>
+                        <span class="edge-state">{stateLabel(vis)}</span>
+                    </button>
+                {/each}
+            </div>
+
+            <!-- Edge visibility (click to cycle: bright → half → hidden) -->
+            <div class="legend-section">
+                <span class="legend-section-title">EDGES</span>
+                {#each edgeTypes as edge}
+                    {@const vis = $filters[edge.key as keyof typeof $filters] as VisibilityState}
+                    <button
+                        class="legend-item"
+                        class:dimmed={vis === 'hidden'}
+                        on:click={() => cycleFilter(edge.key)}
+                        title="Click to cycle: bright → half → hidden"
+                    >
+                        <div class="legend-line" style="background:{edge.color}; opacity:{edgeOpacityForLegend(vis)};"
+                            class:dashed={edge.dash}></div>
+                        <span class="legend-label">{edge.label}</span>
+                        <span class="edge-state">{stateLabel(vis)}</span>
+                    </button>
+                {/each}
+            </div>
+
+            <!-- Project filter with color swatches -->
+            <div class="legend-section">
+                <span class="legend-section-title">PROJECTS (CLICK TO TOGGLE)</span>
                 <button
-                    class="legend-item overflow-toggle"
-                    on:click={() => showAllProjects = !showAllProjects}
+                    class="legend-item"
+                    class:dimmed={($filters.hiddenProjects?.length ?? 0) > 0}
+                    on:click={toggleAllProjects}
                 >
-                    <span class="legend-label overflow-label">
-                        {showAllProjects ? '▲ LESS' : `▼ +${availableProjects.length - MAX_VISIBLE_PROJECTS} MORE`}
-                    </span>
+                    <div class="legend-box" style="background: #666; border-radius: 50%;"></div>
+                    <span class="legend-label">ALL PROJECTS</span>
+                    {#if ($filters.hiddenProjects?.length ?? 0) === 0}
+                        <span class="filter-badge">ON</span>
+                    {/if}
                 </button>
-            {/if}
+                <div class="project-list" class:expanded={showAllProjects}>
+                    {#each visibleProjects as proj}
+                        <button
+                            class="legend-item"
+                            class:dimmed={$filters.hiddenProjects?.includes(proj)}
+                            on:click={() => toggleProject(proj)}
+                            title="Toggle {proj}"
+                        >
+                            <div class="legend-box project-swatch" style="background: {projectColor(proj)};"></div>
+                            <span class="legend-label">{(proj || '').toUpperCase()}</span>
+                            {#if !($filters.hiddenProjects?.includes(proj))}
+                                <span class="filter-badge">ON</span>
+                            {/if}
+                        </button>
+                    {/each}
+                </div>
+                {#if hasOverflow}
+                    <button
+                        class="legend-item overflow-toggle"
+                        on:click={() => showAllProjects = !showAllProjects}
+                    >
+                        <span class="legend-label overflow-label">
+                            {showAllProjects ? '▲ LESS' : `▼ +${availableProjects.length - MAX_VISIBLE_PROJECTS} MORE`}
+                        </span>
+                    </button>
+                {/if}
+            </div>
         </div>
     </div>
 {:else}
-    <button class="legend-toggle graph-control-button graph-control-button-active" on:click={() => viewSettings.update(s => ({ ...s, showLegend: true }))}>
-        <span class="material-symbols-outlined" style="font-size: 14px;">visibility</span>
-        <span>Legend</span>
-    </button>
+    <div class="graph-dock graph-dock-bottom-left">
+        <button class="legend-toggle graph-control-button graph-control-button-active" on:click={() => viewSettings.update(s => ({ ...s, showLegend: true }))}>
+            <span class="material-symbols-outlined" style="font-size: 14px;">visibility</span>
+            <span>Legend</span>
+        </button>
+    </div>
 {/if}
 
 <style>
     .legend {
-        position: absolute;
-        bottom: 16px;
-        left: 16px;
-        z-index: 10;
         border-radius: 12px;
         padding: 10px 12px;
         font-size: 10px;
@@ -344,10 +344,6 @@
     }
 
     .legend-toggle {
-        position: absolute;
-        bottom: 16px;
-        left: 16px;
-        z-index: 10;
         cursor: pointer;
     }
 </style>

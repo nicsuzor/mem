@@ -60,6 +60,22 @@
   .graph-control-icon-button {
     @apply inline-flex items-center justify-center rounded-lg border border-transparent p-2 text-primary/70 transition-colors hover:border-primary/25 hover:bg-primary/20 hover:text-primary;
   }
+
+  .graph-dock {
+    @apply absolute z-30 flex gap-2;
+  }
+
+  .graph-dock-bottom-left {
+    @apply bottom-4 left-4 flex-col items-start;
+  }
+
+  .graph-dock-bottom-center {
+    @apply bottom-4 left-1/2 -translate-x-1/2 items-center;
+  }
+
+  .graph-dock-top-right {
+    @apply top-4 right-4 flex-col items-end;
+  }
 }
 
 /* CRT Scanline Effect */

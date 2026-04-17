@@ -402,13 +402,15 @@
             </div>
             <Legend />
             {#if activeLayout === "force" || activeLayout === "sfdp" || activeLayout === "metro"}
-                <div class="absolute bottom-4 left-4 z-30 flex items-center gap-2">
+                <div class="graph-dock graph-dock-bottom-center">
                     <button class="graph-control-button" onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : (forceRunning ? forceRunning = false : forceRestartNonce += 1)}>
-                        {(activeLayout === "metro" ? metroRunning : forceRunning) ? '⏸ Stop' : '▶ Start'} Layout
+                        <span class="material-symbols-outlined text-sm">{(activeLayout === "metro" ? metroRunning : forceRunning) ? 'pause' : 'play_arrow'}</span>
+                        <span>{(activeLayout === "metro" ? metroRunning : forceRunning) ? 'Stop' : 'Start'} Layout</span>
                     </button>
                     {#if activeLayout === "force"}
                         <button class="graph-control-button" onclick={() => forceRandomizeNonce += 1}>
-                            🎲 Randomise
+                            <span class="material-symbols-outlined text-sm">shuffle</span>
+                            <span>Randomise</span>
                         </button>
                     {/if}
                 </div>
