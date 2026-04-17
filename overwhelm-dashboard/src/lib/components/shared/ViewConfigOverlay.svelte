@@ -3,6 +3,7 @@
 
     $: layout = getLayoutFromViewSettings($viewSettings);
     $: isForce = layout === "force" || layout === "sfdp" || layout === "metro";
+    $: isMetro = layout === "metro";
     $: isCircle = layout === "circle_pack";
     $: isArc = layout === "arc";
     $: isTreemap = layout === "treemap";
@@ -24,7 +25,7 @@
             <div class="config-panel graph-control-panel">
                 <div class="flex items-center justify-between border-b border-primary/10 pb-2">
                     <h3 class="text-[10px] font-bold tracking-[0.2em] text-primary/80 uppercase">
-                        {#if isForce}Simulation_Config{:else if isCircle}Circle_Pack_Config{:else if isArc}Arc_Diagram_Config{:else if isTreemap}Treemap_Config{/if}
+                        {#if isMetro}Metro_Config{:else if isForce}Simulation_Config{:else if isCircle}Circle_Pack_Config{:else if isArc}Arc_Diagram_Config{:else if isTreemap}Treemap_Config{/if}
                     </h3>
                     <button class="graph-control-icon-button" onclick={() => viewSettings.update(s => ({ ...s, showGraphConfig: false }))}>
                         <span class="material-symbols-outlined text-sm">close</span>
@@ -189,10 +190,10 @@
             onclick={() => viewSettings.update(s => ({ ...s, showGraphConfig: !s.showGraphConfig }))}
         >
             <span class="material-symbols-outlined text-primary transition-transform duration-300" class:rotate-90={$viewSettings.showGraphConfig}>
-                {#if isForce}settings_input_component{:else if isCircle}radio_button_checked{:else if isArc}architecture{:else if isTreemap}grid_view{/if}
+                {#if isMetro}subway{:else if isForce}settings_input_component{:else if isCircle}radio_button_checked{:else if isArc}architecture{:else if isTreemap}grid_view{/if}
             </span>
             <span class="text-[10px] font-black uppercase tracking-widest text-primary">
-                {#if isForce}Force{:else if isCircle}Pack{:else if isArc}Arc{:else if isTreemap}Treemap{/if}_Config
+                {#if isMetro}Metro{:else if isForce}Force{:else if isCircle}Pack{:else if isArc}Arc{:else if isTreemap}Treemap{/if}_Config
             </span>
         </button>
     </div>

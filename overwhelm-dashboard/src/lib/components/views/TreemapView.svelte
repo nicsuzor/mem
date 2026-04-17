@@ -60,6 +60,9 @@
     function computeLayout(data: any) {
         const nodes = data.nodes;
         const virtualRootId = "__treemap_root__";
+        const TINY_LEAF_WIDTH = 18;
+        const TINY_LEAF_HEIGHT = 12;
+        const TINY_LEAF_ASPECT = 0.22;
         const nodeIdSet = new Set(nodes.map((n: any) => n.id));
         const projectRootId = ($filters as any).projectFilter as string | undefined;
 
@@ -167,8 +170,66 @@
             });
         });
 
+        const tinyLeavesByParent = new Map<string, any[]>();
+        root.leaves().forEach((leaf: any) => {
+            const width = leaf.x1 - leaf.x0;
+            const height = leaf.y1 - leaf.y0;
+            const isTiny = width < TINY_LEAF_WIDTH || height < TINY_LEAF_HEIGHT || width / Math.max(height, 1) < TINY_LEAF_ASPECT;
+            if (!isTiny || !leaf.parent || !leaf.parent.data?.id) return;
+
+            const parentId = leaf.parent.data.id;
+            const siblings = tinyLeavesByParent.get(parentId) || [];
+            siblings.push(leaf);
+            tinyLeavesByParent.set(parentId, siblings);
+        });
+
+        const hiddenLeafIds = new Set<string>();
+        const overflowNodes: any[] = [];
+        for (const [parentId, tinyLeaves] of tinyLeavesByParent) {
+            if (tinyLeaves.length < 2) continue;
+
+            let x0 = Infinity;
+            let y0 = Infinity;
+            let x1 = -Infinity;
+            let y1 = -Infinity;
+            for (const leaf of tinyLeaves) {
+                hiddenLeafIds.add(leaf.data.id);
+                x0 = Math.min(x0, leaf.x0);
+                y0 = Math.min(y0, leaf.y0);
+                x1 = Math.max(x1, leaf.x1);
+                y1 = Math.max(y1, leaf.y1);
+            }
+
+            const overflowWidth = Math.max(12, x1 - x0);
+            const overflowHeight = Math.max(10, y1 - y0);
+            const labels = tinyLeaves.map((leaf: any) => leaf.data.label).filter(Boolean);
+
+            overflowNodes.push({
+                id: `__overflow__${parentId}`,
+                label: `+${tinyLeaves.length} more`,
+                status: 'overflow',
+                priority: 4,
+                project: tinyLeaves[0]?.data?.project || null,
+                parent: parentId,
+                depth: (layoutMap.get(parentId)?.depth || 0) + 1,
+                x: x0 + overflowWidth / 2,
+                y: y0 + overflowHeight / 2,
+                _lw: overflowWidth,
+                _lh: overflowHeight,
+                _isLeaf: true,
+                _isOverflow: true,
+                _leafCount: tinyLeaves.length,
+                totalLeafCount: tinyLeaves.length,
+                hiddenLabels: labels,
+            });
+        }
+
         visibleNodes = nodes
             .filter((n: any) => {
+                if (hiddenLeafIds.has(n.id)) {
+                    n.x = -9999;
+                    return false;
+                }
                 const l = layoutMap.get(n.id);
                 if (l) {
                     n.x = l.x; n.y = l.y; n._lw = l.w; n._lh = l.h;
@@ -180,6 +241,7 @@
                 n.x = -9999;
                 return false;
             })
+            .concat(overflowNodes)
             .sort((a: any, b: any) => (a.depth || 0) - (b.depth || 0));
 
         links = data.links;
