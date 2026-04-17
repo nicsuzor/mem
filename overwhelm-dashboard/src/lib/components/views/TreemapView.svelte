@@ -139,19 +139,24 @@
         // STABLE SORT: Tie-break with ID to prevent jumping on re-renders
         root.sort((a, b) => (b.value || 0) - (a.value || 0) || a.id!.localeCompare(b.id!));
 
+        const visibleLeafCount = root.leaves().length;
+        const densityScale = Math.max(0.72, Math.min(1, Math.sqrt(visibleLeafCount / 180)));
+        const layoutCanvasW = Math.round(canvasW * densityScale);
+        const layoutCanvasH = Math.round(canvasH * densityScale);
+
         // Use the same header height computation as the renderer
         function estimateHeaderHeight(node: any): number {
             if (node.depth === 0) return 4; // virtual root
             if (!node.children) return 0; // leaves don't need header padding
-            const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
-            const h = (node.y1 ?? canvasH) - (node.y0 ?? 0);
+            const w = (node.x1 ?? layoutCanvasW) - (node.x0 ?? 0);
+            const h = (node.y1 ?? layoutCanvasH) - (node.y0 ?? 0);
             const label = node.data?.label || '';
             if (!label || w < 25) return 14;
             return treemapHeaderMetrics(w, h, label, node.depth).headerH;
         }
 
         const treemap = d3.treemap<any>()
-            .size([canvasW, canvasH])
+            .size([layoutCanvasW, layoutCanvasH])
             .paddingInner((node: any) => node.depth <= 1 ? 14 : node.depth <= 2 ? 6 : 2)
             .paddingBottom((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 2)
             .paddingLeft((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 2)

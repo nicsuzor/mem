@@ -46,7 +46,7 @@ export const STATUS_FILLS: Record<string, string> = {
     cancelled: "#f1f5f9",
     active: "#dbeafe",
     in_progress: "#c7d2fe",
-    blocked: "#3D2B2B",
+    blocked: "#6A3142",
     waiting: "#fef9c3",
     inbox: "#f1f5f9",
     todo: "#f1f5f9",
@@ -62,7 +62,7 @@ export const STATUS_TEXT: Record<string, string> = {
     cancelled: "#94a3b8",
     active: "#1e3a5f",
     in_progress: "#312e81",
-    blocked: "#9B7070",
+    blocked: "#ffd7df",
     waiting: "#854d0e",
     inbox: "#475569",
     todo: "#475569",
@@ -95,9 +95,9 @@ export const ASSIGNEE_DEFAULT = "#6c757d";
 export const PRIORITIES = [
     { value: 0, label: 'CRITICAL', short: 'CRIT', color: '#dc3545' },
     { value: 1, label: 'INTENDED', short: 'INTD', color: '#f59e0b' },
-    { value: 2, label: 'ACTIVE',   short: 'ACTV', color: '#6c757d' },
-    { value: 3, label: 'PLANNED',  short: 'PLAN', color: '#adb5bd' },
-    { value: 4, label: 'BACKLOG',  short: 'BKLG', color: '#dee2e6' },
+    { value: 2, label: 'ACTIVE',   short: 'ACTV', color: '#4f8fda' },
+    { value: 3, label: 'PLANNED',  short: 'PLAN', color: '#7b86c9' },
+    { value: 4, label: 'BACKLOG',  short: 'BKLG', color: '#8c96a3' },
 ] as const;
 
 export const PRIORITY_BORDERS: Record<number, string> = Object.fromEntries(

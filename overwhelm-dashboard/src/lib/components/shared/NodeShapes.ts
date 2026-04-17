@@ -1,7 +1,7 @@
 import * as d3 from 'd3';
 import type { GraphNode } from '../../data/prepareGraphData';
 import { projectHue } from '../../data/projectUtils';
-import { INCOMPLETE_STATUSES } from '../../data/constants';
+import { INCOMPLETE_STATUSES, PRIORITY_BORDERS as SHARED_PRIORITY_BORDERS } from '../../data/constants';
 
 function escapeHtml(str: string): string {
     return str
@@ -10,6 +10,80 @@ function escapeHtml(str: string): string {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+function estimateTextWidth(text: string, fontSize: number): number {
+    return text.length * fontSize * 0.51;
+}
+
+function wrapWordsToWidth(label: string, fontSize: number, maxWidth: number): string[] {
+    const words = label.split(/\s+/).filter(Boolean);
+    if (words.length === 0) return [];
+
+    const lines: string[] = [];
+    let current = '';
+
+    for (const word of words) {
+        const test = current ? `${current} ${word}` : word;
+        if (current && estimateTextWidth(test, fontSize) > maxWidth) {
+            lines.push(current);
+            current = word;
+        } else {
+            current = test;
+        }
+    }
+
+    if (current) lines.push(current);
+    return lines;
+}
+
+function clampWrappedLines(lines: string[], fontSize: number, maxWidth: number, maxLines: number): string[] {
+    if (lines.length <= maxLines) return lines;
+
+    const truncated = lines.slice(0, maxLines);
+    while (
+        truncated[maxLines - 1] &&
+        estimateTextWidth(`${truncated[maxLines - 1]}...`, fontSize) > maxWidth &&
+        truncated[maxLines - 1].includes(' ')
+    ) {
+        truncated[maxLines - 1] = truncated[maxLines - 1].split(' ').slice(0, -1).join(' ');
+    }
+    truncated[maxLines - 1] = `${truncated[maxLines - 1]}...`;
+    return truncated;
+}
+
+function fitTreemapText(
+    label: string,
+    maxWidth: number,
+    maxHeight: number,
+    options: { minFontSize?: number; maxFontSize?: number; maxLines?: number } = {},
+) {
+    const minFontSize = options.minFontSize ?? 5;
+    const maxFontSize = options.maxFontSize ?? 14;
+    const maxLines = options.maxLines ?? 3;
+    const effectiveWidth = maxWidth * 1.06;
+
+    if (!label.trim() || maxWidth <= 0 || maxHeight <= 0) {
+        return { fontSize: minFontSize, lineHeight: minFontSize * 1.18, lines: [] as string[] };
+    }
+
+    for (let fontSize = maxFontSize; fontSize >= minFontSize; fontSize -= 0.5) {
+        const lines = wrapWordsToWidth(label, fontSize, effectiveWidth);
+        const lineHeight = fontSize * 1.18;
+        if (lines.length <= maxLines && lines.length * lineHeight <= maxHeight) {
+            return { fontSize, lineHeight, lines };
+        }
+    }
+
+    const fallbackSize = minFontSize;
+    const fallbackHeight = fallbackSize * 1.18;
+    const fallbackLines = clampWrappedLines(
+        wrapWordsToWidth(label, fallbackSize, effectiveWidth),
+        fallbackSize,
+        effectiveWidth,
+        maxLines,
+    );
+    return { fontSize: fallbackSize, lineHeight: fallbackHeight, lines: fallbackLines };
 }
 
 // Status is encoded via fill color + text color, not opacity.
@@ -46,7 +120,7 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
     // P0/P1 priority glow ring for incomplete nodes
     const isIncomplete = INCOMPLETE_STATUSES.has(d.status);
     if (d.priority <= 1 && isIncomplete) {
-        const glowPad = d.priority === 0 ? 6 : 5;
+        const glowPad = d.priority === 0 ? 4 : 3;
         const glowFilter = d.priority === 0 ? 'url(#glow-p0)' : 'url(#glow-p1)';
         const glowColor = d.priority === 0 ? '#dc3545' : '#f59e0b';
         const rx = d.shape === 'pill' ? hh + glowPad : (d.shape === 'rounded' ? 14 : 6);
@@ -54,8 +128,8 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
             .attr("x", -hw - glowPad).attr("y", -hh - glowPad)
             .attr("width", d.w + glowPad * 2).attr("height", d.h + glowPad * 2)
             .attr("rx", rx).attr("fill", "none")
-            .attr("stroke", glowColor).attr("stroke-width", 2)
-            .attr("stroke-opacity", 0.6)
+            .attr("stroke", glowColor).attr("stroke-width", 1.5)
+            .attr("stroke-opacity", 0.38)
             .attr("filter", glowFilter);
     }
 
@@ -77,6 +151,7 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
 
     if (d.shape === "pill") {
         g.append("rect").attr("x", -hw).attr("y", -hh).attr("width", d.w).attr("height", d.h)
+            .attr("class", "node-surface")
             .attr("rx", hh).attr("ry", hh)
             .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", d.borderWidth);
     } else if (d.shape === "hexagon") {
@@ -100,7 +175,7 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
             .attr("fill", "none").attr("stroke", epicStroke).attr("stroke-width", EPIC_OUTER_STROKE_WIDTH)
             .attr("stroke-opacity", EPIC_OUTER_OPACITY).attr("stroke-dasharray", EPIC_OUTER_DASHARRAY);
 
-        g.append("polygon").attr("points", pts)
+        g.append("polygon").attr("class", "node-surface").attr("points", pts)
             .attr("fill", epicFill).attr("stroke", epicStroke).attr("stroke-width", Math.max(d.borderWidth, EPIC_INNER_STROKE_WIDTH));
 
         // Epic type badge at top
@@ -112,15 +187,45 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
             .text("EPIC");
     } else {
         g.append("rect").attr("x", -hw).attr("y", -hh).attr("width", d.w).attr("height", d.h)
+            .attr("class", "node-surface")
             .attr("rx", d.shape === "rounded" ? 10 : 4)
             .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", d.borderWidth);
     }
 
-    if (d.status === "blocked" && d.dw >= 2) {
+    if (d.status === "blocked") {
         g.insert("rect", ":first-child")
-            .attr("x", -hw - 4).attr("y", -hh - 4).attr("width", d.w + 8).attr("height", d.h + 8)
-            .attr("rx", hh + 4).attr("ry", hh + 4).attr("fill", "none").attr("stroke", "#ef4444")
-            .attr("class", "danger-pulse");
+            .attr("x", -hw - 3).attr("y", -hh - 3).attr("width", d.w + 6).attr("height", d.h + 6)
+            .attr("rx", hh + 3).attr("ry", hh + 3).attr("fill", "none")
+            .attr("stroke", "#ff7588")
+            .attr("stroke-width", 2)
+            .attr("stroke-opacity", 0.8)
+            .attr("stroke-dasharray", "6,3");
+
+        g.append("rect")
+            .attr("x", -hw).attr("y", -hh)
+            .attr("width", Math.min(5, d.w)).attr("height", d.h)
+            .attr("rx", 2)
+            .attr("fill", "#ff7588")
+            .attr("opacity", 0.9);
+
+        if (d.w > 86 && d.h > 28) {
+            g.append("rect")
+                .attr("x", hw - 58).attr("y", -hh + 4)
+                .attr("width", 54).attr("height", 14)
+                .attr("rx", 7)
+                .attr("fill", "rgba(106,49,66,0.95)")
+                .attr("stroke", "#ff9cab")
+                .attr("stroke-width", 0.8);
+            g.append("text")
+                .attr("x", hw - 31).attr("y", -hh + 11)
+                .attr("text-anchor", "middle")
+                .attr("dominant-baseline", "central")
+                .attr("font-size", "7px")
+                .attr("font-weight", "800")
+                .attr("letter-spacing", "0.08em")
+                .attr("fill", "#ffe4e8")
+                .text("BLOCKED");
+        }
     }
 
     const lh = d.fontSize + 4;
@@ -154,18 +259,26 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
  */
 export function treemapHeaderMetrics(w: number, h: number, label: string, depth: number) {
     const pad = 6;
-    // Uniform font sizing: scale with node, min 6px max 12px
-    const fs = Math.max(6, Math.min(12, Math.min(w, h) * 0.08));
-    const charWidth = fs * 0.58;
     const badgeReserve = w > 50 ? 36 : 0;
-    const textAvailW = Math.max(15, w - pad * 2 - badgeReserve);
-    const charsPerLine = Math.max(3, Math.floor(textAvailW / charWidth));
-    const lines = Math.min(3, Math.ceil(label.length / Math.max(1, charsPerLine)));
-    const lineHeight = fs * 1.25;
-    // Padding: HR line (1px) + breathing room
-    const basePad = 8;
-    const headerH = Math.max(14, Math.min(50, lines * lineHeight + basePad));
-    return { headerH, fs, lines, badgeReserve, pad };
+    const textAvailW = Math.max(18, w - pad * 2 - badgeReserve);
+    const maxLines = depth <= 1 ? 3 : 2;
+    const maxFontSize = Math.max(7, Math.min(depth <= 1 ? 18 : 16, Math.min(w * 0.17, h * 0.2)));
+    const fitted = fitTreemapText(label, textAvailW, Math.max(18, Math.min(depth <= 1 ? 64 : 48, h * (depth <= 1 ? 0.38 : 0.28))), {
+        minFontSize: 6,
+        maxFontSize,
+        maxLines,
+    });
+    const basePad = 10;
+    const headerH = Math.max(16, Math.min(58, fitted.lines.length * fitted.lineHeight + basePad));
+    return {
+        headerH,
+        fs: fitted.fontSize,
+        lines: fitted.lines.length,
+        labelLines: fitted.lines,
+        lineHeight: fitted.lineHeight,
+        badgeReserve,
+        pad,
+    };
 }
 
 /** Render a child-count badge in top-right of a container: visible/total leaf descendants */
@@ -224,17 +337,18 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // ── TIER 1: Project containers — explicit bounded regions ──
     if (d._isProjectContainer) {
-        const bgTint = `hsl(${hue}, 20%, 10%)`;
-        const borderColor = `hsl(${hue}, 40%, 35%)`;
-        const labelColor = `hsl(${hue}, 50%, 65%)`;
+        const bgTint = `hsl(${hue}, 24%, 12%)`;
+        const borderColor = `hsl(${hue}, 58%, 52%)`;
+        const labelColor = `hsl(${hue}, 78%, 86%)`;
 
         // Solid dark background — makes project region clearly distinct from canvas
         g.append("rect")
+            .attr("class", "node-surface")
             .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
             .attr("rx", 10)
-            .attr("fill", bgTint).attr("fill-opacity", 0.7)
+            .attr("fill", bgTint).attr("fill-opacity", 0.82)
             .attr("stroke", isSelected ? "#fff" : borderColor)
-            .attr("stroke-width", isSelected ? 3 : 2.5)
+            .attr("stroke-width", isSelected ? 3 : 2.2)
             .style("transition", "all 0.2s ease");
 
         // Inner inset line for extra boundary definition
@@ -243,21 +357,21 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             .attr("width", Math.max(0, w - 6)).attr("height", Math.max(0, h - 6))
             .attr("rx", 8)
             .attr("fill", "none")
-            .attr("stroke", borderColor).attr("stroke-width", 0.5).attr("stroke-opacity", 0.3);
+            .attr("stroke", borderColor).attr("stroke-width", 0.7).attr("stroke-opacity", 0.45);
 
         // Project label — uses shared header metrics for consistent sizing
         if (w > 30 && h > 20) {
             const label = d.label || '';
             const m = treemapHeaderMetrics(w, h, label, d.depth || 0);
-            const labelText = escapeHtml(label);
             const labelW = Math.max(0, w - m.pad * 2 - m.badgeReserve);
+            const labelHtml = m.labelLines.map((line: string) => escapeHtml(line)).join('<br/>');
 
             // Label background bar
             g.append("rect")
                 .attr("x", -w / 2).attr("y", -h / 2)
                 .attr("width", w).attr("height", m.headerH)
                 .attr("rx", 4)
-                .attr("fill", bgTint).attr("fill-opacity", 0.9);
+                .attr("fill", bgTint).attr("fill-opacity", 0.96);
 
             // HR divider at bottom of header
             g.append("line")
@@ -271,7 +385,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("pointer-events", "none")
-                .html(`<div style="font-size:${m.fs}px; font-weight:900; color:${labelColor}; text-transform:uppercase; letter-spacing:0.12em; line-height:1.25; overflow:hidden; display:-webkit-box; -webkit-line-clamp:${m.lines}; -webkit-box-orient:vertical; font-family:var(--font-mono),monospace;">${labelText}</div>`);
+                .html(`<div style="font-size:${m.fs}px; font-weight:900; color:${labelColor}; text-transform:uppercase; letter-spacing:0.1em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal; font-family:var(--font-mono),monospace;">${labelHtml}</div>`);
 
             renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
         }
@@ -282,10 +396,11 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     if (isEpicTier) {
         const epicTint = `hsl(${hue}, 30%, 20%)`;
         g.append("rect")
+            .attr("class", "node-surface")
             .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
             .attr("rx", 5)
-            .attr("fill", epicTint).attr("fill-opacity", 0.4)
-            .attr("stroke", `hsl(${hue}, 35%, 35%)`).attr("stroke-width", isSelected ? 3 : 1)
+            .attr("fill", epicTint).attr("fill-opacity", 0.58)
+            .attr("stroke", `hsl(${hue}, 46%, 50%)`).attr("stroke-width", isSelected ? 3 : 1.4)
             .style("transition", "all 0.2s ease");
 
         // Epic label — uses shared header metrics
@@ -293,6 +408,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             const label = d.label || '';
             const m = treemapHeaderMetrics(w, h, label, d.depth || 0);
             const labelW = Math.max(0, w - m.pad * 2 - m.badgeReserve);
+            const labelHtml = m.labelLines.map((line: string) => escapeHtml(line)).join('<br/>');
 
             // HR divider at bottom of header
             if (w > 40 && h > 30) {
@@ -309,7 +425,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("pointer-events", "none")
-                .html(`<div style="font-size:${m.fs}px; font-weight:700; color:hsl(${hue},40%,65%); text-transform:uppercase; letter-spacing:0.08em; line-height:1.25; overflow:hidden; display:-webkit-box; -webkit-line-clamp:${m.lines}; -webkit-box-orient:vertical;">${escapeHtml(label)}</div>`);
+                .html(`<div style="font-size:${m.fs}px; font-weight:800; color:hsl(${hue},70%,82%); text-transform:uppercase; letter-spacing:0.06em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal;">${labelHtml}</div>`);
 
             renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
         }
@@ -318,10 +434,11 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     if (d._isOverflow) {
         g.append("rect")
+            .attr("class", "node-surface")
             .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
             .attr("rx", 4)
-            .attr("fill", "rgba(0,0,0,0.4)")
-            .attr("stroke", "rgba(255,255,255,0.15)").attr("stroke-width", 1)
+            .attr("fill", "rgba(10,12,16,0.86)")
+            .attr("stroke", "rgba(255,255,255,0.22)").attr("stroke-width", 1)
             .attr("stroke-dasharray", "4,4")
             .style("transition", "all 0.2s ease");
 
@@ -329,8 +446,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             g.append("text")
                 .attr("x", 0).attr("y", 0)
                 .attr("text-anchor", "middle").attr("dominant-baseline", "central")
-                .attr("font-size", "10px").attr("font-weight", "bold").attr("font-family", "monospace")
-                .attr("fill", "rgba(255,255,255,0.5)")
+                .attr("font-size", "10px").attr("font-weight", "800").attr("font-family", "monospace")
+                .attr("fill", "rgba(255,255,255,0.82)")
                 .text(d.label || '[...]');
         }
         return; // Skip the rest of the drawing logic for overflow nodes
@@ -357,14 +474,6 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // Priority border colors — only P0/P1 draw the eye
     // P0/P1 use shared PRIORITIES colors; P2+ are muted to blend with cards
-    const PRIORITY_BORDERS: Record<number, string> = {
-        0: '#dc3545',  // P0 Critical — red (matches PRIORITIES)
-        1: '#f59e0b',  // P1 Intended — amber
-        2: '#4A5568',  // P2 Active — blends with card
-        3: '#3A4250',  // P3 Planned — nearly invisible
-        4: '#2D3340',  // P4 Backlog — disappears
-    };
-
     let cellColor: string;
     if (isParent) {
         // Parents get a stable project hue (unchanged)
@@ -374,7 +483,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         cellColor = STATUS_COLORS[status] || '#4b5563';
     }
 
-    const priorityBorder = PRIORITY_BORDERS[d.priority ?? 4] || '#4b5563';
+    const priorityBorder = SHARED_PRIORITY_BORDERS[d.priority ?? 4] || '#64748b';
 
     // WCAG AA contrast: compute relative luminance and pick text color
     // that guarantees >= 4.5:1 contrast ratio
@@ -404,13 +513,11 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     const textColor = getContrastColor(cellColor);
 
-    // Add native tooltip
-    g.append("title").text(`${d.label} (${d.status})\nPriority: P${d.priority}\nProject: ${d.project || 'None'}`);
-
     if (isMicroLeaf) {
         const compactW = Math.max(2, Math.min(w, 8));
         const compactH = Math.max(2, Math.min(h, 8));
         g.append("rect")
+            .attr("class", "node-surface")
             .attr("x", -compactW / 2).attr("y", -compactH / 2)
             .attr("width", compactW).attr("height", compactH)
             .attr("rx", Math.min(2, compactH / 2))
@@ -435,11 +542,12 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // Base solid background — status fill + priority border
     g.append("rect")
+        .attr("class", "node-surface")
         .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
         .attr("rx", 4)
-        .attr("fill", cellColor).attr("fill-opacity", isParent ? 0.2 : 0.85)
+        .attr("fill", cellColor).attr("fill-opacity", isParent ? 0.36 : 0.94)
         .attr("stroke", isSelected ? "#fff" : (isParent ? cellColor : priorityBorder))
-        .attr("stroke-width", isSelected ? 4 : (d.priority <= 1 ? 2.5 : 1))
+        .attr("stroke-width", isSelected ? 3 : (d.priority <= 1 ? 2.1 : 1.2))
         .style("transition", "all 0.2s ease");
 
     if (isParent && h > 20) {
@@ -450,7 +558,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             .attr("x", -w / 2).attr("y", -h / 2)
             .attr("width", w).attr("height", m.headerH)
             .attr("rx", 4)
-            .attr("fill", cellColor).attr("fill-opacity", 0.8);
+            .attr("fill", cellColor).attr("fill-opacity", 0.9);
     }
 
     // Grid overlay removed — status colors provide sufficient visual distinction
@@ -461,8 +569,20 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         g.append("rect")
             .attr("x", -w / 2).attr("y", -h / 2).attr("width", 3).attr("height", h)
             .attr("rx", 1)
-            .attr("fill", "#9B5555").attr("pointer-events", "none")
-            .attr("opacity", 0.7);
+            .attr("fill", "#ff8192").attr("pointer-events", "none")
+            .attr("opacity", 0.95);
+
+        g.append("rect")
+            .attr("x", -w / 2 + 1).attr("y", -h / 2 + 1)
+            .attr("width", Math.max(0, w - 2)).attr("height", Math.max(0, h - 2))
+            .attr("rx", 3)
+            .attr("fill", "none")
+            .attr("stroke", "#ff9cab")
+            .attr("stroke-width", 1.2)
+            .attr("stroke-dasharray", "5,3")
+            .attr("stroke-opacity", 0.85)
+            .attr("pointer-events", "none");
+
     }
 
     // Double border for Critical (P0) priorities
@@ -488,6 +608,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             // Parent nodes: Draw label in the header bar — shared metrics
             const m = treemapHeaderMetrics(w, h, d.label || '', d.depth || 0);
             const labelW = Math.max(0, w - m.pad * 2 - m.badgeReserve);
+            const labelHtml = m.labelLines.map((line: string) => escapeHtml(line)).join('<br/>');
             if (w > 20 && h > 12) {
                 g.append("foreignObject")
                     .attr("x", -w / 2 + m.pad).attr("y", -h / 2 + 1)
@@ -500,8 +621,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                     .style("height", "100%")
                     .style("pointer-events", "none")
                     .html(`
-                        <div style="font-size: ${m.fs}px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: ${m.lines}; -webkit-box-orient: vertical; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.25;">
-                            ${label}
+                        <div style="font-size: ${m.fs}px; font-weight: 800; color: rgba(255,255,255,0.94); overflow: hidden; white-space: normal; word-break: normal; overflow-wrap: normal; text-transform: uppercase; letter-spacing: 0.05em; line-height: ${m.lineHeight}px;">
+                            ${labelHtml}
                         </div>
                     `);
 
@@ -509,10 +630,19 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             }
         } else {
             // Leaf nodes: Draw title
-            const fs = Math.max(4, Math.min(11, Math.min(w, h) * 0.22));
-            const linesAvailable = Math.max(1, Math.floor((h - pad * 2) / (fs * 1.2)));
-
             const isBlocked = d.status === "blocked";
+            const blockedReserve = isBlocked && h > 40 ? 16 : 0;
+            const textFit = fitTreemapText(
+                d.label || '',
+                Math.max(0, w - pad * 2),
+                Math.max(0, h - pad * 2 - blockedReserve),
+                {
+                    minFontSize: 5,
+                    maxFontSize: Math.max(8, Math.min(18, Math.min(w * 0.22, h * 0.42, Math.sqrt(w * h) * 0.18))),
+                    maxLines: Math.max(1, Math.min(4, Math.floor((h - pad * 2) / 12))),
+                },
+            );
+            const labelHtml = textFit.lines.map((line: string) => escapeHtml(line)).join('<br/>');
 
             g.append("foreignObject")
                 .attr("x", -w / 2 + pad).attr("y", -h / 2 + pad)
@@ -526,9 +656,9 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("height", "100%")
                 .style("pointer-events", "none")
                 .html(`
-                    ${isBlocked && h > 40 ? `<div style="display: flex; justify-content: flex-end; margin-bottom: 2px;"><span class="material-symbols-outlined" style="font-size: ${fs + 2}px; color: rgba(255,255,255,0.5); background: #6B3A3A; border-radius: 50%;">pause_circle</span></div>` : ''}
-                    <div style="font-size: ${fs}px; font-weight: 500; color: ${textColor}; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: ${linesAvailable}; -webkit-box-orient: vertical; letter-spacing: -0.01em;">
-                        ${label}
+                    ${isBlocked && h > 40 ? `<div style="display: flex; justify-content: flex-end; margin-bottom: 4px;"><span class="material-symbols-outlined" style="display:inline-flex; align-items:center; justify-content:center; min-width:${Math.max(20, textFit.fontSize + 10)}px; height:${Math.max(20, textFit.fontSize + 10)}px; font-size:${textFit.fontSize + 4}px; color:#fff4f6; background:rgba(106,49,66,0.98); border:1px solid #ffb4c0; border-radius:999px; box-shadow:0 0 0 2px rgba(255,128,146,0.18);">pause_circle</span></div>` : ''}
+                    <div style="font-size: ${textFit.fontSize}px; font-weight: 600; color: ${textColor}; line-height: ${textFit.lineHeight}px; overflow: hidden; white-space: normal; word-break: normal; overflow-wrap: normal; letter-spacing: -0.01em;">
+                        ${labelHtml}
                     </div>
                 `);
         }
@@ -599,7 +729,7 @@ function renderWrappedTextInCircle(g: d3.Selection<SVGGElement, any, null, undef
 
 export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, undefined>, d: any, isSelected = false) {
     const r = Math.max(d._lr || d.w / 2 || 5, 2);
-    const isParent = !d.isLeaf;
+    const isParent = !(d._isLeaf ?? d.isLeaf);
 
 
     // Add native tooltip
@@ -632,14 +762,6 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         paused: '#4b5563',       // Grey
     };
 
-    const CIRCLE_PRIORITY_BORDERS: Record<number, string> = {
-        0: '#ef4444',  // P0 Critical — red
-        1: '#f59e0b',  // P1 Intended — amber
-        2: '#4A5568',  // P2 Active — blends
-        3: '#3A4250',  // P3 Planned — nearly invisible
-        4: '#2D3340',  // P4 Backlog — disappears
-    };
-
     let cellColor: string;
     if (isParent) {
         cellColor = `hsl(${hue}, 40%, 25%)`;
@@ -648,7 +770,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         cellColor = CIRCLE_STATUS_COLORS[status] || '#4b5563';
     }
 
-    const priorityBorder = CIRCLE_PRIORITY_BORDERS[d.priority ?? 4] || '#3A4250';
+    const priorityBorder = SHARED_PRIORITY_BORDERS[d.priority ?? 4] || '#64748b';
 
     if (isParent) {
         // ── Depth-tiered parent rendering ──
@@ -660,60 +782,33 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         const isEpic = depth === 2;
         // depth 3+ = sub-group
 
-        const fillOpacity = isProject ? 0.18 : isEpic ? 0.12 : 0.06;
+        const fillOpacity = isProject ? 0.28 : isEpic ? 0.22 : 0.16;
         const strokeSat = isProject ? 65 : isEpic ? 50 : 30;
         const strokeLight = isProject ? 60 : isEpic ? 50 : 40;
         const strokeWidth = isSelected
             ? Math.max(3, r * 0.02)
             : isProject
-                ? Math.max(2.5, Math.min(6, r * 0.008))
+                ? Math.max(2.2, Math.min(4.8, r * 0.006))
                 : isEpic
-                    ? Math.max(1.5, Math.min(4, r * 0.005))
-                    : Math.max(0.8, Math.min(2, r * 0.003));
+                    ? Math.max(1.3, Math.min(3, r * 0.004))
+                    : Math.max(0.8, Math.min(1.6, r * 0.0025));
         const dashArray = isSelected ? "none" : isProject ? "none" : isEpic ? "8,3,2,3" : "3,2";
         const strokeColor = isSelected ? "#fff" : `hsl(${hue}, ${strokeSat}%, ${strokeLight}%)`;
 
         // Main circle
         g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
+            .attr("class", "node-surface")
             .attr("fill", cellColor).attr("fill-opacity", fillOpacity)
             .attr("stroke", strokeColor)
             .attr("stroke-width", strokeWidth)
             .attr("stroke-dasharray", dashArray);
 
-        if (isProject && !isSelected) {
-            // Projects: outer accent ring for double-border effect
-            const outerGap = Math.max(3, r * 0.008);
-            g.insert("circle", ":first-child")
-                .attr("cx", 0).attr("cy", 0).attr("r", r + outerGap)
-                .attr("fill", "none")
-                .attr("stroke", `hsl(${hue}, ${strokeSat}%, ${strokeLight}%)`)
-                .attr("stroke-width", Math.max(0.8, strokeWidth * 0.4))
-                .attr("stroke-opacity", 0.5);
-            // Inner subtle glow
-            g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
-                .attr("fill", "none")
-                .attr("stroke", `hsl(${hue}, 70%, 70%)`)
-                .attr("stroke-width", Math.max(1, r * 0.002))
-                .attr("stroke-opacity", 0.15)
-                .style("pointer-events", "none");
-        } else if (isEpic && !isSelected) {
-            // Epics: inner glow ring for subtle distinction
-            const inset = Math.max(2, r * 0.015);
-            g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r - inset)
-                .attr("fill", "none")
-                .attr("stroke", `hsl(${hue}, 45%, 50%)`)
-                .attr("stroke-width", Math.max(0.5, r * 0.001))
-                .attr("stroke-opacity", 0.25)
-                .attr("stroke-dasharray", "4,4")
-                .style("pointer-events", "none");
-        }
-
         // Parent label — centered in container with background pill
-        const MIN_RADIUS_FOR_LABEL = 10;
+        const MIN_RADIUS_FOR_LABEL = 14;
         if (r > MIN_RADIUS_FOR_LABEL) {
-            const minFs = isProject ? 14 : isEpic ? 10 : 7;
-            const maxFs = isProject ? 40 : isEpic ? 28 : 18;
-            const scaleFactor = isProject ? 0.08 : isEpic ? 0.08 : 0.06;
+            const minFs = isProject ? 12 : isEpic ? 9 : 7;
+            const maxFs = isProject ? 28 : isEpic ? 20 : 14;
+            const scaleFactor = isProject ? 0.06 : isEpic ? 0.055 : 0.045;
             const fs = Math.max(minFs, Math.min(maxFs, r * scaleFactor));
             const labelText = escapeHtml(d.label || '');
             const labelColor = isProject
@@ -724,15 +819,15 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
 
             // Label dimensions — allow wrapping for legibility
             const lineH = fs * 1.25;
-            const maxLines = isProject ? 3 : 2;
+            const maxLines = 2;
             const labelH = lineH * maxLines;
 
             // Position label at top of circle, inset from edge
-            const labelY = -r + Math.max(4, r * 0.08);
+            const labelY = -r + Math.max(10, r * 0.18);
 
             // Use a generous width — the label sits at the top where the chord is narrower,
             // but we'd rather show the full name and let CSS clip than truncate aggressively
-            const labelW = Math.max(30, r * 1.6);
+            const labelW = Math.max(44, r * 1.35);
 
             // Type prefix for projects/epics
             const displayLabel = isProject ? `▣ ${labelText}` : isEpic ? `◆ ${labelText}` : labelText;
@@ -750,7 +845,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
                 .style("height", "100%")
                 .style("pointer-events", "none")
                 .html(`
-                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 800}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.08em' : '0.05em'}; text-align: center; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${maxLines}; -webkit-box-orient: vertical; line-height: ${lineH}px; text-shadow: 0 1px 4px rgba(0,0,0,0.9), 0 2px 10px rgba(0,0,0,0.8), 0 0 15px rgba(0,0,0,1);">
+                    <div style="font-size: ${fs}px; font-weight: ${isProject ? 900 : 800}; color: ${labelColor}; text-transform: uppercase; letter-spacing: ${isProject ? '0.06em' : '0.04em'}; text-align: center; overflow: hidden; display: -webkit-box; -webkit-line-clamp: ${maxLines}; -webkit-box-orient: vertical; line-height: ${lineH}px; background: rgba(8,10,12,0.72); border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; padding: 3px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.28);">
                         ${displayLabel}
                     </div>
                 `);
@@ -761,23 +856,37 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         const baseStrokeW = isCompleted
             ? Math.max(0.3, Math.min(1, r * 0.01))
             : d.priority <= 1
-                ? Math.max(1.5, Math.min(4, r * 0.04))
+                ? Math.max(1.1, Math.min(2.4, r * 0.026))
                 : Math.max(0.5, Math.min(2, r * 0.02));
         const strokeColor = isSelected ? "#fff" : isCompleted ? "#2D3340" : priorityBorder;
         g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
+            .attr("class", "node-surface")
             .attr("fill", cellColor)
             .attr("stroke", strokeColor)
             .attr("stroke-width", isSelected ? Math.max(2, r * 0.02) : baseStrokeW)
             .attr("stroke-opacity", isCompleted ? 0.3 : 1);
 
-        // Blocked: subtle dashed ring instead of pulsing red
+        // Blocked: stronger outer ring and symbol for fast scanability
         if (d.status === "blocked") {
             g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
-                .attr("fill", "none").attr("stroke", "#9B5555")
-                .attr("stroke-width", Math.max(0.5, r * 0.015))
-                .attr("stroke-dasharray", "3,3")
-                .attr("stroke-opacity", 0.5)
+                .attr("fill", "none").attr("stroke", "#ff8797")
+                .attr("stroke-width", Math.max(1.1, r * 0.022))
+                .attr("stroke-dasharray", "5,3")
+                .attr("stroke-opacity", 0.82)
                 .style("pointer-events", "none");
+
+            if (r > 14) {
+                g.append("text")
+                    .attr("x", 0)
+                    .attr("y", -Math.max(4, r * 0.08))
+                    .attr("text-anchor", "middle")
+                    .attr("dominant-baseline", "central")
+                    .attr("font-size", Math.max(9, Math.min(16, r * 0.32)) + "px")
+                    .attr("font-weight", "800")
+                    .attr("fill", "#ffe4e8")
+                    .attr("pointer-events", "none")
+                    .text("!");
+            }
         }
 
         // Text always rendered; visibility toggled by zoom handler in CirclePackView
@@ -803,6 +912,7 @@ export function buildArcNode(g: d3.Selection<SVGGElement, any, null, undefined>,
     }
 
     g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
+        .attr("class", "node-surface")
         .attr("fill", d.fill)
         .attr("stroke", isSelected ? "#fff" : d.borderColor).attr("stroke-width", isSelected ? 4 : 1);
 

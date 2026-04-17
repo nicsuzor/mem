@@ -363,9 +363,9 @@ export function prepareGraphData(
             borderColor = ASSIGNEE_COLORS[assignee] || ASSIGNEE_DEFAULT;
         }
 
-        let borderWidth = 1.5 + Math.min(Math.log1p(dw) * 0.5, 2.5);
+        let borderWidth = 1.3 + Math.min(Math.log1p(dw) * 0.4, 2.1);
         if (priority <= 1 && isIncomplete) {
-            borderWidth = Math.max(borderWidth, 3);
+            borderWidth = Math.max(borderWidth, 2.5);
         }
 
         const shape = TYPE_SHAPE[nodeType] || "rect";

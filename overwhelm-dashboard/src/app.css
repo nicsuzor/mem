@@ -31,7 +31,7 @@
     filter: drop-shadow(0 0 15px var(--color-primary)) drop-shadow(0 0 5px #fff);
     z-index: 100;
   }
-  .selected-node rect, .selected-node circle, .selected-node polygon {
+  .selected-node .node-surface {
     stroke: #fff;
     stroke-width: 5px;
     stroke-opacity: 1;

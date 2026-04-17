@@ -7,6 +7,7 @@
     import { filters } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
     import { buildTaskCardNode } from "../shared/NodeShapes";
+    import { routeSfdpEdges, setEdgeObstacles } from "../shared/EdgeRenderer";
     import { projectHue } from "../../data/projectUtils";
     import { zoomScale } from "../../stores/zoom";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
@@ -52,6 +53,7 @@
     let linksLayer: SVGGElement;
     let nodesLayer: SVGGElement;
     let hullLayer: SVGGElement;
+    let labelsLayer: SVGGElement;
 
     let colaLayout: (cola.Layout & cola.ID3StyleLayoutAdaptor) | null = null;
     let colaGroups: any[] = [];
@@ -135,13 +137,16 @@
     function renderLinks(colaLinks: GraphEdge[]) {
         if (!linksLayer) return;
 
-        d3.select(linksLayer).selectAll("line.link")
+        d3.select(linksLayer).selectAll("path.link")
             .data(colaLinks)
-            .join("line")
+            .join("path")
             .attr("class", "link")
+            .attr("fill", "none")
             .attr("stroke", (link: any) => link.color || "#cbd5e1")
             .attr("stroke-width", (link: any) => link.width || 1.5)
             .attr("stroke-dasharray", (link: any) => link.dash || null)
+            .attr("stroke-linejoin", "round")
+            .attr("stroke-linecap", "round")
             .attr("opacity", (link: any) => link.opacity ?? 0.6);
     }
 
@@ -457,13 +462,15 @@
         if (!hullLayer) return;
 
         if (!$viewSettings.colaGroups) {
-            d3.select(hullLayer).selectAll<SVGRectElement, unknown>("rect.cola-group").remove();
+            d3.select(hullLayer).selectAll("rect.cola-group, g.cola-group-label").remove();
+            setEdgeObstacles([], new Map());
             return;
         }
 
-        type GB = { x: number; y: number; w: number; h: number; containerId: string };
+        type GB = { x: number; y: number; w: number; h: number; containerId: string; label: string; chipText: string; hue: number };
         const data: GB[] = [];
         const nodeBounds = new Map<string, { left: number; right: number; top: number; bottom: number }>();
+        const nodeById = new Map(($graphData?.nodes || []).map((node) => [node.id, node]));
 
         for (const node of $graphData?.nodes || []) {
             const width = (node as any).width ?? (node.w + 12);
@@ -497,14 +504,36 @@
                 bottom = Math.max(bottom, bound.bottom);
             }
 
+            const groupNode = nodeById.get(containerId) as GraphNode | undefined;
+            const label = groupNode?.label || containerId;
+            const typeLabel = (groupNode?.type || 'group').toUpperCase();
+            const chipText = `${typeLabel} | ${label}`.toUpperCase().slice(0, 48);
+            const hue = projectHue(groupNode?.project || containerId);
+
             data.push({
                 x: left - padding,
                 y: top - padding,
                 w: (right - left) + padding * 2,
                 h: (bottom - top) + padding * 2,
                 containerId,
+                label,
+                chipText,
+                hue,
             });
         }
+
+        const nodeGroupSets = new Map<string, Set<string>>();
+        for (const [containerId, memberIds] of groupMembers) {
+            for (const memberId of memberIds) {
+                if (!nodeGroupSets.has(memberId)) nodeGroupSets.set(memberId, new Set());
+                nodeGroupSets.get(memberId)!.add(containerId);
+            }
+        }
+
+        setEdgeObstacles(
+            data.map((group) => ({ x: group.x, y: group.y, X: group.x + group.w, Y: group.y + group.h, containerId: group.containerId })),
+            nodeGroupSets,
+        );
 
         d3.select(hullLayer).selectAll<SVGRectElement, GB>("rect.cola-group")
             .data(data, d => d.containerId).join("rect")
@@ -512,24 +541,55 @@
             .attr("rx", 8).attr("ry", 8)
             .attr("x", d => d.x).attr("y", d => d.y)
             .attr("width", d => d.w).attr("height", d => d.h)
-            .attr("fill", d => `hsla(${projectHue(d.containerId)},40%,50%,0.08)`)
-            .attr("stroke", d => `hsla(${projectHue(d.containerId)},40%,50%,0.3)`)
-            .attr("stroke-width", 1.5)
+            .attr("fill", d => `hsla(${d.hue}, 74%, 24%, 0.28)`)
+            .attr("stroke", d => `hsla(${d.hue}, 82%, 68%, 0.9)`)
+            .attr("stroke-width", 2)
             .style("cursor", "crosshair")
             .on("click", (e: any, d) => { e.stopPropagation(); toggleSelection(d.containerId); });
+
+        const labelRoot = labelsLayer ? d3.select(labelsLayer) : d3.select(hullLayer);
+        const labelGroups = labelRoot.selectAll<SVGGElement, GB>("g.cola-group-label")
+            .data(data, d => d.containerId)
+            .join((enter) => {
+                const group = enter.append("g").attr("class", "cola-group-label");
+                group.append("rect").attr("class", "cola-group-chip");
+                group.append("text").attr("class", "cola-group-chip-text");
+                return group;
+            });
+
+        labelGroups
+            .attr("transform", (d) => `translate(${d.x + 12},${d.y + 12})`)
+            .style("pointer-events", "none");
+
+        labelGroups.select<SVGRectElement>("rect.cola-group-chip")
+            .attr("rx", 9)
+            .attr("ry", 9)
+            .attr("width", (d) => Math.max(104, Math.min(d.w - 24, d.chipText.length * 6.8 + 22)))
+            .attr("height", 20)
+            .attr("fill", (d) => `hsla(${d.hue}, 78%, 14%, 0.96)`)
+            .attr("stroke", (d) => `hsla(${d.hue}, 84%, 74%, 0.86)`)
+            .attr("stroke-width", 1);
+
+        labelGroups.select<SVGTextElement>("text.cola-group-chip-text")
+            .attr("x", 9)
+            .attr("y", 13.5)
+            .attr("fill", (d) => `hsla(${d.hue}, 88%, 86%, 1)`)
+            .attr("font-size", "10px")
+            .attr("font-family", "var(--font-mono), monospace")
+            .attr("font-weight", "800")
+            .attr("letter-spacing", "0.07em")
+            .text((d) => d.chipText);
     }
 
     // ─── Tick + rebuild ──────────────────────────────────────────────────────
 
     function tickVisuals() {
-        if (linksLayer) {
-            d3.select(linksLayer).selectAll<SVGLineElement, any>("line.link")
-                .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
-                .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
-        }
         d3.select(nodesLayer).selectAll<SVGGElement, GraphNode>("g.node")
             .attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
         renderGroupBoxes();
+        if (linksLayer) {
+            routeSfdpEdges(d3.select(linksLayer).selectAll<SVGPathElement, any>("path.link"));
+        }
     }
 
     function rebuild(startIterations: readonly [number, number, number] = FULL_START_ITERATIONS, restartHeat = 0.1, resetPositions = false) {
@@ -640,6 +700,7 @@
     <g bind:this={hullLayer} class="hull-layer"></g>
     <g bind:this={linksLayer} class="links-layer"></g>
     <g bind:this={nodesLayer}></g>
+    <g bind:this={labelsLayer} class="labels-layer"></g>
 {/if}
 
 <style>

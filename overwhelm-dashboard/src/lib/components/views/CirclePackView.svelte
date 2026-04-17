@@ -17,7 +17,7 @@
     let lastGraphData: any = null;
 
     // Minimum pixel-space radius for showing text labels
-    const MIN_TEXT_PIXEL_RADIUS = 8;
+    const MIN_TEXT_PIXEL_RADIUS = 10;
 
     onMount(() => {
         // Watch the zoom transform on the parent SVG to toggle text visibility
@@ -46,7 +46,7 @@
     }
 
     // Minimum pixel radius for parent labels to be visible
-    const MIN_PARENT_LABEL_PIXEL_RADIUS = 25;
+    const MIN_PARENT_LABEL_PIXEL_RADIUS = 42;
 
     function updateTextVisibility() {
         if (!nodesLayer) return;
