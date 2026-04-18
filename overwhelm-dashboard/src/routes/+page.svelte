@@ -153,7 +153,7 @@
 
             // Determine status visibility
             let statusVis = 'bright';
-            const isActive = ["active", "inbox", "todo", "in_progress", "review", "waiting", "decomposing", "dormant"].includes(n.status);
+            const isActive = ["active", "ready", "inbox", "todo", "in_progress", "review", "waiting", "decomposing", "dormant"].includes(n.status);
             const isBlocked = n.status === "blocked";
             const isCompleted = ["done", "completed", "cancelled", "historical", "deferred", "paused", "seed", "early-scaffold"].includes(n.status);
 

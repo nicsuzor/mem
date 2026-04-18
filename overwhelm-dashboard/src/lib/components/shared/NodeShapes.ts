@@ -1,7 +1,7 @@
 import * as d3 from 'd3';
 import type { GraphNode } from '../../data/prepareGraphData';
 import { projectHue } from '../../data/projectUtils';
-import { INCOMPLETE_STATUSES, PRIORITY_BORDERS as SHARED_PRIORITY_BORDERS } from '../../data/constants';
+import { INCOMPLETE_STATUSES, PRIORITY_BORDERS as SHARED_PRIORITY_BORDERS, STATUS_FILLS } from '../../data/constants';
 
 function escapeHtml(str: string): string {
     return str
@@ -611,25 +611,6 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         return;
     }
 
-    // Status-based fill colors — muted by default, saturated only for attention states
-    const STATUS_COLORS: Record<string, string> = {
-        active: '#3D6BC3',
-        in_progress: '#3D6BC3',
-        review: '#557FD1',
-        waiting: '#31578F',
-        decomposing: '#31578F',
-        blocked: '#7C4050',
-        ready: '#31734D',
-        todo: '#31734D',
-        inbox: '#2A6746',
-        dormant: '#394253',
-        done: '#252B34',
-        completed: '#252B34',
-        cancelled: '#1D2128',
-        deferred: '#323846',
-        paused: '#505C6D',
-    };
-
     // Priority border colors — only P0/P1 draw the eye
     // P0/P1 use shared PRIORITIES colors; P2+ are muted to blend with cards
     let cellColor: string;
@@ -638,7 +619,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         cellColor = `hsl(${hue}, 48%, 24%)`;
     } else {
         const status = (d.status || 'inbox').toLowerCase();
-        cellColor = STATUS_COLORS[status] || '#4b5563';
+        cellColor = STATUS_FILLS[status] || '#4b5563';
     }
 
     const priorityBorder = SHARED_PRIORITY_BORDERS[d.priority ?? 4] || '#64748b';
@@ -907,30 +888,12 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
     // Color: status → fill, priority → border (matches legend & treemap)
     const hue = projectHue(d.project || d.id);
 
-    const CIRCLE_STATUS_COLORS: Record<string, string> = {
-        active: '#2C4A88',       // Soft blue
-        in_progress: '#2C4A88',  // Soft blue
-        review: '#3A5A9E',       // Lighter blue
-        waiting: '#1E3A6E',      // Darker muted blue
-        decomposing: '#1E3A6E',  // Darker muted blue
-        blocked: '#6B3A3A',      // Muted dark red — blocked but not urgent
-        ready: '#2D5A3D',        // Muted green
-        todo: '#2D5A3D',         // Muted green
-        inbox: '#1E4A2E',        // Dark green
-        dormant: '#2D2D35',      // Very dark grey
-        done: '#1E1E24',         // Near-black
-        completed: '#1E1E24',    // Near-black
-        cancelled: '#18181C',    // Darkest grey
-        deferred: '#2D2D35',     // Dark grey
-        paused: '#4b5563',       // Grey
-    };
-
     let cellColor: string;
     if (isParent) {
         cellColor = `hsl(${hue}, 46%, 24%)`;
     } else {
         const status = (d.status || 'inbox').toLowerCase();
-        cellColor = CIRCLE_STATUS_COLORS[status] || '#4b5563';
+        cellColor = STATUS_FILLS[status] || '#4b5563';
     }
 
     const priorityBorder = SHARED_PRIORITY_BORDERS[d.priority ?? 4] || '#64748b';

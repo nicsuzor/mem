@@ -1,8 +1,8 @@
 <script lang="ts">
-    import { graphData } from "../../stores/graph";
+    import { graphData, updateGraphTaskNode } from "../../stores/graph";
     import { selection } from "../../stores/selection";
     import { filters } from "../../stores/filters";
-    import { toast } from "../../stores/toast";
+    import { describeTaskMutation, taskOperations } from "../../stores/taskOperations";
     import { PRIORITIES } from "../../data/constants";
     import { projectHue } from "../../data/projectUtils";
     import TaskEditorView from "./TaskEditorView.svelte";
@@ -32,11 +32,11 @@
     }
 
     $: isAllProjects = ($filters.hiddenProjects?.length ?? 0) === 0;
-    // Determine which project is active in the sidebar. 
+    // Determine which project is active in the sidebar.
     // If exactly one project is visible (all others are hidden), consider it active.
-    $: activeProject = isAllProjects ? 'ALL' : 
-        (projects.length > 0 && ($filters.hiddenProjects?.length ?? 0) === projects.length - 1) 
-        ? projects.find(p => !($filters.hiddenProjects?.includes(p))) 
+    $: activeProject = isAllProjects ? 'ALL' :
+        (projects.length > 0 && ($filters.hiddenProjects?.length ?? 0) === projects.length - 1)
+        ? projects.find(p => !($filters.hiddenProjects?.includes(p)))
         : 'MIXED';
 
     function toggleSort(field: string) {
@@ -50,18 +50,9 @@
 
     async function toggleTaskStatus(task: any, isChecked: boolean) {
         const newStatus = isChecked ? 'done' : 'ready';
-        
-        // Optimistic update
-        graphData.update(gd => {
-            if (!gd) return gd;
-            const nodes = gd.nodes.map(n => {
-                if (n.id === task.id) {
-                    return { ...n, status: newStatus };
-                }
-                return n;
-            });
-            return { ...gd, nodes };
-        });
+
+        const { rollback } = updateGraphTaskNode(task.id, { status: newStatus });
+        const operationId = taskOperations.start(task.id, describeTaskMutation({ status: newStatus }));
 
         // Persist
         try {
@@ -71,13 +62,15 @@
                 body: JSON.stringify({ id: task.id, status: newStatus })
             });
             if (res.ok) {
-                toast.show(`Marked as ${newStatus}`, 'success');
+                taskOperations.succeed(operationId);
             } else {
-                toast.show(`Failed to update status`, 'error');
+                rollback();
+                taskOperations.fail(operationId, 'Failed to update status');
             }
         } catch (e: any) {
             console.error("Failed to update task status", e);
-            toast.show(`Error: ${e.message}`, 'error');
+            rollback();
+            taskOperations.fail(operationId, e.message ?? 'Network error');
         }
     }
 
@@ -166,7 +159,7 @@
                                     class="p-1 text-primary/40 hover:text-primary transition-colors"
                                     onclick={(e) => { e.stopPropagation(); filters.update(f => {
                                         const hidden = f.hiddenProjects || [];
-                                        return hidden.includes(project) 
+                                        return hidden.includes(project)
                                             ? { ...f, hiddenProjects: hidden.filter(p => p !== project) }
                                             : { ...f, hiddenProjects: [...hidden, project] };
                                     }); }}
@@ -204,12 +197,12 @@
                 <span class="material-symbols-outlined text-xs">chevron_right</span>
                 <span class="text-primary font-bold">{activeProject === 'ALL' ? 'ALL_TASKS' : (activeProject || '').toUpperCase()}</span>
             </div>
-            
+
             <div class="ml-4 flex-1">
-                <input 
-                    type="text" 
-                    bind:value={searchQuery} 
-                    placeholder="Search tasks..." 
+                <input
+                    type="text"
+                    bind:value={searchQuery}
+                    placeholder="Search tasks..."
                     class="w-full bg-black/40 border border-primary/30 text-primary text-xs px-3 py-1.5 focus:ring-1 focus:ring-primary outline-none font-mono"
                 />
             </div>
@@ -297,7 +290,7 @@
                     </tbody>
                 </table>
             </div>
-            
+
             {#if tasks.length === 0}
                 <div class="text-primary/40 italic p-6 text-center text-sm font-mono mt-4">
                     No tasks found matching criteria.

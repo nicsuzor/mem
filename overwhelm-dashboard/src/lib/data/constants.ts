@@ -41,36 +41,48 @@ export const TYPE_SHAPE: Record<string, string> = {
 };
 
 export const STATUS_FILLS: Record<string, string> = {
-    done: "#dcfce7",
-    completed: "#dcfce7",
-    cancelled: "#f1f5f9",
-    active: "#dbeafe",
-    in_progress: "#c7d2fe",
-    blocked: "#6A3142",
-    waiting: "#fef9c3",
-    inbox: "#f1f5f9",
-    todo: "#f1f5f9",
-    review: "#f3e8ff",
-    decomposing: "#e0f2fe",
-    dormant: "#f1f5f9",
-    archived: "#e2e8f0",
+    active: "#2C4A88",
+    in_progress: "#2C4A88",
+    review: "#3A5A9E",
+    waiting: "#1E3A6E",
+    decomposing: "#1E3A6E",
+    blocked: "#6B3A3A",
+    ready: "#2D5A3D",
+    todo: "#2D5A3D",
+    inbox: "#1E4A2E",
+    dormant: "#2D2D35",
+    done: "#1E1E24",
+    completed: "#1E1E24",
+    cancelled: "#18181C",
+    deferred: "#2D2D35",
+    paused: "#4b5563",
+    archived: "#323846",
 };
 
 export const STATUS_TEXT: Record<string, string> = {
-    done: "#166534",
-    completed: "#166534",
-    cancelled: "#94a3b8",
-    active: "#1e3a5f",
-    in_progress: "#312e81",
-    blocked: "#ffd7df",
-    waiting: "#854d0e",
-    inbox: "#475569",
-    todo: "#475569",
-    review: "#6b21a8",
-    decomposing: "#0369a1",
-    dormant: "#94a3b8",
-    archived: "#94a3b8",
+    active: "#edf3ff",
+    in_progress: "#edf3ff",
+    review: "#edf3ff",
+    waiting: "#e6efff",
+    decomposing: "#e6efff",
+    blocked: "#ffe4e8",
+    ready: "#e6f5eb",
+    todo: "#e6f5eb",
+    inbox: "#dbf1e3",
+    dormant: "#d6dbe3",
+    done: "#d7dde7",
+    completed: "#d7dde7",
+    cancelled: "#c5ccd6",
+    deferred: "#d2d8e1",
+    paused: "#edf2f7",
+    archived: "#d2d8e1",
 };
+
+export const STATUS_GROUP_SWATCHES = {
+    active: `linear-gradient(135deg, ${STATUS_FILLS.ready} 0%, ${STATUS_FILLS.active} 100%)`,
+    blocked: STATUS_FILLS.blocked,
+    completed: STATUS_FILLS.done,
+} as const;
 
 export const TYPE_BADGE: Record<string, string> = {
     goal: "GOAL",
@@ -106,10 +118,13 @@ export const PRIORITY_BORDERS: Record<number, string> = Object.fromEntries(
 
 export const INCOMPLETE_STATUSES = new Set([
     "inbox",
+    "ready",
     "active",
     "in_progress",
     "blocked",
     "waiting",
+    "review",
+    "decomposing",
     "todo",
     "pending",
 ]);

@@ -1,17 +1,44 @@
 <script lang="ts">
-    import { graphData } from "../../stores/graph";
+    import { graphData, updateGraphTaskNode } from "../../stores/graph";
     import HierarchyTree from "./HierarchyTree.svelte";
-    import { toast } from "../../stores/toast";
-    import {
-        NODE_TYPES,
-        STATUS_FILLS,
-        STATUS_TEXT
-    } from "../../data/constants";
+    import { describeTaskMutation, taskOperations } from "../../stores/taskOperations";
+    import { PRIORITIES, STATUS_FILLS, STATUS_TEXT } from "../../data/constants";
+
+    const HIDDEN_METADATA_KEYS = new Set([
+        'body', 'id', 'title', 'label', 'node_type', 'status', 'priority', 'project', 'assignee',
+        'layouts', 'x', 'y', 'depth', 'maxDepth', 'lines', 'dw', 'downstream_weight', 'modified',
+        'created', 'isLeaf', 'parent', 'fullTitle', '_safe_parent', 'filter_dimmed', 'path', 'refile'
+    ]);
+
+    const STATE_DETAILS: Record<string, { label: string; icon: string; summary: string; tone: 'neutral' | 'ready' | 'active' | 'warning' | 'danger' | 'success' }> = {
+        inbox: { label: 'Inbox', icon: 'inbox', summary: 'Captured but not yet queued.', tone: 'neutral' },
+        ready: { label: 'Ready', icon: 'task_alt', summary: 'Ready to be picked up.', tone: 'ready' },
+        active: { label: 'Active', icon: 'play_circle', summary: 'Actively being worked.', tone: 'active' },
+        in_progress: { label: 'In Progress', icon: 'play_circle', summary: 'Actively being worked.', tone: 'active' },
+        waiting: { label: 'Waiting', icon: 'schedule', summary: 'Blocked on time or input.', tone: 'warning' },
+        blocked: { label: 'Blocked', icon: 'block', summary: 'Cannot move without upstream change.', tone: 'danger' },
+        decomposing: { label: 'Decomposing', icon: 'account_tree', summary: 'Breaking down into smaller tasks.', tone: 'active' },
+        done: { label: 'Done', icon: 'check_circle', summary: 'Completed.', tone: 'success' },
+        completed: { label: 'Completed', icon: 'check_circle', summary: 'Completed.', tone: 'success' },
+        archived: { label: 'Archived', icon: 'inventory_2', summary: 'Removed from active rotation.', tone: 'neutral' },
+        cancelled: { label: 'Cancelled', icon: 'cancel', summary: 'Explicitly stopped.', tone: 'danger' },
+    };
+
+    const WORKFLOW_ACTIONS = [
+        { status: 'inbox', label: 'Inbox', icon: 'inbox' },
+        { status: 'ready', label: 'Enqueue', icon: 'playlist_add_check' },
+        { status: 'decomposing', label: 'Decomp', icon: 'account_tree' },
+    ] as const;
+
+    const TERMINAL_ACTIONS = [
+        { status: 'archived', label: 'Archive', icon: 'inventory_2' },
+        { status: 'cancelled', label: 'Cancel', icon: 'cancel' },
+    ] as const;
 
     let { taskId = null, onclose = () => {} }: { taskId?: string | null, onclose?: () => void } = $props();
 
     let task = $derived(taskId ? ($graphData?.nodes.find(n => n.id === taskId) || null) : null);
-    
+
     // Check if this is a synthetic project container node (from TreemapView)
     let isProjectContainer = $derived(taskId?.startsWith('__project_') && !taskId.endsWith('_uncategorized__'));
     let projectName = $derived(isProjectContainer ? taskId?.replace(/^__project_/, '').replace(/__$/, '') : null);
@@ -24,9 +51,15 @@
 
 
     let description = $state("");
+    let assigneeDraft = $state("");
     let loadingBody = $state(false);
-    let updating = $state(false);
+    let pendingUpdates = $state(0);
+    let updating = $derived(pendingUpdates > 0);
     let updateError = $state<string | null>(null);
+
+    $effect(() => {
+        assigneeDraft = task?.assignee || "";
+    });
 
     // Fetch body on-demand
     $effect(() => {
@@ -55,35 +88,26 @@
         }
     }
 
-    // Filter out internal fields from metadata display
-    let filteredMetadata = $derived(Object.entries(metadata).filter(([key]) =>
-        !['body', 'id', 'title', 'label', 'node_type', 'status', 'priority', 'project', 'assignee', 'layouts', 'x', 'y', 'depth', 'maxDepth', 'lines', 'dw', 'downstream_weight', 'modified', 'created', 'isLeaf', 'parent', 'fullTitle'].includes(key)
-    ));
+    let filteredMetadata = $derived(
+        Object.entries(metadata)
+            .filter(([key, value]) => !HIDDEN_METADATA_KEYS.has(key))
+            .filter(([, value]) => value !== null && value !== undefined && value !== "")
+            .filter(([, value]) => typeof value !== 'object')
+            .slice(0, 10)
+    );
 
-    const statusOptions = Object.keys(STATUS_FILLS).sort();
-    const typeOptions = [...NODE_TYPES].sort();
+    let currentPriority = $derived(PRIORITIES.find((priority) => priority.value === (t?.priority ?? 2)) ?? PRIORITIES[2]);
+    let currentStateDetails = $derived(STATE_DETAILS[t?.status || ''] ?? {
+        label: t?.status || 'Unknown',
+        icon: 'help',
+        summary: 'State is not mapped in the quick controls.',
+        tone: 'neutral'
+    });
 
     async function updateTask(updates: Record<string, any>, targetId: string | null = taskId) {
         if (!targetId) return;
 
-        // Optimistic local update — mutate the existing node in place so Cola's
-        // internal references stay valid and graphStructureKey doesn't change.
-        // This avoids a full physics rebuild for property-only edits.
-        graphData.update(gd => {
-            if (!gd) return gd;
-            const node = gd.nodes.find(n => n.id === targetId);
-            if (node) {
-                Object.assign(node, updates);
-                if (updates.status) {
-                    node.fill = STATUS_FILLS[updates.status] ?? node.fill;
-                    node.textColor = STATUS_TEXT[updates.status] ?? node.textColor;
-                    node.opacity = ['done', 'completed', 'cancelled', 'archived'].includes(updates.status) ? 0.4 : 0.8;
-                }
-                // Force D3 node rebuild by clearing cached selection state
-                (node as any)._lastSelected = undefined;
-            }
-            return gd;
-        });
+        const { rollback } = updateGraphTaskNode(targetId, updates);
 
         // Persist via API — send any fields that the endpoint accepts
         const apiPayload: Record<string, unknown> = { id: targetId };
@@ -92,7 +116,8 @@
         if (updates.assignee !== undefined) apiPayload.assignee = updates.assignee;
 
         if (Object.keys(apiPayload).length > 1) {
-            updating = true;
+            const operationId = taskOperations.start(targetId, describeTaskMutation(updates));
+            pendingUpdates += 1;
             updateError = null;
             try {
                 const res = await fetch('/api/task/status', {
@@ -103,15 +128,17 @@
                 if (!res.ok) {
                     const data = await res.json().catch(() => ({}));
                     updateError = data.error ?? `HTTP ${res.status}`;
-                    toast.show(`Failed to update ${targetId}: ${updateError}`, 'error');
+                    rollback();
+                    taskOperations.fail(operationId, updateError ?? undefined);
                 } else {
-                    toast.show(`Successfully updated ${targetId}`, 'success');
+                    taskOperations.succeed(operationId);
                 }
             } catch (e: any) {
                 updateError = e.message ?? 'Network error';
-                toast.show(`Error: ${updateError}`, 'error');
+                rollback();
+                taskOperations.fail(operationId, updateError ?? undefined);
             } finally {
-                updating = false;
+                pendingUpdates = Math.max(0, pendingUpdates - 1);
             }
         }
     }
@@ -144,10 +171,6 @@
             return;
         }
         setStatus('done');
-    }
-
-    function setType(type: string) {
-        updateTask({ type });
     }
 
     function setPriority(p: number) {
@@ -190,11 +213,13 @@
         setStatus('decomposing');
     }
 
-    let refileMarked = $state(false);
+    let refileMarked = $derived(Boolean((task as any)?._raw?.refile));
 
     async function handleMarkForRefile() {
         if (!taskId || !task) return;
-        updating = true;
+        const { rollback } = updateGraphTaskNode(taskId, { refile: true });
+        const operationId = taskOperations.start(taskId, describeTaskMutation({ refile: true }));
+        pendingUpdates += 1;
         updateError = null;
         try {
             const res = await fetch('/api/task/status', {
@@ -203,28 +228,94 @@
                 body: JSON.stringify({ id: taskId, refile: true }),
             });
             if (res.ok) {
-                refileMarked = true;
-                toast.show(`Task ${taskId} marked for refile`, 'success');
-                // Also optimistically mark it in-graph
-                graphData.update(gd => {
-                    if (!gd) return gd;
-                    const node = gd.nodes.find(n => n.id === taskId);
-                    if (node && (node as any)._raw) {
-                        (node as any)._raw.refile = true;
-                    }
-                    return gd;
-                });
+                taskOperations.succeed(operationId);
             } else {
                 const data = await res.json().catch(() => ({}));
                 updateError = data.error ?? `HTTP ${res.status}`;
-                toast.show(`Failed to mark refile: ${updateError}`, 'error');
+                rollback();
+                taskOperations.fail(operationId, updateError ?? undefined);
             }
         } catch (e: any) {
             updateError = e.message ?? 'Network error';
-            toast.show(`Error: ${updateError}`, 'error');
+            rollback();
+            taskOperations.fail(operationId, updateError ?? undefined);
         } finally {
-            updating = false;
+            pendingUpdates = Math.max(0, pendingUpdates - 1);
         }
+    }
+
+    async function submitAssignee() {
+        if (!taskId || !task) return;
+
+        const normalized = assigneeDraft.trim();
+        const nextAssignee = normalized || null;
+        if ((task.assignee || null) === nextAssignee) return;
+
+        await updateTask({ assignee: nextAssignee });
+    }
+
+    function handleAssigneeKeydown(event: KeyboardEvent) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            submitAssignee();
+            (event.currentTarget as HTMLInputElement)?.blur();
+        }
+
+        if (event.key === 'Escape') {
+            assigneeDraft = task?.assignee || '';
+            (event.currentTarget as HTMLInputElement)?.blur();
+        }
+    }
+
+    function stateCardClass(status: string, tone: string) {
+        const isActive = t?.status === status;
+        const toneMap: Record<string, string> = {
+            neutral: isActive ? 'border-primary/55 bg-primary/10 text-primary' : 'border-primary/15 bg-black/20 text-primary/70 hover:border-primary/30 hover:text-primary',
+            ready: isActive ? 'border-primary/60 bg-primary/12 text-primary' : 'border-primary/15 bg-black/20 text-primary/70 hover:border-primary/30 hover:text-primary',
+            active: isActive ? 'border-primary/55 bg-primary/10 text-primary' : 'border-primary/15 bg-black/20 text-primary/70 hover:border-primary/30 hover:text-primary',
+            warning: isActive ? 'border-primary/55 bg-primary/10 text-primary' : 'border-primary/15 bg-black/20 text-primary/70 hover:border-primary/30 hover:text-primary',
+            danger: isActive ? 'border-destructive/40 bg-destructive/8 text-destructive/90' : 'border-primary/15 bg-black/20 text-primary/70 hover:border-destructive/35 hover:text-destructive/90',
+            success: isActive ? 'border-primary/60 bg-primary/12 text-primary' : 'border-primary/15 bg-black/20 text-primary/70 hover:border-primary/30 hover:text-primary',
+        };
+
+        return `flex h-10 items-center gap-1.5 rounded-sm border px-2 py-1.5 text-left transition-colors disabled:opacity-50 ${toneMap[tone] || toneMap.neutral}`;
+    }
+
+    function stateBadgeClass(tone: string) {
+        const toneMap: Record<string, string> = {
+            neutral: 'border-primary/20 bg-black/25 text-primary/80',
+            ready: 'border-primary/30 bg-primary/10 text-primary',
+            active: 'border-primary/30 bg-primary/10 text-primary',
+            warning: 'border-primary/25 bg-black/25 text-primary/80',
+            danger: 'border-destructive/35 bg-destructive/8 text-destructive/90',
+            success: 'border-primary/30 bg-primary/10 text-primary',
+        };
+
+        return `inline-flex items-center gap-1 rounded-sm border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.16em] ${toneMap[tone] || toneMap.neutral}`;
+    }
+
+    function hexToRgba(hex: string, alpha: number) {
+        const normalized = hex.replace('#', '');
+        if (normalized.length !== 6) return `rgba(255, 255, 255, ${alpha})`;
+
+        const red = Number.parseInt(normalized.slice(0, 2), 16);
+        const green = Number.parseInt(normalized.slice(2, 4), 16);
+        const blue = Number.parseInt(normalized.slice(4, 6), 16);
+        return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+    }
+
+    function statusBadgeStyle(status: string) {
+        const fill = STATUS_FILLS[status] ?? '#1f2937';
+        const text = STATUS_TEXT[status] ?? '#e5e7eb';
+        return `background:${fill};border-color:${hexToRgba(fill, 0.72)};color:${text};`;
+    }
+
+    function prioritySurfaceStyle(color: string, fillAlpha = 0.12, borderAlpha = 0.5) {
+        return `background:${hexToRgba(color, fillAlpha)};border-color:${hexToRgba(color, borderAlpha)};color:${color};`;
+    }
+
+    function formatMetadataValue(value: unknown) {
+        return typeof value === 'string' ? value : String(value);
     }
 
     function close() {
@@ -289,7 +380,7 @@
                         <span class="material-symbols-outlined text-sm">content_copy</span>
                     </button>
                 </div>
-                
+
                 {#if isProjectContainer}
                     <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-primary/60 text-[9px] font-mono uppercase tracking-wider mt-2">
                         <div class="flex items-center gap-1.5 bg-primary/10 px-2 py-1 rounded border border-primary/20 text-primary font-bold">
@@ -297,112 +388,11 @@
                         </div>
                     </div>
                 {:else}
-                    <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-primary/60 text-[9px] font-mono uppercase tracking-wider">
-                        <div class="flex items-center gap-1.5 bg-primary/5 px-1.5 py-0.5 rounded border border-primary/10">
-                            <span>TYPE:</span>
-                            <select
-                                class="bg-transparent text-primary outline-none cursor-pointer"
-                                value={t.type}
-                                onchange={(e) => setType(e.currentTarget.value)}
-                            >
-                                {#each typeOptions as type}
-                                    <option value={type}>{type}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="flex items-center gap-1.5 bg-primary/5 px-1.5 py-0.5 rounded border border-primary/10">
-                            <span>STATE:</span>
-                            <select
-                                class="bg-transparent text-primary outline-none cursor-pointer"
-                                value={t.status}
-                                onchange={(e) => setStatus(e.currentTarget.value)}
-                            >
-                                {#each statusOptions.filter(s => canComplete || s !== 'done') as status}
-                                    <option value={status}>{status}</option>
-                                {/each}
-                            </select>
-                        </div>
-                    </div>
-
-                    <div class="flex gap-2 mt-1">
-                        {#if canComplete}
-                            <button
-                                class="flex-1 py-1.5 border border-primary {t.status === 'done' ? 'bg-primary text-background' : 'bg-primary/5 text-primary'} hover:bg-primary hover:text-background font-bold text-[10px] transition-all rounded-sm uppercase tracking-widest disabled:opacity-50"
-                                onclick={handleComplete}
-                                disabled={updating}
-                            >
-                                {t.status === 'done' ? 'FINISHED' : 'COMPLETE'}
-                            </button>
-                        {/if}
-                        <button
-                            class="px-2 py-1.5 border border-primary/40 {t.status === 'ready' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
-                            onclick={() => setStatus('ready')}
-                            disabled={updating}
-                        >
-                            READY
-                        </button>
-                        <button
-                            class="px-2 py-1.5 border border-sky-500/40 {t.status === 'decomposing' ? 'bg-sky-500/20 border-sky-500 text-sky-400' : 'text-primary/60'} hover:border-sky-500 hover:text-sky-400 font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
-                            onclick={handleDecompose}
-                            disabled={updating}
-                            title="Needs decomposition into subtasks"
-                        >
-                            DECOMPOSE
-                        </button>
-                    </div>
-                    <div class="flex gap-2">
-                        <button
-                            class="flex-1 py-1.5 border border-primary/30 text-primary/60 hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50 flex items-center justify-center gap-1"
-                            onclick={priorityUp}
-                            disabled={updating || (t.priority ?? 2) <= 0}
-                            title="Increase priority"
-                        >
-                            <span class="material-symbols-outlined text-[12px]">arrow_upward</span>
-                            PRI UP
-                        </button>
-                        <button
-                            class="flex-1 py-1.5 border border-primary/30 text-primary/60 hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50 flex items-center justify-center gap-1"
-                            onclick={priorityDown}
-                            disabled={updating || (t.priority ?? 2) >= 4}
-                            title="Decrease priority"
-                        >
-                            <span class="material-symbols-outlined text-[12px]">arrow_downward</span>
-                            PRI DOWN
-                        </button>
-                        <button
-                            class="flex-1 py-1.5 border border-primary/30 text-primary/50 hover:border-destructive/60 hover:text-destructive/80 font-bold text-[10px] transition-all rounded-sm disabled:opacity-50 flex items-center justify-center gap-1"
-                            onclick={handleArchive}
-                            disabled={updating}
-                            title="Archive this task"
-                        >
-                            <span class="material-symbols-outlined text-[12px]">inventory_2</span>
-                            ARCHIVE
-                        </button>
-                    </div>
-                    <div class="flex gap-2 mt-1">
-                        <button
-                            class="flex-1 py-1.5 border border-primary/40 {t.status === 'inbox' ? 'bg-primary/20 border-primary text-primary' : 'text-primary/60'} hover:border-primary hover:text-primary font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
-                            onclick={() => setStatus('inbox')}
-                            disabled={updating}
-                        >
-                            INBOX
-                        </button>
-                        <button
-                            class="flex-1 py-1.5 border {refileMarked ? 'border-amber-500 bg-amber-500/20 text-amber-400' : 'border-amber-500/40 text-amber-500/60'} hover:border-amber-500 hover:text-amber-400 font-bold text-[10px] transition-all rounded-sm disabled:opacity-50 flex items-center justify-center gap-1"
-                            onclick={handleMarkForRefile}
-                            disabled={updating || refileMarked}
-                            title="Mark this task for refiling/reorganization"
-                        >
-                            <span class="material-symbols-outlined text-[12px]">drive_file_move</span>
-                            {refileMarked ? 'MARKED' : 'REFILE'}
-                        </button>
-                        <button
-                            class="flex-1 py-1.5 border border-destructive/40 {t.status === 'cancelled' ? 'bg-destructive/20 border-destructive text-destructive' : 'text-destructive/60'} hover:border-destructive hover:text-destructive font-bold text-[10px] transition-all rounded-sm disabled:opacity-50"
-                            onclick={() => setStatus('cancelled')}
-                            disabled={updating}
-                        >
-                            CANCEL
-                        </button>
+                    <div class="flex flex-wrap items-center gap-2 text-[9px] font-mono uppercase tracking-[0.14em] text-primary/70">
+                        <span class="inline-flex items-center gap-1 rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-primary/85">
+                            <span class="opacity-55">Type</span>
+                            <span class="font-bold">{t.type}</span>
+                        </span>
                     </div>
                 {/if}
                 {#if showConfirmComplete}
@@ -450,7 +440,7 @@
                         <div class="p-4 border border-primary/20 bg-primary/5 rounded-sm">
                             <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block mb-2">Project_Overview</span>
                             <div class="text-[11px] leading-relaxed text-primary/80">
-                                This is a synthetic container for all tasks within the <strong>{projectName}</strong> project. 
+                                This is a synthetic container for all tasks within the <strong>{projectName}</strong> project.
                                 Click a specific task inside the treemap to edit its details.
                             </div>
                         </div>
@@ -463,63 +453,161 @@
                         </div>
                     </div>
                 {:else if task}
-                    <!-- Main Editor Area -->
-                    <div class="space-y-1.5">
-
-                    <div class="flex items-center justify-between">
-                        <span class="text-[9px] font-bold uppercase tracking-[0.15em] text-primary/50">Core_Intelligence</span>
-                        <button class="text-primary/30 hover:text-primary transition-colors flex items-center gap-1 text-[9px]" onclick={() => copyToClipboard(description)}>
-                            COPY
-                            <span class="material-symbols-outlined text-[10px]">content_copy</span>
-                        </button>
-                    </div>
-                    <div class="border border-primary/20 bg-black/20 p-3 min-h-[160px] relative">
-                        <textarea class="w-full h-full min-h-[140px] bg-transparent border-none focus:ring-0 text-[11px] font-mono leading-relaxed text-primary/80 resize-none outline-none custom-scrollbar" placeholder={loadingBody ? "Syncing..." : "No data found."} value={description}></textarea>
-                    </div>
-
-                <div class="grid grid-cols-2 gap-3">
-                    <div class="space-y-1">
-                        <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50">Priority</span>
-                        <select
-                            class="w-full bg-primary/5 border border-primary/20 rounded p-1.5 text-[10px] text-primary focus:border-primary/50 outline-none"
-                            value={String(t.priority ?? 2)}
-                            onchange={(e) => setPriority(Number(e.currentTarget.value))}
-                        >
-                            <option value="0">P0 CRITICAL</option>
-                            <option value="1">P1 INTENDED</option>
-                            <option value="2">P2 ACTIVE</option>
-                            <option value="3">P3 PLANNED</option>
-                            <option value="4">P4 BACKLOG</option>
-                        </select>
-                    </div>
-                    <div class="space-y-1">
-                        <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50">Assignee</span>
-                        <input class="w-full bg-primary/5 border border-primary/20 rounded p-1.5 text-[10px] text-primary focus:border-primary/50 outline-none placeholder:text-primary/20" placeholder="NONE" type="text" value={t.assignee || ""}/>
-                    </div>
-                </div>
-
-                <div class="space-y-2">
-                    <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Local_Context</span>
-                    <div class="bg-primary/2 rounded p-1">
-                        <HierarchyTree {taskId} />
-                    </div>
-                </div>
-
-                <!-- Metadata List -->
-                <div class="space-y-2">
-                    <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Extended_Telemetry</span>
-                    <div class="grid grid-cols-1 gap-y-2">
-                        {#each filteredMetadata as [key, value]}
-                            <div class="flex justify-between items-start gap-2 border-b border-primary/5 pb-1">
-                                <span class="text-[8px] uppercase text-primary/40 font-bold shrink-0">{key}</span>
-                                <span class="text-[10px] text-primary/70 text-right break-all max-w-[140px]" title={String(value)}>{value}</span>
+                    <div class="space-y-4">
+                        <section class="rounded-sm border border-primary/15 bg-black/15 p-3">
+                            <div class="flex items-center justify-between gap-2">
+                                <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45">State</div>
+                                <span class={stateBadgeClass(currentStateDetails.tone)} style={statusBadgeStyle(t.status)}>
+                                    <span class="material-symbols-outlined text-[12px]">{currentStateDetails.icon}</span>
+                                    {currentStateDetails.label}
+                                </span>
                             </div>
-                        {:else}
-                            <span class="text-[9px] text-primary/20 italic">No telemetry data.</span>
-                        {/each}
+                            <div class="mt-2 grid grid-cols-2 gap-1.5">
+                                {#if canComplete}
+                                    <button
+                                        class={stateCardClass('done', 'success')}
+                                        onclick={handleComplete}
+                                        disabled={updating}
+                                        title="Mark complete"
+                                    >
+                                        <span class="material-symbols-outlined text-[14px]">check_circle</span>
+                                        <span class="min-w-0">
+                                            <span class="block text-[8px] font-black uppercase tracking-[0.06em]">Done</span>
+                                        </span>
+                                    </button>
+                                {/if}
+                                {#each WORKFLOW_ACTIONS as action}
+                                    <button
+                                        class={stateCardClass(action.status, action.status === 'ready' ? 'ready' : action.status === 'decomposing' ? 'active' : 'neutral')}
+                                        onclick={() => action.status === 'decomposing' ? handleDecompose() : setStatus(action.status)}
+                                        disabled={updating}
+                                    >
+                                        <span class="material-symbols-outlined text-[14px]">{action.icon}</span>
+                                        <span class="min-w-0">
+                                            <span class="block text-[8px] font-black uppercase tracking-[0.06em]">{action.label}</span>
+                                        </span>
+                                    </button>
+                                {/each}
+                                {#each TERMINAL_ACTIONS as action}
+                                    <button
+                                        class={stateCardClass(action.status, action.status === 'cancelled' ? 'danger' : 'neutral')}
+                                        onclick={() => setStatus(action.status)}
+                                        disabled={updating}
+                                    >
+                                        <span class="material-symbols-outlined text-[14px]">{action.icon}</span>
+                                        <span class="min-w-0">
+                                            <span class="block text-[8px] font-black uppercase tracking-[0.06em]">{action.label}</span>
+                                        </span>
+                                    </button>
+                                {/each}
+                            </div>
+                        </section>
+
+                        <section class="grid grid-cols-1 gap-3">
+                            <div class="rounded-sm border border-primary/15 bg-black/15 p-3">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45">Priority</span>
+                                    {#if task.type === 'epic'}
+                                        <span class="text-[8px] font-mono uppercase tracking-[0.14em] text-primary/35">Cascades to active children</span>
+                                    {/if}
+                                </div>
+                                <div class="mt-2 grid grid-cols-[2rem_minmax(0,1fr)_2rem] items-center gap-2">
+                                    <button
+                                        class="inline-flex h-8 w-8 items-center justify-center rounded-sm border transition-colors hover:opacity-100 disabled:opacity-40"
+                                        style={prioritySurfaceStyle(currentPriority.color, 0.08, 0.35)}
+                                        onclick={priorityUp}
+                                        disabled={updating || (t.priority ?? 2) <= 0}
+                                        title="Increase priority"
+                                    >
+                                        <span class="material-symbols-outlined text-[14px]">arrow_upward</span>
+                                    </button>
+                                    <div class="min-w-0 rounded-sm border px-2 py-1.5 text-center" style={prioritySurfaceStyle(currentPriority.color, 0.12, 0.45)}>
+                                        <div class="text-[8px] uppercase tracking-[0.14em] text-primary/35">Current</div>
+                                        <div class="mt-0.5 text-[12px] font-black leading-tight" style={`color:${currentPriority.color}`}>
+                                            P{currentPriority.value} {currentPriority.short}
+                                        </div>
+                                    </div>
+                                    <button
+                                        class="inline-flex h-8 w-8 items-center justify-center rounded-sm border transition-colors hover:opacity-100 disabled:opacity-40"
+                                        style={prioritySurfaceStyle(currentPriority.color, 0.08, 0.35)}
+                                        onclick={priorityDown}
+                                        disabled={updating || (t.priority ?? 2) >= 4}
+                                        title="Decrease priority"
+                                    >
+                                        <span class="material-symbols-outlined text-[14px]">arrow_downward</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="rounded-sm border border-primary/15 bg-black/15 p-3">
+                                <div class="flex items-center justify-between gap-3">
+                                    <span class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45">Ownership</span>
+                                    <button
+                                        class="inline-flex shrink-0 items-center gap-1 rounded-sm border border-primary/20 bg-black/20 px-2 py-1 text-[8px] font-bold uppercase tracking-[0.14em] text-primary/75 transition-colors hover:border-primary/35 hover:text-primary disabled:opacity-50"
+                                        onclick={handleMarkForRefile}
+                                        disabled={updating || refileMarked}
+                                        title="Mark this task for refiling or reorganization"
+                                    >
+                                        <span class="material-symbols-outlined text-[12px]">drive_file_move</span>
+                                        {refileMarked ? 'Marked' : 'Refile'}
+                                    </button>
+                                </div>
+                                <label class="mt-3 block">
+                                    <span class="mb-1 block text-[9px] uppercase tracking-[0.16em] text-primary/40">Assignee</span>
+                                    <input
+                                        class="w-full rounded-sm border border-primary/20 bg-black/20 px-3 py-2 text-[11px] text-primary outline-none transition-colors placeholder:text-primary/20 focus:border-primary/45"
+                                        placeholder="Unassigned"
+                                        type="text"
+                                        bind:value={assigneeDraft}
+                                        onblur={submitAssignee}
+                                        onkeydown={handleAssigneeKeydown}
+                                    />
+                                </label>
+                            </div>
+                        </section>
+
+                        <section class="rounded-sm border border-primary/15 bg-black/15">
+                            <div class="flex items-center justify-between border-b border-primary/10 px-3 py-2">
+                                <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45">Description</div>
+                                {#if description.trim()}
+                                    <button class="text-primary/35 hover:text-primary transition-colors flex items-center gap-1 text-[9px] uppercase tracking-[0.14em]" onclick={() => copyToClipboard(description)}>
+                                        Copy
+                                        <span class="material-symbols-outlined text-[10px]">content_copy</span>
+                                    </button>
+                                {/if}
+                            </div>
+                            <div class="max-h-[24rem] overflow-y-auto px-4 py-3 custom-scrollbar">
+                                {#if loadingBody}
+                                    <div class="text-[11px] text-primary/40">Syncing description…</div>
+                                {:else if description.trim()}
+                                    <div class="select-text whitespace-pre-wrap text-[12px] leading-6 text-primary/88">{description}</div>
+                                {:else}
+                                    <div class="text-[11px] italic text-primary/30">No task description is available.</div>
+                                {/if}
+                            </div>
+                        </section>
+
+                        <section class="space-y-2">
+                            <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Local Context</span>
+                            <div class="rounded-sm border border-primary/12 bg-black/15 p-2">
+                                <HierarchyTree {taskId} />
+                            </div>
+                        </section>
+
+                        <section class="space-y-2">
+                            <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Additional Telemetry</span>
+                            <div class="grid grid-cols-1 gap-1.5">
+                                {#each filteredMetadata as [key, value]}
+                                    <div class="flex items-baseline justify-between gap-3 rounded-sm border border-primary/10 bg-black/15 px-2 py-1.5 font-mono">
+                                        <div class="min-w-0 truncate text-[8px] font-bold uppercase tracking-[0.12em] text-primary/35">{key}</div>
+                                        <div class="max-w-[58%] truncate text-[8px] uppercase tracking-[0.04em] text-primary/55" title={formatMetadataValue(value)}>{formatMetadataValue(value)}</div>
+                                    </div>
+                                {:else}
+                                    <span class="text-[9px] text-primary/20 italic">No additional telemetry worth showing.</span>
+                                {/each}
+                            </div>
+                        </section>
                     </div>
-                </div>
-                </div>
                 {/if}
             </div>
         </div>
