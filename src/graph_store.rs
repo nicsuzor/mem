@@ -1285,10 +1285,10 @@ fn compute_centrality_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
 }
 
 /// Compute the `project` field for each node by walking up the parent chain
-/// to find the nearest ancestor with `node_type == "project"` OR an explicit `project` field.
+/// to find the nearest ancestor with `node_type == "project"`.
 fn compute_project_field(nodes: &mut [GraphNode]) {
-    // Build id -> (parent, node_type, label, explicit_project) lookup
-    let info: HashMap<String, (Option<String>, Option<String>, String, Option<String>)> = nodes
+    // Build id -> (parent, node_type, label) lookup
+    let info: HashMap<String, (Option<String>, Option<String>, String)> = nodes
         .iter()
         .map(|n| {
             (
@@ -1297,40 +1297,29 @@ fn compute_project_field(nodes: &mut [GraphNode]) {
                     n.parent.clone(),
                     n.node_type.clone(),
                     n.label.clone(),
-                    n.project.clone(),
                 ),
             )
         })
         .collect();
 
     for node in nodes.iter_mut() {
-        // 1. If this node IS a project, its own project is its own label (overrides any explicit project field)
+        // 1. If this node IS a project, its own project is its own label
         if node.node_type.as_deref() == Some("project") {
             node.project = Some(node.label.clone());
             continue;
         }
 
-        // 2. If it already has an explicit project field from frontmatter, keep it
-        if node.project.is_some() {
-            continue;
-        }
-
-        // 3. Walk up parent chain
+        // 2. Walk up parent chain
         let mut current = node.parent.clone();
         let mut depth = 0;
         while let Some(ref pid) = current {
-            if depth > 50 {
+            if depth > 100 {
                 break; // cycle guard
             }
-            if let Some((parent, ntype, label, explicit_project)) = info.get(pid) {
+            if let Some((parent, ntype, label)) = info.get(pid) {
                 // Ancestor is a project node
                 if ntype.as_deref() == Some("project") {
                     node.project = Some(label.clone());
-                    break;
-                }
-                // Ancestor has its own project field (inherited or explicit)
-                if let Some(ref proj) = explicit_project {
-                    node.project = Some(proj.clone());
                     break;
                 }
                 current = parent.clone();
@@ -2549,5 +2538,64 @@ mod tests {
         assert_eq!(graph.find_soft_cycle_count(), 1, "soft mutual dependency = one soft cycle");
         // Must not appear in hard cycles
         assert!(graph.find_hard_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_compute_project_field_hierarchy() {
+        // Setup a hierarchy:
+        // Project A (type: project)
+        //   Epic B (type: epic, parent: Project A, project: "Wrong Project")
+        //     Task C (type: task, parent: Epic B)
+        // Task D (type: task, project: "Project E") -- no project ancestor
+        
+        let mut fm_b = serde_json::Map::new();
+        fm_b.insert("type".to_string(), serde_json::json!("epic"));
+        fm_b.insert("id".to_string(), serde_json::json!("epic-b"));
+        fm_b.insert("parent".to_string(), serde_json::json!("project-a"));
+        fm_b.insert("project".to_string(), serde_json::json!("Wrong Project"));
+        
+        let mut fm_d = serde_json::Map::new();
+        fm_d.insert("type".to_string(), serde_json::json!("task"));
+        fm_d.insert("id".to_string(), serde_json::json!("task-d"));
+        fm_d.insert("project".to_string(), serde_json::json!("Project E"));
+
+        let docs = vec![
+            make_doc("projects/a.md", "Project A", "project", "active", "project-a", None, &[]),
+            PkbDocument {
+                path: PathBuf::from("epics/b.md"),
+                title: "Epic B".to_string(),
+                body: String::new(),
+                doc_type: Some("epic".to_string()),
+                status: Some("active".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm_b)),
+                content_hash: "test_hash".to_string(),
+            },
+            make_doc("tasks/c.md", "Task C", "task", "active", "task-c", Some("epic-b"), &[]),
+            PkbDocument {
+                path: PathBuf::from("tasks/d.md"),
+                title: "Task D".to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("active".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm_d)),
+                content_hash: "test_hash".to_string(),
+            },
+        ];
+
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let a = graph.get_node("project-a").unwrap();
+        let b = graph.get_node("epic-b").unwrap();
+        let c = graph.get_node("task-c").unwrap();
+        let d = graph.get_node("task-d").unwrap();
+
+        assert_eq!(a.project.as_deref(), Some("Project A"));
+        assert_eq!(b.project.as_deref(), Some("Project A"), "Epic B should inherit Project A and ignore 'Wrong Project'");
+        assert_eq!(c.project.as_deref(), Some("Project A"), "Task C should inherit Project A via Epic B");
+        assert_eq!(d.project, None, "Task D should have no project since 'Project E' in frontmatter must be ignored");
     }
 }

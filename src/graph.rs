@@ -575,11 +575,6 @@ impl GraphNode {
             })
             .unwrap_or_default();
 
-        let project = fm.as_ref().and_then(|f| {
-            f.get("project")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
         let classification = fm.as_ref().and_then(|f| {
             f.get("classification")
                 .and_then(|v| v.as_str())
@@ -610,7 +605,7 @@ impl GraphNode {
             assignee,
             stakeholder,
             waiting_since,
-            project,
+            project: None,
             goals,
             complexity,
             effort,
