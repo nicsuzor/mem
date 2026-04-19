@@ -2,7 +2,7 @@
     import { viewSettings, getLayoutFromViewSettings } from "../../stores/viewSettings";
 
     $: layout = getLayoutFromViewSettings($viewSettings);
-    $: isForce = layout === "force" || layout === "sfdp" || layout === "metro";
+    $: isForce = layout === "force" || layout === "sfdp" || layout === "metro" || layout === "force_v2";
     $: isMetro = layout === "metro";
     $: isCircle = layout === "circle_pack";
     $: isArc = layout === "arc";
@@ -127,10 +127,6 @@
                         <label class="flex items-center justify-between cursor-pointer">
                             <span class="text-[10px] text-primary/60 uppercase">Groups</span>
                             <input type="checkbox" bind:checked={$viewSettings.colaGroups} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
-                        </label>
-                        <label class="flex items-center justify-between cursor-pointer">
-                            <span class="text-[10px] text-primary/60 uppercase">Links</span>
-                            <input type="checkbox" bind:checked={$viewSettings.colaLinks} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
                         </label>
                         <label class="flex items-center justify-between cursor-pointer">
                             <span class="text-[10px] text-primary/60 uppercase">Handle_Disconnected</span>

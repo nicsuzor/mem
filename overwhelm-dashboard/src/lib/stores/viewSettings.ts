@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 
-export const VIEW_MODES = ['Treemap', 'Circle Pack', 'Force', 'Metro', 'Arc Diagram'] as const;
+export const VIEW_MODES = ['Treemap', 'Circle Pack', 'Force', 'Metro', 'Arc Diagram', 'Force V2', 'Metro V2'] as const;
 export type ViewMode = typeof VIEW_MODES[number];
 
 export const viewSettings = writable({
@@ -13,13 +13,13 @@ export const viewSettings = writable({
 
     // Link-specific forces
     colaLinkDistIntraParent: 60,
-    colaLinkWeightIntraParent: 1.0,
+    colaLinkWeightIntraParent: 0.4,
     colaLinkDistInterParent: 150,
-    colaLinkWeightInterParent: 0.8,
+    colaLinkWeightInterParent: 0.25,
     colaLinkDistDependsOn: 150,
-    colaLinkWeightDependsOn: 0.5,
+    colaLinkWeightDependsOn: 0.15,
     colaLinkDistRef: 300,
-    colaLinkWeightRef: 0.2,
+    colaLinkWeightRef: 0.08,
 
     colaConvergence: 0.005, // convergence threshold - must be < 0.1 (Cola's initial alpha)
     colaFlowSep: 40,       // min vertical separation between linked nodes
@@ -49,6 +49,10 @@ export const getLayoutFromViewSettings = ($settings: any) => {
             return 'metro';
         case 'Arc Diagram':
             return 'arc';
+        case 'Force V2':
+            return 'force_v2';
+        case 'Metro V2':
+            return 'metro_v2';
         default:
             return 'force';
     }

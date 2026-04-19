@@ -60,13 +60,6 @@
     function computeLayout(data: any) {
         const nodes = data.nodes;
         const virtualRootId = "__treemap_root__";
-        const TINY_LEAF_WIDTH = 18;
-        const TINY_LEAF_HEIGHT = 12;
-        const TINY_LEAF_ASPECT = 0.22;
-        const TINY_BRANCH_WIDTH = 34;
-        const TINY_BRANCH_HEIGHT = 18;
-        const TINY_BRANCH_ASPECT = 0.3;
-        const MAX_TINY_BRANCH_LEAVES = 3;
         const nodeIdSet = new Set(nodes.map((n: any) => n.id));
         const projectRootId = ($filters as any).projectFilter as string | undefined;
 
@@ -132,36 +125,23 @@
         // STABLE SORT: Tie-break with ID to prevent jumping on re-renders
         root.sort((a, b) => (b.value || 0) - (a.value || 0) || a.id!.localeCompare(b.id!));
 
-        const visibleLeafCount = root.leaves().length;
-        const densityScale = visibleLeafCount > 520
-            ? 0.72
-            : visibleLeafCount > 380
-                ? 0.78
-                : visibleLeafCount > 260
-                    ? 0.84
-                    : visibleLeafCount > 160
-                        ? 0.9
-                        : 0.96;
-        const layoutCanvasW = Math.round(canvasW * densityScale);
-        const layoutCanvasH = Math.round(canvasH * densityScale);
-
         // Use the same header height computation as the renderer
         function estimateHeaderHeight(node: any): number {
             if (node.depth === 0) return 4; // virtual root
             if (!node.children) return 0; // leaves don't need header padding
-            const w = (node.x1 ?? layoutCanvasW) - (node.x0 ?? 0);
-            const h = (node.y1 ?? layoutCanvasH) - (node.y0 ?? 0);
+            const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
+            const h = (node.y1 ?? canvasH) - (node.y0 ?? 0);
             const label = node.data?.label || '';
             if (!label || w < 25) return 14;
             return treemapHeaderMetrics(w, h, label, node.depth).headerH;
         }
 
         const treemap = d3.treemap<any>()
-            .size([layoutCanvasW, layoutCanvasH])
-            .paddingInner((node: any) => node.depth <= 1 ? 14 : node.depth <= 2 ? 6 : 2)
-            .paddingBottom((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 2)
-            .paddingLeft((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 2)
-            .paddingRight((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 2)
+            .size([canvasW, canvasH])
+            .paddingInner((node: any) => node.depth <= 1 ? 14 : node.depth <= 2 ? 6 : 5)
+            .paddingBottom((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
+            .paddingLeft((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
+            .paddingRight((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
             .paddingTop((node: any) => estimateHeaderHeight(node))
             .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
@@ -187,153 +167,8 @@
             });
         });
 
-        const hiddenNodeIds = new Set<string>();
-        const overflowNodes: any[] = [];
-
-        const tinyBranchRoots = new Set<string>();
-        root.descendants().forEach((node: any) => {
-            if (!node.children || node.depth <= 1) return;
-            if (!node.parent || !node.parent.data?.id) return;
-
-            const width = node.x1 - node.x0;
-            const height = node.y1 - node.y0;
-            const leafCount = node.leaves().length;
-            const isTinyBranch = width < TINY_BRANCH_WIDTH || height < TINY_BRANCH_HEIGHT || width / Math.max(height, 1) < TINY_BRANCH_ASPECT;
-            if (!isTinyBranch || leafCount > MAX_TINY_BRANCH_LEAVES) return;
-
-            let ancestor = node.parent;
-            while (ancestor) {
-                if (tinyBranchRoots.has(ancestor.data?.id)) {
-                    return;
-                }
-                ancestor = ancestor.parent;
-            }
-
-            tinyBranchRoots.add(node.data.id);
-        });
-
-        for (const branchRootId of tinyBranchRoots) {
-            const branchRoot = root.descendants().find((node: any) => node.data.id === branchRootId) as any;
-            if (!branchRoot || !branchRoot.parent?.data?.id) continue;
-
-            const descendantLabels = branchRoot.leaves().map((leaf: any) => leaf.data.label).filter(Boolean);
-            const totalLeafCount = branchRoot.leaves().length;
-
-            branchRoot.descendants().forEach((descendant: any) => {
-                hiddenNodeIds.add(descendant.data.id);
-            });
-
-            const regionWidth = Math.max(16, branchRoot.x1 - branchRoot.x0);
-            const regionHeight = Math.max(12, branchRoot.y1 - branchRoot.y0);
-
-            overflowNodes.push({
-                id: `__overflow_branch__${branchRootId}`,
-                label: branchRoot.data.label,
-                status: 'overflow',
-                type: 'overflow',
-                priority: 4,
-                project: branchRoot.data?.project || null,
-                parent: branchRoot.parent.data.id,
-                depth: branchRoot.depth,
-                x: branchRoot.x0 + regionWidth / 2,
-                y: branchRoot.y0 + regionHeight / 2,
-                _lw: regionWidth,
-                _lh: regionHeight,
-                _isLeaf: false,
-                _isOverflow: true,
-                _rollupKind: 'branch',
-                _rollupCount: totalLeafCount,
-                _leafCount: totalLeafCount,
-                totalLeafCount,
-                hiddenLabels: descendantLabels,
-            });
-        }
-
-        const tinyLeavesByParent = new Map<string, any[]>();
-        root.leaves().forEach((leaf: any) => {
-            if (hiddenNodeIds.has(leaf.data.id)) return;
-            const width = leaf.x1 - leaf.x0;
-            const height = leaf.y1 - leaf.y0;
-            const isTiny = width < TINY_LEAF_WIDTH || height < TINY_LEAF_HEIGHT || width / Math.max(height, 1) < TINY_LEAF_ASPECT;
-            if (!isTiny || !leaf.parent || !leaf.parent.data?.id) return;
-
-            const parentId = leaf.parent.data.id;
-            const siblings = tinyLeavesByParent.get(parentId) || [];
-            siblings.push(leaf);
-            tinyLeavesByParent.set(parentId, siblings);
-        });
-
-        const hiddenLeafIds = new Set<string>();
-        for (const [parentId, tinyLeaves] of tinyLeavesByParent) {
-            if (tinyLeaves.length < 2) continue;
-
-            let x0 = Infinity;
-            let y0 = Infinity;
-            let x1 = -Infinity;
-            let y1 = -Infinity;
-            for (const leaf of tinyLeaves) {
-                hiddenLeafIds.add(leaf.data.id);
-                x0 = Math.min(x0, leaf.x0);
-                y0 = Math.min(y0, leaf.y0);
-                x1 = Math.max(x1, leaf.x1);
-                y1 = Math.max(y1, leaf.y1);
-            }
-
-            const labels = tinyLeaves.map((leaf: any) => leaf.data.label).filter(Boolean);
-            const regionWidth = Math.max(12, x1 - x0);
-            const regionHeight = Math.max(10, y1 - y0);
-
-            overflowNodes.push({
-                id: `__overflow__${parentId}`,
-                label: tinyLeaves.length === 1 ? 'Other Task' : 'Other Tasks',
-                status: 'overflow',
-                type: 'overflow',
-                priority: 4,
-                project: tinyLeaves[0]?.data?.project || null,
-                parent: parentId,
-                depth: (layoutMap.get(parentId)?.depth || 0) + 1,
-                x: x0 + regionWidth / 2,
-                y: y0 + regionHeight / 2,
-                _lw: regionWidth,
-                _lh: regionHeight,
-                _isLeaf: false,
-                _isOverflow: true,
-                _rollupKind: 'leaf',
-                _rollupCount: tinyLeaves.length,
-                _leafCount: tinyLeaves.length,
-                totalLeafCount: tinyLeaves.length,
-                hiddenLabels: labels,
-            });
-        }
-
-        const rollupHiddenLeafIds = new Set<string>([
-            ...hiddenNodeIds,
-            ...hiddenLeafIds,
-        ]);
-
-        root.descendants().forEach((node: any) => {
-            if (!node.children || node.data.id === rootId) return;
-            if (hiddenNodeIds.has(node.data.id)) return;
-
-            const descendantLeaves = node.leaves();
-            if (descendantLeaves.length === 0) return;
-
-            const allLeavesRolledUp = descendantLeaves.every((leaf: any) => rollupHiddenLeafIds.has(leaf.data.id));
-            if (!allLeavesRolledUp) return;
-
-            hiddenNodeIds.add(node.data.id);
-        });
-
         visibleNodes = nodes
             .filter((n: any) => {
-                if (hiddenNodeIds.has(n.id)) {
-                    n.x = -9999;
-                    return false;
-                }
-                if (hiddenLeafIds.has(n.id)) {
-                    n.x = -9999;
-                    return false;
-                }
                 const l = layoutMap.get(n.id);
                 if (l) {
                     n.x = l.x; n.y = l.y; n._lw = l.w; n._lh = l.h;
@@ -345,7 +180,6 @@
                 n.x = -9999;
                 return false;
             })
-            .concat(overflowNodes)
             .sort((a: any, b: any) => (a.depth || 0) - (b.depth || 0));
 
         links = data.links;

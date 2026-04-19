@@ -36,7 +36,6 @@ export interface GraphNode {
     modified: number | null;
     badge: string;
     parent: string | null;
-    _safe_parent?: string | null;
     project: string | null;
     assignee: string | null;
     path: string | null;
@@ -363,9 +362,9 @@ export function prepareGraphData(
             borderColor = ASSIGNEE_COLORS[assignee] || ASSIGNEE_DEFAULT;
         }
 
-        let borderWidth = 1.3 + Math.min(Math.log1p(dw) * 0.4, 2.1);
+        let borderWidth = 1.5 + Math.min(Math.log1p(dw) * 0.5, 2.5);
         if (priority <= 1 && isIncomplete) {
-            borderWidth = Math.max(borderWidth, 2.5);
+            borderWidth = Math.max(borderWidth, 3);
         }
 
         const shape = TYPE_SHAPE[nodeType] || "rect";
@@ -437,9 +436,9 @@ export function prepareGraphData(
                 }
             }
         } else if (etype === 'soft_depends_on') {
-            color = "#a3a3a3"; // Treat soft dependencies like references in the UI
-            width = 1.5;
-            dash = "4,3";
+            color = "#b91c1c"; // Muted red — softer version of dependency
+            width = 2.0;
+            dash = "6,3";
         } else {
             color = "#a3a3a3"; // Lighter grey for references
             width = 1.5;
