@@ -1148,7 +1148,7 @@ impl PkbSearchServer {
         let effort_days = node
             .effort
             .as_deref()
-            .and_then(crate::graph_store::parse_effort_days)
+            .and_then(crate::graph_store::GraphStore::parse_effort_days)
             .unwrap_or(3);
         let urgency_ratio: Option<f64> = days_until_due.map(|d| {
             (effort_days as f64 / d.max(1) as f64).min(1.0)
@@ -1164,6 +1164,8 @@ impl PkbSearchServer {
             "subtasks": subtask_nodes_sorted,
             "parent": parent,
             "goals": node.goals,
+            "priority": node.priority.unwrap_or(2),
+            "effective_priority": node.effective_priority.unwrap_or(node.priority.unwrap_or(2)),
             "downstream_weight": node.downstream_weight,
             "stakeholder_exposure": node.stakeholder_exposure,
             "stakeholder": node.stakeholder,
@@ -2163,6 +2165,14 @@ impl PkbSearchServer {
                     .get("due")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                effort: subtask
+                    .get("effort")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                consequence: subtask
+                    .get("consequence")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
             };
 
             let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
@@ -2424,7 +2434,7 @@ impl PkbSearchServer {
         };
 
         if let Some(pri) = priority {
-            tasks.retain(|t| t.priority == Some(pri));
+            tasks.retain(|t| t.effective_priority.unwrap_or(4) <= pri);
         }
         if let Some(a) = assignee {
             tasks.retain(|t| {
@@ -2463,6 +2473,7 @@ impl PkbSearchServer {
                         "title": t.label,
                         "status": t.status.as_deref().unwrap_or("unknown"),
                         "priority": t.priority.unwrap_or(2),
+                        "effective_priority": t.effective_priority.unwrap_or(t.priority.unwrap_or(2)),
                         "project": t.project,
                         "assignee": t.assignee,
                         "modified": t.modified,
@@ -3426,7 +3437,7 @@ impl ServerHandler for PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, done, etc." },
-                        "priority": { "type": "integer", "description": "Filter by exact priority (0-4)" },
+                        "priority": { "type": "integer", "description": "Filter to tasks whose effective priority (own or any downstream task via blocks/parent) ≤ N. E.g. priority=0 returns every task that touches a P0, including its blockers." },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
