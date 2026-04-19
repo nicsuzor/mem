@@ -281,7 +281,7 @@
         if (!$graphData) return;
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
 
-        const nodes: GraphNode[] = $graphData.nodes.filter((n: any) => n.type !== 'project');
+        const nodes: GraphNode[] = $graphData.nodes;
         const links: GraphEdge[] = $graphData.links;
 
         resolveLinkReferences(nodes, links);
