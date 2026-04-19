@@ -2471,7 +2471,7 @@ async fn main() -> Result<()> {
                 let known_ids = None; // single-file mode skips ref checks
                 let results: Vec<lint::FileResult> = files
                     .iter()
-                    .map(|f| lint::lint_file(f, fix, known_ids.as_ref(), None))
+                    .map(|f| lint::lint_file(f, fix, known_ids.as_ref(), None, None))
                     .collect();
                 let summary = lint::LintSummary::from_results(&results);
                 (results, summary)

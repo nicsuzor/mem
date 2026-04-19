@@ -261,7 +261,7 @@ fn generate_missing_id(path: &Path, fm: &serde_json::Map<String, serde_json::Val
 }
 
 /// Lint a single file. If `fix` is true, also produce corrected content.
-pub fn lint_file(path: &Path, fix: bool, known_ids: Option<&HashSet<String>>, ancestor_map: Option<&AncestorMap>) -> FileResult {
+pub fn lint_file(path: &Path, fix: bool, known_ids: Option<&HashSet<String>>, ancestor_map: Option<&AncestorMap>, children_set: Option<&ChildrenSet>) -> FileResult {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -305,7 +305,7 @@ pub fn lint_file(path: &Path, fix: bool, known_ids: Option<&HashSet<String>>, an
 
     // ── Frontmatter rules ────────────────────────────────────────────
 
-    check_frontmatter(&content, &fm_data, &mut diags, known_ids, ancestor_map);
+    check_frontmatter(&content, &fm_data, &mut diags, known_ids, ancestor_map, children_set);
 
     // ── Markdown body rules ──────────────────────────────────────────
 
@@ -413,6 +413,10 @@ fn fallback_parse_frontmatter(content: &str) -> Option<serde_json::Value> {
 /// Built during lint_directory pre-pass.
 pub type AncestorMap = HashMap<String, (Option<String>, Option<String>)>;
 
+/// Set of IDs that appear as a parent of at least one other node.
+/// A node in this set has children (scope > 0).
+pub type ChildrenSet = HashSet<String>;
+
 /// Walk the parent chain to check if any ancestor's ID matches the given value.
 fn has_matching_ancestor(id: &str, project_value: &str, ancestor_map: &AncestorMap) -> bool {
     let mut current = id.to_string();
@@ -444,6 +448,7 @@ fn check_frontmatter(
     diags: &mut Vec<Diagnostic>,
     known_ids: Option<&HashSet<String>>,
     ancestor_map: Option<&AncestorMap>,
+    children_set: Option<&ChildrenSet>,
 ) {
     // Check frontmatter exists
     if !content.starts_with("---") {
@@ -760,13 +765,30 @@ fn check_frontmatter(
                 fixable: false,
             });
         }
-        // Tasks must have a parent (goals and projects are root-level)
+        // Parentless node check: severity depends on whether the node has children.
+        // A node with children (scope > 0) but no parent is likely a structural gap.
+        // A standalone leaf with no parent is valid under the information-theoretic model.
         if node_type == "task" || node_type == "epic" {
             if !fm.contains_key("parent") {
+                let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let has_children = children_set
+                    .map(|cs| cs.contains(node_id))
+                    .unwrap_or(false);
+                let (severity, message) = if has_children {
+                    (
+                        Severity::Warning,
+                        format!("Type '{}' has children but no parent — consider connecting to the graph", node_type),
+                    )
+                } else {
+                    (
+                        Severity::Style,
+                        format!("Type '{}' has no parent (standalone leaf)", node_type),
+                    )
+                };
                 diags.push(Diagnostic {
-                    severity: Severity::Warning,
+                    severity,
                     rule: "task-no-parent",
-                    message: format!("Type '{}' should have a parent node", node_type),
+                    message,
                     line: None,
                     fixable: false,
                 });
@@ -1179,6 +1201,12 @@ pub fn lint_directory(
         })
         .collect();
 
+    // Derive children set: IDs that appear as a parent of at least one node.
+    let children_set: ChildrenSet = ancestor_map
+        .values()
+        .filter_map(|(parent_id, _)| parent_id.clone())
+        .collect();
+
     // ── Hard cycle detection ─────────────────────────────────────────────────
     // Scan all files for `parent` + `depends_on` references to build a directed
     // adjacency map, then run Tarjan's SCC to find hard dependency cycles.
@@ -1276,7 +1304,7 @@ pub fn lint_directory(
 
     let mut results: Vec<FileResult> = files
         .par_iter()
-        .map(|p| lint_file(p, fix, known_ids.as_ref(), Some(&ancestor_map)))
+        .map(|p| lint_file(p, fix, known_ids.as_ref(), Some(&ancestor_map), Some(&children_set)))
         .collect();
 
     // Merge cycle diagnostics into per-file results
@@ -1301,7 +1329,7 @@ pub fn lint_directory(
         // Return fresh results after renames (cycle diagnostics still apply)
         let mut results: Vec<FileResult> = files
             .par_iter()
-            .map(|p| lint_file(p, false, known_ids.as_ref(), Some(&ancestor_map)))
+            .map(|p| lint_file(p, false, known_ids.as_ref(), Some(&ancestor_map), Some(&children_set)))
             .collect();
         for r in &mut results {
             if let Some(diag) = cycle_diags.get(&r.path) {
@@ -1445,14 +1473,14 @@ mod tests {
     fn lint_str(content: &str) -> Vec<Diagnostic> {
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(content.as_bytes()).unwrap();
-        let result = lint_file(f.path(), false, None, None);
+        let result = lint_file(f.path(), false, None, None, None);
         result.diagnostics
     }
 
     fn fix_str(content: &str) -> String {
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(content.as_bytes()).unwrap();
-        let result = lint_file(f.path(), true, None, None);
+        let result = lint_file(f.path(), true, None, None, None);
         result.fixed_content.unwrap_or_else(|| content.to_string())
     }
 
