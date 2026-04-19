@@ -3,6 +3,7 @@ models/
 mem
 .claude/settings.json
 *.png
+!overwhelm-dashboard/qa/**
 .playwright-mcp
 graph.json
 
