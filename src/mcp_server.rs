@@ -3130,6 +3130,12 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    fn handle_get_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let stats = crate::telemetry::get_stats(&self.pkb_root);
+        let json = serde_json::to_string_pretty(&stats).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
     fn handle_batch_reclassify(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let new_type = args
@@ -3257,6 +3263,9 @@ impl ServerHandler for PkbSearchServer {
         request: CallToolRequestParam,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+        let start = std::time::Instant::now();
+        let tool_name = request.name.clone();
+
         let args = Self::args_to_value(request.arguments);
         let result = match &*request.name {
             "search" => self.handle_pkb_search(&args),
@@ -3297,12 +3306,29 @@ impl ServerHandler for PkbSearchServer {
             "merge_node" => self.handle_merge_node(&args),
             "batch_create_epics" => self.handle_batch_create_epics(&args),
             "batch_reclassify" => self.handle_batch_reclassify(&args),
+            "get_stats" => self.handle_get_stats(&args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {}", request.name)),
                 data: None,
             }),
         };
+
+        let latency = start.elapsed().as_millis();
+        let is_error = result.is_err();
+        let response_bytes = match &result {
+            Ok(res) => serde_json::to_vec(res).map(|v| v.len()).unwrap_or(0),
+            Err(e) => serde_json::to_vec(e).map(|v| v.len()).unwrap_or(0),
+        };
+
+        crate::telemetry::record_call(
+            &self.pkb_root,
+            &tool_name,
+            response_bytes,
+            latency,
+            is_error,
+        );
+
         std::future::ready(result)
     }
 
@@ -3937,6 +3963,15 @@ impl ServerHandler for PkbSearchServer {
                 }))
                 .unwrap(),
             ),
+            Tool::new(
+                "get_stats",
+                "Show MCP tool usage telemetry — call counts and response bytes per tool.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }))
+                .unwrap(),
+            ),
         ];
 
         std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
@@ -3961,8 +3996,9 @@ impl ServerHandler for PkbSearchServer {
     fn get_info(&self) -> ServerInfo {
         let mut instructions = String::from(
             "PKB Search — semantic search + task graph over personal knowledge base. \
-             38 tools for search, documents, tasks, and knowledge graph. \
-             Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance.",
+             39 tools for search, documents, tasks, and knowledge graph. \
+             Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance. \
+             Use get_stats to view per-tool usage telemetry.",
         );
         if self.stale_count > 0 {
             instructions.push_str(&format!(
