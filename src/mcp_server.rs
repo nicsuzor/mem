@@ -3131,6 +3131,197 @@ impl PkbSearchServer {
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
+
+    // =========================================================================
+    // CONSOLIDATED TOOLS (Progressive Disclosure)
+    // =========================================================================
+
+    fn handle_pkb_tool_help(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let tool = args.get("tool").and_then(|v| v.as_str());
+        let action = args.get("action").and_then(|v| v.as_str());
+
+        let help = match (tool, action) {
+            (Some("create_document"), _) => {
+                "## create_document\n\n\
+                 Create a new PKB node (task, memory, note, etc.).\n\n\
+                 **Parameters:**\n\
+                 - `type`: task, memory, note, goal, project, epic\n\
+                 - `title`: String (required)\n\
+                 - `parent`: Parent ID (required for tasks)\n\
+                 - `fields`: Object containing priority (0-4), tags (array), depends_on (array), assignee, etc.\n\
+                 - `body`: Markdown content\n"
+            }
+            (Some("manage_task"), Some("release")) => {
+                "## manage_task(action='release')\n\n\
+                 Transition a task to a terminal status with work history.\n\n\
+                 **Parameters:**\n\
+                 - `id`: Task ID\n\
+                 - `params`: Object\n\
+                   - `status`: merge_ready, done, review, blocked, cancelled\n\
+                   - `summary`: What was done (1-3 sentences)\n\
+                   - `pr_url`: PR link (optional)\n"
+            }
+            (Some("manage_task"), _) => {
+                "## manage_task\n\n\
+                 Lifecycle management for tasks.\n\n\
+                 **Actions:**\n\
+                 - `update`: Update fields (params: {updates: {priority: 1, ...}})\n\
+                 - `complete`: Mark as done (params: {completion_evidence: '...'})\n\
+                 - `release`: Handoff (params: {status: 'merge_ready', summary: '...'})\n\
+                 - `decompose`: Create subtasks (params: {subtasks: [{title: '...'}, ...]})\n"
+            }
+            (Some("pkb_batch"), _) => {
+                "## pkb_batch\n\n\
+                 Bulk operations across multiple nodes.\n\n\
+                 **Actions:**\n\
+                 - `update`: Filter and update fields\n\
+                 - `reparent`: Move multiple tasks to new parent\n\
+                 - `archive`: Set multiple to done\n\
+                 - `merge`: Merge duplicates into canonical\n\
+                 - `duplicates`: Detect potential duplicates\n\
+                 - `orphans`: List disconnected nodes\n"
+            }
+            _ => {
+                "## PKB Tools Help\n\n\
+                 Use `pkb_tool_help(tool='TOOL_NAME')` for detailed schema.\n\n\
+                 **Entrypoint Tools:**\n\
+                 - `search`: Semantic search (all types)\n\
+                 - `get_document`: Read by ID/path\n\
+                 - `list_documents`: List and filter\n\
+                 - `create_document`: Create new nodes\n\
+                 - `manage_task`: Task lifecycle\n\
+                 - `pkb_explore`: Graph relationships\n\
+                 - `pkb_batch`: Bulk operations\n\
+                 - `pkb_stats`: System status\n"
+            }
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(help)]))
+    }
+
+    fn handle_create_document_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let doc_type = args.get("type").and_then(|v| v.as_str()).unwrap_or("note");
+        let fields = args.get("fields").and_then(|v| v.as_object());
+        
+        let mut new_args = args.clone();
+        if let Some(obj) = fields {
+            for (k, v) in obj {
+                new_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match doc_type {
+            "task" => self.handle_create_task(&new_args),
+            "memory" => self.handle_create_memory(&new_args),
+            "subtask" => self.handle_create_subtask(&new_args),
+            _ => self.handle_create_document(&new_args),
+        }
+    }
+
+    fn handle_manage_task_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("action is required: update|complete|release|decompose"),
+            data: None,
+        })?;
+
+        let params = args.get("params").and_then(|v| v.as_object());
+        let mut merged_args = args.clone();
+        if let Some(obj) = params {
+            for (k, v) in obj {
+                merged_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match action {
+            "update" => self.handle_update_task(&merged_args),
+            "complete" => self.handle_complete_task(&merged_args),
+            "release" => self.handle_release_task(&merged_args),
+            "decompose" => self.handle_decompose_task(&merged_args),
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_pkb_explore_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("action is required: context|trace|tree|children|metrics"),
+            data: None,
+        })?;
+
+        let params = args.get("params").and_then(|v| v.as_object());
+        let mut merged_args = args.clone();
+        if let Some(obj) = params {
+            for (k, v) in obj {
+                merged_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match action {
+            "context" => self.handle_pkb_context(&merged_args),
+            "trace" => self.handle_pkb_trace(&merged_args),
+            "tree" => self.handle_get_dependency_tree(&merged_args),
+            "children" => self.handle_get_task_children(&merged_args),
+            "metrics" => self.handle_get_network_metrics(&merged_args),
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_pkb_batch_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("action is required"),
+            data: None,
+        })?;
+
+        let params = args.get("params").and_then(|v| v.as_object());
+        let mut merged_args = args.clone();
+        if let Some(obj) = params {
+            for (k, v) in obj {
+                merged_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match action {
+            "update" => self.handle_batch_update(&merged_args),
+            "reparent" => self.handle_batch_reparent(&merged_args),
+            "archive" => self.handle_batch_archive(&merged_args),
+            "merge" => self.handle_batch_merge(&merged_args),
+            "node_merge" => self.handle_merge_node(&merged_args),
+            "epics" => self.handle_batch_create_epics(&merged_args),
+            "reclassify" => self.handle_batch_reclassify(&merged_args),
+            "duplicates" => self.handle_find_duplicates(&merged_args),
+            "orphans" => self.handle_pkb_orphans(&merged_args),
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_pkb_stats_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("summary");
+
+        match action {
+            "summary" => self.handle_task_summary(args),
+            "graph_stats" => self.handle_graph_stats(args),
+            "graph_json" => self.handle_graph_json(args),
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
 }
 
 impl ServerHandler for PkbSearchServer {
@@ -3141,6 +3332,15 @@ impl ServerHandler for PkbSearchServer {
     ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
         let args = Self::args_to_value(request.arguments);
         let result = match &*request.name {
+            // --- Consolidated Tools ---
+            "create_document" => self.handle_create_document_consolidated(&args),
+            "manage_task" => self.handle_manage_task_consolidated(&args),
+            "pkb_explore" => self.handle_pkb_explore_consolidated(&args),
+            "pkb_batch" => self.handle_pkb_batch_consolidated(&args),
+            "pkb_stats" => self.handle_pkb_stats_consolidated(&args),
+            "pkb_tool_help" => self.handle_pkb_tool_help(&args),
+
+            // --- Legacy Tool Aliases (for backward compatibility) ---
             "search" => self.handle_pkb_search(&args),
             "get_document" => self.handle_get_document(&args),
             "list_documents" => self.handle_list_documents(&args),
@@ -3196,14 +3396,14 @@ impl ServerHandler for PkbSearchServer {
         let tools = vec![
             Tool::new(
                 "search",
-                "Hybrid semantic + graph-proximity search across the personal knowledge base. Optionally boost results near a specific node.",
+                "Hybrid semantic search across PKB (docs, tasks, memories).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "Natural language search query" },
-                        "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
-                        "detail": { "type": "string", "description": "Result detail level: 'snippet' (300 chars), 'chunk' (full matching chunk, default), 'full' (entire document)", "enum": ["snippet", "chunk", "full"], "default": "chunk" }
+                        "query": { "type": "string", "description": "Search query" },
+                        "type": { "type": "string", "enum": ["task", "memory", "note", "goal"], "description": "Filter by type" },
+                        "limit": { "type": "integer", "default": 10 },
+                        "boost_id": { "type": "string", "description": "Boost results near this node" }
                     },
                     "required": ["query"]
                 }))
@@ -3211,610 +3411,107 @@ impl ServerHandler for PkbSearchServer {
             ),
             Tool::new(
                 "get_document",
-                "Read the full contents of a specific PKB document. Accepts an ID (preferred), filename stem, title, permalink, or path — uses flexible resolution.",
+                "Read document content by ID, title, or path.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Document ID, filename stem, title, or permalink (preferred — uses flexible resolution)" },
-                        "path": { "type": "string", "description": "Path to document (legacy — use id instead)" }
+                        "id": { "type": "string", "description": "ID, title, or path" }
                     },
-                    "anyOf": [
-                        { "required": ["id"] },
-                        { "required": ["path"] }
-                    ]
+                    "required": ["id"]
                 }))
                 .unwrap(),
             ),
             Tool::new(
                 "list_documents",
-                "List indexed documents with optional filters and pagination.",
+                "List and filter documents, tasks, or memories.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "tag": { "type": "string", "description": "Filter by tag" },
-                        "type": { "type": "string", "description": "Filter by type" },
-                        "status": { "type": "string", "description": "Filter by status" },
-                        "limit": { "type": "integer", "description": "Max results (default: all)" },
-                        "offset": { "type": "integer", "description": "Skip first N results (default: 0)" }
+                        "type": { "type": "string" },
+                        "tag": { "type": "string" },
+                        "status": { "type": "string", "description": "e.g. ready, blocked, active, done" },
+                        "limit": { "type": "integer" }
                     }
                 }))
                 .unwrap(),
             ),
             Tool::new(
-                "task_search",
-                "Semantic search filtered to tasks. Returns tasks with graph context.",
+                "create_document",
+                "Create new PKB node (task, memory, note, etc.).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "Query to search tasks" },
-                        "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." }
+                        "type": { "type": "string", "enum": ["task", "memory", "note", "goal", "project", "epic"] },
+                        "title": { "type": "string" },
+                        "parent": { "type": "string", "description": "Required for tasks" },
+                        "fields": { "type": "object", "description": "Metadata: priority, tags, depends_on, assignee, etc." },
+                        "body": { "type": "string" }
                     },
-                    "required": ["query"]
+                    "required": ["type", "title"]
                 }))
                 .unwrap(),
             ),
             Tool::new(
-                "get_network_metrics",
-                "Get centrality metrics: degree, betweenness, PageRank, downstream weight.",
+                "manage_task",
+                "Lifecycle management for tasks: update, complete, release, or decompose.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Node ID" }
+                        "id": { "type": "string" },
+                        "action": { "type": "string", "enum": ["update", "complete", "release", "decompose"] },
+                        "params": { "type": "object", "description": "Action-specific parameters (e.g. updates, summary, pr_url, subtasks)" }
                     },
-                    "required": ["id"]
+                    "required": ["id", "action"]
                 }))
                 .unwrap(),
             ),
             Tool::new(
-                "create_task",
-                "Create a new task markdown file with YAML frontmatter.",
+                "pkb_explore",
+                "Explore graph relationships: context, trace, tree, children, metrics.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "title": { "type": "string", "description": "Task title" },
-                        "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
-                        "parent": { "type": "string", "description": "Parent task ID" },
-                        "priority": { "type": "integer", "description": "0-4 (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)" },
-                        "tags": { "type": "array", "items": { "type": "string" } },
-                        "depends_on": { "type": "array", "items": { "type": "string" } },
-                        "assignee": { "type": "string" },
-                        "complexity": { "type": "string" },
-                        "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w'. Parser converts to days." },
-                        "consequence": { "type": "string", "description": "Narrative description of what happens if this task is not done or fails." },
-                        "body": { "type": "string", "description": "Markdown body" },
-                        "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
-                        "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
-                        "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" }
+                        "id": { "type": "string" },
+                        "action": { "type": "string", "enum": ["context", "trace", "tree", "children", "metrics"] },
+                        "params": { "type": "object", "description": "Action-specific: e.g. {to: 'ID'} for trace, {recursive: true} for children" }
                     },
-                    "required": ["title"]
+                    "required": ["id", "action"]
                 }))
                 .unwrap(),
             ),
             Tool::new(
-                "create_subtask",
-                "Create a numbered sub-task attached to a parent task. Sub-tasks use dot-notation IDs (e.g. proj-deadbeef.1) and appear as a markdown checkbox checklist when the parent is retrieved via get_task. They can also be addressed individually. Use for checklist-style completion tracking within a task.",
+                "pkb_batch",
+                "Bulk operations: update, reparent, archive, merge, duplicates, orphans.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "parent_id": { "type": "string", "description": "ID of the parent task (e.g. proj-deadbeef)" },
-                        "title": { "type": "string", "description": "Sub-task title" },
-                        "body": { "type": "string", "description": "Optional markdown body" }
+                        "action": { "type": "string", "enum": ["update", "reparent", "archive", "merge", "duplicates", "orphans"] },
+                        "params": { "type": "object", "description": "Filters, updates, new_parent, merge_ids, etc." }
                     },
-                    "required": ["parent_id", "title"]
+                    "required": ["action"]
                 }))
                 .unwrap(),
             ),
             Tool::new(
-                "create_memory",
-                "Create a new memory/note markdown file with YAML frontmatter. Stored in memories/ directory.",
+                "pkb_stats",
+                "System and graph status: summary, graph_stats, graph_json.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "title": { "type": "string", "description": "Memory title" },
-                        "id": { "type": "string", "description": "Memory ID (auto-generated if omitted)" },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags for the memory" },
-                        "body": { "type": "string", "description": "Markdown body content" },
-                        "memory_type": { "type": "string", "description": "Subtype: memory (default), note, insight, observation" },
-                        "source": { "type": "string", "description": "Source context (e.g. session ID)" },
-                        "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
-                        "supersedes": { "type": "string", "description": "ID of memory this one replaces" }
-                    },
-                    "required": ["title"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "create",
-                "Create a new document with full enforced frontmatter. Subdirectory routing: task/bug/epic/feature -> tasks/, project -> projects/, goal -> goals/, else -> notes/.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "title": { "type": "string", "description": "Document title (required)" },
-                        "type": { "type": "string", "description": "Document type (required): note, knowledge, memory, insight, observation, task, project, goal, etc." },
-                        "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
-                        "tags": { "type": "array", "items": { "type": "string" } },
-                        "body": { "type": "string", "description": "Markdown body" },
-                        "status": { "type": "string" },
-                        "priority": { "type": "integer", "description": "0-4 (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)" },
-                        "parent": { "type": "string", "description": "Parent document ID" },
-                        "depends_on": { "type": "array", "items": { "type": "string" } },
-                        "assignee": { "type": "string" },
-                        "complexity": { "type": "string" },
-                        "source": { "type": "string", "description": "Source context" },
-                        "due": { "type": "string", "description": "Due date" },
-                        "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
-                        "supersedes": { "type": "string", "description": "ID of document this one replaces" },
-                        "dir": { "type": "string", "description": "Override subdirectory placement" },
-                        "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
-                        "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." }
-                    },
-                    "required": ["title", "type"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "append",
-                "Append timestamped content to an existing document. Optionally target a specific section heading. Auto-updates modified timestamp.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Document ID (supports flexible resolution: ID, filename stem, or title)" },
-                        "content": { "type": "string", "description": "Content to append (will be timestamped)" },
-                        "section": { "type": "string", "description": "Optional target section heading (e.g. 'Log', 'References'). Creates section if not found." }
-                    },
-                    "required": ["id", "content"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "delete",
-                "Delete a document by ID. Removes the file from disk and the vector store index.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Document ID (task ID, memory ID, filename stem, or title). Uses flexible resolution." }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "complete_task",
-                "Mark a task as done. Requires completion_evidence describing what was done. Sets status to 'done', appends evidence to body, and re-indexes.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Task ID (supports flexible resolution: ID, filename stem, or title)" },
-                        "completion_evidence": { "type": "string", "description": "What was done + outcome. Required — describe the work before completing." },
-                        "pr_url": { "type": "string", "description": "Link to PR/commit (optional, for code tasks)" }
-                    },
-                    "required": ["id", "completion_evidence"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "release_task",
-                "Release a task after work is done. Use instead of update_task when transitioning to a handoff status \
-                 (merge_ready, done, review, blocked, cancelled). Captures what was done so work history is never lost. \
-                 All params are flat strings — no nested objects. \
-                 For merge_ready: summary + pr_url. For done: summary of completion. \
-                 For blocked: summary + blocker. For cancelled/review: summary + reason.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title)" },
-                        "status": {
-                            "type": "string",
-                            "enum": ["merge_ready", "done", "review", "blocked", "cancelled"],
-                            "description": "Target status"
-                        },
-                        "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum." },
-                        "pr_url": { "type": "string", "description": "Pull request or commit URL (recommended for merge_ready)" },
-                        "branch": { "type": "string", "description": "Git branch name (optional)" },
-                        "blocker": { "type": "string", "description": "What is blocking this task (for status=blocked)" },
-                        "reason": { "type": "string", "description": "Why cancelled or needs review (for status=cancelled/review)" }
-                    },
-                    "required": ["id", "status", "summary"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "list_tasks",
-                "List tasks with filtering by project, status, priority, and assignee. Use status='ready' for actionable tasks sorted by priority + downstream weight, or status='blocked' to see blocked tasks with their blockers.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, done, etc." },
-                        "priority": { "type": "integer", "description": "Filter by exact priority (0-4)" },
-                        "assignee": { "type": "string", "description": "Filter by assignee" },
-                        "limit": { "type": "integer", "description": "Max results (default: 50)" },
-                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
-                        "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
+                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json"] }
                     }
                 }))
                 .unwrap(),
             ),
             Tool::new(
-                "get_task",
-                "Retrieve a task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, subtasks, parent with titles/statuses, downstream_weight, stakeholder_exposure, stakeholder, waiting_since, focus_score). Sub-tasks (type=subtask) are injected as a markdown checkbox checklist in the body and listed in the 'subtasks' field.",
+                "pkb_tool_help",
+                "Get detailed schema and examples for consolidated tools.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Task ID (e.g. 'framework-6b4325a1'). Also accepts filename stem or title." }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "update_task",
-                "Update frontmatter fields on an existing task file. Use for non-terminal changes (priority, tags, assignee, body, etc.). \
-                 For status transitions to merge_ready/done/review/blocked/cancelled, prefer release_task instead — it captures work history. \
-                 IMPORTANT: `updates` must be a JSON object, NOT a string. \
-                 Example: update_task(id=\"task-abc\", updates={\"priority\": 1, \"assignee\": \"polecat\"})",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "Path to task file" },
-                        "id": { "type": "string", "description": "Document ID (alternative to path — uses flexible resolution)" },
-                        "updates": { "type": "object", "description": "JSON object of fields to update (null to remove a field). Common fields: status, assignee, body, pr_url, priority. When status='done', include completion_evidence (string). MUST be a JSON object like {\"status\": \"done\", \"completion_evidence\": \"what was done\"}, NOT a JSON string." }
-                    },
-                    "required": ["updates"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "bulk_reparent",
-                "Bulk reparent: set parent field on all .md files matching a directory or glob pattern. Dry run by default — set dry_run=false to apply. Skips files that ARE the parent (by permalink/id) and files already parented correctly.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "pattern": { "type": "string", "description": "Directory path or glob pattern (e.g. 'archive/', 'tasks/*.md'). Relative to PKB root." },
-                        "parent_id": { "type": "string", "description": "Parent ID to set on matching files" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: true). Set to false to apply.", "default": true }
-                    },
-                    "required": ["pattern", "parent_id"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "retrieve_memory",
-                "Semantic search filtered to memory-type documents. Returns full content since memories are typically short.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Search query for finding relevant memories" },
-                        "limit": { "type": "integer", "description": "Maximum number of memories to return (default: 10)" },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Only return memories with all of these tags" }
-                    },
-                    "required": ["query"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "search_by_tag",
-                "Search documents by tags. Returns all documents matching the specified tags.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags to search for (all must match)" },
-                        "type": { "type": "string", "description": "Filter by document type (e.g. 'memory', 'task')" },
-                        "limit": { "type": "integer", "description": "Max results (default: 50)" }
-                    },
-                    "required": ["tags"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "list_memories",
-                "List memory-type documents (memory, note, insight, observation) with optional tag filtering.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "limit": { "type": "integer", "description": "Max results (default: 20)" },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags (all must match)" },
-
+                        "tool": { "type": "string" },
+                        "action": { "type": "string" }
                     }
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "delete_memory",
-                "Delete a memory document by ID. Only works on memory-type documents (memory, note, insight, observation).",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Memory ID (supports flexible resolution)" }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "decompose_task",
-                "Batch creation of subtasks under a parent task. Supports sibling cross-references in 'depends_on' using '$1', '$2', etc. (1-indexed position) or by exact sibling title.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "parent_id": { "type": "string", "description": "Parent task ID to create subtasks under" },
-                        "subtasks": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "title": { "type": "string" },
-                                    "id": { "type": "string", "description": "Optional custom task ID" },
-                                    "priority": { "type": "integer" },
-                                    "depends_on": { "type": "array", "items": { "type": "string" } },
-                                    "tags": { "type": "array", "items": { "type": "string" } },
-                                    "assignee": { "type": "string" },
-                                    "complexity": { "type": "string" },
-                                    "body": { "type": "string" },
-                                    "stakeholder": { "type": "string" },
-                                    "waiting_since": { "type": "string" },
-                                    "due": { "type": "string" }
-                                },
-                                "required": ["title"]
-                            },
-                            "description": "Array of subtask definitions"
-                        }
-                    },
-                    "required": ["parent_id", "subtasks"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "get_dependency_tree",
-                "Get the dependency tree for a task. Upstream shows what it depends on, downstream shows what it unblocks.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Task ID" },
-                        "direction": { "type": "string", "description": "Direction: 'upstream' (depends on, default) or 'downstream' (blocks)" }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "get_task_children",
-                "Get direct children of a task, or the full subtree if recursive. Returns status and completion counts.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Task ID" },
-                        "recursive": { "type": "boolean", "description": "Include all descendants, not just direct children (default: false)" }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "pkb_context",
-                "Get full knowledge neighbourhood for a node: metadata, relationships, backlinks grouped by source type, and nearby nodes within N hops. Supports flexible ID resolution (by ID, filename, title).",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Node ID, task ID, filename stem, or title" },
-                        "hops": { "type": "integer", "description": "Neighbourhood radius in hops (default: 2)" }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "pkb_trace",
-                "Find shortest paths between two nodes in the knowledge graph. Shows up to N paths with node labels.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "from": { "type": "string", "description": "Source node (ID, filename, or title)" },
-                        "to": { "type": "string", "description": "Target node (ID, filename, or title)" },
-                        "max_paths": { "type": "integer", "description": "Maximum paths to return (default: 3)" }
-                    },
-                    "required": ["from", "to"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "pkb_orphans",
-                "Find orphan nodes with no valid parent. By default shows only actionable types (task/bug/feature/action/epic/project/goal) excluding completed — matching graph_stats orphan_count. Use include_all=true or types filter to override.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "limit": { "type": "integer", "description": "Max results (default: all). Set to 0 for unlimited." },
-                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Overrides default actionable-only filter." },
-                        "include_all": { "type": "boolean", "description": "Include all node types (notes, memories, etc.) — default false." }
-                    }
-                }))
-                .unwrap(),
-            ),
-            // ── Batch Operations ──────────────────────────────────────────
-            Tool::new(
-                "batch_update",
-                "Update frontmatter fields across multiple tasks in one operation. Supports filtered selection (by project, priority, tags, age, etc.) or explicit ID lists. Use _add_tags/_remove_tags for array manipulation. Set dry_run=true to preview changes.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs (flexible resolution)" },
-                        "parent": { "type": "string", "description": "Filter: direct children of parent" },
-                        "subtree": { "type": "string", "description": "Filter: all descendants of node" },
-                        "status": { "type": "string", "description": "Filter by status" },
-                        "priority": { "type": "integer", "description": "Filter by exact priority" },
-                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
-                        "type": { "type": "string", "description": "Filter by document type" },
-                        "older_than_days": { "type": "integer", "description": "Filter: created > N days ago" },
-                        "stale_days": { "type": "integer", "description": "Filter: not modified in N days" },
-                        "orphan": { "type": "boolean", "description": "Filter: no parent and no project" },
-                        "title_contains": { "type": "string", "description": "Filter: title substring (case-insensitive)" },
-                        "directory": { "type": "string", "description": "Filter: file path contains directory" },
-                        "weight_gte": { "type": "integer", "description": "Filter: downstream weight >= N" },
-                        "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
-                    },
-                    "required": ["updates"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "batch_reparent",
-                "Move multiple tasks to a new parent in one operation. Use when restructuring the task graph — grouping flat tasks into epics, or reorganizing tasks between projects.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
-                        "parent": { "type": "string", "description": "Filter: direct children of parent" },
-                        "subtree": { "type": "string", "description": "Filter: all descendants of node" },
-                        "status": { "type": "string", "description": "Filter by status" },
-                        "priority": { "type": "integer", "description": "Filter by exact priority" },
-                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
-                        "title_contains": { "type": "string", "description": "Filter: title substring" },
-                        "new_parent": { "type": "string", "description": "ID of new parent (flexible resolution)" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
-                    },
-                    "required": ["new_parent"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "batch_archive",
-                "Archive multiple tasks (set status=done). Dry-run by default for safety — set dry_run=false to execute. Warns about in_progress tasks and those with active children.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
-                        "parent": { "type": "string", "description": "Filter: direct children of parent" },
-                        "subtree": { "type": "string", "description": "Filter: all descendants of node" },
-                        "status": { "type": "string", "description": "Filter by status" },
-                        "priority": { "type": "integer", "description": "Filter by exact priority" },
-                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
-                        "older_than_days": { "type": "integer", "description": "Filter: created > N days ago" },
-                        "stale_days": { "type": "integer", "description": "Filter: not modified in N days" },
-                        "title_contains": { "type": "string", "description": "Filter: title substring" },
-                        "reason": { "type": "string", "description": "Archive reason (appended to task body)" },
-                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
-                    }
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "graph_stats",
-                "Report on graph health: status/priority/type distributions, orphan count, stale tasks, disconnected epics, and more. Read-only, no mutations.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                    }
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "graph_json",
-                "Get the full knowledge graph as JSON for visualizations.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "task_summary",
-                "Returns pre-computed counts of ready and blocked tasks, plus a per-priority breakdown of ready tasks. 'ready' = leaf tasks with claimable types (task/bug/feature), active status, and all dependencies met. Use this instead of list_tasks for dashboard counts and priority bars.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }))
-                .unwrap(),
-            ),
-            // ── Phase 2: Deduplication & Restructuring ────────────────────
-            Tool::new(
-                "find_duplicates",
-                "Detect potential duplicate tasks using title similarity and/or semantic embedding similarity. Returns clusters with suggested canonical task. Read-only.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "status": { "type": "string", "description": "Filter by status" },
-                        "mode": { "type": "string", "description": "Detection mode: title, semantic, or both (default: both)" },
-                        "title_threshold": { "type": "number", "description": "Title similarity threshold 0-1 (default: 0.7)" },
-                        "similarity_threshold": { "type": "number", "description": "Semantic similarity threshold 0-1 (default: 0.85)" }
-                    }
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "batch_merge",
-                "Merge duplicate tasks into a canonical task. Archives merged tasks with superseded_by, unions tags/deps, reparents children, updates backlinks.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "canonical": { "type": "string", "description": "ID of the task to keep" },
-                        "merge_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of duplicates to merge into canonical" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
-                    },
-                    "required": ["canonical", "merge_ids"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "merge_node",
-                "Merge source nodes into a canonical node. Redirects all references (parent, depends_on, blocks, wikilinks, etc.) from each source ID to the canonical ID across the entire PKB, then archives each source node (status=done, superseded_by=canonical). Unlike batch_merge, preserves source node files as archived records and performs complete reference updates including wikilinks.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "canonical_id": { "type": "string", "description": "ID of the node to merge into (must already exist)" },
-                        "source_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of nodes to merge into canonical and archive" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
-                    },
-                    "required": ["canonical_id", "source_ids"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "batch_create_epics",
-                "Create multiple epic containers and reparent existing tasks under them. Primary tool for structuring a flat task list into organized groups.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "parent": { "type": "string", "description": "Parent for all new epics" },
-                        "epics": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "title": { "type": "string" },
-                                    "id": { "type": "string" },
-                                    "priority": { "type": "integer" },
-                                    "task_ids": { "type": "array", "items": { "type": "string" } },
-                                    "depends_on": { "type": "array", "items": { "type": "string" } },
-                                    "body": { "type": "string" }
-                                },
-                                "required": ["title", "task_ids"]
-                            },
-                            "description": "Array of epic definitions with title and task_ids to reparent"
-                        },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
-                    },
-                    "required": ["epics"]
-                }))
-                .unwrap(),
-            ),
-            Tool::new(
-                "batch_reclassify",
-                "Change the type field of matching tasks and move files to the correct subdirectory. Use for fixing memories filed as tasks and vice versa.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Explicit task IDs" },
-                        "status": { "type": "string", "description": "Filter by status" },
-                        "type": { "type": "string", "description": "Filter by current type" },
-                        "title_contains": { "type": "string", "description": "Filter by title substring" },
-                        "new_type": { "type": "string", "description": "New document type (task, memory, note, knowledge, project, epic, goal)" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
-                    },
-                    "required": ["new_type"]
                 }))
                 .unwrap(),
             ),
@@ -3826,13 +3523,8 @@ impl ServerHandler for PkbSearchServer {
     fn get_info(&self) -> ServerInfo {
         let mut instructions = String::from(
             "PKB Search — semantic search + task graph over personal knowledge base. \
-             27 tools: search, get_document, list_documents, \
-             task_search, get_network_metrics, create_task, create_memory, \
-             create, append, delete, complete_task, release_task, list_tasks, \
-             get_task, update_task, bulk_reparent, retrieve_memory, search_by_tag, \
-             list_memories, delete_memory, decompose_task, \
-             get_dependency_tree, get_task_children, \
-             pkb_context, pkb_trace, pkb_orphans, task_summary.",
+             Consolidated tools: search, get_document, list_documents, create_document, \
+             manage_task, pkb_explore, pkb_batch, pkb_stats.",
         );
         if self.stale_count > 0 {
             instructions.push_str(&format!(
