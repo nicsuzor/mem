@@ -3131,6 +3131,92 @@ impl PkbSearchServer {
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
+
+    fn handle_list_prompts(&self) -> Result<ListPromptsResult, McpError> {
+        let prompts = vec![
+            Prompt::new(
+                "find-task",
+                "How do I find a task about X?",
+            )
+            .with_argument(PromptArgument::new("query", "The task to find").required(true)),
+            Prompt::new(
+                "explore-topic",
+                "What do we know about X?",
+            )
+            .with_argument(PromptArgument::new("query", "The topic to explore").required(true)),
+            Prompt::new(
+                "navigate-graph",
+                "What's connected to X?",
+            )
+            .with_argument(
+                PromptArgument::new("id", "The node ID, title, or filename").required(true),
+            ),
+            Prompt::new("find-by-tag", "Show me everything tagged X").with_argument(
+                PromptArgument::new("tag", "The tag to filter by").required(true),
+            ),
+        ];
+        Ok(ListPromptsResult::with_all_items(prompts))
+    }
+
+    fn handle_get_prompt(
+        &self,
+        request: GetPromptRequestParam,
+    ) -> Result<GetPromptResult, McpError> {
+        let name = request.name;
+        let arguments = request.arguments.unwrap_or_default();
+
+        match name.as_str() {
+            "find-task" => {
+                let query = arguments.get("query").ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Missing required parameter: query"),
+                    data: None,
+                })?;
+                Ok(GetPromptResult::new(vec![PromptMessage::user(format!(
+                    "I want to find a task about '{}'. Please use 'task_search' to find it, then 'get_task' to read the most relevant one.",
+                    query
+                ))]))
+            }
+            "explore-topic" => {
+                let query = arguments.get("query").ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Missing required parameter: query"),
+                    data: None,
+                })?;
+                Ok(GetPromptResult::new(vec![PromptMessage::user(format!(
+                    "What do we know about '{}'? Please use 'search' to find documents, then 'get_document' for the full content of relevant ones.",
+                    query
+                ))]))
+            }
+            "navigate-graph" => {
+                let id = arguments.get("id").ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Missing required parameter: id"),
+                    data: None,
+                })?;
+                Ok(GetPromptResult::new(vec![PromptMessage::user(format!(
+                    "What's connected to '{}'? Please use 'pkb_context' to see its parents, children, and neighbours in the knowledge graph.",
+                    id
+                ))]))
+            }
+            "find-by-tag" => {
+                let tag = arguments.get("tag").ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Missing required parameter: tag"),
+                    data: None,
+                })?;
+                Ok(GetPromptResult::new(vec![PromptMessage::user(format!(
+                    "Show me everything tagged '{}'. Please use 'search_by_tag' with this tag.",
+                    tag
+                ))]))
+            }
+            _ => Err(McpError {
+                code: ErrorCode::METHOD_NOT_FOUND,
+                message: Cow::from(format!("Unknown prompt: {}", name)),
+                data: None,
+            }),
+        }
+    }
 }
 
 impl ServerHandler for PkbSearchServer {
@@ -3823,16 +3909,27 @@ impl ServerHandler for PkbSearchServer {
         std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
 
+    fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
+        std::future::ready(self.handle_list_prompts())
+    }
+
+    fn get_prompt(
+        &self,
+        request: GetPromptRequestParam,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
+        std::future::ready(self.handle_get_prompt(request))
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut instructions = String::from(
             "PKB Search — semantic search + task graph over personal knowledge base. \
-             27 tools: search, get_document, list_documents, \
-             task_search, get_network_metrics, create_task, create_memory, \
-             create, append, delete, complete_task, release_task, list_tasks, \
-             get_task, update_task, bulk_reparent, retrieve_memory, search_by_tag, \
-             list_memories, delete_memory, decompose_task, \
-             get_dependency_tree, get_task_children, \
-             pkb_context, pkb_trace, pkb_orphans, task_summary.",
+             38 tools for search, documents, tasks, and knowledge graph. \
+             Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance.",
         );
         if self.stale_count > 0 {
             instructions.push_str(&format!(
@@ -3842,9 +3939,14 @@ impl ServerHandler for PkbSearchServer {
                 self.stale_count
             ));
         }
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2024_11_05)
-            .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
-            .with_instructions(instructions)
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_protocol_version(ProtocolVersion::V_2024_11_05)
+        .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
+        .with_instructions(instructions)
     }
 }
