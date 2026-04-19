@@ -69,9 +69,34 @@ impl GraphStore {
     /// 5. Compute downstream_weight + stakeholder_exposure (BFS)
     /// 6. Classify ready/blocked tasks
     pub fn build(docs: &[PkbDocument], pkb_root: &Path) -> Self {
-        // 1. Extract graph nodes
-        let mut nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
+        let nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
+        Self::build_internal(nodes, pkb_root)
+    }
 
+    /// Build from a directory: scan, parse (with relative paths), build graph.
+    pub fn build_from_directory(root: &Path) -> Self {
+        let files = crate::pkb::scan_directory_all(root);
+        let docs: Vec<PkbDocument> = files
+            .par_iter()
+            .filter_map(|p| crate::pkb::parse_file_relative(p, root))
+            .collect();
+        Self::build(&docs, root)
+    }
+
+    /// Rebuild graph from existing nodes (avoids re-scanning/re-parsing all files).
+    ///
+    /// Takes the current node map, rebuilds all edges, metrics, and indices.
+    /// Use after updating/inserting/removing a single node to avoid a full
+    /// directory walk.
+    pub fn rebuild_from_nodes(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
+        let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
+        Self::build_internal(nodes_vec, pkb_root)
+    }
+
+    /// Internal helper to build GraphStore from a vector of nodes.
+    ///
+    /// This is the core pipeline shared by build() and rebuild_from_nodes().
+    fn build_internal(mut nodes: Vec<GraphNode>, pkb_root: &Path) -> Self {
         // 2. Build lookup maps
         // Node paths may be relative — reconstruct absolute for canonicalize & link resolution
         let mut id_map: HashMap<String, String> = HashMap::new(); // permalink -> abs_path
@@ -162,97 +187,6 @@ impl GraphStore {
             blocked,
             roots,
             resolution_map,
-
-        }
-    }
-
-    /// Build from a directory: scan, parse (with relative paths), build graph.
-    pub fn build_from_directory(root: &Path) -> Self {
-        let files = crate::pkb::scan_directory_all(root);
-        let docs: Vec<PkbDocument> = files
-            .par_iter()
-            .filter_map(|p| crate::pkb::parse_file_relative(p, root))
-            .collect();
-        Self::build(&docs, root)
-    }
-
-    /// Rebuild graph from existing nodes (avoids re-scanning/re-parsing all files).
-    ///
-    /// Takes the current node map, rebuilds all edges, metrics, and indices.
-    /// Use after updating/inserting/removing a single node to avoid a full
-    /// directory walk.
-    pub fn rebuild_from_nodes(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
-        let mut nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
-
-        // Build lookup maps (same as build() steps 2-3)
-        let mut id_map: HashMap<String, String> = HashMap::new();
-        let mut path_to_id: HashMap<String, String> = HashMap::new();
-
-        for n in &nodes_vec {
-            let full_path = if n.path.is_absolute() {
-                n.path.clone()
-            } else {
-                pkb_root.join(&n.path)
-            };
-            let abs_path = full_path
-                .canonicalize()
-                .unwrap_or(full_path)
-                .to_string_lossy()
-                .to_string();
-            path_to_id.insert(abs_path.clone(), n.id.clone());
-            for key in &n.permalinks {
-                id_map.insert(key.clone(), abs_path.clone());
-            }
-        }
-
-        // Rebuild edges
-        let edges: Vec<Edge> = nodes_vec
-            .par_iter()
-            .flat_map(|n| build_node_edges(n, &id_map, &path_to_id, pkb_root))
-            .collect();
-
-        let mut seen: HashSet<(String, String, String)> = HashSet::new();
-        let edges: Vec<Edge> = edges
-            .into_iter()
-            .filter(|e| {
-                let key = (
-                    e.source.clone(),
-                    e.target.clone(),
-                    format!("{:?}", e.edge_type),
-                );
-                seen.insert(key)
-            })
-            .collect();
-
-        // Recompute all metrics (steps 4-9)
-        compute_inverses(&mut nodes_vec, &edges);
-        compute_degree_metrics(&mut nodes_vec, &edges);
-        compute_centrality_metrics(&mut nodes_vec, &edges);
-        compute_downstream_metrics(&mut nodes_vec);
-        compute_scope(&mut nodes_vec);
-        compute_uncertainty(&mut nodes_vec);
-        compute_criticality(&mut nodes_vec);
-        Self::compute_focus_scores(&mut nodes_vec);
-        compute_project_field(&mut nodes_vec);
-
-        let reachable_set = find_reachable_set(&nodes_vec, &edges);
-        for node in &mut nodes_vec {
-            node.reachable = reachable_set.contains(&node.id);
-        }
-
-        let node_map: HashMap<String, GraphNode> =
-            nodes_vec.into_iter().map(|n| (n.id.clone(), n)).collect();
-        let (ready, blocked, roots) = classify_tasks(&node_map);
-        let resolution_map = build_resolution_map(&node_map);
-
-        GraphStore {
-            nodes: node_map,
-            edges,
-            ready,
-            blocked,
-            roots,
-            resolution_map,
-
         }
     }
 
@@ -2250,8 +2184,46 @@ mod tests {
     #[test]
     fn test_resolve_nonexistent() {
         let graph = build_test_graph();
-        assert!(graph.resolve("nonexistent").is_none());
+        assert!(graph.resolve("ghost").is_none());
     }
+
+    #[test]
+    fn test_rebuild_from_nodes() {
+        let graph = build_test_graph();
+        let nodes = graph.nodes_cloned();
+        let root = Path::new("/tmp/test-pkb");
+
+        // Rebuild from same nodes
+        let graph2 = GraphStore::rebuild_from_nodes(nodes.clone(), root);
+
+        assert_eq!(graph.nodes.len(), graph2.nodes.len());
+        assert_eq!(graph.edges.len(), graph2.edges.len());
+        assert_eq!(graph.ready.len(), graph2.ready.len());
+
+        // Verify a specific metric
+        let node_a = graph.get_node("task-a").unwrap();
+        let node_a2 = graph2.get_node("task-a").unwrap();
+        assert_eq!(node_a.downstream_weight, node_a2.downstream_weight);
+    }
+
+    #[test]
+    fn test_rebuild_from_nodes_incremental_update() {
+        let graph = build_test_graph();
+        let mut nodes = graph.nodes_cloned();
+        let root = Path::new("/tmp/test-pkb");
+
+        // Update task-b to be done
+        let mut task_b = nodes.get("task-b").unwrap().clone();
+        task_b.status = Some("done".to_string());
+        nodes.insert("task-b".to_string(), task_b);
+
+        let graph2 = GraphStore::rebuild_from_nodes(nodes, root);
+
+        // Now task-a should be ready (it was blocked by task-b)
+        assert!(graph2.ready.iter().any(|n| n.id == "task-a"));
+        assert!(!graph.ready.iter().any(|n| n.id == "task-a"));
+    }
+
 
     // ── dependency_tree ──
 

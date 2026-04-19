@@ -119,20 +119,23 @@ impl PkbSearchServer {
         *self.graph.write() = new_graph;
     }
 
-    /// Incremental graph update after a single file changed.
-    /// Re-parses only the changed file, then rebuilds edges/metrics from existing nodes.
-    /// Falls back to full rebuild if parsing fails.
-    fn rebuild_graph_for_file(&self, abs_path: &std::path::Path) {
-        if let Some(doc) = crate::pkb::parse_file_relative(abs_path, &self.pkb_root) {
-            let node = crate::graph::GraphNode::from_pkb_document(&doc);
-            let mut nodes = self.graph.read().nodes_cloned();
-            nodes.insert(node.id.clone(), node);
-            let new_graph = GraphStore::rebuild_from_nodes(nodes, &self.pkb_root);
-            *self.graph.write() = new_graph;
-        } else {
-            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
-            self.rebuild_graph();
-        }
+    /// Incremental graph update after a single file changed, given an already-parsed document.
+    /// This avoids re-reading/re-parsing the file when the caller already has a `PkbDocument`.
+    fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
+        let abs_path = self.abs_path(&doc.path);
+        let node = crate::graph::GraphNode::from_pkb_document(doc);
+        let mut nodes = self.graph.read().nodes_cloned();
+
+        // Remove any existing node(s) that correspond to the same file path.
+        // This handles cases where the frontmatter `id` changes for a given file,
+        // ensuring we don't keep stale nodes/edges for the old id.
+        nodes.retain(|_, existing_node| {
+            self.abs_path(&existing_node.path) != abs_path
+        });
+
+        nodes.insert(node.id.clone(), node);
+        let new_graph = GraphStore::rebuild_from_nodes(nodes, &self.pkb_root);
+        *self.graph.write() = new_graph;
     }
 
     /// Incremental graph update after a node is removed.
@@ -549,11 +552,12 @@ impl PkbSearchServer {
             })?;
 
         // Incremental graph update for the new file
-        self.rebuild_graph_for_file(&path);
-
-        // Index the new file (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            self.rebuild_graph();
         }
 
         let mut msg = format!("Task created: `{}`", path.display());
@@ -610,9 +614,12 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        self.rebuild_graph_for_file(&path);
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            self.rebuild_graph();
         }
 
         let id = path
@@ -1234,11 +1241,12 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        self.rebuild_graph_for_file(&path);
-
-        // Index the new file (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            self.rebuild_graph();
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -1352,11 +1360,12 @@ impl PkbSearchServer {
             }
         })?;
 
-        self.rebuild_graph_for_file(&path);
-
-        // Index the new file (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            self.rebuild_graph();
         }
 
         let mut msg = format!("Document created: `{}`", path.display());
@@ -1411,11 +1420,12 @@ impl PkbSearchServer {
             }
         })?;
 
-        self.rebuild_graph_for_file(&abs_path);
-
-        // Re-index the updated file (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            self.rebuild_graph();
         }
 
         let section_msg = section
@@ -1517,11 +1527,12 @@ impl PkbSearchServer {
         // Append completion evidence to the document body
         Self::append_evidence(&abs_path, evidence, pr_url)?;
 
-        self.rebuild_graph_for_file(&abs_path);
-
-        // Re-index (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            self.rebuild_graph();
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -1678,11 +1689,12 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        self.rebuild_graph_for_file(&abs_path);
-
-        // Re-index (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            self.rebuild_graph();
         }
 
         // Build response with soft warnings
@@ -2789,12 +2801,12 @@ impl PkbSearchServer {
             }
         }
 
-        // Incremental graph update for the changed file
-        self.rebuild_graph_for_file(&path);
-
-        // Re-index the updated file (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            self.rebuild_graph();
         }
 
         // Soft warning if setting a terminal status via update_task instead of release_task
