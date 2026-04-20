@@ -5,12 +5,10 @@ import {
     MUTED_FILL,
     MUTED_TEXT,
     INCOMPLETE_STATUSES,
-    PRIORITY_BORDERS,
-    ASSIGNEE_COLORS,
-    ASSIGNEE_DEFAULT,
     TYPE_SHAPE,
     TYPE_BADGE,
 } from './constants';
+import { projectBorderColor } from './projectUtils';
 
 export interface GraphNode {
     id: string;
@@ -354,13 +352,8 @@ export function prepareGraphData(
         }
 
         const isIncomplete = INCOMPLETE_STATUSES.has(status);
-        let borderColor = PRIORITY_BORDERS[priority] || "#cbd5e1";
-
-        // In Python we extracted assignee from frontmatter. Here we assume it's passed down.
-        const assignee = node.assignee || null;
-        if (assignee && isIncomplete) {
-            borderColor = ASSIGNEE_COLORS[assignee] || ASSIGNEE_DEFAULT;
-        }
+        const project = node.project || '';
+        const borderColor = isStructural ? '#475569' : projectBorderColor(project);
 
         let borderWidth = 1.5 + Math.min(Math.log1p(dw) * 0.5, 2.5);
         if (priority <= 1 && isIncomplete) {
@@ -396,7 +389,7 @@ export function prepareGraphData(
             badge,
             parent: node.parent || null,
             project: node.project || null,
-            assignee,
+            assignee: node.assignee || null,
             path: node.path || null,
             opacity,
             isLeaf: !parentIdsInGraph.has(nid),
