@@ -141,6 +141,8 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             time_display: minutesAgo < 60 ? `${Math.round(minutesAgo)}m ago` : `${Math.round(hoursAgo)}h ago`,
             duration_min: durationMin,
             prompt_count: promptCount,
+            prompt_count: promptCount,
+            id: data.session_id || stem,
             prompts: allPrompts,
             is_active: minutesAgo < 10,
             last_modified: st.mtimeMs,
