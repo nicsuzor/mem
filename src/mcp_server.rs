@@ -3177,7 +3177,10 @@ impl PkbSearchServer {
                  - `update`: Filter and update fields\n\
                  - `reparent`: Move multiple tasks to new parent\n\
                  - `archive`: Set multiple to done\n\
-                 - `merge`: Merge duplicates into canonical\n\
+                 - `merge`: Merge duplicate tasks into canonical\n\
+                 - `node_merge`: Merge any nodes and redirect references\n\
+                 - `epics`: Create epics and reparent tasks\n\
+                 - `reclassify`: Change node types in bulk\n\
                  - `duplicates`: Detect potential duplicates\n\
                  - `orphans`: List disconnected nodes\n"
             }
@@ -3213,8 +3216,19 @@ impl PkbSearchServer {
         match doc_type {
             "task" => self.handle_create_task(&new_args),
             "memory" => self.handle_create_memory(&new_args),
-            "subtask" => self.handle_create_subtask(&new_args),
+            "subtask" => {
+                Self::remap_arg(&mut new_args, "parent", "parent_id");
+                self.handle_create_subtask(&new_args)
+            }
             _ => self.handle_create_document(&new_args),
+        }
+    }
+
+    fn remap_arg(args: &mut JsonValue, from: &str, to: &str) {
+        if let Some(obj) = args.as_object_mut() {
+            if let Some(val) = obj.remove(from) {
+                obj.insert(to.to_string(), val);
+            }
         }
     }
 
@@ -3237,7 +3251,10 @@ impl PkbSearchServer {
             "update" => self.handle_update_task(&merged_args),
             "complete" => self.handle_complete_task(&merged_args),
             "release" => self.handle_release_task(&merged_args),
-            "decompose" => self.handle_decompose_task(&merged_args),
+            "decompose" => {
+                Self::remap_arg(&mut merged_args, "id", "parent_id");
+                self.handle_decompose_task(&merged_args)
+            }
             _ => Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Unknown action: {action}")),
@@ -3263,7 +3280,10 @@ impl PkbSearchServer {
 
         match action {
             "context" => self.handle_pkb_context(&merged_args),
-            "trace" => self.handle_pkb_trace(&merged_args),
+            "trace" => {
+                Self::remap_arg(&mut merged_args, "id", "from");
+                self.handle_pkb_trace(&merged_args)
+            }
             "tree" => self.handle_get_dependency_tree(&merged_args),
             "children" => self.handle_get_task_children(&merged_args),
             "metrics" => self.handle_get_network_metrics(&merged_args),
@@ -3308,6 +3328,12 @@ impl PkbSearchServer {
         }
     }
 
+    fn handle_get_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let stats = crate::telemetry::get_stats(&self.pkb_root);
+        let json = serde_json::to_string_pretty(&stats).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
     fn handle_pkb_stats_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("summary");
 
@@ -3315,6 +3341,7 @@ impl PkbSearchServer {
             "summary" => self.handle_task_summary(args),
             "graph_stats" => self.handle_graph_stats(args),
             "graph_json" => self.handle_graph_json(args),
+            "tool_stats" => self.handle_get_stats(args),
             _ => Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Unknown action: {action}")),
@@ -3330,7 +3357,21 @@ impl ServerHandler for PkbSearchServer {
         request: CallToolRequestParam,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+        let start = std::time::Instant::now();
+        let tool_name = request.name.clone();
         let args = Self::args_to_value(request.arguments);
+
+        // For consolidated tools, build a granular name for telemetry
+        let effective_name: String = match &*tool_name {
+            "manage_task" | "pkb_explore" | "pkb_batch" | "pkb_stats" | "create_document" => {
+                let sub = args.get("action").or_else(|| args.get("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                format!("{tool_name}/{sub}")
+            }
+            other => other.to_string(),
+        };
+
         let result = match &*request.name {
             // --- Consolidated Tools ---
             "create_document" => self.handle_create_document_consolidated(&args),
@@ -3379,12 +3420,22 @@ impl ServerHandler for PkbSearchServer {
             "merge_node" => self.handle_merge_node(&args),
             "batch_create_epics" => self.handle_batch_create_epics(&args),
             "batch_reclassify" => self.handle_batch_reclassify(&args),
+            "get_stats" => self.handle_get_stats(&args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {}", request.name)),
                 data: None,
             }),
         };
+
+        let latency = start.elapsed().as_millis();
+        let is_error = result.is_err();
+        let response_bytes = match &result {
+            Ok(res) => serde_json::to_vec(res).map(|v| v.len()).unwrap_or(0),
+            Err(e) => serde_json::to_vec(e).map(|v| v.len()).unwrap_or(0),
+        };
+        crate::telemetry::record_call(&self.pkb_root, &effective_name, response_bytes, latency, is_error);
+
         std::future::ready(result)
     }
 
@@ -3408,7 +3459,9 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["query"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Hybrid Semantic Search")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_document",
                 "Read document content by ID, title, or path.",
@@ -3420,7 +3473,9 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Get Document Content")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_documents",
                 "List and filter documents, tasks, or memories.",
@@ -3434,23 +3489,26 @@ impl ServerHandler for PkbSearchServer {
                     }
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("List Documents")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_document",
-                "Create new PKB node (task, memory, note, etc.).",
+                "Create new PKB node (task, subtask, memory, note, etc.).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "type": { "type": "string", "enum": ["task", "memory", "note", "goal", "project", "epic"] },
+                        "type": { "type": "string", "enum": ["task", "subtask", "memory", "note", "goal", "project", "epic"] },
                         "title": { "type": "string" },
-                        "parent": { "type": "string", "description": "Required for tasks" },
+                        "parent": { "type": "string", "description": "Parent ID (required for subtask)" },
                         "fields": { "type": "object", "description": "Metadata: priority, tags, depends_on, assignee, etc." },
                         "body": { "type": "string" }
                     },
                     "required": ["type", "title"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Create Document"),
             Tool::new(
                 "manage_task",
                 "Lifecycle management for tasks: update, complete, release, or decompose.",
@@ -3464,7 +3522,8 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id", "action"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Manage Task"),
             Tool::new(
                 "pkb_explore",
                 "Explore graph relationships: context, trace, tree, children, metrics.",
@@ -3478,31 +3537,37 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id", "action"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("PKB Graph Explorer")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "pkb_batch",
-                "Bulk operations: update, reparent, archive, merge, duplicates, orphans.",
+                "Bulk operations: update, reparent, archive, merge, node_merge, epics, reclassify, duplicates, orphans.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "action": { "type": "string", "enum": ["update", "reparent", "archive", "merge", "duplicates", "orphans"] },
+                        "action": { "type": "string", "enum": ["update", "reparent", "archive", "merge", "node_merge", "epics", "reclassify", "duplicates", "orphans"] },
                         "params": { "type": "object", "description": "Filters, updates, new_parent, merge_ids, etc." }
                     },
                     "required": ["action"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("PKB Batch Operations")
+            .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "pkb_stats",
-                "System and graph status: summary, graph_stats, graph_json.",
+                "System and graph status: summary, graph_stats, graph_json, tool_stats.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json"] }
+                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json", "tool_stats"] }
                     }
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("PKB Statistics")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "pkb_tool_help",
                 "Get detailed schema and examples for consolidated tools.",
@@ -3514,7 +3579,9 @@ impl ServerHandler for PkbSearchServer {
                     }
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("PKB Tool Help")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
         ];
 
         std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
