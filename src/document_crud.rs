@@ -82,6 +82,10 @@ pub struct TaskFields {
     pub project: Option<String>,
     pub task_type: Option<String>,
     pub status: Option<String>,
+    pub session_id: Option<String>,
+    pub issue_url: Option<String>,
+    pub follow_up_tasks: Vec<String>,
+    pub release_summary: Option<String>,
 }
 
 /// Fields for creating a new memory.

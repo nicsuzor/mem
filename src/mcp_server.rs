@@ -1627,14 +1627,42 @@ impl PkbSearchServer {
         let branch = args.get("branch").and_then(|v| v.as_str());
         let blocker = args.get("blocker").and_then(|v| v.as_str());
         let reason = args.get("reason").and_then(|v| v.as_str());
+        let session_id_arg = args.get("session_id").and_then(|v| v.as_str());
+        let issue_url = args.get("issue_url").and_then(|v| v.as_str());
+        let follow_up_tasks = args.get("follow_up_tasks").and_then(|v| v.as_array());
+        let release_summary = args.get("release_summary").and_then(|v| v.as_str());
 
-        // Resolve task
+        // Resolve task and validate follow_up_tasks
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
         })?;
+
+        let mut follow_up_ids = Vec::new();
+        if let Some(arr) = follow_up_tasks {
+            let mut unresolved = Vec::new();
+            for v in arr {
+                if let Some(id_str) = v.as_str() {
+                    if graph.resolve(id_str).is_none() {
+                        unresolved.push(id_str.to_string());
+                    } else {
+                        follow_up_ids.push(id_str.to_string());
+                    }
+                }
+            }
+            if !unresolved.is_empty() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Unresolved follow_up_tasks: {}",
+                        unresolved.join(", ")
+                    )),
+                    data: None,
+                });
+            }
+        }
 
         // Check task is not already terminal
         let current_status = node.status.as_deref().unwrap_or("active");
@@ -1671,6 +1699,38 @@ impl PkbSearchServer {
                 serde_json::Value::String(b.to_string()),
             );
         }
+
+        // session_id: arg or env $AOPS_SESSION_ID
+        let final_session_id = session_id_arg
+            .map(|s| s.to_string())
+            .or_else(|| std::env::var("AOPS_SESSION_ID").ok());
+        if let Some(sid) = final_session_id {
+            updates.insert("session_id".to_string(), serde_json::Value::String(sid));
+        }
+
+        if let Some(url) = issue_url {
+            updates.insert("issue_url".to_string(), serde_json::Value::String(url.to_string()));
+        }
+
+        if !follow_up_ids.is_empty() {
+            updates.insert(
+                "follow_up_tasks".to_string(),
+                serde_json::Value::Array(
+                    follow_up_ids
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+        }
+
+        if let Some(rs) = release_summary {
+            updates.insert(
+                "release_summary".to_string(),
+                serde_json::Value::String(rs.to_string()),
+            );
+        }
+
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         updates.insert(
             "released_at".to_string(),
@@ -1727,6 +1787,11 @@ impl PkbSearchServer {
         }
         if (status == "cancelled" || status == "review") && reason.map_or(true, |r| r.trim().is_empty()) {
             warnings.push("WARNING: No reason provided. Future you will want to know why.");
+        }
+        if let Some(rs) = release_summary {
+            if rs.len() > 500 {
+                warnings.push("WARNING: release_summary exceeds 500 characters.");
+            }
         }
 
         let mut response = format!("Released: {} → {} (`{}`)", label, status, id);
@@ -3899,7 +3964,11 @@ impl PkbSearchServer {
                         "pr_url": { "type": "string", "description": "Pull request or commit URL (recommended for merge_ready)" },
                         "branch": { "type": "string", "description": "Git branch name (optional)" },
                         "blocker": { "type": "string", "description": "What is blocking this task (for status=blocked)" },
-                        "reason": { "type": "string", "description": "Why cancelled or needs review (for status=cancelled/review)" }
+                        "reason": { "type": "string", "description": "Why cancelled or needs review (for status=cancelled/review)" },
+                        "session_id": { "type": "string", "description": "Active session ID. Falls back to $AOPS_SESSION_ID if omitted." },
+                        "issue_url": { "type": "string", "description": "External issue/ticket URL" },
+                        "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
+                        "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." }
                     },
                     "required": ["id", "status", "summary"]
                 }))
