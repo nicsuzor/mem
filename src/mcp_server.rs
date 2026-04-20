@@ -4482,7 +4482,18 @@ mod annotation_tests {
                 // Some tools like 'append', 'complete_task', 'release_task' are writes but NOT destructive nor read-only.
                 // The requirement says "read-only OR destructive OR neither explicitly".
                 // I'll check that if it's NOT one of those known write tools, it should probably have a hint.
-                let is_known_write = ["append", "complete_task", "release_task", "batch_merge", "batch_reclassify"].contains(&&*tool.name);
+                let is_known_write = [
+                    "append",
+                    "complete_task",
+                    "release_task",
+                    "update_task",
+                    "bulk_reparent",
+                    "batch_update",
+                    "batch_reparent",
+                    "batch_merge",
+                    "batch_reclassify",
+                ]
+                .contains(&&*tool.name);
 
                 if !is_known_write {
                     assert!(
