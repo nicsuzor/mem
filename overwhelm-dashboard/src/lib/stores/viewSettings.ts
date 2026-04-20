@@ -12,16 +12,16 @@ export const viewSettings = writable({
     colaLinkLength: 600,   // ideal link length (general, used by Metro)
 
     // Link-specific forces
-    colaLinkDistIntraParent: 60,
-    colaLinkWeightIntraParent: 0.4,
-    colaLinkDistInterParent: 150,
-    colaLinkWeightInterParent: 0.25,
-    colaLinkDistDependsOn: 150,
-    colaLinkWeightDependsOn: 0.15,
-    colaLinkDistRef: 300,
-    colaLinkWeightRef: 0.08,
+    colaLinkDistIntraParent: 300,
+    colaLinkWeightIntraParent: 1.0,
+    colaLinkDistInterParent: 500,
+    colaLinkWeightInterParent: 0.8,
+    colaLinkDistDependsOn: 400,
+    colaLinkWeightDependsOn: 1.0,
+    colaLinkDistRef: 600,
+    colaLinkWeightRef: 0.6,
 
-    colaConvergence: 0.005, // convergence threshold - must be < 0.1 (Cola's initial alpha)
+    colaConvergence: 0.5, // convergence threshold - must be < 0.1 (Cola's initial alpha)
     colaFlowSep: 40,       // min vertical separation between linked nodes
     colaGroupPadding: 15,  // padding inside epic group hulls - keeps non-descendants out
     // Cola debug toggles - turn on one at a time to isolate layout issues

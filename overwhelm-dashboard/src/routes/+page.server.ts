@@ -93,16 +93,26 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             if (evt.type !== 'user_prompt') continue;
             const desc = evt.description || '';
             // Skip bash I/O noise and slash commands
-            if (desc.includes('<bash-input>') || desc.includes('<bash-stdout>') || desc.startsWith('/clear')) continue;
+            if (desc.includes('<bash-input>') || desc.includes('<bash-stdout>') || /^\/\w/.test(desc)) continue;
             // Clean up scheduled task preamble
             if (desc.includes('<scheduled-task')) {
                 firstPrompt = 'Scheduled: ' + (desc.match(/name="([^"]+)"/)?.[1] || 'task');
                 break;
             }
-            firstPrompt = desc.slice(0, 150);
+            firstPrompt = desc.slice(0, 300);
             break;
         }
         const description = data.summary || firstPrompt || '';
+
+        // All clean user prompts for expand view
+        const allPrompts: string[] = [];
+        for (const evt of timeline) {
+            if (evt.type !== 'user_prompt') continue;
+            const desc = evt.description || '';
+            if (desc.includes('<bash-input>') || desc.includes('<bash-stdout>') || /^\/\w/.test(desc)) continue;
+            if (desc.includes('<scheduled-task')) continue;
+            allPrompts.push(desc);
+        }
 
         // Duration: use time since first event (the cron snapshot of token_metrics is stale for running sessions)
         const firstEvent = timeline[0]?.timestamp;
@@ -131,6 +141,7 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             time_display: minutesAgo < 60 ? `${Math.round(minutesAgo)}m ago` : `${Math.round(hoursAgo)}h ago`,
             duration_min: durationMin,
             prompt_count: promptCount,
+            prompts: allPrompts,
             is_active: minutesAgo < 10,
             last_modified: st.mtimeMs,
             bucket,
