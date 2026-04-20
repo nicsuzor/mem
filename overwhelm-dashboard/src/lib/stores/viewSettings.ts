@@ -21,7 +21,7 @@ export const viewSettings = writable({
     colaLinkDistRef: 600,
     colaLinkWeightRef: 0.6,
 
-    colaConvergence: 0.5, // convergence threshold - must be < 0.1 (Cola's initial alpha)
+    colaConvergence: 0.05, // convergence threshold - must be < 0.1 (Cola's initial alpha)
     colaFlowSep: 40,       // min vertical separation between linked nodes
     colaGroupPadding: 15,  // padding inside epic group hulls - keeps non-descendants out
     // Cola debug toggles - turn on one at a time to isolate layout issues
