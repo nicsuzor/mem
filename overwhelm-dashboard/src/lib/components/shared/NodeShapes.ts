@@ -67,7 +67,9 @@ function fitTreemapText(
         return { fontSize: minFontSize, lineHeight: minFontSize * 1.18, lines: [] as string[] };
     }
 
+    const longestWord = label.split(/\s+/).reduce((a, b) => a.length > b.length ? a : b, '');
     for (let fontSize = maxFontSize; fontSize >= minFontSize; fontSize -= 0.5) {
+        if (estimateTextWidth(longestWord, fontSize) > maxWidth * 1.06) continue;
         const lines = wrapWordsToWidth(label, fontSize, effectiveWidth);
         const lineHeight = fontSize * 1.18;
         if (lines.length <= maxLines && lines.length * lineHeight <= maxHeight) {
@@ -276,7 +278,7 @@ export function treemapHeaderMetrics(w: number, h: number, label: string, depth:
     }
 
     const maxLines = depth <= 1 ? 3 : 2;
-    const maxFontSize = Math.max(8, Math.min(depth <= 1 ? 22 : 18, Math.min(w * 0.21, h * 0.28)));
+    const maxFontSize = Math.max(8, Math.min(w * 0.21, h * 0.28));
     const fitted = fitTreemapText(label, textAvailW, Math.max(20, Math.min(depth <= 1 ? 64 : 44, h * (depth <= 1 ? 0.42 : 0.28))), {
         minFontSize: 6,
         maxFontSize,
@@ -782,8 +784,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 Math.max(0, h - pad * 2 - blockedReserve),
                 {
                     minFontSize: 5,
-                    maxFontSize: Math.max(8, Math.min(18, Math.min(w * 0.22, h * 0.42, Math.sqrt(w * h) * 0.18))),
-                    maxLines: Math.max(1, Math.min(4, Math.floor((h - pad * 2) / 12))),
+                    maxFontSize: Math.max(8, Math.min(w * 0.25, (h - pad * 2) / 1.18)),
+                    maxLines: Math.max(1, Math.min(6, Math.floor((h - pad * 2) / 12))),
                 },
             );
             const labelHtml = textFit.lines.map((line: string) => escapeHtml(line)).join('<br/>');

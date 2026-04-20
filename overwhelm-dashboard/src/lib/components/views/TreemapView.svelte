@@ -170,7 +170,7 @@
         visibleNodes = nodes
             .filter((n: any) => {
                 const l = layoutMap.get(n.id);
-                if (l) {
+                if (l && (l.w >= 8 || l.h >= 8)) {
                     n.x = l.x; n.y = l.y; n._lw = l.w; n._lh = l.h;
                     n.depth = l.depth;
                     n._isLeaf = l.isLeaf;

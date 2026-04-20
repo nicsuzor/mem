@@ -68,11 +68,23 @@
     }
 
     function buildPhysicsLinks(nodes: GraphNode[], links: GraphEdge[]) {
+        const parentIds = new Set(nodes.map(n => (n as any)._safe_parent).filter(Boolean));
         return links.filter((l: any) => {
             if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
             if (l.type === 'parent' && $filters.edgeParent === 'hidden') return false;
             if (l.type === 'depends_on' && $filters.edgeDependencies === 'hidden') return false;
             if (l.type === 'ref' && $filters.edgeReferences === 'hidden') return false;
+            // Drop intra-group edges: both nodes share the same group (same _safe_parent,
+            // or one is the direct parent of a leaf child in the same group)
+            const src = l.source as any;
+            const tgt = l.target as any;
+            const srcParent = src._safe_parent;
+            const tgtParent = tgt._safe_parent;
+            // Same parent → siblings in same group
+            if (srcParent && srcParent === tgtParent) return false;
+            // Parent→leaf-child edge (child is not itself a parent, so they're in the same group)
+            if (tgtParent === src.id && !parentIds.has(tgt.id)) return false;
+            if (srcParent === tgt.id && !parentIds.has(src.id)) return false;
             return true;
         }).map((l: any) => {
             let length = 1000;
@@ -115,13 +127,11 @@
 
     function applyZoomTextScale() {
         if (!nodesLayer) return;
-        const k = Math.max(0.1, $zoomScale);
-        const boost = k < 1 ? Math.min(1 / k, 6) : 1;
         d3.select(nodesLayer).selectAll<SVGTextElement, any>('text[data-base-fs]')
             .each(function() {
                 const el = d3.select(this);
                 const base = parseFloat(el.attr('data-base-fs') || '10');
-                el.attr('font-size', `${base * boost}px`);
+                el.attr('font-size', `${base}px`);
             });
     }
 

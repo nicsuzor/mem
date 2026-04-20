@@ -23,6 +23,7 @@ export const filters = writable({
     priority4: 'half' as VisibilityState,
 
     hiddenProjects: [] as string[],
+    selectedStatuses: ['inbox', 'ready', 'todo', 'in_progress', 'active', 'review', 'waiting', 'decomposing', 'dormant', 'blocked'] as string[],
 
     edgeDependencies: 'half' as VisibilityState,
     edgeReferences: 'hidden' as VisibilityState,
