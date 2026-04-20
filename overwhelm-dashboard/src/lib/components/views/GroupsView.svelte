@@ -68,7 +68,7 @@
     }
 
     function buildPhysicsLinks(nodes: GraphNode[], links: GraphEdge[]) {
-        const parentIds = new Set(nodes.filter((n: any) => nodes.some((c: any) => c._safe_parent === n.id)).map(n => n.id));
+        const parentIds = new Set(nodes.map(n => (n as any)._safe_parent).filter(Boolean));
         return links.filter((l: any) => {
             if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
             if (l.type === 'parent' && $filters.edgeParent === 'hidden') return false;
