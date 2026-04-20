@@ -8,10 +8,9 @@
     import TreemapView from "$lib/components/views/TreemapView.svelte";
     import CirclePackView from "$lib/components/views/CirclePackView.svelte";
     import ForceView from "$lib/components/views/ForceView.svelte";
-    import ForceViewV2 from "$lib/components/views/ForceViewV2.svelte";
+    import GroupsView from "$lib/components/views/GroupsView.svelte";
     import ArcView from "$lib/components/views/ArcView.svelte";
     import MetroView from "$lib/components/views/MetroView.svelte";
-    import MetroViewV2 from "$lib/components/views/MetroViewV2.svelte";
 
     import DashboardView from "$lib/components/dashboard/DashboardView.svelte";
     import ThreadedTasksView from "$lib/components/views/ThreadedTasksView.svelte";
@@ -39,12 +38,10 @@
     let forceRandomizeNonce = 0;
     let metroViewRef: MetroView;
     let metroRunning = false;
-    let forceV2Ref: ForceViewV2;
-    let forceV2Running = false;
-    let forceV2RestartNonce = 0;
-    let forceV2RandomizeNonce = 0;
-    let metroV2Ref: MetroViewV2;
-    let metroV2Running = false;
+    let groupsRef: GroupsView;
+    let groupsRunning = false;
+    let groupsRestartNonce = 0;
+    let groupsRandomizeNonce = 0;
     let rawGraph: any = null;
     let loading = true;
     let errorMsg = "";
@@ -442,8 +439,6 @@
             <div class="flex-1 relative z-0 h-full">
                 {#if activeLayout === "metro"}
                     <MetroView bind:this={metroViewRef} bind:running={metroRunning} />
-                {:else if activeLayout === "metro_v2"}
-                    <MetroViewV2 bind:this={metroV2Ref} bind:running={metroV2Running} />
                 {:else}
                     <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
                         {#if containerGroup}
@@ -453,8 +448,8 @@
                                 <CirclePackView {containerGroup} />
                             {:else if activeLayout === "force" || activeLayout === "sfdp"}
                                 <ForceView {containerGroup} bind:this={forceViewRef} bind:running={forceRunning} restartNonce={forceRestartNonce} randomizeNonce={forceRandomizeNonce} />
-                            {:else if activeLayout === "force_v2"}
-                                <ForceViewV2 {containerGroup} bind:this={forceV2Ref} bind:running={forceV2Running} restartNonce={forceV2RestartNonce} randomizeNonce={forceV2RandomizeNonce} />
+                            {:else if activeLayout === "groups"}
+                                <GroupsView {containerGroup} bind:this={groupsRef} bind:running={groupsRunning} restartNonce={groupsRestartNonce} randomizeNonce={groupsRandomizeNonce} />
                             {:else if activeLayout === "arc"}
                                 <ArcView {containerGroup} />
                             {/if}
@@ -463,16 +458,15 @@
                 {/if}
             </div>
             <Legend />
-            {#if activeLayout === "force" || activeLayout === "sfdp" || activeLayout === "metro" || activeLayout === "force_v2" || activeLayout === "metro_v2"}
+            {#if activeLayout === "force" || activeLayout === "sfdp" || activeLayout === "metro" || activeLayout === "groups"}
                 <div class="graph-dock graph-dock-bottom-center">
                     <button class="graph-control-button" onclick={() => {
                         if (activeLayout === "metro") metroViewRef?.toggleRunning();
-                        else if (activeLayout === "metro_v2") metroV2Ref?.toggleRunning();
-                        else if (activeLayout === "force_v2") forceV2Running ? forceV2Ref?.toggleRunning() : forceV2RestartNonce += 1;
+                        else if (activeLayout === "groups") groupsRunning ? groupsRef?.toggleRunning() : groupsRestartNonce += 1;
                         else forceRunning ? forceRunning = false : forceRestartNonce += 1;
                     }}>
-                        <span class="material-symbols-outlined text-sm">{(activeLayout === "metro" ? metroRunning : activeLayout === "metro_v2" ? metroV2Running : activeLayout === "force_v2" ? forceV2Running : forceRunning) ? 'pause' : 'play_arrow'}</span>
-                        <span>{(activeLayout === "metro" ? metroRunning : activeLayout === "metro_v2" ? metroV2Running : activeLayout === "force_v2" ? forceV2Running : forceRunning) ? 'Stop' : 'Start'} Layout</span>
+                        <span class="material-symbols-outlined text-sm">{(activeLayout === "metro" ? metroRunning : activeLayout === "groups" ? groupsRunning : forceRunning) ? 'pause' : 'play_arrow'}</span>
+                        <span>{(activeLayout === "metro" ? metroRunning : activeLayout === "groups" ? groupsRunning : forceRunning) ? 'Stop' : 'Start'} Layout</span>
                     </button>
                     {#if activeLayout === "force"}
                         <button class="graph-control-button" onclick={() => forceRandomizeNonce += 1}>
@@ -480,8 +474,8 @@
                             <span>Randomise</span>
                         </button>
                     {/if}
-                    {#if activeLayout === "force_v2"}
-                        <button class="graph-control-button" onclick={() => forceV2RandomizeNonce += 1}>
+                    {#if activeLayout === "groups"}
+                        <button class="graph-control-button" onclick={() => groupsRandomizeNonce += 1}>
                             <span class="material-symbols-outlined text-sm">shuffle</span>
                             <span>Randomise</span>
                         </button>
