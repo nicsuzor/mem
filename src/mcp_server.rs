@@ -2205,6 +2205,18 @@ impl PkbSearchServer {
                     .get("consequence")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                project: subtask
+                    .get("project")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                task_type: subtask
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                status: subtask
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
             };
 
             let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
@@ -3191,26 +3203,34 @@ impl PkbSearchServer {
     }
 
     fn handle_list_prompts(&self) -> Result<ListPromptsResult, McpError> {
+        fn required_arg(name: &str, description: &str) -> PromptArgument {
+            PromptArgument::new(name)
+                .with_description(description)
+                .with_required(true)
+        }
         let prompts = vec![
             Prompt::new(
                 "find-task",
-                "How do I find a task about X?",
-            )
-            .with_argument(PromptArgument::new("query", "The task to find").required(true)),
+                Some("How do I find a task about X?"),
+                Some(vec![required_arg("query", "The task to find")]),
+            ),
             Prompt::new(
                 "explore-topic",
-                "What do we know about X?",
-            )
-            .with_argument(PromptArgument::new("query", "The topic to explore").required(true)),
+                Some("What do we know about X?"),
+                Some(vec![required_arg("query", "The topic to explore")]),
+            ),
             Prompt::new(
                 "navigate-graph",
-                "What's connected to X?",
-            )
-            .with_argument(
-                PromptArgument::new("id", "The node ID, title, or filename").required(true),
+                Some("What's connected to X?"),
+                Some(vec![required_arg(
+                    "id",
+                    "The node ID, title, or filename",
+                )]),
             ),
-            Prompt::new("find-by-tag", "Show me everything tagged X").with_argument(
-                PromptArgument::new("tag", "The tag to filter by").required(true),
+            Prompt::new(
+                "find-by-tag",
+                Some("Show me everything tagged X"),
+                Some(vec![required_arg("tag", "The tag to filter by")]),
             ),
         ];
         Ok(ListPromptsResult::with_all_items(prompts))
@@ -3230,7 +3250,7 @@ impl PkbSearchServer {
                     message: Cow::from("Missing required parameter: query"),
                     data: None,
                 })?;
-                Ok(GetPromptResult::new(vec![PromptMessage::user(format!(
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
                     "I want to find a task about '{}'. Please use 'task_search' to find it, then 'get_task' to read the most relevant one.",
                     query
                 ))]))
@@ -3241,7 +3261,7 @@ impl PkbSearchServer {
                     message: Cow::from("Missing required parameter: query"),
                     data: None,
                 })?;
-                Ok(GetPromptResult::new(vec![PromptMessage::user(format!(
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
                     "What do we know about '{}'? Please use 'search' to find documents, then 'get_document' for the full content of relevant ones.",
                     query
                 ))]))
@@ -3252,7 +3272,7 @@ impl PkbSearchServer {
                     message: Cow::from("Missing required parameter: id"),
                     data: None,
                 })?;
-                Ok(GetPromptResult::new(vec![PromptMessage::user(format!(
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
                     "What's connected to '{}'? Please use 'pkb_context' to see its parents, children, and neighbours in the knowledge graph.",
                     id
                 ))]))
@@ -3263,7 +3283,7 @@ impl PkbSearchServer {
                     message: Cow::from("Missing required parameter: tag"),
                     data: None,
                 })?;
-                Ok(GetPromptResult::new(vec![PromptMessage::user(format!(
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
                     "Show me everything tagged '{}'. Please use 'search_by_tag' with this tag.",
                     tag
                 ))]))
@@ -3361,6 +3381,51 @@ impl ServerHandler for PkbSearchServer {
         std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
 
+
+    fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
+        std::future::ready(self.handle_list_prompts())
+    }
+
+    fn get_prompt(
+        &self,
+        request: GetPromptRequestParam,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
+        std::future::ready(self.handle_get_prompt(request))
+    }
+
+    fn get_info(&self) -> ServerInfo {
+        let mut instructions = String::from(
+            "PKB Search — semantic search + task graph over personal knowledge base. \
+             39 tools for search, documents, tasks, and knowledge graph. \
+             Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance. \
+             Use get_stats to view per-tool usage telemetry.",
+        );
+        if self.stale_count > 0 {
+            instructions.push_str(&format!(
+                " WARNING: Index is stale — {} document(s) need re-indexing. \
+                 Search results may be incomplete or outdated. \
+                 Run `pkb reindex` to update.",
+                self.stale_count
+            ));
+        }
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_protocol_version(ProtocolVersion::V_2024_11_05)
+        .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
+        .with_instructions(instructions)
+    }
+}
+
+impl PkbSearchServer {
     fn get_all_tools() -> Vec<Tool> {
         vec![
             Tool::new(
@@ -4061,51 +4126,7 @@ impl ServerHandler for PkbSearchServer {
             )
             .with_title("Tool Usage Stats")
             .with_annotations(ToolAnnotations::new().read_only(true)),
-        ];
-
-        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
-    }
-
-    fn list_prompts(
-        &self,
-        _request: Option<PaginatedRequestParam>,
-        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
-        std::future::ready(self.handle_list_prompts())
-    }
-
-    fn get_prompt(
-        &self,
-        request: GetPromptRequestParam,
-        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
-        std::future::ready(self.handle_get_prompt(request))
-    }
-
-    fn get_info(&self) -> ServerInfo {
-        let mut instructions = String::from(
-            "PKB Search — semantic search + task graph over personal knowledge base. \
-             39 tools for search, documents, tasks, and knowledge graph. \
-             Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance. \
-             Use get_stats to view per-tool usage telemetry.",
-        );
-        if self.stale_count > 0 {
-            instructions.push_str(&format!(
-                " WARNING: Index is stale — {} document(s) need re-indexing. \
-                 Search results may be incomplete or outdated. \
-                 Run `pkb reindex` to update.",
-                self.stale_count
-            ));
-        }
-        ServerInfo::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_prompts()
-                .build(),
-        )
-        .with_protocol_version(ProtocolVersion::V_2024_11_05)
-        .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
-        .with_instructions(instructions)
+        ]
     }
 }
 
@@ -4248,10 +4269,7 @@ mod tests {
         let text = result
             .content
             .iter()
-            .filter_map(|c| match c {
-                Content::Text(t) => Some(t.text.as_str()),
-                _ => None,
-            })
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
             .collect::<String>();
         // Parse the JSON output
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -4412,10 +4430,7 @@ mod tests {
         let text = result
             .content
             .iter()
-            .filter_map(|c| match c {
-                Content::Text(t) => Some(t.text.as_str()),
-                _ => None,
-            })
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
             .collect::<String>();
         // Either empty JSON tasks array or "No tasks found" message
         let is_empty = text.contains("No tasks found") || text.contains("\"tasks\":[]") || text.contains("\"tasks\": []");
@@ -4424,13 +4439,10 @@ mod tests {
 
     // ── AC6: tool schema includes project parameter ──
 
-    #[tokio::test]
-    async fn test_list_tasks_schema_includes_project_parameter() {
-        let server = build_test_server();
-        let ctx = rmcp::service::RequestContext::<rmcp::service::RoleServer>::default();
-        let tools_result = ServerHandler::list_tools(&server, None, ctx).await.unwrap();
-        let list_tasks_tool = tools_result
-            .tools
+    #[test]
+    fn test_list_tasks_schema_includes_project_parameter() {
+        let tools = PkbSearchServer::get_all_tools();
+        let list_tasks_tool = tools
             .iter()
             .find(|t| t.name.as_ref() == "list_tasks")
             .expect("list_tasks tool should exist");
@@ -4444,14 +4456,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod annotation_tests {
     use super::*;
-    use std::sync::Arc;
-    use parking_lot::RwLock;
-    use crate::vectordb::VectorStore;
-    use crate::embeddings::Embedder;
-    use crate::graph_store::GraphStore;
-    use std::path::PathBuf;
 
     #[tokio::test]
     async fn test_tool_annotations_audit() {
@@ -4476,7 +4482,18 @@ mod tests {
                 // Some tools like 'append', 'complete_task', 'release_task' are writes but NOT destructive nor read-only.
                 // The requirement says "read-only OR destructive OR neither explicitly".
                 // I'll check that if it's NOT one of those known write tools, it should probably have a hint.
-                let is_known_write = ["append", "complete_task", "release_task", "batch_merge", "batch_reclassify"].contains(&&*tool.name);
+                let is_known_write = [
+                    "append",
+                    "complete_task",
+                    "release_task",
+                    "update_task",
+                    "bulk_reparent",
+                    "batch_update",
+                    "batch_reparent",
+                    "batch_merge",
+                    "batch_reclassify",
+                ]
+                .contains(&&*tool.name);
 
                 if !is_known_write {
                     assert!(

@@ -2220,8 +2220,8 @@ mod tests {
         let graph2 = GraphStore::rebuild_from_nodes(nodes, root);
 
         // Now task-a should be ready (it was blocked by task-b)
-        assert!(graph2.ready.iter().any(|n| n.id == "task-a"));
-        assert!(!graph.ready.iter().any(|n| n.id == "task-a"));
+        assert!(graph2.ready.iter().any(|id| id == "task-a"));
+        assert!(!graph.ready.iter().any(|id| id == "task-a"));
     }
 
 
