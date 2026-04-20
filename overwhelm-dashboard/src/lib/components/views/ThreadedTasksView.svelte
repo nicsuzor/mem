@@ -6,6 +6,7 @@
     import { PRIORITIES } from "../../data/constants";
     import { projectHue } from "../../data/projectUtils";
     import TaskEditorView from "./TaskEditorView.svelte";
+    import StatusFilterBar from "../shared/StatusFilterBar.svelte";
 
     let currentTab = "ACTIVE_TASKS";
     let searchQuery = "";
@@ -95,7 +96,9 @@
             matchesSearch = (n.label || '').toLowerCase().includes(q) || (n.id || '').toLowerCase().includes(q);
         }
 
-        return matchesType && matchesProject && matchesTab && matchesSearch;
+        const matchesStatusFilter = $filters.selectedStatuses.length === 0 || $filters.selectedStatuses.includes(n.status);
+
+        return matchesType && matchesProject && matchesTab && matchesSearch && matchesStatusFilter;
     }).sort((a, b) => {
         // Pin focus tasks to top
         const aFocus = focusIds.has(a.id) ? 0 : 1;
@@ -212,6 +215,11 @@
                     <span class="material-symbols-outlined text-sm">add</span> NEW_TASK
                 </button>
             </div>
+        </div>
+
+        <!-- Status filter chips -->
+        <div class="border-b border-primary/10 bg-surface/40">
+            <StatusFilterBar />
         </div>
 
         <!-- Tabs -->

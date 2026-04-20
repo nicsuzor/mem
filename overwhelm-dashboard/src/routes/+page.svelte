@@ -14,6 +14,7 @@
 
     import DashboardView from "$lib/components/dashboard/DashboardView.svelte";
     import ThreadedTasksView from "$lib/components/views/ThreadedTasksView.svelte";
+    import StatusFilterBar from "$lib/components/shared/StatusFilterBar.svelte";
 
     import {
         prepareGraphData,
@@ -181,6 +182,12 @@
             (n as any).filter_dimmed = (visState === 'half');
             return true;
         });
+
+        if ($filters.selectedStatuses.length > 0) {
+            fNodes = fNodes.filter(n =>
+                STRUCTURAL_TYPES.has(n.type) || $filters.selectedStatuses.includes(n.status)
+            );
+        }
 
         const edgeVisibilityFor = (edge: GraphEdge) => {
             if (edge.type === 'parent') return $filters.edgeParent;
@@ -430,8 +437,12 @@
     {:else}
     <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} relative bg-surface flex flex-col h-full border-r border-primary-border overflow-hidden transition-all" data-component="graph-canvas">
         <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
+        <!-- Status filter bar -->
+        <div class="relative z-10 border-b border-primary/10 bg-surface/80 backdrop-blur-sm">
+            <StatusFilterBar />
+        </div>
             {#if $selection.focusNodeId}
-                <div class="absolute top-4 left-4 z-20 flex items-center gap-3">
+                <div class="absolute top-14 left-4 z-20 flex items-center gap-3">
                     <button class="graph-control-button" onclick={() => selection.update((s) => ({ ...s, focusNodeId: null, focusNeighborSet: null, }))}>← Full View</button>
                     <span class="graph-control-panel px-3 py-2 font-mono text-xs text-primary/70">FOCUS: {focusNode?.fullTitle || $selection.focusNodeId}</span>
                 </div>

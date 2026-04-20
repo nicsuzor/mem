@@ -2,18 +2,11 @@
     import { filters, cycleVisibility, type VisibilityState } from '../../stores/filters';
     import { graphData } from '../../stores/graph';
     import { viewSettings } from '../../stores/viewSettings';
-    import { PRIORITIES, STATUS_GROUP_SWATCHES } from '../../data/constants';
+    import { PRIORITIES } from '../../data/constants';
     import { projectColor } from '../../data/projectUtils';
 
     let showAllProjects = false;
     const MAX_VISIBLE_PROJECTS = 6;
-
-    // Status = fill color (muted defaults, saturated for attention)
-    const statusGroups = [
-        { key: 'statusActive', label: 'ACTIVE', swatch: STATUS_GROUP_SWATCHES.active },
-        { key: 'statusBlocked', label: 'BLOCKED', swatch: STATUS_GROUP_SWATCHES.blocked },
-        { key: 'statusCompleted', label: 'COMPLETED', swatch: STATUS_GROUP_SWATCHES.completed },
-    ] as const;
 
     // Priority = border color — now interactive (click to cycle)
     const priorityItems = PRIORITIES.map(p => ({
@@ -77,15 +70,9 @@
 
     $: isMetroLegend = $viewSettings.viewMode === 'Metro';
 
-    const ACTIVE_STATUSES = new Set(["active", "ready", "inbox", "todo", "in_progress", "review", "waiting", "decomposing", "dormant"]);
-    const COMPLETED_STATUSES = new Set(["done", "completed", "cancelled", "historical", "deferred", "paused", "seed", "early-scaffold"]);
-
     $: nodeCounts = $graphData ? (() => {
         const nodes = $graphData.nodes;
         return {
-            statusActive: nodes.filter(n => ACTIVE_STATUSES.has(n.status)).length,
-            statusBlocked: nodes.filter(n => n.status === 'blocked').length,
-            statusCompleted: nodes.filter(n => COMPLETED_STATUSES.has(n.status)).length,
             priority0: nodes.filter(n => n.priority === 0).length,
             priority1: nodes.filter(n => n.priority === 1).length,
             priority2: nodes.filter(n => n.priority === 2).length,
@@ -123,24 +110,6 @@
                 <button class="legend-close graph-control-icon-button" on:click={() => viewSettings.update(s => ({ ...s, showLegend: false }))}>
                     <span class="material-symbols-outlined" style="font-size: 14px;">close</span>
                 </button>
-            </div>
-
-            <!-- Status filters (click to cycle: bright → half → hidden) -->
-            <div class="legend-section">
-                <span class="legend-section-title">STATUS</span>
-                {#each statusGroups as group}
-                    {@const vis = $filters[group.key as keyof typeof $filters] as VisibilityState}
-                    <button
-                        class="legend-item"
-                        class:dimmed={vis === 'hidden'}
-                        on:click={() => cycleFilter(group.key)}
-                        title="Click to cycle: bright → half → hidden"
-                    >
-                        <div class="legend-box" style="background:{group.swatch}; opacity:{edgeOpacityForLegend(vis)};"></div>
-                        <span class="legend-label">{group.label}{nodeCounts ? ` [${nodeCounts[group.key as keyof typeof nodeCounts]}]` : ''}</span>
-                        <span class="edge-state">{stateLabel(vis)}</span>
-                    </button>
-                {/each}
             </div>
 
             <!-- Priority filter (click to cycle: bright → half → hidden) -->
