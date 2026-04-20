@@ -9,7 +9,11 @@
 
     let showPaused = false;
     let isSubmitting = false;
-    let expandedSessions: Record<string, boolean> = {};
+    let expandedSessions = $state<Record<string, boolean>>({});
+
+    function toggleExpand(sessionId: string) {
+        expandedSessions[sessionId] = !expandedSessions[sessionId];
+    }
 
     function toggleExpand(sessionId: string) {
         expandedSessions = { ...expandedSessions, [sessionId]: !expandedSessions[sessionId] };
