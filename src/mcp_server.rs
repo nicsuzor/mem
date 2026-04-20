@@ -4269,10 +4269,7 @@ mod tests {
         let text = result
             .content
             .iter()
-            .filter_map(|c| match c {
-                Content::Text(t) => Some(t.text.as_str()),
-                _ => None,
-            })
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
             .collect::<String>();
         // Parse the JSON output
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -4433,10 +4430,7 @@ mod tests {
         let text = result
             .content
             .iter()
-            .filter_map(|c| match c {
-                Content::Text(t) => Some(t.text.as_str()),
-                _ => None,
-            })
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
             .collect::<String>();
         // Either empty JSON tasks array or "No tasks found" message
         let is_empty = text.contains("No tasks found") || text.contains("\"tasks\":[]") || text.contains("\"tasks\": []");
@@ -4445,13 +4439,10 @@ mod tests {
 
     // ── AC6: tool schema includes project parameter ──
 
-    #[tokio::test]
-    async fn test_list_tasks_schema_includes_project_parameter() {
-        let server = build_test_server();
-        let ctx = rmcp::service::RequestContext::<rmcp::service::RoleServer>::default();
-        let tools_result = ServerHandler::list_tools(&server, None, ctx).await.unwrap();
-        let list_tasks_tool = tools_result
-            .tools
+    #[test]
+    fn test_list_tasks_schema_includes_project_parameter() {
+        let tools = PkbSearchServer::get_all_tools();
+        let list_tasks_tool = tools
             .iter()
             .find(|t| t.name.as_ref() == "list_tasks")
             .expect("list_tasks tool should exist");
@@ -4465,14 +4456,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod annotation_tests {
     use super::*;
-    use std::sync::Arc;
-    use parking_lot::RwLock;
-    use crate::vectordb::VectorStore;
-    use crate::embeddings::Embedder;
-    use crate::graph_store::GraphStore;
-    use std::path::PathBuf;
 
     #[tokio::test]
     async fn test_tool_annotations_audit() {
