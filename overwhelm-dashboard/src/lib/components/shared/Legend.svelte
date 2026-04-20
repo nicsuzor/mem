@@ -77,6 +77,32 @@
 
     $: isMetroLegend = $viewSettings.viewMode === 'Metro';
 
+    const ACTIVE_STATUSES = new Set(["active", "ready", "inbox", "todo", "in_progress", "review", "waiting", "decomposing", "dormant"]);
+    const COMPLETED_STATUSES = new Set(["done", "completed", "cancelled", "historical", "deferred", "paused", "seed", "early-scaffold"]);
+
+    $: nodeCounts = $graphData ? (() => {
+        const nodes = $graphData.nodes;
+        return {
+            statusActive: nodes.filter(n => ACTIVE_STATUSES.has(n.status)).length,
+            statusBlocked: nodes.filter(n => n.status === 'blocked').length,
+            statusCompleted: nodes.filter(n => COMPLETED_STATUSES.has(n.status)).length,
+            priority0: nodes.filter(n => n.priority === 0).length,
+            priority1: nodes.filter(n => n.priority === 1).length,
+            priority2: nodes.filter(n => n.priority === 2).length,
+            priority3: nodes.filter(n => n.priority === 3).length,
+            priority4: nodes.filter(n => n.priority === 4).length,
+        };
+    })() : null;
+
+    $: edgeCounts = $graphData ? (() => {
+        const links = $graphData.links;
+        return {
+            edgeParent: links.filter((l: any) => l.type === 'parent').length,
+            edgeDependencies: links.filter((l: any) => l.type === 'depends_on').length,
+            edgeReferences: links.filter((l: any) => l.type === 'ref' || l.type === 'soft_depends_on').length,
+        };
+    })() : null;
+
     $: availableProjects = $graphData
         ? Array.from(new Set($graphData.nodes.map((n) => n.project).filter((p): p is string => !!p))).sort()
         : [];
@@ -111,7 +137,7 @@
                         title="Click to cycle: bright → half → hidden"
                     >
                         <div class="legend-box" style="background:{group.swatch}; opacity:{edgeOpacityForLegend(vis)};"></div>
-                        <span class="legend-label">{group.label}</span>
+                        <span class="legend-label">{group.label}{nodeCounts ? ` [${nodeCounts[group.key as keyof typeof nodeCounts]}]` : ''}</span>
                         <span class="edge-state">{stateLabel(vis)}</span>
                     </button>
                 {/each}
@@ -129,7 +155,7 @@
                         title="Click to cycle: bright → half → hidden"
                     >
                         <div class="legend-box" style="background:rgba(10, 14, 20, 0.92); border: 2px solid {p.color}; opacity:{edgeOpacityForLegend(vis)};"></div>
-                        <span class="legend-label">{p.label}</span>
+                        <span class="legend-label">{p.label}{nodeCounts ? ` [${nodeCounts[p.key as keyof typeof nodeCounts]}]` : ''}</span>
                         <span class="edge-state">{stateLabel(vis)}</span>
                     </button>
                 {/each}
@@ -148,7 +174,7 @@
                     >
                         <div class="legend-line" style="background:{edge.color}; opacity:{edgeOpacityForLegend(vis)};"
                             class:dashed={edge.dash}></div>
-                        <span class="legend-label">{edge.label}</span>
+                        <span class="legend-label">{edge.label}{!isMetroLegend && edgeCounts ? ` [${edgeCounts[edge.key as keyof typeof edgeCounts]}]` : ''}</span>
                         <span class="edge-state">{stateLabel(vis)}</span>
                     </button>
                     {#if isMetroLegend && 'note' in edge}

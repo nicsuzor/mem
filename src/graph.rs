@@ -181,6 +181,11 @@ pub struct GraphNode {
     /// and stakeholder_exposure, normalized across all nodes in the graph.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub criticality: f64,
+    /// Computed: min priority across self + full downstream cone (blocks, soft_blocks, children).
+    /// Used for filtering/sorting — a P2 blocker of a P0 gets effective_priority=0.
+    /// Never written back to frontmatter; skip serialization to avoid polluting YAML.
+    #[serde(skip)]
+    pub effective_priority: Option<i32>,
 }
 
 /// An assumption attached to a planning node.
@@ -575,11 +580,6 @@ impl GraphNode {
             })
             .unwrap_or_default();
 
-        let project = fm.as_ref().and_then(|f| {
-            f.get("project")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
         let classification = fm.as_ref().and_then(|f| {
             f.get("classification")
                 .and_then(|v| v.as_str())
@@ -610,7 +610,7 @@ impl GraphNode {
             assignee,
             stakeholder,
             waiting_since,
-            project,
+            project: None,
             goals,
             complexity,
             effort,
@@ -640,6 +640,7 @@ impl GraphNode {
             scope: 0,
             uncertainty: 0.0,
             criticality: 0.0,
+            effective_priority: None,
         }
     }
 }

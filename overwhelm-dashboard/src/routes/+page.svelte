@@ -8,6 +8,7 @@
     import TreemapView from "$lib/components/views/TreemapView.svelte";
     import CirclePackView from "$lib/components/views/CirclePackView.svelte";
     import ForceView from "$lib/components/views/ForceView.svelte";
+    import GroupsView from "$lib/components/views/GroupsView.svelte";
     import ArcView from "$lib/components/views/ArcView.svelte";
     import MetroView from "$lib/components/views/MetroView.svelte";
 
@@ -37,6 +38,10 @@
     let forceRandomizeNonce = 0;
     let metroViewRef: MetroView;
     let metroRunning = false;
+    let groupsRef: GroupsView;
+    let groupsRunning = false;
+    let groupsRestartNonce = 0;
+    let groupsRandomizeNonce = 0;
     let rawGraph: any = null;
     let loading = true;
     let errorMsg = "";
@@ -130,7 +135,7 @@
         let fNodes = [...prepared.nodes];
         let fLinks = [...prepared.links];
         const isForce =
-            $viewSettings.viewMode === "Force";
+            $viewSettings.viewMode === "Force" || $viewSettings.viewMode === "Force V2";
 
         // Only include real task types with explicit ID and status
         // Structural types (epic, project, goal) are always included — they often lack task_id or explicit status
@@ -443,6 +448,8 @@
                                 <CirclePackView {containerGroup} />
                             {:else if activeLayout === "force" || activeLayout === "sfdp"}
                                 <ForceView {containerGroup} bind:this={forceViewRef} bind:running={forceRunning} restartNonce={forceRestartNonce} randomizeNonce={forceRandomizeNonce} />
+                            {:else if activeLayout === "groups"}
+                                <GroupsView {containerGroup} bind:this={groupsRef} bind:running={groupsRunning} restartNonce={groupsRestartNonce} randomizeNonce={groupsRandomizeNonce} />
                             {:else if activeLayout === "arc"}
                                 <ArcView {containerGroup} />
                             {/if}
@@ -451,14 +458,24 @@
                 {/if}
             </div>
             <Legend />
-            {#if activeLayout === "force" || activeLayout === "sfdp" || activeLayout === "metro"}
+            {#if activeLayout === "force" || activeLayout === "sfdp" || activeLayout === "metro" || activeLayout === "groups"}
                 <div class="graph-dock graph-dock-bottom-center">
-                    <button class="graph-control-button" onclick={() => activeLayout === "metro" ? metroViewRef?.toggleRunning() : (forceRunning ? forceRunning = false : forceRestartNonce += 1)}>
-                        <span class="material-symbols-outlined text-sm">{(activeLayout === "metro" ? metroRunning : forceRunning) ? 'pause' : 'play_arrow'}</span>
-                        <span>{(activeLayout === "metro" ? metroRunning : forceRunning) ? 'Stop' : 'Start'} Layout</span>
+                    <button class="graph-control-button" onclick={() => {
+                        if (activeLayout === "metro") metroViewRef?.toggleRunning();
+                        else if (activeLayout === "groups") groupsRunning ? groupsRef?.toggleRunning() : groupsRestartNonce += 1;
+                        else forceRunning ? forceRunning = false : forceRestartNonce += 1;
+                    }}>
+                        <span class="material-symbols-outlined text-sm">{(activeLayout === "metro" ? metroRunning : activeLayout === "groups" ? groupsRunning : forceRunning) ? 'pause' : 'play_arrow'}</span>
+                        <span>{(activeLayout === "metro" ? metroRunning : activeLayout === "groups" ? groupsRunning : forceRunning) ? 'Stop' : 'Start'} Layout</span>
                     </button>
                     {#if activeLayout === "force"}
                         <button class="graph-control-button" onclick={() => forceRandomizeNonce += 1}>
+                            <span class="material-symbols-outlined text-sm">shuffle</span>
+                            <span>Randomise</span>
+                        </button>
+                    {/if}
+                    {#if activeLayout === "groups"}
+                        <button class="graph-control-button" onclick={() => groupsRandomizeNonce += 1}>
                             <span class="material-symbols-outlined text-sm">shuffle</span>
                             <span>Randomise</span>
                         </button>
