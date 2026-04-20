@@ -3202,6 +3202,218 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    // =========================================================================
+    // CONSOLIDATED TOOLS (Progressive Disclosure)
+    // =========================================================================
+
+    fn handle_pkb_tool_help(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let tool = args.get("tool").and_then(|v| v.as_str());
+        let action = args.get("action").and_then(|v| v.as_str());
+
+        let help = match (tool, action) {
+            (Some("create_document"), _) => {
+                "## create_document\n\n\
+                 Create a new PKB node (task, memory, note, etc.).\n\n\
+                 **Parameters:**\n\
+                 - `type`: task, memory, note, goal, project, epic\n\
+                 - `title`: String (required)\n\
+                 - `parent`: Parent ID (required for tasks)\n\
+                 - `fields`: Object containing priority (0-4), tags (array), depends_on (array), assignee, etc.\n\
+                 - `body`: Markdown content\n"
+            }
+            (Some("manage_task"), Some("release")) => {
+                "## manage_task(action='release')\n\n\
+                 Transition a task to a terminal status with work history.\n\n\
+                 **Parameters:**\n\
+                 - `id`: Task ID\n\
+                 - `params`: Object\n\
+                   - `status`: merge_ready, done, review, blocked, cancelled\n\
+                   - `summary`: What was done (1-3 sentences)\n\
+                   - `pr_url`: PR link (optional)\n"
+            }
+            (Some("manage_task"), _) => {
+                "## manage_task\n\n\
+                 Lifecycle management for tasks.\n\n\
+                 **Actions:**\n\
+                 - `update`: Update fields (params: {updates: {priority: 1, ...}})\n\
+                 - `complete`: Mark as done (params: {completion_evidence: '...'})\n\
+                 - `release`: Handoff (params: {status: 'merge_ready', summary: '...'})\n\
+                 - `decompose`: Create subtasks (params: {subtasks: [{title: '...'}, ...]})\n"
+            }
+            (Some("pkb_batch"), _) => {
+                "## pkb_batch\n\n\
+                 Bulk operations across multiple nodes.\n\n\
+                 **Actions:**\n\
+                 - `update`: Filter and update fields\n\
+                 - `reparent`: Move multiple tasks to new parent\n\
+                 - `archive`: Set multiple to done\n\
+                 - `merge`: Merge duplicate tasks into canonical\n\
+                 - `node_merge`: Merge any nodes and redirect references\n\
+                 - `epics`: Create epics and reparent tasks\n\
+                 - `reclassify`: Change node types in bulk\n\
+                 - `duplicates`: Detect potential duplicates\n\
+                 - `orphans`: List disconnected nodes\n"
+            }
+            _ => {
+                "## PKB Tools Help\n\n\
+                 Use `pkb_tool_help(tool='TOOL_NAME')` for detailed schema.\n\n\
+                 **Entrypoint Tools:**\n\
+                 - `search`: Semantic search (all types)\n\
+                 - `get_document`: Read by ID/path\n\
+                 - `list_documents`: List and filter\n\
+                 - `create_document`: Create new nodes\n\
+                 - `manage_task`: Task lifecycle\n\
+                 - `pkb_explore`: Graph relationships\n\
+                 - `pkb_batch`: Bulk operations\n\
+                 - `pkb_stats`: System status\n"
+            }
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(help)]))
+    }
+
+    fn remap_arg(args: &mut JsonValue, from: &str, to: &str) {
+        if let Some(obj) = args.as_object_mut() {
+            if let Some(val) = obj.remove(from) {
+                obj.insert(to.to_string(), val);
+            }
+        }
+    }
+
+    fn handle_create_document_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let doc_type = args.get("type").and_then(|v| v.as_str()).unwrap_or("note");
+        let fields = args.get("fields").and_then(|v| v.as_object());
+
+        let mut new_args = args.clone();
+        if let Some(obj) = fields {
+            for (k, v) in obj {
+                new_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match doc_type {
+            "task" => self.handle_create_task(&new_args),
+            "memory" => self.handle_create_memory(&new_args),
+            "subtask" => {
+                Self::remap_arg(&mut new_args, "parent", "parent_id");
+                self.handle_create_subtask(&new_args)
+            }
+            _ => self.handle_create_document(&new_args),
+        }
+    }
+
+    fn handle_manage_task_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("action is required: update|complete|release|decompose"),
+            data: None,
+        })?;
+
+        let params = args.get("params").and_then(|v| v.as_object());
+        let mut merged_args = args.clone();
+        if let Some(obj) = params {
+            for (k, v) in obj {
+                merged_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match action {
+            "update" => self.handle_update_task(&merged_args),
+            "complete" => self.handle_complete_task(&merged_args),
+            "release" => self.handle_release_task(&merged_args),
+            "decompose" => {
+                Self::remap_arg(&mut merged_args, "id", "parent_id");
+                self.handle_decompose_task(&merged_args)
+            }
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_pkb_explore_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("action is required: context|trace|tree|children|metrics"),
+            data: None,
+        })?;
+
+        let params = args.get("params").and_then(|v| v.as_object());
+        let mut merged_args = args.clone();
+        if let Some(obj) = params {
+            for (k, v) in obj {
+                merged_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match action {
+            "context" => self.handle_pkb_context(&merged_args),
+            "trace" => {
+                Self::remap_arg(&mut merged_args, "id", "from");
+                self.handle_pkb_trace(&merged_args)
+            }
+            "tree" => self.handle_get_dependency_tree(&merged_args),
+            "children" => self.handle_get_task_children(&merged_args),
+            "metrics" => self.handle_get_network_metrics(&merged_args),
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_pkb_batch_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("action is required"),
+            data: None,
+        })?;
+
+        let params = args.get("params").and_then(|v| v.as_object());
+        let mut merged_args = args.clone();
+        if let Some(obj) = params {
+            for (k, v) in obj {
+                merged_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match action {
+            "update" => self.handle_batch_update(&merged_args),
+            "reparent" => self.handle_batch_reparent(&merged_args),
+            "archive" => self.handle_batch_archive(&merged_args),
+            "merge" => self.handle_batch_merge(&merged_args),
+            "node_merge" => self.handle_merge_node(&merged_args),
+            "epics" => self.handle_batch_create_epics(&merged_args),
+            "reclassify" => self.handle_batch_reclassify(&merged_args),
+            "duplicates" => self.handle_find_duplicates(&merged_args),
+            "orphans" => self.handle_pkb_orphans(&merged_args),
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_pkb_stats_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("summary");
+
+        match action {
+            "summary" => self.handle_task_summary(args),
+            "graph_stats" => self.handle_graph_stats(args),
+            "graph_json" => self.handle_graph_json(args),
+            "tool_stats" => self.handle_get_stats(args),
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
     fn handle_list_prompts(&self) -> Result<ListPromptsResult, McpError> {
         fn required_arg(name: &str, description: &str) -> PromptArgument {
             PromptArgument::new(name)
@@ -3307,7 +3519,30 @@ impl ServerHandler for PkbSearchServer {
         let tool_name = request.name.clone();
 
         let args = Self::args_to_value(request.arguments);
+
+        // For consolidated tools, build a granular name for telemetry
+        let effective_name: String = match &*tool_name {
+            "manage_task" | "pkb_explore" | "pkb_batch" | "pkb_stats" | "create_document" => {
+                let sub = args
+                    .get("action")
+                    .or_else(|| args.get("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                format!("{tool_name}/{sub}")
+            }
+            other => other.to_string(),
+        };
+
         let result = match &*request.name {
+            // --- Consolidated Tools ---
+            "create_document" => self.handle_create_document_consolidated(&args),
+            "manage_task" => self.handle_manage_task_consolidated(&args),
+            "pkb_explore" => self.handle_pkb_explore_consolidated(&args),
+            "pkb_batch" => self.handle_pkb_batch_consolidated(&args),
+            "pkb_stats" => self.handle_pkb_stats_consolidated(&args),
+            "pkb_tool_help" => self.handle_pkb_tool_help(&args),
+
+            // --- Legacy / Granular Tools ---
             "search" => self.handle_pkb_search(&args),
             "get_document" => self.handle_get_document(&args),
             "list_documents" => self.handle_list_documents(&args),
@@ -3363,7 +3598,7 @@ impl ServerHandler for PkbSearchServer {
 
         crate::telemetry::record_call(
             &self.pkb_root,
-            &tool_name,
+            &effective_name,
             response_bytes,
             latency,
             is_error,
@@ -4126,6 +4361,98 @@ impl PkbSearchServer {
             )
             .with_title("Tool Usage Stats")
             .with_annotations(ToolAnnotations::new().read_only(true)),
+            // --- Consolidated (Progressive Disclosure) Tools ---
+            Tool::new(
+                "create_document",
+                "Create a new PKB node (task, subtask, memory, note, goal, project, epic). Dispatches on `type`.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "type": { "type": "string", "enum": ["task", "subtask", "memory", "note", "goal", "project", "epic"] },
+                        "title": { "type": "string" },
+                        "parent": { "type": "string", "description": "Parent ID (required for subtask)" },
+                        "fields": { "type": "object", "description": "Metadata: priority, tags, depends_on, assignee, etc." },
+                        "body": { "type": "string" }
+                    },
+                    "required": ["type", "title"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Create Document"),
+            Tool::new(
+                "manage_task",
+                "Lifecycle management for tasks: update, complete, release, or decompose.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "action": { "type": "string", "enum": ["update", "complete", "release", "decompose"] },
+                        "params": { "type": "object", "description": "Action-specific parameters (e.g. updates, summary, pr_url, subtasks)" }
+                    },
+                    "required": ["id", "action"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Manage Task")
+            .with_annotations(ToolAnnotations::new().idempotent(true)),
+            Tool::new(
+                "pkb_explore",
+                "Explore graph relationships: context, trace, tree, children, metrics.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "action": { "type": "string", "enum": ["context", "trace", "tree", "children", "metrics"] },
+                        "params": { "type": "object", "description": "Action-specific: e.g. {to: 'ID'} for trace, {recursive: true} for children" }
+                    },
+                    "required": ["id", "action"]
+                }))
+                .unwrap(),
+            )
+            .with_title("PKB Graph Explorer")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "pkb_batch",
+                "Bulk operations: update, reparent, archive, merge, node_merge, epics, reclassify, duplicates, orphans.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["update", "reparent", "archive", "merge", "node_merge", "epics", "reclassify", "duplicates", "orphans"] },
+                        "params": { "type": "object", "description": "Filters, updates, new_parent, merge_ids, etc." }
+                    },
+                    "required": ["action"]
+                }))
+                .unwrap(),
+            )
+            .with_title("PKB Batch Operations")
+            .with_annotations(ToolAnnotations::new().destructive(true)),
+            Tool::new(
+                "pkb_stats",
+                "System and graph status: summary, graph_stats, graph_json, tool_stats.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json", "tool_stats"] }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("PKB Statistics")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "pkb_tool_help",
+                "Get detailed schema and examples for consolidated tools.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tool": { "type": "string" },
+                        "action": { "type": "string" }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("PKB Tool Help")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
         ]
     }
 }
@@ -4492,6 +4819,7 @@ mod annotation_tests {
                     "batch_reparent",
                     "batch_merge",
                     "batch_reclassify",
+                    "manage_task",
                 ]
                 .contains(&&*tool.name);
 
