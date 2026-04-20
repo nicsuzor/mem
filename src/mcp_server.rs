@@ -523,6 +523,32 @@ impl PkbSearchServer {
                 .get("status")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            session_id: args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            issue_url: args
+                .get("issue_url")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            follow_up_tasks: args
+                .get("follow_up_tasks")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            release_summary: args
+                .get("release_summary")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            contributes_to: args
+                .get("contributes_to")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.clone())
+                .unwrap_or_default(),
         };
 
         // Hierarchy validation: tasks must have a parent
@@ -1191,6 +1217,8 @@ impl PkbSearchServer {
             "subtasks": subtask_nodes_sorted,
             "parent": parent,
             "goals": node.goals,
+            "contributes_to": node.contributes_to,
+            "follow_up_tasks": node.follow_up_tasks,
             "priority": node.priority.unwrap_or(2),
             "effective_priority": node.effective_priority.unwrap_or(node.priority.unwrap_or(2)),
             "downstream_weight": node.downstream_weight,
@@ -1356,6 +1384,11 @@ impl PkbSearchServer {
                 .get("waiting_since")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            contributes_to: args
+                .get("contributes_to")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.clone())
+                .unwrap_or_default(),
         };
 
         // Hierarchy validation: warn if task-like type without parent

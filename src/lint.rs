@@ -148,6 +148,7 @@ const KNOWN_KEYS: &[&str] = &[
     "archived_at",
     "classification",
     "metadata",
+    "contributes_to",
     "progress",
     // Mobile capture / triage workflow keys
     "processed",

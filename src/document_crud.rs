@@ -58,6 +58,7 @@ pub struct DocumentFields {
     pub supersedes: Option<String>,
     pub stakeholder: Option<String>,
     pub waiting_since: Option<String>,
+    pub contributes_to: Vec<serde_json::Value>,
     /// Override subdirectory placement (e.g. "notes", "projects")
     pub dir: Option<String>,
 }
@@ -86,6 +87,7 @@ pub struct TaskFields {
     pub issue_url: Option<String>,
     pub follow_up_tasks: Vec<String>,
     pub release_summary: Option<String>,
+    pub contributes_to: Vec<serde_json::Value>,
 }
 
 /// Fields for creating a new memory.
@@ -250,6 +252,17 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     if let Some(ref waiting_since) = fields.waiting_since {
         fm.push_str(&format!("waiting_since: {}\n", waiting_since));
+    }
+
+    if !fields.contributes_to.is_empty() {
+        if let Ok(yaml) = serde_yaml::to_string(&fields.contributes_to) {
+            fm.push_str("contributes_to:\n");
+            for line in yaml.trim_start_matches("---\n").lines() {
+                if !line.is_empty() {
+                    fm.push_str(&format!("  {}\n", line));
+                }
+            }
+        }
     }
 
     fm.push_str("---\n\n");
@@ -453,6 +466,24 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     if let Some(ref due) = fields.due {
         fm.push_str(&format!("due: {}\n", due));
+    }
+
+    if !fields.follow_up_tasks.is_empty() {
+        fm.push_str("follow_up_tasks:\n");
+        for task_id in &fields.follow_up_tasks {
+            fm.push_str(&format!("  - {}\n", task_id));
+        }
+    }
+
+    if !fields.contributes_to.is_empty() {
+        if let Ok(yaml) = serde_yaml::to_string(&fields.contributes_to) {
+            fm.push_str("contributes_to:\n");
+            for line in yaml.trim_start_matches("---\n").lines() {
+                if !line.is_empty() {
+                    fm.push_str(&format!("  {}\n", line));
+                }
+            }
+        }
     }
 
     fm.push_str("---\n\n");

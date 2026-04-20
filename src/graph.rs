@@ -110,6 +110,8 @@ pub struct GraphNode {
     pub project: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub goals: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub contributes_to: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -468,6 +470,12 @@ impl GraphNode {
             .as_ref()
             .map(|f| parse_string_array(f, "goals"))
             .unwrap_or_default();
+        let contributes_to = fm
+            .as_ref()
+            .and_then(|f| f.get("contributes_to"))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.clone())
+            .unwrap_or_default();
         let source = fm
             .as_ref()
             .and_then(|f| f.get("source").and_then(|v| v.as_str()).map(String::from));
@@ -598,6 +606,7 @@ impl GraphNode {
             priority,
             order,
             parent,
+            contributes_to,
             depends_on,
             soft_depends_on,
             blocks,
