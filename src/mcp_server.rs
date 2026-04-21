@@ -1602,7 +1602,8 @@ impl PkbSearchServer {
         // Truncate summary to 200 chars for title
         let mut title = summary.trim().replace('\n', " ");
         if title.len() > 200 {
-            let last_space = title[..200].rfind(' ').unwrap_or(200);
+            let end = title.floor_char_boundary(200);
+            let last_space = title[..end].rfind(' ').unwrap_or(end);
             title.truncate(last_space);
         }
         if title.is_empty() {
@@ -1649,22 +1650,28 @@ impl PkbSearchServer {
             data: None,
         })?;
 
+        // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4")
+        static ID_RE: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]{8}").unwrap());
+        let id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| {
+                ID_RE.find(s)
+                    .map(|m| m.as_str())
+                    .unwrap_or(s)
+            })
+            .unwrap_or("task-unknown")
+            .to_string();
+
         // Update graph and vector DB
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
-            let id = doc.id.clone();
             self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
-            Ok(id)
         } else {
-            // Fallback: extract ID from filename if parsing fails
-            let id = path.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.split('-').next().unwrap_or(s))
-                .unwrap_or("task-unknown")
-                .to_string();
             self.rebuild_graph();
-            Ok(id)
         }
+        Ok(id)
     }
 
     fn handle_release_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
