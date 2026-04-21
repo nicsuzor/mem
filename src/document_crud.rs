@@ -468,6 +468,21 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         fm.push_str(&format!("due: {}\n", due));
     }
 
+    if let Some(ref session_id) = fields.session_id {
+        fm.push_str(&format!("session_id: {}\n", session_id));
+    }
+
+    if let Some(ref issue_url) = fields.issue_url {
+        fm.push_str(&format!("issue_url: {}\n", issue_url));
+    }
+
+    if let Some(ref release_summary) = fields.release_summary {
+        fm.push_str(&format!(
+            "release_summary: \"{}\"\n",
+            release_summary.replace('"', "\\\"")
+        ));
+    }
+
     if !fields.follow_up_tasks.is_empty() {
         fm.push_str("follow_up_tasks:\n");
         for task_id in &fields.follow_up_tasks {

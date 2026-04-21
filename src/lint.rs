@@ -149,6 +149,10 @@ const KNOWN_KEYS: &[&str] = &[
     "classification",
     "metadata",
     "contributes_to",
+    "follow_up_tasks",
+    "session_id",
+    "issue_url",
+    "release_summary",
     "progress",
     // Mobile capture / triage workflow keys
     "processed",
