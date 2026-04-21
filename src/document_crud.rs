@@ -357,6 +357,28 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
 ///
 /// Returns the path to the created file. The filename is derived from the
 /// task ID and title (slugified).
+/// Ensure the well-known root node for ad-hoc sessions exists.
+/// If it doesn't exist, creates a new project document with ID "adhoc-sessions".
+pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
+    // Check if it already exists in projects/
+    let adhoc_path = root.join("projects").join("adhoc-sessions.md");
+    if adhoc_path.exists() {
+        return Ok(());
+    }
+
+    let fields = DocumentFields {
+        title: "Ad-hoc Sessions".to_string(),
+        doc_type: "project".to_string(),
+        id: Some("adhoc-sessions".to_string()),
+        status: Some("active".to_string()),
+        body: Some("# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n".to_string()),
+        ..Default::default()
+    };
+
+    create_document(root, fields)?;
+    Ok(())
+}
+
 pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     // parent is required — tasks must be linked to an existing node
     if fields.parent.as_deref().map(str::is_empty).unwrap_or(true) {
