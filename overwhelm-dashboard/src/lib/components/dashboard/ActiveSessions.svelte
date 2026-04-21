@@ -1,14 +1,16 @@
 <script lang="ts">
     import { projectColor, projectBgTint, projectBorderColor } from "../../data/projectUtils";
     import { toggleSelection } from "../../stores/selection";
-    
-    export let sessions: any[] = [];
-    export let pausedSessions: any[] = [];
-    export let staleSessions: any[] = [];
-    export let needsYou: any[] = [];
 
-    let showPaused = false;
-    let isSubmitting = false;
+    let { sessions = [], pausedSessions = [], staleSessions = [], needsYou = [] }: {
+        sessions?: any[];
+        pausedSessions?: any[];
+        staleSessions?: any[];
+        needsYou?: any[];
+    } = $props();
+
+    let showPaused = $state(false);
+    let isSubmitting = $state(false);
     let expandedSessions = $state<Record<string, boolean>>({});
 
     function toggleExpand(sessionId: string) {
@@ -94,7 +96,7 @@
             {@const extraPrompts = (session.prompts || []).slice(1)}
             <div class="bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors">
                 <div class="flex items-center gap-4 p-2 cursor-pointer"
-                     role="button" tabindex="0" on:click={() => toggleExpand(session.session_id)} on:keydown={(e) => { if(e.key === 'Enter') toggleExpand(session.session_id); }}>
+                     role="button" tabindex="0" onclick={() => toggleExpand(session.session_id)} onkeydown={(e) => { if(e.key === 'Enter') toggleExpand(session.session_id); }}>
                     <span class="text-[10px] text-primary/60 min-w-[55px]">{formatTimeAgo(session.started_at)}</span>
                     {#if session.project}
                         <span class="text-[10px] font-bold px-2 py-0.5"
@@ -132,7 +134,7 @@
     {#if pausedSessions.length > 0}
         <button
             class="flex items-center gap-2 text-[10px] font-bold tracking-widest text-primary/50 hover:text-primary transition-colors cursor-pointer border-t border-primary/10 pt-3"
-            on:click={() => showPaused = !showPaused}
+            onclick={() => showPaused = !showPaused}
         >
             <span class="material-symbols-outlined text-[14px]">{showPaused ? 'expand_less' : 'expand_more'}</span>
             PAUSED ({pausedSessions.length}) — 4-24h ago
@@ -141,7 +143,7 @@
             <div class="flex flex-col gap-1 opacity-60">
                 {#each pausedSessions.slice(0, 10) as session}
                     <div class="flex items-center gap-4 bg-primary/3 border-l border-primary/20 p-1.5 text-xs cursor-pointer hover:bg-primary/10"
-                         role="button" tabindex="0" on:click={() => { if(session.id) toggleSelection(session.id); }} on:keydown={(e) => { if(e.key === 'Enter' && session.id) toggleSelection(session.id); }}>
+                         role="button" tabindex="0" onclick={() => { if(session.id) toggleSelection(session.id); }} onkeydown={(e) => { if(e.key === 'Enter' && session.id) toggleSelection(session.id); }}>
                         <span class="text-[10px] text-primary/40 min-w-[55px]">{session.time_display}</span>
                         {#if session.project}
                             <span class="text-[10px] font-bold px-1.5 py-0.5"
@@ -180,14 +182,14 @@
                     <div class="flex items-center gap-2 shrink-0">
                         {#if session.id}
                             <button class="text-[10px] font-bold tracking-widest text-primary/50 hover:text-primary border border-primary/20 hover:border-primary/50 px-2 py-1 transition-colors"
-                                    on:click={() => toggleSelection(session.id)}>
+                                    onclick={() => toggleSelection(session.id)}>
                                 REVIEW
                             </button>
                         {/if}
                         {#if session.source === 'pkb'}
                             <button class="text-[10px] font-bold tracking-widest text-primary/30 hover:text-primary/60 px-2 py-1 transition-colors disabled:opacity-50"
                                     disabled={isSubmitting}
-                                    on:click={() => dismissStaleSession(session)}>
+                                    onclick={() => dismissStaleSession(session)}>
                                 DISMISS
                             </button>
                         {/if}
