@@ -4075,7 +4075,7 @@ impl PkbSearchServer {
             .with_title("Complete Task"),
             Tool::new(
                 "release_task",
-                "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled). Use instead of update_task for state transitions to ensure work history is captured.",
+                "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
