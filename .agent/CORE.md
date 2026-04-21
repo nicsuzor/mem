@@ -42,7 +42,7 @@ src/
 - `create_subtask` — subtask under a parent
 - `update_task` — patch frontmatter fields
 - `complete_task` — set status=done
-- `release_task` — terminal status release and session handover (populates session_id, pr_url, follow_up_tasks, release_summary); handles ad-hoc creation if ID omitted
+- `release_task` — terminal status release and session handover (populates session_id, pr_url, issue_url, follow_up_tasks, release_summary); handles ad-hoc creation if ID omitted
 - `decompose_task` — batch create subtasks under a parent
 - `get_dependency_tree` — upstream/downstream dependency tree
 - `get_task_children` — direct/recursive children with completion counts
