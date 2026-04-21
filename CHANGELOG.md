@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9](https://github.com/nicsuzor/mem/compare/v0.3.8...v0.3.9) - 2026-04-21
+
+### Added
+
+- *(lint)* replace task-no-parent type check with scope-aware severity ([#211](https://github.com/nicsuzor/mem/pull/211))
+- status filter bar + node colouring by status/project ([#209](https://github.com/nicsuzor/mem/pull/209))
+- *(mcp)* release_task writes session_id, issue_url, and follow-ups ([#207](https://github.com/nicsuzor/mem/pull/207))
+- rename ForceViewV2 → GroupsView, drop MetroViewV2, add legend counts
+- *(mcp)* enrich tool exposures with annotations and titles ([#198](https://github.com/nicsuzor/mem/pull/198))
+- *(mcp)* add prompts for essential search patterns ([#199](https://github.com/nicsuzor/mem/pull/199))
+- *(lint)* replace task-no-parent type check with scope-aware severity ([#195](https://github.com/nicsuzor/mem/pull/195))
+- propagate effective_priority through graph; fix list_tasks filter ([#204](https://github.com/nicsuzor/mem/pull/204))
+- add project filter parameter to list_tasks MCP tool ([#193](https://github.com/nicsuzor/mem/pull/193))
+- add ForceViewV2 and MetroViewV2, slim TreemapView, update routing
+- *(mcp)* add release_task tool for structured task handoff
+- add goals field to frontmatter schema ([#177](https://github.com/nicsuzor/mem/pull/177))
+- *(dashboard)* split Force/Metro views, add recency emphasis and progressive labels
+- *(dashboard)* organic force layout and tri-state filters
+- *(mcp)* switch get_document to ID-based lookup ([#175](https://github.com/nicsuzor/mem/pull/175))
+- *(dashboard)* overhaul force map epic grouping and layout ([#168](https://github.com/nicsuzor/mem/pull/168))
+- *(graph)* add computed properties scope, uncertainty, criticality ([#172](https://github.com/nicsuzor/mem/pull/172))
+- *(ci)* add gemini workflows and commands
+- *(graph)* edge-typed cycle detection via Tarjan's SCC ([#173](https://github.com/nicsuzor/mem/pull/173))
+- unify type system — collapse to 4 actionable types ([#169](https://github.com/nicsuzor/mem/pull/169))
+- add stakeholder waiting urgency to focus scoring ([#167](https://github.com/nicsuzor/mem/pull/167))
+
+### Fixed
+
+- *(mcp)* support contributes_to and other complex frontmatter fields ([#210](https://github.com/nicsuzor/mem/pull/210))
+- fix dash
+- *(mcp)* restore compilation on main — CI has been red for 3+ days ([#208](https://github.com/nicsuzor/mem/pull/208))
+- *(mcp)* accept project/type/status in create_task and return structured JSON ([#194](https://github.com/nicsuzor/mem/pull/194))
+- *(mcp)* incremental graph update optimizations and ID change handling ([#200](https://github.com/nicsuzor/mem/pull/200))
+- fix leak svg
+- fixtiny treemap
+- fix tiny treemap
+- *(dashboard)* resolve build errors and optimize structural collapse logic
+- *(dashboard)* resolve ForceView constraints and add randomize functionality ([#187](https://github.com/nicsuzor/mem/pull/187))
+- *(mcp)* skip vector index update when reindex holds the lock ([#186](https://github.com/nicsuzor/mem/pull/186))
+- *(mem)* filter body from YAML frontmatter writes in update_document() ([#183](https://github.com/nicsuzor/mem/pull/183))
+- *(dashboard)* restore named constants and intermediates in ForceView ([#181](https://github.com/nicsuzor/mem/pull/181))
+- *(mcp)* improve update_task tool description with type warning
+- *(dashboard)* remove unused FORCE_CONFIG import
+- *(dashboard)* restore webcola grouping constraints
+- *(dashboard)* remove data fallbacks, enforce fail-fast pipeline ([#176](https://github.com/nicsuzor/mem/pull/176))
+
+### Other
+
+- T4 IMPL (mem): release_task auto-creates ad-hoc task when no id bound ([#212](https://github.com/nicsuzor/mem/pull/212))
+- typo
+- *(mem)* YAML frontmatter extension for session handover ([#206](https://github.com/nicsuzor/mem/pull/206))
+- Radically simplify MCP tool surface + docs ([#197](https://github.com/nicsuzor/mem/pull/197))
+- Add usage telemetry to MCP server and pkb stats CLI command ([#202](https://github.com/nicsuzor/mem/pull/202))
+- Compute project field from nearest project ancestor and ignore frontmatter ([#201](https://github.com/nicsuzor/mem/pull/201))
+- integrate extra branch
+- partially clarify metro
+- overflow
+- ui changes
+- update ui
+- resume don't reset
+- ui
+- rename
+- metro
+- adjustmnets
+- groups work!
+- layout works
+- force graph showing again
+- recover crash
+- *(dashboard)* radically simplify ForceView — remove edges, hover, seeding (731→370 lines)
+- Add effort and consequence fields to PKB data model ([#189](https://github.com/nicsuzor/mem/pull/189))
+- Wire 'due' through create_task and handle_decompose_task in PKB server ([#188](https://github.com/nicsuzor/mem/pull/188))
+- add user expectations to planning-web umbrella spec ([#185](https://github.com/nicsuzor/mem/pull/185))
+- *(dashboard)* radically simplify ForceView (731→370 lines) ([#184](https://github.com/nicsuzor/mem/pull/184))
+- *(dashboard)* simplify ForceView — extract helpers, remove dead code ([#178](https://github.com/nicsuzor/mem/pull/178))
+- install PR reviewer agent with fix authority + runtime axiom loading (PR #465) ([#174](https://github.com/nicsuzor/mem/pull/174))
+- read agent prompts from origin/main, not the PR branch ([#171](https://github.com/nicsuzor/mem/pull/171))
+- replace pr-reviewer with three-agent review suite ([#170](https://github.com/nicsuzor/mem/pull/170))
+
 ## [0.3.8](https://github.com/nicsuzor/mem/compare/v0.3.7...v0.3.8) - 2026-04-02
 
 ### Added
