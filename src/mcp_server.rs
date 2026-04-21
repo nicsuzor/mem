@@ -1595,15 +1595,89 @@ impl PkbSearchServer {
     }
 
     /// Release a task to a handoff/terminal status with required summary.
+    /// Create an ad-hoc task for a session release when no ID is provided.
+    fn create_adhoc_task(&self, args: &JsonValue) -> Result<String, McpError> {
+        let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+        
+        // Truncate summary to 200 chars for title
+        let mut title = summary.trim().replace('\n', " ");
+        if title.len() > 200 {
+            let last_space = title[..200].rfind(' ').unwrap_or(200);
+            title.truncate(last_space);
+        }
+        if title.is_empty() {
+            title = "Ad-hoc Session Task".to_string();
+        }
+
+        // Ensure adhoc-sessions root exists
+        crate::document_crud::ensure_adhoc_sessions_root(&self.pkb_root).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to ensure adhoc-sessions root: {e}")),
+            data: None,
+        })?;
+
+        // Rebuild graph if adhoc-sessions is missing from memory
+        {
+            let graph = self.graph.read();
+            if graph.resolve("adhoc-sessions").is_none() {
+                drop(graph);
+                self.rebuild_graph();
+            }
+        }
+
+        let fields = crate::document_crud::TaskFields {
+            title,
+            parent: Some("adhoc-sessions".to_string()),
+            tags: vec!["adhoc".to_string(), "session-release".to_string()],
+            session_id: args.get("session_id").and_then(|v| v.as_str()).map(String::from),
+            issue_url: args.get("issue_url").and_then(|v| v.as_str()).map(String::from),
+            release_summary: args.get("release_summary").and_then(|v| v.as_str()).map(String::from),
+            follow_up_tasks: args.get("follow_up_tasks")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+
+        let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to create ad-hoc task: {e}")),
+            data: None,
+        })?;
+
+        // Update graph and vector DB
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            let id = doc.id.clone();
+            self.rebuild_graph_for_pkb_document(&doc);
+            self.try_upsert_document(&doc);
+            Ok(id)
+        } else {
+            // Fallback: extract ID from filename if parsing fails
+            let id = path.file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.split('-').next().unwrap_or(s))
+                .unwrap_or("task-unknown")
+                .to_string();
+            self.rebuild_graph();
+            Ok(id)
+        }
+    }
+
     fn handle_release_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let id = args
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: id"),
-                data: None,
-            })?;
+        let mut created_id = None;
+        let id_val = match args.get("id").and_then(|v| v.as_str()) {
+            Some(id) if !id.is_empty() => id.to_string(),
+            _ => {
+                let nid = self.create_adhoc_task(args)?;
+                created_id = Some(nid.clone());
+                nid
+            }
+        };
+        let id = &id_val;
 
         let status = args
             .get("status")
@@ -1827,12 +1901,23 @@ impl PkbSearchServer {
             }
         }
 
-        let mut response = format!("Released: {} → {} (`{}`)", label, status, id);
+        let mut response_text = format!("Released: {} → {} (`{}`)", label, status, id);
         for w in &warnings {
-            response.push_str(&format!("\n{w}"));
+            response_text.push_str(&format!("\n{w}"));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(response)]))
+        if let Some(nid) = created_id {
+            let json = serde_json::json!({
+                "status": "success",
+                "message": response_text,
+                "created_id": nid,
+            });
+            Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&json).unwrap_or_default(),
+            )]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(response_text)]))
+        }
     }
 
     // =========================================================================
@@ -3987,7 +4072,7 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title)" },
+                        "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title). If omitted, an ad-hoc task is created." },
                         "status": {
                             "type": "string",
                             "enum": ["merge_ready", "done", "review", "blocked", "cancelled"],
@@ -4003,7 +4088,7 @@ impl PkbSearchServer {
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
                         "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." }
                     },
-                    "required": ["id", "status", "summary"]
+                    "required": ["status", "summary"]
                 }))
                 .unwrap(),
             )
