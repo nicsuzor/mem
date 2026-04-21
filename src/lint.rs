@@ -774,6 +774,7 @@ fn check_frontmatter(
         // A node with children (scope > 0) but no parent is likely a structural gap.
         // A standalone leaf with no parent is valid under the information-theoretic model.
         if node_type == "task" || node_type == "epic" {
+            let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if !fm.contains_key("parent") {
                 let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let has_children = children_set
@@ -1330,6 +1331,67 @@ pub fn lint_directory(
         for (old_id, new_id) in &id_renames {
             let _ = rename_id(pkb_root, old_id, new_id);
         }
+
+        // Rebuild context maps — IDs have changed so the pre-rename maps are stale.
+        // Without this, ref checks produce false positives and task-no-parent severity
+        // is wrong for any node whose ID was just renamed.
+        let known_ids: Option<HashSet<String>> = if check_refs {
+            let ids: HashSet<String> = files
+                .par_iter()
+                .filter_map(|p| {
+                    let content = std::fs::read_to_string(p).ok()?;
+                    let matter = Matter::<YAML>::new();
+                    let parsed = matter.parse(&content);
+                    parsed.data.as_ref().and_then(|d| {
+                        let fm: serde_json::Value = d.deserialize().ok()?;
+                        let mut ids = Vec::new();
+                        if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
+                            ids.push(id.to_string());
+                        }
+                        if let Some(stem) = p.file_stem() {
+                            ids.push(stem.to_string_lossy().to_string());
+                        }
+                        if let Some(pl) = fm.get("permalink").and_then(|v| v.as_str()) {
+                            ids.push(pl.to_string());
+                        }
+                        for key in &["alias", "aliases"] {
+                            if let Some(arr) = fm.get(*key).and_then(|v| v.as_array()) {
+                                for item in arr {
+                                    if let Some(s) = item.as_str() {
+                                        ids.push(s.to_string());
+                                    }
+                                }
+                            } else if let Some(s) = fm.get(*key).and_then(|v| v.as_str()) {
+                                ids.push(s.to_string());
+                            }
+                        }
+                        Some(ids)
+                    })
+                })
+                .flatten()
+                .collect();
+            Some(ids)
+        } else {
+            None
+        };
+        let ancestor_map: AncestorMap = files
+            .par_iter()
+            .filter_map(|p| {
+                let content = std::fs::read_to_string(p).ok()?;
+                let matter = Matter::<YAML>::new();
+                let parsed = matter.parse(&content);
+                let fm = parsed.data.as_ref()
+                    .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
+                let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
+                let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
+                let doc_type = fm.get("type").and_then(|v| v.as_str()).map(String::from);
+                Some((id, (parent, doc_type)))
+            })
+            .collect();
+        let children_set: ChildrenSet = ancestor_map
+            .values()
+            .filter_map(|(parent_id, _)| parent_id.clone())
+            .collect();
 
         // Return fresh results after renames (cycle diagnostics still apply)
         let mut results: Vec<FileResult> = files
