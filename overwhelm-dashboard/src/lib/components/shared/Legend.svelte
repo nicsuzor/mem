@@ -8,13 +8,6 @@
     let showAllProjects = false;
     const MAX_VISIBLE_PROJECTS = 6;
 
-    // Status = fill color (muted defaults, saturated for attention)
-    const statusGroups = [
-        { key: 'statusActive', label: 'ACTIVE', color: '#2C4A88' },
-        { key: 'statusBlocked', label: 'BLOCKED', color: '#6B3A3A' },
-        { key: 'statusCompleted', label: 'COMPLETED', color: '#1E1E24' },
-    ] as const;
-
     // Priority = border color — now interactive (click to cycle)
     const priorityItems = PRIORITIES.map(p => ({
         key: `priority${p.value}`,
@@ -27,6 +20,18 @@
         { key: 'edgeParent', label: 'PARENT', color: '#facc15', dash: false },
         { key: 'edgeDependencies', label: 'DEPENDENCIES', color: '#ef4444', dash: false },
         { key: 'edgeReferences', label: 'REFERENCES', color: '#a3a3a3', dash: true },
+    ] as const;
+
+    const metroEdgeTypes = [
+        { key: 'edgeParent', label: 'PARENT / HIERARCHY', color: '#42d4f4', dash: false, note: 'Orthogonal project-colored hierarchy link' },
+        { key: 'edgeDependencies', label: 'DEPENDENCY', color: '#f59e0b', dash: true, note: 'Amber dashed dependency with arrow' },
+        { key: 'edgeReferences', label: 'REFERENCE / CONTEXT', color: '#6b7280', dash: true, note: 'Thin grey contextual link' },
+    ] as const;
+
+    const metroNodeTypes = [
+        { label: 'TASK', description: 'Circle. Project color; size tracks downstream weight.', sampleClass: 'sample-task' },
+        { label: 'P0 / P1 TASK', description: 'Same task node with explicit priority border.', sampleClass: 'sample-task-priority' },
+        { label: 'EPIC', description: 'Square structural task. Project nodes are omitted in this view.', sampleClass: 'sample-epic' },
     ] as const;
 
     function cycleFilter(key: string) {
@@ -63,6 +68,28 @@
         return '○';
     }
 
+    $: isMetroLegend = $viewSettings.viewMode === 'Metro';
+
+    $: nodeCounts = $graphData ? (() => {
+        const nodes = $graphData.nodes;
+        return {
+            priority0: nodes.filter(n => n.priority === 0).length,
+            priority1: nodes.filter(n => n.priority === 1).length,
+            priority2: nodes.filter(n => n.priority === 2).length,
+            priority3: nodes.filter(n => n.priority === 3).length,
+            priority4: nodes.filter(n => n.priority === 4).length,
+        };
+    })() : null;
+
+    $: edgeCounts = $graphData ? (() => {
+        const links = $graphData.links;
+        return {
+            edgeParent: links.filter((l: any) => l.type === 'parent').length,
+            edgeDependencies: links.filter((l: any) => l.type === 'depends_on').length,
+            edgeReferences: links.filter((l: any) => l.type === 'ref' || l.type === 'soft_depends_on').length,
+        };
+    })() : null;
+
     $: availableProjects = $graphData
         ? Array.from(new Set($graphData.nodes.map((n) => n.project).filter((p): p is string => !!p))).sort()
         : [];
@@ -85,24 +112,6 @@
                 </button>
             </div>
 
-            <!-- Status filters (click to cycle: bright → half → hidden) -->
-            <div class="legend-section">
-                <span class="legend-section-title">STATUS</span>
-                {#each statusGroups as group}
-                    {@const vis = $filters[group.key as keyof typeof $filters] as VisibilityState}
-                    <button
-                        class="legend-item"
-                        class:dimmed={vis === 'hidden'}
-                        on:click={() => cycleFilter(group.key)}
-                        title="Click to cycle: bright → half → hidden"
-                    >
-                        <div class="legend-box" style="background:{group.color}; opacity:{edgeOpacityForLegend(vis)};"></div>
-                        <span class="legend-label">{group.label}</span>
-                        <span class="edge-state">{stateLabel(vis)}</span>
-                    </button>
-                {/each}
-            </div>
-
             <!-- Priority filter (click to cycle: bright → half → hidden) -->
             <div class="legend-section">
                 <span class="legend-section-title">PRIORITY</span>
@@ -114,8 +123,8 @@
                         on:click={() => cycleFilter(p.key)}
                         title="Click to cycle: bright → half → hidden"
                     >
-                        <div class="legend-box" style="background:transparent; border: 2px solid {p.color}; opacity:{edgeOpacityForLegend(vis)};"></div>
-                        <span class="legend-label">{p.label}</span>
+                        <div class="legend-box" style="background:rgba(10, 14, 20, 0.92); border: 2px solid {p.color}; opacity:{edgeOpacityForLegend(vis)};"></div>
+                        <span class="legend-label">{p.label}{nodeCounts ? ` [${nodeCounts[p.key as keyof typeof nodeCounts]}]` : ''}</span>
                         <span class="edge-state">{stateLabel(vis)}</span>
                     </button>
                 {/each}
@@ -124,7 +133,7 @@
             <!-- Edge visibility (click to cycle: bright → half → hidden) -->
             <div class="legend-section">
                 <span class="legend-section-title">EDGES</span>
-                {#each edgeTypes as edge}
+                {#each (isMetroLegend ? metroEdgeTypes : edgeTypes) as edge}
                     {@const vis = $filters[edge.key as keyof typeof $filters] as VisibilityState}
                     <button
                         class="legend-item"
@@ -134,11 +143,29 @@
                     >
                         <div class="legend-line" style="background:{edge.color}; opacity:{edgeOpacityForLegend(vis)};"
                             class:dashed={edge.dash}></div>
-                        <span class="legend-label">{edge.label}</span>
+                        <span class="legend-label">{edge.label}{!isMetroLegend && edgeCounts ? ` [${edgeCounts[edge.key as keyof typeof edgeCounts]}]` : ''}</span>
                         <span class="edge-state">{stateLabel(vis)}</span>
                     </button>
+                    {#if isMetroLegend && 'note' in edge}
+                        <div class="legend-note">{edge.note}</div>
+                    {/if}
                 {/each}
             </div>
+
+            {#if isMetroLegend}
+                <div class="legend-section">
+                    <span class="legend-section-title">NODES</span>
+                    {#each metroNodeTypes as station}
+                        <div class="legend-item legend-static-item">
+                            <div class={`legend-node-sample ${station.sampleClass}`}></div>
+                            <div class="legend-copy">
+                                <span class="legend-label">{station.label}</span>
+                                <span class="legend-note legend-note-inline">{station.description}</span>
+                            </div>
+                        </div>
+                    {/each}
+                </div>
+            {/if}
 
             <!-- Project filter with color swatches -->
             <div class="legend-section">
@@ -278,6 +305,25 @@
         transition: opacity 0.15s;
     }
 
+    .legend-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        min-width: 0;
+    }
+
+    .legend-note {
+        font-size: 8px;
+        color: color-mix(in srgb, var(--color-primary) 42%, transparent);
+        letter-spacing: 0.04em;
+        text-transform: none;
+        padding-left: 24px;
+    }
+
+    .legend-note-inline {
+        padding-left: 0;
+    }
+
     .legend-box {
         width: 12px;
         height: 12px;
@@ -304,6 +350,43 @@
         border-top: 3px dashed;
         border-color: inherit;
         height: 0;
+    }
+
+    .legend-static-item {
+        cursor: default;
+    }
+
+    .legend-static-item:hover {
+        background: none;
+    }
+
+    .legend-node-sample {
+        flex: 0 0 auto;
+        position: relative;
+    }
+
+    .sample-task {
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        background: #42d4f4;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+    }
+
+    .sample-task-priority {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        background: #42d4f4;
+        border: 2px solid #dc3545;
+    }
+
+    .sample-epic {
+        width: 13px;
+        height: 13px;
+        border-radius: 0;
+        background: #42d4f4;
+        border: 1px solid rgba(255, 255, 255, 0.18);
     }
 
     .edge-state {

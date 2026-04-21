@@ -522,6 +522,13 @@ enum Commands {
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
     },
+
+    /// Show MCP tool usage telemetry
+    Stats {
+        /// Sort by: count (default), bytes, latency, errors
+        #[arg(short, long, default_value = "count")]
+        sort: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2727,6 +2734,46 @@ async fn main() -> Result<()> {
             }
         }
 
+        Commands::Stats { sort } => {
+            let stats = mem::telemetry::get_stats(&pkb_root);
+            if stats.is_empty() {
+                println!("No telemetry data found.");
+                return Ok(());
+            }
+
+            let mut entries: Vec<_> = stats.into_iter().collect();
+            match sort.as_str() {
+                "bytes" => entries.sort_by(|a, b| b.1.total_bytes.cmp(&a.1.total_bytes)),
+                "latency" => entries.sort_by(|a, b| b.1.total_latency_ms.cmp(&a.1.total_latency_ms)),
+                "errors" => entries.sort_by(|a, b| b.1.error_count.cmp(&a.1.error_count)),
+                _ => entries.sort_by(|a, b| b.1.count.cmp(&a.1.count)),
+            }
+
+            println!();
+            println!(
+                "  \x1b[1m{:<24} {:>8} {:>12} {:>12} {:>8}\x1b[0m",
+                "TOOL", "CALLS", "TOTAL BYTES", "AVG LATENCY", "ERRORS"
+            );
+            println!("  {}", "-".repeat(68));
+
+            for (name, s) in entries {
+                let avg_latency = if s.count > 0 {
+                    s.total_latency_ms / s.count as u128
+                } else {
+                    0
+                };
+                println!(
+                    "  {:<24} {:>8} {:>12} {:>10}ms {:>8}",
+                    name,
+                    s.count,
+                    format_bytes(s.total_bytes),
+                    avg_latency,
+                    s.error_count
+                );
+            }
+            println!();
+        }
+
         Commands::Mcp { http, port, host } => {
             let embedder = embedder.unwrap();
             let store = store.unwrap();
@@ -3337,6 +3384,16 @@ fn extract_id_from_path(path: &std::path::Path) -> String {
         .unwrap_or_else(|| stem.to_string())
 }
 
+
+fn format_bytes(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
 
 fn score_to_bar(score: f32) -> String {
     let normalized = ((score + 1.0) / 2.0).clamp(0.0, 1.0);

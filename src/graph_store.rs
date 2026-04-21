@@ -69,9 +69,34 @@ impl GraphStore {
     /// 5. Compute downstream_weight + stakeholder_exposure (BFS)
     /// 6. Classify ready/blocked tasks
     pub fn build(docs: &[PkbDocument], pkb_root: &Path) -> Self {
-        // 1. Extract graph nodes
-        let mut nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
+        let nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
+        Self::build_internal(nodes, pkb_root)
+    }
 
+    /// Build from a directory: scan, parse (with relative paths), build graph.
+    pub fn build_from_directory(root: &Path) -> Self {
+        let files = crate::pkb::scan_directory_all(root);
+        let docs: Vec<PkbDocument> = files
+            .par_iter()
+            .filter_map(|p| crate::pkb::parse_file_relative(p, root))
+            .collect();
+        Self::build(&docs, root)
+    }
+
+    /// Rebuild graph from existing nodes (avoids re-scanning/re-parsing all files).
+    ///
+    /// Takes the current node map, rebuilds all edges, metrics, and indices.
+    /// Use after updating/inserting/removing a single node to avoid a full
+    /// directory walk.
+    pub fn rebuild_from_nodes(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
+        let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
+        Self::build_internal(nodes_vec, pkb_root)
+    }
+
+    /// Internal helper to build GraphStore from a vector of nodes.
+    ///
+    /// This is the core pipeline shared by build() and rebuild_from_nodes().
+    fn build_internal(mut nodes: Vec<GraphNode>, pkb_root: &Path) -> Self {
         // 2. Build lookup maps
         // Node paths may be relative — reconstruct absolute for canonicalize & link resolution
         let mut id_map: HashMap<String, String> = HashMap::new(); // permalink -> abs_path
@@ -123,8 +148,11 @@ impl GraphStore {
         // 6. Compute centrality metrics (PageRank, betweenness)
         compute_centrality_metrics(&mut nodes, &edges);
 
-        // 7. Compute downstream metrics (BFS through blocks/soft_blocks)
+        // 7. Compute downstream metrics (BFS through blocks/soft_blocks/children)
         compute_downstream_metrics(&mut nodes);
+
+        // 7b. Compute effective_priority (min priority in downstream cone)
+        compute_effective_priority(&mut nodes);
 
         // 8. Compute derived properties: scope, uncertainty, criticality
         compute_scope(&mut nodes);
@@ -159,97 +187,6 @@ impl GraphStore {
             blocked,
             roots,
             resolution_map,
-
-        }
-    }
-
-    /// Build from a directory: scan, parse (with relative paths), build graph.
-    pub fn build_from_directory(root: &Path) -> Self {
-        let files = crate::pkb::scan_directory_all(root);
-        let docs: Vec<PkbDocument> = files
-            .par_iter()
-            .filter_map(|p| crate::pkb::parse_file_relative(p, root))
-            .collect();
-        Self::build(&docs, root)
-    }
-
-    /// Rebuild graph from existing nodes (avoids re-scanning/re-parsing all files).
-    ///
-    /// Takes the current node map, rebuilds all edges, metrics, and indices.
-    /// Use after updating/inserting/removing a single node to avoid a full
-    /// directory walk.
-    pub fn rebuild_from_nodes(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
-        let mut nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
-
-        // Build lookup maps (same as build() steps 2-3)
-        let mut id_map: HashMap<String, String> = HashMap::new();
-        let mut path_to_id: HashMap<String, String> = HashMap::new();
-
-        for n in &nodes_vec {
-            let full_path = if n.path.is_absolute() {
-                n.path.clone()
-            } else {
-                pkb_root.join(&n.path)
-            };
-            let abs_path = full_path
-                .canonicalize()
-                .unwrap_or(full_path)
-                .to_string_lossy()
-                .to_string();
-            path_to_id.insert(abs_path.clone(), n.id.clone());
-            for key in &n.permalinks {
-                id_map.insert(key.clone(), abs_path.clone());
-            }
-        }
-
-        // Rebuild edges
-        let edges: Vec<Edge> = nodes_vec
-            .par_iter()
-            .flat_map(|n| build_node_edges(n, &id_map, &path_to_id, pkb_root))
-            .collect();
-
-        let mut seen: HashSet<(String, String, String)> = HashSet::new();
-        let edges: Vec<Edge> = edges
-            .into_iter()
-            .filter(|e| {
-                let key = (
-                    e.source.clone(),
-                    e.target.clone(),
-                    format!("{:?}", e.edge_type),
-                );
-                seen.insert(key)
-            })
-            .collect();
-
-        // Recompute all metrics (steps 4-9)
-        compute_inverses(&mut nodes_vec, &edges);
-        compute_degree_metrics(&mut nodes_vec, &edges);
-        compute_centrality_metrics(&mut nodes_vec, &edges);
-        compute_downstream_metrics(&mut nodes_vec);
-        compute_scope(&mut nodes_vec);
-        compute_uncertainty(&mut nodes_vec);
-        compute_criticality(&mut nodes_vec);
-        Self::compute_focus_scores(&mut nodes_vec);
-        compute_project_field(&mut nodes_vec);
-
-        let reachable_set = find_reachable_set(&nodes_vec, &edges);
-        for node in &mut nodes_vec {
-            node.reachable = reachable_set.contains(&node.id);
-        }
-
-        let node_map: HashMap<String, GraphNode> =
-            nodes_vec.into_iter().map(|n| (n.id.clone(), n)).collect();
-        let (ready, blocked, roots) = classify_tasks(&node_map);
-        let resolution_map = build_resolution_map(&node_map);
-
-        GraphStore {
-            nodes: node_map,
-            edges,
-            ready,
-            blocked,
-            roots,
-            resolution_map,
-
         }
     }
 
@@ -830,7 +767,7 @@ fn compute_focus_scores(nodes: &mut [GraphNode]) {
                 let effort_days = node
                     .effort
                     .as_deref()
-                    .and_then(parse_effort_days)
+                    .and_then(GraphStore::parse_effort_days)
                     .unwrap_or(3);
 
                 let mut deadline_score = if days_until < 0 {
@@ -1285,10 +1222,10 @@ fn compute_centrality_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
 }
 
 /// Compute the `project` field for each node by walking up the parent chain
-/// to find the nearest ancestor with `node_type == "project"` OR an explicit `project` field.
+/// to find the nearest ancestor with `node_type == "project"`.
 fn compute_project_field(nodes: &mut [GraphNode]) {
-    // Build id -> (parent, node_type, label, explicit_project) lookup
-    let info: HashMap<String, (Option<String>, Option<String>, String, Option<String>)> = nodes
+    // Build id -> (parent, node_type, label) lookup
+    let info: HashMap<String, (Option<String>, Option<String>, String)> = nodes
         .iter()
         .map(|n| {
             (
@@ -1297,40 +1234,29 @@ fn compute_project_field(nodes: &mut [GraphNode]) {
                     n.parent.clone(),
                     n.node_type.clone(),
                     n.label.clone(),
-                    n.project.clone(),
                 ),
             )
         })
         .collect();
 
     for node in nodes.iter_mut() {
-        // 1. If this node IS a project, its own project is its own label (overrides any explicit project field)
+        // 1. If this node IS a project, its own project is its own label
         if node.node_type.as_deref() == Some("project") {
             node.project = Some(node.label.clone());
             continue;
         }
 
-        // 2. If it already has an explicit project field from frontmatter, keep it
-        if node.project.is_some() {
-            continue;
-        }
-
-        // 3. Walk up parent chain
+        // 2. Walk up parent chain
         let mut current = node.parent.clone();
         let mut depth = 0;
         while let Some(ref pid) = current {
-            if depth > 50 {
+            if depth > 100 {
                 break; // cycle guard
             }
-            if let Some((parent, ntype, label, explicit_project)) = info.get(pid) {
+            if let Some((parent, ntype, label)) = info.get(pid) {
                 // Ancestor is a project node
                 if ntype.as_deref() == Some("project") {
                     node.project = Some(label.clone());
-                    break;
-                }
-                // Ancestor has its own project field (inherited or explicit)
-                if let Some(ref proj) = explicit_project {
-                    node.project = Some(proj.clone());
                     break;
                 }
                 current = parent.clone();
@@ -1387,7 +1313,7 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
         .map(|n| n.id.clone())
         .collect();
 
-    // Snapshot blocks/soft_blocks to avoid borrow issues
+    // Snapshot blocks/soft_blocks/children to avoid borrow issues
     let blocks_map: HashMap<String, Vec<String>> = nodes
         .iter()
         .map(|n| (n.id.clone(), n.blocks.clone()))
@@ -1396,6 +1322,10 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
         .iter()
         .map(|n| (n.id.clone(), n.soft_blocks.clone()))
         .collect();
+    let children_map: HashMap<String, Vec<String>> = nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.children.clone()))
+        .collect();
 
     let all_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
 
@@ -1403,42 +1333,47 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
         let mut total_weight: f64 = 0.0;
         let mut has_stakeholder = false;
         let mut visited: HashSet<String> = HashSet::new();
-        let mut queue: Vec<(String, u32, bool)> = Vec::new();
+        // Queue: (id, depth, edge_factor) where edge_factor < 1.0 for soft/child edges
+        let mut queue: Vec<(String, u32, f64)> = Vec::new();
 
-        // Seed with direct blocks
+        let status_ok = |id: &str| -> bool {
+            id_to_idx
+                .get(id)
+                .and_then(|&idx| nodes[idx].status.as_deref())
+                .map(|s| !excluded.contains(s))
+                .unwrap_or(false)
+        };
+
+        // Seed with direct blocks, soft_blocks, and children
         if let Some(blocked) = blocks_map.get(start_id) {
             for bid in blocked {
-                let status_ok = id_to_idx
-                    .get(bid)
-                    .and_then(|&idx| nodes[idx].status.as_deref())
-                    .map(|s| !excluded.contains(s))
-                    .unwrap_or(false);
-                if status_ok {
-                    queue.push((bid.clone(), 1, false));
+                if status_ok(bid) {
+                    queue.push((bid.clone(), 1, 1.0));
                 }
             }
         }
         if let Some(soft_blocked) = soft_blocks_map.get(start_id) {
             for sbid in soft_blocked {
-                let status_ok = id_to_idx
-                    .get(sbid)
-                    .and_then(|&idx| nodes[idx].status.as_deref())
-                    .map(|s| !excluded.contains(s))
-                    .unwrap_or(false);
-                if status_ok {
-                    queue.push((sbid.clone(), 1, true));
+                if status_ok(sbid) {
+                    queue.push((sbid.clone(), 1, 0.3));
+                }
+            }
+        }
+        if let Some(ch) = children_map.get(start_id) {
+            for cid in ch {
+                if status_ok(cid) {
+                    queue.push((cid.clone(), 1, 0.5));
                 }
             }
         }
 
-        while let Some((tid, depth, is_soft)) = queue.pop() {
+        while let Some((tid, depth, edge_factor)) = queue.pop() {
             if !visited.insert(tid.clone()) {
                 continue;
             }
             if let Some(&bw) = base_weights.get(&tid) {
                 let depth_decay = 1.0 / (depth as f64);
-                let soft_factor = if is_soft { 0.3 } else { 1.0 };
-                total_weight += depth_decay * bw * soft_factor;
+                total_weight += depth_decay * bw * edge_factor;
             }
             if has_due.contains(&tid) {
                 has_stakeholder = true;
@@ -1446,14 +1381,21 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
             if let Some(next_blocks) = blocks_map.get(&tid) {
                 for next in next_blocks {
                     if !visited.contains(next) {
-                        queue.push((next.clone(), depth + 1, is_soft));
+                        queue.push((next.clone(), depth + 1, edge_factor));
                     }
                 }
             }
             if let Some(next_soft) = soft_blocks_map.get(&tid) {
                 for next in next_soft {
                     if !visited.contains(next) {
-                        queue.push((next.clone(), depth + 1, true));
+                        queue.push((next.clone(), depth + 1, edge_factor * 0.3));
+                    }
+                }
+            }
+            if let Some(next_ch) = children_map.get(&tid) {
+                for next in next_ch {
+                    if !visited.contains(next) {
+                        queue.push((next.clone(), depth + 1, edge_factor * 0.5));
                     }
                 }
             }
@@ -1465,6 +1407,99 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
             // has an explicit stakeholder (someone external is waiting)
             nodes[idx].stakeholder_exposure =
                 has_stakeholder || nodes[idx].stakeholder.is_some();
+        }
+    }
+}
+
+/// Compute effective_priority for each node: min(own priority, min priority in downstream cone).
+///
+/// Downstream cone = BFS through blocks, soft_blocks, children edges (skipping completed nodes).
+/// A P2 blocker of a P0 child gets effective_priority=0.
+fn compute_effective_priority(nodes: &mut [GraphNode]) {
+    let excluded: HashSet<&str> = graph::COMPLETED_STATUSES.iter().copied().collect();
+
+    let id_to_idx: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    let blocks_map: HashMap<String, Vec<String>> = nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.blocks.clone()))
+        .collect();
+    let soft_blocks_map: HashMap<String, Vec<String>> = nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.soft_blocks.clone()))
+        .collect();
+    let children_map: HashMap<String, Vec<String>> = nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.children.clone()))
+        .collect();
+
+    // Snapshot priorities to avoid borrow conflicts during mutation
+    let priority_map: HashMap<String, i32> = nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.priority.unwrap_or(2)))
+        .collect();
+    let status_map: HashMap<String, bool> = nodes
+        .iter()
+        .map(|n| {
+            let completed = n.status.as_deref().map(|s| excluded.contains(s)).unwrap_or(false);
+            (n.id.clone(), completed)
+        })
+        .collect();
+
+    let all_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+
+    for start_id in &all_ids {
+        let own_priority = priority_map.get(start_id.as_str()).copied().unwrap_or(2);
+        let mut min_priority = own_priority;
+        let mut visited: HashSet<String> = HashSet::new();
+        visited.insert(start_id.clone());
+        let mut queue: Vec<String> = Vec::new();
+
+        for neighbours in [
+            blocks_map.get(start_id),
+            soft_blocks_map.get(start_id),
+            children_map.get(start_id),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for id in neighbours {
+                if !status_map.get(id.as_str()).copied().unwrap_or(true) {
+                    queue.push(id.clone());
+                }
+            }
+        }
+
+        while let Some(tid) = queue.pop() {
+            if !visited.insert(tid.clone()) {
+                continue;
+            }
+            let pri = priority_map.get(tid.as_str()).copied().unwrap_or(2);
+            if pri < min_priority {
+                min_priority = pri;
+            }
+            for neighbours in [
+                blocks_map.get(&tid),
+                soft_blocks_map.get(&tid),
+                children_map.get(&tid),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                for id in neighbours {
+                    if !visited.contains(id) && !status_map.get(id.as_str()).copied().unwrap_or(true) {
+                        queue.push(id.clone());
+                    }
+                }
+            }
+        }
+
+        if let Some(&idx) = id_to_idx.get(start_id) {
+            nodes[idx].effective_priority = Some(min_priority);
         }
     }
 }
@@ -1659,13 +1694,13 @@ fn classify_tasks(
         }
     }
 
-    // Sort ready by priority, then downstream_weight DESC, then order, then title
+    // Sort ready by effective_priority (propagated), then downstream_weight DESC, then order, then title
     ready.sort_by(|a, b| {
         let na = nodes.get(a).unwrap();
         let nb = nodes.get(b).unwrap();
-        na.priority
+        na.effective_priority
             .unwrap_or(2)
-            .cmp(&nb.priority.unwrap_or(2))
+            .cmp(&nb.effective_priority.unwrap_or(2))
             .then(
                 nb.downstream_weight
                     .partial_cmp(&na.downstream_weight)
@@ -2036,6 +2071,91 @@ mod tests {
         GraphStore::build(&docs, Path::new("/tmp/test-pkb"))
     }
 
+    // ── effective_priority ──
+
+    /// Build a graph to test priority propagation:
+    ///   blocker (P2, active) --blocks--> p0-task (P0, active)
+    ///   epic-p0 (P2) with child p0-task (P0, active)
+    ///   unrelated (P3, active) -- standalone
+    fn build_priority_test_graph() -> GraphStore {
+        let mut make_with_priority = |path: &str, title: &str, id: &str, priority: i32, status: &str, parent: Option<&str>, depends_on: &[&str]| -> PkbDocument {
+            let mut fm = serde_json::Map::new();
+            fm.insert("title".to_string(), serde_json::json!(title));
+            fm.insert("type".to_string(), serde_json::json!("task"));
+            fm.insert("status".to_string(), serde_json::json!(status));
+            fm.insert("id".to_string(), serde_json::json!(id));
+            fm.insert("priority".to_string(), serde_json::json!(priority));
+            if let Some(p) = parent {
+                fm.insert("parent".to_string(), serde_json::json!(p));
+            }
+            if !depends_on.is_empty() {
+                fm.insert("depends_on".to_string(), serde_json::json!(depends_on));
+            }
+            PkbDocument {
+                path: std::path::PathBuf::from(path),
+                title: title.to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some(status.to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm)),
+                content_hash: "test".to_string(),
+            }
+        };
+
+        let docs = vec![
+            // p0-task: P0, blocked by blocker
+            make_with_priority("tasks/p0-task.md", "P0 Task", "p0-task", 0, "active", Some("epic-p0"), &["blocker"]),
+            // blocker: P2, ready (no deps), blocks p0-task
+            make_with_priority("tasks/blocker.md", "Blocker Task", "blocker", 2, "active", None, &[]),
+            // epic-p0: P2 epic, parent of p0-task
+            make_with_priority("tasks/epic-p0.md", "Epic P0", "epic-p0", 2, "active", None, &[]),
+            // unrelated: P3, no connections
+            make_with_priority("tasks/unrelated.md", "Unrelated Task", "unrelated", 3, "active", None, &[]),
+        ];
+        GraphStore::build(&docs, std::path::Path::new("/tmp/test-priority-pkb"))
+    }
+
+    #[test]
+    fn test_effective_priority_blocker_inherits_from_downstream() {
+        let graph = build_priority_test_graph();
+        // blocker (P2) blocks p0-task (P0) → blocker's effective_priority should be 0
+        let blocker = graph.resolve("blocker").expect("blocker not found");
+        assert_eq!(
+            blocker.effective_priority, Some(0),
+            "blocker should inherit P0 from downstream p0-task"
+        );
+    }
+
+    #[test]
+    fn test_effective_priority_epic_inherits_from_child() {
+        let graph = build_priority_test_graph();
+        // epic-p0 (P2) is parent of p0-task (P0) → epic's effective_priority should be 0
+        let epic = graph.resolve("epic-p0").expect("epic-p0 not found");
+        assert_eq!(
+            epic.effective_priority, Some(0),
+            "epic should inherit P0 from its child p0-task"
+        );
+    }
+
+    #[test]
+    fn test_effective_priority_unrelated_unchanged() {
+        let graph = build_priority_test_graph();
+        let unrelated = graph.resolve("unrelated").expect("unrelated not found");
+        assert_eq!(
+            unrelated.effective_priority, Some(3),
+            "unrelated task should keep its own priority"
+        );
+    }
+
+    #[test]
+    fn test_effective_priority_own_p0_stays_zero() {
+        let graph = build_priority_test_graph();
+        let p0 = graph.resolve("p0-task").expect("p0-task not found");
+        assert_eq!(p0.effective_priority, Some(0));
+    }
+
     // ── resolve ──
 
     #[test]
@@ -2064,8 +2184,46 @@ mod tests {
     #[test]
     fn test_resolve_nonexistent() {
         let graph = build_test_graph();
-        assert!(graph.resolve("nonexistent").is_none());
+        assert!(graph.resolve("ghost").is_none());
     }
+
+    #[test]
+    fn test_rebuild_from_nodes() {
+        let graph = build_test_graph();
+        let nodes = graph.nodes_cloned();
+        let root = Path::new("/tmp/test-pkb");
+
+        // Rebuild from same nodes
+        let graph2 = GraphStore::rebuild_from_nodes(nodes.clone(), root);
+
+        assert_eq!(graph.nodes.len(), graph2.nodes.len());
+        assert_eq!(graph.edges.len(), graph2.edges.len());
+        assert_eq!(graph.ready.len(), graph2.ready.len());
+
+        // Verify a specific metric
+        let node_a = graph.get_node("task-a").unwrap();
+        let node_a2 = graph2.get_node("task-a").unwrap();
+        assert_eq!(node_a.downstream_weight, node_a2.downstream_weight);
+    }
+
+    #[test]
+    fn test_rebuild_from_nodes_incremental_update() {
+        let graph = build_test_graph();
+        let mut nodes = graph.nodes_cloned();
+        let root = Path::new("/tmp/test-pkb");
+
+        // Update task-b to be done
+        let mut task_b = nodes.get("task-b").unwrap().clone();
+        task_b.status = Some("done".to_string());
+        nodes.insert("task-b".to_string(), task_b);
+
+        let graph2 = GraphStore::rebuild_from_nodes(nodes, root);
+
+        // Now task-a should be ready (it was blocked by task-b)
+        assert!(graph2.ready.iter().any(|id| id == "task-a"));
+        assert!(!graph.ready.iter().any(|id| id == "task-a"));
+    }
+
 
     // ── dependency_tree ──
 
@@ -2361,12 +2519,12 @@ mod tests {
 
     #[test]
     fn test_parse_effort_days() {
-        assert_eq!(parse_effort_days("1d"), Some(1));
-        assert_eq!(parse_effort_days("1w"), Some(7));
-        assert_eq!(parse_effort_days("2h"), Some(1));
-        assert_eq!(parse_effort_days("10h"), Some(2));
-        assert_eq!(parse_effort_days("5"), Some(5));
-        assert_eq!(parse_effort_days(""), None);
+        assert_eq!(GraphStore::parse_effort_days("1d"), Some(1));
+        assert_eq!(GraphStore::parse_effort_days("1w"), Some(7));
+        assert_eq!(GraphStore::parse_effort_days("2h"), Some(1));
+        assert_eq!(GraphStore::parse_effort_days("10h"), Some(2));
+        assert_eq!(GraphStore::parse_effort_days("5"), Some(5));
+        assert_eq!(GraphStore::parse_effort_days(""), None);
     }
 
     #[test]
@@ -2416,7 +2574,7 @@ mod tests {
             node5.clone(),
             node6,
         ];
-        compute_focus_scores(&mut nodes);
+        GraphStore::compute_focus_scores(&mut nodes);
 
         // Verify scores
         assert_eq!(nodes[0].focus_score.unwrap(), 1000);
@@ -2440,7 +2598,7 @@ mod tests {
         node7.effort = Some("1d".to_string());
         node7.consequence = Some("high".to_string());
         let mut nodes7 = vec![node7];
-        compute_focus_scores(&mut nodes7);
+        GraphStore::compute_focus_scores(&mut nodes7);
         assert_eq!(nodes7[0].focus_score.unwrap(), 9000);
 
         // Scenario 8: Overdue by 2 days: +8000 + 2*200 = 8400
@@ -2451,7 +2609,7 @@ mod tests {
                 .to_string(),
         );
         let mut nodes8 = vec![node8];
-        compute_focus_scores(&mut nodes8);
+        GraphStore::compute_focus_scores(&mut nodes8);
         assert_eq!(nodes8[0].focus_score.unwrap(), 8400);
     }
 
@@ -2549,5 +2707,64 @@ mod tests {
         assert_eq!(graph.find_soft_cycle_count(), 1, "soft mutual dependency = one soft cycle");
         // Must not appear in hard cycles
         assert!(graph.find_hard_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_compute_project_field_hierarchy() {
+        // Setup a hierarchy:
+        // Project A (type: project)
+        //   Epic B (type: epic, parent: Project A, project: "Wrong Project")
+        //     Task C (type: task, parent: Epic B)
+        // Task D (type: task, project: "Project E") -- no project ancestor
+        
+        let mut fm_b = serde_json::Map::new();
+        fm_b.insert("type".to_string(), serde_json::json!("epic"));
+        fm_b.insert("id".to_string(), serde_json::json!("epic-b"));
+        fm_b.insert("parent".to_string(), serde_json::json!("project-a"));
+        fm_b.insert("project".to_string(), serde_json::json!("Wrong Project"));
+        
+        let mut fm_d = serde_json::Map::new();
+        fm_d.insert("type".to_string(), serde_json::json!("task"));
+        fm_d.insert("id".to_string(), serde_json::json!("task-d"));
+        fm_d.insert("project".to_string(), serde_json::json!("Project E"));
+
+        let docs = vec![
+            make_doc("projects/a.md", "Project A", "project", "active", "project-a", None, &[]),
+            PkbDocument {
+                path: PathBuf::from("epics/b.md"),
+                title: "Epic B".to_string(),
+                body: String::new(),
+                doc_type: Some("epic".to_string()),
+                status: Some("active".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm_b)),
+                content_hash: "test_hash".to_string(),
+            },
+            make_doc("tasks/c.md", "Task C", "task", "active", "task-c", Some("epic-b"), &[]),
+            PkbDocument {
+                path: PathBuf::from("tasks/d.md"),
+                title: "Task D".to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("active".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm_d)),
+                content_hash: "test_hash".to_string(),
+            },
+        ];
+
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let a = graph.get_node("project-a").unwrap();
+        let b = graph.get_node("epic-b").unwrap();
+        let c = graph.get_node("task-c").unwrap();
+        let d = graph.get_node("task-d").unwrap();
+
+        assert_eq!(a.project.as_deref(), Some("Project A"));
+        assert_eq!(b.project.as_deref(), Some("Project A"), "Epic B should inherit Project A and ignore 'Wrong Project'");
+        assert_eq!(c.project.as_deref(), Some("Project A"), "Task C should inherit Project A via Epic B");
+        assert_eq!(d.project, None, "Task D should have no project since 'Project E' in frontmatter must be ignored");
     }
 }

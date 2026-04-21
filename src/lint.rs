@@ -148,6 +148,11 @@ const KNOWN_KEYS: &[&str] = &[
     "archived_at",
     "classification",
     "metadata",
+    "contributes_to",
+    "follow_up_tasks",
+    "session_id",
+    "issue_url",
+    "release_summary",
     "progress",
     // Mobile capture / triage workflow keys
     "processed",
@@ -771,6 +776,7 @@ fn check_frontmatter(
         if node_type == "task" || node_type == "epic" {
             let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if !fm.contains_key("parent") {
+                let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let has_children = children_set
                     .map(|cs| cs.contains(node_id))
                     .unwrap_or(false);

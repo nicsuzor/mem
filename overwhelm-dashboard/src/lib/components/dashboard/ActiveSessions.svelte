@@ -1,14 +1,21 @@
 <script lang="ts">
     import { projectColor, projectBgTint, projectBorderColor } from "../../data/projectUtils";
     import { toggleSelection } from "../../stores/selection";
-    
-    export let sessions: any[] = [];
-    export let pausedSessions: any[] = [];
-    export let staleSessions: any[] = [];
-    export let needsYou: any[] = [];
 
-    let showPaused = false;
-    let isSubmitting = false;
+    let { sessions = [], pausedSessions = [], staleSessions = [], needsYou = [] }: {
+        sessions?: any[];
+        pausedSessions?: any[];
+        staleSessions?: any[];
+        needsYou?: any[];
+    } = $props();
+
+    let showPaused = $state(false);
+    let isSubmitting = $state(false);
+    let expandedSessions = $state<Record<string, boolean>>({});
+
+    function toggleExpand(sessionId: string) {
+        expandedSessions = { ...expandedSessions, [sessionId]: !expandedSessions[sessionId] };
+    }
 
     function formatTimeAgo(isoString: string): string {
         if (!isoString) return "just started";
@@ -85,25 +92,33 @@
     <!-- Active Sessions (< 4h) — full cards -->
     <div class="flex flex-col gap-2">
         {#each sessions.slice(0, 8) as session}
-            <div class="flex items-center gap-4 bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} p-2 hover:bg-primary/10 transition-colors cursor-pointer"
-                 role="button" tabindex="0" on:click={() => { if(session.id) toggleSelection(session.id); }} on:keydown={(e) => { if(e.key === 'Enter' && session.id) toggleSelection(session.id); }}>
-                <span class="text-[10px] text-primary/60 min-w-[55px]">{formatTimeAgo(session.started_at)}</span>
-                {#if session.project}
-                    <span class="text-[10px] font-bold px-2 py-0.5"
-                          style="background: {projectBgTint(session.project)}; color: {projectColor(session.project)}; border: 1px solid {projectBorderColor(session.project)};">{session.project}</span>
-                {/if}
-                <span class="text-xs text-primary/90 truncate flex-1" title={session.description}>
-                    {session.description}
-                </span>
-                {#if session.prompt_count != null}
-                    <span class="text-[10px] text-primary/40 shrink-0" title="User prompts">{session.prompt_count}p</span>
-                {/if}
-                {#if session.duration_min != null}
-                    <span class="text-[10px] text-primary/40 shrink-0" title="Session duration">{Math.round(session.duration_min)}m</span>
-                {/if}
-                {#if session.status_badge}
-                    {@const badge = BADGE_STYLES[session.status_badge] || BADGE_STYLES.idle}
-                    <span class="text-[10px] font-bold px-1.5 py-0.5 {badge.class} shrink-0">{badge.label}</span>
+            {@const expanded = !!expandedSessions[session.session_id]}
+            {@const extraPrompts = (session.prompts || []).slice(1)}
+            <div class="bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors">
+                <div class="flex items-center gap-4 p-2 cursor-pointer"
+                     role="button" tabindex="0" onclick={() => toggleExpand(session.session_id)} onkeydown={(e) => { if(e.key === 'Enter') toggleExpand(session.session_id); }}>
+                    <span class="text-[10px] text-primary/60 min-w-[55px]">{formatTimeAgo(session.started_at)}</span>
+                    {#if session.project}
+                        <span class="text-[10px] font-bold px-2 py-0.5"
+                              style="background: {projectBgTint(session.project)}; color: {projectColor(session.project)}; border: 1px solid {projectBorderColor(session.project)};">{session.project}</span>
+                    {/if}
+                    <span class="text-xs text-primary/90 flex-1 {expanded ? 'whitespace-pre-wrap break-words' : 'truncate'}" title={session.description}>
+                        {session.description}
+                    </span>
+                    {#if session.prompt_count != null}
+                        <span class="text-[10px] text-primary/40 shrink-0" title="User prompts">{session.prompt_count}p</span>
+                    {/if}
+                    {#if session.status_badge}
+                        {@const badge = BADGE_STYLES[session.status_badge] || BADGE_STYLES.idle}
+                        <span class="text-[10px] font-bold px-1.5 py-0.5 {badge.class} shrink-0">{badge.label}</span>
+                    {/if}
+                </div>
+                {#if expanded && extraPrompts.length > 0}
+                    <div class="flex flex-col gap-1 px-4 pb-2 border-t border-primary/10">
+                        {#each extraPrompts as prompt}
+                            <p class="text-[11px] text-primary/60 py-1 border-b border-primary/5 last:border-0 whitespace-pre-wrap break-words">{prompt}</p>
+                        {/each}
+                    </div>
                 {/if}
             </div>
         {/each}
@@ -119,7 +134,7 @@
     {#if pausedSessions.length > 0}
         <button
             class="flex items-center gap-2 text-[10px] font-bold tracking-widest text-primary/50 hover:text-primary transition-colors cursor-pointer border-t border-primary/10 pt-3"
-            on:click={() => showPaused = !showPaused}
+            onclick={() => showPaused = !showPaused}
         >
             <span class="material-symbols-outlined text-[14px]">{showPaused ? 'expand_less' : 'expand_more'}</span>
             PAUSED ({pausedSessions.length}) — 4-24h ago
@@ -128,7 +143,7 @@
             <div class="flex flex-col gap-1 opacity-60">
                 {#each pausedSessions.slice(0, 10) as session}
                     <div class="flex items-center gap-4 bg-primary/3 border-l border-primary/20 p-1.5 text-xs cursor-pointer hover:bg-primary/10"
-                         role="button" tabindex="0" on:click={() => { if(session.id) toggleSelection(session.id); }} on:keydown={(e) => { if(e.key === 'Enter' && session.id) toggleSelection(session.id); }}>
+                         role="button" tabindex="0" onclick={() => { if(session.id) toggleSelection(session.id); }} onkeydown={(e) => { if(e.key === 'Enter' && session.id) toggleSelection(session.id); }}>
                         <span class="text-[10px] text-primary/40 min-w-[55px]">{session.time_display}</span>
                         {#if session.project}
                             <span class="text-[10px] font-bold px-1.5 py-0.5"
@@ -167,14 +182,14 @@
                     <div class="flex items-center gap-2 shrink-0">
                         {#if session.id}
                             <button class="text-[10px] font-bold tracking-widest text-primary/50 hover:text-primary border border-primary/20 hover:border-primary/50 px-2 py-1 transition-colors"
-                                    on:click={() => toggleSelection(session.id)}>
+                                    onclick={() => toggleSelection(session.id)}>
                                 REVIEW
                             </button>
                         {/if}
                         {#if session.source === 'pkb'}
                             <button class="text-[10px] font-bold tracking-widest text-primary/30 hover:text-primary/60 px-2 py-1 transition-colors disabled:opacity-50"
                                     disabled={isSubmitting}
-                                    on:click={() => dismissStaleSession(session)}>
+                                    onclick={() => dismissStaleSession(session)}>
                                 DISMISS
                             </button>
                         {/if}

@@ -46,7 +46,7 @@
     }
 
     // Minimum pixel radius for parent labels to be visible
-    const MIN_PARENT_LABEL_PIXEL_RADIUS = 42;
+    const MIN_PARENT_LABEL_PIXEL_RADIUS = 48;
 
     function updateTextVisibility() {
         if (!nodesLayer) return;

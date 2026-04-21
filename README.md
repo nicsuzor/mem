@@ -10,8 +10,9 @@ A fast, local semantic search engine and knowledge graph for your personal knowl
 - **Knowledge graph** — Automatic relationship extraction from YAML frontmatter (`depends_on`, `parent`, `tags`, etc.), with PageRank, betweenness centrality, and path tracing
 - **Task management** — Create, prioritize, and track tasks with dependency graphs; `ready` and `blocked` filters use graph analysis
 - **Memory system** — Store and retrieve observations, notes, and insights with semantic search
-- **MCP server** — 18 tools for AI assistants over stdio transport
+- **MCP server** — 40 tools for AI assistants over stdio transport
 - **CLI** — Full-featured command-line interface for search, tasks, memory, and graph operations
+- **Telemetry** — Built-in usage tracking for MCP tools (call counts, response sizes, latency)
 - **Fast** — Lazy ONNX session pooling, SIMD-accelerated vector ops, parallel batch embedding
 - **Local** — Everything runs on your machine. No cloud services, no API keys, no data leaves your disk
 - **Auto-setup** — Model files and ONNX Runtime are downloaded automatically on first run
@@ -163,19 +164,33 @@ Actionable types are used for task management (ready/blocked analysis, dependenc
 | `aops orphans` | Disconnected nodes with no edges |
 | `aops metrics [id]` | PageRank, betweenness, degree centrality |
 | `aops graph [--format json\|graphml\|dot] [--output path]` | Export the knowledge graph |
-| `aops graph --layout-config path/to/layout.toml` | Use custom layout parameters |
+| `aops stats [--sort count\|bytes\|latency\|errors]` | Show MCP tool usage telemetry |
 
 ## MCP Tools
 
-The `pkb` binary exposes 18 tools over MCP stdio transport. Any MCP-compatible client can use them.
+The `pkb` binary exposes 39 tools over MCP stdio transport. Any MCP-compatible client can use them.
+It also provides **MCP prompts** to guide AI assistants through common search and navigation patterns.
+
+### Prompts
+
+| Prompt | Description | Guidance |
+|--------|-------------|----------|
+| `find-task` | "How do I find a task about X?" | Demonstrates `task_search` then `get_task` |
+| `explore-topic` | "What do we know about X?" | Demonstrates `search` then `get_document` |
+| `navigate-graph` | "What's connected to X?" | Demonstrates `pkb_context` for relationships |
+| `find-by-tag` | "Show me everything tagged X" | Demonstrates `search_by_tag` usage |
+
+### Tools
 
 | Category | Tools |
 |----------|-------|
-| **Search** | `search`, `get_document`, `list_documents`, `reindex` |
-| **Tasks** | `task_search`, `list_tasks`, `get_task`, `create_task`, `update_task`, `complete_task`, `get_network_metrics`, `decompose_task`, `get_dependency_tree`, `get_task_children` |
+| **Search** | `search`, `get_document`, `list_documents`, `find_duplicates` |
+| **Tasks** | `task_search`, `list_tasks`, `get_task`, `create_task`, `create_subtask`, `update_task`, `complete_task`, `release_task`, `decompose_task`, `get_dependency_tree`, `get_task_children`, `task_summary`, `get_network_metrics` |
 | **Memory** | `retrieve_memory`, `search_by_tag`, `list_memories`, `delete_memory` |
 | **CRUD** | `create`, `create_memory`, `append`, `delete` |
-| **Graph** | `pkb_context`, `pkb_trace`, `pkb_orphans` |
+| **Graph** | `pkb_context`, `pkb_trace`, `pkb_orphans`, `graph_stats`, `graph_json` |
+| **Batch** | `batch_update`, `batch_reparent`, `batch_archive`, `batch_merge`, `batch_create_epics`, `batch_reclassify`, `bulk_reparent`, `merge_node` |
+| **System** | `get_stats` |
 
 ## Architecture
 

@@ -1,5 +1,6 @@
 <script lang="ts">
     import { viewSettings } from '../../stores/viewSettings';
+    import { selection } from '../../stores/selection';
 
     let captureText = "";
     let isSubmitting = false;
@@ -8,13 +9,14 @@
     let isOpen = false;
 
     $: isGraphView = $viewSettings.mainTab === 'Task Graph';
+    $: hasDetailSidebar = isGraphView && Boolean($selection.activeNodeId);
 
     $: triggerClass = isGraphView
-        ? `fixed bottom-4 right-24 z-50 graph-control-button ${isOpen ? 'graph-control-button-active' : ''}`
+        ? `fixed bottom-4 z-50 graph-control-button ${hasDetailSidebar ? 'right-[calc(25%+1rem)]' : 'right-24'} ${isOpen ? 'graph-control-button-active' : ''}`
         : `fixed bottom-6 right-6 z-50 w-12 h-12 bg-primary/20 border border-primary text-primary hover:bg-primary hover:text-black transition-all font-mono text-lg flex items-center justify-center shadow-lg shadow-black/50 ${isOpen ? 'rotate-45' : ''}`;
 
     $: panelClass = isGraphView
-        ? 'fixed bottom-20 right-24 z-50 w-[min(20rem,calc(100vw-7rem))] graph-control-panel font-mono'
+        ? `fixed bottom-20 z-50 w-[min(20rem,calc(100vw-7rem))] graph-control-panel font-mono ${hasDetailSidebar ? 'right-[calc(25%+1rem)]' : 'right-24'}`
         : 'fixed bottom-20 right-6 z-50 w-80 bg-black border border-primary shadow-xl shadow-black/80 font-mono';
 
     function handleKeydown(e: KeyboardEvent) {

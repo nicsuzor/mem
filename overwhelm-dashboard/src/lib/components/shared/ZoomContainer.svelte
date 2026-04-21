@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import * as d3 from 'd3';
-  import { graphData } from '../../stores/graph';
+  import { graphData, graphStructureKey } from '../../stores/graph';
   import { viewSettings } from '../../stores/viewSettings';
   import { zoomScale } from '../../stores/zoom';
   import { selection, clearSelection } from '../../stores/selection';
@@ -10,8 +10,8 @@
   let svgElement: SVGSVGElement;
   let containerGroup: SVGGElement;
 
-  let zoomBehavior: d3.ZoomBehavior<SVGSVGElement, unknown>;
-  let svgSelection: d3.Selection<SVGSVGElement, unknown, null, undefined>;
+  let zoomBehavior: d3.ZoomBehavior<SVGSVGElement, unknown> | undefined;
+  let svgSelection: d3.Selection<SVGSVGElement, unknown, null, undefined> | undefined;
 
   export let innerWidth = 1000;
   export let innerHeight = 800;
@@ -36,13 +36,15 @@
     svgSelection.call(zoomBehavior);
 
     return () => {
-      svgSelection.on('.zoom', null); // cleanup
+      if (svgSelection) svgSelection.on('.zoom', null); // cleanup
     };
   });
 
   // Export so parent (+page.svelte) or child views can trigger it
   export function autoZoomToFit(nodesToFit?: GraphNode[], delay: number = 0, trimOutliers: boolean = true) {
-    if (!svgSelection || !zoomBehavior) return;
+    const activeSvgSelection = svgSelection;
+    const activeZoomBehavior = zoomBehavior;
+    if (!activeSvgSelection || !activeZoomBehavior) return;
 
     let ns = nodesToFit;
     if (!ns || ns.length === 0) {
@@ -90,8 +92,8 @@
       const cx = (x0 + x1) / 2;
       const cy = (y0 + y1) / 2;
 
-      svgSelection.transition().duration(450).call(
-        zoomBehavior.transform,
+      activeSvgSelection!.transition().duration(450).call(
+        activeZoomBehavior!.transform,
         d3.zoomIdentity.translate(W / 2, H / 2).scale(zoomScale).translate(-cx, -cy)
       );
     }
@@ -115,10 +117,16 @@
     }
   }
 
-  // Reactively auto-zoom when data or layout changes
+  let lastAutoFitKey = '';
+
+  // Auto-fit only when the graph structure or active layout changes.
   $: {
-    if ($graphData && $viewSettings.viewMode) {
-      // Trigger zoom on next tick so views have placed nodes
+    const autoFitKey = svgSelection && zoomBehavior && $graphStructureKey && $viewSettings.viewMode
+      ? `${$viewSettings.viewMode}|${$graphStructureKey}`
+      : '';
+
+    if (autoFitKey && autoFitKey !== lastAutoFitKey) {
+      lastAutoFitKey = autoFitKey;
       setTimeout(() => autoZoomToFit(undefined, 0, true), 50);
     }
   }

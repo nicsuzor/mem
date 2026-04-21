@@ -119,20 +119,23 @@ impl PkbSearchServer {
         *self.graph.write() = new_graph;
     }
 
-    /// Incremental graph update after a single file changed.
-    /// Re-parses only the changed file, then rebuilds edges/metrics from existing nodes.
-    /// Falls back to full rebuild if parsing fails.
-    fn rebuild_graph_for_file(&self, abs_path: &std::path::Path) {
-        if let Some(doc) = crate::pkb::parse_file_relative(abs_path, &self.pkb_root) {
-            let node = crate::graph::GraphNode::from_pkb_document(&doc);
-            let mut nodes = self.graph.read().nodes_cloned();
-            nodes.insert(node.id.clone(), node);
-            let new_graph = GraphStore::rebuild_from_nodes(nodes, &self.pkb_root);
-            *self.graph.write() = new_graph;
-        } else {
-            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
-            self.rebuild_graph();
-        }
+    /// Incremental graph update after a single file changed, given an already-parsed document.
+    /// This avoids re-reading/re-parsing the file when the caller already has a `PkbDocument`.
+    fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
+        let abs_path = self.abs_path(&doc.path);
+        let node = crate::graph::GraphNode::from_pkb_document(doc);
+        let mut nodes = self.graph.read().nodes_cloned();
+
+        // Remove any existing node(s) that correspond to the same file path.
+        // This handles cases where the frontmatter `id` changes for a given file,
+        // ensuring we don't keep stale nodes/edges for the old id.
+        nodes.retain(|_, existing_node| {
+            self.abs_path(&existing_node.path) != abs_path
+        });
+
+        nodes.insert(node.id.clone(), node);
+        let new_graph = GraphStore::rebuild_from_nodes(nodes, &self.pkb_root);
+        *self.graph.write() = new_graph;
     }
 
     /// Incremental graph update after a node is removed.
@@ -508,6 +511,44 @@ impl PkbSearchServer {
                 .get("due")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            project: args
+                .get("project")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            task_type: args
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            status: args
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            session_id: args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            issue_url: args
+                .get("issue_url")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            follow_up_tasks: args
+                .get("follow_up_tasks")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            release_summary: args
+                .get("release_summary")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            contributes_to: args
+                .get("contributes_to")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.clone())
+                .unwrap_or_default(),
         };
 
         // Hierarchy validation: tasks must have a parent
@@ -549,22 +590,31 @@ impl PkbSearchServer {
             })?;
 
         // Incremental graph update for the new file
-        self.rebuild_graph_for_file(&path);
-
-        // Index the new file (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            self.rebuild_graph();
         }
 
-        let mut msg = format!("Task created: `{}`", path.display());
-        if !warnings.is_empty() {
-            msg.push_str("\n\nHierarchy warnings:\n");
-            for w in &warnings {
-                msg.push_str(&format!("- {}\n", w));
-            }
-        }
+        // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4")
+        let task_id = path
+            .file_stem()
+            .map(|s| {
+                let stem = s.to_string_lossy();
+                // Match standard ID pattern: prefix-hexchars
+                static RE: std::sync::LazyLock<regex::Regex> =
+                    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]+").unwrap());
+                RE.find(&stem)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| stem.to_string())
+            })
+            .unwrap_or_default();
 
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        // Return structured JSON matching get_task shape
+        let get_args = serde_json::json!({ "id": task_id });
+        self.handle_get_task(&get_args)
     }
 
     fn handle_create_subtask(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -610,9 +660,12 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        self.rebuild_graph_for_file(&path);
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            self.rebuild_graph();
         }
 
         let id = path
@@ -1148,7 +1201,7 @@ impl PkbSearchServer {
         let effort_days = node
             .effort
             .as_deref()
-            .and_then(crate::graph_store::parse_effort_days)
+            .and_then(crate::graph_store::GraphStore::parse_effort_days)
             .unwrap_or(3);
         let urgency_ratio: Option<f64> = days_until_due.map(|d| {
             (effort_days as f64 / d.max(1) as f64).min(1.0)
@@ -1164,6 +1217,10 @@ impl PkbSearchServer {
             "subtasks": subtask_nodes_sorted,
             "parent": parent,
             "goals": node.goals,
+            "contributes_to": node.contributes_to,
+            "follow_up_tasks": node.follow_up_tasks,
+            "priority": node.priority.unwrap_or(2),
+            "effective_priority": node.effective_priority.unwrap_or(node.priority.unwrap_or(2)),
             "downstream_weight": node.downstream_weight,
             "stakeholder_exposure": node.stakeholder_exposure,
             "stakeholder": node.stakeholder,
@@ -1232,11 +1289,12 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        self.rebuild_graph_for_file(&path);
-
-        // Index the new file (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            self.rebuild_graph();
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -1326,6 +1384,11 @@ impl PkbSearchServer {
                 .get("waiting_since")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            contributes_to: args
+                .get("contributes_to")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.clone())
+                .unwrap_or_default(),
         };
 
         // Hierarchy validation: warn if task-like type without parent
@@ -1350,11 +1413,12 @@ impl PkbSearchServer {
             }
         })?;
 
-        self.rebuild_graph_for_file(&path);
-
-        // Index the new file (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            self.rebuild_graph();
         }
 
         let mut msg = format!("Document created: `{}`", path.display());
@@ -1409,11 +1473,12 @@ impl PkbSearchServer {
             }
         })?;
 
-        self.rebuild_graph_for_file(&abs_path);
-
-        // Re-index the updated file (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            self.rebuild_graph();
         }
 
         let section_msg = section
@@ -1515,11 +1580,12 @@ impl PkbSearchServer {
         // Append completion evidence to the document body
         Self::append_evidence(&abs_path, evidence, pr_url)?;
 
-        self.rebuild_graph_for_file(&abs_path);
-
-        // Re-index (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            self.rebuild_graph();
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -1594,14 +1660,42 @@ impl PkbSearchServer {
         let branch = args.get("branch").and_then(|v| v.as_str());
         let blocker = args.get("blocker").and_then(|v| v.as_str());
         let reason = args.get("reason").and_then(|v| v.as_str());
+        let session_id_arg = args.get("session_id").and_then(|v| v.as_str());
+        let issue_url = args.get("issue_url").and_then(|v| v.as_str());
+        let follow_up_tasks = args.get("follow_up_tasks").and_then(|v| v.as_array());
+        let release_summary = args.get("release_summary").and_then(|v| v.as_str());
 
-        // Resolve task
+        // Resolve task and validate follow_up_tasks
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
         })?;
+
+        let mut follow_up_ids = Vec::new();
+        if let Some(arr) = follow_up_tasks {
+            let mut unresolved = Vec::new();
+            for v in arr {
+                if let Some(id_str) = v.as_str() {
+                    if graph.resolve(id_str).is_none() {
+                        unresolved.push(id_str.to_string());
+                    } else {
+                        follow_up_ids.push(id_str.to_string());
+                    }
+                }
+            }
+            if !unresolved.is_empty() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Unresolved follow_up_tasks: {}",
+                        unresolved.join(", ")
+                    )),
+                    data: None,
+                });
+            }
+        }
 
         // Check task is not already terminal
         let current_status = node.status.as_deref().unwrap_or("active");
@@ -1638,6 +1732,38 @@ impl PkbSearchServer {
                 serde_json::Value::String(b.to_string()),
             );
         }
+
+        // session_id: arg or env $AOPS_SESSION_ID
+        let final_session_id = session_id_arg
+            .map(|s| s.to_string())
+            .or_else(|| std::env::var("AOPS_SESSION_ID").ok());
+        if let Some(sid) = final_session_id {
+            updates.insert("session_id".to_string(), serde_json::Value::String(sid));
+        }
+
+        if let Some(url) = issue_url {
+            updates.insert("issue_url".to_string(), serde_json::Value::String(url.to_string()));
+        }
+
+        if !follow_up_ids.is_empty() {
+            updates.insert(
+                "follow_up_tasks".to_string(),
+                serde_json::Value::Array(
+                    follow_up_ids
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+        }
+
+        if let Some(rs) = release_summary {
+            updates.insert(
+                "release_summary".to_string(),
+                serde_json::Value::String(rs.to_string()),
+            );
+        }
+
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         updates.insert(
             "released_at".to_string(),
@@ -1676,11 +1802,12 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        self.rebuild_graph_for_file(&abs_path);
-
-        // Re-index (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            self.rebuild_graph();
         }
 
         // Build response with soft warnings
@@ -1693,6 +1820,11 @@ impl PkbSearchServer {
         }
         if (status == "cancelled" || status == "review") && reason.map_or(true, |r| r.trim().is_empty()) {
             warnings.push("WARNING: No reason provided. Future you will want to know why.");
+        }
+        if let Some(rs) = release_summary {
+            if rs.len() > 500 {
+                warnings.push("WARNING: release_summary exceeds 500 characters.");
+            }
         }
 
         let mut response = format!("Released: {} → {} (`{}`)", label, status, id);
@@ -2163,6 +2295,26 @@ impl PkbSearchServer {
                     .get("due")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                effort: subtask
+                    .get("effort")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                consequence: subtask
+                    .get("consequence")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                project: subtask
+                    .get("project")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                task_type: subtask
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                status: subtask
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
             };
 
             let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
@@ -2372,6 +2524,7 @@ impl PkbSearchServer {
             .and_then(|v| v.as_i64())
             .map(|v| v as i32);
         let assignee = args.get("assignee").and_then(|v| v.as_str());
+        let project = args.get("project").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
         let include_subtasks = args
             .get("include_subtasks")
@@ -2424,13 +2577,21 @@ impl PkbSearchServer {
         };
 
         if let Some(pri) = priority {
-            tasks.retain(|t| t.priority == Some(pri));
+            tasks.retain(|t| t.effective_priority.unwrap_or(4) <= pri);
         }
         if let Some(a) = assignee {
             tasks.retain(|t| {
                 t.assignee
                     .as_deref()
                     .map(|ag| ag.eq_ignore_ascii_case(a))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(p) = project {
+            tasks.retain(|t| {
+                t.project
+                    .as_deref()
+                    .map(|pr| pr.eq_ignore_ascii_case(p))
                     .unwrap_or(false)
             });
         }
@@ -2463,6 +2624,7 @@ impl PkbSearchServer {
                         "title": t.label,
                         "status": t.status.as_deref().unwrap_or("unknown"),
                         "priority": t.priority.unwrap_or(2),
+                        "effective_priority": t.effective_priority.unwrap_or(t.priority.unwrap_or(2)),
                         "project": t.project,
                         "assignee": t.assignee,
                         "modified": t.modified,
@@ -2769,12 +2931,12 @@ impl PkbSearchServer {
             }
         }
 
-        // Incremental graph update for the changed file
-        self.rebuild_graph_for_file(&path);
-
-        // Re-index the updated file (skipped if reindex holds the lock)
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            self.rebuild_graph();
         }
 
         // Soft warning if setting a terminal status via update_task instead of release_task
@@ -3098,6 +3260,12 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    fn handle_get_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let stats = crate::telemetry::get_stats(&self.pkb_root);
+        let json = serde_json::to_string_pretty(&stats).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
     fn handle_batch_reclassify(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let new_type = args
@@ -3131,6 +3299,312 @@ impl PkbSearchServer {
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
+
+    // =========================================================================
+    // CONSOLIDATED TOOLS (Progressive Disclosure)
+    // =========================================================================
+
+    fn handle_pkb_tool_help(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let tool = args.get("tool").and_then(|v| v.as_str());
+        let action = args.get("action").and_then(|v| v.as_str());
+
+        let help = match (tool, action) {
+            (Some("create_document"), _) => {
+                "## create_document\n\n\
+                 Create a new PKB node (task, memory, note, etc.).\n\n\
+                 **Parameters:**\n\
+                 - `type`: task, memory, note, goal, project, epic\n\
+                 - `title`: String (required)\n\
+                 - `parent`: Parent ID (required for tasks)\n\
+                 - `fields`: Object containing priority (0-4), tags (array), depends_on (array), assignee, etc.\n\
+                 - `body`: Markdown content\n"
+            }
+            (Some("manage_task"), Some("release")) => {
+                "## manage_task(action='release')\n\n\
+                 Transition a task to a terminal status with work history.\n\n\
+                 **Parameters:**\n\
+                 - `id`: Task ID\n\
+                 - `params`: Object\n\
+                   - `status`: merge_ready, done, review, blocked, cancelled\n\
+                   - `summary`: What was done (1-3 sentences)\n\
+                   - `pr_url`: PR link (optional)\n"
+            }
+            (Some("manage_task"), _) => {
+                "## manage_task\n\n\
+                 Lifecycle management for tasks.\n\n\
+                 **Actions:**\n\
+                 - `update`: Update fields (params: {updates: {priority: 1, ...}})\n\
+                 - `complete`: Mark as done (params: {completion_evidence: '...'})\n\
+                 - `release`: Handoff (params: {status: 'merge_ready', summary: '...'})\n\
+                 - `decompose`: Create subtasks (params: {subtasks: [{title: '...'}, ...]})\n"
+            }
+            (Some("pkb_batch"), _) => {
+                "## pkb_batch\n\n\
+                 Bulk operations across multiple nodes.\n\n\
+                 **Actions:**\n\
+                 - `update`: Filter and update fields\n\
+                 - `reparent`: Move multiple tasks to new parent\n\
+                 - `archive`: Set multiple to done\n\
+                 - `merge`: Merge duplicate tasks into canonical\n\
+                 - `node_merge`: Merge any nodes and redirect references\n\
+                 - `epics`: Create epics and reparent tasks\n\
+                 - `reclassify`: Change node types in bulk\n\
+                 - `duplicates`: Detect potential duplicates\n\
+                 - `orphans`: List disconnected nodes\n"
+            }
+            _ => {
+                "## PKB Tools Help\n\n\
+                 Use `pkb_tool_help(tool='TOOL_NAME')` for detailed schema.\n\n\
+                 **Entrypoint Tools:**\n\
+                 - `search`: Semantic search (all types)\n\
+                 - `get_document`: Read by ID/path\n\
+                 - `list_documents`: List and filter\n\
+                 - `create_document`: Create new nodes\n\
+                 - `manage_task`: Task lifecycle\n\
+                 - `pkb_explore`: Graph relationships\n\
+                 - `pkb_batch`: Bulk operations\n\
+                 - `pkb_stats`: System status\n"
+            }
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(help)]))
+    }
+
+    fn remap_arg(args: &mut JsonValue, from: &str, to: &str) {
+        if let Some(obj) = args.as_object_mut() {
+            if let Some(val) = obj.remove(from) {
+                obj.insert(to.to_string(), val);
+            }
+        }
+    }
+
+    fn handle_create_document_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let doc_type = args.get("type").and_then(|v| v.as_str()).unwrap_or("note");
+        let fields = args.get("fields").and_then(|v| v.as_object());
+
+        let mut new_args = args.clone();
+        if let Some(obj) = fields {
+            for (k, v) in obj {
+                new_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match doc_type {
+            "task" => self.handle_create_task(&new_args),
+            "memory" => self.handle_create_memory(&new_args),
+            "subtask" => {
+                Self::remap_arg(&mut new_args, "parent", "parent_id");
+                self.handle_create_subtask(&new_args)
+            }
+            _ => self.handle_create_document(&new_args),
+        }
+    }
+
+    fn handle_manage_task_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("action is required: update|complete|release|decompose"),
+            data: None,
+        })?;
+
+        let params = args.get("params").and_then(|v| v.as_object());
+        let mut merged_args = args.clone();
+        if let Some(obj) = params {
+            for (k, v) in obj {
+                merged_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match action {
+            "update" => self.handle_update_task(&merged_args),
+            "complete" => self.handle_complete_task(&merged_args),
+            "release" => self.handle_release_task(&merged_args),
+            "decompose" => {
+                Self::remap_arg(&mut merged_args, "id", "parent_id");
+                self.handle_decompose_task(&merged_args)
+            }
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_pkb_explore_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("action is required: context|trace|tree|children|metrics"),
+            data: None,
+        })?;
+
+        let params = args.get("params").and_then(|v| v.as_object());
+        let mut merged_args = args.clone();
+        if let Some(obj) = params {
+            for (k, v) in obj {
+                merged_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match action {
+            "context" => self.handle_pkb_context(&merged_args),
+            "trace" => {
+                Self::remap_arg(&mut merged_args, "id", "from");
+                self.handle_pkb_trace(&merged_args)
+            }
+            "tree" => self.handle_get_dependency_tree(&merged_args),
+            "children" => self.handle_get_task_children(&merged_args),
+            "metrics" => self.handle_get_network_metrics(&merged_args),
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_pkb_batch_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("action is required"),
+            data: None,
+        })?;
+
+        let params = args.get("params").and_then(|v| v.as_object());
+        let mut merged_args = args.clone();
+        if let Some(obj) = params {
+            for (k, v) in obj {
+                merged_args.as_object_mut().unwrap().insert(k.clone(), v.clone());
+            }
+        }
+
+        match action {
+            "update" => self.handle_batch_update(&merged_args),
+            "reparent" => self.handle_batch_reparent(&merged_args),
+            "archive" => self.handle_batch_archive(&merged_args),
+            "merge" => self.handle_batch_merge(&merged_args),
+            "node_merge" => self.handle_merge_node(&merged_args),
+            "epics" => self.handle_batch_create_epics(&merged_args),
+            "reclassify" => self.handle_batch_reclassify(&merged_args),
+            "duplicates" => self.handle_find_duplicates(&merged_args),
+            "orphans" => self.handle_pkb_orphans(&merged_args),
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_pkb_stats_consolidated(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("summary");
+
+        match action {
+            "summary" => self.handle_task_summary(args),
+            "graph_stats" => self.handle_graph_stats(args),
+            "graph_json" => self.handle_graph_json(args),
+            "tool_stats" => self.handle_get_stats(args),
+            _ => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Unknown action: {action}")),
+                data: None,
+            }),
+        }
+    }
+
+    fn handle_list_prompts(&self) -> Result<ListPromptsResult, McpError> {
+        fn required_arg(name: &str, description: &str) -> PromptArgument {
+            PromptArgument::new(name)
+                .with_description(description)
+                .with_required(true)
+        }
+        let prompts = vec![
+            Prompt::new(
+                "find-task",
+                Some("How do I find a task about X?"),
+                Some(vec![required_arg("query", "The task to find")]),
+            ),
+            Prompt::new(
+                "explore-topic",
+                Some("What do we know about X?"),
+                Some(vec![required_arg("query", "The topic to explore")]),
+            ),
+            Prompt::new(
+                "navigate-graph",
+                Some("What's connected to X?"),
+                Some(vec![required_arg(
+                    "id",
+                    "The node ID, title, or filename",
+                )]),
+            ),
+            Prompt::new(
+                "find-by-tag",
+                Some("Show me everything tagged X"),
+                Some(vec![required_arg("tag", "The tag to filter by")]),
+            ),
+        ];
+        Ok(ListPromptsResult::with_all_items(prompts))
+    }
+
+    fn handle_get_prompt(
+        &self,
+        request: GetPromptRequestParam,
+    ) -> Result<GetPromptResult, McpError> {
+        let name = request.name;
+        let arguments = request.arguments.unwrap_or_default();
+
+        match name.as_str() {
+            "find-task" => {
+                let query = arguments.get("query").ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Missing required parameter: query"),
+                    data: None,
+                })?;
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
+                    "I want to find a task about '{}'. Please use 'task_search' to find it, then 'get_task' to read the most relevant one.",
+                    query
+                ))]))
+            }
+            "explore-topic" => {
+                let query = arguments.get("query").ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Missing required parameter: query"),
+                    data: None,
+                })?;
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
+                    "What do we know about '{}'? Please use 'search' to find documents, then 'get_document' for the full content of relevant ones.",
+                    query
+                ))]))
+            }
+            "navigate-graph" => {
+                let id = arguments.get("id").ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Missing required parameter: id"),
+                    data: None,
+                })?;
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
+                    "What's connected to '{}'? Please use 'pkb_context' to see its parents, children, and neighbours in the knowledge graph.",
+                    id
+                ))]))
+            }
+            "find-by-tag" => {
+                let tag = arguments.get("tag").ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Missing required parameter: tag"),
+                    data: None,
+                })?;
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
+                    "Show me everything tagged '{}'. Please use 'search_by_tag' with this tag.",
+                    tag
+                ))]))
+            }
+            _ => Err(McpError {
+                code: ErrorCode::METHOD_NOT_FOUND,
+                message: Cow::from(format!("Unknown prompt: {}", name)),
+                data: None,
+            }),
+        }
+    }
 }
 
 impl ServerHandler for PkbSearchServer {
@@ -3139,8 +3613,34 @@ impl ServerHandler for PkbSearchServer {
         request: CallToolRequestParam,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+        let start = std::time::Instant::now();
+        let tool_name = request.name.clone();
+
         let args = Self::args_to_value(request.arguments);
+
+        // For consolidated tools, build a granular name for telemetry
+        let effective_name: String = match &*tool_name {
+            "manage_task" | "pkb_explore" | "pkb_batch" | "pkb_stats" | "create_document" => {
+                let sub = args
+                    .get("action")
+                    .or_else(|| args.get("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                format!("{tool_name}/{sub}")
+            }
+            other => other.to_string(),
+        };
+
         let result = match &*request.name {
+            // --- Consolidated Tools ---
+            "create_document" => self.handle_create_document_consolidated(&args),
+            "manage_task" => self.handle_manage_task_consolidated(&args),
+            "pkb_explore" => self.handle_pkb_explore_consolidated(&args),
+            "pkb_batch" => self.handle_pkb_batch_consolidated(&args),
+            "pkb_stats" => self.handle_pkb_stats_consolidated(&args),
+            "pkb_tool_help" => self.handle_pkb_tool_help(&args),
+
+            // --- Legacy / Granular Tools ---
             "search" => self.handle_pkb_search(&args),
             "get_document" => self.handle_get_document(&args),
             "list_documents" => self.handle_list_documents(&args),
@@ -3179,12 +3679,29 @@ impl ServerHandler for PkbSearchServer {
             "merge_node" => self.handle_merge_node(&args),
             "batch_create_epics" => self.handle_batch_create_epics(&args),
             "batch_reclassify" => self.handle_batch_reclassify(&args),
+            "get_stats" => self.handle_get_stats(&args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {}", request.name)),
                 data: None,
             }),
         };
+
+        let latency = start.elapsed().as_millis();
+        let is_error = result.is_err();
+        let response_bytes = match &result {
+            Ok(res) => serde_json::to_vec(res).map(|v| v.len()).unwrap_or(0),
+            Err(e) => serde_json::to_vec(e).map(|v| v.len()).unwrap_or(0),
+        };
+
+        crate::telemetry::record_call(
+            &self.pkb_root,
+            &effective_name,
+            response_bytes,
+            latency,
+            is_error,
+        );
+
         std::future::ready(result)
     }
 
@@ -3193,10 +3710,60 @@ impl ServerHandler for PkbSearchServer {
         _request: Option<PaginatedRequestParam>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
-        let tools = vec![
+        let tools = Self::get_all_tools();
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
+    }
+
+
+    fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
+        std::future::ready(self.handle_list_prompts())
+    }
+
+    fn get_prompt(
+        &self,
+        request: GetPromptRequestParam,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
+        std::future::ready(self.handle_get_prompt(request))
+    }
+
+    fn get_info(&self) -> ServerInfo {
+        let mut instructions = String::from(
+            "PKB Search — semantic search + task graph over personal knowledge base. \
+             39 tools for search, documents, tasks, and knowledge graph. \
+             Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance. \
+             Use get_stats to view per-tool usage telemetry.",
+        );
+        if self.stale_count > 0 {
+            instructions.push_str(&format!(
+                " WARNING: Index is stale — {} document(s) need re-indexing. \
+                 Search results may be incomplete or outdated. \
+                 Run `pkb reindex` to update.",
+                self.stale_count
+            ));
+        }
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_protocol_version(ProtocolVersion::V_2024_11_05)
+        .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
+        .with_instructions(instructions)
+    }
+}
+
+impl PkbSearchServer {
+    fn get_all_tools() -> Vec<Tool> {
+        vec![
             Tool::new(
                 "search",
-                "Hybrid semantic + graph-proximity search across the personal knowledge base. Optionally boost results near a specific node.",
+                "Hybrid semantic + graph-proximity search across the personal knowledge base. Use this for general discovery and finding related knowledge. Supports proximity boosting.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3208,10 +3775,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["query"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Hybrid Semantic Search")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_document",
-                "Read the full contents of a specific PKB document. Accepts an ID (preferred), filename stem, title, permalink, or path — uses flexible resolution.",
+                "Read the full contents of a specific PKB document. Use when you need the complete text for analysis. Supports flexible ID resolution.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3224,10 +3793,12 @@ impl ServerHandler for PkbSearchServer {
                     ]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Get Document Content")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_documents",
-                "List indexed documents with optional filters and pagination.",
+                "List indexed documents with optional filters. Good for browsing specific types, tags, or status groups with pagination.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3239,10 +3810,12 @@ impl ServerHandler for PkbSearchServer {
                     }
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("List Documents")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "task_search",
-                "Semantic search filtered to tasks. Returns tasks with graph context.",
+                "Semantic search filtered to actionable tasks. Returns results with rich graph context including status and dependencies.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3253,10 +3826,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["query"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Task Search")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_network_metrics",
-                "Get centrality metrics: degree, betweenness, PageRank, downstream weight.",
+                "Calculate centrality metrics (PageRank, betweenness, degree) for a node. Use to identify high-impact or 'load-bearing' tasks in the graph.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3265,10 +3840,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Get Network Metrics")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter.",
+                "Create a new task markdown file with YAML frontmatter. Returns structured JSON matching get_task shape. Always provide a parent to maintain graph integrity.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3285,15 +3862,19 @@ impl ServerHandler for PkbSearchServer {
                         "body": { "type": "string", "description": "Markdown body" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
-                        "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" }
+                        "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
+                        "project": { "type": "string", "description": "Project identifier (e.g. 'aops')" },
+                        "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, project." },
+                        "status": { "type": "string", "description": "Task status (default: 'active'). Also accepts: blocked, done, merge_ready, in_progress, etc." }
                     },
                     "required": ["title"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Create Task"),
             Tool::new(
                 "create_subtask",
-                "Create a numbered sub-task attached to a parent task. Sub-tasks use dot-notation IDs (e.g. proj-deadbeef.1) and appear as a markdown checkbox checklist when the parent is retrieved via get_task. They can also be addressed individually. Use for checklist-style completion tracking within a task.",
+                "Create a numbered sub-task attached to a parent task. Sub-tasks use dot-notation IDs (e.g. proj.1) and appear as a checklist when the parent is retrieved. Use for fine-grained completion tracking.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3304,10 +3885,11 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["parent_id", "title"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Create Sub-task"),
             Tool::new(
                 "create_memory",
-                "Create a new memory/note markdown file with YAML frontmatter. Stored in memories/ directory.",
+                "Create a new memory, insight, or observation. Stored in memories/ directory. Use for recording persistent knowledge or session findings.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3323,10 +3905,11 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["title"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Create Memory"),
             Tool::new(
                 "create",
-                "Create a new document with full enforced frontmatter. Subdirectory routing: task/bug/epic/feature -> tasks/, project -> projects/, goal -> goals/, else -> notes/.",
+                "Generic document creation with automatic subdirectory routing (tasks/, projects/, goals/, notes/). Use when the specific specialized tool is not applicable.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3352,10 +3935,11 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["title", "type"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Create Document"),
             Tool::new(
                 "append",
-                "Append timestamped content to an existing document. Optionally target a specific section heading. Auto-updates modified timestamp.",
+                "Append timestamped content to an existing document. Use for logging progress, adding references, or updating a 'log' section. Not idempotent.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3366,10 +3950,11 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id", "content"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Append to Document"),
             Tool::new(
                 "delete",
-                "Delete a document by ID. Removes the file from disk and the vector store index.",
+                "Permanently delete a document by ID. Removes the file from disk and the vector store index. Use with caution.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3378,10 +3963,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Delete Document")
+            .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "complete_task",
-                "Mark a task as done. Requires completion_evidence describing what was done. Sets status to 'done', appends evidence to body, and re-indexes.",
+                "Mark a task as done. Requires completion_evidence describing what was achieved. Sets status to 'done', appends evidence to body, and re-indexes.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3392,14 +3979,11 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id", "completion_evidence"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Complete Task"),
             Tool::new(
                 "release_task",
-                "Release a task after work is done. Use instead of update_task when transitioning to a handoff status \
-                 (merge_ready, done, review, blocked, cancelled). Captures what was done so work history is never lost. \
-                 All params are flat strings — no nested objects. \
-                 For merge_ready: summary + pr_url. For done: summary of completion. \
-                 For blocked: summary + blocker. For cancelled/review: summary + reason.",
+                "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled). Use instead of update_task for state transitions to ensure work history is captured.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3413,20 +3997,26 @@ impl ServerHandler for PkbSearchServer {
                         "pr_url": { "type": "string", "description": "Pull request or commit URL (recommended for merge_ready)" },
                         "branch": { "type": "string", "description": "Git branch name (optional)" },
                         "blocker": { "type": "string", "description": "What is blocking this task (for status=blocked)" },
-                        "reason": { "type": "string", "description": "Why cancelled or needs review (for status=cancelled/review)" }
+                        "reason": { "type": "string", "description": "Why cancelled or needs review (for status=cancelled/review)" },
+                        "session_id": { "type": "string", "description": "Active session ID. Falls back to $AOPS_SESSION_ID if omitted." },
+                        "issue_url": { "type": "string", "description": "External issue/ticket URL" },
+                        "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
+                        "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." }
                     },
                     "required": ["id", "status", "summary"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Release Task"),
             Tool::new(
                 "list_tasks",
-                "List tasks with filtering by project, status, priority, and assignee. Use status='ready' for actionable tasks sorted by priority + downstream weight, or status='blocked' to see blocked tasks with their blockers.",
+                "List tasks with smart filtering. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers. Supports sorting by focus score.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "project": { "type": "string", "description": "Filter by project name (case-insensitive). Returns tasks whose computed project field (nearest ancestor with node_type=project) matches." },
                         "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, done, etc." },
-                        "priority": { "type": "integer", "description": "Filter by exact priority (0-4)" },
+                        "priority": { "type": "integer", "description": "Filter to tasks whose effective priority (own or any downstream task via blocks/parent) ≤ N. E.g. priority=0 returns every task that touches a P0, including its blockers." },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
@@ -3434,10 +4024,12 @@ impl ServerHandler for PkbSearchServer {
                     }
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("List Tasks")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve a task by ID. Returns frontmatter, body, path, and relationship context (depends_on, blocks, children, subtasks, parent with titles/statuses, downstream_weight, stakeholder_exposure, stakeholder, waiting_since, focus_score). Sub-tasks (type=subtask) are injected as a markdown checkbox checklist in the body and listed in the 'subtasks' field.",
+                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3446,27 +4038,28 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Get Task Detail")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "update_task",
-                "Update frontmatter fields on an existing task file. Use for non-terminal changes (priority, tags, assignee, body, etc.). \
-                 For status transitions to merge_ready/done/review/blocked/cancelled, prefer release_task instead — it captures work history. \
-                 IMPORTANT: `updates` must be a JSON object, NOT a string. \
-                 Example: update_task(id=\"task-abc\", updates={\"priority\": 1, \"assignee\": \"polecat\"})",
+                "Patch metadata fields on an existing task. Use for non-terminal updates (priority, tags, assignee). For state transitions (done, merge_ready), prefer release_task.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Path to task file" },
                         "id": { "type": "string", "description": "Document ID (alternative to path — uses flexible resolution)" },
-                        "updates": { "type": "object", "description": "JSON object of fields to update (null to remove a field). Common fields: status, assignee, body, pr_url, priority. When status='done', include completion_evidence (string). MUST be a JSON object like {\"status\": \"done\", \"completion_evidence\": \"what was done\"}, NOT a JSON string." }
+                        "updates": { "type": "object", "description": "JSON object of fields to update (null to remove a field). MUST be a JSON object like {\"priority\": 1}, NOT a string." }
                     },
                     "required": ["updates"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Update Task")
+            .with_annotations(ToolAnnotations::new().idempotent(true)),
             Tool::new(
                 "bulk_reparent",
-                "Bulk reparent: set parent field on all .md files matching a directory or glob pattern. Dry run by default — set dry_run=false to apply. Skips files that ARE the parent (by permalink/id) and files already parented correctly.",
+                "Set a new parent for all documents matching a pattern. Skips files already parented correctly. Dry run by default.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3477,10 +4070,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["pattern", "parent_id"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Bulk Reparent Tasks")
+            .with_annotations(ToolAnnotations::new().idempotent(true)),
             Tool::new(
                 "retrieve_memory",
-                "Semantic search filtered to memory-type documents. Returns full content since memories are typically short.",
+                "Find relevant memories, insights, or observations by semantic similarity. Returns full content for the top matches.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3491,10 +4086,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["query"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Retrieve Memory")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "search_by_tag",
-                "Search documents by tags. Returns all documents matching the specified tags.",
+                "Find all documents sharing a specific set of tags. Supports filtering by document type.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3505,23 +4102,26 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["tags"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Search by Tag")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_memories",
-                "List memory-type documents (memory, note, insight, observation) with optional tag filtering.",
+                "Browse memory-type documents (notes, insights, observations) with optional tag filtering.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "limit": { "type": "integer", "description": "Max results (default: 20)" },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags (all must match)" },
-
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags (all must match)" }
                     }
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("List Memories")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "delete_memory",
-                "Delete a memory document by ID. Only works on memory-type documents (memory, note, insight, observation).",
+                "Permanently delete a memory document. Only works on memory-type nodes (note, insight, observation). Destructive.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3530,10 +4130,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Delete Memory")
+            .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "decompose_task",
-                "Batch creation of subtasks under a parent task. Supports sibling cross-references in 'depends_on' using '$1', '$2', etc. (1-indexed position) or by exact sibling title.",
+                "Split a large task into multiple subtasks in one operation. Supports relative sibling references (e.g. '$1') for dependencies. Use to structure a newly defined work package.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3563,10 +4165,11 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["parent_id", "subtasks"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Decompose Task"),
             Tool::new(
                 "get_dependency_tree",
-                "Get the dependency tree for a task. Upstream shows what it depends on, downstream shows what it unblocks.",
+                "Visualize the task dependency graph for a specific node. Upstream shows what the task depends on; downstream shows what it blocks.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3576,10 +4179,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Get Dependency Tree")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task_children",
-                "Get direct children of a task, or the full subtree if recursive. Returns status and completion counts.",
+                "List all direct or recursive children of a task. Returns completion counts and status for the subtree. Use to assess progress of an epic or parent task.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3589,10 +4194,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Get Task Children")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "pkb_context",
-                "Get full knowledge neighbourhood for a node: metadata, relationships, backlinks grouped by source type, and nearby nodes within N hops. Supports flexible ID resolution (by ID, filename, title).",
+                "Explore the knowledge neighbourhood of a node. Returns metadata, relationships, and backlinks grouped by source type. Supports flexible ID resolution.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3602,10 +4209,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["id"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("PKB Knowledge Context")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "pkb_trace",
-                "Find shortest paths between two nodes in the knowledge graph. Shows up to N paths with node labels.",
+                "Find shortest paths between two nodes in the knowledge graph. Useful for understanding how two seemingly unrelated concepts or tasks are linked.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3616,10 +4225,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["from", "to"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("PKB Path Trace")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "pkb_orphans",
-                "Find orphan nodes with no valid parent. By default shows only actionable types (task/bug/feature/action/epic/project/goal) excluding completed — matching graph_stats orphan_count. Use include_all=true or types filter to override.",
+                "Identify disconnected nodes with no valid parent. Use to maintain graph integrity and ensure all tasks are properly situated in the hierarchy.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3629,11 +4240,13 @@ impl ServerHandler for PkbSearchServer {
                     }
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Find Orphan Nodes")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             // ── Batch Operations ──────────────────────────────────────────
             Tool::new(
                 "batch_update",
-                "Update frontmatter fields across multiple tasks in one operation. Supports filtered selection (by project, priority, tags, age, etc.) or explicit ID lists. Use _add_tags/_remove_tags for array manipulation. Set dry_run=true to preview changes.",
+                "Apply frontmatter updates to multiple tasks simultaneously. Supports complex filters (by parent, subtree, tags, age, etc.) or explicit ID lists. Always use _add_tags/_remove_tags for list fields.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3657,10 +4270,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["updates"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Batch Update Tasks")
+            .with_annotations(ToolAnnotations::new().idempotent(true)),
             Tool::new(
                 "batch_reparent",
-                "Move multiple tasks to a new parent in one operation. Use when restructuring the task graph — grouping flat tasks into epics, or reorganizing tasks between projects.",
+                "Bulk move tasks to a new parent node. Use for major restructuring, such as grouping flat tasks into a new project or epic.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3678,10 +4293,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["new_parent"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Batch Reparent Tasks")
+            .with_annotations(ToolAnnotations::new().idempotent(true)),
             Tool::new(
                 "batch_archive",
-                "Archive multiple tasks (set status=done). Dry-run by default for safety — set dry_run=false to execute. Warns about in_progress tasks and those with active children.",
+                "Bulk archive tasks by setting status to 'done'. Use for closing out entire subtrees or stale tasks. Dry-run by default.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3700,39 +4317,47 @@ impl ServerHandler for PkbSearchServer {
                     }
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Batch Archive Tasks")
+            .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "graph_stats",
-                "Report on graph health: status/priority/type distributions, orphan count, stale tasks, disconnected epics, and more. Read-only, no mutations.",
+                "Get a summary of PKB health, including task distribution by status/priority, orphan counts, and disconnected clusters. Read-only.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                     }
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Graph Statistics")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "graph_json",
-                "Get the full knowledge graph as JSON for visualizations.",
+                "Export the full knowledge graph as JSON. Use for external visualization or deep structural analysis.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {}
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Knowledge Graph JSON")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "task_summary",
-                "Returns pre-computed counts of ready and blocked tasks, plus a per-priority breakdown of ready tasks. 'ready' = leaf tasks with claimable types (task/bug/feature), active status, and all dependencies met. Use this instead of list_tasks for dashboard counts and priority bars.",
+                "Get high-level dashboard metrics: counts of 'ready' vs 'blocked' tasks, and priority breakdowns. Use for situational awareness.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {}
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Task Summary Statistics")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             // ── Phase 2: Deduplication & Restructuring ────────────────────
             Tool::new(
                 "find_duplicates",
-                "Detect potential duplicate tasks using title similarity and/or semantic embedding similarity. Returns clusters with suggested canonical task. Read-only.",
+                "Identify potential duplicate tasks using both semantic and title similarity. Returns clusters with a suggested canonical task. Read-only.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3743,10 +4368,12 @@ impl ServerHandler for PkbSearchServer {
                     }
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Find Duplicate Tasks")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "batch_merge",
-                "Merge duplicate tasks into a canonical task. Archives merged tasks with superseded_by, unions tags/deps, reparents children, updates backlinks.",
+                "Merge multiple duplicate tasks into a single canonical task. Archives duplicates and redirects dependencies. Idempotent.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3757,10 +4384,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["canonical", "merge_ids"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Batch Merge Tasks")
+            .with_annotations(ToolAnnotations::new().idempotent(true)),
             Tool::new(
                 "merge_node",
-                "Merge source nodes into a canonical node. Redirects all references (parent, depends_on, blocks, wikilinks, etc.) from each source ID to the canonical ID across the entire PKB, then archives each source node (status=done, superseded_by=canonical). Unlike batch_merge, preserves source node files as archived records and performs complete reference updates including wikilinks.",
+                "Merge source knowledge nodes into a canonical node. Performs a deep merge of all references (wikilinks, parents, etc.) across the entire PKB. Destructive for source nodes (archived).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3771,10 +4400,12 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["canonical_id", "source_ids"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Merge Knowledge Node")
+            .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "batch_create_epics",
-                "Create multiple epic containers and reparent existing tasks under them. Primary tool for structuring a flat task list into organized groups.",
+                "Group flat tasks into new epic containers. Use to organize a scattered list of tasks into coherent, parented groups.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3800,10 +4431,11 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["epics"]
                 }))
                 .unwrap(),
-            ),
+            )
+            .with_title("Batch Create Epics"),
             Tool::new(
                 "batch_reclassify",
-                "Change the type field of matching tasks and move files to the correct subdirectory. Use for fixing memories filed as tasks and vice versa.",
+                "Correct the type field for multiple documents and move them to their appropriate subdirectories. Idempotent.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3817,34 +4449,500 @@ impl ServerHandler for PkbSearchServer {
                     "required": ["new_type"]
                 }))
                 .unwrap(),
-            ),
-        ];
-
-        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
-    }
-
-    fn get_info(&self) -> ServerInfo {
-        let mut instructions = String::from(
-            "PKB Search — semantic search + task graph over personal knowledge base. \
-             27 tools: search, get_document, list_documents, \
-             task_search, get_network_metrics, create_task, create_memory, \
-             create, append, delete, complete_task, release_task, list_tasks, \
-             get_task, update_task, bulk_reparent, retrieve_memory, search_by_tag, \
-             list_memories, delete_memory, decompose_task, \
-             get_dependency_tree, get_task_children, \
-             pkb_context, pkb_trace, pkb_orphans, task_summary.",
-        );
-        if self.stale_count > 0 {
-            instructions.push_str(&format!(
-                " WARNING: Index is stale — {} document(s) need re-indexing. \
-                 Search results may be incomplete or outdated. \
-                 Run `pkb reindex` to update.",
-                self.stale_count
-            ));
-        }
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2024_11_05)
-            .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
-            .with_instructions(instructions)
+            )
+            .with_title("Batch Reclassify Types")
+            .with_annotations(ToolAnnotations::new().idempotent(true)),
+            Tool::new(
+                "get_stats",
+                "Show MCP tool usage telemetry — call counts and response bytes per tool.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }))
+                .unwrap(),
+            )
+            .with_title("Tool Usage Stats")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            // --- Consolidated (Progressive Disclosure) Tools ---
+            Tool::new(
+                "create_document",
+                "Create a new PKB node (task, subtask, memory, note, goal, project, epic). Dispatches on `type`.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "type": { "type": "string", "enum": ["task", "subtask", "memory", "note", "goal", "project", "epic"] },
+                        "title": { "type": "string" },
+                        "parent": { "type": "string", "description": "Parent ID (required for subtask)" },
+                        "fields": { "type": "object", "description": "Metadata: priority, tags, depends_on, assignee, etc." },
+                        "body": { "type": "string" }
+                    },
+                    "required": ["type", "title"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Create Document"),
+            Tool::new(
+                "manage_task",
+                "Lifecycle management for tasks: update, complete, release, or decompose.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "action": { "type": "string", "enum": ["update", "complete", "release", "decompose"] },
+                        "params": { "type": "object", "description": "Action-specific parameters (e.g. updates, summary, pr_url, subtasks)" }
+                    },
+                    "required": ["id", "action"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Manage Task")
+            .with_annotations(ToolAnnotations::new().idempotent(true)),
+            Tool::new(
+                "pkb_explore",
+                "Explore graph relationships: context, trace, tree, children, metrics.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "action": { "type": "string", "enum": ["context", "trace", "tree", "children", "metrics"] },
+                        "params": { "type": "object", "description": "Action-specific: e.g. {to: 'ID'} for trace, {recursive: true} for children" }
+                    },
+                    "required": ["id", "action"]
+                }))
+                .unwrap(),
+            )
+            .with_title("PKB Graph Explorer")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "pkb_batch",
+                "Bulk operations: update, reparent, archive, merge, node_merge, epics, reclassify, duplicates, orphans.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["update", "reparent", "archive", "merge", "node_merge", "epics", "reclassify", "duplicates", "orphans"] },
+                        "params": { "type": "object", "description": "Filters, updates, new_parent, merge_ids, etc." }
+                    },
+                    "required": ["action"]
+                }))
+                .unwrap(),
+            )
+            .with_title("PKB Batch Operations")
+            .with_annotations(ToolAnnotations::new().destructive(true)),
+            Tool::new(
+                "pkb_stats",
+                "System and graph status: summary, graph_stats, graph_json, tool_stats.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json", "tool_stats"] }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("PKB Statistics")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "pkb_tool_help",
+                "Get detailed schema and examples for consolidated tools.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tool": { "type": "string" },
+                        "action": { "type": "string" }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("PKB Tool Help")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+        ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embeddings::Embedder;
+    use crate::graph_store::GraphStore;
+    use crate::pkb::PkbDocument;
+    use crate::vectordb::VectorStore;
+    use serde_json::json;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    fn make_doc(
+        path: &str,
+        title: &str,
+        doc_type: &str,
+        status: &str,
+        id: &str,
+        parent: Option<&str>,
+        depends_on: &[&str],
+    ) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), json!(title));
+        fm.insert("type".to_string(), json!(doc_type));
+        fm.insert("status".to_string(), json!(status));
+        fm.insert("id".to_string(), json!(id));
+        if let Some(p) = parent {
+            fm.insert("parent".to_string(), json!(p));
+        }
+        if !depends_on.is_empty() {
+            fm.insert("depends_on".to_string(), json!(depends_on));
+        }
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some(doc_type.to_string()),
+            status: Some(status.to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+        }
+    }
+
+    fn make_doc_with_priority(
+        path: &str,
+        title: &str,
+        doc_type: &str,
+        status: &str,
+        id: &str,
+        parent: Option<&str>,
+        depends_on: &[&str],
+        priority: i32,
+        assignee: Option<&str>,
+    ) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), json!(title));
+        fm.insert("type".to_string(), json!(doc_type));
+        fm.insert("status".to_string(), json!(status));
+        fm.insert("id".to_string(), json!(id));
+        fm.insert("priority".to_string(), json!(priority));
+        if let Some(p) = parent {
+            fm.insert("parent".to_string(), json!(p));
+        }
+        if let Some(a) = assignee {
+            fm.insert("assignee".to_string(), json!(a));
+        }
+        if !depends_on.is_empty() {
+            fm.insert("depends_on".to_string(), json!(depends_on));
+        }
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some(doc_type.to_string()),
+            status: Some(status.to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+        }
+    }
+
+    /// Build a test graph with 3 projects and tasks under each, plus an orphan.
+    ///
+    /// ProjectAlpha:
+    ///   - task-a1: active, priority 1, assignee "alice"
+    ///   - task-a2: active, priority 2, assignee "bob" (depends on task-a1)
+    ///   - task-a3: done, priority 1
+    ///
+    /// ProjectBeta:
+    ///   - task-b1: active, priority 1 (leaf, no deps = ready)
+    ///   - task-b2: active, priority 2 (depends on task-b1 = blocked)
+    ///
+    /// ProjectGamma:
+    ///   - task-g1: active, priority 3
+    ///
+    /// Orphan (no project):
+    ///   - task-orphan: active, priority 1
+    fn build_project_test_graph() -> GraphStore {
+        let docs = vec![
+            // Project nodes
+            make_doc("projects/proj-alpha.md", "ProjectAlpha", "project", "active", "proj-alpha", None, &[]),
+            make_doc("projects/proj-beta.md", "ProjectBeta", "project", "active", "proj-beta", None, &[]),
+            make_doc("projects/proj-gamma.md", "ProjectGamma", "project", "active", "proj-gamma", None, &[]),
+            // ProjectAlpha tasks
+            make_doc_with_priority("tasks/task-a1.md", "Alpha Task 1", "task", "active", "task-a1", Some("proj-alpha"), &[], 1, Some("alice")),
+            make_doc_with_priority("tasks/task-a2.md", "Alpha Task 2", "task", "active", "task-a2", Some("proj-alpha"), &["task-a1"], 2, Some("bob")),
+            make_doc_with_priority("tasks/task-a3.md", "Alpha Task 3", "task", "done", "task-a3", Some("proj-alpha"), &[], 1, None),
+            // ProjectBeta tasks — task-b1 is a leaf with no deps (ready), task-b2 depends on task-b1
+            make_doc_with_priority("tasks/task-b1.md", "Beta Task 1", "task", "active", "task-b1", Some("proj-beta"), &[], 1, None),
+            make_doc_with_priority("tasks/task-b2.md", "Beta Task 2", "task", "active", "task-b2", Some("proj-beta"), &["task-b1"], 2, None),
+            // ProjectGamma task
+            make_doc_with_priority("tasks/task-g1.md", "Gamma Task 1", "task", "active", "task-g1", Some("proj-gamma"), &[], 3, None),
+            // Orphan task (no parent, no project)
+            make_doc_with_priority("tasks/task-orphan.md", "Orphan Task", "task", "active", "task-orphan", None, &[], 1, None),
+        ];
+        GraphStore::build(&docs, Path::new("/tmp/test-pkb-project"))
+    }
+
+    fn build_test_server() -> PkbSearchServer {
+        let graph = build_project_test_graph();
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            PathBuf::from("/tmp/test-pkb-project"),
+            PathBuf::from("/tmp/test-pkb-project/db"),
+            Arc::new(RwLock::new(graph)),
+        )
+    }
+
+    /// Helper to extract task IDs from a list_tasks call result.
+    fn extract_task_ids(result: &CallToolResult) -> Vec<String> {
+        // Use JSON format for easier parsing
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        // Parse the JSON output
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(tasks) = val.get("tasks").and_then(|t| t.as_array()) {
+                return tasks
+                    .iter()
+                    .filter_map(|t| t.get("id").and_then(|id| id.as_str()).map(String::from))
+                    .collect();
+            }
+        }
+        vec![]
+    }
+
+    // ── AC1: project filter returns only matching tasks, no leakage ──
+
+    #[test]
+    fn test_list_tasks_project_filter_returns_only_matching() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"project": "ProjectAlpha", "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        // Should contain only alpha tasks
+        assert!(ids.contains(&"task-a1".to_string()), "should contain task-a1");
+        assert!(ids.contains(&"task-a2".to_string()), "should contain task-a2");
+        assert!(ids.contains(&"task-a3".to_string()), "should contain task-a3");
+        // Should NOT contain tasks from other projects
+        assert!(!ids.contains(&"task-b1".to_string()), "should not contain task-b1");
+        assert!(!ids.contains(&"task-b2".to_string()), "should not contain task-b2");
+        assert!(!ids.contains(&"task-g1".to_string()), "should not contain task-g1");
+        assert!(!ids.contains(&"task-orphan".to_string()), "should not contain orphan");
+    }
+
+    // ── AC2: case-insensitive matching ──
+
+    #[test]
+    fn test_list_tasks_project_filter_case_insensitive() {
+        let server = build_test_server();
+        let lower = server
+            .handle_list_tasks(&json!({"project": "projectalpha", "format": "json"}))
+            .unwrap();
+        let upper = server
+            .handle_list_tasks(&json!({"project": "PROJECTALPHA", "format": "json"}))
+            .unwrap();
+        let mixed = server
+            .handle_list_tasks(&json!({"project": "ProjectAlpha", "format": "json"}))
+            .unwrap();
+        let ids_lower = extract_task_ids(&lower);
+        let ids_upper = extract_task_ids(&upper);
+        let ids_mixed = extract_task_ids(&mixed);
+        assert_eq!(ids_lower, ids_mixed, "lowercase should match mixed case");
+        assert_eq!(ids_upper, ids_mixed, "uppercase should match mixed case");
+        assert!(!ids_lower.is_empty(), "should return results");
+    }
+
+    // ── AC3a: composes with status + priority + assignee ──
+
+    #[test]
+    fn test_list_tasks_project_composes_with_other_filters() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({
+                "project": "ProjectAlpha",
+                "status": "active",
+                "priority": 1,
+                "assignee": "alice",
+                "format": "json"
+            }))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        // Only task-a1 matches: ProjectAlpha + active + priority 1 + assignee alice
+        assert_eq!(ids, vec!["task-a1".to_string()]);
+    }
+
+    // ── AC3b: composes with status="ready" (different code path) ──
+
+    #[test]
+    fn test_list_tasks_project_composes_with_ready_status() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({
+                "project": "ProjectAlpha",
+                "status": "ready",
+                "format": "json"
+            }))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        // task-a1 has a dependent (task-a2 depends on it), so task-a1 is not a leaf
+        // task-a2 depends on task-a1 (unmet dep), so task-a2 is not ready
+        // task-a3 is done, so not ready
+        // The ready tasks in ProjectAlpha depend on the graph's ready_tasks() logic
+        // Key assertion: no beta/gamma/orphan tasks leak through
+        for id in &ids {
+            assert!(
+                id.starts_with("task-a"),
+                "ready+project=ProjectAlpha should only return alpha tasks, got {}",
+                id
+            );
+        }
+
+        // Also verify that beta ready tasks are excluded
+        let beta_result = server
+            .handle_list_tasks(&json!({
+                "project": "ProjectBeta",
+                "status": "ready",
+                "format": "json"
+            }))
+            .unwrap();
+        let beta_ids = extract_task_ids(&beta_result);
+        // task-b1 should be ready (leaf, no deps, active)
+        // task-b2 depends on task-b1, so blocked
+        for id in &beta_ids {
+            assert!(
+                id.starts_with("task-b"),
+                "ready+project=ProjectBeta should only return beta tasks, got {}",
+                id
+            );
+        }
+    }
+
+    // ── AC4: works for multiple distinct projects ──
+
+    #[test]
+    fn test_list_tasks_project_filter_multiple_projects() {
+        let server = build_test_server();
+
+        let alpha = server.handle_list_tasks(&json!({"project": "ProjectAlpha", "format": "json"})).unwrap();
+        let beta = server.handle_list_tasks(&json!({"project": "ProjectBeta", "format": "json"})).unwrap();
+        let gamma = server.handle_list_tasks(&json!({"project": "ProjectGamma", "format": "json"})).unwrap();
+
+        let alpha_ids = extract_task_ids(&alpha);
+        let beta_ids = extract_task_ids(&beta);
+        let gamma_ids = extract_task_ids(&gamma);
+
+        assert!(!alpha_ids.is_empty(), "ProjectAlpha should have tasks");
+        assert!(!beta_ids.is_empty(), "ProjectBeta should have tasks");
+        assert!(!gamma_ids.is_empty(), "ProjectGamma should have tasks");
+
+        // Verify no overlap
+        for id in &alpha_ids {
+            assert!(!beta_ids.contains(id), "alpha task {} should not be in beta", id);
+            assert!(!gamma_ids.contains(id), "alpha task {} should not be in gamma", id);
+        }
+        for id in &beta_ids {
+            assert!(!gamma_ids.contains(id), "beta task {} should not be in gamma", id);
+        }
+    }
+
+    // ── AC5: non-existent project returns empty, not error ──
+
+    #[test]
+    fn test_list_tasks_project_filter_nonexistent_returns_empty() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"project": "NonExistentProject", "format": "json"}))
+            .unwrap();
+        // Should succeed (not error), and return empty or "no tasks found" message
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        // Either empty JSON tasks array or "No tasks found" message
+        let is_empty = text.contains("No tasks found") || text.contains("\"tasks\":[]") || text.contains("\"tasks\": []");
+        assert!(is_empty, "non-existent project should return empty: {}", text);
+    }
+
+    // ── AC6: tool schema includes project parameter ──
+
+    #[test]
+    fn test_list_tasks_schema_includes_project_parameter() {
+        let tools = PkbSearchServer::get_all_tools();
+        let list_tasks_tool = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "list_tasks")
+            .expect("list_tasks tool should exist");
+        let schema = serde_json::to_string(&list_tasks_tool.input_schema).unwrap();
+        assert!(
+            schema.contains("\"project\""),
+            "list_tasks schema should include 'project' parameter, got: {}",
+            schema
+        );
+    }
+}
+
+#[cfg(test)]
+mod annotation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_tool_annotations_audit() {
+        let tools = PkbSearchServer::get_all_tools();
+
+        for tool in tools {
+            // 1. Every tool must have a title
+            assert!(
+                tool.title.is_some(),
+                "Tool '{}' is missing a human-readable title. Use .with_title()",
+                tool.name
+            );
+
+            // 2. Safety hints check
+            // Note: Creation tools (create_*) don't require read_only or destructive hints
+            // but they still need a title.
+            let annotations = tool.annotations.as_ref();
+            let is_creation = tool.name.starts_with("create") || tool.name.contains("decompose") || tool.name.contains("create_epics");
+
+            if !is_creation {
+                let has_hint = annotations.map(|a| a.read_only_hint.is_some() || a.destructive_hint.is_some()).unwrap_or(false);
+                // Some tools like 'append', 'complete_task', 'release_task' are writes but NOT destructive nor read-only.
+                // The requirement says "read-only OR destructive OR neither explicitly".
+                // I'll check that if it's NOT one of those known write tools, it should probably have a hint.
+                let is_known_write = [
+                    "append",
+                    "complete_task",
+                    "release_task",
+                    "update_task",
+                    "bulk_reparent",
+                    "batch_update",
+                    "batch_reparent",
+                    "batch_merge",
+                    "batch_reclassify",
+                    "manage_task",
+                ]
+                .contains(&&*tool.name);
+
+                if !is_known_write {
+                    assert!(
+                        has_hint,
+                        "Tool '{}' should have a safety hint (readOnlyHint or destructiveHint).",
+                        tool.name
+                    );
+                }
+            }
+
+            // 3. Contradictory hints check
+            if let Some(ann) = annotations {
+                assert!(
+                    !(ann.read_only_hint == Some(true) && ann.destructive_hint == Some(true)),
+                    "Tool '{}' has contradictory hints (read-only AND destructive)",
+                    tool.name
+                );
+            }
+        }
+    }
+}
+
