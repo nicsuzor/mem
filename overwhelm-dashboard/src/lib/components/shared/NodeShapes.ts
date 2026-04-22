@@ -13,7 +13,8 @@ function escapeHtml(str: string): string {
 }
 
 function estimateTextWidth(text: string, fontSize: number): number {
-    return text.length * fontSize * 0.51;
+    // Increased from 0.51 to 0.62 to better estimate width for modern, bold sans-serif fonts
+    return text.length * fontSize * 0.62;
 }
 
 function wrapWordsToWidth(label: string, fontSize: number, maxWidth: number): string[] {
@@ -415,7 +416,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("pointer-events", "none")
-                .html(`<div style="font-size:${m.fs}px; font-weight:820; color:${labelColor}; text-transform:none; letter-spacing:0.01em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal; font-family:var(--font-display), sans-serif;">${labelHtml}</div>`);
+                .html(`<div style="font-size:${m.fs}px; font-weight:820; color:${labelColor}; text-transform:none; letter-spacing:0.01em; line-height:${m.lineHeight}px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-family:var(--font-display), sans-serif;">${labelHtml}</div>`);
 
             renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
         }
@@ -458,7 +459,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .append("xhtml:div")
                 .style("pointer-events", "none")
-                .html(`<div style="font-size:${m.fs}px; font-weight:780; color:hsl(${hue},82%,90%); text-transform:none; letter-spacing:0.005em; line-height:${m.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal; font-family:var(--font-display), sans-serif;">${labelHtml}</div>`);
+                .html(`<div style="font-size:${m.fs}px; font-weight:780; color:hsl(${hue},82%,90%); text-transform:none; letter-spacing:0.005em; line-height:${m.lineHeight}px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-family:var(--font-display), sans-serif;">${labelHtml}</div>`);
 
             renderCountBadge(g, w, h, hue, d._leafCount || 0, d.totalLeafCount || 0, m.fs);
         }
@@ -567,7 +568,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                     .style("pointer-events", "none")
                     .append("xhtml:div")
                     .style("pointer-events", "none")
-                    .html(`<div style="font-size:${headerFit.fontSize}px; font-weight:760; color:${labelColor}; text-transform:none; letter-spacing:0.01em; line-height:${headerFit.lineHeight}px; overflow:hidden; white-space:normal; word-break:normal; overflow-wrap:normal; font-family:var(--font-display), sans-serif;">${labelHtml}</div>`);
+                    .html(`<div style="font-size:${headerFit.fontSize}px; font-weight:760; color:${labelColor}; text-transform:none; letter-spacing:0.01em; line-height:${headerFit.lineHeight}px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-family:var(--font-display), sans-serif;">${labelHtml}</div>`);
             }
 
             const countBadgeW = Math.max(42, Math.min(w * 0.45, 72));
@@ -767,7 +768,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                     .style("height", "100%")
                     .style("pointer-events", "none")
                     .html(`
-                        <div style="font-size: ${m.fs}px; font-weight: 760; color: rgba(255,255,255,0.96); overflow: hidden; white-space: normal; word-break: normal; overflow-wrap: normal; text-transform: none; letter-spacing: 0.01em; line-height: ${m.lineHeight}px;">
+                        <div style="font-size: ${m.fs}px; font-weight: 760; color: rgba(255,255,255,0.96); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-transform: none; letter-spacing: 0.01em; line-height: ${m.lineHeight}px;">
                             ${labelHtml}
                         </div>
                     `);
@@ -803,7 +804,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
                 .style("pointer-events", "none")
                 .html(`
                     ${isBlocked && h > 40 ? `<div style="display: flex; justify-content: flex-end; margin-bottom: 4px;"><span class="material-symbols-outlined" style="display:inline-flex; align-items:center; justify-content:center; min-width:${Math.max(20, textFit.fontSize + 10)}px; height:${Math.max(20, textFit.fontSize + 10)}px; font-size:${textFit.fontSize + 4}px; color:#fff4f6; background:rgba(106,49,66,0.98); border:1px solid #ffb4c0; border-radius:999px; box-shadow:0 0 0 2px rgba(255,128,146,0.18);">pause_circle</span></div>` : ''}
-                    <div style="font-size: ${textFit.fontSize}px; font-weight: 600; color: ${textColor}; line-height: ${textFit.lineHeight}px; overflow: hidden; white-space: normal; word-break: normal; overflow-wrap: normal; letter-spacing: -0.01em;">
+                    <div style="font-size: ${textFit.fontSize}px; font-weight: 600; color: ${textColor}; line-height: ${textFit.lineHeight}px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; letter-spacing: -0.01em;">
                         ${labelHtml}
                     </div>
                 `);
