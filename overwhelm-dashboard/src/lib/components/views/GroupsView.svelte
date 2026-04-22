@@ -133,8 +133,8 @@
                     weight = $viewSettings.colaLinkWeightIntraParent;
                     color = '#3b82f6';
                 } else {
-                    length = $viewSettings.colaLinkLength;
-                    weight = 0.8;
+                    length = $viewSettings.colaLinkDistInterParent;
+                    weight = $viewSettings.colaLinkWeightInterParent;
                 }
             } else if (l.type === 'depends_on') {
                 length = $viewSettings.colaLinkDistDependsOn;
@@ -486,7 +486,7 @@
 
     $: {
         const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}|${$viewSettings.colaHandleDisconnected}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaLinkDistIntraParent}|${$viewSettings.colaLinkWeightIntraParent}|${$viewSettings.colaLinkDistDependsOn}|${$viewSettings.colaLinkWeightDependsOn}|${$viewSettings.colaLinkDistRef}|${$viewSettings.colaLinkWeightRef}|${$filters.edgeDependencies}|${$filters.edgeReferences}|${$filters.edgeParent}|${($filters as any).edgeIntraGroup}`;
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}|${$viewSettings.colaHandleDisconnected}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaLinkDistIntraParent}|${$viewSettings.colaLinkWeightIntraParent}|${$viewSettings.colaLinkDistInterParent}|${$viewSettings.colaLinkWeightInterParent}|${$viewSettings.colaLinkDistDependsOn}|${$viewSettings.colaLinkWeightDependsOn}|${$viewSettings.colaLinkDistRef}|${$viewSettings.colaLinkWeightRef}|${$filters.edgeDependencies}|${$filters.edgeReferences}|${$filters.edgeParent}|${($filters as any).edgeIntraGroup}`;
         if (containerGroup && $graphData && nodesLayer && hullLayer) {
             if (sk !== lastStructureKey) {
                 lastStructureKey = sk;

@@ -52,6 +52,21 @@
 
                         <div class="space-y-1">
                             <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Dist_Inter_Parent</span>
+                                <span>{$viewSettings.colaLinkDistInterParent}</span>
+                            </div>
+                            <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistInterParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                                <span>Weight_Inter_Parent</span>
+                                <span>{$viewSettings.colaLinkWeightInterParent.toFixed(1)}</span>
+                            </div>
+                            <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightInterParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                        </div>
+
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[9px] text-primary/50 uppercase">
                                 <span>Dist_DependsOn</span>
                                 <span>{$viewSettings.colaLinkDistDependsOn}</span>
                             </div>
