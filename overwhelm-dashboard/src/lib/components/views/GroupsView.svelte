@@ -337,7 +337,7 @@
         renderGroupBoxes();
     }
 
-    function reheatLayout(heat = 0.75) {
+    function reheatLayout(heat = 0.95) {
         if (!colaLayout) return;
         ticks = 0;
         colaLayout.resume(); // restart timer if stopped
@@ -345,7 +345,7 @@
         running = true;
     }
 
-    function applyLiveLayoutSettings(heat = 0.45) {
+    function applyLiveLayoutSettings(heat = 0.85) {
         if (!$graphData || !colaLayout) return;
 
         const nodes = getActiveNodes($graphData.nodes);
@@ -421,14 +421,14 @@
             .handleDisconnected($viewSettings.colaHandleDisconnected)
             .on("tick", () => {
                 ticks++;
-                if (ticks > 300) {
+                if (ticks > 500) {
                     if (colaLayout) colaLayout.stop();
                     running = false;
                 }
                 tickVisuals();
             })
             .on("end", () => { running = false; })
-            .start(0, 0, 0);
+            .start(30, 20, 20);
         running = true;
 
         tickVisuals();
