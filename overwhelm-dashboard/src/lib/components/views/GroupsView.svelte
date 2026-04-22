@@ -83,7 +83,7 @@
 
             const keepIds = new Set<string>();
             for (const [pid, children] of childrenOf.entries()) {
-                if (children.size >= 1) { 
+                if (children.size >= 1) {
                     keepIds.add(pid);
                     for (const cid of children) {
                         keepIds.add(cid);
@@ -101,32 +101,32 @@
         const parentIds = new Set(nodes.map(n => (n as any)._safe_parent).filter(Boolean));
         return links.filter((l: any) => {
             if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
-            
+
             const src = l.source as any;
             const tgt = l.target as any;
             const srcParent = src._safe_parent;
             const tgtParent = tgt._safe_parent;
-            
+
             const isIntraGroup = (srcParent && srcParent === tgtParent) ||
                                  (tgtParent === src.id && !parentIds.has(tgt.id)) ||
                                  (srcParent === tgt.id && !parentIds.has(src.id));
-                                 
+
             // Drop non-parent intra-group edges (like depends_on or ref between siblings) as before
             if (l.type !== 'parent' && isIntraGroup) return false;
-            
+
             l._isIntraGroup = (l.type === 'parent' && isIntraGroup);
 
             if (l._isIntraGroup && ($filters as any).edgeIntraGroup === 'hidden') return false;
             if (l.type === 'parent' && !l._isIntraGroup && $filters.edgeParent === 'hidden') return false;
             if (l.type === 'depends_on' && $filters.edgeDependencies === 'hidden') return false;
             if (l.type === 'ref' && $filters.edgeReferences === 'hidden') return false;
-            
+
             return true;
         }).map((l: any) => {
-            let length = 1000;
+            let length = $viewSettings.colaLinkLength;
             let weight = 0.2;
             let color = undefined;
-            
+
             if (l.type === 'parent') {
                 if (l._isIntraGroup) {
                     length = $viewSettings.colaLinkDistIntraParent;
@@ -143,7 +143,7 @@
                 length = $viewSettings.colaLinkDistRef;
                 weight = $viewSettings.colaLinkWeightRef;
             }
-            
+
             return { ...l, length, weight, color: color || l.color };
         });
     }
