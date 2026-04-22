@@ -2407,6 +2407,11 @@ impl PkbSearchServer {
                     .get("status")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                session_id: None,
+                issue_url: None,
+                follow_up_tasks: vec![],
+                release_summary: None,
+                contributes_to: vec![],
             };
 
             let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
