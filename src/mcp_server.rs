@@ -3883,11 +3883,7 @@ impl PkbSearchServer {
                     "properties": {
                         "id": { "type": "string", "description": "Document ID, filename stem, title, or permalink (preferred — uses flexible resolution)" },
                         "path": { "type": "string", "description": "Path to document (legacy — use id instead)" }
-                    },
-                    "anyOf": [
-                        { "required": ["id"] },
-                        { "required": ["path"] }
-                    ]
+                    }
                 }))
                 .unwrap(),
             )
@@ -5037,6 +5033,24 @@ mod annotation_tests {
                     !(ann.read_only_hint == Some(true) && ann.destructive_hint == Some(true)),
                     "Tool '{}' has contradictory hints (read-only AND destructive)",
                     tool.name
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_top_level_composition_keywords() {
+        // Anthropic rejects tool schemas that have anyOf/allOf/oneOf at the top level of
+        // inputSchema. They are only allowed nested inside a property.
+        let tools = PkbSearchServer::get_all_tools();
+        for tool in &tools {
+            let schema = serde_json::to_value(&tool.input_schema).unwrap();
+            for keyword in ["anyOf", "allOf", "oneOf"] {
+                assert!(
+                    !schema.as_object().map(|o| o.contains_key(keyword)).unwrap_or(false),
+                    "Tool '{}' has '{}' at the top level of inputSchema — Anthropic rejects this (HTTP 400). Nest it inside a property instead.",
+                    tool.name,
+                    keyword,
                 );
             }
         }
