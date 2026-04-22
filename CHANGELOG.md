@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10](https://github.com/nicsuzor/mem/compare/v0.3.9...v0.3.10) - 2026-04-22
+
+### Fixed
+
+- fix compile
+
+### Other
+
+- T9 CLEANUP (mem): Update release_task tool description and CORE.md ([#213](https://github.com/nicsuzor/mem/pull/213))
+
 ## [0.3.9](https://github.com/nicsuzor/mem/compare/v0.3.8...v0.3.9) - 2026-04-21
 
 ### Added
