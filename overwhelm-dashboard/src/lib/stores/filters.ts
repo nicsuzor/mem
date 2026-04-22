@@ -28,4 +28,5 @@ export const filters = writable({
     edgeDependencies: 'half' as VisibilityState,
     edgeReferences: 'hidden' as VisibilityState,
     edgeParent: 'bright' as VisibilityState,
+    edgeIntraGroup: 'bright' as VisibilityState,
 });

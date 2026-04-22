@@ -18,6 +18,7 @@
 
     const edgeTypes = [
         { key: 'edgeParent', label: 'PARENT', color: '#facc15', dash: false },
+        { key: 'edgeIntraGroup', label: 'INTRA-GROUP', color: '#3b82f6', dash: false },
         { key: 'edgeDependencies', label: 'DEPENDENCIES', color: '#ef4444', dash: false },
         { key: 'edgeReferences', label: 'REFERENCES', color: '#a3a3a3', dash: true },
     ] as const;
@@ -85,6 +86,7 @@
         const links = $graphData.links;
         return {
             edgeParent: links.filter((l: any) => l.type === 'parent').length,
+            edgeIntraGroup: 0, // dynamic count not tracked in base graphData
             edgeDependencies: links.filter((l: any) => l.type === 'depends_on').length,
             edgeReferences: links.filter((l: any) => l.type === 'ref' || l.type === 'soft_depends_on').length,
         };

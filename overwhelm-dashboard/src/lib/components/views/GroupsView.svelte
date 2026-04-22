@@ -67,32 +67,75 @@
         nodes.forEach((n: any) => { n.width = n.w + 12; n.height = n.h + 24; });
     }
 
+    function getActiveNodes(baseNodes: GraphNode[]): GraphNode[] {
+        let nodes = baseNodes.filter((n: any) => n.type !== 'project');
+
+        if (!$viewSettings.colaHandleDisconnected) {
+            const nodeById = new Map(nodes.map(n => [n.id, n]));
+            const childrenOf = new Map<string, Set<string>>();
+
+            for (const n of nodes) {
+                const pid = (n as any)._safe_parent;
+                if (!pid || !nodeById.has(pid)) continue;
+                if (!childrenOf.has(pid)) childrenOf.set(pid, new Set());
+                childrenOf.get(pid)!.add(n.id);
+            }
+
+            const keepIds = new Set<string>();
+            for (const [pid, children] of childrenOf.entries()) {
+                if (children.size >= 1) { 
+                    keepIds.add(pid);
+                    for (const cid of children) {
+                        keepIds.add(cid);
+                    }
+                }
+            }
+
+            nodes = nodes.filter(n => keepIds.has(n.id));
+        }
+
+        return nodes;
+    }
+
     function buildPhysicsLinks(nodes: GraphNode[], links: GraphEdge[]) {
         const parentIds = new Set(nodes.map(n => (n as any)._safe_parent).filter(Boolean));
         return links.filter((l: any) => {
             if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
-            if (l.type === 'parent' && $filters.edgeParent === 'hidden') return false;
-            if (l.type === 'depends_on' && $filters.edgeDependencies === 'hidden') return false;
-            if (l.type === 'ref' && $filters.edgeReferences === 'hidden') return false;
-            // Drop intra-group edges: both nodes share the same group (same _safe_parent,
-            // or one is the direct parent of a leaf child in the same group)
+            
             const src = l.source as any;
             const tgt = l.target as any;
             const srcParent = src._safe_parent;
             const tgtParent = tgt._safe_parent;
-            // Same parent → siblings in same group
-            if (srcParent && srcParent === tgtParent) return false;
-            // Parent→leaf-child edge (child is not itself a parent, so they're in the same group)
-            if (tgtParent === src.id && !parentIds.has(tgt.id)) return false;
-            if (srcParent === tgt.id && !parentIds.has(src.id)) return false;
+            
+            const isIntraGroup = (srcParent && srcParent === tgtParent) ||
+                                 (tgtParent === src.id && !parentIds.has(tgt.id)) ||
+                                 (srcParent === tgt.id && !parentIds.has(src.id));
+                                 
+            // Drop non-parent intra-group edges (like depends_on or ref between siblings) as before
+            if (l.type !== 'parent' && isIntraGroup) return false;
+            
+            l._isIntraGroup = (l.type === 'parent' && isIntraGroup);
+
+            if (l._isIntraGroup && ($filters as any).edgeIntraGroup === 'hidden') return false;
+            if (l.type === 'parent' && !l._isIntraGroup && $filters.edgeParent === 'hidden') return false;
+            if (l.type === 'depends_on' && $filters.edgeDependencies === 'hidden') return false;
+            if (l.type === 'ref' && $filters.edgeReferences === 'hidden') return false;
+            
             return true;
         }).map((l: any) => {
             let length = 1000;
             let weight = 0.2;
+            let color = undefined;
+            
             if (l.type === 'parent') {
-                const isChildParent = nodes.some((n: any) => n._safe_parent === l.target.id);
-                length = isChildParent ? $viewSettings.colaLinkDistInterParent : $viewSettings.colaLinkDistIntraParent;
-                weight = isChildParent ? $viewSettings.colaLinkWeightInterParent : $viewSettings.colaLinkWeightIntraParent;
+                if (l._isIntraGroup) {
+                    length = $viewSettings.colaLinkDistIntraParent;
+                    weight = $viewSettings.colaLinkWeightIntraParent;
+                    color = '#3b82f6';
+                } else {
+                    length = $viewSettings.colaLinkLength;
+                    weight = 0.8;
+                }
             } else if (l.type === 'depends_on') {
                 length = $viewSettings.colaLinkDistDependsOn;
                 weight = $viewSettings.colaLinkWeightDependsOn;
@@ -100,7 +143,8 @@
                 length = $viewSettings.colaLinkDistRef;
                 weight = $viewSettings.colaLinkWeightRef;
             }
-            return { ...l, length, weight };
+            
+            return { ...l, length, weight, color: color || l.color };
         });
     }
 
@@ -191,6 +235,29 @@
             });
         }
 
+        const assignedLeaves = new Set<number>();
+        for (const g of groups) {
+            for (const leafIdx of g.leaves) {
+                assignedLeaves.add(leafIdx);
+            }
+        }
+
+        const unassignedLeaves = [];
+        for (let i = 0; i < activeNodes.length; i++) {
+            if (!assignedLeaves.has(i)) {
+                unassignedLeaves.push(i);
+            }
+        }
+
+        if (unassignedLeaves.length > 0 && $viewSettings.colaHandleDisconnected) {
+            groups.push({
+                leaves: unassignedLeaves,
+                groups: [], // can also use subGroupIndices to nest
+                padding: $viewSettings.colaGroupPadding + 20,
+                containerId: "__main__",
+            });
+        }
+
         return groups;
     }
 
@@ -270,7 +337,7 @@
         renderGroupBoxes();
     }
 
-    function reheatLayout(heat = 0.45) {
+    function reheatLayout(heat = 0.75) {
         if (!colaLayout) return;
         ticks = 0;
         colaLayout.resume(); // restart timer if stopped
@@ -281,8 +348,8 @@
     function applyLiveLayoutSettings(heat = 0.45) {
         if (!$graphData || !colaLayout) return;
 
-        const nodes = $graphData.nodes;
-        const links = $graphData.links;
+        const nodes = getActiveNodes($graphData.nodes);
+        const links = $graphData.links.map((l: any) => ({ ...l })); // Shallow copy to avoid mutating store
 
         resolveLinkReferences(nodes, links);
         syncNodeDimensions(nodes);
@@ -309,8 +376,8 @@
         if (!$graphData) return;
         if (colaLayout) { colaLayout.stop(); colaLayout = null; }
 
-        const nodes: GraphNode[] = $graphData.nodes.filter((n: any) => n.type !== 'project');
-        const links: GraphEdge[] = $graphData.links;
+        const nodes = getActiveNodes($graphData.nodes);
+        const links = $graphData.links.map((l: any) => ({ ...l })); // Shallow copy
 
         resolveLinkReferences(nodes, links);
         syncNodeDimensions(nodes);
@@ -419,7 +486,7 @@
 
     $: {
         const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}|${$viewSettings.colaHandleDisconnected}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaLinkDistIntraParent}|${$viewSettings.colaLinkWeightIntraParent}|${$viewSettings.colaLinkDistInterParent}|${$viewSettings.colaLinkWeightInterParent}|${$viewSettings.colaLinkDistDependsOn}|${$viewSettings.colaLinkWeightDependsOn}|${$viewSettings.colaLinkDistRef}|${$viewSettings.colaLinkWeightRef}|${$filters.edgeDependencies}|${$filters.edgeReferences}|${$filters.edgeParent}`;
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}|${$viewSettings.colaHandleDisconnected}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaLinkDistIntraParent}|${$viewSettings.colaLinkWeightIntraParent}|${$viewSettings.colaLinkDistDependsOn}|${$viewSettings.colaLinkWeightDependsOn}|${$viewSettings.colaLinkDistRef}|${$viewSettings.colaLinkWeightRef}|${$filters.edgeDependencies}|${$filters.edgeReferences}|${$filters.edgeParent}|${($filters as any).edgeIntraGroup}`;
         if (containerGroup && $graphData && nodesLayer && hullLayer) {
             if (sk !== lastStructureKey) {
                 lastStructureKey = sk;

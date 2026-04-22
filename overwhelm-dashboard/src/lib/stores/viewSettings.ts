@@ -14,8 +14,6 @@ export const viewSettings = writable({
     // Link-specific forces
     colaLinkDistIntraParent: 300,
     colaLinkWeightIntraParent: 1.0,
-    colaLinkDistInterParent: 500,
-    colaLinkWeightInterParent: 0.8,
     colaLinkDistDependsOn: 400,
     colaLinkWeightDependsOn: 1.0,
     colaLinkDistRef: 600,
