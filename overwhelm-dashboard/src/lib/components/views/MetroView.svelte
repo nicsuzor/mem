@@ -774,6 +774,25 @@
                         'overlay-opacity': 0.18,
                     } as any,
                 },
+                // Route highlight — cytoscape renders to canvas, so these
+                // classes must be declared in the stylesheet (not just as DOM
+                // CSS) to actually dim/brighten pixels.
+                {
+                    selector: '.not-path',
+                    style: { 'opacity': 0.1 } as any,
+                },
+                {
+                    selector: '.route-active',
+                    style: { 'opacity': 1 } as any,
+                },
+                {
+                    selector: '.dimmed',
+                    style: { 'opacity': 0.15 } as any,
+                },
+                {
+                    selector: '.highlighted',
+                    style: { 'opacity': 1 } as any,
+                },
             ],
             layout: { name: 'preset' } as any,
             wheelSensitivity: 0.3,
