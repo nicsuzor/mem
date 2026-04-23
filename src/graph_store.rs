@@ -8,6 +8,7 @@ use crate::graph::{self, deduplicate_vec, Edge, EdgeType, GraphNode};
 use crate::metrics;
 use crate::pkb::PkbDocument;
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -743,6 +744,27 @@ pub(crate) fn parse_effort_days(effort: &str) -> Option<i64> {
     } else {
         effort.parse::<f64>().ok().map(|d| d.ceil() as i64)
     }
+}
+
+/// Recency signal (0.0 - 1.0) based on modification date.
+///
+/// 1.0 if modified today, decaying exponentially with exp(-days / 30).
+/// Clamps to 0.0 at or after 90 days.
+fn recency_signal(modified: &DateTime<Utc>) -> f64 {
+    let now = Utc::now();
+    let duration = now.signed_duration_since(*modified);
+    let days = duration.num_seconds() as f64 / 86400.0;
+
+    if days >= 90.0 {
+        return 0.0;
+    }
+
+    if days <= 0.0 {
+        return 1.0;
+    }
+
+    let signal = (-days / 30.0).exp();
+    signal.clamp(0.0, 1.0)
 }
 
 /// Compute focus scores for all nodes.
@@ -1988,6 +2010,38 @@ mod tests {
     use super::*;
     use crate::pkb::PkbDocument;
     use std::path::PathBuf;
+
+    #[test]
+    fn test_recency_signal() {
+        use chrono::{Duration, Utc};
+
+        let now = Utc::now();
+
+        // (a) modified today -> ~1.0
+        let today = now - Duration::try_minutes(5).unwrap();
+        let s_today = recency_signal(&today);
+        assert!(s_today > 0.99 && s_today <= 1.0, "Today signal should be ~1.0, got {}", s_today);
+
+        // (b) modified 30 days ago -> ~0.37 (exp(-1))
+        let thirty_days_ago = now - Duration::try_days(30).unwrap();
+        let s_30 = recency_signal(&thirty_days_ago);
+        let expected_30 = (-1.0f64).exp();
+        assert!((s_30 - expected_30).abs() < 0.01, "30 days ago signal should be ~0.37, got {}", s_30);
+
+        // (c) modified 90+ days ago -> 0.0
+        let ninety_days_ago = now - Duration::try_days(90).unwrap();
+        let s_90 = recency_signal(&ninety_days_ago);
+        assert_eq!(s_90, 0.0, "90 days ago signal should be 0.0");
+
+        let old = now - Duration::try_days(120).unwrap();
+        let s_old = recency_signal(&old);
+        assert_eq!(s_old, 0.0, "120 days ago signal should be 0.0");
+
+        // Extra: future date (clock skew) -> 1.0
+        let future = now + Duration::try_hours(1).unwrap();
+        let s_future = recency_signal(&future);
+        assert_eq!(s_future, 1.0, "Future signal should be 1.0");
+    }
 
     /// Helper: create a PkbDocument with frontmatter for graph building.
     fn make_doc(
