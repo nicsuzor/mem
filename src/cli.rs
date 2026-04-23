@@ -2,8 +2,6 @@
 //!
 //! Provides subcommands: search, reindex, tasks, focus, mcp, ...
 
-mod tui;
-
 use mem::{document_crud, embeddings, eval, graph, graph_display, graph_store, lint, mcp_server, metrics, pkb, task_index, vectordb};
 
 use anyhow::Result;
@@ -462,10 +460,6 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
-
-    /// Launch the interactive planning dashboard
-    #[command(alias = "tui")]
-    Dash,
 
     /// Run search evaluation with golden queries
     Eval {
@@ -2667,10 +2661,6 @@ async fn main() -> Result<()> {
 
             let summary = eval::evaluate(&store_read, embedder, &queries, &pkb_root, top_k);
             print!("{}", eval::format_report(&summary, "current index"));
-        }
-
-        Commands::Dash => {
-            tui::run(&pkb_root, &db_path)?;
         }
 
         Commands::Batch(batch_cmd) => {
