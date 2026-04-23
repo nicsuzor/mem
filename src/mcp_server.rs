@@ -140,7 +140,24 @@ impl PkbSearchServer {
             self.abs_path(&existing_node.path) != abs_path
         });
 
+    fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
+        let abs_path = self.abs_path(&doc.path);
+        let mut node = crate::graph::GraphNode::from_pkb_document(doc);
+        
+        let mut nodes = {
+            let graph = self.graph.read();
+            let mut ns = graph.nodes_cloned();
+            if let Some(old) = ns.get(&node.id) {
+                node.pagerank = old.pagerank;
+                node.betweenness = old.betweenness;
+            }
+            ns
+        };
+
         nodes.insert(node.id.clone(), node);
+        let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
+        *self.graph.write() = new_graph;
+    }
         let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
         *self.graph.write() = new_graph;
     }
