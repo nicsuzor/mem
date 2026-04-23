@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.13](https://github.com/nicsuzor/mem/compare/v0.3.12...v0.3.13) - 2026-04-23
+
+### Fixed
+
+- *(graph)* add missing blocking_urgency field to GraphNode initializer ([#222](https://github.com/nicsuzor/mem/pull/222))
+
 ## [0.3.12](https://github.com/nicsuzor/mem/compare/v0.3.11...v0.3.12) - 2026-04-23
 
 ### Added
