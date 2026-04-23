@@ -646,6 +646,7 @@ impl GraphNode {
             status_group: sg,
             task_id,
             downstream_weight: 0.0,
+            blocking_urgency: 0.0,
             pagerank: 0.0,
             betweenness: 0.0,
             indegree: 0,
