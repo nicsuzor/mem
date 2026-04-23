@@ -106,11 +106,3 @@ make release    # bump patch, build both, install, tag, push
 **Local install**: Always use `cargo install --path .` — never manually copy binaries to /usr/local/bin.
 
 Requires: Rust >= 1.88, zig 0.13 for cross-compile.
-
-## UX Testing / TUI Capture
-
-The TUI uses Ratatui + crossterm. Use the helper script:
-```bash
-./scripts/tui-capture.sh start|capture|key <k>|restart|stop
-```
-View keys: `f` Focus, `g` Graph, `t` Tree, `d` Dashboard. Always `sleep 0.3-0.5` after `send-keys` before capturing.
