@@ -1,5 +1,18 @@
 # mem — Developer Reference
 
+## Path Discovery (CRITICAL)
+
+To discover project locations, read `.agents/context-map.json` in the relevant repo. If the map is missing or stale, HALT.
+
+## Fail-Fast / Halt Rule (ENFORCED)
+
+If you cannot do what was asked, **STOP and report** — do NOT search broadly, do NOT invent workarounds.
+
+- **Missing Paths**: If a documented path does not exist, HALT.
+- **No Broad Grep**: Never grep `$HOME` or `/` to find source repos or documents. Use `context-map.json` for discovery.
+- **Tool Failures**: If a tool doesn't work as documented, report the failure — do not invent alternatives.
+- **Ambiguity**: If instructions conflict or are ambiguous, ask for clarification.
+
 ## Overview
 
 Semantic search + knowledge graph MCP server for a personal knowledge base (PKB) of markdown files with YAML frontmatter. Built in Rust. Version 0.3.x.
