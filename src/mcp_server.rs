@@ -130,8 +130,16 @@ impl PkbSearchServer {
     /// Uses the fast path (skips centrality recomputation).
     fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
         let abs_path = self.abs_path(&doc.path);
-        let node = crate::graph::GraphNode::from_pkb_document(doc);
+        let mut node = crate::graph::GraphNode::from_pkb_document(doc);
+
         let mut nodes = self.graph.read().nodes_cloned();
+
+        // Carry over centrality scores from the prior node with the same id
+        // so the fast-path rebuild doesn't zero them out.
+        if let Some(old) = nodes.get(&node.id) {
+            node.pagerank = old.pagerank;
+            node.betweenness = old.betweenness;
+        }
 
         // Remove any existing node(s) that correspond to the same file path.
         // This handles cases where the frontmatter `id` changes for a given file,
@@ -140,24 +148,7 @@ impl PkbSearchServer {
             self.abs_path(&existing_node.path) != abs_path
         });
 
-    fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
-        let abs_path = self.abs_path(&doc.path);
-        let mut node = crate::graph::GraphNode::from_pkb_document(doc);
-        
-        let mut nodes = {
-            let graph = self.graph.read();
-            let mut ns = graph.nodes_cloned();
-            if let Some(old) = ns.get(&node.id) {
-                node.pagerank = old.pagerank;
-                node.betweenness = old.betweenness;
-            }
-            ns
-        };
-
         nodes.insert(node.id.clone(), node);
-        let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
-        *self.graph.write() = new_graph;
-    }
         let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
         *self.graph.write() = new_graph;
     }
