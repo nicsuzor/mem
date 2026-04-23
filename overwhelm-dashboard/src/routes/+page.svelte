@@ -141,7 +141,7 @@
 
         // Only include real task types with explicit ID and status
         // Structural types (epic, project, goal) are always included — they often lack task_id or explicit status
-        const TASK_TYPES = new Set(["task", "goal", "project", "epic", "bug", "feature", "learn", "action", "subproject"]);
+        const TASK_TYPES = new Set(["task", "goal", "project", "epic", "bug", "feature", "learn", "action", "subproject", "target"]);
         const STRUCTURAL_TYPES = new Set(["epic", "project", "goal"]);
         fNodes = fNodes.filter(n => {
             if (!TASK_TYPES.has(n.type)) return false;

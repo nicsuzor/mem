@@ -89,41 +89,23 @@
         destIndex: Map<string, number>;     // destId -> ordinal position
     }
 
-    // Build three adjacency maps from the flipped-parent edge set. Parent edges
-    // arrive from prepareGraphData with source=parent, target=child. We need
-    // both directions available because route direction depends on destination
-    // shape:
-    //   - container destinations (goal / epic with incomplete children) walk
-    //     parent→child to collect descendants
-    //   - leaf destinations do not walk parent at all — their route is the
-    //     transitive depends_on chain
-    interface Adjacencies {
-        deps: Map<string, Set<string>>;        // dependent -> blocker
-        parentDown: Map<string, Set<string>>;  // parent -> child
-        parentUp: Map<string, Set<string>>;    // child -> parent
-    }
-
-    function buildAdjacencies(nodes: GraphNode[], edges: GraphEdge[]): Adjacencies {
-        const deps = new Map<string, Set<string>>();
-        const parentDown = new Map<string, Set<string>>();
-        const parentUp = new Map<string, Set<string>>();
-        for (const n of nodes) {
-            deps.set(n.id, new Set());
-            parentDown.set(n.id, new Set());
-            parentUp.set(n.id, new Set());
-        }
+    // Build an undirected neighbor map covering every edge type — parent,
+    // depends_on, soft_depends_on, ref, anything else. Route discovery treats
+    // the graph as undirected so every incident edge counts as a potential
+    // route step. Per-edge-type weighting / directionality can be re-layered
+    // later if the picture demands it.
+    function buildNeighbors(nodes: GraphNode[], edges: GraphEdge[]): Map<string, Set<string>> {
+        const nbr = new Map<string, Set<string>>();
+        for (const n of nodes) nbr.set(n.id, new Set());
         for (const e of edges) {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-            if (!deps.has(src) || !deps.has(tgt)) continue;
-            if (e.type === 'depends_on' || e.type === 'soft_depends_on') {
-                deps.get(src)!.add(tgt);
-            } else if (e.type === 'parent') {
-                parentDown.get(src)!.add(tgt);
-                parentUp.get(tgt)!.add(src);
-            }
+            if (!nbr.has(src) || !nbr.has(tgt)) continue;
+            if (src === tgt) continue;
+            nbr.get(src)!.add(tgt);
+            nbr.get(tgt)!.add(src);
         }
-        return { deps, parentDown, parentUp };
+        return nbr;
     }
 
     // Every P0/P1 incomplete node is a destination — that's what the user set
@@ -145,11 +127,15 @@
         return incompleteChildIds.has(dest.id);
     }
 
+    // Terminals are now explicitly target-type nodes. P0/P1 "priority" tasks
+    // that aren't targets are rendered as larger stations but are not the
+    // named ends-of-lines. The user sets targets deliberately; priority alone
+    // is a weaker signal.
     function computeDestinations(nodes: GraphNode[]): GraphNode[] {
         return nodes
             .filter(n => {
                 if (!isIncomplete(n)) return false;
-                if (n.priority > 1) return false;
+                if ((n.type || '').toLowerCase() !== 'target') return false;
                 return true;
             })
             .sort((a, b) => {
@@ -174,67 +160,31 @@
             return { destinations, routes, depth, destIndex };
         }
 
-        const { deps, parentDown, parentUp } = buildAdjacencies(nodes, edges);
+        const neighbors = buildNeighbors(nodes, edges);
         const nodeById = new Map(nodes.map(n => [n.id, n]));
-        const incompleteChildIds = computeIncompleteChildIds(nodes);
 
-        // Per-destination BFS. Every destination walks:
-        //   - depends_on (src→tgt) — transitive blockers
-        //   - the correct parent direction given its shape:
-        //       * container (goal): walk parent→child (descendants) hop-capped
-        //         so the goal pulls its incomplete subtree as the route
-        //       * leaf: walk child→parent (ancestors) so containers that host
-        //         the destination appear on its route. Shared containers
-        //         naturally become interchanges ("this epic sits on the route
-        //         to N P0/P1 outcomes") — that's a useful signal, not noise.
+        // Undirected BFS from each destination. Every edge type is a step, no
+        // direction distinction — we want to see all edges on the map before
+        // deciding which distinctions matter.
         for (const dest of destinations) {
-            const container = isContainerDestination(dest, incompleteChildIds);
             const seen = new Set<string>([dest.id]);
-            const queue: Array<{ id: string; d: number; parentHops: number }> = [
-                { id: dest.id, d: 0, parentHops: 0 },
-            ];
+            const queue: Array<{ id: string; d: number }> = [{ id: dest.id, d: 0 }];
             while (queue.length > 0) {
-                const { id, d, parentHops } = queue.shift()!;
+                const { id, d } = queue.shift()!;
                 const node = nodeById.get(id);
                 if (!node) continue;
-                // Only traverse through incomplete nodes (completed = already-traversed track)
                 if (!isIncomplete(node) && id !== dest.id) continue;
 
                 routes.get(id)!.add(dest.id);
                 const prev = depth.get(id);
                 if (prev === undefined || d < prev) depth.set(id, d);
 
-                // deps always contribute
-                const blockers = deps.get(id);
-                if (blockers) {
-                    for (const next of blockers) {
-                        if (seen.has(next)) continue;
-                        seen.add(next);
-                        queue.push({ id: next, d: d + 1, parentHops });
-                    }
-                }
-                if (container) {
-                    // Goal pulls its descendants (hop-capped)
-                    if (parentHops < GOAL_PARENT_HOP_CAP) {
-                        const children = parentDown.get(id);
-                        if (children) {
-                            for (const next of children) {
-                                if (seen.has(next)) continue;
-                                seen.add(next);
-                                queue.push({ id: next, d: d + 1, parentHops: parentHops + 1 });
-                            }
-                        }
-                    }
-                } else {
-                    // Leaf destinations walk up to ancestors
-                    const ancestors = parentUp.get(id);
-                    if (ancestors) {
-                        for (const next of ancestors) {
-                            if (seen.has(next)) continue;
-                            seen.add(next);
-                            queue.push({ id: next, d: d + 1, parentHops });
-                        }
-                    }
+                const nbr = neighbors.get(id);
+                if (!nbr) continue;
+                for (const next of nbr) {
+                    if (seen.has(next)) continue;
+                    seen.add(next);
+                    queue.push({ id: next, d: d + 1 });
                 }
             }
         }
@@ -362,93 +312,113 @@
         displayLabel: string;
         nodeType: string;
         priority: number;
-        nodeRole: 'epic' | 'task';
         visibilityState: VisibilityState;
         isDestination: 0 | 1;
-        isInterchange: 0 | 1;
         isOnRoute: 0 | 1;
         routeIds: string;
         nodeSize: number;
-        labelSize: number;
         fillColor: string;
-        labelColor: string;
         borderColor: string;
-        borderWidth: number;
         isCompleted: boolean;
         nodeOpacity: number;
     }
 
-    function getNodeSize(node: GraphNode, isDestination: boolean, isInterchange: boolean, isOnRoute: boolean): number {
-        if (!isOnRoute) return 6; // context station (track width)
-        const weight = Math.max(0, node.dw || 0);
-        const isEpic = getNodeRole(node) === 'epic';
-        let base = isEpic ? 18 : 8;
-        const maxExtra = isEpic ? 18 : 14;
-        const scale = isEpic ? 5.2 : 3.8;
-        let size = base + Math.min(maxExtra, Math.log1p(weight) * scale);
-        if (isDestination) size *= 2.4;
-        else if (isInterchange) size *= 1.3;
-        const completedScale = isIncomplete(node) ? 1 : 0.7;
-        return Math.round(size * completedScale * 10) / 10;
-    }
+    // Visual encoding — kept deliberately sparse while we figure out the
+    // metaphor. Three categories for now:
+    //   - terminal (isDestination): large, priority-coloured, always labelled
+    //   - starting station (no blockers): green round dot — nothing blocks it,
+    //     so it is actionable right now. User intent: surface the concrete
+    //     entry points of each line.
+    //   - station (everything else): grey round dot, small
+    // Completed nodes fade. No shape-by-type, no project fills, no interchange.
+    const TERMINAL_FILL_P0 = PRIORITY_BORDERS[0] || '#dc3545';
+    const TERMINAL_FILL_P1 = PRIORITY_BORDERS[1] || '#f59e0b';
+    const STATION_FILL = '#94a3b8';
+    const START_FILL = '#22c55e';
+    const BAD_CHOICE_FILL = '#6b7280';       // dull grey body
+    const BAD_CHOICE_BORDER = '#dc2626';     // red outline — "you picked this as priority but it isn't on any line"
 
-    function getLabelSize(node: GraphNode, isDestination: boolean, isInterchange: boolean): number {
-        if (isDestination) return 13;
-        if (isInterchange) return 11;
-        const isEpic = getNodeRole(node) === 'epic';
-        const base = isEpic ? 9 : 8;
-        const maxExtra = isEpic ? 4 : 2;
-        return Math.round((base + Math.min(maxExtra, Math.log1p(Math.max(0, node.dw || 0)) * 0.9)) * 10) / 10;
-    }
-
-    function getNodeData(
-        node: GraphNode,
+    // Build a set of on-route nodes that have no outgoing blocker edge to
+    // another incomplete on-route node. Under the schema we're adopting here,
+    // every blocker edge (parent flipped, depends_on, soft_depends_on) points
+    // from the blocked node to its blocker — so "no outgoing blocker edge" ⇒
+    // nothing is stopping this node from starting.
+    function computeStartingStations(
+        nodes: GraphNode[],
+        edges: GraphEdge[],
         routeData: RouteData
-    ): NodeData {
+    ): Set<string> {
+        const onRoute = new Set<string>();
+        for (const n of nodes) {
+            if ((routeData.routes.get(n.id)?.size ?? 0) >= 1) onRoute.add(n.id);
+        }
+        const nodeById = new Map(nodes.map(n => [n.id, n]));
+        const hasBlocker = new Set<string>();
+        for (const e of edges) {
+            const src = typeof e.source === 'object' ? e.source.id : e.source;
+            const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+            if (!onRoute.has(src)) continue;
+            const tgtNode = nodeById.get(tgt);
+            if (!tgtNode) continue;
+            if (!isIncomplete(tgtNode)) continue;
+            hasBlocker.add(src);
+        }
+        const starts = new Set<string>();
+        for (const id of onRoute) {
+            const n = nodeById.get(id);
+            if (!n) continue;
+            if (!isIncomplete(n)) continue;
+            if (routeData.destIndex.has(id)) continue; // terminals keep their own fill
+            if (!hasBlocker.has(id)) starts.add(id);
+        }
+        return starts;
+    }
+
+    function getNodeData(node: GraphNode, routeData: RouteData, startingStations: Set<string>): NodeData {
         const rs = routeData.routes.get(node.id) ?? new Set();
         const isDestination = routeData.destIndex.has(node.id);
-        const isInterchange = !isDestination && rs.size >= 2;
         const isOnRoute = rs.size >= 1;
+        const isStart = startingStations.has(node.id);
         const visibilityState = priorityVisibility(node.priority);
-
-        const projectLineColor = getProjectLineColor(node.project);
-
         const completed = !isIncomplete(node);
-        const nodeSize = getNodeSize(node, isDestination, isInterchange, isOnRoute);
-        const labelSize = getLabelSize(node, isDestination, isInterchange);
-        // Completed nodes are desaturated (not just dimmed) to distinguish
-        // "already-traversed track" from "live route" at a glance.
-        const fillColor = completed ? desaturateHsl(projectLineColor, 0.75) : projectLineColor;
-        const labelColor = completed ? desaturateHsl(projectLineColor, 0.5) : projectLineColor;
 
-        let borderColor = 'rgba(255,255,255,0.18)';
-        let borderWidth = 0.9;
-        if (isDestination) {
-            borderColor = PRIORITY_BORDERS[node.priority] || '#ffffff';
-            borderWidth = 4;
-        } else if (isInterchange) {
-            borderColor = '#ffffff';
-            borderWidth = 2.4;
-        } else if (node.priority <= 1 && isIncomplete(node)) {
-            borderColor = PRIORITY_BORDERS[node.priority] || '#e5e7eb';
-            borderWidth = node.priority === 0 ? 2.8 : 2.2;
-        }
-
-        const baseOpacity = visibilityState === 'half' ? 0.48 : 0.95;
-        const nodeOpacity = isIncomplete(node) ? baseOpacity : baseOpacity * 0.38;
-
-        // Label visibility policy:
-        //  - destinations + interchanges: always labelled (even when priority-dimmed)
-        //  - route stations: labelled when priority bright
-        //  - context stations: no label at default zoom
+        let nodeSize: number;
+        let fillColor: string;
+        let borderColor: string;
         let displayLabel: string;
-        if (isDestination || isInterchange) {
+
+        const isPriorityStation = !isDestination && node.priority <= 1 && isIncomplete(node) && (node.type || '').toLowerCase() !== 'target';
+        const isBadChoice = isPriorityStation && !isOnRoute;
+
+        if (isDestination) {
+            nodeSize = 34;
+            fillColor = node.priority === 0 ? TERMINAL_FILL_P0 : TERMINAL_FILL_P1;
+            borderColor = '#ffffff';
             displayLabel = node.label;
-        } else if (isOnRoute && visibilityState === 'bright') {
-            displayLabel = node.label;
+        } else if (isBadChoice) {
+            nodeSize = 14;
+            fillColor = BAD_CHOICE_FILL;
+            borderColor = BAD_CHOICE_BORDER;
+            displayLabel = '';
+        } else if (isStart) {
+            nodeSize = isPriorityStation ? 14 : 10;
+            fillColor = START_FILL;
+            borderColor = '#ffffff';
+            displayLabel = '';
+        } else if (isPriorityStation) {
+            nodeSize = 14;
+            fillColor = STATION_FILL;
+            borderColor = 'rgba(255,255,255,0.35)';
+            displayLabel = '';
         } else {
+            nodeSize = isOnRoute ? 7 : 3;
+            fillColor = STATION_FILL;
+            borderColor = 'rgba(255,255,255,0.08)';
             displayLabel = '';
         }
+
+        const baseOpacity = visibilityState === 'half' ? 0.45 : 0.95;
+        const nodeOpacity = completed ? baseOpacity * 0.35 : baseOpacity;
 
         return {
             id: node.id,
@@ -456,18 +426,13 @@
             displayLabel,
             nodeType: node.type,
             priority: node.priority,
-            nodeRole: getNodeRole(node),
             visibilityState,
             isDestination: isDestination ? 1 : 0,
-            isInterchange: isInterchange ? 1 : 0,
             isOnRoute: isOnRoute ? 1 : 0,
             routeIds: Array.from(rs).join(','),
             nodeSize,
-            labelSize,
             fillColor,
-            labelColor,
             borderColor,
-            borderWidth,
             isCompleted: completed,
             nodeOpacity,
         };
@@ -484,11 +449,8 @@
         return visibilityState === 'half' ? base * 0.45 : base;
     }
 
-    function getEdgeWidth(edgeRole: string, isOnRoute: boolean): number {
-        if (!isOnRoute) return 1;
-        if (edgeRole === 'parent') return 7;
-        if (edgeRole === 'dependency') return 5;
-        return 1;
+    function getEdgeWidth(_edgeRole: string, isOnRoute: boolean): number {
+        return isOnRoute ? 5 : 1;
     }
 
     // Shared destinations that both endpoints are on the route to.
@@ -553,9 +515,13 @@
                 .slice(0, CONTEXT_CAP);
             contextKeep = new Set(ranked.map(n => n.id));
         }
+        // P0/P1 incomplete nodes that aren't on any route are "bad choices":
+        // flagged as priority but not serving any declared target. Keep them
+        // visible so the user can see them, just not anchored.
         const metroNodes = allMetroNodes.filter(n => {
             const onRoute = (routeData.routes.get(n.id)?.size ?? 0) > 0;
             if (onRoute) return true;
+            if (isIncomplete(n) && n.priority <= 1 && (n.type || '').toLowerCase() !== 'target') return true;
             return contextKeep ? contextKeep.has(n.id) : false;
         });
         const nodeById = new Map(metroNodes.map(n => [n.id, n]));
@@ -566,9 +532,10 @@
         });
 
         const positions = computePositions(metroNodes, routeData, width, height);
+        const startingStations = computeStartingStations(metroNodes, metroEdges, routeData);
 
         const cyNodes = metroNodes.map(n => ({
-            data: getNodeData(n, routeData),
+            data: getNodeData(n, routeData, startingStations),
             position: positions.get(n.id) ?? { x: width / 2, y: height / 2 },
         }));
 
@@ -637,146 +604,68 @@
             container: containerEl,
             elements: [...cyNodes, ...cyEdges],
             style: [
-                // Base node styling by role
+                // Stations — muted uniform dots
                 {
-                    selector: 'node[nodeRole = "epic"][visibilityState != "hidden"]',
-                    style: {
-                        'shape': 'round-rectangle',
-                        'width': 'data(nodeSize)',
-                        'height': 'data(nodeSize)',
-                        'background-color': 'data(fillColor)',
-                        'background-opacity': 0.9,
-                        'border-width': 'data(borderWidth)',
-                        'border-color': 'data(borderColor)',
-                        'opacity': 'data(nodeOpacity)',
-                        'label': 'data(displayLabel)',
-                        'text-valign': 'top',
-                        'text-halign': 'center',
-                        'text-margin-y': -6,
-                        'font-size': 'data(labelSize)',
-                        'font-weight': '600',
-                        'color': '#f5f7fb',
-                        'text-outline-color': '#0a0a14',
-                        'text-outline-width': 2,
-                        'text-max-width': '200px',
-                        'text-wrap': 'wrap',
-                        'min-zoomed-font-size': 6,
-                    } as any,
-                },
-                {
-                    selector: 'node[nodeRole = "task"][visibilityState != "hidden"]',
+                    selector: 'node[visibilityState != "hidden"]',
                     style: {
                         'shape': 'ellipse',
                         'width': 'data(nodeSize)',
                         'height': 'data(nodeSize)',
                         'background-color': 'data(fillColor)',
-                        'background-opacity': 0.88,
-                        'border-width': 'data(borderWidth)',
+                        'background-opacity': 0.85,
+                        'border-width': 1,
                         'border-color': 'data(borderColor)',
                         'opacity': 'data(nodeOpacity)',
-                        'label': 'data(displayLabel)',
-                        'text-valign': 'bottom',
-                        'text-halign': 'center',
-                        'text-margin-y': 6,
-                        'font-size': 'data(labelSize)',
-                        'font-weight': '500',
-                        'color': 'data(labelColor)',
-                        'text-outline-color': '#0a0a14',
-                        'text-outline-width': 1.5,
-                        'text-max-width': '180px',
-                        'text-wrap': 'wrap',
-                        'min-zoomed-font-size': 8,
-                    } as any,
-                },
-                // Half-visibility: dim labels for route stations only. Destinations
-                // and interchanges remain labelled at every priority state —
-                // this selector precedes the destination/interchange override
-                // below so isDestination/isInterchange always wins.
-                {
-                    selector: 'node[visibilityState = "half"][isDestination = 0][isInterchange = 0]',
-                    style: {
                         'label': '',
                         'text-opacity': 0,
                     } as any,
                 },
-                // Context stations: force small, no label
-                {
-                    selector: 'node[isOnRoute = 0]',
-                    style: {
-                        'width': 6,
-                        'height': 6,
-                        'label': '',
-                        'text-opacity': 0,
-                        'background-opacity': 0.6,
-                        'border-width': 0.5,
-                        'opacity': 0.4,
-                    } as any,
-                },
-                // Destinations: label always visible, larger outline glow,
-                // narrow text-max-width + wrap keeps multi-row terminal labels
-                // from running into each other.
+                // Terminals — big, priority-coloured, always labelled
                 {
                     selector: 'node[isDestination = 1]',
                     style: {
+                        'shape': 'round-rectangle',
+                        'background-opacity': 1,
+                        'border-width': 3,
+                        'border-color': '#ffffff',
                         'z-index': 9999,
                         'label': 'data(displayLabel)',
                         'text-opacity': 1,
-                        'font-size': 'data(labelSize)',
+                        'font-size': 13,
                         'font-weight': '700',
-                        'min-zoomed-font-size': 0,
-                        'text-outline-width': 3,
+                        'color': '#ffffff',
                         'text-outline-color': '#000',
-                        'text-max-width': '130px',
-                        'text-wrap': 'wrap',
-                        'text-margin-y': 14,
+                        'text-outline-width': 3,
                         'text-valign': 'bottom',
                         'text-halign': 'center',
-                    } as any,
-                },
-                // Interchanges: label always visible
-                {
-                    selector: 'node[isInterchange = 1]',
-                    style: {
-                        'z-index': 500,
-                        'label': 'data(displayLabel)',
-                        'text-opacity': 1,
+                        'text-margin-y': 12,
+                        'text-max-width': '160px',
+                        'text-wrap': 'wrap',
                         'min-zoomed-font-size': 0,
-                        'font-weight': '600',
                     } as any,
                 },
                 {
                     selector: 'node[visibilityState = "hidden"]',
                     style: { 'display': 'none' } as any,
                 },
-                // Edges — route edges: thick, semi-transparent, haystack
+                // Route edges — uniform
                 {
                     selector: 'edge[isOnRoute = 1][visibilityState != "hidden"]',
                     style: {
                         'width': 'data(edgeWidth)',
-                        'line-color': 'data(lineColor)',
-                        'opacity': 'data(edgeOpacity)',
+                        'line-color': '#94a3b8',
+                        'opacity': 0.5,
                         'curve-style': 'haystack',
                         'haystack-radius': 0,
                     } as any,
                 },
-                // Dependency route edges keep an arrow
-                {
-                    selector: 'edge[edgeRole = "dependency"][isOnRoute = 1][visibilityState != "hidden"]',
-                    style: {
-                        'curve-style': 'bezier', // haystack doesn't render arrows
-                        'target-arrow-shape': 'triangle',
-                        'target-arrow-color': 'data(lineColor)',
-                        'arrow-scale': 0.7,
-                        'control-point-step-size': 20,
-                    } as any,
-                },
-                // Non-route edges: thin, grey backdrop
+                // Non-route edges — thin grey dashed backdrop
                 {
                     selector: 'edge[isOnRoute = 0][visibilityState != "hidden"]',
                     style: {
                         'width': 1,
-                        'line-color': '#6b7280',
-                        'opacity': 'data(edgeOpacity)',
+                        'line-color': '#475569',
+                        'opacity': 0.2,
                         'curve-style': 'straight',
                         'line-style': 'dashed',
                     } as any,
@@ -824,6 +713,7 @@
         cy.one('layoutstop', () => { cy?.fit(undefined, 60); running = false; });
         // preset layouts don't always emit layoutstop; fit on next tick as backup
         setTimeout(() => { if (cy) cy.fit(undefined, 60); }, 0);
+        (window as any).__cy = cy;
 
         // ── Interactions ──
 
@@ -993,11 +883,12 @@
             return nodeById.has(src) && nodeById.has(tgt);
         });
         const routeData = computeRouteData(allMetroNodes, allMetroEdges);
+        const startingStations = computeStartingStations(allMetroNodes, allMetroEdges, routeData);
 
         for (const n of allMetroNodes) {
             const cyNode = cyInstance.getElementById(n.id);
             if (!cyNode.length) continue;
-            Object.entries(getNodeData(n, routeData)).forEach(([k, v]) => cyNode.data(k, v));
+            Object.entries(getNodeData(n, routeData, startingStations)).forEach(([k, v]) => cyNode.data(k, v));
         }
 
         cyInstance.edges().forEach(cyEdge => {
