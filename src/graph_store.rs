@@ -71,7 +71,7 @@ impl GraphStore {
     /// 6. Classify ready/blocked tasks
     pub fn build(docs: &[PkbDocument], pkb_root: &Path) -> Self {
         let nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
-        Self::build_internal(nodes, pkb_root)
+        Self::build_internal(nodes, pkb_root, true)
     }
 
     /// Build from a directory: scan, parse (with relative paths), build graph.
@@ -91,13 +91,26 @@ impl GraphStore {
     /// directory walk.
     pub fn rebuild_from_nodes(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
         let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
-        Self::build_internal(nodes_vec, pkb_root)
+        Self::build_internal(nodes_vec, pkb_root, true)
+    }
+
+    /// Fast incremental rebuild: skips centrality metrics (PageRank, betweenness).
+    ///
+    /// A single-file update shifts PageRank/betweenness by a negligible amount,
+    /// and recomputing them is O(V*E) — the dominant cost of a rebuild at
+    /// multi-thousand-node PKB sizes. The previous values on the cloned nodes
+    /// are preserved (they drift slowly until the next full rebuild).
+    pub fn rebuild_from_nodes_fast(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
+        let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
+        Self::build_internal(nodes_vec, pkb_root, false)
     }
 
     /// Internal helper to build GraphStore from a vector of nodes.
     ///
     /// This is the core pipeline shared by build() and rebuild_from_nodes().
-    fn build_internal(mut nodes: Vec<GraphNode>, pkb_root: &Path) -> Self {
+    /// When `include_centrality` is false, PageRank and betweenness computation
+    /// are skipped — any pre-existing values on the input nodes are retained.
+    fn build_internal(mut nodes: Vec<GraphNode>, pkb_root: &Path, include_centrality: bool) -> Self {
         // 2. Build lookup maps
         // Node paths may be relative — reconstruct absolute for canonicalize & link resolution
         let mut id_map: HashMap<String, String> = HashMap::new(); // permalink -> abs_path
@@ -146,8 +159,13 @@ impl GraphStore {
         // 5. Compute degree metrics (indegree/outdegree)
         compute_degree_metrics(&mut nodes, &edges);
 
-        // 6. Compute centrality metrics (PageRank, betweenness)
-        compute_centrality_metrics(&mut nodes, &edges);
+        // 6. Compute centrality metrics (PageRank, betweenness).
+        //    Skipped on incremental rebuilds — O(V*E) dominates write latency at
+        //    multi-thousand-node PKB sizes, and single-file updates barely shift
+        //    these scores. Prior values on the input nodes are retained instead.
+        if include_centrality {
+            compute_centrality_metrics(&mut nodes, &edges);
+        }
 
         // 7. Compute downstream metrics (BFS through blocks/soft_blocks/children)
         compute_downstream_metrics(&mut nodes);
