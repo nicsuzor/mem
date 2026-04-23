@@ -430,14 +430,16 @@ impl PkbSearchServer {
             if !is_task {
                 continue;
             }
-            if !include_subtasks && r.doc_type.as_deref() == Some("subtask") {
+            let is_subtask = r.doc_type.as_deref().map(|t| t.eq_ignore_ascii_case("subtask")).unwrap_or(false);
+            let subtask_allowed = include_subtasks || type_filter.as_ref().map(|f| f.contains("subtask")).unwrap_or(false);
+            if is_subtask && !subtask_allowed {
                 continue;
             }
             if let Some(ref filter) = type_filter {
                 let matches = r
                     .doc_type
                     .as_deref()
-                    .map(|t| filter.contains(&t.to_ascii_lowercase()))
+                    .map(|t| filter.iter().any(|f| t.eq_ignore_ascii_case(f)))
                     .unwrap_or(false);
                 if !matches {
                     continue;
