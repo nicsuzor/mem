@@ -118,12 +118,15 @@ export const PRIORITY_BORDERS: Record<number, string> = Object.fromEntries(
 
 export const INCOMPLETE_STATUSES = new Set([
     "inbox",
+    "draft",
     "ready",
+    "queued",
     "active",
     "in_progress",
     "blocked",
     "waiting",
     "review",
+    "merge_ready",
     "decomposing",
     "todo",
     "pending",

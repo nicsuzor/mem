@@ -39,6 +39,7 @@
     let forceRandomizeNonce = 0;
     let metroViewRef: MetroView;
     let metroRunning = false;
+    let metroShowContext = false;
     let groupsRef: GroupsView;
     let groupsRunning = false;
     let groupsRestartNonce = 0;
@@ -449,7 +450,7 @@
             {/if}
             <div class="flex-1 relative z-0 h-full">
                 {#if activeLayout === "metro"}
-                    <MetroView bind:this={metroViewRef} bind:running={metroRunning} />
+                    <MetroView bind:this={metroViewRef} bind:running={metroRunning} showContext={metroShowContext} />
                 {:else}
                     <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
                         {#if containerGroup}
@@ -476,8 +477,8 @@
                         else if (activeLayout === "groups") groupsRunning ? groupsRef?.toggleRunning() : groupsRestartNonce += 1;
                         else forceRunning ? forceRunning = false : forceRestartNonce += 1;
                     }}>
-                        <span class="material-symbols-outlined text-sm">{(activeLayout === "metro" ? metroRunning : activeLayout === "groups" ? groupsRunning : forceRunning) ? 'pause' : 'play_arrow'}</span>
-                        <span>{(activeLayout === "metro" ? metroRunning : activeLayout === "groups" ? groupsRunning : forceRunning) ? 'Stop' : 'Start'} Layout</span>
+                        <span class="material-symbols-outlined text-sm">{activeLayout === "metro" ? 'refresh' : ((activeLayout === "groups" ? groupsRunning : forceRunning) ? 'pause' : 'play_arrow')}</span>
+                        <span>{activeLayout === "metro" ? 'Recompute' : ((activeLayout === "groups" ? groupsRunning : forceRunning) ? 'Stop Layout' : 'Start Layout')}</span>
                     </button>
                     {#if activeLayout === "force"}
                         <button class="graph-control-button" onclick={() => forceRandomizeNonce += 1}>
@@ -489,6 +490,12 @@
                         <button class="graph-control-button" onclick={() => groupsRandomizeNonce += 1}>
                             <span class="material-symbols-outlined text-sm">shuffle</span>
                             <span>Randomise</span>
+                        </button>
+                    {/if}
+                    {#if activeLayout === "metro"}
+                        <button class="graph-control-button" class:graph-control-button-active={metroShowContext} onclick={() => metroShowContext = !metroShowContext}>
+                            <span class="material-symbols-outlined text-sm">{metroShowContext ? 'visibility' : 'visibility_off'}</span>
+                            <span>{metroShowContext ? 'Hide context' : 'Show context'}</span>
                         </button>
                     {/if}
                 </div>

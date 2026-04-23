@@ -12,18 +12,36 @@
     let cy: cytoscape.Core | null = null;
 
     export let running = false;
+    // Context stations (nodes on no route) are noise for the "routes to
+    // destinations" question — hidden by default. Toggle via the `Show context`
+    // control; when enabled, only the top-N by downstream_weight render.
+    export let showContext = false;
 
     const HIDDEN_TYPES = new Set(['project']);
+    const CONTAINER_TYPES = new Set(['goal', 'epic']);
     const EPIC_TYPES = new Set(['epic', 'goal']);
     const DEFAULT_PROJECT_COLOR = 'hsl(220, 12%, 46%)';
 
     // Layout constants
-    const LANE_WIDTH = 240;
     const ROW_HEIGHT = 120;
-    const TERMINAL_Y = 0;
     const CONTEXT_STRIP_Y = 140;
+    const CONTEXT_CAP = 200;           // hard cap on rendered context stations
+    const TERMINAL_ROW_GAP = 32;       // vertical spacing between terminal rows
+    const TERMINAL_PER_ROW = 12;       // target number of terminals per row
+    const GOAL_PARENT_HOP_CAP = 3;     // limit goal-destination descendant walk depth
     const GRID_X = 36;
     const GRID_Y = 40;
+
+    // Hover tooltip state
+    let tooltip: {
+        x: number;
+        y: number;
+        title: string;
+        status: string;
+        priority: number;
+        project: string | null;
+        destinations: string[];
+    } | null = null;
 
     // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -71,6 +89,47 @@
         destIndex: Map<string, number>;     // destId -> ordinal position
     }
 
+    // Build three adjacency maps from the flipped-parent edge set. Parent edges
+    // arrive from prepareGraphData with source=parent, target=child. We need
+    // both directions available because route direction depends on destination
+    // shape:
+    //   - container destinations (goal / epic with incomplete children) walk
+    //     parent→child to collect descendants
+    //   - leaf destinations do not walk parent at all — their route is the
+    //     transitive depends_on chain
+    interface Adjacencies {
+        deps: Map<string, Set<string>>;        // dependent -> blocker
+        parentDown: Map<string, Set<string>>;  // parent -> child
+    }
+
+    function buildAdjacencies(nodes: GraphNode[], edges: GraphEdge[]): Adjacencies {
+        const deps = new Map<string, Set<string>>();
+        const parentDown = new Map<string, Set<string>>();
+        for (const n of nodes) {
+            deps.set(n.id, new Set());
+            parentDown.set(n.id, new Set());
+        }
+        for (const e of edges) {
+            const src = typeof e.source === 'object' ? e.source.id : e.source;
+            const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+            if (!deps.has(src) || !deps.has(tgt)) continue;
+            if (e.type === 'depends_on' || e.type === 'soft_depends_on') {
+                deps.get(src)!.add(tgt);
+            } else if (e.type === 'parent') {
+                parentDown.get(src)!.add(tgt);
+            }
+        }
+        return { deps, parentDown };
+    }
+
+    // Destination shape decides whether it's a container (pulls descendants)
+    // or a leaf (route is pure depends_on chain). In practice only goal-type
+    // destinations behave as containers — epic destinations only enter the
+    // destination set if they have no incomplete children (see computeDestinations).
+    function isContainerDestination(dest: GraphNode): boolean {
+        return CONTAINER_TYPES.has((dest.type || '').toLowerCase());
+    }
+
     function computeDestinations(nodes: GraphNode[]): GraphNode[] {
         const parentIds = new Set<string>();
         const incompleteChildIds = new Set<string>();
@@ -98,27 +157,6 @@
             });
     }
 
-    // Build adjacency: for each node n, which other nodes are "upstream" from n
-    // (i.e. complete the destination requires completing them). We traverse:
-    //   - depends_on / soft_depends_on edges where source==n -> target is blocker
-    //   - parent edges where source==n (parent side) -> target is child (belongs to n)
-    function buildUpstreamAdjacency(nodes: GraphNode[], edges: GraphEdge[]): Map<string, Set<string>> {
-        const adj = new Map<string, Set<string>>();
-        for (const n of nodes) adj.set(n.id, new Set());
-        for (const e of edges) {
-            const src = typeof e.source === 'object' ? e.source.id : e.source;
-            const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-            if (!adj.has(src) || !adj.has(tgt)) continue;
-            if (e.type === 'depends_on' || e.type === 'soft_depends_on') {
-                adj.get(src)!.add(tgt);
-            } else if (e.type === 'parent') {
-                // prepareGraphData flips parent edges so source=parent, target=child
-                adj.get(src)!.add(tgt);
-            }
-        }
-        return adj;
-    }
-
     function computeRouteData(nodes: GraphNode[], edges: GraphEdge[]): RouteData {
         const destinations = computeDestinations(nodes);
         const destIndex = new Map<string, number>();
@@ -132,15 +170,22 @@
             return { destinations, routes, depth, destIndex };
         }
 
-        const adj = buildUpstreamAdjacency(nodes, edges);
+        const { deps, parentDown } = buildAdjacencies(nodes, edges);
         const nodeById = new Map(nodes.map(n => [n.id, n]));
 
-        // BFS from each destination; record membership + min distance per node
+        // Per-destination BFS. Direction is chosen by destination shape:
+        //   - container (goal/epic or has incomplete children): walk parent→child
+        //     descendants (hop-capped) + deps
+        //   - leaf: walk deps only (parent ancestors aren't blockers of a leaf;
+        //     including them would make every shared parent an interchange)
         for (const dest of destinations) {
+            const container = isContainerDestination(dest);
             const seen = new Set<string>([dest.id]);
-            const queue: Array<{ id: string; d: number }> = [{ id: dest.id, d: 0 }];
+            const queue: Array<{ id: string; d: number; parentHops: number }> = [
+                { id: dest.id, d: 0, parentHops: 0 },
+            ];
             while (queue.length > 0) {
-                const { id, d } = queue.shift()!;
+                const { id, d, parentHops } = queue.shift()!;
                 const node = nodeById.get(id);
                 if (!node) continue;
                 // Only traverse through incomplete nodes (completed = already-traversed track)
@@ -150,18 +195,32 @@
                 const prev = depth.get(id);
                 if (prev === undefined || d < prev) depth.set(id, d);
 
-                const upstream = adj.get(id);
-                if (!upstream) continue;
-                for (const next of upstream) {
-                    if (seen.has(next)) continue;
-                    seen.add(next);
-                    queue.push({ id: next, d: d + 1 });
+                // deps always contribute
+                const blockers = deps.get(id);
+                if (blockers) {
+                    for (const next of blockers) {
+                        if (seen.has(next)) continue;
+                        seen.add(next);
+                        queue.push({ id: next, d: d + 1, parentHops });
+                    }
+                }
+                // parent descendants contribute for container destinations
+                if (container && parentHops < GOAL_PARENT_HOP_CAP) {
+                    const children = parentDown.get(id);
+                    if (children) {
+                        for (const next of children) {
+                            if (seen.has(next)) continue;
+                            seen.add(next);
+                            queue.push({ id: next, d: d + 1, parentHops: parentHops + 1 });
+                        }
+                    }
                 }
             }
         }
 
         return { destinations, routes, depth, destIndex };
     }
+
 
     // ─── Target-anchored layout ─────────────────────────────────────────────
 
@@ -171,32 +230,44 @@
         width: number,
         height: number
     ): Map<string, { x: number; y: number }> {
-        const { destinations, routes, depth, destIndex } = routeData;
+        const { destinations, routes, depth } = routeData;
         const positions = new Map<string, { x: number; y: number }>();
 
         const N = Math.max(1, destinations.length);
         const xMin = width * 0.1;
         const xMax = width * 0.9;
         const xSpan = xMax - xMin;
+
+        // Multi-row terminal staggering: when there are many destinations,
+        // cycle them through `rowCount` rows so adjacent labels don't collide.
+        const rowCount = Math.max(1, Math.min(4, Math.ceil(N / TERMINAL_PER_ROW)));
+        const terminalYBase = height - 140;
+
         const destinationX = new Map<string, number>();
+        const destinationY = new Map<string, number>();
         destinations.forEach((d, i) => {
             const x = N === 1 ? width / 2 : xMin + (i * xSpan) / (N - 1);
+            const row = i % rowCount;
+            // lower rows (closer to the bottom) get larger y; we stagger upward
+            // so there's always label-clear space below the bottom-most row
+            const y = terminalYBase - row * TERMINAL_ROW_GAP;
             destinationX.set(d.id, x);
+            destinationY.set(d.id, y);
         });
 
         // Max depth observed — used to size the route area
         let maxDepth = 0;
         for (const d of depth.values()) if (d > maxDepth) maxDepth = d;
 
-        const routeAreaTop = height - (maxDepth + 1) * ROW_HEIGHT - 80;
-        const yMax = height - 140; // terminal band y
+        const topOfTerminals = terminalYBase - (rowCount - 1) * TERMINAL_ROW_GAP;
+        const routeAreaTop = topOfTerminals - (maxDepth + 1) * ROW_HEIGHT - 40;
 
-        // Destinations at the bottom
+        // Destinations at the bottom, staggered y per row
         for (const d of destinations) {
-            positions.set(d.id, { x: destinationX.get(d.id)!, y: yMax });
+            positions.set(d.id, { x: destinationX.get(d.id)!, y: destinationY.get(d.id)! });
         }
 
-        // Route nodes: x = mean of serving destinations' anchors, y = yMax - depth*rowHeight
+        // Route nodes: x = mean of serving destinations' anchors, y = topOfTerminals - depth*rowHeight
         const contextNodes: GraphNode[] = [];
         for (const n of metroNodes) {
             if (positions.has(n.id)) continue; // skip destinations
@@ -209,22 +280,39 @@
             let xSum = 0;
             for (const did of rs) xSum += destinationX.get(did) ?? width / 2;
             const x = xSum / rs.size;
-            const y = yMax - d * ROW_HEIGHT;
+            const y = topOfTerminals - d * ROW_HEIGHT;
             positions.set(n.id, { x, y });
         }
 
-        // Context nodes sit in a strip above the route area, spread by id hash
-        const contextY = Math.min(CONTEXT_STRIP_Y, routeAreaTop - 60);
-        const contextXSpan = width * 0.9;
-        const contextXMin = width * 0.05;
-        contextNodes.forEach((n, i) => {
-            const h = idHash(n.id);
-            const x = contextXMin + (h % 10000) / 10000 * contextXSpan;
-            const y = contextY - ((h >> 16) % 4) * 28;
-            positions.set(n.id, { x, y });
-        });
+        // Context stations: only lay out a top-N slice, bucketed above the
+        // route area. Everything else stays unpositioned and is excluded from
+        // the cytoscape element set in buildGraph. Callers control this via
+        // the `showContext` prop; when false, `contextNodes` will not appear
+        // in the node list (filtered upstream), and this branch is a no-op.
+        if (contextNodes.length > 0) {
+            // Preserve top-CONTEXT_CAP by downstream_weight
+            const ranked = contextNodes
+                .slice()
+                .sort((a, b) => (b.dw || 0) - (a.dw || 0))
+                .slice(0, CONTEXT_CAP);
+            const contextY = Math.min(CONTEXT_STRIP_Y, routeAreaTop - 60);
+            const contextXSpan = width * 0.9;
+            const contextXMin = width * 0.05;
+            const cols = Math.max(1, Math.ceil(Math.sqrt(ranked.length)));
+            ranked.forEach((n, i) => {
+                const h = idHash(n.id);
+                const col = i % cols;
+                const row = Math.floor(i / cols);
+                const jitter = (h % 500) / 500 - 0.5; // ±0.5
+                const x = contextXMin + ((col + 0.5) / cols) * contextXSpan + jitter * 10;
+                const y = Math.max(20, contextY - row * 24);
+                positions.set(n.id, { x, y });
+            });
+        }
 
-        // Collision spread: bucket by grid cell and offset siblings along x
+        // Collision spread: bucket by grid cell and offset siblings along x.
+        // Tie-break by stable id hash — sorting by id string meant re-renders
+        // with added/removed ids shifted bucket siblings, breaking stability.
         const buckets = new Map<string, string[]>();
         for (const [id, p] of positions) {
             const key = `${Math.round(p.x / GRID_X)}|${Math.round(p.y / GRID_Y)}`;
@@ -234,7 +322,7 @@
         }
         for (const ids of buckets.values()) {
             if (ids.length <= 1) continue;
-            ids.sort();
+            ids.sort((a, b) => idHash(a) - idHash(b));
             ids.forEach((id, i) => {
                 const p = positions.get(id)!;
                 const offset = (i - (ids.length - 1) / 2) * (GRID_X * 0.9);
@@ -304,8 +392,13 @@
 
         const projectLineColor = getProjectLineColor(node.project);
 
+        const completed = !isIncomplete(node);
         const nodeSize = getNodeSize(node, isDestination, isInterchange, isOnRoute);
         const labelSize = getLabelSize(node, isDestination, isInterchange);
+        // Completed nodes are desaturated (not just dimmed) to distinguish
+        // "already-traversed track" from "live route" at a glance.
+        const fillColor = completed ? desaturateHsl(projectLineColor, 0.75) : projectLineColor;
+        const labelColor = completed ? desaturateHsl(projectLineColor, 0.5) : projectLineColor;
 
         let borderColor = 'rgba(255,255,255,0.18)';
         let borderWidth = 0.9;
@@ -324,7 +417,7 @@
         const nodeOpacity = isIncomplete(node) ? baseOpacity : baseOpacity * 0.38;
 
         // Label visibility policy:
-        //  - destinations + interchanges: always labelled
+        //  - destinations + interchanges: always labelled (even when priority-dimmed)
         //  - route stations: labelled when priority bright
         //  - context stations: no label at default zoom
         let displayLabel: string;
@@ -350,11 +443,11 @@
             routeIds: Array.from(rs).join(','),
             nodeSize,
             labelSize,
-            fillColor: projectLineColor,
-            labelColor: projectLineColor,
+            fillColor,
+            labelColor,
             borderColor,
             borderWidth,
-            isCompleted: !isIncomplete(node),
+            isCompleted: completed,
             nodeOpacity,
         };
     }
@@ -377,22 +470,35 @@
         return 1;
     }
 
-    // For a route edge, colour by the destination whose route it serves.
-    // Single-route: that destination's project colour. Multi-route: the
-    // alphabetically-first destination's colour (see spec — full per-route
-    // stacking is a follow-up).
+    // Shared destinations that both endpoints are on the route to.
+    function sharedRouteIds(sourceRoutes: Set<string>, targetRoutes: Set<string>): string[] {
+        const shared: string[] = [];
+        for (const r of sourceRoutes) if (targetRoutes.has(r)) shared.push(r);
+        shared.sort();
+        return shared;
+    }
+
+    // For a collapsed route edge (single stroke), pick the dominant colour —
+    // used by filter-update code. buildGraph emits per-route strokes for
+    // multi-route edges so browser alpha compositing handles the blend.
     function getEdgeLineColor(
-        sourceRoutes: Set<string>,
-        targetRoutes: Set<string>,
+        shared: string[],
         destById: Map<string, GraphNode>,
         fallback: string
     ): string {
-        const shared: string[] = [];
-        for (const r of sourceRoutes) if (targetRoutes.has(r)) shared.push(r);
         if (shared.length === 0) return fallback;
-        shared.sort();
         const dest = destById.get(shared[0]);
         return getProjectLineColor(dest?.project);
+    }
+
+    // HSL desaturation — projectColor returns hsl(...).
+    function desaturateHsl(hsl: string, amount: number): string {
+        const m = hsl.match(/hsl\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)%\s*,\s*(-?\d+(?:\.\d+)?)%\s*\)/);
+        if (!m) return hsl;
+        const h = m[1];
+        const s = Math.max(0, parseFloat(m[2]) * (1 - amount));
+        const l = parseFloat(m[3]);
+        return `hsl(${h}, ${s.toFixed(1)}%, ${l}%)`;
     }
 
     // ─── Cytoscape lifecycle ────────────────────────────────────────────────
@@ -404,16 +510,40 @@
         const width = containerEl.clientWidth || 1200;
         const height = containerEl.clientHeight || 800;
 
-        const metroNodes = $graphData.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
+        const allMetroNodes = $graphData.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
+        const nodeByIdAll = new Map(allMetroNodes.map(n => [n.id, n]));
+        const allMetroEdges = $graphData.links.filter(e => {
+            const src = typeof e.source === 'object' ? e.source.id : e.source;
+            const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+            return nodeByIdAll.has(src) && nodeByIdAll.has(tgt);
+        });
+
+        const routeData = computeRouteData(allMetroNodes, allMetroEdges);
+        const destById = new Map(routeData.destinations.map(d => [d.id, d]));
+
+        // Default view hides context stations. When showContext is true, the
+        // top-CONTEXT_CAP by downstream_weight are kept in a dedicated strip.
+        let contextKeep: Set<string> | null = null;
+        if (showContext) {
+            const ranked = allMetroNodes
+                .filter(n => (routeData.routes.get(n.id)?.size ?? 0) === 0)
+                .slice()
+                .sort((a, b) => (b.dw || 0) - (a.dw || 0))
+                .slice(0, CONTEXT_CAP);
+            contextKeep = new Set(ranked.map(n => n.id));
+        }
+        const metroNodes = allMetroNodes.filter(n => {
+            const onRoute = (routeData.routes.get(n.id)?.size ?? 0) > 0;
+            if (onRoute) return true;
+            return contextKeep ? contextKeep.has(n.id) : false;
+        });
         const nodeById = new Map(metroNodes.map(n => [n.id, n]));
-        const metroEdges = $graphData.links.filter(e => {
+        const metroEdges = allMetroEdges.filter(e => {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             return nodeById.has(src) && nodeById.has(tgt);
         });
 
-        const routeData = computeRouteData(metroNodes, metroEdges);
-        const destById = new Map(routeData.destinations.map(d => [d.id, d]));
         const positions = computePositions(metroNodes, routeData, width, height);
 
         const cyNodes = metroNodes.map(n => ({
@@ -421,38 +551,65 @@
             position: positions.get(n.id) ?? { x: width / 2, y: height / 2 },
         }));
 
-        const cyEdges = metroEdges.map((edge, index) => {
+        // Per-route strokes for interchange edges (Tokyo "duplicate-per-line" trick).
+        // An edge with shared.length >= 2 emits one stroke per shared destination;
+        // each stroke is coloured by that destination's project at low opacity so
+        // browser alpha compositing produces the blend naturally.
+        const cyEdges: any[] = [];
+        metroEdges.forEach((edge, index) => {
             const src = typeof edge.source === 'object' ? edge.source.id : edge.source;
             const tgt = typeof edge.target === 'object' ? edge.target.id : edge.target;
             const sourceNode = nodeById.get(src)!;
             const targetNode = nodeById.get(tgt)!;
             const sourceRoutes = routeData.routes.get(src) ?? new Set();
             const targetRoutes = routeData.routes.get(tgt) ?? new Set();
-            let shared = 0;
-            for (const r of sourceRoutes) if (targetRoutes.has(r)) shared++;
-            const isOnRoute = shared >= 1;
+            const shared = sharedRouteIds(sourceRoutes, targetRoutes);
+            const isOnRoute = shared.length >= 1;
             const edgeRole = getEdgeRole(edge.type);
             const sourceVisibility = priorityVisibility(sourceNode.priority);
             const targetVisibility = priorityVisibility(targetNode.priority);
             const visibilityState = getEdgeVisibilityState(sourceVisibility, targetVisibility);
             const fallback = getProjectLineColor(sourceNode.project || targetNode.project);
-            const lineColor = isOnRoute
-                ? getEdgeLineColor(sourceRoutes, targetRoutes, destById, fallback)
-                : '#6b7280';
+            const baseOpacity = getEdgeOpacity(visibilityState, isOnRoute);
+            const edgeWidth = getEdgeWidth(edgeRole, isOnRoute);
 
-            return {
-                data: {
-                    id: `e${index}`,
-                    source: src,
-                    target: tgt,
-                    edgeRole,
-                    visibilityState,
-                    isOnRoute: isOnRoute ? 1 : 0,
-                    lineColor,
-                    edgeOpacity: getEdgeOpacity(visibilityState, isOnRoute),
-                    edgeWidth: getEdgeWidth(edgeRole, isOnRoute),
-                },
-            };
+            if (isOnRoute && shared.length >= 2) {
+                // Emit one stroke per shared destination (blended by compositing).
+                const perStrokeOpacity = baseOpacity * 0.85;
+                shared.forEach((destId, k) => {
+                    const dest = destById.get(destId);
+                    cyEdges.push({
+                        data: {
+                            id: `e${index}_r${k}`,
+                            source: src,
+                            target: tgt,
+                            edgeRole,
+                            visibilityState,
+                            isOnRoute: 1,
+                            lineColor: getProjectLineColor(dest?.project),
+                            edgeOpacity: perStrokeOpacity,
+                            edgeWidth,
+                        },
+                    });
+                });
+            } else {
+                const lineColor = isOnRoute
+                    ? getEdgeLineColor(shared, destById, fallback)
+                    : '#6b7280';
+                cyEdges.push({
+                    data: {
+                        id: `e${index}`,
+                        source: src,
+                        target: tgt,
+                        edgeRole,
+                        visibilityState,
+                        isOnRoute: isOnRoute ? 1 : 0,
+                        lineColor,
+                        edgeOpacity: baseOpacity,
+                        edgeWidth,
+                    },
+                });
+            }
         });
 
         cy = cytoscape({
@@ -510,25 +667,15 @@
                         'min-zoomed-font-size': 8,
                     } as any,
                 },
-                // Destinations: label always visible, larger outline glow
+                // Half-visibility: dim labels for route stations only. Destinations
+                // and interchanges remain labelled at every priority state —
+                // this selector precedes the destination/interchange override
+                // below so isDestination/isInterchange always wins.
                 {
-                    selector: 'node[isDestination = 1]',
+                    selector: 'node[visibilityState = "half"][isDestination = 0][isInterchange = 0]',
                     style: {
-                        'z-index': 9999,
-                        'font-size': 'data(labelSize)',
-                        'font-weight': '700',
-                        'min-zoomed-font-size': 0,
-                        'text-outline-width': 3,
-                        'text-outline-color': '#000',
-                    } as any,
-                },
-                // Interchanges: label always visible
-                {
-                    selector: 'node[isInterchange = 1]',
-                    style: {
-                        'z-index': 500,
-                        'min-zoomed-font-size': 0,
-                        'font-weight': '600',
+                        'label': '',
+                        'text-opacity': 0,
                     } as any,
                 },
                 // Context stations: force small, no label
@@ -544,11 +691,36 @@
                         'opacity': 0.4,
                     } as any,
                 },
+                // Destinations: label always visible, larger outline glow,
+                // narrow text-max-width + wrap keeps multi-row terminal labels
+                // from running into each other.
                 {
-                    selector: 'node[visibilityState = "half"]',
+                    selector: 'node[isDestination = 1]',
                     style: {
-                        'label': '',
-                        'text-opacity': 0,
+                        'z-index': 9999,
+                        'label': 'data(displayLabel)',
+                        'text-opacity': 1,
+                        'font-size': 'data(labelSize)',
+                        'font-weight': '700',
+                        'min-zoomed-font-size': 0,
+                        'text-outline-width': 3,
+                        'text-outline-color': '#000',
+                        'text-max-width': '130px',
+                        'text-wrap': 'wrap',
+                        'text-margin-y': 14,
+                        'text-valign': 'bottom',
+                        'text-halign': 'center',
+                    } as any,
+                },
+                // Interchanges: label always visible
+                {
+                    selector: 'node[isInterchange = 1]',
+                    style: {
+                        'z-index': 500,
+                        'label': 'data(displayLabel)',
+                        'text-opacity': 1,
+                        'min-zoomed-font-size': 0,
+                        'font-weight': '600',
                     } as any,
                 },
                 {
@@ -677,17 +849,51 @@
             cy!.elements().addClass('dimmed');
             node.removeClass('dimmed').addClass('highlighted');
             node.neighborhood().removeClass('dimmed').addClass('highlighted');
+
+            // Tooltip: title, status, destinations the station serves.
+            const raw = nodeById.get(id);
+            const rs = routeData.routes.get(id);
+            const destinations: string[] = [];
+            if (rs) {
+                for (const destId of rs) {
+                    const d = destById.get(destId);
+                    if (d) destinations.push(d.label);
+                }
+            }
+            const pos = node.renderedPosition();
+            tooltip = {
+                x: pos.x,
+                y: pos.y - (node.renderedHeight ? node.renderedHeight() : 20) / 2,
+                title: raw?.label || id,
+                status: raw?.status || '',
+                priority: raw?.priority ?? -1,
+                project: raw?.project ?? null,
+                destinations,
+            };
+        });
+
+        cy.on('mousemove', 'node', (evt) => {
+            if (!tooltip) return;
+            const node = evt.target;
+            const pos = node.renderedPosition();
+            tooltip = {
+                ...tooltip,
+                x: pos.x,
+                y: pos.y - (node.renderedHeight ? node.renderedHeight() : 20) / 2,
+            };
         });
 
         cy.on('mouseout', 'node', () => {
             selection.update(s => ({ ...s, hoveredNodeId: null }));
             cy!.elements().removeClass('dimmed').removeClass('highlighted');
+            tooltip = null;
         });
     }
 
-    // Parent component binds a play/stop control; since this view has no live
-    // simulation, toggleRunning recomputes layout and animates nodes to new
-    // positions. `running` flips true for the animation window only.
+    // Parent component binds a play/stop control. Metro has no live simulation,
+    // so this re-runs the preset layout and animates nodes to their new
+    // positions — useful after filter changes. The control is surfaced to the
+    // user as "Recompute" in Metro mode (see parent view chrome).
     export function toggleRunning() {
         if (!cy || !containerEl || !$graphData) return;
         const width = containerEl.clientWidth || 1200;
@@ -727,52 +933,50 @@
 
     // Rebuild on structural changes
     let lastStructureKey = '';
-    $: if (containerEl && $graphData && $graphStructureKey !== lastStructureKey) {
+    let lastShowContext = showContext;
+    $: if (containerEl && $graphData && ($graphStructureKey !== lastStructureKey || showContext !== lastShowContext)) {
         lastStructureKey = $graphStructureKey;
+        lastShowContext = showContext;
         buildGraph();
     }
 
-    // Refresh node data (visibility, labels) when filters change but structure doesn't
+    // Refresh node/edge visibility data when priority filters change but
+    // structure doesn't. Edges may have been split into per-route strokes —
+    // we iterate cy's actual edges and refresh each by source/target.
     $: if (cy && $graphData && $graphStructureKey === lastStructureKey) {
         const cyInstance = cy;
-        const metroNodes = $graphData.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
-        const nodeById = new Map(metroNodes.map(n => [n.id, n]));
-        const metroEdges = $graphData.links.filter(e => {
+        const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
+        const allMetroNodes = $graphData.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
+        const allMetroEdges = $graphData.links.filter(e => {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             return nodeById.has(src) && nodeById.has(tgt);
         });
-        const routeData = computeRouteData(metroNodes, metroEdges);
-        const destById = new Map(routeData.destinations.map(d => [d.id, d]));
+        const routeData = computeRouteData(allMetroNodes, allMetroEdges);
 
-        for (const n of metroNodes) {
+        for (const n of allMetroNodes) {
             const cyNode = cyInstance.getElementById(n.id);
             if (!cyNode.length) continue;
             Object.entries(getNodeData(n, routeData)).forEach(([k, v]) => cyNode.data(k, v));
         }
 
-        metroEdges.forEach((edge, index) => {
-            const src = typeof edge.source === 'object' ? edge.source.id : edge.source;
-            const tgt = typeof edge.target === 'object' ? edge.target.id : edge.target;
-            const sourceNode = nodeById.get(src);
-            const targetNode = nodeById.get(tgt);
+        cyInstance.edges().forEach(cyEdge => {
+            const src = cyEdge.source().id();
+            const tgt = cyEdge.target().id();
+            const sourceNode = nodeById.get(src) as any;
+            const targetNode = nodeById.get(tgt) as any;
             if (!sourceNode || !targetNode) return;
-            const cyEdge = cyInstance.getElementById(`e${index}`);
-            if (!cyEdge.length) return;
             const sourceRoutes = routeData.routes.get(src) ?? new Set();
             const targetRoutes = routeData.routes.get(tgt) ?? new Set();
-            let shared = 0;
-            for (const r of sourceRoutes) if (targetRoutes.has(r)) shared++;
-            const isOnRoute = shared >= 1;
-            const visibilityState = getEdgeVisibilityState(priorityVisibility(sourceNode.priority), priorityVisibility(targetNode.priority));
-            const edgeRole = getEdgeRole(edge.type);
-            const fallback = getProjectLineColor(sourceNode.project || targetNode.project);
-            cyEdge.data('edgeRole', edgeRole);
+            const shared = sharedRouteIds(sourceRoutes, targetRoutes);
+            const isOnRoute = shared.length >= 1;
+            const visibilityState = getEdgeVisibilityState(
+                priorityVisibility(sourceNode.priority),
+                priorityVisibility(targetNode.priority),
+            );
             cyEdge.data('visibilityState', visibilityState);
             cyEdge.data('isOnRoute', isOnRoute ? 1 : 0);
-            cyEdge.data('lineColor', isOnRoute ? getEdgeLineColor(sourceRoutes, targetRoutes, destById, fallback) : '#6b7280');
             cyEdge.data('edgeOpacity', getEdgeOpacity(visibilityState, isOnRoute));
-            cyEdge.data('edgeWidth', getEdgeWidth(edgeRole, isOnRoute));
         });
     }
 
@@ -787,10 +991,36 @@
     });
 </script>
 
-<div
-    bind:this={containerEl}
-    class="w-full h-full bg-background/50"
-></div>
+<div class="metro-root">
+    <div
+        bind:this={containerEl}
+        class="w-full h-full bg-background/50 metro-canvas"
+    ></div>
+    {#if tooltip}
+        <div
+            class="metro-tooltip"
+            style="transform: translate({tooltip.x}px, {tooltip.y}px);"
+        >
+            <div class="metro-tooltip-title">{tooltip.title}</div>
+            <div class="metro-tooltip-meta">
+                {#if tooltip.priority >= 0}<span>P{tooltip.priority}</span>{/if}
+                {#if tooltip.status}<span>{tooltip.status}</span>{/if}
+                {#if tooltip.project}<span>{tooltip.project}</span>{/if}
+            </div>
+            {#if tooltip.destinations.length}
+                <div class="metro-tooltip-dest-label">On routes to:</div>
+                <ul class="metro-tooltip-dest-list">
+                    {#each tooltip.destinations.slice(0, 6) as d}
+                        <li>{d}</li>
+                    {/each}
+                    {#if tooltip.destinations.length > 6}
+                        <li class="metro-tooltip-more">+{tooltip.destinations.length - 6} more</li>
+                    {/if}
+                </ul>
+            {/if}
+        </div>
+    {/if}
+</div>
 
 <style>
     :global(.dimmed) {
@@ -808,5 +1038,64 @@
     :global(.route-active) {
         opacity: 1 !important;
         transition: opacity 0.2s ease;
+    }
+
+    .metro-root {
+        position: relative;
+        width: 100%;
+        height: 100%;
+    }
+    .metro-canvas {
+        width: 100%;
+        height: 100%;
+    }
+    .metro-tooltip {
+        position: absolute;
+        top: 0;
+        left: 0;
+        pointer-events: none;
+        max-width: 280px;
+        padding: 8px 10px;
+        background: rgba(10, 14, 20, 0.94);
+        color: #f5f7fb;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 6px;
+        font-size: 11px;
+        line-height: 1.35;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+        translate: -50% calc(-100% - 10px);
+        z-index: 10000;
+    }
+    .metro-tooltip-title {
+        font-weight: 600;
+        margin-bottom: 4px;
+        overflow-wrap: anywhere;
+    }
+    .metro-tooltip-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        font-size: 9px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: color-mix(in srgb, #f5f7fb 65%, transparent);
+        margin-bottom: 6px;
+    }
+    .metro-tooltip-dest-label {
+        font-size: 9px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: color-mix(in srgb, #f5f7fb 55%, transparent);
+        margin-bottom: 2px;
+    }
+    .metro-tooltip-dest-list {
+        margin: 0;
+        padding-left: 14px;
+        font-size: 11px;
+    }
+    .metro-tooltip-more {
+        list-style: none;
+        margin-left: -14px;
+        opacity: 0.6;
     }
 </style>
