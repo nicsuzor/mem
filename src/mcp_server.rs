@@ -3958,7 +3958,7 @@ impl PkbSearchServer {
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
                         "project": { "type": "string", "description": "Project identifier (e.g. 'aops')" },
                         "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, project." },
-                        "status": { "type": "string", "description": "Task status (default: 'active'). Also accepts: blocked, done, merge_ready, in_progress, etc." }
+                        "status": { "type": "string", "description": "Task status (default: 'draft' — new tasks start as draft and are excluded from ready queue until promoted to 'active'). Also accepts: active, blocked, done, merge_ready, in_progress, etc." }
                     },
                     "required": ["title"]
                 }))
