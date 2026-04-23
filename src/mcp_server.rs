@@ -2687,6 +2687,186 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    fn handle_get_tree(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args.get("id").and_then(|v| v.as_str());
+        let recursive = args
+            .get("recursive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let graph = self.graph.read();
+
+        let mut output = String::new();
+        let mut total = 0usize;
+        let mut done_count = 0usize;
+
+        if let Some(root_id) = id {
+            let node = graph.resolve(root_id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Node not found: {root_id}")),
+                data: None,
+            })?;
+            output.push_str(&format!("## Tree for `{root_id}` ({})\n\n", node.label));
+            self.collect_tree_recursive(
+                &graph,
+                &node.id,
+                recursive,
+                0,
+                &mut output,
+                &mut total,
+                &mut done_count,
+            );
+        } else {
+            output.push_str("## Full Task Tree\n\n");
+            // Use GraphStore::roots
+            let roots = graph.roots();
+            for root_id in roots {
+                self.collect_tree_recursive(
+                    &graph,
+                    root_id,
+                    recursive,
+                    0,
+                    &mut output,
+                    &mut total,
+                    &mut done_count,
+                );
+            }
+        }
+
+        output.push_str(&format!("\n**Summary:** {done_count}/{total} tasks shown\n"));
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn collect_tree_recursive(
+        &self,
+        graph: &GraphStore,
+        node_id: &str,
+        recursive: bool,
+        depth: usize,
+        output: &mut String,
+        total: &mut usize,
+        done: &mut usize,
+    ) {
+        if let Some(node) = graph.get_node(node_id) {
+            *total += 1;
+            let is_done = is_completed(node.status.as_deref());
+            if is_done {
+                *done += 1;
+            }
+
+            let indent = "  ".repeat(depth);
+            let status = node.status.as_deref().unwrap_or("-");
+            let pri = node.priority.map(|p| format!("P{p} ")).unwrap_or_default();
+            let ntype = node
+                .node_type
+                .as_deref()
+                .map(|t| format!("{t}:"))
+                .unwrap_or_default();
+            let cid = node.task_id.as_deref().unwrap_or(&node.id);
+
+            output.push_str(&format!(
+                "{indent}- {ntype} `{cid}` [{status}] {pri}{}\n",
+                node.label
+            ));
+
+            if recursive && !node.children.is_empty() {
+                // Sort children by order, then priority, then label
+                let mut children: Vec<_> = node
+                    .children
+                    .iter()
+                    .filter_map(|id| graph.get_node(id))
+                    .collect();
+                children.sort_by(|a, b| {
+                    a.order
+                        .cmp(&b.order)
+                        .then(a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2)))
+                        .then(a.label.cmp(&b.label))
+                });
+
+                for child in children {
+                    self.collect_tree_recursive(
+                        graph,
+                        &child.id,
+                        recursive,
+                        depth + 1,
+                        output,
+                        total,
+                        done,
+                    );
+                }
+            }
+        }
+    }
+
+    fn collect_filtered_tree_recursive(
+        &self,
+        graph: &GraphStore,
+        node_id: &str,
+        visible: &std::collections::HashSet<String>,
+        context_ids: &std::collections::HashSet<String>,
+        depth: usize,
+        output: &mut String,
+        count: &mut usize,
+        done: &mut usize,
+    ) {
+        if let Some(node) = graph.get_node(node_id) {
+            let is_context = context_ids.contains(node_id);
+            if !is_context {
+                *count += 1;
+                if is_completed(node.status.as_deref()) {
+                    *done += 1;
+                }
+            }
+
+            let indent = "  ".repeat(depth);
+            let status = node.status.as_deref().unwrap_or("-");
+            let pri = node.priority.map(|p| format!("P{p} ")).unwrap_or_default();
+            let ntype = node
+                .node_type
+                .as_deref()
+                .map(|t| format!("{t}:"))
+                .unwrap_or_default();
+            let cid = node.task_id.as_deref().unwrap_or(&node.id);
+
+            if is_context {
+                output.push_str(&format!("{indent}- **{ntype} {}**\n", node.label));
+            } else {
+                output.push_str(&format!(
+                    "{indent}- {ntype} `{cid}` [{status}] {pri}{}\n",
+                    node.label
+                ));
+            }
+
+            // Sort children by order, then priority, then label
+            let mut children: Vec<_> = node
+                .children
+                .iter()
+                .filter(|id| visible.contains(*id))
+                .filter_map(|id| graph.get_node(id))
+                .collect();
+            children.sort_by(|a, b| {
+                a.order
+                    .cmp(&b.order)
+                    .then(a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2)))
+                    .then(a.label.cmp(&b.label))
+            });
+
+            for child in children {
+                self.collect_filtered_tree_recursive(
+                    graph,
+                    &child.id,
+                    visible,
+                    context_ids,
+                    depth + 1,
+                    output,
+                    count,
+                    done,
+                );
+            }
+        }
+    }
+
     fn handle_list_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let status = args.get("status").and_then(|v| v.as_str());
         let priority = args
@@ -2698,6 +2878,10 @@ impl PkbSearchServer {
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
         let include_subtasks = args
             .get("include_subtasks")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_parent = args
+            .get("include_parent")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let format = args
@@ -2801,6 +2985,12 @@ impl PkbSearchServer {
                         "tags": t.tags,
                         "downstream_weight": t.downstream_weight,
                         "parent": t.parent,
+                        "parent_id": t.parent,
+                        "parent_title": if include_parent {
+                            t.parent.as_ref().and_then(|pid| graph.get_node(pid).map(|n| n.label.clone()))
+                        } else {
+                            None
+                        },
                         "depends_on": t.depends_on,
                         "node_type": t.node_type,
                         "scope": t.scope,
@@ -2821,6 +3011,75 @@ impl PkbSearchServer {
             return Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&result).unwrap_or_default(),
             )]));
+        }
+
+        // Tree format mode
+        if format.eq_ignore_ascii_case("tree") {
+            let mut visible: std::collections::HashSet<String> =
+                tasks.iter().map(|t| t.id.clone()).collect();
+            let mut context_ids: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let context_types = ["project", "epic"];
+
+            for task in &tasks {
+                let mut current_id = task.parent.as_deref();
+                while let Some(pid) = current_id {
+                    if visible.contains(pid) {
+                        break;
+                    }
+                    if context_ids.contains(pid) {
+                        break;
+                    }
+                    if let Some(parent_node) = graph.get_node(pid) {
+                        if parent_node
+                            .node_type
+                            .as_deref()
+                            .map(|t| context_types.contains(&t))
+                            .unwrap_or(false)
+                        {
+                            context_ids.insert(pid.to_string());
+                        }
+                        current_id = parent_node.parent.as_deref();
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            for cid in &context_ids {
+                visible.insert(cid.clone());
+            }
+
+            let mut roots: Vec<&GraphNode> = visible
+                .iter()
+                .filter_map(|id| graph.get_node(id))
+                .filter(|n| match &n.parent {
+                    None => true,
+                    Some(pid) => !visible.contains(pid),
+                })
+                .collect();
+
+            // Sort roots by label
+            roots.sort_by(|a, b| a.label.cmp(&b.label));
+
+            let mut output = format!("## Task Tree (showing {total} tasks)\n\n");
+            let mut count = 0;
+            let mut done = 0;
+
+            for root in roots {
+                self.collect_filtered_tree_recursive(
+                    &graph,
+                    &root.id,
+                    &visible,
+                    &context_ids,
+                    0,
+                    &mut output,
+                    &mut count,
+                    &mut done,
+                );
+            }
+
+            return Ok(CallToolResult::success(vec![Content::text(output)]));
         }
 
         let output = if is_blocked {
@@ -3854,6 +4113,7 @@ impl ServerHandler for PkbSearchServer {
             "decompose_task" => self.handle_decompose_task(&args),
             "get_dependency_tree" => self.handle_get_dependency_tree(&args),
             "get_task_children" => self.handle_get_task_children(&args),
+            "get_tree" => self.handle_get_tree(&args),
             "pkb_context" => self.handle_pkb_context(&args),
             "pkb_trace" => self.handle_pkb_trace(&args),
             "pkb_orphans" => self.handle_pkb_orphans(&args),
@@ -4207,12 +4467,27 @@ impl PkbSearchServer {
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
-                        "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
+                        "include_parent": { "type": "boolean", "description": "Include parent_id and parent_title in results (only for json format)." },
+                        "format": { "type": "string", "enum": ["markdown", "json", "tree"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. 'tree' returns an indented hierarchical view. Default: 'markdown'." }
                     }
                 }))
                 .unwrap(),
             )
             .with_title("List Tasks")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "get_tree",
+                "Retrieve the full hierarchical subtree from a given node. Shows epics, projects, and tasks in an indented tree view.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Root task/node ID for the tree. If omitted, shows all root-level tasks." },
+                        "recursive": { "type": "boolean", "description": "Whether to include descendants recursively. Defaults to true." }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("Get Task Tree")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
