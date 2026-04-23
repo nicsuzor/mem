@@ -100,14 +100,17 @@
     interface Adjacencies {
         deps: Map<string, Set<string>>;        // dependent -> blocker
         parentDown: Map<string, Set<string>>;  // parent -> child
+        parentUp: Map<string, Set<string>>;    // child -> parent
     }
 
     function buildAdjacencies(nodes: GraphNode[], edges: GraphEdge[]): Adjacencies {
         const deps = new Map<string, Set<string>>();
         const parentDown = new Map<string, Set<string>>();
+        const parentUp = new Map<string, Set<string>>();
         for (const n of nodes) {
             deps.set(n.id, new Set());
             parentDown.set(n.id, new Set());
+            parentUp.set(n.id, new Set());
         }
         for (const e of edges) {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
@@ -117,9 +120,10 @@
                 deps.get(src)!.add(tgt);
             } else if (e.type === 'parent') {
                 parentDown.get(src)!.add(tgt);
+                parentUp.get(tgt)!.add(src);
             }
         }
-        return { deps, parentDown };
+        return { deps, parentDown, parentUp };
     }
 
     // Destination shape decides whether it's a container (pulls descendants)
@@ -170,14 +174,18 @@
             return { destinations, routes, depth, destIndex };
         }
 
-        const { deps, parentDown } = buildAdjacencies(nodes, edges);
+        const { deps, parentDown, parentUp } = buildAdjacencies(nodes, edges);
         const nodeById = new Map(nodes.map(n => [n.id, n]));
 
-        // Per-destination BFS. Direction is chosen by destination shape:
-        //   - container (goal/epic or has incomplete children): walk parent→child
-        //     descendants (hop-capped) + deps
-        //   - leaf: walk deps only (parent ancestors aren't blockers of a leaf;
-        //     including them would make every shared parent an interchange)
+        // Per-destination BFS. Every destination walks:
+        //   - depends_on (src→tgt) — transitive blockers
+        //   - the correct parent direction given its shape:
+        //       * container (goal): walk parent→child (descendants) hop-capped
+        //         so the goal pulls its incomplete subtree as the route
+        //       * leaf: walk child→parent (ancestors) so containers that host
+        //         the destination appear on its route. Shared containers
+        //         naturally become interchanges ("this epic sits on the route
+        //         to N P0/P1 outcomes") — that's a useful signal, not noise.
         for (const dest of destinations) {
             const container = isContainerDestination(dest);
             const seen = new Set<string>([dest.id]);
@@ -204,14 +212,26 @@
                         queue.push({ id: next, d: d + 1, parentHops });
                     }
                 }
-                // parent descendants contribute for container destinations
-                if (container && parentHops < GOAL_PARENT_HOP_CAP) {
-                    const children = parentDown.get(id);
-                    if (children) {
-                        for (const next of children) {
+                if (container) {
+                    // Goal pulls its descendants (hop-capped)
+                    if (parentHops < GOAL_PARENT_HOP_CAP) {
+                        const children = parentDown.get(id);
+                        if (children) {
+                            for (const next of children) {
+                                if (seen.has(next)) continue;
+                                seen.add(next);
+                                queue.push({ id: next, d: d + 1, parentHops: parentHops + 1 });
+                            }
+                        }
+                    }
+                } else {
+                    // Leaf destinations walk up to ancestors
+                    const ancestors = parentUp.get(id);
+                    if (ancestors) {
+                        for (const next of ancestors) {
                             if (seen.has(next)) continue;
                             seen.add(next);
-                            queue.push({ id: next, d: d + 1, parentHops: parentHops + 1 });
+                            queue.push({ id: next, d: d + 1, parentHops });
                         }
                     }
                 }

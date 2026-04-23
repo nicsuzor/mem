@@ -57,10 +57,10 @@ Destinations are ordered deterministically: priority asc, then project, then lab
 
 ### Routes
 
-For each destination `d`, the **route to `d`** is the set of incomplete nodes that must complete before `d` itself can be considered reached. Direction depends on `d`'s shape:
+For each destination `d`, the **route to `d`** is the set of incomplete nodes reached by walking `depends_on` / `soft_depends_on` edges upstream **and** walking `parent` edges in the direction dictated by `d`'s shape:
 
-- **Leaf destinations** (any P0/P1 incomplete node with no incomplete children): walk only `depends_on` / `soft_depends_on` edges upstream (dependent → blocker, transitively). A leaf's route does **not** include its parent hierarchy — containers are organisational, not blockers, and treating them as route members would make every shared parent an artificial interchange.
-- **Container destinations** (node type `goal`; in principle also `epic` but epics only enter the destination set when leaf-like, so the container branch is primarily goal-driven): walk `parent` descendants (parent → child) up to `GOAL_PARENT_HOP_CAP` hops, plus `depends_on` on every collected node. The hop cap prevents a top-level goal from pulling its entire subtree and drowning out other routes.
+- **Leaf destinations** (any P0/P1 incomplete node with no incomplete children): walk `parent` child → parent — the containing epic/project hierarchy becomes part of the route. This is deliberate: a shared parent becoming an interchange is *useful* information ("this epic hosts three P0/P1 outcomes"), not noise.
+- **Container destinations** (node type `goal`; epics only enter the destination set when leaf-like, so the container branch is primarily goal-driven): walk `parent` parent → child (descendants) up to `GOAL_PARENT_HOP_CAP` hops, plus `depends_on` on every collected node. The hop cap prevents a top-level goal from pulling its entire subtree and drowning out other routes.
 
 Completed nodes are hidden or heavily dimmed — they are already-traversed track.
 
