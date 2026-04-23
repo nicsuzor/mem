@@ -2013,33 +2013,33 @@ mod tests {
 
     #[test]
     fn test_recency_signal() {
-        use chrono::{Duration, Utc};
+        use chrono::Duration;
 
         let now = Utc::now();
 
         // (a) modified today -> ~1.0
         let today = now - Duration::try_minutes(5).unwrap();
-        let s_today = recency_signal(&today);
+        let s_today = recency_signal(&today, &now);
         assert!(s_today > 0.99 && s_today <= 1.0, "Today signal should be ~1.0, got {}", s_today);
 
         // (b) modified 30 days ago -> ~0.37 (exp(-1))
         let thirty_days_ago = now - Duration::try_days(30).unwrap();
-        let s_30 = recency_signal(&thirty_days_ago);
+        let s_30 = recency_signal(&thirty_days_ago, &now);
         let expected_30 = (-1.0f64).exp();
-        assert!((s_30 - expected_30).abs() < 0.01, "30 days ago signal should be ~0.37, got {}", s_30);
+        assert!((s_30 - expected_30).abs() < 0.0001, "30 days ago signal should be ~0.37, got {}", s_30);
 
         // (c) modified 90+ days ago -> 0.0
         let ninety_days_ago = now - Duration::try_days(90).unwrap();
-        let s_90 = recency_signal(&ninety_days_ago);
+        let s_90 = recency_signal(&ninety_days_ago, &now);
         assert_eq!(s_90, 0.0, "90 days ago signal should be 0.0");
 
         let old = now - Duration::try_days(120).unwrap();
-        let s_old = recency_signal(&old);
+        let s_old = recency_signal(&old, &now);
         assert_eq!(s_old, 0.0, "120 days ago signal should be 0.0");
 
         // Extra: future date (clock skew) -> 1.0
         let future = now + Duration::try_hours(1).unwrap();
-        let s_future = recency_signal(&future);
+        let s_future = recency_signal(&future, &now);
         assert_eq!(s_future, 1.0, "Future signal should be 1.0");
     }
 
