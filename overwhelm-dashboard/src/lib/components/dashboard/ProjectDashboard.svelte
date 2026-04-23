@@ -2,6 +2,8 @@
     import { graphData } from "../../stores/graph";
     import { toggleSelection } from "../../stores/selection";
     import { projectColor, projectBgTint, projectBorderColor, buildProjectRollupMap, summarizeProjectName, resolveMajorProject } from "../../data/projectUtils";
+    import TaskActionButtons from "../shared/TaskActionButtons.svelte";
+    import AssigneeBadge from "../shared/AssigneeBadge.svelte";
     export let projectProjects: string[] = [];
     export let projectData: any = {};
 
@@ -117,11 +119,12 @@
                             <div class="flex flex-col gap-2">
                                 <h4 class="text-[10px] font-bold tracking-widest text-primary/60 mb-1">TOP PRIORITIES & NEXT TASKS</h4>
                                 {#each [...tasks].sort((a, b) => (a.priority ?? 5) - (b.priority ?? 5)).slice(0, 3) as task}
-                                    <div class="flex items-start gap-2 p-2 bg-primary/5 border-l-2 {task.priority === 0 ? 'border-red-500' : task.priority === 1 ? 'border-orange-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors cursor-pointer"
+                                    <div class="group flex items-start gap-2 p-2 bg-primary/5 border-l-2 {task.priority === 0 ? 'border-red-500' : task.priority === 1 ? 'border-orange-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors cursor-pointer"
                                          role="button" tabindex="0"
                                          on:click={() => toggleSelection(task.id || task.task_id || '')}
                                          on:keydown={(e) => { if (e.key === 'Enter') toggleSelection(task.id || task.task_id || ''); }}>
                                         <span class="text-[10px] font-bold {task.priority === 0 ? 'text-red-500' : task.priority === 1 ? 'text-orange-500' : 'text-primary/70'}">P{task.priority !== undefined ? task.priority : '?'}</span>
+                                        <AssigneeBadge assignee={task.assignee} compact={true} />
                                         <span class="text-xs text-primary/90 flex-1">{task.title || task.label}</span>
                                         <span class="text-[10px] font-bold px-1 py-0.5 shrink-0 {
                                             task.status === 'in_progress' ? 'bg-primary text-black animate-pulse' :
@@ -130,6 +133,9 @@
                                             task.status === 'review' ? 'bg-purple-900/30 text-purple-400 border border-purple-500/40' :
                                             'bg-primary/10 text-primary/50 border border-primary/20'
                                         }">{(task.status || 'active').toUpperCase().replace('_', ' ')}</span>
+                                        {#if task.id || task.task_id}
+                                            <TaskActionButtons taskId={task.id || task.task_id} />
+                                        {/if}
                                     </div>
                                 {:else}
                                     <div class="text-xs text-primary/40 italic">No active tasks.</div>

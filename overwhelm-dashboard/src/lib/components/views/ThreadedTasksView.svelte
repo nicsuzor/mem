@@ -3,10 +3,19 @@
     import { selection } from "../../stores/selection";
     import { filters } from "../../stores/filters";
     import { describeTaskMutation, taskOperations } from "../../stores/taskOperations";
+    import {
+        multiSelectActive,
+        selectedTaskIds,
+        toggleMultiSelect,
+        toggleSelectedTask,
+    } from "../../stores/queueActions";
     import { PRIORITIES } from "../../data/constants";
     import { projectHue } from "../../data/projectUtils";
     import TaskEditorView from "./TaskEditorView.svelte";
     import StatusFilterBar from "../shared/StatusFilterBar.svelte";
+    import TaskActionButtons from "../shared/TaskActionButtons.svelte";
+    import AssigneeBadge from "../shared/AssigneeBadge.svelte";
+    import BulkActionBar from "../shared/BulkActionBar.svelte";
 
     let currentTab = "ACTIVE_TASKS";
     let searchQuery = "";
@@ -211,6 +220,16 @@
             </div>
 
             <div class="ml-auto flex gap-2">
+                <button
+                    class="px-3 py-1 text-xs font-bold flex items-center gap-1 font-mono transition-all cursor-pointer border uppercase tracking-widest
+                        {$multiSelectActive ? 'bg-primary text-background-dark border-primary' : 'text-primary border-primary/40 hover:bg-primary/10'}"
+                    onclick={toggleMultiSelect}
+                    aria-pressed={$multiSelectActive}
+                    title="Toggle multi-select (bulk done/archive/cancel)"
+                >
+                    <span class="material-symbols-outlined text-sm">{$multiSelectActive ? 'check_box' : 'check_box_outline_blank'}</span>
+                    {$multiSelectActive ? `SELECT [${$selectedTaskIds.size}]` : 'MULTI_SELECT'}
+                </button>
                 <button class="bg-primary text-background-dark px-3 py-1 text-xs font-bold flex items-center gap-1 hover:brightness-110 font-mono transition-all cursor-pointer">
                     <span class="material-symbols-outlined text-sm">add</span> NEW_TASK
                 </button>
@@ -240,21 +259,42 @@
                 <table class="w-full text-left border-collapse font-mono">
                     <thead>
                         <tr class="bg-primary/10 border-b border-primary/20">
+                            {#if $multiSelectActive}
+                                <th class="px-3 py-3 w-8"></th>
+                            {/if}
                             <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-32 cursor-pointer hover:bg-primary/20 transition-colors" onclick={() => toggleSort('id')}>ID {sortField === 'id' ? (sortAsc ? '▲' : '▼') : ''}</th>
                             <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-32 cursor-pointer hover:bg-primary/20 transition-colors" onclick={() => toggleSort('status')}>Status {sortField === 'status' ? (sortAsc ? '▲' : '▼') : ''}</th>
                             <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest cursor-pointer hover:bg-primary/20 transition-colors" onclick={() => toggleSort('label')}>Task_Name {sortField === 'label' ? (sortAsc ? '▲' : '▼') : ''}</th>
                             <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-32 cursor-pointer hover:bg-primary/20 transition-colors" onclick={() => toggleSort('assignee')}>Assignee {sortField === 'assignee' ? (sortAsc ? '▲' : '▼') : ''}</th>
                             <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-28 cursor-pointer hover:bg-primary/20 transition-colors" onclick={() => toggleSort('priority')}>Priority {sortField === 'priority' ? (sortAsc ? '▲' : '▼') : ''}</th>
-                            <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-12"></th>
+                            <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-48 text-right">Actions</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-primary/10 text-sm">
                         {#each tasks as task}
+                            {@const isSelected = $selectedTaskIds.has(task.id)}
                             <tr
-                                class="hover:bg-primary/5 group transition-colors cursor-pointer {$selection.activeNodeId === task.id ? 'bg-primary/10' : ''} {focusIds.has(task.id) ? 'border-l-[3px] border-l-amber-500/80' : ''}"
+                                class="hover:bg-primary/5 group transition-colors cursor-pointer {$selection.activeNodeId === task.id ? 'bg-primary/10' : ''} {isSelected ? 'bg-primary/15' : ''} {focusIds.has(task.id) ? 'border-l-[3px] border-l-amber-500/80' : ''}"
                                 style="border-left: 3px solid hsl({projectHue(task.project || '')}, 45%, 45%);"
-                                onclick={() => selection.update(s => ({...s, activeNodeId: task.id}))}
+                                onclick={() => {
+                                    if ($multiSelectActive) {
+                                        toggleSelectedTask(task.id);
+                                    } else {
+                                        selection.update(s => ({...s, activeNodeId: task.id}));
+                                    }
+                                }}
                             >
+                                {#if $multiSelectActive}
+                                    <td class="px-3 py-4">
+                                        <button
+                                            class="p-1 text-primary/70 hover:text-primary"
+                                            aria-label={isSelected ? 'Deselect task' : 'Select task'}
+                                            onclick={(e) => { e.stopPropagation(); toggleSelectedTask(task.id); }}
+                                        >
+                                            <span class="material-symbols-outlined text-base">{isSelected ? 'check_box' : 'check_box_outline_blank'}</span>
+                                        </button>
+                                    </td>
+                                {/if}
                                 <td class="px-4 py-4 text-primary/60 font-mono text-xs">
                                     {#if focusIds.has(task.id)}<span class="text-[9px] font-bold text-amber-500 mr-1">FOCUS</span>{/if}
                                     {task.id.length > 12 ? task.id.substring(0, 12) + '...' : task.id}
@@ -272,11 +312,9 @@
                                 </td>
                                 <td class="px-4 py-4">
                                     <div class="flex items-center gap-2">
+                                        <AssigneeBadge assignee={task.assignee} compact={true} />
                                         {#if task.assignee}
-                                            <div class="size-6 bg-primary/10 border border-primary/30 flex items-center justify-center text-[10px] text-primary font-bold">
-                                                {task.assignee.substring(0, 2).toUpperCase()}
-                                            </div>
-                                            <span class="text-primary/80 text-xs">{task.assignee}</span>
+                                            <span class="text-primary/80 text-xs truncate">{task.assignee}</span>
                                         {:else}
                                             <span class="text-primary/40 text-xs italic">Unassigned</span>
                                         {/if}
@@ -289,9 +327,16 @@
                                     </span>
                                 </td>
                                 <td class="px-4 py-4 text-right">
-                                    <button class="opacity-0 group-hover:opacity-100 p-1 text-primary hover:bg-primary/20 transition-all cursor-pointer" onclick={(e) => { e.stopPropagation(); selection.update(s => ({...s, activeNodeId: task.id})); }}>
-                                        <span class="material-symbols-outlined text-lg">edit</span>
-                                    </button>
+                                    <div class="flex items-center justify-end gap-1">
+                                        <TaskActionButtons taskId={task.id} hoverReveal={!$multiSelectActive} />
+                                        <button
+                                            class="{$multiSelectActive ? 'hidden' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'} p-1 text-primary hover:bg-primary/20 transition-all cursor-pointer"
+                                            aria-label="Open editor"
+                                            onclick={(e) => { e.stopPropagation(); selection.update(s => ({...s, activeNodeId: task.id})); }}
+                                        >
+                                            <span class="material-symbols-outlined text-lg">edit</span>
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
                         {/each}
@@ -313,4 +358,7 @@
             <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
         </aside>
     {/if}
+
+    <!-- Floating bulk action bar for multi-select mode -->
+    <BulkActionBar />
 </div>
