@@ -47,11 +47,12 @@ Nic has 500+ tasks across many projects. He cannot hold in working memory what s
 
 ### Destinations (terminal stations)
 
-A **destination** is a node that is all of:
+A **destination** is any node that is **both**:
 
-1. incomplete (status in `INCOMPLETE_STATUSES`),
-2. priority 0 or 1,
-3. a leaf — no incomplete children — **or** explicitly marked as a goal/outcome (node type `goal`).
+1. incomplete (status in `INCOMPLETE_STATUSES`), and
+2. priority 0 or 1.
+
+That's it. The user sets priorities to name their targets; this view renders every target as a terminal regardless of whether the node happens to be a leaf. Whether a destination has children does not decide *whether* it is a destination — it decides how the route to it is walked (see below).
 
 Destinations are ordered deterministically: priority asc, then project, then label. Order defines their horizontal slot.
 
@@ -59,8 +60,8 @@ Destinations are ordered deterministically: priority asc, then project, then lab
 
 For each destination `d`, the **route to `d`** is the set of incomplete nodes reached by walking `depends_on` / `soft_depends_on` edges upstream **and** walking `parent` edges in the direction dictated by `d`'s shape:
 
-- **Leaf destinations** (any P0/P1 incomplete node with no incomplete children): walk `parent` child → parent — the containing epic/project hierarchy becomes part of the route. This is deliberate: a shared parent becoming an interchange is *useful* information ("this epic hosts three P0/P1 outcomes"), not noise.
-- **Container destinations** (node type `goal`; epics only enter the destination set when leaf-like, so the container branch is primarily goal-driven): walk `parent` parent → child (descendants) up to `GOAL_PARENT_HOP_CAP` hops, plus `depends_on` on every collected node. The hop cap prevents a top-level goal from pulling its entire subtree and drowning out other routes.
+- **Container destinations** (type `goal`/`epic`, or any node with at least one incomplete child): walk `parent` parent → child (descendants) up to `GOAL_PARENT_HOP_CAP` hops, plus `depends_on` on every collected node. The subtree *is* the route — these destinations are reached by completing the work they contain.
+- **Leaf destinations** (no incomplete children, not a container type): walk `parent` child → parent — the containing epic/project hierarchy becomes part of the route, plus `depends_on`. This is deliberate: a shared parent becoming an interchange is *useful* information ("this epic hosts three P0/P1 outcomes"), not noise.
 
 Completed nodes are hidden or heavily dimmed — they are already-traversed track.
 

@@ -126,31 +126,31 @@
         return { deps, parentDown, parentUp };
     }
 
-    // Destination shape decides whether it's a container (pulls descendants)
-    // or a leaf (route is pure depends_on chain). In practice only goal-type
-    // destinations behave as containers — epic destinations only enter the
-    // destination set if they have no incomplete children (see computeDestinations).
-    function isContainerDestination(dest: GraphNode): boolean {
-        return CONTAINER_TYPES.has((dest.type || '').toLowerCase());
+    // Every P0/P1 incomplete node is a destination — that's what the user set
+    // as a target. Whether it has children decides how the route is walked,
+    // not whether it qualifies.
+    function computeIncompleteChildIds(nodes: GraphNode[]): Set<string> {
+        const ids = new Set<string>();
+        for (const n of nodes) {
+            if (n.parent && isIncomplete(n)) ids.add(n.parent);
+        }
+        return ids;
+    }
+
+    // A destination behaves as a container (pulls its incomplete subtree
+    // inward as the route) when its type is goal/epic, or when it has any
+    // incomplete children. Otherwise it's a leaf and walks parent ancestors.
+    function isContainerDestination(dest: GraphNode, incompleteChildIds: Set<string>): boolean {
+        if (CONTAINER_TYPES.has((dest.type || '').toLowerCase())) return true;
+        return incompleteChildIds.has(dest.id);
     }
 
     function computeDestinations(nodes: GraphNode[]): GraphNode[] {
-        const parentIds = new Set<string>();
-        const incompleteChildIds = new Set<string>();
-        for (const n of nodes) {
-            if (n.parent) {
-                parentIds.add(n.parent);
-                if (isIncomplete(n)) incompleteChildIds.add(n.parent);
-            }
-        }
         return nodes
             .filter(n => {
                 if (!isIncomplete(n)) return false;
                 if (n.priority > 1) return false;
-                const type = (n.type || '').toLowerCase();
-                if (type === 'goal') return true;
-                // Leaf destinations: P0/P1 with no incomplete descendants
-                return !incompleteChildIds.has(n.id);
+                return true;
             })
             .sort((a, b) => {
                 if (a.priority !== b.priority) return a.priority - b.priority;
@@ -176,6 +176,7 @@
 
         const { deps, parentDown, parentUp } = buildAdjacencies(nodes, edges);
         const nodeById = new Map(nodes.map(n => [n.id, n]));
+        const incompleteChildIds = computeIncompleteChildIds(nodes);
 
         // Per-destination BFS. Every destination walks:
         //   - depends_on (src→tgt) — transitive blockers
@@ -187,7 +188,7 @@
         //         naturally become interchanges ("this epic sits on the route
         //         to N P0/P1 outcomes") — that's a useful signal, not noise.
         for (const dest of destinations) {
-            const container = isContainerDestination(dest);
+            const container = isContainerDestination(dest, incompleteChildIds);
             const seen = new Set<string>([dest.id]);
             const queue: Array<{ id: string; d: number; parentHops: number }> = [
                 { id: dest.id, d: 0, parentHops: 0 },
