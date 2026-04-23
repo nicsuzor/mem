@@ -447,9 +447,11 @@ impl PkbSearchServer {
     }
 
     fn handle_create_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        // Accept `title` (preferred) or `task_title` (alias — some skill docs use this name)
         let title = args
             .get("title")
             .and_then(|v| v.as_str())
+            .or_else(|| args.get("task_title").and_then(|v| v.as_str()))
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: title"),
@@ -1433,12 +1435,14 @@ impl PkbSearchServer {
     }
 
     fn handle_append_to_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        // Accept `id` (preferred) or `path` (alias) — both resolve via the graph
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .or_else(|| args.get("path").and_then(|v| v.as_str()))
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: id"),
+                message: Cow::from("Missing required parameter: id (or path)"),
                 data: None,
             })?;
 
@@ -2965,14 +2969,33 @@ impl PkbSearchServer {
             });
         };
 
-        let updates = args
-            .get("updates")
-            .and_then(|v| v.as_object())
-            .ok_or_else(|| McpError {
+        // Accept two forms for convenience:
+        //   1. Nested: {"id": "...", "updates": {"status": "done"}}
+        //   2. Flat:   {"id": "...", "status": "done"}
+        // If `updates` is present, it wins. Otherwise collect top-level fields.
+        const ROUTING_KEYS: &[&str] = &["id", "path", "updates"];
+        let updates: serde_json::Map<String, serde_json::Value> =
+            if let Some(nested) = args.get("updates").and_then(|v| v.as_object()) {
+                nested.clone()
+            } else {
+                args.as_object()
+                    .map(|obj| {
+                        obj.iter()
+                            .filter(|(k, _)| !ROUTING_KEYS.contains(&k.as_str()))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+        if updates.is_empty() {
+            return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: updates (object)"),
+                message: Cow::from(
+                    "No fields to update. Pass fields either nested as `updates: {status: \"done\"}` or flat as top-level params (e.g. status=\"done\").",
+                ),
                 data: None,
-            })?;
+            });
+        }
 
         // When setting status to "done", require completion_evidence
         let setting_done = updates
@@ -3942,7 +3965,8 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "title": { "type": "string", "description": "Task title" },
+                        "title": { "type": "string", "description": "Task title (also accepts `task_title` as alias)" },
+                        "task_title": { "type": "string", "description": "Alias for title" },
                         "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
                         "parent": { "type": "string", "description": "Parent task ID" },
                         "priority": { "type": "integer", "description": "0-4 (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)" },
@@ -4036,11 +4060,12 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Document ID (supports flexible resolution: ID, filename stem, or title)" },
+                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
+                        "path": { "type": "string", "description": "Alias for id — path-style reference also resolves via the graph" },
                         "content": { "type": "string", "description": "Content to append (will be timestamped)" },
                         "section": { "type": "string", "description": "Optional target section heading (e.g. 'Log', 'References'). Creates section if not found." }
                     },
-                    "required": ["id", "content"]
+                    "required": ["content"]
                 }))
                 .unwrap(),
             )
@@ -4136,15 +4161,15 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "update_task",
-                "Patch metadata fields on an existing task. Use for non-terminal updates (priority, tags, assignee). For state transitions (done, merge_ready), prefer release_task.",
+                "Patch metadata fields on an existing task. Pass fields either nested as `updates: {status: \"done\"}` or flat at the top level (e.g. status=\"done\"). Use for non-terminal updates (priority, tags, assignee). For state transitions (done, merge_ready), prefer release_task.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Path to task file" },
-                        "id": { "type": "string", "description": "Document ID (alternative to path — uses flexible resolution)" },
-                        "updates": { "type": "object", "description": "JSON object of fields to update (null to remove a field). MUST be a JSON object like {\"priority\": 1}, NOT a string." }
+                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, title)" },
+                        "path": { "type": "string", "description": "Path to task file (alias for id)" },
+                        "updates": { "type": "object", "description": "Optional nested form. JSON object of fields to update (null to remove a field). If omitted, any top-level fields other than id/path/updates are treated as fields to update." }
                     },
-                    "required": ["updates"]
+                    "required": []
                 }))
                 .unwrap(),
             )
