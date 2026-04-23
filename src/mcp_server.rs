@@ -377,6 +377,19 @@ impl PkbSearchServer {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Optional `type` filter: either a single type ("epic") or a comma-
+        // separated list ("epic,feature"). When set, only matching types are
+        // returned. Recognised actionable types: project, epic, task, learn.
+        let type_filter: Option<HashSet<String>> = args
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                s.split(',')
+                    .map(|t| t.trim().to_ascii_lowercase())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            });
+
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Embedding error: {e}")),
@@ -384,7 +397,13 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let fetch_limit = limit * 3;
+        // When a type filter is present, fetch more candidates so we still fill
+        // the limit after filtering.
+        let fetch_limit = if type_filter.is_some() {
+            limit * 10
+        } else {
+            limit * 3
+        };
         let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         let graph = self.graph.read();
@@ -413,6 +432,16 @@ impl PkbSearchServer {
             }
             if !include_subtasks && r.doc_type.as_deref() == Some("subtask") {
                 continue;
+            }
+            if let Some(ref filter) = type_filter {
+                let matches = r
+                    .doc_type
+                    .as_deref()
+                    .map(|t| filter.contains(&t.to_ascii_lowercase()))
+                    .unwrap_or(false);
+                if !matches {
+                    continue;
+                }
             }
 
             count += 1;
@@ -4000,13 +4029,14 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "task_search",
-                "Semantic search filtered to actionable tasks. Returns results with rich graph context including status and dependencies.",
+                "Semantic search filtered to actionable tasks. Returns results with rich graph context including status and dependencies. Use `type: \"epic\"` to find container tasks (with context and subtasks) rather than leaf tasks.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Query to search tasks" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." }
+                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." },
+                        "type": { "type": "string", "description": "Filter by task type. Single value (e.g. 'epic') or comma-separated list (e.g. 'epic,feature'). Recognised actionable types: project, epic, task, learn. Default: all actionable types." }
                     },
                     "required": ["query"]
                 }))
