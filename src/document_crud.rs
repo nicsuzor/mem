@@ -431,7 +431,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     ));
     fm.push_str(&format!(
         "status: {}\n",
-        fields.status.as_deref().unwrap_or("active")
+        fields.status.as_deref().unwrap_or("draft")
     ));
 
     if let Some(p) = fields.priority {
@@ -1236,7 +1236,7 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
 
         assert!(content.contains("type: task"), "default type should be 'task': {content}");
-        assert!(content.contains("status: active"), "default status should be 'active': {content}");
+        assert!(content.contains("status: draft"), "default status should be 'draft': {content}");
         assert!(!content.contains("project:"), "project should not appear when None: {content}");
     }
 }
