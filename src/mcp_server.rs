@@ -2699,6 +2699,7 @@ impl PkbSearchServer {
         let mut output = String::new();
         let mut total = 0usize;
         let mut done_count = 0usize;
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         if let Some(root_id) = id {
             let node = graph.resolve(root_id).ok_or_else(|| McpError {
@@ -2715,6 +2716,7 @@ impl PkbSearchServer {
                 &mut output,
                 &mut total,
                 &mut done_count,
+                &mut visited,
             );
         } else {
             output.push_str("## Full Task Tree\n\n");
@@ -2729,6 +2731,7 @@ impl PkbSearchServer {
                     &mut output,
                     &mut total,
                     &mut done_count,
+                    &mut visited,
                 );
             }
         }
@@ -2747,7 +2750,11 @@ impl PkbSearchServer {
         output: &mut String,
         total: &mut usize,
         done: &mut usize,
+        visited: &mut std::collections::HashSet<String>,
     ) {
+        if !visited.insert(node_id.to_string()) {
+            return;
+        }
         if let Some(node) = graph.get_node(node_id) {
             *total += 1;
             let is_done = is_completed(node.status.as_deref());
@@ -2761,12 +2768,12 @@ impl PkbSearchServer {
             let ntype = node
                 .node_type
                 .as_deref()
-                .map(|t| format!("{t}:"))
+                .map(|t| format!("{t}: "))
                 .unwrap_or_default();
             let cid = node.task_id.as_deref().unwrap_or(&node.id);
 
             output.push_str(&format!(
-                "{indent}- {ntype} `{cid}` [{status}] {pri}{}\n",
+                "{indent}- {ntype}`{cid}` [{status}] {pri}{}\n",
                 node.label
             ));
 
@@ -2793,6 +2800,7 @@ impl PkbSearchServer {
                         output,
                         total,
                         done,
+                        visited,
                     );
                 }
             }
@@ -2809,7 +2817,11 @@ impl PkbSearchServer {
         output: &mut String,
         count: &mut usize,
         done: &mut usize,
+        visited: &mut std::collections::HashSet<String>,
     ) {
+        if !visited.insert(node_id.to_string()) {
+            return;
+        }
         if let Some(node) = graph.get_node(node_id) {
             let is_context = context_ids.contains(node_id);
             if !is_context {
@@ -2825,15 +2837,15 @@ impl PkbSearchServer {
             let ntype = node
                 .node_type
                 .as_deref()
-                .map(|t| format!("{t}:"))
+                .map(|t| format!("{t}: "))
                 .unwrap_or_default();
             let cid = node.task_id.as_deref().unwrap_or(&node.id);
 
             if is_context {
-                output.push_str(&format!("{indent}- **{ntype} {}**\n", node.label));
+                output.push_str(&format!("{indent}- **{ntype}{}**\n", node.label));
             } else {
                 output.push_str(&format!(
-                    "{indent}- {ntype} `{cid}` [{status}] {pri}{}\n",
+                    "{indent}- {ntype}`{cid}` [{status}] {pri}{}\n",
                     node.label
                 ));
             }
@@ -2862,6 +2874,7 @@ impl PkbSearchServer {
                     output,
                     count,
                     done,
+                    visited,
                 );
             }
         }
@@ -2985,7 +2998,6 @@ impl PkbSearchServer {
                         "tags": t.tags,
                         "downstream_weight": t.downstream_weight,
                         "parent": t.parent,
-                        "parent_id": t.parent,
                         "parent_title": if include_parent {
                             t.parent.as_ref().and_then(|pid| graph.get_node(pid).map(|n| n.label.clone()))
                         } else {
@@ -3019,35 +3031,30 @@ impl PkbSearchServer {
                 tasks.iter().map(|t| t.id.clone()).collect();
             let mut context_ids: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
-            let context_types = ["project", "epic"];
 
+            // Walk all ancestors for every result task, adding them to visible and
+            // marking them as context nodes. We must include intermediate task-type
+            // ancestors (not just project/epic) to maintain tree connectivity for
+            // deep hierarchies. A seen set prevents looping in cyclic parent chains.
             for task in &tasks {
                 let mut current_id = task.parent.as_deref();
+                let mut seen_ancestors: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
                 while let Some(pid) = current_id {
-                    if visible.contains(pid) {
-                        break;
+                    if !seen_ancestors.insert(pid.to_string()) {
+                        break; // cycle detected
                     }
-                    if context_ids.contains(pid) {
-                        break;
+                    if visible.contains(pid) && !context_ids.contains(pid) {
+                        break; // already a result node, stop
                     }
                     if let Some(parent_node) = graph.get_node(pid) {
-                        if parent_node
-                            .node_type
-                            .as_deref()
-                            .map(|t| context_types.contains(&t))
-                            .unwrap_or(false)
-                        {
-                            context_ids.insert(pid.to_string());
-                        }
+                        visible.insert(pid.to_string());
+                        context_ids.insert(pid.to_string());
                         current_id = parent_node.parent.as_deref();
                     } else {
                         break;
                     }
                 }
-            }
-
-            for cid in &context_ids {
-                visible.insert(cid.clone());
             }
 
             let mut roots: Vec<&GraphNode> = visible
@@ -3065,6 +3072,7 @@ impl PkbSearchServer {
             let mut output = format!("## Task Tree (showing {total} tasks)\n\n");
             let mut count = 0;
             let mut done = 0;
+            let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
 
             for root in roots {
                 self.collect_filtered_tree_recursive(
@@ -3076,9 +3084,11 @@ impl PkbSearchServer {
                     &mut output,
                     &mut count,
                     &mut done,
+                    &mut visited,
                 );
             }
 
+            output.push_str(&format!("\n**Summary:** {done}/{count} done\n"));
             return Ok(CallToolResult::success(vec![Content::text(output)]));
         }
 
@@ -4467,7 +4477,7 @@ impl PkbSearchServer {
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
-                        "include_parent": { "type": "boolean", "description": "Include parent_id and parent_title in results (only for json format)." },
+                        "include_parent": { "type": "boolean", "description": "Include parent_title in results (only for json format; parent id is always included as 'parent')." },
                         "format": { "type": "string", "enum": ["markdown", "json", "tree"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. 'tree' returns an indented hierarchical view. Default: 'markdown'." }
                     }
                 }))
@@ -5424,6 +5434,146 @@ mod annotation_tests {
                 );
             }
         }
+    }
+
+    // ── Tree view tests ────────────────────────────────────────────────────────
+
+    fn build_tree_test_graph() -> GraphStore {
+        let docs = vec![
+            make_doc("projects/p1.md", "Project One", "project", "active", "p1", None, &[]),
+            make_doc("epics/e1.md", "Epic One", "epic", "active", "e1", Some("p1"), &[]),
+            make_doc("tasks/t1.md", "Task One", "task", "active", "t1", Some("e1"), &[]),
+            make_doc("tasks/t2.md", "Task Two", "task", "active", "t2", Some("e1"), &[]),
+            make_doc("tasks/t3.md", "Task Three", "task", "active", "t3", None, &[]),
+        ];
+        GraphStore::build(&docs, Path::new("/tmp/test-pkb-tree"))
+    }
+
+    fn build_tree_test_server() -> PkbSearchServer {
+        let graph = build_tree_test_graph();
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            PathBuf::from("/tmp/test-pkb-tree"),
+            PathBuf::from("/tmp/test-pkb-tree/db"),
+            Arc::new(RwLock::new(graph)),
+        )
+    }
+
+    #[test]
+    fn test_list_tasks_json_include_parent() {
+        let server = build_tree_test_server();
+        let result = server.handle_list_tasks(&json!({
+            "format": "json",
+            "include_parent": true
+        })).unwrap();
+
+        let val: serde_json::Value = serde_json::from_str(result.content[0].raw.as_text().unwrap().text.as_str()).unwrap();
+        let tasks = val["tasks"].as_array().unwrap();
+
+        let t1 = tasks.iter().find(|t| t["id"] == "t1").unwrap();
+        assert_eq!(t1["parent"], "e1");
+        assert_eq!(t1["parent_title"], "Epic One");
+
+        let t3 = tasks.iter().find(|t| t["id"] == "t3").unwrap();
+        assert!(t3["parent"].is_null());
+        assert!(t3["parent_title"].is_null());
+    }
+
+    #[test]
+    fn test_list_tasks_tree_format() {
+        let server = build_tree_test_server();
+        let result = server.handle_list_tasks(&json!({
+            "format": "tree"
+        })).unwrap();
+
+        let text = result.content[0].raw.as_text().unwrap().text.as_str();
+
+        assert!(text.contains("## Task Tree"));
+        assert!(text.contains("**project: Project One**"));
+        assert!(text.contains("**epic: Epic One**"));
+        assert!(text.contains("task: `t1`"));
+        assert!(text.contains("task: `t2`"));
+        assert!(text.contains("task: `t3`"));
+        assert!(text.contains("**Summary:**"));
+    }
+
+    #[test]
+    fn test_get_tree_subtree() {
+        let server = build_tree_test_server();
+        let result = server.handle_get_tree(&json!({
+            "id": "p1"
+        })).unwrap();
+
+        let text = result.content[0].raw.as_text().unwrap().text.as_str();
+
+        assert!(text.contains("## Tree for `p1`"));
+        assert!(text.contains("project: `p1`"));
+        assert!(text.contains("epic: `e1`"));
+        assert!(text.contains("task: `t1`"));
+        assert!(text.contains("**Summary:**"));
+    }
+
+    #[test]
+    fn test_tree_cycle_protection() {
+        // Build a graph with a parent cycle: c1 -> c2 -> c1
+        let mut fm1 = serde_json::Map::new();
+        fm1.insert("title".to_string(), json!("Cycle Node 1"));
+        fm1.insert("type".to_string(), json!("task"));
+        fm1.insert("status".to_string(), json!("active"));
+        fm1.insert("id".to_string(), json!("c1"));
+        fm1.insert("parent".to_string(), json!("c2"));
+
+        let mut fm2 = serde_json::Map::new();
+        fm2.insert("title".to_string(), json!("Cycle Node 2"));
+        fm2.insert("type".to_string(), json!("task"));
+        fm2.insert("status".to_string(), json!("active"));
+        fm2.insert("id".to_string(), json!("c2"));
+        fm2.insert("parent".to_string(), json!("c1"));
+
+        let docs = vec![
+            PkbDocument {
+                path: PathBuf::from("tasks/c1.md"),
+                title: "Cycle Node 1".to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("active".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm1)),
+                content_hash: "h1".to_string(),
+            },
+            PkbDocument {
+                path: PathBuf::from("tasks/c2.md"),
+                title: "Cycle Node 2".to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("active".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm2)),
+                content_hash: "h2".to_string(),
+            },
+        ];
+
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-cycle"));
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            PathBuf::from("/tmp/test-pkb-cycle"),
+            PathBuf::from("/tmp/test-pkb-cycle/db"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // Must not panic or loop infinitely
+        let result = server.handle_get_tree(&json!({}));
+        assert!(result.is_ok());
+        let result = server.handle_list_tasks(&json!({"format": "tree"}));
+        assert!(result.is_ok());
     }
 }
 
