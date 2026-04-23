@@ -28,6 +28,11 @@ pub struct PkbSearchServer {
     db_path: PathBuf,
     graph: Arc<RwLock<GraphStore>>,
     stale_count: usize,
+    /// True when a background vector-store save is already scheduled. Used
+    /// to coalesce burst writes: a subsequent `save_store` call while a save
+    /// is in flight is skipped (the in-flight save will capture the latest
+    /// state when it runs).
+    save_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PkbSearchServer {
@@ -45,6 +50,7 @@ impl PkbSearchServer {
             db_path,
             graph,
             stale_count: 0,
+            save_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -121,6 +127,7 @@ impl PkbSearchServer {
 
     /// Incremental graph update after a single file changed, given an already-parsed document.
     /// This avoids re-reading/re-parsing the file when the caller already has a `PkbDocument`.
+    /// Uses the fast path (skips centrality recomputation).
     fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
         let abs_path = self.abs_path(&doc.path);
         let node = crate::graph::GraphNode::from_pkb_document(doc);
@@ -133,16 +140,34 @@ impl PkbSearchServer {
             self.abs_path(&existing_node.path) != abs_path
         });
 
+    fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
+        let abs_path = self.abs_path(&doc.path);
+        let mut node = crate::graph::GraphNode::from_pkb_document(doc);
+        
+        let mut nodes = {
+            let graph = self.graph.read();
+            let mut ns = graph.nodes_cloned();
+            if let Some(old) = ns.get(&node.id) {
+                node.pagerank = old.pagerank;
+                node.betweenness = old.betweenness;
+            }
+            ns
+        };
+
         nodes.insert(node.id.clone(), node);
-        let new_graph = GraphStore::rebuild_from_nodes(nodes, &self.pkb_root);
+        let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
+        *self.graph.write() = new_graph;
+    }
+        let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
         *self.graph.write() = new_graph;
     }
 
     /// Incremental graph update after a node is removed.
+    /// Uses the fast path (skips centrality recomputation).
     fn rebuild_graph_remove(&self, id: &str) {
         let mut nodes = self.graph.read().nodes_cloned();
         nodes.remove(id);
-        let new_graph = GraphStore::rebuild_from_nodes(nodes, &self.pkb_root);
+        let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
         *self.graph.write() = new_graph;
     }
 
@@ -158,25 +183,64 @@ impl PkbSearchServer {
         }
     }
 
-    /// Save the vector store to disk with a non-blocking lock.
-    /// If another process holds the lock, logs a warning and skips the save.
+    /// Save the vector store to disk asynchronously, off the write critical path.
+    ///
+    /// Uses a coalescing flag (`save_pending`) so that bursts of writes result
+    /// in at most a single outstanding background save. The in-memory upsert
+    /// has already happened; this only persists to disk.
+    ///
+    /// If the lock file is held by another process (e.g. a running reindex),
+    /// logs and skips — the on-disk state will be refreshed when the other
+    /// process releases. If no tokio runtime is present (e.g. a direct CLI
+    /// caller), falls back to an inline save.
     fn save_store(&self) {
-        match VectorStore::acquire_lock(&self.db_path) {
-            Ok(mut lock) => match lock.try_write() {
-                Ok(_guard) => {
-                    if let Err(e) = self.store.read().save(&self.db_path) {
-                        tracing::error!("Failed to save vector store: {e}");
+        use std::sync::atomic::Ordering;
+        // Coalesce: if a background save is already scheduled, skip — it will
+        // read the latest in-memory state when it runs.
+        if self.save_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let store = self.store.clone();
+        let db_path = self.db_path.clone();
+        let pending = self.save_pending.clone();
+
+        let do_save = move || {
+            // Clear the flag BEFORE serializing: any concurrent write that
+            // arrives during serialize will schedule a follow-up save (rather
+            // than be silently dropped).
+            pending.store(false, Ordering::SeqCst);
+            match VectorStore::acquire_lock(&db_path) {
+                Ok(mut lock) => match lock.try_write() {
+                    Ok(_guard) => {
+                        if let Err(e) = store.read().save(&db_path) {
+                            tracing::error!("Failed to save vector store: {e}");
+                        }
                     }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    tracing::info!("Vector store lock held by another process — disk save deferred (in-memory index updated, source file written)");
-                }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        tracing::info!(
+                            "Vector store lock held by another process — disk save deferred"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to acquire write lock for save: {e}");
+                    }
+                },
                 Err(e) => {
-                    tracing::error!("Failed to acquire write lock for save: {e}");
+                    tracing::error!("Failed to open lock file for save: {e}");
                 }
-            },
-            Err(e) => {
-                tracing::error!("Failed to open lock file for save: {e}");
+            }
+        };
+
+        // Offload serialize + file I/O to a blocking pool thread so the MCP
+        // handler returns without waiting for disk.
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => {
+                tokio::task::spawn_blocking(do_save);
+            }
+            Err(_) => {
+                // No runtime (e.g. CLI test path) — save inline.
+                do_save();
             }
         }
     }
