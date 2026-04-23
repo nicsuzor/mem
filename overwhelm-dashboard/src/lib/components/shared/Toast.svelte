@@ -5,9 +5,18 @@
     let visibleOperations = $derived.by(() => {
         const entries = $taskOperations;
         const pending = entries.filter((entry) => entry.status === 'pending').reverse();
-        const resolved = entries.filter((entry) => entry.status !== 'pending').slice(-Math.max(0, 4 - pending.length)).reverse();
-        return [...pending, ...resolved].slice(0, 4);
+        const errors = entries.filter((entry) => entry.status === 'error').reverse();
+        const successes = entries.filter((entry) => entry.status === 'success')
+            .slice(-Math.max(0, 4 - pending.length - errors.length))
+            .reverse();
+        return [...errors, ...pending, ...successes].slice(0, 6);
     });
+
+    function handleRetry(operation: typeof visibleOperations[number]) {
+        const retry = operation.retry;
+        taskOperations.remove(operation.id);
+        retry?.();
+    }
 </script>
 
 {#if visibleOperations.length > 0}
@@ -19,7 +28,7 @@
                         ? 'border-primary/30 text-primary'
                         : operation.status === 'success'
                             ? 'border-emerald-500/50 text-emerald-100'
-                            : 'border-red-500/50 text-red-100'
+                            : 'border-red-500/50 text-red-100 pointer-events-auto'
                 }`}
             >
                 <div class="flex items-start gap-2">
@@ -39,6 +48,27 @@
                             <span class="opacity-40">/</span>
                             <span class="truncate">{operation.detail}</span>
                         </div>
+                        {#if operation.status === 'error'}
+                            <div class="mt-1.5 flex items-center gap-1.5">
+                                {#if operation.retry}
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1 rounded-sm border border-red-400/50 bg-red-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.14em] text-red-100 hover:bg-red-500/20 transition-colors"
+                                        onclick={() => handleRetry(operation)}
+                                    >
+                                        <span class="material-symbols-outlined text-[11px]">refresh</span>
+                                        Retry
+                                    </button>
+                                {/if}
+                                <button
+                                    type="button"
+                                    class="inline-flex items-center gap-1 rounded-sm border border-red-400/30 bg-transparent px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.14em] text-red-100/80 hover:bg-red-500/10 transition-colors"
+                                    onclick={() => taskOperations.remove(operation.id)}
+                                >
+                                    Dismiss
+                                </button>
+                            </div>
+                        {/if}
                     </div>
                 </div>
             </div>

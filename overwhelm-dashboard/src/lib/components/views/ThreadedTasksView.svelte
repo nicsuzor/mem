@@ -75,12 +75,12 @@
                 taskOperations.succeed(operationId);
             } else {
                 rollback();
-                taskOperations.fail(operationId, 'Failed to update status');
+                taskOperations.fail(operationId, 'Failed to update status', () => toggleTaskStatus(task, isChecked));
             }
         } catch (e: any) {
             console.error("Failed to update task status", e);
             rollback();
-            taskOperations.fail(operationId, e.message ?? 'Network error');
+            taskOperations.fail(operationId, e.message ?? 'Network error', () => toggleTaskStatus(task, isChecked));
         }
     }
 

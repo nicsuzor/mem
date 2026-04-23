@@ -10,20 +10,21 @@ export interface TaskOperationEntry {
     status: TaskOperationStatus;
     startedAt: number;
     completedAt?: number;
+    retry?: () => void;
 }
 
 const MAX_OPERATIONS = 6;
 const SUCCESS_TIMEOUT_MS = 2600;
-const ERROR_TIMEOUT_MS = 8000;
 
 function capOperations(entries: TaskOperationEntry[]) {
     if (entries.length <= MAX_OPERATIONS) return entries;
 
     const pending = entries.filter((entry) => entry.status === 'pending');
-    const resolved = entries.filter((entry) => entry.status !== 'pending');
-    const keepResolved = Math.max(0, MAX_OPERATIONS - pending.length);
+    const errors = entries.filter((entry) => entry.status === 'error');
+    const successes = entries.filter((entry) => entry.status === 'success');
+    const keepOther = Math.max(0, MAX_OPERATIONS - pending.length - errors.length);
 
-    return [...pending, ...resolved.slice(-keepResolved)];
+    return [...pending, ...errors, ...successes.slice(-keepOther)];
 }
 
 function createTaskOperationsStore() {
@@ -68,18 +69,18 @@ function createTaskOperationsStore() {
         succeed: (id: number, detail = 'Saved') => {
             update((entries) => entries.map((entry) => (
                 entry.id === id
-                    ? { ...entry, status: 'success', detail, completedAt: Date.now() }
+                    ? { ...entry, status: 'success', detail, completedAt: Date.now(), retry: undefined }
                     : entry
             )));
             scheduleRemoval(id, SUCCESS_TIMEOUT_MS);
         },
-        fail: (id: number, detail = 'Failed') => {
+        fail: (id: number, detail = 'Failed', retry?: () => void) => {
+            clearRemovalTimer(id);
             update((entries) => entries.map((entry) => (
                 entry.id === id
-                    ? { ...entry, status: 'error', detail, completedAt: Date.now() }
+                    ? { ...entry, status: 'error', detail, completedAt: Date.now(), retry }
                     : entry
             )));
-            scheduleRemoval(id, ERROR_TIMEOUT_MS);
         },
         remove: (id: number) => {
             clearRemovalTimer(id);

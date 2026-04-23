@@ -53,9 +53,6 @@
     let description = $state("");
     let assigneeDraft = $state("");
     let loadingBody = $state(false);
-    let pendingUpdates = $state(0);
-    let updating = $derived(pendingUpdates > 0);
-    let updateError = $state<string | null>(null);
 
     $effect(() => {
         assigneeDraft = task?.assignee || "";
@@ -117,8 +114,6 @@
 
         if (Object.keys(apiPayload).length > 1) {
             const operationId = taskOperations.start(targetId, describeTaskMutation(updates));
-            pendingUpdates += 1;
-            updateError = null;
             try {
                 const res = await fetch('/api/task/status', {
                     method: 'POST',
@@ -127,18 +122,16 @@
                 });
                 if (!res.ok) {
                     const data = await res.json().catch(() => ({}));
-                    updateError = data.error ?? `HTTP ${res.status}`;
+                    const errMsg = data.error ?? `HTTP ${res.status}`;
                     rollback();
-                    taskOperations.fail(operationId, updateError ?? undefined);
+                    taskOperations.fail(operationId, errMsg, () => updateTask(updates, targetId));
                 } else {
                     taskOperations.succeed(operationId);
                 }
             } catch (e: any) {
-                updateError = e.message ?? 'Network error';
+                const errMsg = e.message ?? 'Network error';
                 rollback();
-                taskOperations.fail(operationId, updateError ?? undefined);
-            } finally {
-                pendingUpdates = Math.max(0, pendingUpdates - 1);
+                taskOperations.fail(operationId, errMsg, () => updateTask(updates, targetId));
             }
         }
     }
@@ -219,8 +212,6 @@
         if (!taskId || !task) return;
         const { rollback } = updateGraphTaskNode(taskId, { refile: true });
         const operationId = taskOperations.start(taskId, describeTaskMutation({ refile: true }));
-        pendingUpdates += 1;
-        updateError = null;
         try {
             const res = await fetch('/api/task/status', {
                 method: 'POST',
@@ -231,16 +222,14 @@
                 taskOperations.succeed(operationId);
             } else {
                 const data = await res.json().catch(() => ({}));
-                updateError = data.error ?? `HTTP ${res.status}`;
+                const errMsg = data.error ?? `HTTP ${res.status}`;
                 rollback();
-                taskOperations.fail(operationId, updateError ?? undefined);
+                taskOperations.fail(operationId, errMsg, () => handleMarkForRefile());
             }
         } catch (e: any) {
-            updateError = e.message ?? 'Network error';
+            const errMsg = e.message ?? 'Network error';
             rollback();
-            taskOperations.fail(operationId, updateError ?? undefined);
-        } finally {
-            pendingUpdates = Math.max(0, pendingUpdates - 1);
+            taskOperations.fail(operationId, errMsg, () => handleMarkForRefile());
         }
     }
 
@@ -424,11 +413,6 @@
                         </div>
                     </div>
                 {/if}
-                {#if updating}
-                    <p class="text-[9px] text-primary/50 mt-1 font-mono">saving…</p>
-                {:else if updateError}
-                    <p class="text-[9px] text-destructive mt-1 font-mono">{updateError}</p>
-                {/if}
             </div>
         </div>
 
@@ -467,7 +451,6 @@
                                     <button
                                         class={stateCardClass('done', 'success')}
                                         onclick={handleComplete}
-                                        disabled={updating}
                                         title="Mark complete"
                                     >
                                         <span class="material-symbols-outlined text-[14px]">check_circle</span>
@@ -480,7 +463,6 @@
                                     <button
                                         class={stateCardClass(action.status, action.status === 'ready' ? 'ready' : action.status === 'decomposing' ? 'active' : 'neutral')}
                                         onclick={() => action.status === 'decomposing' ? handleDecompose() : setStatus(action.status)}
-                                        disabled={updating}
                                     >
                                         <span class="material-symbols-outlined text-[14px]">{action.icon}</span>
                                         <span class="min-w-0">
@@ -492,7 +474,6 @@
                                     <button
                                         class={stateCardClass(action.status, action.status === 'cancelled' ? 'danger' : 'neutral')}
                                         onclick={() => setStatus(action.status)}
-                                        disabled={updating}
                                     >
                                         <span class="material-symbols-outlined text-[14px]">{action.icon}</span>
                                         <span class="min-w-0">
@@ -516,7 +497,7 @@
                                         class="inline-flex h-8 w-8 items-center justify-center rounded-sm border transition-colors hover:opacity-100 disabled:opacity-40"
                                         style={prioritySurfaceStyle(currentPriority.color, 0.08, 0.35)}
                                         onclick={priorityUp}
-                                        disabled={updating || (t.priority ?? 2) <= 0}
+                                        disabled={(t.priority ?? 2) <= 0}
                                         title="Increase priority"
                                     >
                                         <span class="material-symbols-outlined text-[14px]">arrow_upward</span>
@@ -531,7 +512,7 @@
                                         class="inline-flex h-8 w-8 items-center justify-center rounded-sm border transition-colors hover:opacity-100 disabled:opacity-40"
                                         style={prioritySurfaceStyle(currentPriority.color, 0.08, 0.35)}
                                         onclick={priorityDown}
-                                        disabled={updating || (t.priority ?? 2) >= 4}
+                                        disabled={(t.priority ?? 2) >= 4}
                                         title="Decrease priority"
                                     >
                                         <span class="material-symbols-outlined text-[14px]">arrow_downward</span>
@@ -545,7 +526,7 @@
                                     <button
                                         class="inline-flex shrink-0 items-center gap-1 rounded-sm border border-primary/20 bg-black/20 px-2 py-1 text-[8px] font-bold uppercase tracking-[0.14em] text-primary/75 transition-colors hover:border-primary/35 hover:text-primary disabled:opacity-50"
                                         onclick={handleMarkForRefile}
-                                        disabled={updating || refileMarked}
+                                        disabled={refileMarked}
                                         title="Mark this task for refiling or reorganization"
                                     >
                                         <span class="material-symbols-outlined text-[12px]">drive_file_move</span>
