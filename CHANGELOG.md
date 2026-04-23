@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.12](https://github.com/nicsuzor/mem/compare/v0.3.11...v0.3.12) - 2026-04-23
+
+### Added
+
+- *(pkb-server)* add blocking_urgency field and compute function ([#219](https://github.com/nicsuzor/mem/pull/219))
+
+### Other
+
+- enable on wsl
+- adjust heat
+- add slider for link length again
+- put var in
+- add intra-group links
+
 ## [0.3.11](https://github.com/nicsuzor/mem/compare/v0.3.10...v0.3.11) - 2026-04-22
 
 ### Other
