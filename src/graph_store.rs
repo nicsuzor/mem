@@ -750,10 +750,10 @@ pub(crate) fn parse_effort_days(effort: &str) -> Option<i64> {
 ///
 /// 1.0 if modified today, decaying exponentially with exp(-days / 30).
 /// Clamps to 0.0 at or after 90 days.
-fn recency_signal(modified: &DateTime<Utc>) -> f64 {
-    let now = Utc::now();
+fn recency_signal(modified: &DateTime<Utc>, now: &DateTime<Utc>) -> f64 {
+    const MS_PER_DAY: f64 = 86_400_000.0;
     let duration = now.signed_duration_since(*modified);
-    let days = duration.num_seconds() as f64 / 86400.0;
+    let days = duration.num_milliseconds() as f64 / MS_PER_DAY;
 
     if days >= 90.0 {
         return 0.0;
@@ -763,8 +763,7 @@ fn recency_signal(modified: &DateTime<Utc>) -> f64 {
         return 1.0;
     }
 
-    let signal = (-days / 30.0).exp();
-    signal.clamp(0.0, 1.0)
+    (-days / 30.0).exp()
 }
 
 /// Compute focus scores for all nodes.
