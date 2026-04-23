@@ -2239,7 +2239,7 @@ impl PkbSearchServer {
             });
         }
 
-        let project_prefix = {
+        let (project_prefix, parent_project) = {
             let graph = self.graph.read();
             match graph.resolve(parent_id) {
                 None => {
@@ -2259,7 +2259,20 @@ impl PkbSearchServer {
                             data: None,
                         });
                     }
-                    node.node_type.clone().unwrap_or_else(|| "task".to_string())
+                    let prefix = node.node_type.clone().unwrap_or_else(|| "task".to_string());
+                    // Read parent's raw frontmatter `project` field so subtasks can inherit it.
+                    // GraphNode.project is a computed ancestor label, not the frontmatter value.
+                    let parent_project = crate::pkb::parse_file_relative(
+                        &self.abs_path(&node.path),
+                        &self.pkb_root,
+                    )
+                    .and_then(|doc| doc.frontmatter)
+                    .and_then(|fm| {
+                        fm.get("project")
+                            .and_then(|v| v.as_str())
+                            .map(String::from)
+                    });
+                    (prefix, parent_project)
                 }
             }
         };
@@ -2398,7 +2411,8 @@ impl PkbSearchServer {
                 project: subtask
                     .get("project")
                     .and_then(|v| v.as_str())
-                    .map(String::from),
+                    .map(String::from)
+                    .or_else(|| parent_project.clone()),
                 task_type: subtask
                     .get("type")
                     .and_then(|v| v.as_str())
@@ -4228,7 +4242,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "decompose_task",
-                "Split a large task into multiple subtasks in one operation. Supports relative sibling references (e.g. '$1') for dependencies. Use to structure a newly defined work package.",
+                "Split a large task into multiple subtasks in one operation. Supports relative sibling references (e.g. '$1') for dependencies. Subtasks inherit the parent's `project` field unless explicitly overridden. Use to structure a newly defined work package.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4248,7 +4262,8 @@ impl PkbSearchServer {
                                     "body": { "type": "string" },
                                     "stakeholder": { "type": "string" },
                                     "waiting_since": { "type": "string" },
-                                    "due": { "type": "string" }
+                                    "due": { "type": "string" },
+                                    "project": { "type": "string", "description": "Override project field (defaults to parent's project)" }
                                 },
                                 "required": ["title"]
                             },
