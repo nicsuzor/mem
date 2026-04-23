@@ -1,124 +1,157 @@
 ---
-title: "View: Metro (Priority Paths)"
+title: "View: Metro (Routes to Destinations)"
 type: spec
 status: active
 tier: ux
 parent: planning-web
-tags: [spec, planning-web, view, metro, priority-paths, visualization]
+tags: [spec, planning-web, view, metro, priority-paths, destinations, visualization]
 created: 2026-04-07
+updated: 2026-04-23
 ---
 
-# View: Metro (Priority Paths)
+# View: Metro (Routes to Destinations)
 
-**Question answered:** "What are the priority paths?"
+**Question answered:** "What do I need to do to get to each destination?"
 
-Part of the [[planning-web]] spec. Separated from [[view-graph]] so that Force handles pure topology and Metro handles priority dependency chains.
+Part of the [[planning-web]] spec. Separated from [[view-graph]] so that Force handles pure topology and Metro makes the route to each priority outcome visually traceable.
 
 ---
 
 ## Purpose
 
-The metro map extracts and highlights the dependency chains leading to P0 and P1 outcomes. It answers: "what's blocking my most important work, and where do the chains overlap?"
+The metro map anchors the user's **destinations** — P0/P1 outcomes still to be reached — and arranges every incomplete dependency above them so the route to each destination reads as a single visual sweep.
 
-Each priority chain is rendered as a named "metro line" colored by project. Where chains cross (shared blockers, common ancestors), interchange stations appear — these are the highest-leverage intervention points.
+Destinations are fixed terminal stations along the bottom of the map. Upstream blockers are positioned relative to the destinations they serve. When a blocker lies on the route to more than one destination, it naturally falls between those destinations' lanes and becomes an **interchange** — the highest-leverage work, visually emergent.
 
-Force shows the forest. Metro shows the trails that matter.
+Force shows the forest. Metro shows the tracks to the destinations that matter.
 
 ---
 
 ## The User
 
-Nic has 500+ tasks across many projects. He needs to see which dependency chains lead to his most important outcomes, and where those chains share common blockers. The metro map makes critical paths visually obvious without requiring him to trace edges through a dense graph.
+Nic has 500+ tasks across many projects. He cannot hold in working memory what stands between him and each priority outcome. The metro map makes that set visible at a glance: which destinations exist, what lies on the route to each, and where routes converge on shared blockers.
 
 ---
 
 ## ADHD Design Principles
 
-- **Priority paths dominate.** Non-priority stations are background context, not foreground noise. They render at or below track width — visible but not competing for attention.
-- **Interchange stations are the insight.** Where two priority chains share a blocker, that's the highest-value thing to see. Interchanges must be visually distinctive.
-- **Chains, not clouds.** Unlike Force (spatial clusters), Metro shows linear paths. The layout should emphasize directionality — upstream blockers at top, downstream outcomes at bottom.
-- **Scannable depth.** At overview zoom, you should see: how many priority lines exist, which are long (deep dependency chains), and where they cross. No label reading required.
+- **Destinations are anchors, not decorations.** Each P0/P1 outcome is a labelled terminus the eye can find and return to. If you can't immediately see the destinations, the view has failed.
+- **The path is the answer.** Tracing from a destination back through its blockers must be a single visual sweep — no edge-following through density required.
+- **Overview first, labels on zoom.** At map scale, shape, colour, and position convey meaning. Labels unlock as the user zooms in (via `min-zoomed-font-size`). Destinations and interchanges keep their labels at every zoom level.
+- **Interchanges are emergent.** Shared blockers reveal themselves through geometry and edge blending, not through a bespoke marker.
+- **Static positions, not animated physics.** Running a force simulation each mount destroys the mental model. Positions are computed once per graph structure and preserved across renders.
 
 ---
 
 ## Data Model
 
-### Priority chain extraction
+### Destinations (terminal stations)
 
-1. Identify all P0 and P1 **leaf tasks** (incomplete, no incomplete children)
-2. For each leaf, walk upstream through `depends_on` and `parent` edges
-3. Each complete path (leaf → root ancestor) is a "metro line"
-4. Nodes appearing on multiple lines are **interchange stations**
+A **destination** is a node that is all of:
+
+1. incomplete (status in `INCOMPLETE_STATUSES`),
+2. priority 0 or 1,
+3. a leaf — no incomplete children — **or** explicitly marked as a goal/outcome (node type `goal`).
+
+Destinations are ordered deterministically: priority asc, then project, then label. Order defines their horizontal slot.
+
+### Routes
+
+For each destination `d`, the **route to `d`** is the set of all incomplete ancestors reachable by walking `parent` and `depends_on` edges upstream from `d`. Completed ancestors are hidden or heavily dimmed — they are already-traversed track.
+
+Each node carries `routes: Set<destinationId>` computed once during preparation.
 
 ### Station types
 
-| Station type | Criteria | Visual |
+| Station type | Criteria | Visual role |
 |---|---|---|
-| **Priority station** | Node is P0/P1, or is on a priority chain with incomplete work downstream | Large, labeled, colored by status |
-| **Interchange** | Node appears on 2+ priority lines | Extra-large, distinctive marker, always labeled |
-| **Context station** | Node not on any priority chain | Small (≤ track width), no label at default zoom |
+| **Terminal** | Node is a destination | Largest, always labelled, priority-coloured border, project fill |
+| **Interchange** | `routes.size ≥ 2` | Enlarged, always labelled, edges blend at its position |
+| **Route station** | `routes.size == 1` | Sized by downstream_weight, label on zoom |
+| **Context station** | `routes.size == 0` | Track-width dot, no label, low opacity |
+
+---
+
+## Layout — target-anchored preset
+
+This is the heart of the view. Layout is **not** force-directed; it is computed once and applied as a Cytoscape `preset`.
+
+Algorithm:
+
+1. Let `N` = number of destinations. Destination `i` gets anchor `(x_i, y_max)` where `x_i` is equally spaced across the horizontal extent.
+2. For every non-destination node, compute `depth` = shortest-path distance (along reversed `parent` + `depends_on` edges) to the nearest destination it serves. Its y-coordinate is `y_max − depth × rowHeight`.
+3. Its x-coordinate is `mean(x_d for d in node.routes)`. Nodes on a single route sit directly above their destination; interchanges drift to the mean of their destinations' anchors, landing between lanes.
+4. Context stations (empty routes) are placed in a backdrop strip above the route area, spread by id hash so they don't overlap the routes.
+5. Final collision pass: bucket by `(round(x/gridX), round(y/gridY))`; within a bucket, nudge ±Δ along x to separate siblings.
+
+The algorithm exploits the fact that the task graph is already a DAG with well-defined destinations — no need for Sugiyama or dagre.
 
 ---
 
 ## Visual Encoding
 
-### Lines (edges)
-
-- **Priority parent edges**: Thick metro lines colored by project. Taxi/orthogonal routing.
-- **Priority dependency edges**: Dashed, amber/orange, with directional arrows. Thinner than parent lines but still prominent.
-- **Non-priority edges**: Thin, grey, low opacity. Visible for context but not competing.
-
 ### Stations (nodes)
 
-- **Priority stations**: Sized by downstream_weight. Status fill color. Priority border. Label visible at default zoom.
-- **Interchange stations**: Larger than priority stations. White or distinctive border. Multiple line colors visible (e.g. split fill or ring segments). Always labeled.
-- **Context stations**: Diameter ≤ line width. Status color fill. No label (reveal on zoom). Low opacity.
-- **Completed stations**: Dimmed and smaller than their type would normally be.
+- **Terminals**: labelled, enlarged (≈3× base), priority-coloured border, project-coloured fill. Bloom on selection (à la Tokyo's start/end stations).
+- **Interchanges**: slightly larger than route stations, always labelled, distinguished by multi-colour edge convergence at their position.
+- **Route stations**: sized by `downstream_weight`, status-coloured fill, label revealed when zoom passes `min-zoomed-font-size`.
+- **Context stations**: diameter ≤ track width, no label, low opacity.
+- **Completed nodes**: desaturated and shrunk, regardless of station type.
 
-### Layout
+### Lines (edges)
 
-- Directional: upstream (blockers/ancestors) at top, downstream (outcomes/leaves) at bottom.
-- Lines should run roughly vertically with taxi-curve bends at branches.
-- Interchange stations should be visually centered where lines cross.
+- **Thick, semi-transparent, straight.** Haystack-style rendering (Cytoscape `curve-style: haystack`, `haystack-radius: 0`): cheap, overlap-blending, and matches the metro-map aesthetic.
+- **Width**: parent-route ≈ 6–8 px; `depends_on` route ≈ 4–5 px; non-route references 1 px.
+- **Opacity**: ≈ 0.45 for route edges so colours mix where they overlap. That blending is how interchanges communicate "this blocker serves multiple routes" — no extra markup.
+- **Colour** by the destination(s) a route serves. Edges on a single route: coloured by that destination's project. Multi-route edges: ideally rendered as one stroke per route slightly offset (Tokyo's "duplicate-per-line" trick) so colours stack visibly. A single blended stroke is acceptable as a first cut.
+- **Direction**: `depends_on` carries a directional arrow; `parent` is undirected.
+- **Non-route edges**: thin, grey, low opacity — present for context.
+
+This spec deliberately drops the earlier "taxi/orthogonal routing" prescription in favour of haystack. Straight, blending edges are simpler and produce the target aesthetic directly.
 
 ---
 
 ## Interactions
 
-- Click station: opens detail panel (shared with other views)
-- Hover station: flashlight — dims non-neighborhood, shows tooltip with title, status, which lines pass through this station
-- Click line label/color: filter to show only that line's stations
-- Click empty space: clears selection
+- **Click a terminal** → enter route-highlight mode. Every node with that destination in its `routes` stays bright; everything else gets `.not-path` (opacity ≈ 0.12). This is the Tokyo A\* pattern repurposed — and it is the primary answer to the view's centring question.
+- **Click any station** → highlight all nodes that share at least one route with the tapped station (i.e. "which destinations does finishing this unblock?"). Also opens the shared detail panel.
+- **Click empty space** → clear highlight, restore full map.
+- **Hover station** → neighbourhood flashlight: dim non-neighbours, tooltip shows title, status, and which destinations the station serves.
+- **Click terminal in legend** → isolate that one route (dim others).
 
 ---
 
 ## Acceptance Criteria
 
-### Rendering
+### Destination handling
 
-- [ ] Metro view renders without freezing for typical graph size
-- [ ] Only P0/P1 chains are visually prominent; non-priority nodes are background
-- [ ] Interchange stations are visually distinctive and always labeled
+- [ ] Every incomplete P0/P1 leaf appears as a labelled terminal station.
+- [ ] Terminal positions are deterministic and stable across re-renders of the same graph.
+- [ ] Clicking a terminal highlights the full upstream route and dims everything else.
 
-### Visual Encoding
+### Layout
 
-- [ ] Lines are colored by project
-- [ ] Priority stations show status color and priority border
-- [ ] Context stations are ≤ track width
-- [ ] Completed nodes are dimmed
-- [ ] Layout has clear directionality (upstream → downstream)
+- [ ] Layout is computed by the target-anchored algorithm and applied via Cytoscape `preset`; no live force simulation on mount or refresh.
+- [ ] Y-axis encodes depth-to-destination; x-axis encodes route membership.
+- [ ] Nodes with `routes.size ≥ 2` land between the relevant terminals' lanes.
+
+### Visual encoding
+
+- [ ] Route edges use haystack (or equivalent straight, thick, semi-transparent) rendering; overlap visibly blends colours at interchanges.
+- [ ] Labels hidden at overview zoom (`min-zoomed-font-size`) except on terminals and interchanges, which remain labelled.
+- [ ] Completed nodes are desaturated and shrunk.
+- [ ] Context (non-route) nodes render at track width with no label at default zoom.
+
+### Data integrity
+
+- [ ] Route membership is computed purely from `depends_on` + `parent` edges and the destination set; deterministic for equal graph inputs.
+- [ ] Interchange detection matches nodes where `routes.size ≥ 2`.
+- [ ] A node reachable from no destination has empty routes and is classed as a context station.
 
 ### Interaction
 
-- [ ] Click station opens detail panel
-- [ ] Hover shows neighborhood flashlight
-- [ ] Click empty space clears selection
-
-### Data Integrity
-
-- [ ] Every P0/P1 incomplete leaf appears as an endpoint
-- [ ] Every node on a priority chain is reachable from at least one P0/P1 leaf
-- [ ] Interchange detection correctly identifies shared nodes
+- [ ] Click terminal ⇒ route highlight. Click station ⇒ routes-through highlight. Click empty ⇒ clear.
+- [ ] Hover preserves the neighbourhood flashlight and shows a tooltip with destination memberships.
 
 ---
 
@@ -126,8 +159,19 @@ Nic has 500+ tasks across many projects. He needs to see which dependency chains
 
 | Need | Handled by |
 |---|---|
+| What's blocking outcome X? | Metro (this view) |
 | Full network topology | Force view |
 | Size/weight distribution | Treemap |
 | Hierarchy quality | Circle Pack |
-| Ranked next actions | Arc Diagram |
+| Ranked next actions | Focus / Arc |
 | Session context recovery | Dashboard |
+
+---
+
+## References
+
+- **Cytoscape.js Tokyo Railways demo** — https://github.com/cytoscape/cytoscape.js/tree/unstable/documentation/demos/tokyo-railways (note: `master` branch 404s; use `unstable`). Three ideas borrowed directly:
+  1. **Preset layout with coordinates baked into data** — gives a genuine map feel instead of a tidy schematic. We compute coordinates from destination anchors + depth rather than from geography, but the principle is identical.
+  2. **Haystack edges at width ~20 and opacity ~0.5** — overlap blending is what makes interchanges visually emergent.
+  3. **A\* path highlight with `.not-path` dimming** — repurposed as "click a destination, see everything in its route".
+- Shared infrastructure: `projectUtils.ts` (`projectColor`), `constants.ts` (`PRIORITY_BORDERS`, `INCOMPLETE_STATUSES`). Reachable-filter semantics carry over from [[view-graph]].
