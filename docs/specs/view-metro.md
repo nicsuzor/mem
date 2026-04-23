@@ -47,17 +47,23 @@ Nic has 500+ tasks across many projects. He cannot hold in working memory what s
 
 ### Destinations (terminal stations)
 
-A **destination** is a node that is all of:
+A **destination** is any node that is **both**:
 
-1. incomplete (status in `INCOMPLETE_STATUSES`),
-2. priority 0 or 1,
-3. a leaf — no incomplete children — **or** explicitly marked as a goal/outcome (node type `goal`).
+1. incomplete (status in `INCOMPLETE_STATUSES`), and
+2. priority 0 or 1.
+
+That's it. The user sets priorities to name their targets; this view renders every target as a terminal regardless of whether the node happens to be a leaf. Whether a destination has children does not decide *whether* it is a destination — it decides how the route to it is walked (see below).
 
 Destinations are ordered deterministically: priority asc, then project, then label. Order defines their horizontal slot.
 
 ### Routes
 
-For each destination `d`, the **route to `d`** is the set of all incomplete ancestors reachable by walking `parent` and `depends_on` edges upstream from `d`. Completed ancestors are hidden or heavily dimmed — they are already-traversed track.
+For each destination `d`, the **route to `d`** is the set of incomplete nodes reached by walking `depends_on` / `soft_depends_on` edges upstream **and** walking `parent` edges in the direction dictated by `d`'s shape:
+
+- **Container destinations** (type `goal`/`epic`, or any node with at least one incomplete child): walk `parent` parent → child (descendants) up to `GOAL_PARENT_HOP_CAP` hops, plus `depends_on` on every collected node. The subtree *is* the route — these destinations are reached by completing the work they contain.
+- **Leaf destinations** (no incomplete children, not a container type): walk `parent` child → parent — the containing epic/project hierarchy becomes part of the route, plus `depends_on`. This is deliberate: a shared parent becoming an interchange is *useful* information ("this epic hosts three P0/P1 outcomes"), not noise.
+
+Completed nodes are hidden or heavily dimmed — they are already-traversed track.
 
 Each node carries `routes: Set<destinationId>` computed once during preparation.
 
@@ -78,11 +84,11 @@ This is the heart of the view. Layout is **not** force-directed; it is computed 
 
 Algorithm:
 
-1. Let `N` = number of destinations. Destination `i` gets anchor `(x_i, y_max)` where `x_i` is equally spaced across the horizontal extent.
-2. For every non-destination node, compute `depth` = shortest-path distance (along reversed `parent` + `depends_on` edges) to the nearest destination it serves. Its y-coordinate is `y_max − depth × rowHeight`.
+1. Let `N` = number of destinations. Destinations are staggered into `rowCount = ceil(N / TERMINAL_PER_ROW)` rows (capped at 4) along the bottom band — adjacent destinations in the ordering go to different rows so their labels don't collide at dense N. Destination `i` gets anchor `(x_i, y_terminalBase − (i mod rowCount) × rowGap)` with `x_i` equally spaced across the horizontal extent.
+2. For every non-destination route node, compute `depth` = shortest-path distance to the nearest destination it serves, following the direction chosen for that destination (leaf: deps; container: parent-down + deps). Its y-coordinate is `topOfTerminals − depth × rowHeight`.
 3. Its x-coordinate is `mean(x_d for d in node.routes)`. Nodes on a single route sit directly above their destination; interchanges drift to the mean of their destinations' anchors, landing between lanes.
-4. Context stations (empty routes) are placed in a backdrop strip above the route area, spread by id hash so they don't overlap the routes.
-5. Final collision pass: bucket by `(round(x/gridX), round(y/gridY))`; within a bucket, nudge ±Δ along x to separate siblings.
+4. Context stations (empty routes) are **hidden by default**. They're noise for the "routes to destinations" question, and at this PKB's scale they overplot catastrophically. A "Show context" toggle surfaces at most `CONTEXT_CAP` (top-N by `downstream_weight`) in a bucketed grid above the route area.
+5. Final collision pass: bucket by `(round(x/gridX), round(y/gridY))`; within a bucket, sort by stable `idHash` and nudge ±Δ along x to separate siblings. Sorting by hash (not id string) keeps layout stable when ids are added or removed.
 
 The algorithm exploits the fact that the task graph is already a DAG with well-defined destinations — no need for Sugiyama or dagre.
 
@@ -103,7 +109,7 @@ The algorithm exploits the fact that the task graph is already a DAG with well-d
 - **Thick, semi-transparent, straight.** Haystack-style rendering (Cytoscape `curve-style: haystack`, `haystack-radius: 0`): cheap, overlap-blending, and matches the metro-map aesthetic.
 - **Width**: parent-route ≈ 6–8 px; `depends_on` route ≈ 4–5 px; non-route references 1 px.
 - **Opacity**: ≈ 0.45 for route edges so colours mix where they overlap. That blending is how interchanges communicate "this blocker serves multiple routes" — no extra markup.
-- **Colour** by the destination(s) a route serves. Edges on a single route: coloured by that destination's project. Multi-route edges: ideally rendered as one stroke per route slightly offset (Tokyo's "duplicate-per-line" trick) so colours stack visibly. A single blended stroke is acceptable as a first cut.
+- **Colour** by the destination(s) a route serves. Single-route edges: coloured by that destination's project. **Multi-route edges render one stroke per shared destination (mandatory — Tokyo "duplicate-per-line" trick)**; each stroke at ~0.4 opacity so browser alpha compositing stacks the colours at the interchange. A single blended stroke is no longer an acceptable compromise — without per-route strokes the view cannot meet the "colours visibly mix" acceptance criterion on real data.
 - **Direction**: `depends_on` carries a directional arrow; `parent` is undirected.
 - **Non-route edges**: thin, grey, low opacity — present for context.
 
@@ -116,7 +122,7 @@ This spec deliberately drops the earlier "taxi/orthogonal routing" prescription 
 - **Click a terminal** → enter route-highlight mode. Every node with that destination in its `routes` stays bright; everything else gets `.not-path` (opacity ≈ 0.12). This is the Tokyo A\* pattern repurposed — and it is the primary answer to the view's centring question.
 - **Click any station** → highlight all nodes that share at least one route with the tapped station (i.e. "which destinations does finishing this unblock?"). Also opens the shared detail panel.
 - **Click empty space** → clear highlight, restore full map.
-- **Hover station** → neighbourhood flashlight: dim non-neighbours, tooltip shows title, status, and which destinations the station serves.
+- **Hover station** → neighbourhood flashlight: dim non-neighbours **and** show an HTML overlay tooltip anchored to the node with: title, priority, status, project, and the labels of up to 6 destinations the station serves (with a `+N more` count if truncated). Positioning is computed from `renderedPosition()` and translated into the container's coordinate frame. Implemented as a plain Svelte `{#if tooltip}` overlay — no `cytoscape-popper`/`tippy.js` dependency needed.
 - **Click terminal in legend** → isolate that one route (dim others).
 
 ---

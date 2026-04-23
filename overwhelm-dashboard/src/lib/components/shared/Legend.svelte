@@ -24,15 +24,17 @@
     ] as const;
 
     const metroEdgeTypes = [
-        { key: 'edgeParent', label: 'PARENT / HIERARCHY', color: '#42d4f4', dash: false, note: 'Orthogonal project-colored hierarchy link' },
-        { key: 'edgeDependencies', label: 'DEPENDENCY', color: '#f59e0b', dash: true, note: 'Amber dashed dependency with arrow' },
-        { key: 'edgeReferences', label: 'REFERENCE / CONTEXT', color: '#6b7280', dash: true, note: 'Thin grey contextual link' },
+        { key: 'edgeParent', label: 'ROUTE (PARENT)', color: '#42d4f4', dash: false, note: 'Haystack stroke coloured by destination project; thick, semi-transparent, blends at interchanges' },
+        { key: 'edgeDependencies', label: 'ROUTE (DEPENDENCY)', color: '#f59e0b', dash: false, note: 'Same haystack stroke but with a triangle arrow toward the blocker' },
+        { key: 'edgeReferences', label: 'OFF-ROUTE', color: '#6b7280', dash: true, note: 'Thin grey dashed link — not on the route to any destination' },
     ] as const;
 
     const metroNodeTypes = [
-        { label: 'TASK', description: 'Circle. Project color; size tracks downstream weight.', sampleClass: 'sample-task' },
-        { label: 'P0 / P1 TASK', description: 'Same task node with explicit priority border.', sampleClass: 'sample-task-priority' },
-        { label: 'EPIC', description: 'Square structural task. Project nodes are omitted in this view.', sampleClass: 'sample-epic' },
+        { label: 'TERMINAL', description: 'P0/P1 destination. Always labelled, priority-coloured border, bottom-row anchor.', sampleClass: 'sample-terminal' },
+        { label: 'INTERCHANGE', description: 'Serves two or more destinations. Always labelled — highest-leverage work.', sampleClass: 'sample-interchange' },
+        { label: 'ROUTE STATION', description: 'On the route to one destination. Size tracks downstream weight.', sampleClass: 'sample-task' },
+        { label: 'CONTEXT STATION', description: 'Not on any route. Hidden by default; small dot when shown.', sampleClass: 'sample-context' },
+        { label: 'COMPLETED', description: 'Desaturated (already-traversed track).', sampleClass: 'sample-completed' },
     ] as const;
 
     function cycleFilter(key: string) {
@@ -375,20 +377,36 @@
         border: 1px solid rgba(255, 255, 255, 0.18);
     }
 
-    .sample-task-priority {
+    .sample-terminal {
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+        background: #42d4f4;
+        border: 2.5px solid #dc3545;
+    }
+
+    .sample-interchange {
         width: 12px;
         height: 12px;
         border-radius: 999px;
         background: #42d4f4;
-        border: 2px solid #dc3545;
+        border: 2px solid #ffffff;
     }
 
-    .sample-epic {
-        width: 13px;
-        height: 13px;
-        border-radius: 0;
-        background: #42d4f4;
-        border: 1px solid rgba(255, 255, 255, 0.18);
+    .sample-context {
+        width: 5px;
+        height: 5px;
+        border-radius: 999px;
+        background: #6b7280;
+        opacity: 0.5;
+    }
+
+    .sample-completed {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #5a6575;
+        opacity: 0.55;
     }
 
     .edge-state {
