@@ -185,6 +185,10 @@ pub struct GraphNode {
     /// and stakeholder_exposure, normalized across all nodes in the graph.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub criticality: f64,
+    /// Computed: urgency signal based on status of blocked tasks.
+    /// 1.0 if blocking any in_progress, 0.5 if blocking any active, else 0.0.
+    #[serde(skip)]
+    pub blocking_urgency: f64,
     /// Computed: min priority across self + full downstream cone (blocks, soft_blocks, children).
     /// Used for filtering/sorting — a P2 blocker of a P0 gets effective_priority=0.
     /// Never written back to frontmatter; skip serialization to avoid polluting YAML.

@@ -153,6 +153,7 @@ impl GraphStore {
 
         // 7b. Compute effective_priority (min priority in downstream cone)
         compute_effective_priority(&mut nodes);
+        compute_blocking_urgency(&mut nodes);
 
         // 8. Compute derived properties: scope, uncertainty, criticality
         compute_scope(&mut nodes);
@@ -1504,6 +1505,34 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
     }
 }
 
+/// Compute blocking_urgency for each node based on the status of tasks it blocks.
+///
+/// Algorithm:
+/// - If any target has status: in_progress -> set blocking_urgency = 1.0
+/// - Else if any target has status: active -> set blocking_urgency = 0.5
+/// - Else -> 0.0
+fn compute_blocking_urgency(nodes: &mut [GraphNode]) {
+    let id_to_status: HashMap<String, String> = nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.status.clone().unwrap_or_default()))
+        .collect();
+
+    for node in nodes.iter_mut() {
+        let mut urgency = 0.0;
+        for target_id in &node.blocks {
+            if let Some(status) = id_to_status.get(target_id) {
+                if status == "in_progress" {
+                    urgency = 1.0;
+                    break;
+                } else if status == "active" {
+                    urgency = 0.5f64.max(urgency);
+                }
+            }
+        }
+        node.blocking_urgency = urgency;
+    }
+}
+
 /// Compute scope (subtree size) for each node via recursive descendant count.
 ///
 /// Called after `compute_inverses` so `node.children` is fully populated.
@@ -2115,6 +2144,61 @@ mod tests {
             make_with_priority("tasks/unrelated.md", "Unrelated Task", "unrelated", 3, "active", None, &[]),
         ];
         GraphStore::build(&docs, std::path::Path::new("/tmp/test-priority-pkb"))
+    }
+
+    #[test]
+    fn test_compute_blocking_urgency() {
+        let mut nodes = vec![
+            GraphNode {
+                id: "blocker-1".to_string(),
+                blocks: vec!["target-in-progress".to_string()],
+                ..Default::default()
+            },
+            GraphNode {
+                id: "blocker-2".to_string(),
+                blocks: vec!["target-active".to_string()],
+                ..Default::default()
+            },
+            GraphNode {
+                id: "blocker-3".to_string(),
+                blocks: vec!["target-done".to_string()],
+                ..Default::default()
+            },
+            GraphNode {
+                id: "target-in-progress".to_string(),
+                status: Some("in_progress".to_string()),
+                ..Default::default()
+            },
+            GraphNode {
+                id: "target-active".to_string(),
+                status: Some("active".to_string()),
+                ..Default::default()
+            },
+            GraphNode {
+                id: "target-done".to_string(),
+                status: Some("done".to_string()),
+                ..Default::default()
+            },
+            GraphNode {
+                id: "blocker-both".to_string(),
+                blocks: vec!["target-in-progress".to_string(), "target-active".to_string()],
+                ..Default::default()
+            },
+        ];
+
+        compute_blocking_urgency(&mut nodes);
+
+        let n1 = nodes.iter().find(|n| n.id == "blocker-1").unwrap();
+        assert_eq!(n1.blocking_urgency, 1.0);
+
+        let n2 = nodes.iter().find(|n| n.id == "blocker-2").unwrap();
+        assert_eq!(n2.blocking_urgency, 0.5);
+
+        let n3 = nodes.iter().find(|n| n.id == "blocker-3").unwrap();
+        assert_eq!(n3.blocking_urgency, 0.0);
+
+        let n_both = nodes.iter().find(|n| n.id == "blocker-both").unwrap();
+        assert_eq!(n_both.blocking_urgency, 1.0);
     }
 
     #[test]
