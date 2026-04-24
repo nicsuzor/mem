@@ -11,6 +11,7 @@
     import GroupsView from "$lib/components/views/GroupsView.svelte";
     import ArcView from "$lib/components/views/ArcView.svelte";
     import MetroView from "$lib/components/views/MetroView.svelte";
+    import MetroRadialView from "$lib/components/views/MetroRadialView.svelte";
 
     import DashboardView from "$lib/components/dashboard/DashboardView.svelte";
     import ThreadedTasksView from "$lib/components/views/ThreadedTasksView.svelte";
@@ -455,6 +456,8 @@
             <div class="flex-1 relative z-0 h-full">
                 {#if activeLayout === "metro"}
                     <MetroView bind:this={metroViewRef} bind:running={metroRunning} showContext={metroShowContext} />
+                {:else if activeLayout === "metro_radial"}
+                    <MetroRadialView />
                 {:else}
                     <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
                         {#if containerGroup}
