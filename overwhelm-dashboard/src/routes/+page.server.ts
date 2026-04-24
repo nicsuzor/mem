@@ -1,6 +1,5 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import os from 'node:os';
 import { env } from '$env/dynamic/private';
 
 const AOPS_SESSIONS = env.AOPS_SESSIONS || '';
@@ -27,6 +26,20 @@ async function loadSynthesis(): Promise<any | null> {
     } catch { /* ignore */ }
 
     return data;
+}
+
+interface ProjectsConfig {
+    pseudo_projects: string[];
+}
+
+async function loadProjectsConfig(): Promise<ProjectsConfig> {
+    const empty: ProjectsConfig = { pseudo_projects: [] };
+    if (!AOPS_SESSIONS) return empty;
+    const data = await readJson(join(AOPS_SESSIONS, 'projects.json'));
+    if (!data) return empty;
+    return {
+        pseudo_projects: Array.isArray(data.pseudo_projects) ? data.pseudo_projects : [],
+    };
 }
 
 /**
@@ -140,7 +153,6 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             started_at: data.date || new Date(st.mtimeMs).toISOString(),
             time_display: minutesAgo < 60 ? `${Math.round(minutesAgo)}m ago` : `${Math.round(hoursAgo)}h ago`,
             duration_min: durationMin,
-            prompt_count: promptCount,
             prompt_count: promptCount,
             id: data.session_id || stem,
             prompts: allPrompts,
@@ -261,20 +273,12 @@ function buildPathData(summaries: any[]): any {
     return { activity, abandoned_work: abandoned };
 }
 
-function formatProjectName(folder: string): string {
-    const parts = folder.replace(/^-/, '').split('-');
-    // Derive skip list from environment instead of hardcoding usernames
-    const homeSegments = (env.HOME || os.homedir()).split('/').filter(Boolean);
-    const skip = new Set([...homeSegments, 'src', 'opt', '_aops', '']);
-    const meaningful = parts.filter(p => !skip.has(p) && !/^[a-f0-9]{8,}$/.test(p));
-    return meaningful.pop() || folder;
-}
-
 export const load = async () => {
-    const [synthesis, sessions, summaries] = await Promise.all([
+    const [synthesis, sessions, summaries, projectsConfig] = await Promise.all([
         loadSynthesis(),
         findActiveSessions(48), // Fetch 48h to populate stale bucket
         loadRecentSummaries(3),
+        loadProjectsConfig(),
     ]);
 
     // Bucket sessions by recency
@@ -286,15 +290,37 @@ export const load = async () => {
     // Build project-level data: prefer graph data (via client), synthesis enriches
     // Collect all projects from sessions + synthesis
     const projectSet = new Set<string>();
-    sessions.forEach(s => { if (s.project) projectSet.add(s.project); });
+    const projectLatestSession = new Map<string, number>();
+
+    const pseudoProjects = new Set(projectsConfig.pseudo_projects);
+
+    sessions.forEach(s => {
+        if (s.project && !pseudoProjects.has(s.project)) {
+            projectSet.add(s.project);
+            const currentLatest = projectLatestSession.get(s.project) || 0;
+            if (s.last_modified > currentLatest) {
+                projectLatestSession.set(s.project, s.last_modified);
+            }
+        }
+    });
+
     if (synthesis?.sessions?.by_project) {
-        Object.keys(synthesis.sessions.by_project).forEach(p => projectSet.add(p));
+        Object.keys(synthesis.sessions.by_project).forEach(p => {
+            if (!pseudoProjects.has(p)) projectSet.add(p);
+        });
     }
-    const projectProjects = Array.from(projectSet).sort();
+
+    const projectProjects = Array.from(projectSet).sort((a, b) => {
+        const aLatest = projectLatestSession.get(a) || 0;
+        const bLatest = projectLatestSession.get(b) || 0;
+        return bLatest - aLatest; // Sort by most recent session timestamp
+    });
 
     const projectData: any = { meta: {}, tasks: {}, accomplishments: {}, sessions: {} };
     for (const proj of projectProjects) {
-        projectData.meta[proj] = {};
+        projectData.meta[proj] = {
+            latest_session: projectLatestSession.get(proj) || 0
+        };
         projectData.tasks[proj] = [];
         projectData.sessions[proj] = sessions.filter(s => s.project === proj);
         projectData.accomplishments[proj] = synthesis
@@ -306,7 +332,7 @@ export const load = async () => {
 
     // Pipeline health — fail fast and loud when data sources are missing
     const synthesisPipelineOk = synthesis !== null;
-    const dailyStoryOk = synthesis?.narrative != null;
+    const dailyStoryOk = (synthesis?.daily_story != null || synthesis?.narrative != null);
     const summariesDirOk = AOPS_SESSIONS !== '';
 
     return {
@@ -324,12 +350,19 @@ export const load = async () => {
             synthesis: synthesis ? {
                 _age_minutes: synthesis._age_minutes,
                 sessions: synthesis.sessions,
+                alignment: synthesis.alignment,
+                waiting_on: synthesis.waiting_on,
+                // Add metadata for observability
+                last_run: synthesis.generated,
+                exit_code: synthesis.exit_code, 
+                input_completeness: synthesis.input_completeness
             } : null,
-            daily_story: synthesis?.narrative ? { story: synthesis.narrative } : null,
+            daily_story: synthesis?.daily_story ? { story: synthesis.daily_story } : (synthesis?.narrative ? { story: synthesis.narrative } : null),
             
             project_projects: projectProjects,
             project_data: projectData,
             path: buildPathData(summaries),
+            projects_config: projectsConfig,
         },
     };
 };

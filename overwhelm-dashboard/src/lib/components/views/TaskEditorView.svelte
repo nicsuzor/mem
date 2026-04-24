@@ -10,28 +10,33 @@
         'created', 'isLeaf', 'parent', 'fullTitle', '_safe_parent', 'filter_dimmed', 'path', 'refile'
     ]);
 
+    // Canonical status lifecycle (see aops-core/TAXONOMY.md):
+    //   inbox → ready → queued → in_progress → merge_ready → done
+    // `ready` is auto-computed from decomposition + dep state.
+    // `queued` is the human gate that makes a task dispatchable to agents.
     const STATE_DETAILS: Record<string, { label: string; icon: string; summary: string; tone: 'neutral' | 'ready' | 'active' | 'warning' | 'danger' | 'success' }> = {
-        inbox: { label: 'Inbox', icon: 'inbox', summary: 'Captured but not yet queued.', tone: 'neutral' },
-        ready: { label: 'Ready', icon: 'task_alt', summary: 'Ready to be picked up.', tone: 'ready' },
-        active: { label: 'Active', icon: 'play_circle', summary: 'Actively being worked.', tone: 'active' },
-        in_progress: { label: 'In Progress', icon: 'play_circle', summary: 'Actively being worked.', tone: 'active' },
-        waiting: { label: 'Waiting', icon: 'schedule', summary: 'Blocked on time or input.', tone: 'warning' },
-        blocked: { label: 'Blocked', icon: 'block', summary: 'Cannot move without upstream change.', tone: 'danger' },
-        decomposing: { label: 'Decomposing', icon: 'account_tree', summary: 'Breaking down into smaller tasks.', tone: 'active' },
+        inbox: { label: 'Inbox', icon: 'inbox', summary: 'Captured but not yet triaged.', tone: 'neutral' },
+        ready: { label: 'Ready', icon: 'task_alt', summary: 'Decomposed and unblocked (auto).', tone: 'ready' },
+        queued: { label: 'Queued', icon: 'playlist_add_check', summary: 'Available for agent dispatch.', tone: 'ready' },
+        in_progress: { label: 'In Progress', icon: 'play_circle', summary: 'Claimed and actively being worked.', tone: 'active' },
+        merge_ready: { label: 'Merge Ready', icon: 'commit', summary: 'Work complete, awaiting merge.', tone: 'active' },
+        review: { label: 'Review', icon: 'rate_review', summary: 'Awaiting human review.', tone: 'warning' },
+        blocked: { label: 'Blocked', icon: 'block', summary: 'Waiting on external dependency.', tone: 'danger' },
+        paused: { label: 'Paused', icon: 'pause_circle', summary: 'Deferred mid-flight; intent to resume.', tone: 'neutral' },
+        someday: { label: 'Someday', icon: 'bookmark', summary: 'Parked idea — may never be worked.', tone: 'neutral' },
         done: { label: 'Done', icon: 'check_circle', summary: 'Completed.', tone: 'success' },
-        completed: { label: 'Completed', icon: 'check_circle', summary: 'Completed.', tone: 'success' },
-        archived: { label: 'Archived', icon: 'inventory_2', summary: 'Removed from active rotation.', tone: 'neutral' },
-        cancelled: { label: 'Cancelled', icon: 'cancel', summary: 'Explicitly stopped.', tone: 'danger' },
+        cancelled: { label: 'Cancelled', icon: 'cancel', summary: 'Will not be done.', tone: 'danger' },
     };
 
+    // Human-initiated transitions. `ready` is auto-computed, so it is not a user action.
     const WORKFLOW_ACTIONS = [
         { status: 'inbox', label: 'Inbox', icon: 'inbox' },
-        { status: 'ready', label: 'Enqueue', icon: 'playlist_add_check' },
-        { status: 'decomposing', label: 'Decomp', icon: 'account_tree' },
+        { status: 'queued', label: 'Enqueue', icon: 'playlist_add_check' },
+        { status: 'paused', label: 'Pause', icon: 'pause_circle' },
     ] as const;
 
     const TERMINAL_ACTIONS = [
-        { status: 'archived', label: 'Archive', icon: 'inventory_2' },
+        { status: 'done', label: 'Archive', icon: 'inventory_2' },
         { status: 'cancelled', label: 'Cancel', icon: 'cancel' },
     ] as const;
 
@@ -53,9 +58,6 @@
     let description = $state("");
     let assigneeDraft = $state("");
     let loadingBody = $state(false);
-    let pendingUpdates = $state(0);
-    let updating = $derived(pendingUpdates > 0);
-    let updateError = $state<string | null>(null);
 
     $effect(() => {
         assigneeDraft = task?.assignee || "";
@@ -117,8 +119,6 @@
 
         if (Object.keys(apiPayload).length > 1) {
             const operationId = taskOperations.start(targetId, describeTaskMutation(updates));
-            pendingUpdates += 1;
-            updateError = null;
             try {
                 const res = await fetch('/api/task/status', {
                     method: 'POST',
@@ -127,18 +127,16 @@
                 });
                 if (!res.ok) {
                     const data = await res.json().catch(() => ({}));
-                    updateError = data.error ?? `HTTP ${res.status}`;
+                    const errMsg = data.error ?? `HTTP ${res.status}`;
                     rollback();
-                    taskOperations.fail(operationId, updateError ?? undefined);
+                    taskOperations.fail(operationId, errMsg, () => updateTask(updates, targetId));
                 } else {
                     taskOperations.succeed(operationId);
                 }
             } catch (e: any) {
-                updateError = e.message ?? 'Network error';
+                const errMsg = e.message ?? 'Network error';
                 rollback();
-                taskOperations.fail(operationId, updateError ?? undefined);
-            } finally {
-                pendingUpdates = Math.max(0, pendingUpdates - 1);
+                taskOperations.fail(operationId, errMsg, () => updateTask(updates, targetId));
             }
         }
     }
@@ -206,11 +204,11 @@
     }
 
     function handleArchive() {
-        setStatus('archived');
+        setStatus('done');
     }
 
     function handleDecompose() {
-        setStatus('decomposing');
+        setStatus('in_progress');
     }
 
     let refileMarked = $derived(Boolean((task as any)?._raw?.refile));
@@ -219,8 +217,6 @@
         if (!taskId || !task) return;
         const { rollback } = updateGraphTaskNode(taskId, { refile: true });
         const operationId = taskOperations.start(taskId, describeTaskMutation({ refile: true }));
-        pendingUpdates += 1;
-        updateError = null;
         try {
             const res = await fetch('/api/task/status', {
                 method: 'POST',
@@ -231,16 +227,14 @@
                 taskOperations.succeed(operationId);
             } else {
                 const data = await res.json().catch(() => ({}));
-                updateError = data.error ?? `HTTP ${res.status}`;
+                const errMsg = data.error ?? `HTTP ${res.status}`;
                 rollback();
-                taskOperations.fail(operationId, updateError ?? undefined);
+                taskOperations.fail(operationId, errMsg, () => handleMarkForRefile());
             }
         } catch (e: any) {
-            updateError = e.message ?? 'Network error';
+            const errMsg = e.message ?? 'Network error';
             rollback();
-            taskOperations.fail(operationId, updateError ?? undefined);
-        } finally {
-            pendingUpdates = Math.max(0, pendingUpdates - 1);
+            taskOperations.fail(operationId, errMsg, () => handleMarkForRefile());
         }
     }
 
@@ -424,11 +418,6 @@
                         </div>
                     </div>
                 {/if}
-                {#if updating}
-                    <p class="text-[9px] text-primary/50 mt-1 font-mono">saving…</p>
-                {:else if updateError}
-                    <p class="text-[9px] text-destructive mt-1 font-mono">{updateError}</p>
-                {/if}
             </div>
         </div>
 
@@ -467,7 +456,6 @@
                                     <button
                                         class={stateCardClass('done', 'success')}
                                         onclick={handleComplete}
-                                        disabled={updating}
                                         title="Mark complete"
                                     >
                                         <span class="material-symbols-outlined text-[14px]">check_circle</span>
@@ -480,7 +468,6 @@
                                     <button
                                         class={stateCardClass(action.status, action.status === 'ready' ? 'ready' : action.status === 'decomposing' ? 'active' : 'neutral')}
                                         onclick={() => action.status === 'decomposing' ? handleDecompose() : setStatus(action.status)}
-                                        disabled={updating}
                                     >
                                         <span class="material-symbols-outlined text-[14px]">{action.icon}</span>
                                         <span class="min-w-0">
@@ -492,7 +479,6 @@
                                     <button
                                         class={stateCardClass(action.status, action.status === 'cancelled' ? 'danger' : 'neutral')}
                                         onclick={() => setStatus(action.status)}
-                                        disabled={updating}
                                     >
                                         <span class="material-symbols-outlined text-[14px]">{action.icon}</span>
                                         <span class="min-w-0">
@@ -516,7 +502,7 @@
                                         class="inline-flex h-8 w-8 items-center justify-center rounded-sm border transition-colors hover:opacity-100 disabled:opacity-40"
                                         style={prioritySurfaceStyle(currentPriority.color, 0.08, 0.35)}
                                         onclick={priorityUp}
-                                        disabled={updating || (t.priority ?? 2) <= 0}
+                                        disabled={(t.priority ?? 2) <= 0}
                                         title="Increase priority"
                                     >
                                         <span class="material-symbols-outlined text-[14px]">arrow_upward</span>
@@ -531,7 +517,7 @@
                                         class="inline-flex h-8 w-8 items-center justify-center rounded-sm border transition-colors hover:opacity-100 disabled:opacity-40"
                                         style={prioritySurfaceStyle(currentPriority.color, 0.08, 0.35)}
                                         onclick={priorityDown}
-                                        disabled={updating || (t.priority ?? 2) >= 4}
+                                        disabled={(t.priority ?? 2) >= 4}
                                         title="Decrease priority"
                                     >
                                         <span class="material-symbols-outlined text-[14px]">arrow_downward</span>
@@ -545,7 +531,7 @@
                                     <button
                                         class="inline-flex shrink-0 items-center gap-1 rounded-sm border border-primary/20 bg-black/20 px-2 py-1 text-[8px] font-bold uppercase tracking-[0.14em] text-primary/75 transition-colors hover:border-primary/35 hover:text-primary disabled:opacity-50"
                                         onclick={handleMarkForRefile}
-                                        disabled={updating || refileMarked}
+                                        disabled={refileMarked}
                                         title="Mark this task for refiling or reorganization"
                                     >
                                         <span class="material-symbols-outlined text-[12px]">drive_file_move</span>

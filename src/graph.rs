@@ -244,22 +244,46 @@ pub fn fallback_id(path: &Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().to_string())
 }
 
-/// Normalize status values for backwards compatibility.
+/// Normalize legacy/alternate status values to the canonical set defined in
+/// `aops-core/TAXONOMY.md`. Canonical statuses pass through unchanged.
+///
+/// Canonical set (11 values): `inbox, ready, queued, in_progress, merge_ready,
+/// review, done, blocked, paused, someday, cancelled`.
 pub fn resolve_status_alias(status: &str) -> &str {
     match status {
-        "inbox" | "todo" | "open" => "active",
-        "in-progress" => "in_progress",
-        "in_review" | "in-review" | "ready-for-review" | "ISSUES_FOUND" => "review",
-        "merge_ready" | "merge-ready" => "merge_ready",
-        "complete" | "completed" | "closed" | "archived" | "resolved" | "published-spir" => "done",
+        // Passthrough — canonical values
+        "inbox" | "ready" | "queued" | "in_progress" | "merge_ready" | "review"
+        | "done" | "blocked" | "paused" | "someday" | "cancelled" => status,
+
+        // Legacy "active" (old taxonomy collapsed ready/queued/in_progress into
+        // one label). Historical usage was closest to "pullable" — treat as queued.
+        "active" => "queued",
+
+        // Inbox-family: untriaged capture
+        "todo" | "open" | "draft" | "early-scaffold" | "planning" | "seed" => "inbox",
+
+        // In-progress spellings (decomposing = was active work mid-flight)
+        "in-progress" | "in-preparation" | "partial" | "decomposing" => "in_progress",
+
+        // Review-family: awaiting human or external decision
+        "in_review" | "in-review" | "ready-for-review" | "ISSUES_FOUND"
+        | "conditionally-accepted" | "revise-and-resubmit"
+        | "waiting" | "invited" | "awaiting-approval" | "submitted" => "review",
+
+        // Merge-ready
+        "merge-ready" => "merge_ready",
+
+        // Done-family: completed externally or internally
+        "complete" | "completed" | "closed" | "archived" | "resolved"
+        | "published-spir" | "historical" | "accepted" => "done",
+
+        // Cancelled-family
         "dead" => "cancelled",
-        "deferred" => "paused",
-        "queued" => "active",
-        "early-scaffold" | "planning" | "seed" => "draft",
-        "in-preparation" | "partial" => "in_progress",
-        "historical" => "done",
-        "conditionally-accepted" | "revise-and-resubmit" => "review",
-        "invited" | "awaiting-approval" => "waiting",
+
+        // Paused-family
+        "deferred" | "dormant" => "paused",
+
+        // Unknown → passthrough so linter can flag
         other => other,
     }
 }
@@ -267,34 +291,34 @@ pub fn resolve_status_alias(status: &str) -> &str {
 // ── Canonical status and type values ────────────────────────────────────
 
 /// All recognized canonical status values (post-alias resolution).
+/// See `aops-core/TAXONOMY.md` for semantic definitions.
 ///
-/// - **active**: default / open / ready to work on
-/// - **in_progress**: currently being worked on
-/// - **blocked**: waiting on dependencies
-/// - **review**: in review / awaiting feedback
-/// - **merge_ready**: work complete, PR filed, awaiting merge
-/// - **paused**: intentionally deferred
-/// - **someday**: low priority / maybe later
-/// - **draft**: early / incomplete / seed content
-/// - **waiting**: waiting on external input (not a dependency)
-/// - **submitted**: sent for external decision
-/// - **accepted**: approved / accepted externally
+/// Lifecycle: `inbox → ready → queued → in_progress → merge_ready → done`
+/// with branches to `review`, `blocked`, `paused`, `someday`, `cancelled`.
+///
+/// - **inbox**: default for new nodes — captured but not triaged
+/// - **ready**: decomposed with dependencies resolved (auto-computed)
+/// - **queued**: human-gated — available for agent dispatch (manual promotion)
+/// - **in_progress**: claimed and actively being worked
+/// - **merge_ready**: work complete and committed, awaiting merge
+/// - **review**: awaiting human review (mid-flight or post-PR)
 /// - **done**: completed successfully
-/// - **cancelled**: abandoned / no longer relevant
+/// - **blocked**: waiting on an unresolved external dependency
+/// - **paused**: intentionally stopped mid-flight with intent to resume
+/// - **someday**: explicitly deferred idea — differs from inbox by intent
+/// - **cancelled**: will not be done
 pub const VALID_STATUSES: &[&str] = &[
-    "active", "in_progress", "blocked", "review", "merge_ready",
-    "paused", "someday", "draft", "waiting",
-    "submitted", "accepted",
-    "done", "cancelled",
+    "inbox", "ready", "queued", "in_progress", "merge_ready", "review",
+    "done", "blocked", "paused", "someday", "cancelled",
 ];
 
-/// Statuses that indicate a task is finished (no longer active).
+/// Terminal statuses — no further work expected.
 pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled"];
 
-/// Statuses that represent active/open work items.
+/// Open work items — everything that is neither terminal nor blocked.
+/// Used for surfacing active work in dashboards and filters.
 pub const ACTIVE_STATUSES: &[&str] = &[
-    "active", "in_progress", "review", "merge_ready", "waiting",
-    "draft", "submitted", "accepted",
+    "inbox", "ready", "queued", "in_progress", "merge_ready", "review",
     "paused", "someday",
 ];
 
@@ -306,7 +330,9 @@ pub fn is_completed(status: Option<&str>) -> bool {
     matches!(status, Some("done") | Some("cancelled"))
 }
 
-/// Returns the status group ("active", "blocked", or "completed") for a given status.
+/// Returns the coarse status group (`"active"`, `"blocked"`, or `"completed"`)
+/// for a given status. Note: the `"active"` group name is a coarse bucket
+/// meaning "open work" — it is NOT the retired `active` status value.
 pub fn status_group(status: Option<&str>) -> &'static str {
     match status {
         Some(s) if COMPLETED_STATUSES.contains(&s) => "completed",

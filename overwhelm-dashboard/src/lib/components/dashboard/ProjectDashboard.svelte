@@ -2,6 +2,9 @@
     import { graphData } from "../../stores/graph";
     import { toggleSelection } from "../../stores/selection";
     import { projectColor, projectBgTint, projectBorderColor, buildProjectRollupMap, summarizeProjectName, resolveMajorProject } from "../../data/projectUtils";
+    import { copyToClipboard } from "../../data/utils";
+    import TaskActionButtons from "../shared/TaskActionButtons.svelte";
+    import AssigneeBadge from "../shared/AssigneeBadge.svelte";
     export let projectProjects: string[] = [];
     export let projectData: any = {};
 
@@ -37,16 +40,13 @@
 
     $: hasData = priorityProjects.length > 0;
 
-    // Sort by number of priority epics, then by active task count
+    // Sort by most recent session timestamp as per spec
     $: sortedProjects = [...priorityProjects].sort((a, b) => {
         const aMembers = projectMembers.get(a) || [a];
         const bMembers = projectMembers.get(b) || [b];
-        const aPriEpics = aMembers.flatMap(p => (projectData.meta?.[p] || {}).epics || []).filter(e => e.hasPriorityTask).length;
-        const bPriEpics = bMembers.flatMap(p => (projectData.meta?.[p] || {}).epics || []).filter(e => e.hasPriorityTask).length;
-        if (bPriEpics !== aPriEpics) return bPriEpics - aPriEpics;
-        const aTaskNodes = $graphData ? $graphData.nodes.filter(n => aMembers.includes(n.project || '') && ['active', 'in_progress', 'blocked'].includes(n.status)).length : 0;
-        const bTaskNodes = $graphData ? $graphData.nodes.filter(n => bMembers.includes(n.project || '') && ['active', 'in_progress', 'blocked'].includes(n.status)).length : 0;
-        return bTaskNodes - aTaskNodes;
+        const aLatest = Math.max(...aMembers.map(p => (projectData.meta?.[p] || {}).latest_session || 0));
+        const bLatest = Math.max(...bMembers.map(p => (projectData.meta?.[p] || {}).latest_session || 0));
+        return bLatest - aLatest;
     });
 
     function dedup(items: any[]): any[] {
@@ -71,8 +71,8 @@
                         <h3 class="text-sm font-bold tracking-[0.2em] flex items-center gap-2 cursor-pointer hover:text-primary transition-colors"
                             style="color: {projectColor(project)};"
                             role="button" tabindex="0"
-                            on:click={() => { const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); }}
-                            on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { if (e.key === ' ') e.preventDefault(); const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); } }}>
+                            onclick={() => { const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); }}
+                            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { if (e.key === ' ') e.preventDefault(); const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); } }}>
                             <span class="material-symbols-outlined text-[16px]">folder_open</span>
                             {project.toUpperCase()}
                             {#if meta.is_spotlight}
@@ -89,8 +89,8 @@
                                 {#each allEpics.slice(0, 3) as epic}
                                     <div class="bg-black/40 border border-primary/20 p-3 hover:border-primary transition-colors cursor-pointer"
                                          role="button" tabindex="0"
-                                         on:click={() => { const eNode = $graphData?.nodes.find(n => n.label === epic.title && n.type === 'epic'); if (eNode) toggleSelection(eNode.id); }}
-                                         on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { if (e.key === ' ') e.preventDefault(); const eNode = $graphData?.nodes.find(n => n.label === epic.title && n.type === 'epic'); if (eNode) toggleSelection(eNode.id); } }}>
+                                         onclick={() => { const eNode = $graphData?.nodes.find(n => n.label === epic.title && n.type === 'epic'); if (eNode) toggleSelection(eNode.id); }}
+                                         onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { if (e.key === ' ') e.preventDefault(); const eNode = $graphData?.nodes.find(n => n.label === epic.title && n.type === 'epic'); if (eNode) toggleSelection(eNode.id); } }}>
                                         <div class="flex justify-between items-center mb-2">
                                             <span class="text-xs font-bold truncate pr-2">{epic.title}</span>
                                             {#if epic.progress}
@@ -117,11 +117,23 @@
                             <div class="flex flex-col gap-2">
                                 <h4 class="text-[10px] font-bold tracking-widest text-primary/60 mb-1">TOP PRIORITIES & NEXT TASKS</h4>
                                 {#each [...tasks].sort((a, b) => (a.priority ?? 5) - (b.priority ?? 5)).slice(0, 3) as task}
-                                    <div class="flex items-start gap-2 p-2 bg-primary/5 border-l-2 {task.priority === 0 ? 'border-red-500' : task.priority === 1 ? 'border-orange-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors cursor-pointer"
+                                    {@const taskId = task.id || task.task_id || ''}
+                                    {@const shortId = taskId.slice(-8)}
+                                    <div class="group flex items-start gap-2 p-2 bg-primary/5 border-l-2 {task.priority === 0 ? 'border-red-500' : task.priority === 1 ? 'border-orange-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors cursor-pointer"
                                          role="button" tabindex="0"
-                                         on:click={() => toggleSelection(task.id || task.task_id || '')}
-                                         on:keydown={(e) => { if (e.key === 'Enter') toggleSelection(task.id || task.task_id || ''); }}>
+                                         onclick={() => toggleSelection(taskId)}
+                                         onkeydown={(e) => { if (e.key === 'Enter') toggleSelection(taskId); }}>
                                         <span class="text-[10px] font-bold {task.priority === 0 ? 'text-red-500' : task.priority === 1 ? 'text-orange-500' : 'text-primary/70'}">P{task.priority !== undefined ? task.priority : '?'}</span>
+                                        
+                                        {#if taskId}
+                                            <button class="text-[9px] font-bold bg-primary/20 text-primary/40 px-1 py-0.5 hover:bg-primary/40 transition-colors shrink-0" 
+                                                    onclick={(e) => { e.stopPropagation(); copyToClipboard(taskId); }}
+                                                    title="Click to copy task ID: {taskId}">
+                                                {shortId}
+                                            </button>
+                                        {/if}
+
+                                        <AssigneeBadge assignee={task.assignee} compact={true} />
                                         <span class="text-xs text-primary/90 flex-1">{task.title || task.label}</span>
                                         <span class="text-[10px] font-bold px-1 py-0.5 shrink-0 {
                                             task.status === 'in_progress' ? 'bg-primary text-black animate-pulse' :
@@ -130,13 +142,16 @@
                                             task.status === 'review' ? 'bg-purple-900/30 text-purple-400 border border-purple-500/40' :
                                             'bg-primary/10 text-primary/50 border border-primary/20'
                                         }">{(task.status || 'active').toUpperCase().replace('_', ' ')}</span>
+                                        {#if taskId}
+                                            <TaskActionButtons taskId={taskId} />
+                                        {/if}
                                     </div>
                                 {:else}
                                     <div class="text-xs text-primary/40 italic">No active tasks.</div>
                                 {/each}
                                 {#if tasks.length > 3}
                                     <button class="text-[10px] text-primary/30 hover:text-primary/60 text-left pl-2 transition-colors cursor-pointer"
-                                            on:click={() => { const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); }}>
+                                            onclick={() => { const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); }}>
                                         · · · view all {tasks.length} active
                                     </button>
                                 {/if}
@@ -160,7 +175,7 @@
                                 {/each}
                                 {#if dedup(accomplishments).length > 3}
                                     <button class="text-[10px] text-primary/30 hover:text-primary/60 text-left pl-2 transition-colors cursor-pointer"
-                                            on:click={() => { const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); }}>
+                                            onclick={() => { const pNode = $graphData?.nodes.find(n => members.includes(n.project || '') && n.type === 'project'); if (pNode) toggleSelection(pNode.id); }}>
                                         · · · view all {dedup(accomplishments).length} completed
                                     </button>
                                 {/if}

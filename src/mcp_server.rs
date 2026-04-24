@@ -130,8 +130,16 @@ impl PkbSearchServer {
     /// Uses the fast path (skips centrality recomputation).
     fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
         let abs_path = self.abs_path(&doc.path);
-        let node = crate::graph::GraphNode::from_pkb_document(doc);
+        let mut node = crate::graph::GraphNode::from_pkb_document(doc);
+
         let mut nodes = self.graph.read().nodes_cloned();
+
+        // Carry over centrality scores from the prior node with the same id
+        // so the fast-path rebuild doesn't zero them out.
+        if let Some(old) = nodes.get(&node.id) {
+            node.pagerank = old.pagerank;
+            node.betweenness = old.betweenness;
+        }
 
         // Remove any existing node(s) that correspond to the same file path.
         // This handles cases where the frontmatter `id` changes for a given file,
@@ -140,24 +148,7 @@ impl PkbSearchServer {
             self.abs_path(&existing_node.path) != abs_path
         });
 
-    fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
-        let abs_path = self.abs_path(&doc.path);
-        let mut node = crate::graph::GraphNode::from_pkb_document(doc);
-        
-        let mut nodes = {
-            let graph = self.graph.read();
-            let mut ns = graph.nodes_cloned();
-            if let Some(old) = ns.get(&node.id) {
-                node.pagerank = old.pagerank;
-                node.betweenness = old.betweenness;
-            }
-            ns
-        };
-
         nodes.insert(node.id.clone(), node);
-        let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
-        *self.graph.write() = new_graph;
-    }
         let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
         *self.graph.write() = new_graph;
     }
@@ -386,6 +377,19 @@ impl PkbSearchServer {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Optional `type` filter: either a single type ("epic") or a comma-
+        // separated list ("epic,feature"). When set, only matching types are
+        // returned. Recognised actionable types: project, epic, task, learn.
+        let type_filter: Option<HashSet<String>> = args
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                s.split(',')
+                    .map(|t| t.trim().to_ascii_lowercase())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            });
+
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Embedding error: {e}")),
@@ -393,7 +397,13 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let fetch_limit = limit * 3;
+        // When a type filter is present, fetch more candidates so we still fill
+        // the limit after filtering.
+        let fetch_limit = if type_filter.is_some() {
+            limit * 10
+        } else {
+            limit * 3
+        };
         let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
 
         let graph = self.graph.read();
@@ -420,8 +430,20 @@ impl PkbSearchServer {
             if !is_task {
                 continue;
             }
-            if !include_subtasks && r.doc_type.as_deref() == Some("subtask") {
+            let is_subtask = r.doc_type.as_deref().map(|t| t.eq_ignore_ascii_case("subtask")).unwrap_or(false);
+            let subtask_allowed = include_subtasks || type_filter.as_ref().map(|f| f.contains("subtask")).unwrap_or(false);
+            if is_subtask && !subtask_allowed {
                 continue;
+            }
+            if let Some(ref filter) = type_filter {
+                let matches = r
+                    .doc_type
+                    .as_deref()
+                    .map(|t| filter.iter().any(|f| t.eq_ignore_ascii_case(f)))
+                    .unwrap_or(false);
+                if !matches {
+                    continue;
+                }
             }
 
             count += 1;
@@ -2307,7 +2329,7 @@ impl PkbSearchServer {
             });
         }
 
-        let project_prefix = {
+        let (project_prefix, parent_project) = {
             let graph = self.graph.read();
             match graph.resolve(parent_id) {
                 None => {
@@ -2327,7 +2349,20 @@ impl PkbSearchServer {
                             data: None,
                         });
                     }
-                    node.node_type.clone().unwrap_or_else(|| "task".to_string())
+                    let prefix = node.node_type.clone().unwrap_or_else(|| "task".to_string());
+                    // Read parent's raw frontmatter `project` field so subtasks can inherit it.
+                    // GraphNode.project is a computed ancestor label, not the frontmatter value.
+                    let parent_project = crate::pkb::parse_file_relative(
+                        &self.abs_path(&node.path),
+                        &self.pkb_root,
+                    )
+                    .and_then(|doc| doc.frontmatter)
+                    .and_then(|fm| {
+                        fm.get("project")
+                            .and_then(|v| v.as_str())
+                            .map(String::from)
+                    });
+                    (prefix, parent_project)
                 }
             }
         };
@@ -2466,7 +2501,8 @@ impl PkbSearchServer {
                 project: subtask
                     .get("project")
                     .and_then(|v| v.as_str())
-                    .map(String::from),
+                    .map(String::from)
+                    .or_else(|| parent_project.clone()),
                 task_type: subtask
                     .get("type")
                     .and_then(|v| v.as_str())
@@ -2731,10 +2767,11 @@ impl PkbSearchServer {
         } else {
             let mut all: Vec<_> = graph.all_tasks().into_iter().collect();
             if let Some(s) = status {
+                let s_canonical = crate::graph::resolve_status_alias(s);
                 all.retain(|t| {
                     t.status
                         .as_deref()
-                        .map(|st| st.eq_ignore_ascii_case(s))
+                        .map(|st| st.eq_ignore_ascii_case(s_canonical))
                         .unwrap_or(false)
                 });
             }
@@ -3995,13 +4032,14 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "task_search",
-                "Semantic search filtered to actionable tasks. Returns results with rich graph context including status and dependencies.",
+                "Semantic search filtered to actionable tasks. Returns results with rich graph context including status and dependencies. Use `type: \"epic\"` to find container tasks (with context and subtasks) rather than leaf tasks.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Query to search tasks" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." }
+                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." },
+                        "type": { "type": "string", "description": "Filter by task type. Single value (e.g. 'epic') or comma-separated list (e.g. 'epic,feature'). Recognised actionable types: project, epic, task, learn. Default: all actionable types." }
                     },
                     "required": ["query"]
                 }))
@@ -4317,7 +4355,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "decompose_task",
-                "Split a large task into multiple subtasks in one operation. Supports relative sibling references (e.g. '$1') for dependencies. Use to structure a newly defined work package.",
+                "Split a large task into multiple subtasks in one operation. Supports relative sibling references (e.g. '$1') for dependencies. Subtasks inherit the parent's `project` field unless explicitly overridden. Use to structure a newly defined work package.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4337,7 +4375,8 @@ impl PkbSearchServer {
                                     "body": { "type": "string" },
                                     "stakeholder": { "type": "string" },
                                     "waiting_since": { "type": "string" },
-                                    "due": { "type": "string" }
+                                    "due": { "type": "string" },
+                                    "project": { "type": "string", "description": "Override project field (defaults to parent's project)" }
                                 },
                                 "required": ["title"]
                             },
