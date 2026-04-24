@@ -520,6 +520,72 @@
     // depends_on / soft_depends_on. Parent edges don't count — a parent epic
     // isn't a blocker of its child. Backbone (project/epic/goal) nodes are
     // excluded — they're structural, not actionable entry points.
+    // Undirected adjacency over the parent / depends_on / soft_depends_on
+    // edges that route discovery already walks. Used by `computePathsToTerminals`
+    // to find the shortest visual path from a station to each of its terminals.
+    function buildRouteAdjacency(
+        nodes: GraphNode[],
+        edges: GraphEdge[],
+    ): Map<string, Set<string>> {
+        const adj = new Map<string, Set<string>>();
+        for (const n of nodes) adj.set(n.id, new Set());
+        for (const e of edges) {
+            if (e.type !== 'parent' && e.type !== 'depends_on' && e.type !== 'soft_depends_on') continue;
+            const src = typeof e.source === 'object' ? e.source.id : e.source;
+            const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+            if (!adj.has(src) || !adj.has(tgt)) continue;
+            if (src === tgt) continue;
+            adj.get(src)!.add(tgt);
+            adj.get(tgt)!.add(src);
+        }
+        return adj;
+    }
+
+    // Shortest path from `nodeId` to each terminal it serves. BFS is run on
+    // the subgraph of nodes that also serve that terminal — preserves the
+    // route semantics from `computeRouteData` while collapsing edge
+    // directionality (a station above a terminal can reach it via either
+    // parent up-walks, parent-subtree fans, or blocker chains).
+    function computePathsToTerminals(
+        nodeId: string,
+        routeData: RouteData,
+        adj: Map<string, Set<string>>,
+    ): Map<string, string[]> {
+        const out = new Map<string, string[]>();
+        const myRoutes = routeData.routes.get(nodeId);
+        if (!myRoutes || myRoutes.size === 0) return out;
+        for (const destId of myRoutes) {
+            if (destId === nodeId) continue;
+            const onRoute = (id: string) =>
+                id === destId || (routeData.routes.get(id)?.has(destId) ?? false);
+            const prev = new Map<string, string | null>([[nodeId, null]]);
+            const q: string[] = [nodeId];
+            let found = false;
+            while (q.length) {
+                const cur = q.shift()!;
+                if (cur === destId) { found = true; break; }
+                const nbrs = adj.get(cur);
+                if (!nbrs) continue;
+                for (const n of nbrs) {
+                    if (prev.has(n)) continue;
+                    if (!onRoute(n)) continue;
+                    prev.set(n, cur);
+                    q.push(n);
+                }
+            }
+            if (!found) continue;
+            const path: string[] = [];
+            let cur: string | null = destId;
+            while (cur !== null) {
+                path.push(cur);
+                cur = prev.get(cur) ?? null;
+            }
+            path.reverse();
+            out.set(destId, path);
+        }
+        return out;
+    }
+
     function computeStartingStations(
         nodes: GraphNode[],
         edges: GraphEdge[],
@@ -740,6 +806,7 @@
 
         const positions = computePositions(metroNodes, metroEdges, routeData, width, height);
         const startingStations = computeStartingStations(metroNodes, metroEdges, routeData);
+        const routeAdj = buildRouteAdjacency(metroNodes, metroEdges);
 
         const cyNodes = metroNodes.map(n => ({
             data: getNodeData(n, routeData, startingStations),
@@ -784,6 +851,7 @@
                             lineColor: getProjectLineColor(dest?.project),
                             edgeOpacity: perStrokeOpacity,
                             edgeWidth,
+                            pathDestId: destId,
                         },
                     });
                 });
@@ -802,6 +870,7 @@
                         lineColor,
                         edgeOpacity: baseOpacity,
                         edgeWidth,
+                        pathDestId: isOnRoute && shared.length === 1 ? shared[0] : '',
                     },
                 });
             }
@@ -942,6 +1011,20 @@
                     selector: '.route-active',
                     style: { 'opacity': 1 } as any,
                 },
+                // Edges on a computed path-to-terminal: project-coloured, thick,
+                // raised above the rest. Multi-terminal stations emit one .on-path
+                // stroke per destination — alpha compositing blends overlaps.
+                {
+                    selector: 'edge.on-path',
+                    style: {
+                        'line-color': 'data(lineColor)',
+                        'width': 7,
+                        'opacity': 0.95,
+                        'z-index': 100,
+                        'curve-style': 'haystack',
+                        'haystack-radius': 0,
+                    } as any,
+                },
                 {
                     selector: '.dimmed',
                     style: { 'opacity': 0.15 } as any,
@@ -1020,22 +1103,31 @@
             if (sim) sim.alphaTarget(0);
         });
 
-        // Keep a reference to the currently-highlighted destination (toggle)
+        // Persistent highlight state — set by tap, cleared by tapping the same
+        // node again or empty space. Stations and terminals are tracked
+        // separately so each toggles independently.
         let activeHighlightDestId: string | null = null;
+        let activeHighlightStationId: string | null = null;
 
         function clearHighlight() {
             if (!cy) return;
-            cy.elements().removeClass('not-path').removeClass('route-active');
+            cy.elements()
+                .removeClass('not-path')
+                .removeClass('route-active')
+                .removeClass('on-path');
             activeHighlightDestId = null;
+            activeHighlightStationId = null;
         }
 
+        // Terminal tap: keep the existing "show every station on this line"
+        // fan — the terminal IS the path's endpoint, so the right answer is
+        // the whole route, not a single thread.
         function highlightForNode(nodeId: string) {
             if (!cy) return;
             const rs = routeData.routes.get(nodeId);
             if (!rs || rs.size === 0) { clearHighlight(); return; }
             cy.batch(() => {
-                cy!.elements().addClass('not-path').removeClass('route-active');
-                // Any node whose routes share at least one destination with the tapped node
+                cy!.elements().addClass('not-path').removeClass('route-active').removeClass('on-path');
                 cy!.nodes().forEach(n => {
                     const nodeRoutes = routeData.routes.get(n.id()) ?? new Set();
                     for (const r of rs) {
@@ -1045,10 +1137,50 @@
                         }
                     }
                 });
-                // Edges that connect two highlighted nodes
                 cy!.edges().forEach(e => {
                     if (e.source().hasClass('route-active') && e.target().hasClass('route-active')) {
                         e.removeClass('not-path').addClass('route-active');
+                    }
+                });
+            });
+        }
+
+        // Station tap: draw one bright polyline per terminal the station
+        // serves. Edges on a path get .on-path so the project-colour stroke
+        // overrides the muted route style; everything else dims via .not-path.
+        function highlightPathFromStation(nodeId: string) {
+            if (!cy) return;
+            const paths = computePathsToTerminals(nodeId, routeData, routeAdj);
+            if (paths.size === 0) { clearHighlight(); return; }
+
+            const pathNodes = new Set<string>();
+            const pathEdgePairs = new Map<string, Set<string>>();
+            for (const [destId, nodes] of paths) {
+                const set = new Set<string>();
+                for (let i = 0; i < nodes.length - 1; i++) {
+                    const a = nodes[i];
+                    const b = nodes[i + 1];
+                    set.add(a < b ? `${a}|${b}` : `${b}|${a}`);
+                    pathNodes.add(a);
+                    pathNodes.add(b);
+                }
+                pathEdgePairs.set(destId, set);
+            }
+
+            cy.batch(() => {
+                cy!.elements().addClass('not-path').removeClass('route-active').removeClass('on-path');
+                cy!.nodes().forEach(n => {
+                    if (pathNodes.has(n.id())) {
+                        n.removeClass('not-path').addClass('route-active');
+                    }
+                });
+                cy!.edges().forEach(e => {
+                    const src = e.source().id();
+                    const tgt = e.target().id();
+                    const key = src < tgt ? `${src}|${tgt}` : `${tgt}|${src}`;
+                    const destId = e.data('pathDestId');
+                    if (destId && pathEdgePairs.get(destId)?.has(key)) {
+                        e.removeClass('not-path').addClass('route-active').addClass('on-path');
                     }
                 });
             });
@@ -1061,12 +1193,18 @@
                 if (activeHighlightDestId === id) {
                     clearHighlight();
                 } else {
+                    clearHighlight();
                     activeHighlightDestId = id;
                     highlightForNode(id);
                 }
             } else {
-                activeHighlightDestId = null;
-                highlightForNode(id);
+                if (activeHighlightStationId === id) {
+                    clearHighlight();
+                } else {
+                    clearHighlight();
+                    activeHighlightStationId = id;
+                    highlightPathFromStation(id);
+                }
                 toggleSelection(id);
             }
         });
