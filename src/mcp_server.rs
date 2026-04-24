@@ -2736,10 +2736,11 @@ impl PkbSearchServer {
         } else {
             let mut all: Vec<_> = graph.all_tasks().into_iter().collect();
             if let Some(s) = status {
+                let s_canonical = crate::graph::resolve_status_alias(s);
                 all.retain(|t| {
                     t.status
                         .as_deref()
-                        .map(|st| st.eq_ignore_ascii_case(s))
+                        .map(|st| st.eq_ignore_ascii_case(s_canonical))
                         .unwrap_or(false)
                 });
             }
