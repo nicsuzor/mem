@@ -1,5 +1,6 @@
 <script lang="ts">
     import { projectColor, projectBgTint, projectBorderColor } from "../../data/projectUtils";
+    import { copyToClipboard } from "../../data/utils";
     import { toggleSelection } from "../../stores/selection";
 
     let { 
@@ -25,11 +26,6 @@
     function toggleExpand(sessionId: string) {
         if (compact) return;
         expandedSessions = { ...expandedSessions, [sessionId]: !expandedSessions[sessionId] };
-    }
-
-    function copyToClipboard(text: string) {
-        navigator.clipboard.writeText(text);
-        // Maybe add a toast here if available
     }
 
     function formatTimeAgo(isoString: string): string {

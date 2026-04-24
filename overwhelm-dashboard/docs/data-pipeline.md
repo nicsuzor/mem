@@ -39,6 +39,24 @@
 | Recent Activity    | `summaries/*.json` → accomplishments by project | Working |
 | Project Dashboard  | `/api/graph` (PKB MCP) — only priority epics   | Working |
 | Quick Capture      | Client-side POST to `/api/tasks/create`        | Working |
+| Projects config    | `$AOPS_SESSIONS/projects.json`                 | Working (optional) |
+
+### Projects config
+
+`$AOPS_SESSIONS/projects.json` is the single source of truth for project-name
+filtering shared between the server loader and the client view. If the file is
+missing, no filtering is applied.
+
+```json
+{
+    "pseudo_projects": ["workspace", "polecat", "audre"]
+}
+```
+
+- `pseudo_projects` — names that look like projects (extracted from session
+  filenames or graph nodes) but are actually generic containers. They are
+  stripped from the project grid, the client-side project list, and the
+  session → project attribution.
 
 ## Current Activity
 

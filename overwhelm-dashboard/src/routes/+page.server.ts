@@ -1,6 +1,5 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import os from 'node:os';
 import { env } from '$env/dynamic/private';
 
 const AOPS_SESSIONS = env.AOPS_SESSIONS || '';
@@ -27,6 +26,20 @@ async function loadSynthesis(): Promise<any | null> {
     } catch { /* ignore */ }
 
     return data;
+}
+
+interface ProjectsConfig {
+    pseudo_projects: string[];
+}
+
+async function loadProjectsConfig(): Promise<ProjectsConfig> {
+    const empty: ProjectsConfig = { pseudo_projects: [] };
+    if (!AOPS_SESSIONS) return empty;
+    const data = await readJson(join(AOPS_SESSIONS, 'projects.json'));
+    if (!data) return empty;
+    return {
+        pseudo_projects: Array.isArray(data.pseudo_projects) ? data.pseudo_projects : [],
+    };
 }
 
 /**
@@ -140,7 +153,6 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             started_at: data.date || new Date(st.mtimeMs).toISOString(),
             time_display: minutesAgo < 60 ? `${Math.round(minutesAgo)}m ago` : `${Math.round(hoursAgo)}h ago`,
             duration_min: durationMin,
-            prompt_count: promptCount,
             prompt_count: promptCount,
             id: data.session_id || stem,
             prompts: allPrompts,
@@ -261,20 +273,12 @@ function buildPathData(summaries: any[]): any {
     return { activity, abandoned_work: abandoned };
 }
 
-function formatProjectName(folder: string): string {
-    const parts = folder.replace(/^-/, '').split('-');
-    // Derive skip list from environment instead of hardcoding usernames
-    const homeSegments = (env.HOME || os.homedir()).split('/').filter(Boolean);
-    const skip = new Set([...homeSegments, 'src', 'opt', '_aops', 'workspace', 'polecat', 'audre', '']);
-    const meaningful = parts.filter(p => !skip.has(p) && !/^[a-f0-9]{8,}$/.test(p));
-    return meaningful.pop() || folder;
-}
-
 export const load = async () => {
-    const [synthesis, sessions, summaries] = await Promise.all([
+    const [synthesis, sessions, summaries, projectsConfig] = await Promise.all([
         loadSynthesis(),
         findActiveSessions(48), // Fetch 48h to populate stale bucket
         loadRecentSummaries(3),
+        loadProjectsConfig(),
     ]);
 
     // Bucket sessions by recency
@@ -288,7 +292,7 @@ export const load = async () => {
     const projectSet = new Set<string>();
     const projectLatestSession = new Map<string, number>();
 
-    const pseudoProjects = new Set(['workspace', 'polecat', 'audre']);
+    const pseudoProjects = new Set(projectsConfig.pseudo_projects);
 
     sessions.forEach(s => {
         if (s.project && !pseudoProjects.has(s.project)) {
@@ -358,6 +362,7 @@ export const load = async () => {
             project_projects: projectProjects,
             project_data: projectData,
             path: buildPathData(summaries),
+            projects_config: projectsConfig,
         },
     };
 };
