@@ -284,14 +284,17 @@
         metroNodes: GraphNode[],
         edges: GraphEdge[],
         positions: Map<string, { x: number; y: number }>,
-        routeData: RouteData
+        routeData: RouteData,
+        lineMembership: Map<string, string> = new Map()
     ): void {
         if (sim) { sim.stop(); sim = null; }
         const isBackbone = (n: GraphNode) => BACKBONE_TYPES.has((n.type || '').toLowerCase());
         simNodes = metroNodes.map(n => {
             const p = positions.get(n.id);
             if (!p) return null as any;
-            const fixed = routeData.destIndex.has(n.id);
+            // Pin terminals AND epic-line stops so the line stays straight.
+            // Other route nodes float so they can converge around blockers.
+            const fixed = routeData.destIndex.has(n.id) || lineMembership.has(n.id);
             return {
                 id: n.id,
                 x: p.x,
@@ -363,7 +366,8 @@
         edges: GraphEdge[],
         routeData: RouteData,
         width: number,
-        height: number
+        height: number,
+        epicLines: EpicLine[] = []
     ): Map<string, { x: number; y: number }> {
         const { destinations, routes } = routeData;
         const positions = new Map<string, { x: number; y: number }>();
@@ -406,6 +410,25 @@
 
         for (const d of destinations) {
             positions.set(d.id, { x: destinationX.get(d.id)!, y: destinationY.get(d.id)! });
+        }
+
+        // Epic lines: place stops evenly along the ray from centre to terminal.
+        // The terminal is already positioned at the perimeter; stops fall on
+        // the line between centre and terminal so the visual run is straight.
+        for (const line of epicLines) {
+            const tx = destinationX.get(line.terminalId);
+            const ty = destinationY.get(line.terminalId);
+            if (tx === undefined || ty === undefined) continue;
+            const stopCount = line.stops.length - 1; // exclude terminal
+            if (stopCount < 1) continue;
+            const tStart = 0.18;
+            const tEnd = 0.92;
+            for (let i = 0; i < stopCount; i++) {
+                const u = stopCount === 1 ? (tStart + tEnd) / 2 : tStart + (tEnd - tStart) * (i / (stopCount - 1));
+                const x = centerX + (tx - centerX) * u;
+                const y = centerY + (ty - centerY) * u;
+                positions.set(line.stops[i], { x, y });
+            }
         }
 
         // Route nodes: seed at the centroid of their serving terminals so the
@@ -520,6 +543,82 @@
     // depends_on / soft_depends_on. Parent edges don't count — a parent epic
     // isn't a blocker of its child. Backbone (project/epic/goal) nodes are
     // excluded — they're structural, not actionable entry points.
+    // ─── Epic-as-line linearisation ─────────────────────────────────────────
+    //
+    // Easy case for "turn a web into a line": a node with children. The line
+    // is the post-order traversal of its incomplete subtree — leaves first,
+    // each parent after all its descendants, the root (terminal) last.
+    // Real-world ordering: children sorted by `_raw.order` (frontmatter
+    // `order:` field), then priority asc, then label.
+    //
+    // A node is claimed by the first terminal whose subtree contains it; this
+    // keeps multi-parent nodes from appearing on multiple lines and bending
+    // the geometry. Cross-terminal blockers stay as ordinary depends_on edges
+    // and remain visible on top of the lines.
+
+    interface EpicLine {
+        terminalId: string;
+        stops: string[]; // descendants in post-order, terminal last
+    }
+
+    function postOrderEpicLine(
+        rootId: string,
+        parentDown: Map<string, Set<string>>,
+        nodeById: Map<string, GraphNode>,
+        claimed: Set<string>,
+        depthCap: number = 8,
+    ): string[] {
+        const stops: string[] = [];
+        function visit(id: string, depth: number): void {
+            if (depth > depthCap) return;
+            const kids = Array.from(parentDown.get(id) ?? new Set<string>())
+                .filter(c => {
+                    if (claimed.has(c)) return false;
+                    const cn = nodeById.get(c);
+                    return !!cn && isIncomplete(cn);
+                })
+                .sort((a, b) => {
+                    const na = nodeById.get(a)!;
+                    const nb = nodeById.get(b)!;
+                    const oa = (na as any)._raw?.order ?? Number.MAX_SAFE_INTEGER;
+                    const ob = (nb as any)._raw?.order ?? Number.MAX_SAFE_INTEGER;
+                    if (oa !== ob) return oa - ob;
+                    if (na.priority !== nb.priority) return na.priority - nb.priority;
+                    return (na.label || '').localeCompare(nb.label || '');
+                });
+            for (const k of kids) {
+                claimed.add(k);
+                visit(k, depth + 1);
+                stops.push(k);
+            }
+        }
+        visit(rootId, 0);
+        stops.push(rootId);
+        return stops;
+    }
+
+    function computeEpicLines(
+        destinations: GraphNode[],
+        nodes: GraphNode[],
+        edges: GraphEdge[],
+    ): { lines: EpicLine[]; membership: Map<string, string> } {
+        const { parentDown } = buildDirectedAdjacency(nodes, edges);
+        const nodeById = new Map(nodes.map(n => [n.id, n]));
+        const claimed = new Set<string>();
+        const lines: EpicLine[] = [];
+        const membership = new Map<string, string>();
+        for (const t of destinations) {
+            const stops = postOrderEpicLine(t.id, parentDown, nodeById, claimed);
+            if (stops.length > 1) {
+                lines.push({ terminalId: t.id, stops });
+                for (const s of stops) {
+                    if (s !== t.id) membership.set(s, t.id);
+                }
+            }
+        }
+        return { lines, membership };
+    }
+
     // Undirected adjacency over the parent / depends_on / soft_depends_on
     // edges that route discovery already walks. Used by `computePathsToTerminals`
     // to find the shortest visual path from a station to each of its terminals.
@@ -804,7 +903,9 @@
             return nodeById.has(src) && nodeById.has(tgt);
         });
 
-        const positions = computePositions(metroNodes, metroEdges, routeData, width, height);
+        const { lines: epicLines, membership: lineMembership } =
+            computeEpicLines(routeData.destinations, metroNodes, metroEdges);
+        const positions = computePositions(metroNodes, metroEdges, routeData, width, height, epicLines);
         const startingStations = computeStartingStations(metroNodes, metroEdges, routeData);
         const routeAdj = buildRouteAdjacency(metroNodes, metroEdges);
 
@@ -875,6 +976,34 @@
                 });
             }
         });
+
+        // Epic-line connectors: one thick stroke per consecutive (stop_i,
+        // stop_i+1) pair, project-coloured. These overlay the underlying
+        // parent/dependency edges so the line reads as a single sweep.
+        for (const line of epicLines) {
+            const dest = destById.get(line.terminalId);
+            const lineColor = getProjectLineColor(dest?.project);
+            for (let i = 0; i < line.stops.length - 1; i++) {
+                const a = line.stops[i];
+                const b = line.stops[i + 1];
+                if (!nodeById.has(a) || !nodeById.has(b)) continue;
+                cyEdges.push({
+                    data: {
+                        id: `line_${line.terminalId}_${i}`,
+                        source: a,
+                        target: b,
+                        edgeRole: 'line',
+                        visibilityState: 'bright',
+                        isOnRoute: 1,
+                        lineColor,
+                        edgeOpacity: 0.95,
+                        edgeWidth: 8,
+                        pathDestId: line.terminalId,
+                        isLine: 1,
+                    },
+                });
+            }
+        }
 
         cy = cytoscape({
             container: containerEl,
@@ -975,6 +1104,19 @@
                         'haystack-radius': 0,
                     } as any,
                 },
+                // Epic-line connector — thick, project-coloured, opaque,
+                // sits above the muted route strokes so the line dominates.
+                {
+                    selector: 'edge[isLine = 1]',
+                    style: {
+                        'width': 'data(edgeWidth)',
+                        'line-color': 'data(lineColor)',
+                        'opacity': 0.85,
+                        'curve-style': 'haystack',
+                        'haystack-radius': 0,
+                        'z-index': 80,
+                    } as any,
+                },
                 // Non-route edges — thin grey dashed backdrop
                 {
                     selector: 'edge[isOnRoute = 0][visibilityState != "hidden"]',
@@ -1047,7 +1189,7 @@
 
         // Kick off the persistent force simulation so edges pull nodes together
         // live, and dragging a terminal tows its whole network.
-        startSimulation(metroNodes, metroEdges, positions, routeData);
+        startSimulation(metroNodes, metroEdges, positions, routeData, lineMembership);
         warmSimulation(160);
         // Push warmed positions into cytoscape before the first paint settles
         if (cy) {
@@ -1278,7 +1420,8 @@
             return nodeById.has(src) && nodeById.has(tgt);
         });
         const routeData = computeRouteData(metroNodes, metroEdges);
-        const positions = computePositions(metroNodes, metroEdges, routeData, width, height);
+        const { lines: epicLines } = computeEpicLines(routeData.destinations, metroNodes, metroEdges);
+        const positions = computePositions(metroNodes, metroEdges, routeData, width, height, epicLines);
 
         running = true;
         let pending = 0;
@@ -1335,6 +1478,7 @@
         }
 
         cyInstance.edges().forEach(cyEdge => {
+            if (cyEdge.data('isLine') === 1) return; // line connectors keep their bright state
             const src = cyEdge.source().id();
             const tgt = cyEdge.target().id();
             const sourceNode = nodeById.get(src) as any;
