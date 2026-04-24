@@ -22,7 +22,7 @@
         type GraphNode,
         type GraphEdge,
     } from "$lib/data/prepareGraphData";
-    import { graphData } from "$lib/stores/graph";
+    import { graphData, preparedGraphData } from "$lib/stores/graph";
     import {
         viewSettings,
         getLayoutFromViewSettings,
@@ -134,6 +134,10 @@
         const previousLinksByKey = new Map(($graphData?.links || []).map((link) => [edgeIdentity(link), link]));
 
         const prepared = prepareGraphData(rawGraph);
+        // Expose the pre-filter prepared graph for views that need completeness
+        // (Metro route discovery walks completed/low-priority nodes that the UI
+        // filters normally hide).
+        $preparedGraphData = prepared;
         let fNodes = [...prepared.nodes];
         let fLinks = [...prepared.links];
         const isForce =

@@ -1,7 +1,15 @@
 <script lang="ts">
     import { onDestroy } from "svelte";
     import cytoscape from "cytoscape";
-    import { graphData, graphStructureKey } from "../../stores/graph";
+    import {
+        forceSimulation,
+        forceLink,
+        forceManyBody,
+        forceCollide,
+        forceX,
+        forceY,
+    } from "d3-force";
+    import { graphData, preparedGraphData, graphStructureKey, preparedStructureKey } from "../../stores/graph";
     import { filters, type VisibilityState } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
@@ -17,20 +25,27 @@
     // control; when enabled, only the top-N by downstream_weight render.
     export let showContext = false;
 
-    const HIDDEN_TYPES = new Set(['project']);
-    const CONTAINER_TYPES = new Set(['goal', 'epic']);
-    const EPIC_TYPES = new Set(['epic', 'goal']);
+    // Project-type nodes are structural containers. They are not hidden
+    // outright — when they appear on a target's ancestor chain we want the
+    // connector to be visible — but we render them as muted backbone stops.
+    const HIDDEN_TYPES = new Set<string>();
+    const BACKBONE_TYPES = new Set(['project', 'epic', 'goal']);
+    const CONTAINER_TYPES = new Set(['goal', 'epic', 'project']);
+    const EPIC_TYPES = new Set(['epic', 'goal', 'project']);
     const DEFAULT_PROJECT_COLOR = 'hsl(220, 12%, 46%)';
 
     // Layout constants
-    const ROW_HEIGHT = 120;
+    const ROW_HEIGHT = 80;
     const CONTEXT_STRIP_Y = 140;
     const CONTEXT_CAP = 200;           // hard cap on rendered context stations
-    const TERMINAL_ROW_GAP = 32;       // vertical spacing between terminal rows
-    const TERMINAL_PER_ROW = 12;       // target number of terminals per row
-    const GOAL_PARENT_HOP_CAP = 3;     // limit goal-destination descendant walk depth
+    const TERMINAL_ROW_GAP = 56;       // vertical spacing between terminal rows
+    const TERMINAL_PER_ROW = 3;        // target number of terminals per row
+    const ANCESTOR_HOP_CAP = 1;        // walk at most N parent hops above a target
+    const SUBTREE_DEPTH_CAP = 5;       // cap descendant-from-ancestor BFS depth
+    const DESCENDANT_DEPTH_CAP = 6;    // cap descendant-from-target BFS depth
+    const BLOCKER_DEPTH_CAP = 6;       // cap transitive blocker walk
     const GRID_X = 36;
-    const GRID_Y = 40;
+    const GRID_Y = 32;
 
     // Hover tooltip state
     let tooltip: {
@@ -89,48 +104,41 @@
         destIndex: Map<string, number>;     // destId -> ordinal position
     }
 
-    // Build an undirected neighbor map covering every edge type — parent,
-    // depends_on, soft_depends_on, ref, anything else. Route discovery treats
-    // the graph as undirected so every incident edge counts as a potential
-    // route step. Per-edge-type weighting / directionality can be re-layered
-    // later if the picture demands it.
-    function buildNeighbors(nodes: GraphNode[], edges: GraphEdge[]): Map<string, Set<string>> {
-        const nbr = new Map<string, Set<string>>();
-        for (const n of nodes) nbr.set(n.id, new Set());
+    // Directed adjacency for route discovery.
+    //   parentDown[p]  → children p→c  (after prepareGraphData flip)
+    //   parentUp[c]    → p             (child's parent)
+    //   blockersOut[b] → set of blockers (follows depends_on + soft_depends_on)
+    interface DirectedAdjacency {
+        parentDown: Map<string, Set<string>>;
+        parentUp: Map<string, string>;
+        blockersOut: Map<string, Set<string>>;
+    }
+
+    function buildDirectedAdjacency(nodes: GraphNode[], edges: GraphEdge[]): DirectedAdjacency {
+        const parentDown = new Map<string, Set<string>>();
+        const parentUp = new Map<string, string>();
+        const blockersOut = new Map<string, Set<string>>();
+        for (const n of nodes) {
+            parentDown.set(n.id, new Set());
+            blockersOut.set(n.id, new Set());
+        }
         for (const e of edges) {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-            if (!nbr.has(src) || !nbr.has(tgt)) continue;
+            if (!parentDown.has(src) || !parentDown.has(tgt)) continue;
             if (src === tgt) continue;
-            nbr.get(src)!.add(tgt);
-            nbr.get(tgt)!.add(src);
+            if (e.type === 'parent') {
+                parentDown.get(src)!.add(tgt);
+                parentUp.set(tgt, src);
+            } else if (e.type === 'depends_on' || e.type === 'soft_depends_on') {
+                blockersOut.get(src)!.add(tgt);
+            }
         }
-        return nbr;
+        return { parentDown, parentUp, blockersOut };
     }
 
-    // Every P0/P1 incomplete node is a destination — that's what the user set
-    // as a target. Whether it has children decides how the route is walked,
-    // not whether it qualifies.
-    function computeIncompleteChildIds(nodes: GraphNode[]): Set<string> {
-        const ids = new Set<string>();
-        for (const n of nodes) {
-            if (n.parent && isIncomplete(n)) ids.add(n.parent);
-        }
-        return ids;
-    }
-
-    // A destination behaves as a container (pulls its incomplete subtree
-    // inward as the route) when its type is goal/epic, or when it has any
-    // incomplete children. Otherwise it's a leaf and walks parent ancestors.
-    function isContainerDestination(dest: GraphNode, incompleteChildIds: Set<string>): boolean {
-        if (CONTAINER_TYPES.has((dest.type || '').toLowerCase())) return true;
-        return incompleteChildIds.has(dest.id);
-    }
-
-    // Terminals are now explicitly target-type nodes. P0/P1 "priority" tasks
-    // that aren't targets are rendered as larger stations but are not the
-    // named ends-of-lines. The user sets targets deliberately; priority alone
-    // is a weaker signal.
+    // Terminals are explicitly target-type nodes. Priority alone doesn't
+    // qualify — the user sets targets deliberately.
     function computeDestinations(nodes: GraphNode[]): GraphNode[] {
         return nodes
             .filter(n => {
@@ -147,6 +155,16 @@
             });
     }
 
+    // For each terminal T, the "line" is the set of stations meaningfully on
+    // the way to T. We include:
+    //   (a) descendants of T via parent (sub-tasks, grand-sub-tasks),
+    //   (b) the immediate parent ancestor and its subtree (siblings and cousins
+    //       that compose the epic the target sits inside),
+    //   (c) transitive blockers (depends_on / soft_depends_on) of every
+    //       already-collected node.
+    // Walks stop at other terminals so distinct lines don't bleed together.
+    // Completed nodes stay on the route — they render desaturated, but the
+    // user can still see the full scope of what the target covers.
     function computeRouteData(nodes: GraphNode[], edges: GraphEdge[]): RouteData {
         const destinations = computeDestinations(nodes);
         const destIndex = new Map<string, number>();
@@ -160,32 +178,78 @@
             return { destinations, routes, depth, destIndex };
         }
 
-        const neighbors = buildNeighbors(nodes, edges);
-        const nodeById = new Map(nodes.map(n => [n.id, n]));
+        const { parentDown, parentUp, blockersOut } = buildDirectedAdjacency(nodes, edges);
+        const destSet = new Set(destinations.map(d => d.id));
 
-        // Undirected BFS from each destination. Every edge type is a step, no
-        // direction distinction — we want to see all edges on the map before
-        // deciding which distinctions matter.
         for (const dest of destinations) {
-            const seen = new Set<string>([dest.id]);
-            const queue: Array<{ id: string; d: number }> = [{ id: dest.id, d: 0 }];
-            while (queue.length > 0) {
-                const { id, d } = queue.shift()!;
-                const node = nodeById.get(id);
-                if (!node) continue;
-                if (!isIncomplete(node) && id !== dest.id) continue;
+            const stopAt = new Set<string>();
+            for (const other of destSet) if (other !== dest.id) stopAt.add(other);
+            const perDest = new Map<string, number>([[dest.id, 0]]);
 
+            // (a) descendants of the target itself
+            const descQueue: Array<{ id: string; d: number }> = [{ id: dest.id, d: 0 }];
+            while (descQueue.length) {
+                const { id, d } = descQueue.shift()!;
+                if (d >= DESCENDANT_DEPTH_CAP) continue;
+                const kids = parentDown.get(id);
+                if (!kids) continue;
+                for (const kid of kids) {
+                    if (perDest.has(kid)) continue;
+                    if (stopAt.has(kid)) continue;
+                    perDest.set(kid, d + 1);
+                    descQueue.push({ id: kid, d: d + 1 });
+                }
+            }
+
+            // (b) walk up at most ANCESTOR_HOP_CAP levels; at each level, include
+            // the ancestor and its subtree (siblings + cousins) capped by
+            // SUBTREE_DEPTH_CAP.
+            let cur = dest.id;
+            for (let hop = 0; hop < ANCESTOR_HOP_CAP; hop++) {
+                const parent = parentUp.get(cur);
+                if (!parent) break;
+                if (destSet.has(parent)) break;
+                const parentD = (perDest.get(cur) ?? 0) + 1;
+                if (!perDest.has(parent)) perDest.set(parent, parentD);
+                // Fan the ancestor's subtree down, minus other-terminal branches
+                const q: Array<{ id: string; d: number }> = [{ id: parent, d: parentD }];
+                while (q.length) {
+                    const { id, d } = q.shift()!;
+                    if (d - parentD >= SUBTREE_DEPTH_CAP) continue;
+                    const kids = parentDown.get(id);
+                    if (!kids) continue;
+                    for (const kid of kids) {
+                        if (perDest.has(kid)) continue;
+                        if (stopAt.has(kid)) continue;
+                        perDest.set(kid, d + 1);
+                        q.push({ id: kid, d: d + 1 });
+                    }
+                }
+                cur = parent;
+            }
+
+            // (c) transitive blockers of every on-route node.
+            const frontier: Array<{ id: string; d: number }> = [];
+            for (const [id, d] of perDest) frontier.push({ id, d });
+            while (frontier.length) {
+                const { id, d } = frontier.shift()!;
+                if (d >= BLOCKER_DEPTH_CAP) continue;
+                const blockers = blockersOut.get(id);
+                if (!blockers) continue;
+                for (const b of blockers) {
+                    const existing = perDest.get(b);
+                    if (existing !== undefined && existing <= d + 1) continue;
+                    if (stopAt.has(b)) continue;
+                    perDest.set(b, d + 1);
+                    frontier.push({ id: b, d: d + 1 });
+                }
+            }
+
+            // Commit per-destination visits to the global structures.
+            for (const [id, d] of perDest) {
                 routes.get(id)!.add(dest.id);
                 const prev = depth.get(id);
                 if (prev === undefined || d < prev) depth.set(id, d);
-
-                const nbr = neighbors.get(id);
-                if (!nbr) continue;
-                for (const next of nbr) {
-                    if (seen.has(next)) continue;
-                    seen.add(next);
-                    queue.push({ id: next, d: d + 1 });
-                }
             }
         }
 
@@ -195,8 +259,87 @@
 
     // ─── Target-anchored layout ─────────────────────────────────────────────
 
+    // Brief d3-force relaxation pulls connected nodes closer while respecting
+    // the bottom-anchored terminal stratification. Terminals are pinned; route
+    // stations get a strong y-anchor (their depth band) and flex in x; backbone
+    // (epic/project/goal) keep their y too. Link force creates the cluster
+    // structure the user asked for — "a little structure so edges pull nodes
+    // closer together".
+    function relaxPositions(
+        metroNodes: GraphNode[],
+        edges: GraphEdge[],
+        positions: Map<string, { x: number; y: number }>,
+        routeData: RouteData
+    ): void {
+        type FNode = {
+            id: string;
+            x: number;
+            y: number;
+            fx: number | null;
+            fy: number | null;
+            anchorX: number;
+            anchorY: number;
+            radius: number;
+        };
+        const nodeById = new Map(metroNodes.map(n => [n.id, n]));
+        const isBackbone = (n: GraphNode) => BACKBONE_TYPES.has((n.type || '').toLowerCase());
+        const fnodes: FNode[] = metroNodes.map(n => {
+            const p = positions.get(n.id);
+            if (!p) return null as any;
+            const fixed = routeData.destIndex.has(n.id);
+            const backbone = isBackbone(n);
+            return {
+                id: n.id,
+                x: p.x,
+                y: p.y,
+                fx: fixed ? p.x : null,
+                fy: fixed ? p.y : null,
+                anchorX: p.x,
+                anchorY: p.y,
+                radius: fixed ? 22 : backbone ? 14 : 10,
+            };
+        }).filter(Boolean);
+
+        const idSet = new Set(fnodes.map(f => f.id));
+        const flinks = edges
+            .map(e => {
+                const src = typeof e.source === 'object' ? e.source.id : e.source;
+                const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+                return { source: src, target: tgt, type: e.type };
+            })
+            .filter(l => idSet.has(l.source) && idSet.has(l.target));
+
+        const sim = forceSimulation<FNode>(fnodes)
+            .force('link', forceLink<FNode, any>(flinks)
+                .id(d => d.id)
+                .distance(l => {
+                    // parent/depends_on are "spine" edges — short; refs are loose.
+                    if (l.type === 'parent' || l.type === 'depends_on') return 36;
+                    if (l.type === 'soft_depends_on') return 50;
+                    return 80;
+                })
+                .strength(l => (l.type === 'parent' || l.type === 'depends_on') ? 0.6 : 0.2))
+            .force('charge', forceManyBody<FNode>().strength(-80).distanceMax(220))
+            .force('collide', forceCollide<FNode>().radius(d => d.radius).strength(0.9))
+            // Keep x wandering gentle; keep y near its depth band so the
+            // metro stratification (terminals bottom, deeper stations up) holds.
+            .force('x', forceX<FNode>(d => d.anchorX).strength(0.05))
+            .force('y', forceY<FNode>(d => d.anchorY).strength(0.35))
+            .stop();
+
+        // Short, warm run — enough to untangle without drifting from preset.
+        sim.alpha(0.9).alphaDecay(0.05);
+        for (let i = 0; i < 150; i++) sim.tick();
+
+        for (const fn of fnodes) {
+            if (!nodeById.has(fn.id)) continue;
+            positions.set(fn.id, { x: fn.x, y: fn.y });
+        }
+    }
+
     function computePositions(
         metroNodes: GraphNode[],
+        edges: GraphEdge[],
         routeData: RouteData,
         width: number,
         height: number
@@ -281,6 +424,12 @@
             });
         }
 
+        // Force relaxation: pull connected nodes closer together. Terminals
+        // stay pinned at their preset (x, y). Backbone nodes keep their y
+        // but can drift in x. Route stations and context can move in x and
+        // drift a little in y from their depth-band anchor.
+        relaxPositions(metroNodes, edges, positions, routeData);
+
         // Collision spread: bucket by grid cell and offset siblings along x.
         // Tie-break by stable id hash — sorting by id string meant re-renders
         // with added/removed ids shifted bucket siblings, breaking stability.
@@ -315,6 +464,7 @@
         visibilityState: VisibilityState;
         isDestination: 0 | 1;
         isOnRoute: 0 | 1;
+        isBackbone: 0 | 1;
         routeIds: string;
         nodeSize: number;
         fillColor: string;
@@ -338,11 +488,10 @@
     const BAD_CHOICE_FILL = '#6b7280';       // dull grey body
     const BAD_CHOICE_BORDER = '#dc2626';     // red outline — "you picked this as priority but it isn't on any line"
 
-    // Build a set of on-route nodes that have no outgoing blocker edge to
-    // another incomplete on-route node. Under the schema we're adopting here,
-    // every blocker edge (parent flipped, depends_on, soft_depends_on) points
-    // from the blocked node to its blocker — so "no outgoing blocker edge" ⇒
-    // nothing is stopping this node from starting.
+    // A starting station is an on-route node with no incomplete blocker via
+    // depends_on / soft_depends_on. Parent edges don't count — a parent epic
+    // isn't a blocker of its child. Backbone (project/epic/goal) nodes are
+    // excluded — they're structural, not actionable entry points.
     function computeStartingStations(
         nodes: GraphNode[],
         edges: GraphEdge[],
@@ -355,6 +504,7 @@
         const nodeById = new Map(nodes.map(n => [n.id, n]));
         const hasBlocker = new Set<string>();
         for (const e of edges) {
+            if (e.type !== 'depends_on' && e.type !== 'soft_depends_on') continue;
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             if (!onRoute.has(src)) continue;
@@ -368,10 +518,16 @@
             const n = nodeById.get(id);
             if (!n) continue;
             if (!isIncomplete(n)) continue;
-            if (routeData.destIndex.has(id)) continue; // terminals keep their own fill
+            if (routeData.destIndex.has(id)) continue;
+            if (BACKBONE_TYPES.has((n.type || '').toLowerCase())) continue;
             if (!hasBlocker.has(id)) starts.add(id);
         }
         return starts;
+    }
+
+    function truncate(s: string, n: number): string {
+        if (!s) return '';
+        return s.length <= n ? s : s.slice(0, n - 1) + '…';
     }
 
     function getNodeData(node: GraphNode, routeData: RouteData, startingStations: Set<string>): NodeData {
@@ -381,13 +537,15 @@
         const isStart = startingStations.has(node.id);
         const visibilityState = priorityVisibility(node.priority);
         const completed = !isIncomplete(node);
+        const typeLower = (node.type || '').toLowerCase();
+        const isBackbone = BACKBONE_TYPES.has(typeLower);
 
         let nodeSize: number;
         let fillColor: string;
         let borderColor: string;
         let displayLabel: string;
 
-        const isPriorityStation = !isDestination && node.priority <= 1 && isIncomplete(node) && (node.type || '').toLowerCase() !== 'target';
+        const isPriorityStation = !isDestination && node.priority <= 1 && isIncomplete(node) && typeLower !== 'target';
         const isBadChoice = isPriorityStation && !isOnRoute;
 
         if (isDestination) {
@@ -399,19 +557,33 @@
             nodeSize = 14;
             fillColor = BAD_CHOICE_FILL;
             borderColor = BAD_CHOICE_BORDER;
-            displayLabel = '';
+            displayLabel = truncate(node.label, 40);
+        } else if (isOnRoute && isBackbone) {
+            // Epic / project / goal backbones — larger, squared, dim. These
+            // anchor the line structurally but aren't the work itself.
+            nodeSize = 18;
+            fillColor = '#475569';
+            borderColor = '#cbd5e1';
+            displayLabel = truncate(node.label, 36);
         } else if (isStart) {
-            nodeSize = isPriorityStation ? 14 : 10;
+            nodeSize = isPriorityStation ? 16 : 12;
             fillColor = START_FILL;
             borderColor = '#ffffff';
-            displayLabel = '';
+            displayLabel = truncate(node.label, 40);
         } else if (isPriorityStation) {
-            nodeSize = 14;
+            nodeSize = 16;
+            fillColor = STATION_FILL;
+            borderColor = 'rgba(255,255,255,0.45)';
+            displayLabel = truncate(node.label, 40);
+        } else if (isOnRoute) {
+            // A station on a terminal's line — sub-task or blocker. Give it a
+            // visible body + a label so the line is readable, not just dots.
+            nodeSize = 12;
             fillColor = STATION_FILL;
             borderColor = 'rgba(255,255,255,0.35)';
-            displayLabel = '';
+            displayLabel = truncate(node.label, 40);
         } else {
-            nodeSize = isOnRoute ? 7 : 3;
+            nodeSize = 3;
             fillColor = STATION_FILL;
             borderColor = 'rgba(255,255,255,0.08)';
             displayLabel = '';
@@ -429,6 +601,7 @@
             visibilityState,
             isDestination: isDestination ? 1 : 0,
             isOnRoute: isOnRoute ? 1 : 0,
+            isBackbone: (isOnRoute && isBackbone) ? 1 : 0,
             routeIds: Array.from(rs).join(','),
             nodeSize,
             fillColor,
@@ -487,15 +660,20 @@
     // ─── Cytoscape lifecycle ────────────────────────────────────────────────
 
     function buildGraph() {
-        if (!containerEl || !$graphData) return;
+        // Use the pre-filter prepared graph so route discovery can see
+        // completed children, low-priority blockers, and structural ancestors
+        // that the UI filter chain would otherwise hide. Per-node visibility
+        // (priority/status filters) is still applied via `visibilityState`.
+        const sourceGraph = $preparedGraphData ?? $graphData;
+        if (!containerEl || !sourceGraph) return;
         if (cy) { cy.destroy(); cy = null; }
 
         const width = containerEl.clientWidth || 1200;
         const height = containerEl.clientHeight || 800;
 
-        const allMetroNodes = $graphData.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
+        const allMetroNodes = sourceGraph.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
         const nodeByIdAll = new Map(allMetroNodes.map(n => [n.id, n]));
-        const allMetroEdges = $graphData.links.filter(e => {
+        const allMetroEdges = sourceGraph.links.filter(e => {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             return nodeByIdAll.has(src) && nodeByIdAll.has(tgt);
@@ -531,7 +709,7 @@
             return nodeById.has(src) && nodeById.has(tgt);
         });
 
-        const positions = computePositions(metroNodes, routeData, width, height);
+        const positions = computePositions(metroNodes, metroEdges, routeData, width, height);
         const startingStations = computeStartingStations(metroNodes, metroEdges, routeData);
 
         const cyNodes = metroNodes.map(n => ({
@@ -618,6 +796,46 @@
                         'opacity': 'data(nodeOpacity)',
                         'label': '',
                         'text-opacity': 0,
+                    } as any,
+                },
+                // Stations with a displayLabel — route stations (sub-tasks /
+                // blockers), priority stations, bad choices. Labels hidden at
+                // far zoom so the overview stays clean.
+                {
+                    selector: 'node[isOnRoute = 1][isDestination = 0][isBackbone = 0]',
+                    style: {
+                        'label': 'data(displayLabel)',
+                        'text-opacity': 1,
+                        'color': '#cbd5e1',
+                        'font-size': 9,
+                        'text-outline-color': '#0b0f17',
+                        'text-outline-width': 2,
+                        'text-valign': 'center',
+                        'text-halign': 'right',
+                        'text-margin-x': 6,
+                        'text-max-width': '180px',
+                        'text-wrap': 'wrap',
+                        'min-zoomed-font-size': 8,
+                    } as any,
+                },
+                // Backbones — epic/project/goal on route. Squared, muted, small label.
+                {
+                    selector: 'node[isBackbone = 1]',
+                    style: {
+                        'shape': 'round-rectangle',
+                        'label': 'data(displayLabel)',
+                        'text-opacity': 1,
+                        'color': '#e2e8f0',
+                        'font-size': 10,
+                        'font-weight': '600',
+                        'text-outline-color': '#0b0f17',
+                        'text-outline-width': 2,
+                        'text-valign': 'center',
+                        'text-halign': 'right',
+                        'text-margin-x': 8,
+                        'text-max-width': '200px',
+                        'text-wrap': 'wrap',
+                        'min-zoomed-font-size': 7,
                     } as any,
                 },
                 // Terminals — big, priority-coloured, always labelled
@@ -825,18 +1043,19 @@
     // positions — useful after filter changes. The control is surfaced to the
     // user as "Recompute" in Metro mode (see parent view chrome).
     export function toggleRunning() {
-        if (!cy || !containerEl || !$graphData) return;
+        const sourceGraph = $preparedGraphData ?? $graphData;
+        if (!cy || !containerEl || !sourceGraph) return;
         const width = containerEl.clientWidth || 1200;
         const height = containerEl.clientHeight || 800;
-        const metroNodes = $graphData.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
+        const metroNodes = sourceGraph.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
         const nodeById = new Map(metroNodes.map(n => [n.id, n]));
-        const metroEdges = $graphData.links.filter(e => {
+        const metroEdges = sourceGraph.links.filter(e => {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             return nodeById.has(src) && nodeById.has(tgt);
         });
         const routeData = computeRouteData(metroNodes, metroEdges);
-        const positions = computePositions(metroNodes, routeData, width, height);
+        const positions = computePositions(metroNodes, metroEdges, routeData, width, height);
 
         running = true;
         let pending = 0;
@@ -864,8 +1083,8 @@
     // Rebuild on structural changes
     let lastStructureKey = '';
     let lastShowContext = showContext;
-    $: if (containerEl && $graphData && ($graphStructureKey !== lastStructureKey || showContext !== lastShowContext)) {
-        lastStructureKey = $graphStructureKey;
+    $: if (containerEl && ($preparedGraphData || $graphData) && ($preparedStructureKey !== lastStructureKey || showContext !== lastShowContext)) {
+        lastStructureKey = $preparedStructureKey;
         lastShowContext = showContext;
         buildGraph();
     }
@@ -873,11 +1092,12 @@
     // Refresh node/edge visibility data when priority filters change but
     // structure doesn't. Edges may have been split into per-route strokes —
     // we iterate cy's actual edges and refresh each by source/target.
-    $: if (cy && $graphData && $graphStructureKey === lastStructureKey) {
+    $: if (cy && ($preparedGraphData || $graphData) && $preparedStructureKey === lastStructureKey) {
         const cyInstance = cy;
-        const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
-        const allMetroNodes = $graphData.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
-        const allMetroEdges = $graphData.links.filter(e => {
+        const sourceGraph = $preparedGraphData ?? $graphData!;
+        const nodeById = new Map(sourceGraph.nodes.map(n => [n.id, n]));
+        const allMetroNodes = sourceGraph.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
+        const allMetroEdges = sourceGraph.links.filter(e => {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             return nodeById.has(src) && nodeById.has(tgt);
