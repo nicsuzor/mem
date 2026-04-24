@@ -4,11 +4,10 @@
     import { graphData } from "../../stores/graph";
     import ActiveSessions from "./ActiveSessions.svelte";
     import SynthesisPanel from "./SynthesisPanel.svelte";
-    import PathTimeline from "./PathTimeline.svelte";
     import ProjectDashboard from "./ProjectDashboard.svelte";
 
     // Extract dynamic project list from graph data
-    $: projects = $graphData ? Array.from(new Set($graphData.nodes.map(n => n.project).filter(p => !!p))).sort() : [];
+    $: projects = $graphData ? Array.from(new Set($graphData.nodes.map(n => n.project).filter(p => !!p && !['workspace', 'polecat', 'audre'].includes(p)))).sort() : [];
 
     // Session data comes exclusively from server-side sources (synthesis.json / session-state files).
     // No client-side fallback — if the pipeline isn't producing data, the UI shows errors.
@@ -17,7 +16,9 @@
     $: staleSessionsData = data?.dashboardData?.stale_sessions || [];
     $: pipelineErrors = data?.dashboardData?.pipeline_errors || [];
 
-    $: pathData = data?.dashboardData?.path || { threads: [], abandoned_work: [] };
+    // Interactive vs Background
+    $: interactiveSessions = activeSessionsData.filter(s => s.session_type === 'interactive');
+    $: backgroundSessions = activeSessionsData.filter(s => s.session_type !== 'interactive');
 
     // Build enriched project data from graph store (primary) + server data (enrichment)
     $: graphProjectData = (() => {
@@ -112,13 +113,26 @@
     </div>
 
     <!-- PRIORITY 1: What's running + what needs you (above the fold) -->
-    <div class="border border-primary/30 bg-surface p-4">
-        <ActiveSessions
-            sessions={activeSessionsData}
-            pausedSessions={pausedSessionsData}
-            staleSessions={staleSessionsData}
-            needsYou={data?.dashboardData?.needs_you || []}
-        />
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2 border border-primary/30 bg-surface p-4">
+            <ActiveSessions
+                sessions={interactiveSessions}
+                pausedSessions={pausedSessionsData}
+                staleSessions={staleSessionsData}
+                needsYou={data?.dashboardData?.needs_you || []}
+                title="CURRENT ACTIVITY"
+            />
+        </div>
+        <div class="border border-primary/20 bg-surface/50 p-4">
+            <ActiveSessions
+                sessions={backgroundSessions}
+                pausedSessions={[]}
+                staleSessions={[]}
+                needsYou={[]}
+                title="BACKGROUND ACTIVITY"
+                compact={true}
+            />
+        </div>
     </div>
 
     <!-- PRIORITY 2: Today's Story (narrative context recovery) -->
@@ -129,21 +143,7 @@
         />
     </div>
 
-    <!-- PRIORITY 3: Dropped threads — promoted to standalone section -->
-    {#if pathData.abandoned_work?.length > 0}
-        <div class="border border-yellow-500/30 bg-surface p-4">
-            <PathTimeline path={pathData} abandonedOnly={true} />
-        </div>
-    {/if}
-
-    <!-- PRIORITY 4: Recent activity feed (what happened, by project) -->
-    {#if pathData.activity?.length > 0}
-        <div class="border border-primary/30 bg-surface p-4">
-            <PathTimeline path={pathData} />
-        </div>
-    {/if}
-
-    <!-- PRIORITY 5: Project details (sessions + tasks) -->
+    <!-- PRIORITY 3: Project details (sessions + tasks) -->
     <div class="border border-primary/30 bg-surface p-4">
         <ProjectDashboard
             projectProjects={enrichedProjects}

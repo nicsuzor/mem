@@ -2,11 +2,20 @@
     import { projectColor, projectBgTint, projectBorderColor } from "../../data/projectUtils";
     import { toggleSelection } from "../../stores/selection";
 
-    let { sessions = [], pausedSessions = [], staleSessions = [], needsYou = [] }: {
+    let { 
+        sessions = [], 
+        pausedSessions = [], 
+        staleSessions = [], 
+        needsYou = [], 
+        title = "CURRENT ACTIVITY",
+        compact = false
+    }: {
         sessions?: any[];
         pausedSessions?: any[];
         staleSessions?: any[];
         needsYou?: any[];
+        title?: string;
+        compact?: boolean;
     } = $props();
 
     let showPaused = $state(false);
@@ -14,7 +23,13 @@
     let expandedSessions = $state<Record<string, boolean>>({});
 
     function toggleExpand(sessionId: string) {
+        if (compact) return;
         expandedSessions = { ...expandedSessions, [sessionId]: !expandedSessions[sessionId] };
+    }
+
+    function copyToClipboard(text: string) {
+        navigator.clipboard.writeText(text);
+        // Maybe add a toast here if available
     }
 
     function formatTimeAgo(isoString: string): string {
@@ -78,10 +93,10 @@
 <div class="flex flex-col gap-4 font-mono w-full">
     <div class="flex justify-between items-center border-b border-primary/30 pb-2">
         <h3 class="text-sm font-bold tracking-widest text-primary flex items-center gap-2">
-            <span class="material-symbols-outlined text-[16px]">bolt</span>
-            CURRENT ACTIVITY ({sessions.length})
+            <span class="material-symbols-outlined text-[16px]">{compact ? 'robot_2' : 'bolt'}</span>
+            {title} ({sessions.length})
         </h3>
-        {#if needsYou.length > 0}
+        {#if needsYou.length > 0 && !compact}
             <div class="flex items-center gap-2 px-3 py-1 border border-red-500 bg-red-900/20 text-red-500 font-bold text-[10px] uppercase tracking-widest animate-pulse">
                 <span class="material-symbols-outlined text-[14px]">warning</span>
                 {needsYou.length} Needs You
@@ -91,13 +106,23 @@
 
     <!-- Active Sessions (< 4h) — full cards -->
     <div class="flex flex-col gap-2">
-        {#each sessions.slice(0, 8) as session}
+        {#each (compact ? sessions.slice(0, 15) : sessions.slice(0, 8)) as session}
             {@const expanded = !!expandedSessions[session.session_id]}
             {@const extraPrompts = (session.prompts || []).slice(1)}
+            {@const shortId = (session.session_id || "").slice(-8)}
             <div class="bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors">
                 <div class="flex items-center gap-4 p-2 cursor-pointer"
                      role="button" tabindex="0" onclick={() => toggleExpand(session.session_id)} onkeydown={(e) => { if(e.key === 'Enter') toggleExpand(session.session_id); }}>
                     <span class="text-[10px] text-primary/60 min-w-[55px]">{formatTimeAgo(session.started_at)}</span>
+                    
+                    {#if !compact && session.session_id}
+                        <button class="text-[9px] font-bold bg-primary/20 text-primary/60 px-1 py-0.5 hover:bg-primary/40 transition-colors shrink-0" 
+                                onclick={(e) => { e.stopPropagation(); copyToClipboard(session.session_id); }}
+                                title="Click to copy session ID: {session.session_id}">
+                            {shortId}
+                        </button>
+                    {/if}
+
                     {#if session.project}
                         <span class="text-[10px] font-bold px-2 py-0.5"
                               style="background: {projectBgTint(session.project)}; color: {projectColor(session.project)}; border: 1px solid {projectBorderColor(session.project)};">{session.project}</span>
@@ -105,10 +130,10 @@
                     <span class="text-xs text-primary/90 flex-1 {expanded ? 'whitespace-pre-wrap break-words' : 'truncate'}" title={session.description}>
                         {session.description}
                     </span>
-                    {#if session.prompt_count != null}
+                    {#if session.prompt_count != null && !compact}
                         <span class="text-[10px] text-primary/40 shrink-0" title="User prompts">{session.prompt_count}p</span>
                     {/if}
-                    {#if session.status_badge}
+                    {#if session.status_badge && !compact}
                         {@const badge = BADGE_STYLES[session.status_badge] || BADGE_STYLES.idle}
                         <span class="text-[10px] font-bold px-1.5 py-0.5 {badge.class} shrink-0">{badge.label}</span>
                     {/if}
@@ -125,7 +150,7 @@
         {#if sessions.length === 0}
             <div class="flex items-center gap-3 text-xs text-primary/50 py-2">
                 <span class="material-symbols-outlined text-[16px] text-primary/30">nights_stay</span>
-                All quiet — no active sessions right now.
+                {compact ? 'No background activity.' : 'All quiet — no active sessions right now.'}
             </div>
         {/if}
     </div>
