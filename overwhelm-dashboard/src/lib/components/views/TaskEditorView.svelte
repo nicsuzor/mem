@@ -10,24 +10,29 @@
         'created', 'isLeaf', 'parent', 'fullTitle', '_safe_parent', 'filter_dimmed', 'path', 'refile'
     ]);
 
+    // Canonical status lifecycle (see aops-core/TAXONOMY.md):
+    //   inbox → ready → queued → in_progress → merge_ready → done
+    // `ready` is auto-computed from decomposition + dep state.
+    // `queued` is the human gate that makes a task dispatchable to agents.
     const STATE_DETAILS: Record<string, { label: string; icon: string; summary: string; tone: 'neutral' | 'ready' | 'active' | 'warning' | 'danger' | 'success' }> = {
-        inbox: { label: 'Inbox', icon: 'inbox', summary: 'Captured but not yet queued.', tone: 'neutral' },
-        ready: { label: 'Ready', icon: 'task_alt', summary: 'Ready to be picked up.', tone: 'ready' },
-        active: { label: 'Active', icon: 'play_circle', summary: 'Actively being worked.', tone: 'active' },
-        in_progress: { label: 'In Progress', icon: 'play_circle', summary: 'Actively being worked.', tone: 'active' },
-        waiting: { label: 'Waiting', icon: 'schedule', summary: 'Blocked on time or input.', tone: 'warning' },
-        blocked: { label: 'Blocked', icon: 'block', summary: 'Cannot move without upstream change.', tone: 'danger' },
-        decomposing: { label: 'Decomposing', icon: 'account_tree', summary: 'Breaking down into smaller tasks.', tone: 'active' },
+        inbox: { label: 'Inbox', icon: 'inbox', summary: 'Captured but not yet triaged.', tone: 'neutral' },
+        ready: { label: 'Ready', icon: 'task_alt', summary: 'Decomposed and unblocked (auto).', tone: 'ready' },
+        queued: { label: 'Queued', icon: 'playlist_add_check', summary: 'Available for agent dispatch.', tone: 'ready' },
+        in_progress: { label: 'In Progress', icon: 'play_circle', summary: 'Claimed and actively being worked.', tone: 'active' },
+        merge_ready: { label: 'Merge Ready', icon: 'commit', summary: 'Work complete, awaiting merge.', tone: 'active' },
+        review: { label: 'Review', icon: 'rate_review', summary: 'Awaiting human review.', tone: 'warning' },
+        blocked: { label: 'Blocked', icon: 'block', summary: 'Waiting on external dependency.', tone: 'danger' },
+        paused: { label: 'Paused', icon: 'pause_circle', summary: 'Deferred mid-flight; intent to resume.', tone: 'neutral' },
+        someday: { label: 'Someday', icon: 'bookmark', summary: 'Parked idea — may never be worked.', tone: 'neutral' },
         done: { label: 'Done', icon: 'check_circle', summary: 'Completed.', tone: 'success' },
-        completed: { label: 'Completed', icon: 'check_circle', summary: 'Completed.', tone: 'success' },
-        archived: { label: 'Archived', icon: 'inventory_2', summary: 'Removed from active rotation.', tone: 'neutral' },
-        cancelled: { label: 'Cancelled', icon: 'cancel', summary: 'Explicitly stopped.', tone: 'danger' },
+        cancelled: { label: 'Cancelled', icon: 'cancel', summary: 'Will not be done.', tone: 'danger' },
     };
 
+    // Human-initiated transitions. `ready` is auto-computed, so it is not a user action.
     const WORKFLOW_ACTIONS = [
         { status: 'inbox', label: 'Inbox', icon: 'inbox' },
-        { status: 'ready', label: 'Enqueue', icon: 'playlist_add_check' },
-        { status: 'decomposing', label: 'Decomp', icon: 'account_tree' },
+        { status: 'queued', label: 'Enqueue', icon: 'playlist_add_check' },
+        { status: 'paused', label: 'Pause', icon: 'pause_circle' },
     ] as const;
 
     const TERMINAL_ACTIONS = [

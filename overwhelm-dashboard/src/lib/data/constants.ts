@@ -40,46 +40,41 @@ export const TYPE_SHAPE: Record<string, string> = {
     person: "pill",
 };
 
+// Fills for the 11 canonical statuses (aops-core/TAXONOMY.md).
+// Lifecycle: inbox → ready → queued → in_progress → merge_ready → done,
+// with branches: review, blocked, paused, someday, cancelled.
 export const STATUS_FILLS: Record<string, string> = {
-    active: "#2C4A88",
+    inbox:       "#1E4A2E",
+    ready:       "#2D5A3D",
+    queued:      "#2D5A3D",
     in_progress: "#2C4A88",
-    review: "#3A5A9E",
-    waiting: "#1E3A6E",
-    decomposing: "#1E3A6E",
-    blocked: "#6B3A3A",
-    ready: "#2D5A3D",
-    todo: "#2D5A3D",
-    inbox: "#1E4A2E",
-    dormant: "#2D2D35",
-    done: "#1E1E24",
-    completed: "#1E1E24",
-    cancelled: "#18181C",
-    deferred: "#2D2D35",
-    paused: "#4b5563",
-    archived: "#323846",
+    merge_ready: "#3A4A7E",
+    review:      "#3A5A9E",
+    blocked:     "#6B3A3A",
+    paused:      "#4b5563",
+    someday:     "#2D2D35",
+    done:        "#1E1E24",
+    cancelled:   "#18181C",
 };
 
 export const STATUS_TEXT: Record<string, string> = {
-    active: "#edf3ff",
+    inbox:       "#dbf1e3",
+    ready:       "#e6f5eb",
+    queued:      "#e6f5eb",
     in_progress: "#edf3ff",
-    review: "#edf3ff",
-    waiting: "#e6efff",
-    decomposing: "#e6efff",
-    blocked: "#ffe4e8",
-    ready: "#e6f5eb",
-    todo: "#e6f5eb",
-    inbox: "#dbf1e3",
-    dormant: "#d6dbe3",
-    done: "#d7dde7",
-    completed: "#d7dde7",
-    cancelled: "#c5ccd6",
-    deferred: "#d2d8e1",
-    paused: "#edf2f7",
-    archived: "#d2d8e1",
+    merge_ready: "#e6ebff",
+    review:      "#edf3ff",
+    blocked:     "#ffe4e8",
+    paused:      "#edf2f7",
+    someday:     "#d6dbe3",
+    done:        "#d7dde7",
+    cancelled:   "#c5ccd6",
 };
 
+// Coarse buckets surfaced by the mem graph's `status_group` (active/blocked/completed).
+// Note: `active` here is the coarse group label (open work), not the retired `active` status.
 export const STATUS_GROUP_SWATCHES = {
-    active: `linear-gradient(135deg, ${STATUS_FILLS.ready} 0%, ${STATUS_FILLS.active} 100%)`,
+    active: `linear-gradient(135deg, ${STATUS_FILLS.ready} 0%, ${STATUS_FILLS.in_progress} 100%)`,
     blocked: STATUS_FILLS.blocked,
     completed: STATUS_FILLS.done,
 } as const;
