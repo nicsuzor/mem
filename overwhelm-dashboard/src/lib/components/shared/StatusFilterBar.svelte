@@ -1,25 +1,19 @@
 <script lang="ts">
     import { filters } from '../../stores/filters';
     import { graphData } from '../../stores/graph';
+    import { STATUS_FILLS, STATUS_LABELS, STATUS_ORDER } from '../../data/constants';
 
-    // Chips follow the canonical lifecycle in aops-core/TAXONOMY.md:
-    //   inbox → ready → queued → in_progress → merge_ready → review/done
-    // `ready` is auto-computed (decomposed + deps resolved); `queued` is the
-    // human gate that promotes tasks for agent dispatch. They are distinct.
+    // Chips follow the canonical lifecycle in aops-core/TAXONOMY.md and consume the
+    // canonical palette from constants.ts — so chip color == card fill color for the
+    // same status ("green in the filter" = "green on the card").
     const STATUS_GROUPS = [
-        { label: 'ALL',         statuses: [] as string[],        color: '#94a3b8' },
-        { label: 'INBOX',       statuses: ['inbox'],             color: '#38bdf8' },  // sky — captured, untriaged
-        { label: 'READY',       statuses: ['ready'],             color: '#86efac' },  // light lime — decomposed + unblocked (auto)
-        { label: 'QUEUED',      statuses: ['queued'],            color: '#4ade80' },  // lime — human-gated, dispatchable
-        { label: 'IN PROGRESS', statuses: ['in_progress'],       color: '#a78bfa' },  // violet — claimed, in flight
-        { label: 'MERGE',       statuses: ['merge_ready'],       color: '#fbbf24' },  // amber — awaiting merge
-        { label: 'REVIEW',      statuses: ['review'],            color: '#fb923c' },  // orange — needs attention
-        { label: 'BLOCKED',     statuses: ['blocked'],           color: '#f87171' },  // red — external blocker
-        { label: 'PAUSED',      statuses: ['paused'],            color: '#94a3b8' },  // slate — in-flight, deferred
-        { label: 'SOMEDAY',     statuses: ['someday'],           color: '#64748b' },  // dark slate — parked idea
-        { label: 'DONE',        statuses: ['done'],              color: '#6ee7b7' },  // mint — success
-        { label: 'CANCELLED',   statuses: ['cancelled'],         color: '#475569' },  // grey — dropped
-    ] as const;
+        { label: 'ALL', statuses: [] as string[], color: '#94a3b8' },
+        ...STATUS_ORDER.map(s => ({
+            label: STATUS_LABELS[s],
+            statuses: [s],
+            color: STATUS_FILLS[s],
+        })),
+    ];
 
     function toggleGroup(group: typeof STATUS_GROUPS[number]) {
         if (group.statuses.length === 0) {

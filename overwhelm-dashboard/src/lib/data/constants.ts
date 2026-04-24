@@ -40,35 +40,61 @@ export const TYPE_SHAPE: Record<string, string> = {
     person: "pill",
 };
 
-// Fills for the 11 canonical statuses (aops-core/TAXONOMY.md).
+// Canonical status palette — single source of truth.
+// Used as fills on task cards AND as dot/chip colors in StatusFilterBar.
+// "Green in the filter" = "green on the task card" by construction.
 // Lifecycle: inbox → ready → queued → in_progress → merge_ready → done,
 // with branches: review, blocked, paused, someday, cancelled.
+// Labels chosen for distinguishable hue per lifecycle stage.
 export const STATUS_FILLS: Record<string, string> = {
-    inbox:       "#1E4A2E",
-    ready:       "#2D5A3D",
-    queued:      "#366a47",
-    in_progress: "#2C4A88",
-    merge_ready: "#3A4A7E",
-    review:      "#3A5A9E",
-    blocked:     "#6B3A3A",
-    paused:      "#4b5563",
-    someday:     "#2D2D35",
-    done:        "#1E1E24",
-    cancelled:   "#18181C",
+    inbox:       "#38bdf8",  // sky — captured, untriaged
+    ready:       "#86efac",  // light lime — decomposed + unblocked (auto)
+    queued:      "#4ade80",  // lime — human-gated, dispatchable
+    in_progress: "#a78bfa",  // violet — claimed, in flight
+    merge_ready: "#fbbf24",  // amber — awaiting merge
+    review:      "#fb923c",  // orange — needs attention
+    blocked:     "#f87171",  // red — external blocker
+    paused:      "#94a3b8",  // slate — in-flight, deferred
+    someday:     "#64748b",  // dark slate — parked idea
+    done:        "#6ee7b7",  // mint — success
+    cancelled:   "#475569",  // grey — dropped
 };
 
+// Readable text color paired with each STATUS_FILLS value.
+// Bright fills (sky, lime, amber, mint) get dark text; dim fills get light text.
 export const STATUS_TEXT: Record<string, string> = {
-    inbox:       "#dbf1e3",
-    ready:       "#e6f5eb",
-    queued:      "#e6f5eb",
-    in_progress: "#edf3ff",
-    merge_ready: "#e6ebff",
-    review:      "#edf3ff",
-    blocked:     "#ffe4e8",
-    paused:      "#edf2f7",
-    someday:     "#d6dbe3",
-    done:        "#d7dde7",
-    cancelled:   "#c5ccd6",
+    inbox:       "#0a1929",
+    ready:       "#0a2015",
+    queued:      "#0a2015",
+    in_progress: "#14102a",
+    merge_ready: "#2a1e05",
+    review:      "#2a1608",
+    blocked:     "#2a0a0a",
+    paused:      "#141a24",
+    someday:     "#eef2f8",
+    done:        "#0a2015",
+    cancelled:   "#eef2f8",
+};
+
+// Canonical display order + labels for status (used by filter bar and legend).
+// Keep in sync with STATUS_FILLS keys.
+export const STATUS_ORDER = [
+    'inbox', 'ready', 'queued', 'in_progress', 'merge_ready',
+    'review', 'blocked', 'paused', 'someday', 'done', 'cancelled',
+] as const;
+
+export const STATUS_LABELS: Record<string, string> = {
+    inbox:       'INBOX',
+    ready:       'READY',
+    queued:      'QUEUED',
+    in_progress: 'IN PROGRESS',
+    merge_ready: 'MERGE',
+    review:      'REVIEW',
+    blocked:     'BLOCKED',
+    paused:      'PAUSED',
+    someday:     'SOMEDAY',
+    done:        'DONE',
+    cancelled:   'CANCELLED',
 };
 
 // Coarse buckets surfaced by the mem graph's `status_group` (active/blocked/completed).
