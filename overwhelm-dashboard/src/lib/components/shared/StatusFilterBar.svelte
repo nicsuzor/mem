@@ -2,16 +2,23 @@
     import { filters } from '../../stores/filters';
     import { graphData } from '../../stores/graph';
 
+    // Chips follow the canonical lifecycle in aops-core/TAXONOMY.md:
+    //   inbox → ready → queued → in_progress → merge_ready → review/done
+    // `ready` is auto-computed (decomposed + deps resolved); `queued` is the
+    // human gate that promotes tasks for agent dispatch. They are distinct.
     const STATUS_GROUPS = [
-        { label: 'ALL',      statuses: [] as string[],                            color: '#94a3b8' },
-        { label: 'INBOX',    statuses: ['inbox'],                                  color: '#38bdf8' },  // sky blue  — incoming, unread
-        { label: 'READY',    statuses: ['ready', 'todo'],                          color: '#4ade80' },  // lime green — queued, good to go
-        { label: 'IN PROG',  statuses: ['in_progress', 'active'],                  color: '#a78bfa' },  // violet    — active work
-        { label: 'REVIEW',   statuses: ['review'],                                 color: '#fb923c' },  // orange    — needs attention
-        { label: 'WAITING',  statuses: ['waiting', 'decomposing', 'dormant'],      color: '#94a3b8' },  // slate     — paused/idle
-        { label: 'BLOCKED',  statuses: ['blocked'],                                color: '#f87171' },  // red       — stop
-        { label: 'DONE',     statuses: ['done', 'completed'],                      color: '#6ee7b7' },  // mint      — success
-        { label: 'DEFERRED', statuses: ['deferred', 'paused', 'cancelled', 'historical', 'seed', 'early-scaffold'], color: '#64748b' },  // dark slate
+        { label: 'ALL',         statuses: [] as string[],        color: '#94a3b8' },
+        { label: 'INBOX',       statuses: ['inbox'],             color: '#38bdf8' },  // sky — captured, untriaged
+        { label: 'READY',       statuses: ['ready'],             color: '#86efac' },  // light lime — decomposed + unblocked (auto)
+        { label: 'QUEUED',      statuses: ['queued'],            color: '#4ade80' },  // lime — human-gated, dispatchable
+        { label: 'IN PROGRESS', statuses: ['in_progress'],       color: '#a78bfa' },  // violet — claimed, in flight
+        { label: 'MERGE',       statuses: ['merge_ready'],       color: '#fbbf24' },  // amber — awaiting merge
+        { label: 'REVIEW',      statuses: ['review'],            color: '#fb923c' },  // orange — needs attention
+        { label: 'BLOCKED',     statuses: ['blocked'],           color: '#f87171' },  // red — external blocker
+        { label: 'PAUSED',      statuses: ['paused'],            color: '#94a3b8' },  // slate — in-flight, deferred
+        { label: 'SOMEDAY',     statuses: ['someday'],           color: '#64748b' },  // dark slate — parked idea
+        { label: 'DONE',        statuses: ['done'],              color: '#6ee7b7' },  // mint — success
+        { label: 'CANCELLED',   statuses: ['cancelled'],         color: '#475569' },  // grey — dropped
     ] as const;
 
     function toggleGroup(group: typeof STATUS_GROUPS[number]) {

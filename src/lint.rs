@@ -1572,15 +1572,15 @@ mod tests {
 
     #[test]
     fn detects_status_alias() {
-        let diags = lint_str("---\ntitle: Test\nstatus: inbox\ntype: note\n---\n\nBody.\n");
+        let diags = lint_str("---\ntitle: Test\nstatus: active\ntype: note\n---\n\nBody.\n");
         assert!(diags.iter().any(|d| d.rule == "fm-status-alias"));
     }
 
     #[test]
     fn fixes_status_alias() {
-        let fixed = fix_str("---\ntitle: Test\nstatus: inbox\ntype: note\n---\n\nBody.\n");
-        assert!(fixed.contains("status: active"), "Got: {}", fixed);
-        assert!(!fixed.contains("inbox"));
+        let fixed = fix_str("---\ntitle: Test\nstatus: active\ntype: note\n---\n\nBody.\n");
+        assert!(fixed.contains("status: queued"), "Got: {}", fixed);
+        assert!(!fixed.contains("status: active"));
     }
 
     #[test]
