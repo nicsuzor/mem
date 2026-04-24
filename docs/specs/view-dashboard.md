@@ -6,7 +6,7 @@ tier: ux
 parent: planning-web
 tags: [spec, planning-web, view, dashboard, sessions, adhd, context-recovery]
 created: 2026-01-21
-modified: 2026-03-24
+modified: 2026-04-24
 ---
 
 # View: Dashboard
@@ -89,7 +89,9 @@ The dashboard exists because Nic's brain can't hold all this state. He needs an 
 
 ### 1. Current Activity
 
-Agent count and active session indicator. "N agents running, M need your attention."
+**Interactive sessions only.** Shows what the user is explicitly driving. Agent count and active session indicator. "N agents running, M need your attention."
+
+**Background Activity (Right-hand container):** Polecat workers, autonomous task completions, and PR filings are rendered in a separate container to reduce noise in the main feed.
 
 ### 2. Where You Left Off + Focus Synthesis
 
@@ -103,7 +105,7 @@ Agent count and active session indicator. "N agents running, M need your attenti
 
 **Session cards** for context recovery:
 
-- **Active sessions** (<4h): Rich cards with project name, timestamp, initial prompt (what you asked), progress bar, current step, next step, status badge (Running / Needs You)
+- **Active sessions** (<4h): Rich cards with project name, timestamp, initial prompt (what you asked), progress bar, current step, next step, status badge (Running / Needs You). **Short-form hash (last 8 chars) of session-id must be visible and copyable.**
 - **Paused sessions** (4-24h): Collapsed cards with outcome, accomplishment summary, reentry point. Subdued styling.
 - **Stale sessions** (>24h): Archive prompt with count. "N stale sessions — [Archive All] [Review] [Dismiss]"
 
@@ -113,47 +115,29 @@ Agent count and active session indicator. "N agents running, M need your attenti
 - Status cards: accomplishments, alignment, blockers
 - Session insights: skill compliance, corrections, context gaps
 - Staleness indicator (STALE badge if >60 minutes)
-- Graceful fallback when missing: message + regeneration hint
+- Graceful fallback when missing: message + regeneration hint. **When synthesis is stale or low-quality, the dashboard must surface the 'why' (e.g., last cron run, exit code).**
 
 **Critical rule:** Sessions must show the user's initial prompt, not agent-generated descriptions. If a session can't answer "what was I doing?", it's filtered out.
 
-### 3. Your Path (Dropped Threads)
+### 3. Project Grid
 
-Reconstructed user path across sessions:
+Responsive grid of project cards (CSS grid, min 350px per card).
 
-- **Dropped threads first** (most actionable for ADHD context recovery): tasks created/claimed but not completed, grouped by project with coloured borders
-- **Timeline threads:** Horizontal-scroll cards per project with initial goal, git branch, and coloured-dot event timeline (prompts, task creates, completions, updates)
+**Project Definition:** A project is a **repository**. Generic containers like "workspace", "polecat", or "audre" are NOT projects and must never be extracted as such.
 
-### 4. Active Intentions
-
-**Replaces:** former "Spotlight Epic" section (which guessed the most active epic).
-
-**Data source:** `intentions.yaml` (see academicOps `specs/intentions.md`).
-
-Shows the user's **declared intentions** — what they've explicitly said they intend to accomplish. Each intention card shows:
-
-- Intention statement and linked PKB node (goal/project/epic)
-- Progress bar based on downstream task completion
-- Done/in-progress/blocked card grid for the intention's subgraph
-- Clickable — drills into the intention's task tree
-
-When no intentions are active, falls back to a prompt: "What do you intend to work on?" with quick-declare affordance. Does NOT guess or auto-select.
-
-### 5. Project Grid
-
-Responsive grid of project cards (CSS grid, min 350px per card):
+**Sorting:** Sorted by **most recent session timestamp** across the entire repo (not just today's accomplishments).
 
 | Section   | Content                                                   |
 | --------- | --------------------------------------------------------- |
 | Header    | Project name, colour-coded border                         |
 | Epics     | Active epic titles + progress bars (max 3)                |
 | Completed | Recently completed tasks with time_ago (max 3 + "X more") |
-| Up Next   | Top 3 priority tasks with priority AND status badges      |
-| Recent    | Accomplishments from daily notes (max 3)                  |
+| Up Next   | Top 3 priority tasks with priority AND status badges. **Short-form hashes (last 8 chars) of task-id must be visible and copyable.** |
+| Recent    | Accomplishments from repo history (max 3)                 |
 
-Sorted by activity score. Empty projects hidden. Sub-projects roll up.
+Empty projects hidden. Sub-projects roll up.
 
-### 6. Quick Capture
+### 4. Quick Capture
 
 Text input + optional tags + submit. Creates a task in PKB inbox. Minimal friction: no project/priority required, just a title.
 
@@ -212,7 +196,6 @@ Sessions >24h without activity are **not displayed in the main list**. Instead:
 
 ### ADHD Accommodation
 
-- **Dropped threads first** — most actionable information for context recovery
 - **Scannable, not studyable** — one-line items, colored indicators, no paragraph-level reading required
 - **Reactive design** — reconstructs from existing data; no pre-planning required from user
 - **Directive framing** — "YOUR PATH" not "Session History"; "NEEDS YOU" not "Status: waiting"
@@ -254,34 +237,36 @@ It does NOT try to: recommend ONE thing to do, hide options, force single-focus,
 - [ ] Recency triage applied: Active (<4h), Paused (4-24h), Stale (>24h)
 - [ ] Stale sessions trigger auto-archive prompt, not flat list display
 - [ ] User can answer "what was I doing?" for every displayed session
+- [ ] **Short-form hashes (last 8 chars) of session-id and task-id are visible and copyable.**
 
 ### Session Triage
 
-- [ ] Active sessions (last 4h) shown with full conversation context
-- [ ] Paused sessions (4-24h) shown collapsed, expandable
-- [ ] Stale sessions (>24h) show archive prompt with count
-- [ ] Archive action moves session to archive, removes from display
+- [ ] Active sessions (last 4h) shown with full conversation context. **Interactive sessions only.**
+- [ ] Paused sessions (4-24h) shown collapsed, expandable.
+- [ ] Stale sessions (>24h) show archive prompt with count.
+- [ ] Archive action moves session to archive, removes from display.
+- [ ] **Background Activity (polecat, autonomous, PR filings) moved to separate right-hand container.**
 
 ### Path Reconstruction
 
-- [ ] Dropped threads shown first, grouped by project
-- [ ] Timeline events scannable (one line each with colored dots)
-- [ ] Path section visible even when synthesis.json is missing
+- [ ] Path section removed as it duplicated the daily narrative.
 
 ### Synthesis
 
-- [ ] Narrative panel shows 3-5 bullet summary of today's story
-- [ ] Staleness clearly indicated when >60 minutes
-- [ ] Graceful fallback when synthesis.json missing (message + regeneration hint)
+- [ ] Narrative panel shows 3-5 bullet summary of today's story.
+- [ ] Staleness clearly indicated when >60 minutes.
+- [ ] Graceful fallback when synthesis.json missing (message + regeneration hint).
+- [ ] **Dashboard surfaces *why* synthesis is stale/low-quality (e.g., cron exit code).**
 
 ### Project Boxes
 
-- [ ] Projects sorted by activity (active agents first)
-- [ ] Each project shows active work, next priorities, and recent completions
-- [ ] UP NEXT shows task status, not just priority
-- [ ] Empty projects hidden
+- [ ] Projects sorted by activity (**most recent session timestamp**).
+- [ ] **Projects limited to real repositories (stripping pseudo-projects).**
+- [ ] Each project shows active work, next priorities, and recent completions.
+- [ ] UP NEXT shows task status, not just priority.
+- [ ] Empty projects hidden.
 
 ### Quick Capture
 
-- [ ] Create task from dashboard UI
-- [ ] Idea to captured in under 5 seconds
+- [ ] Create task from dashboard UI.
+- [ ] Idea to captured in under 5 seconds.
