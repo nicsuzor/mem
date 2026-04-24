@@ -18,6 +18,11 @@
 
     let containerEl: HTMLDivElement;
     let cy: cytoscape.Core | null = null;
+    // Persistent force simulation — kept running after buildGraph so that
+    // dragging a node (pinning it via fx/fy) lets the surrounding network
+    // react organically. Stopped on destroy / structural rebuild.
+    let sim: any = null;
+    let simNodes: Array<{ id: string; x: number; y: number; fx: number | null; fy: number | null; anchorX: number; anchorY: number; radius: number }> = [];
 
     export let running = false;
     // Context stations (nodes on no route) are noise for the "routes to
@@ -259,31 +264,31 @@
 
     // ─── Target-anchored layout ─────────────────────────────────────────────
 
-    // Brief d3-force relaxation pulls connected nodes closer while respecting
-    // the bottom-anchored terminal stratification. Terminals are pinned; route
-    // stations get a strong y-anchor (their depth band) and flex in x; backbone
-    // (epic/project/goal) keep their y too. Link force creates the cluster
-    // structure the user asked for — "a little structure so edges pull nodes
-    // closer together".
-    function relaxPositions(
+    // Build a persistent d3-force simulation that pulls connected nodes
+    // together. Terminals and backbone nodes are pinned at their preset (x,y);
+    // route stations get a depth-band y anchor but flex in x. The simulation
+    // stays alive so cytoscape drag events can reheat it and the rest of the
+    // network reacts organically while the user drags a node.
+    type FNode = {
+        id: string;
+        x: number;
+        y: number;
+        fx: number | null;
+        fy: number | null;
+        anchorX: number;
+        anchorY: number;
+        radius: number;
+    };
+
+    function startSimulation(
         metroNodes: GraphNode[],
         edges: GraphEdge[],
         positions: Map<string, { x: number; y: number }>,
         routeData: RouteData
     ): void {
-        type FNode = {
-            id: string;
-            x: number;
-            y: number;
-            fx: number | null;
-            fy: number | null;
-            anchorX: number;
-            anchorY: number;
-            radius: number;
-        };
-        const nodeById = new Map(metroNodes.map(n => [n.id, n]));
+        if (sim) { sim.stop(); sim = null; }
         const isBackbone = (n: GraphNode) => BACKBONE_TYPES.has((n.type || '').toLowerCase());
-        const fnodes: FNode[] = metroNodes.map(n => {
+        simNodes = metroNodes.map(n => {
             const p = positions.get(n.id);
             if (!p) return null as any;
             const fixed = routeData.destIndex.has(n.id);
@@ -292,15 +297,16 @@
                 id: n.id,
                 x: p.x,
                 y: p.y,
+                // Terminals pin in both dims. Backbones pin their y only.
                 fx: fixed ? p.x : null,
-                fy: fixed ? p.y : null,
+                fy: fixed ? p.y : (backbone ? p.y : null),
                 anchorX: p.x,
                 anchorY: p.y,
                 radius: fixed ? 22 : backbone ? 14 : 10,
-            };
-        }).filter(Boolean);
+            } as FNode;
+        }).filter(Boolean) as FNode[];
 
-        const idSet = new Set(fnodes.map(f => f.id));
+        const idSet = new Set(simNodes.map(f => f.id));
         const flinks = edges
             .map(e => {
                 const src = typeof e.source === 'object' ? e.source.id : e.source;
@@ -309,32 +315,44 @@
             })
             .filter(l => idSet.has(l.source) && idSet.has(l.target));
 
-        const sim = forceSimulation<FNode>(fnodes)
+        sim = forceSimulation<FNode>(simNodes)
             .force('link', forceLink<FNode, any>(flinks)
                 .id(d => d.id)
                 .distance(l => {
-                    // parent/depends_on are "spine" edges — short; refs are loose.
-                    if (l.type === 'parent' || l.type === 'depends_on') return 36;
-                    if (l.type === 'soft_depends_on') return 50;
-                    return 80;
+                    if (l.type === 'parent' || l.type === 'depends_on') return 144;
+                    if (l.type === 'soft_depends_on') return 200;
+                    return 320;
                 })
                 .strength(l => (l.type === 'parent' || l.type === 'depends_on') ? 0.6 : 0.2))
-            .force('charge', forceManyBody<FNode>().strength(-80).distanceMax(220))
+            .force('charge', forceManyBody<FNode>().strength(-80).distanceMax(260))
             .force('collide', forceCollide<FNode>().radius(d => d.radius).strength(0.9))
-            // Keep x wandering gentle; keep y near its depth band so the
-            // metro stratification (terminals bottom, deeper stations up) holds.
             .force('x', forceX<FNode>(d => d.anchorX).strength(0.05))
             .force('y', forceY<FNode>(d => d.anchorY).strength(0.35))
-            .stop();
+            .alphaDecay(0.02)
+            .on('tick', () => {
+                if (!cy) return;
+                cy.batch(() => {
+                    for (const f of simNodes) {
+                        const n = cy!.getElementById(f.id);
+                        if (!n.length) continue;
+                        // While cy user-grabs a node, skip — cytoscape owns the
+                        // position until release; we mirror its position to the
+                        // sim (handled in drag handler).
+                        if (n.grabbed()) continue;
+                        n.position({ x: f.x, y: f.y });
+                    }
+                });
+            });
+    }
 
-        // Short, warm run — enough to untangle without drifting from preset.
-        sim.alpha(0.9).alphaDecay(0.05);
-        for (let i = 0; i < 150; i++) sim.tick();
-
-        for (const fn of fnodes) {
-            if (!nodeById.has(fn.id)) continue;
-            positions.set(fn.id, { x: fn.x, y: fn.y });
-        }
+    // Seed starting positions so the sim doesn't have to untangle from
+    // a pile. Short warm-up before cy ever renders.
+    function warmSimulation(iterations = 120): void {
+        if (!sim) return;
+        sim.alpha(0.9);
+        for (let i = 0; i < iterations; i++) sim.tick();
+        // After warm-up, let sim continue breathing but at low energy.
+        sim.alpha(0.1);
     }
 
     function computePositions(
@@ -423,12 +441,6 @@
                 positions.set(n.id, { x, y });
             });
         }
-
-        // Force relaxation: pull connected nodes closer together. Terminals
-        // stay pinned at their preset (x, y). Backbone nodes keep their y
-        // but can drift in x. Route stations and context can move in x and
-        // drift a little in y from their depth-band anchor.
-        relaxPositions(metroNodes, edges, positions, routeData);
 
         // Collision spread: bucket by grid cell and offset siblings along x.
         // Tie-break by stable id hash — sorting by id string meant re-renders
@@ -666,6 +678,7 @@
         // (priority/status filters) is still applied via `visibilityState`.
         const sourceGraph = $preparedGraphData ?? $graphData;
         if (!containerEl || !sourceGraph) return;
+        if (sim) { sim.stop(); sim = null; simNodes = []; }
         if (cy) { cy.destroy(); cy = null; }
 
         const width = containerEl.clientWidth || 1200;
@@ -933,7 +946,63 @@
         setTimeout(() => { if (cy) cy.fit(undefined, 60); }, 0);
         (window as any).__cy = cy;
 
+        // Kick off the persistent force simulation so edges pull nodes together
+        // live, and dragging a terminal tows its whole network.
+        startSimulation(metroNodes, metroEdges, positions, routeData);
+        warmSimulation(160);
+        // Push warmed positions into cytoscape before the first paint settles
+        if (cy) {
+            cy.batch(() => {
+                for (const f of simNodes) {
+                    const n = cy!.getElementById(f.id);
+                    if (n.length) n.position({ x: f.x, y: f.y });
+                }
+            });
+            setTimeout(() => cy?.fit(undefined, 60), 0);
+        }
+
         // ── Interactions ──
+
+        // Drag: pin the dragged node in the simulation so the rest of the
+        // network is pulled along. Reheat the sim to keep motion alive.
+        const simById = new Map<string, FNode>(simNodes.map(f => [f.id, f]));
+
+        cy.on('grab', 'node', (evt) => {
+            const id = evt.target.id();
+            const f = simById.get(id);
+            if (!f) return;
+            const pos = evt.target.position();
+            f.fx = pos.x;
+            f.fy = pos.y;
+            if (sim) sim.alphaTarget(0.3).restart();
+        });
+
+        cy.on('drag', 'node', (evt) => {
+            const id = evt.target.id();
+            const f = simById.get(id);
+            if (!f) return;
+            const pos = evt.target.position();
+            f.fx = pos.x;
+            f.fy = pos.y;
+        });
+
+        cy.on('free', 'node', (evt) => {
+            const id = evt.target.id();
+            const f = simById.get(id);
+            if (!f) return;
+            // Terminals and backbones keep their pin. Everything else releases.
+            const isDest = evt.target.data('isDestination') === 1;
+            const isBackbone = evt.target.data('isBackbone') === 1;
+            if (!isDest && !isBackbone) {
+                f.fx = null;
+                f.fy = null;
+            } else {
+                // Update anchor so simulation's x/y forces respect the new home
+                f.anchorX = f.fx ?? f.x;
+                f.anchorY = f.fy ?? f.y;
+            }
+            if (sim) sim.alphaTarget(0);
+        });
 
         // Keep a reference to the currently-highlighted destination (toggle)
         let activeHighlightDestId: string | null = null;
@@ -1138,6 +1207,7 @@
     }
 
     onDestroy(() => {
+        if (sim) { sim.stop(); sim = null; simNodes = []; }
         if (cy) cy.destroy();
     });
 </script>
