@@ -565,15 +565,19 @@
         rootId: string,
         parentDown: Map<string, Set<string>>,
         nodeById: Map<string, GraphNode>,
-        claimed: Set<string>,
+        forbidden: Set<string>, // read-only: nodes to never enter
         depthCap: number = 8,
     ): string[] {
         const stops: string[] = [];
+        const visited = new Set<string>();
         function visit(id: string, depth: number): void {
             if (depth > depthCap) return;
+            if (visited.has(id)) return;
+            visited.add(id);
             const kids = Array.from(parentDown.get(id) ?? new Set<string>())
                 .filter(c => {
-                    if (claimed.has(c)) return false;
+                    if (forbidden.has(c)) return false;
+                    if (visited.has(c)) return false;
                     const cn = nodeById.get(c);
                     return !!cn && isIncomplete(cn);
                 })
@@ -587,7 +591,6 @@
                     return (na.label || '').localeCompare(nb.label || '');
                 });
             for (const k of kids) {
-                claimed.add(k);
                 visit(k, depth + 1);
                 stops.push(k);
             }
@@ -602,20 +605,68 @@
         nodes: GraphNode[],
         edges: GraphEdge[],
     ): { lines: EpicLine[]; membership: Map<string, string> } {
-        const { parentDown } = buildDirectedAdjacency(nodes, edges);
+        const { parentDown, parentUp } = buildDirectedAdjacency(nodes, edges);
         const nodeById = new Map(nodes.map(n => [n.id, n]));
+        const allTargetIds = new Set(destinations.map(d => d.id));
         const claimed = new Set<string>();
         const lines: EpicLine[] = [];
         const membership = new Map<string, string>();
+
+        // Bucket: targets-with-children (own epic) vs leaf targets (borrow).
+        const withKids: GraphNode[] = [];
+        const leaves: GraphNode[] = [];
         for (const t of destinations) {
-            const stops = postOrderEpicLine(t.id, parentDown, nodeById, claimed);
-            if (stops.length > 1) {
-                lines.push({ terminalId: t.id, stops });
-                for (const s of stops) {
-                    if (s !== t.id) membership.set(s, t.id);
+            const ownKids = Array.from(parentDown.get(t.id) ?? new Set<string>())
+                .filter(c => {
+                    const cn = nodeById.get(c);
+                    return !!cn && isIncomplete(cn);
+                });
+            (ownKids.length > 0 ? withKids : leaves).push(t);
+        }
+
+        const recordLine = (terminalId: string, stops: string[]): void => {
+            if (stops.length <= 1) return;
+            lines.push({ terminalId, stops });
+            for (const s of stops) {
+                if (s !== terminalId) {
+                    membership.set(s, terminalId);
+                    claimed.add(s);
                 }
             }
+        };
+
+        // Pass 1: targets that have children own their subtree first. Other
+        // terminals are excluded so a sibling-target leaf doesn't poach.
+        for (const t of withKids) {
+            const forbidden = new Set(claimed);
+            for (const otherId of allTargetIds) if (otherId !== t.id) forbidden.add(otherId);
+            const stops = postOrderEpicLine(t.id, parentDown, nodeById, forbidden);
+            recordLine(t.id, stops);
         }
+
+        // Pass 2: leaf targets borrow their containing epic's remaining
+        // descendants. All target ids are forbidden — the line ends at the
+        // terminal, not through another target. Nodes already claimed by a
+        // with-kids line ARE forbidden (that subtree has a dedicated line).
+        // But nodes that two leaf targets both see as siblings are NOT
+        // forbidden: both lines include them; the node's position is pinned
+        // to whichever line records it first.
+        for (const t of leaves) {
+            const parent = parentUp.get(t.id);
+            if (!parent || !nodeById.has(parent)) continue;
+            const forbidden = new Set(claimed);
+            for (const otherId of allTargetIds) forbidden.add(otherId);
+            const subtree = postOrderEpicLine(parent, parentDown, nodeById, forbidden);
+            const sibs = subtree.slice(0, -1); // drop the parent root
+            if (sibs.length === 0) continue;
+            const stops = [...sibs, t.id];
+            if (stops.length <= 1) continue;
+            lines.push({ terminalId: t.id, stops });
+            for (const s of sibs) {
+                if (!membership.has(s)) membership.set(s, t.id);
+            }
+        }
+
         return { lines, membership };
     }
 
