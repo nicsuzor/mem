@@ -285,16 +285,17 @@
         edges: GraphEdge[],
         positions: Map<string, { x: number; y: number }>,
         routeData: RouteData,
-        lineMembership: Map<string, string> = new Map()
+        _lineMembership: Map<string, string> = new Map()
     ): void {
         if (sim) { sim.stop(); sim = null; }
         const isBackbone = (n: GraphNode) => BACKBONE_TYPES.has((n.type || '').toLowerCase());
         simNodes = metroNodes.map(n => {
             const p = positions.get(n.id);
             if (!p) return null as any;
-            // Pin terminals AND epic-line stops so the line stays straight.
-            // Other route nodes float so they can converge around blockers.
-            const fixed = routeData.destIndex.has(n.id) || lineMembership.has(n.id);
+            // Only terminals are pinned. Line stops are seeded on the ray
+            // (via computePositions) but stay free so the network breathes
+            // and dragging a terminal tows its line via link forces.
+            const fixed = routeData.destIndex.has(n.id);
             return {
                 id: n.id,
                 x: p.x,
