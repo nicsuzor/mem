@@ -262,8 +262,8 @@ pub fn resolve_status_alias(status: &str) -> &str {
         // Inbox-family: untriaged capture
         "todo" | "open" | "draft" | "early-scaffold" | "planning" | "seed" => "inbox",
 
-        // In-progress spellings
-        "in-progress" | "in-preparation" | "partial" => "in_progress",
+        // In-progress spellings (decomposing = was active work mid-flight)
+        "in-progress" | "in-preparation" | "partial" | "decomposing" => "in_progress",
 
         // Review-family: awaiting human or external decision
         "in_review" | "in-review" | "ready-for-review" | "ISSUES_FOUND"
@@ -281,7 +281,7 @@ pub fn resolve_status_alias(status: &str) -> &str {
         "dead" => "cancelled",
 
         // Paused-family
-        "deferred" => "paused",
+        "deferred" | "dormant" => "paused",
 
         // Unknown → passthrough so linter can flag
         other => other,

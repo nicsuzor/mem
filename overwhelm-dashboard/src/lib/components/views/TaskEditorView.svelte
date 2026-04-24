@@ -36,7 +36,7 @@
     ] as const;
 
     const TERMINAL_ACTIONS = [
-        { status: 'archived', label: 'Archive', icon: 'inventory_2' },
+        { status: 'done', label: 'Archive', icon: 'inventory_2' },
         { status: 'cancelled', label: 'Cancel', icon: 'cancel' },
     ] as const;
 
@@ -204,11 +204,11 @@
     }
 
     function handleArchive() {
-        setStatus('archived');
+        setStatus('done');
     }
 
     function handleDecompose() {
-        setStatus('decomposing');
+        setStatus('in_progress');
     }
 
     let refileMarked = $derived(Boolean((task as any)?._raw?.refile));

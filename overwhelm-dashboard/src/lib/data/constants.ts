@@ -46,7 +46,7 @@ export const TYPE_SHAPE: Record<string, string> = {
 export const STATUS_FILLS: Record<string, string> = {
     inbox:       "#1E4A2E",
     ready:       "#2D5A3D",
-    queued:      "#2D5A3D",
+    queued:      "#366a47",
     in_progress: "#2C4A88",
     merge_ready: "#3A4A7E",
     review:      "#3A5A9E",
