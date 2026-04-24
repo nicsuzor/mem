@@ -292,17 +292,17 @@
             const p = positions.get(n.id);
             if (!p) return null as any;
             const fixed = routeData.destIndex.has(n.id);
-            const backbone = isBackbone(n);
             return {
                 id: n.id,
                 x: p.x,
                 y: p.y,
-                // Terminals pin in both dims. Backbones pin their y only.
+                // Only terminals pin — backbones now flow with the network so
+                // the radial layout converges instead of fighting itself.
                 fx: fixed ? p.x : null,
-                fy: fixed ? p.y : (backbone ? p.y : null),
+                fy: fixed ? p.y : null,
                 anchorX: p.x,
                 anchorY: p.y,
-                radius: fixed ? 22 : backbone ? 14 : 10,
+                radius: fixed ? 28 : isBackbone(n) ? 20 : 14,
             } as FNode;
         }).filter(Boolean) as FNode[];
 
@@ -324,10 +324,13 @@
                     return 320;
                 })
                 .strength(l => (l.type === 'parent' || l.type === 'depends_on') ? 0.6 : 0.2))
-            .force('charge', forceManyBody<FNode>().strength(-80).distanceMax(260))
+            .force('charge', forceManyBody<FNode>().strength(-160).distanceMax(360))
             .force('collide', forceCollide<FNode>().radius(d => d.radius).strength(0.9))
-            .force('x', forceX<FNode>(d => d.anchorX).strength(0.05))
-            .force('y', forceY<FNode>(d => d.anchorY).strength(0.35))
+            // Gentle pull toward the seeded centroid — enough to bias each
+            // station toward its terminal cluster, loose enough that links
+            // and drag dominate motion.
+            .force('x', forceX<FNode>(d => d.anchorX).strength(0.04))
+            .force('y', forceY<FNode>(d => d.anchorY).strength(0.04))
             .alphaDecay(0.02)
             .on('tick', () => {
                 if (!cy) return;
@@ -362,82 +365,95 @@
         width: number,
         height: number
     ): Map<string, { x: number; y: number }> {
-        const { destinations, routes, depth } = routeData;
+        const { destinations, routes } = routeData;
         const positions = new Map<string, { x: number; y: number }>();
 
         const N = Math.max(1, destinations.length);
-        const xMin = width * 0.1;
-        const xMax = width * 0.9;
-        const xSpan = xMax - xMin;
-
-        // Multi-row terminal staggering: when there are many destinations,
-        // cycle them through `rowCount` rows so adjacent labels don't collide.
-        const rowCount = Math.max(1, Math.min(4, Math.ceil(N / TERMINAL_PER_ROW)));
-        const terminalYBase = height - 140;
+        const centerX = width / 2;
+        const centerY = height / 2;
+        // Terminals live on the outer edge of the *laid-out* graph, not the
+        // viewport — force sim naturally spreads ~271 nodes over a much
+        // larger area than the 780×400 canvas. Scale the perimeter rectangle
+        // by expected node density so terminals actually sit at the edge of
+        // the final drawing (after cy.fit() zooms the view to match).
+        const nodeCount = Math.max(1, metroNodes.length);
+        const virtualSide = Math.max(Math.min(width, height), Math.sqrt(nodeCount * 9000));
+        const virtualW = Math.max(width, virtualSide * 1.35);
+        const virtualH = Math.max(height, virtualSide * 0.95);
+        const boxL = centerX - virtualW / 2 + 120;
+        const boxR = centerX + virtualW / 2 - 120;
+        const boxT = centerY - virtualH / 2 + 100;
+        const boxB = centerY + virtualH / 2 - 100;
 
         const destinationX = new Map<string, number>();
         const destinationY = new Map<string, number>();
         destinations.forEach((d, i) => {
-            const x = N === 1 ? width / 2 : xMin + (i * xSpan) / (N - 1);
-            const row = i % rowCount;
-            // lower rows (closer to the bottom) get larger y; we stagger upward
-            // so there's always label-clear space below the bottom-most row
-            const y = terminalYBase - row * TERMINAL_ROW_GAP;
-            destinationX.set(d.id, x);
-            destinationY.set(d.id, y);
+            if (N === 1) {
+                destinationX.set(d.id, centerX);
+                destinationY.set(d.id, boxT);
+                return;
+            }
+            const angle = (i / N) * Math.PI * 2 - Math.PI / 2;
+            const dx = Math.cos(angle);
+            const dy = Math.sin(angle);
+            // Scale the ray until it hits the nearest rectangle edge.
+            const tx = Math.abs(dx) < 1e-6 ? Infinity : (dx > 0 ? (boxR - centerX) / dx : (boxL - centerX) / dx);
+            const ty = Math.abs(dy) < 1e-6 ? Infinity : (dy > 0 ? (boxB - centerY) / dy : (boxT - centerY) / dy);
+            const t = Math.min(tx, ty);
+            destinationX.set(d.id, centerX + dx * t);
+            destinationY.set(d.id, centerY + dy * t);
         });
 
-        // Max depth observed — used to size the route area
-        let maxDepth = 0;
-        for (const d of depth.values()) if (d > maxDepth) maxDepth = d;
-
-        const topOfTerminals = terminalYBase - (rowCount - 1) * TERMINAL_ROW_GAP;
-        const routeAreaTop = topOfTerminals - (maxDepth + 1) * ROW_HEIGHT - 40;
-
-        // Destinations at the bottom, staggered y per row
         for (const d of destinations) {
             positions.set(d.id, { x: destinationX.get(d.id)!, y: destinationY.get(d.id)! });
         }
 
-        // Route nodes: x = mean of serving destinations' anchors, y = topOfTerminals - depth*rowHeight
+        // Route nodes: seed at the centroid of their serving terminals so the
+        // force sim converges from a sensible starting state. Stations serving
+        // a single terminal bias toward it; interchanges end up in the middle.
         const contextNodes: GraphNode[] = [];
         for (const n of metroNodes) {
-            if (positions.has(n.id)) continue; // skip destinations
+            if (positions.has(n.id)) continue;
             const rs = routes.get(n.id);
             if (!rs || rs.size === 0) {
                 contextNodes.push(n);
                 continue;
             }
-            const d = depth.get(n.id) ?? 1;
-            let xSum = 0;
-            for (const did of rs) xSum += destinationX.get(did) ?? width / 2;
-            const x = xSum / rs.size;
-            const y = topOfTerminals - d * ROW_HEIGHT;
+            let xSum = 0, ySum = 0;
+            for (const did of rs) {
+                xSum += destinationX.get(did) ?? centerX;
+                ySum += destinationY.get(did) ?? centerY;
+            }
+            // Blend 70% centroid of terminals + 30% centre — keeps stations
+            // pulled inward from the perimeter so the whole network breathes.
+            const cxMean = xSum / rs.size;
+            const cyMean = ySum / rs.size;
+            const h = idHash(n.id);
+            const jitter = ((h % 1000) / 1000 - 0.5) * 40;
+            const x = cxMean * 0.7 + centerX * 0.3 + jitter;
+            const y = cyMean * 0.7 + centerY * 0.3 + jitter;
             positions.set(n.id, { x, y });
         }
 
-        // Context stations: only lay out a top-N slice, bucketed above the
-        // route area. Everything else stays unpositioned and is excluded from
-        // the cytoscape element set in buildGraph. Callers control this via
-        // the `showContext` prop; when false, `contextNodes` will not appear
-        // in the node list (filtered upstream), and this branch is a no-op.
+        // Context stations: a compact strip along the top, outside the
+        // terminal ring but still readable. Callers control whether these
+        // nodes reach buildGraph at all via showContext.
         if (contextNodes.length > 0) {
-            // Preserve top-CONTEXT_CAP by downstream_weight
             const ranked = contextNodes
                 .slice()
                 .sort((a, b) => (b.dw || 0) - (a.dw || 0))
                 .slice(0, CONTEXT_CAP);
-            const contextY = Math.min(CONTEXT_STRIP_Y, routeAreaTop - 60);
-            const contextXSpan = width * 0.9;
-            const contextXMin = width * 0.05;
+            const stripY = Math.max(20, boxT - 40);
+            const stripXMin = width * 0.05;
+            const stripXSpan = width * 0.9;
             const cols = Math.max(1, Math.ceil(Math.sqrt(ranked.length)));
             ranked.forEach((n, i) => {
                 const h = idHash(n.id);
                 const col = i % cols;
                 const row = Math.floor(i / cols);
-                const jitter = (h % 500) / 500 - 0.5; // ±0.5
-                const x = contextXMin + ((col + 0.5) / cols) * contextXSpan + jitter * 10;
-                const y = Math.max(20, contextY - row * 24);
+                const jitter = (h % 500) / 500 - 0.5;
+                const x = stripXMin + ((col + 0.5) / cols) * stripXSpan + jitter * 10;
+                const y = Math.max(20, stripY - row * 24);
                 positions.set(n.id, { x, y });
             });
         }
