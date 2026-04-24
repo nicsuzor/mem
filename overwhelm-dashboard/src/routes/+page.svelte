@@ -11,6 +11,7 @@
     import GroupsView from "$lib/components/views/GroupsView.svelte";
     import ArcView from "$lib/components/views/ArcView.svelte";
     import MetroView from "$lib/components/views/MetroView.svelte";
+    import MetroRadialView from "$lib/components/views/MetroRadialView.svelte";
 
     import DashboardView from "$lib/components/dashboard/DashboardView.svelte";
     import ThreadedTasksView from "$lib/components/views/ThreadedTasksView.svelte";
@@ -22,7 +23,7 @@
         type GraphNode,
         type GraphEdge,
     } from "$lib/data/prepareGraphData";
-    import { graphData } from "$lib/stores/graph";
+    import { graphData, preparedGraphData } from "$lib/stores/graph";
     import {
         viewSettings,
         getLayoutFromViewSettings,
@@ -134,6 +135,10 @@
         const previousLinksByKey = new Map(($graphData?.links || []).map((link) => [edgeIdentity(link), link]));
 
         const prepared = prepareGraphData(rawGraph);
+        // Expose the pre-filter prepared graph for views that need completeness
+        // (Metro route discovery walks completed/low-priority nodes that the UI
+        // filters normally hide).
+        $preparedGraphData = prepared;
         let fNodes = [...prepared.nodes];
         let fLinks = [...prepared.links];
         const isForce =
@@ -451,6 +456,8 @@
             <div class="flex-1 relative z-0 h-full">
                 {#if activeLayout === "metro"}
                     <MetroView bind:this={metroViewRef} bind:running={metroRunning} showContext={metroShowContext} />
+                {:else if activeLayout === "metro_radial"}
+                    <MetroRadialView />
                 {:else}
                     <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
                         {#if containerGroup}

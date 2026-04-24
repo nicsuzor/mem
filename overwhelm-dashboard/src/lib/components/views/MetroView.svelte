@@ -1,7 +1,15 @@
 <script lang="ts">
     import { onDestroy } from "svelte";
     import cytoscape from "cytoscape";
-    import { graphData, graphStructureKey } from "../../stores/graph";
+    import {
+        forceSimulation,
+        forceLink,
+        forceManyBody,
+        forceCollide,
+        forceX,
+        forceY,
+    } from "d3-force";
+    import { graphData, preparedGraphData, graphStructureKey, preparedStructureKey } from "../../stores/graph";
     import { filters, type VisibilityState } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
@@ -10,6 +18,11 @@
 
     let containerEl: HTMLDivElement;
     let cy: cytoscape.Core | null = null;
+    // Persistent force simulation — kept running after buildGraph so that
+    // dragging a node (pinning it via fx/fy) lets the surrounding network
+    // react organically. Stopped on destroy / structural rebuild.
+    let sim: any = null;
+    let simNodes: Array<{ id: string; x: number; y: number; fx: number | null; fy: number | null; anchorX: number; anchorY: number; radius: number }> = [];
 
     export let running = false;
     // Context stations (nodes on no route) are noise for the "routes to
@@ -17,20 +30,27 @@
     // control; when enabled, only the top-N by downstream_weight render.
     export let showContext = false;
 
-    const HIDDEN_TYPES = new Set(['project']);
-    const CONTAINER_TYPES = new Set(['goal', 'epic']);
-    const EPIC_TYPES = new Set(['epic', 'goal']);
+    // Project-type nodes are structural containers. They are not hidden
+    // outright — when they appear on a target's ancestor chain we want the
+    // connector to be visible — but we render them as muted backbone stops.
+    const HIDDEN_TYPES = new Set<string>();
+    const BACKBONE_TYPES = new Set(['project', 'epic', 'goal']);
+    const CONTAINER_TYPES = new Set(['goal', 'epic', 'project']);
+    const EPIC_TYPES = new Set(['epic', 'goal', 'project']);
     const DEFAULT_PROJECT_COLOR = 'hsl(220, 12%, 46%)';
 
     // Layout constants
-    const ROW_HEIGHT = 120;
+    const ROW_HEIGHT = 80;
     const CONTEXT_STRIP_Y = 140;
     const CONTEXT_CAP = 200;           // hard cap on rendered context stations
-    const TERMINAL_ROW_GAP = 32;       // vertical spacing between terminal rows
-    const TERMINAL_PER_ROW = 12;       // target number of terminals per row
-    const GOAL_PARENT_HOP_CAP = 3;     // limit goal-destination descendant walk depth
+    const TERMINAL_ROW_GAP = 56;       // vertical spacing between terminal rows
+    const TERMINAL_PER_ROW = 3;        // target number of terminals per row
+    const ANCESTOR_HOP_CAP = 1;        // walk at most N parent hops above a target
+    const SUBTREE_DEPTH_CAP = 5;       // cap descendant-from-ancestor BFS depth
+    const DESCENDANT_DEPTH_CAP = 6;    // cap descendant-from-target BFS depth
+    const BLOCKER_DEPTH_CAP = 6;       // cap transitive blocker walk
     const GRID_X = 36;
-    const GRID_Y = 40;
+    const GRID_Y = 32;
 
     // Hover tooltip state
     let tooltip: {
@@ -89,48 +109,41 @@
         destIndex: Map<string, number>;     // destId -> ordinal position
     }
 
-    // Build an undirected neighbor map covering every edge type — parent,
-    // depends_on, soft_depends_on, ref, anything else. Route discovery treats
-    // the graph as undirected so every incident edge counts as a potential
-    // route step. Per-edge-type weighting / directionality can be re-layered
-    // later if the picture demands it.
-    function buildNeighbors(nodes: GraphNode[], edges: GraphEdge[]): Map<string, Set<string>> {
-        const nbr = new Map<string, Set<string>>();
-        for (const n of nodes) nbr.set(n.id, new Set());
+    // Directed adjacency for route discovery.
+    //   parentDown[p]  → children p→c  (after prepareGraphData flip)
+    //   parentUp[c]    → p             (child's parent)
+    //   blockersOut[b] → set of blockers (follows depends_on + soft_depends_on)
+    interface DirectedAdjacency {
+        parentDown: Map<string, Set<string>>;
+        parentUp: Map<string, string>;
+        blockersOut: Map<string, Set<string>>;
+    }
+
+    function buildDirectedAdjacency(nodes: GraphNode[], edges: GraphEdge[]): DirectedAdjacency {
+        const parentDown = new Map<string, Set<string>>();
+        const parentUp = new Map<string, string>();
+        const blockersOut = new Map<string, Set<string>>();
+        for (const n of nodes) {
+            parentDown.set(n.id, new Set());
+            blockersOut.set(n.id, new Set());
+        }
         for (const e of edges) {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-            if (!nbr.has(src) || !nbr.has(tgt)) continue;
+            if (!parentDown.has(src) || !parentDown.has(tgt)) continue;
             if (src === tgt) continue;
-            nbr.get(src)!.add(tgt);
-            nbr.get(tgt)!.add(src);
+            if (e.type === 'parent') {
+                parentDown.get(src)!.add(tgt);
+                parentUp.set(tgt, src);
+            } else if (e.type === 'depends_on' || e.type === 'soft_depends_on') {
+                blockersOut.get(src)!.add(tgt);
+            }
         }
-        return nbr;
+        return { parentDown, parentUp, blockersOut };
     }
 
-    // Every P0/P1 incomplete node is a destination — that's what the user set
-    // as a target. Whether it has children decides how the route is walked,
-    // not whether it qualifies.
-    function computeIncompleteChildIds(nodes: GraphNode[]): Set<string> {
-        const ids = new Set<string>();
-        for (const n of nodes) {
-            if (n.parent && isIncomplete(n)) ids.add(n.parent);
-        }
-        return ids;
-    }
-
-    // A destination behaves as a container (pulls its incomplete subtree
-    // inward as the route) when its type is goal/epic, or when it has any
-    // incomplete children. Otherwise it's a leaf and walks parent ancestors.
-    function isContainerDestination(dest: GraphNode, incompleteChildIds: Set<string>): boolean {
-        if (CONTAINER_TYPES.has((dest.type || '').toLowerCase())) return true;
-        return incompleteChildIds.has(dest.id);
-    }
-
-    // Terminals are now explicitly target-type nodes. P0/P1 "priority" tasks
-    // that aren't targets are rendered as larger stations but are not the
-    // named ends-of-lines. The user sets targets deliberately; priority alone
-    // is a weaker signal.
+    // Terminals are explicitly target-type nodes. Priority alone doesn't
+    // qualify — the user sets targets deliberately.
     function computeDestinations(nodes: GraphNode[]): GraphNode[] {
         return nodes
             .filter(n => {
@@ -147,6 +160,16 @@
             });
     }
 
+    // For each terminal T, the "line" is the set of stations meaningfully on
+    // the way to T. We include:
+    //   (a) descendants of T via parent (sub-tasks, grand-sub-tasks),
+    //   (b) the immediate parent ancestor and its subtree (siblings and cousins
+    //       that compose the epic the target sits inside),
+    //   (c) transitive blockers (depends_on / soft_depends_on) of every
+    //       already-collected node.
+    // Walks stop at other terminals so distinct lines don't bleed together.
+    // Completed nodes stay on the route — they render desaturated, but the
+    // user can still see the full scope of what the target covers.
     function computeRouteData(nodes: GraphNode[], edges: GraphEdge[]): RouteData {
         const destinations = computeDestinations(nodes);
         const destIndex = new Map<string, number>();
@@ -160,32 +183,78 @@
             return { destinations, routes, depth, destIndex };
         }
 
-        const neighbors = buildNeighbors(nodes, edges);
-        const nodeById = new Map(nodes.map(n => [n.id, n]));
+        const { parentDown, parentUp, blockersOut } = buildDirectedAdjacency(nodes, edges);
+        const destSet = new Set(destinations.map(d => d.id));
 
-        // Undirected BFS from each destination. Every edge type is a step, no
-        // direction distinction — we want to see all edges on the map before
-        // deciding which distinctions matter.
         for (const dest of destinations) {
-            const seen = new Set<string>([dest.id]);
-            const queue: Array<{ id: string; d: number }> = [{ id: dest.id, d: 0 }];
-            while (queue.length > 0) {
-                const { id, d } = queue.shift()!;
-                const node = nodeById.get(id);
-                if (!node) continue;
-                if (!isIncomplete(node) && id !== dest.id) continue;
+            const stopAt = new Set<string>();
+            for (const other of destSet) if (other !== dest.id) stopAt.add(other);
+            const perDest = new Map<string, number>([[dest.id, 0]]);
 
+            // (a) descendants of the target itself
+            const descQueue: Array<{ id: string; d: number }> = [{ id: dest.id, d: 0 }];
+            while (descQueue.length) {
+                const { id, d } = descQueue.shift()!;
+                if (d >= DESCENDANT_DEPTH_CAP) continue;
+                const kids = parentDown.get(id);
+                if (!kids) continue;
+                for (const kid of kids) {
+                    if (perDest.has(kid)) continue;
+                    if (stopAt.has(kid)) continue;
+                    perDest.set(kid, d + 1);
+                    descQueue.push({ id: kid, d: d + 1 });
+                }
+            }
+
+            // (b) walk up at most ANCESTOR_HOP_CAP levels; at each level, include
+            // the ancestor and its subtree (siblings + cousins) capped by
+            // SUBTREE_DEPTH_CAP.
+            let cur = dest.id;
+            for (let hop = 0; hop < ANCESTOR_HOP_CAP; hop++) {
+                const parent = parentUp.get(cur);
+                if (!parent) break;
+                if (destSet.has(parent)) break;
+                const parentD = (perDest.get(cur) ?? 0) + 1;
+                if (!perDest.has(parent)) perDest.set(parent, parentD);
+                // Fan the ancestor's subtree down, minus other-terminal branches
+                const q: Array<{ id: string; d: number }> = [{ id: parent, d: parentD }];
+                while (q.length) {
+                    const { id, d } = q.shift()!;
+                    if (d - parentD >= SUBTREE_DEPTH_CAP) continue;
+                    const kids = parentDown.get(id);
+                    if (!kids) continue;
+                    for (const kid of kids) {
+                        if (perDest.has(kid)) continue;
+                        if (stopAt.has(kid)) continue;
+                        perDest.set(kid, d + 1);
+                        q.push({ id: kid, d: d + 1 });
+                    }
+                }
+                cur = parent;
+            }
+
+            // (c) transitive blockers of every on-route node.
+            const frontier: Array<{ id: string; d: number }> = [];
+            for (const [id, d] of perDest) frontier.push({ id, d });
+            while (frontier.length) {
+                const { id, d } = frontier.shift()!;
+                if (d >= BLOCKER_DEPTH_CAP) continue;
+                const blockers = blockersOut.get(id);
+                if (!blockers) continue;
+                for (const b of blockers) {
+                    const existing = perDest.get(b);
+                    if (existing !== undefined && existing <= d + 1) continue;
+                    if (stopAt.has(b)) continue;
+                    perDest.set(b, d + 1);
+                    frontier.push({ id: b, d: d + 1 });
+                }
+            }
+
+            // Commit per-destination visits to the global structures.
+            for (const [id, d] of perDest) {
                 routes.get(id)!.add(dest.id);
                 const prev = depth.get(id);
                 if (prev === undefined || d < prev) depth.set(id, d);
-
-                const nbr = neighbors.get(id);
-                if (!nbr) continue;
-                for (const next of nbr) {
-                    if (seen.has(next)) continue;
-                    seen.add(next);
-                    queue.push({ id: next, d: d + 1 });
-                }
             }
         }
 
@@ -195,88 +264,220 @@
 
     // ─── Target-anchored layout ─────────────────────────────────────────────
 
+    // Build a persistent d3-force simulation that pulls connected nodes
+    // together. Terminals and backbone nodes are pinned at their preset (x,y);
+    // route stations get a depth-band y anchor but flex in x. The simulation
+    // stays alive so cytoscape drag events can reheat it and the rest of the
+    // network reacts organically while the user drags a node.
+    type FNode = {
+        id: string;
+        x: number;
+        y: number;
+        fx: number | null;
+        fy: number | null;
+        anchorX: number;
+        anchorY: number;
+        radius: number;
+    };
+
+    function startSimulation(
+        metroNodes: GraphNode[],
+        edges: GraphEdge[],
+        positions: Map<string, { x: number; y: number }>,
+        routeData: RouteData,
+        _lineMembership: Map<string, string> = new Map()
+    ): void {
+        if (sim) { sim.stop(); sim = null; }
+        const isBackbone = (n: GraphNode) => BACKBONE_TYPES.has((n.type || '').toLowerCase());
+        simNodes = metroNodes.map(n => {
+            const p = positions.get(n.id);
+            if (!p) return null as any;
+            // Only terminals are pinned. Line stops are seeded on the ray
+            // (via computePositions) but stay free so the network breathes
+            // and dragging a terminal tows its line via link forces.
+            const fixed = routeData.destIndex.has(n.id);
+            return {
+                id: n.id,
+                x: p.x,
+                y: p.y,
+                // Only terminals pin — backbones now flow with the network so
+                // the radial layout converges instead of fighting itself.
+                fx: fixed ? p.x : null,
+                fy: fixed ? p.y : null,
+                anchorX: p.x,
+                anchorY: p.y,
+                radius: fixed ? 28 : isBackbone(n) ? 20 : 14,
+            } as FNode;
+        }).filter(Boolean) as FNode[];
+
+        const idSet = new Set(simNodes.map(f => f.id));
+        const flinks = edges
+            .map(e => {
+                const src = typeof e.source === 'object' ? e.source.id : e.source;
+                const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+                return { source: src, target: tgt, type: e.type };
+            })
+            .filter(l => idSet.has(l.source) && idSet.has(l.target));
+
+        sim = forceSimulation<FNode>(simNodes)
+            .force('link', forceLink<FNode, any>(flinks)
+                .id(d => d.id)
+                .distance(l => {
+                    if (l.type === 'parent' || l.type === 'depends_on') return 144;
+                    if (l.type === 'soft_depends_on') return 200;
+                    return 320;
+                })
+                .strength(l => (l.type === 'parent' || l.type === 'depends_on') ? 0.6 : 0.2))
+            .force('charge', forceManyBody<FNode>().strength(-160).distanceMax(360))
+            .force('collide', forceCollide<FNode>().radius(d => d.radius).strength(0.9))
+            // Gentle pull toward the seeded centroid — enough to bias each
+            // station toward its terminal cluster, loose enough that links
+            // and drag dominate motion.
+            .force('x', forceX<FNode>(d => d.anchorX).strength(0.04))
+            .force('y', forceY<FNode>(d => d.anchorY).strength(0.04))
+            .alphaDecay(0.02)
+            .on('tick', () => {
+                if (!cy) return;
+                cy.batch(() => {
+                    for (const f of simNodes) {
+                        const n = cy!.getElementById(f.id);
+                        if (!n.length) continue;
+                        // While cy user-grabs a node, skip — cytoscape owns the
+                        // position until release; we mirror its position to the
+                        // sim (handled in drag handler).
+                        if (n.grabbed()) continue;
+                        n.position({ x: f.x, y: f.y });
+                    }
+                });
+            });
+    }
+
+    // Seed starting positions so the sim doesn't have to untangle from
+    // a pile. Short warm-up before cy ever renders.
+    function warmSimulation(iterations = 120): void {
+        if (!sim) return;
+        sim.alpha(0.9);
+        for (let i = 0; i < iterations; i++) sim.tick();
+        // After warm-up, let sim continue breathing but at low energy.
+        sim.alpha(0.1);
+    }
+
     function computePositions(
         metroNodes: GraphNode[],
+        edges: GraphEdge[],
         routeData: RouteData,
         width: number,
-        height: number
+        height: number,
+        epicLines: EpicLine[] = []
     ): Map<string, { x: number; y: number }> {
-        const { destinations, routes, depth } = routeData;
+        const { destinations, routes } = routeData;
         const positions = new Map<string, { x: number; y: number }>();
 
         const N = Math.max(1, destinations.length);
-        const xMin = width * 0.1;
-        const xMax = width * 0.9;
-        const xSpan = xMax - xMin;
-
-        // Multi-row terminal staggering: when there are many destinations,
-        // cycle them through `rowCount` rows so adjacent labels don't collide.
-        const rowCount = Math.max(1, Math.min(4, Math.ceil(N / TERMINAL_PER_ROW)));
-        const terminalYBase = height - 140;
+        const centerX = width / 2;
+        const centerY = height / 2;
+        // Terminals live on the outer edge of the *laid-out* graph, not the
+        // viewport — force sim naturally spreads ~271 nodes over a much
+        // larger area than the 780×400 canvas. Scale the perimeter rectangle
+        // by expected node density so terminals actually sit at the edge of
+        // the final drawing (after cy.fit() zooms the view to match).
+        const nodeCount = Math.max(1, metroNodes.length);
+        const virtualSide = Math.max(Math.min(width, height), Math.sqrt(nodeCount * 9000));
+        const virtualW = Math.max(width, virtualSide * 1.35);
+        const virtualH = Math.max(height, virtualSide * 0.95);
+        const boxL = centerX - virtualW / 2 + 120;
+        const boxR = centerX + virtualW / 2 - 120;
+        const boxT = centerY - virtualH / 2 + 100;
+        const boxB = centerY + virtualH / 2 - 100;
 
         const destinationX = new Map<string, number>();
         const destinationY = new Map<string, number>();
         destinations.forEach((d, i) => {
-            const x = N === 1 ? width / 2 : xMin + (i * xSpan) / (N - 1);
-            const row = i % rowCount;
-            // lower rows (closer to the bottom) get larger y; we stagger upward
-            // so there's always label-clear space below the bottom-most row
-            const y = terminalYBase - row * TERMINAL_ROW_GAP;
-            destinationX.set(d.id, x);
-            destinationY.set(d.id, y);
+            if (N === 1) {
+                destinationX.set(d.id, centerX);
+                destinationY.set(d.id, boxT);
+                return;
+            }
+            const angle = (i / N) * Math.PI * 2 - Math.PI / 2;
+            const dx = Math.cos(angle);
+            const dy = Math.sin(angle);
+            // Scale the ray until it hits the nearest rectangle edge.
+            const tx = Math.abs(dx) < 1e-6 ? Infinity : (dx > 0 ? (boxR - centerX) / dx : (boxL - centerX) / dx);
+            const ty = Math.abs(dy) < 1e-6 ? Infinity : (dy > 0 ? (boxB - centerY) / dy : (boxT - centerY) / dy);
+            const t = Math.min(tx, ty);
+            destinationX.set(d.id, centerX + dx * t);
+            destinationY.set(d.id, centerY + dy * t);
         });
 
-        // Max depth observed — used to size the route area
-        let maxDepth = 0;
-        for (const d of depth.values()) if (d > maxDepth) maxDepth = d;
-
-        const topOfTerminals = terminalYBase - (rowCount - 1) * TERMINAL_ROW_GAP;
-        const routeAreaTop = topOfTerminals - (maxDepth + 1) * ROW_HEIGHT - 40;
-
-        // Destinations at the bottom, staggered y per row
         for (const d of destinations) {
             positions.set(d.id, { x: destinationX.get(d.id)!, y: destinationY.get(d.id)! });
         }
 
-        // Route nodes: x = mean of serving destinations' anchors, y = topOfTerminals - depth*rowHeight
+        // Epic lines: place stops evenly along the ray from centre to terminal.
+        // The terminal is already positioned at the perimeter; stops fall on
+        // the line between centre and terminal so the visual run is straight.
+        for (const line of epicLines) {
+            const tx = destinationX.get(line.terminalId);
+            const ty = destinationY.get(line.terminalId);
+            if (tx === undefined || ty === undefined) continue;
+            const stopCount = line.stops.length - 1; // exclude terminal
+            if (stopCount < 1) continue;
+            const tStart = 0.18;
+            const tEnd = 0.92;
+            for (let i = 0; i < stopCount; i++) {
+                const u = stopCount === 1 ? (tStart + tEnd) / 2 : tStart + (tEnd - tStart) * (i / (stopCount - 1));
+                const x = centerX + (tx - centerX) * u;
+                const y = centerY + (ty - centerY) * u;
+                positions.set(line.stops[i], { x, y });
+            }
+        }
+
+        // Route nodes: seed at the centroid of their serving terminals so the
+        // force sim converges from a sensible starting state. Stations serving
+        // a single terminal bias toward it; interchanges end up in the middle.
         const contextNodes: GraphNode[] = [];
         for (const n of metroNodes) {
-            if (positions.has(n.id)) continue; // skip destinations
+            if (positions.has(n.id)) continue;
             const rs = routes.get(n.id);
             if (!rs || rs.size === 0) {
                 contextNodes.push(n);
                 continue;
             }
-            const d = depth.get(n.id) ?? 1;
-            let xSum = 0;
-            for (const did of rs) xSum += destinationX.get(did) ?? width / 2;
-            const x = xSum / rs.size;
-            const y = topOfTerminals - d * ROW_HEIGHT;
+            let xSum = 0, ySum = 0;
+            for (const did of rs) {
+                xSum += destinationX.get(did) ?? centerX;
+                ySum += destinationY.get(did) ?? centerY;
+            }
+            // Blend 70% centroid of terminals + 30% centre — keeps stations
+            // pulled inward from the perimeter so the whole network breathes.
+            const cxMean = xSum / rs.size;
+            const cyMean = ySum / rs.size;
+            const h = idHash(n.id);
+            const jitter = ((h % 1000) / 1000 - 0.5) * 40;
+            const x = cxMean * 0.7 + centerX * 0.3 + jitter;
+            const y = cyMean * 0.7 + centerY * 0.3 + jitter;
             positions.set(n.id, { x, y });
         }
 
-        // Context stations: only lay out a top-N slice, bucketed above the
-        // route area. Everything else stays unpositioned and is excluded from
-        // the cytoscape element set in buildGraph. Callers control this via
-        // the `showContext` prop; when false, `contextNodes` will not appear
-        // in the node list (filtered upstream), and this branch is a no-op.
+        // Context stations: a compact strip along the top, outside the
+        // terminal ring but still readable. Callers control whether these
+        // nodes reach buildGraph at all via showContext.
         if (contextNodes.length > 0) {
-            // Preserve top-CONTEXT_CAP by downstream_weight
             const ranked = contextNodes
                 .slice()
                 .sort((a, b) => (b.dw || 0) - (a.dw || 0))
                 .slice(0, CONTEXT_CAP);
-            const contextY = Math.min(CONTEXT_STRIP_Y, routeAreaTop - 60);
-            const contextXSpan = width * 0.9;
-            const contextXMin = width * 0.05;
+            const stripY = Math.max(20, boxT - 40);
+            const stripXMin = width * 0.05;
+            const stripXSpan = width * 0.9;
             const cols = Math.max(1, Math.ceil(Math.sqrt(ranked.length)));
             ranked.forEach((n, i) => {
                 const h = idHash(n.id);
                 const col = i % cols;
                 const row = Math.floor(i / cols);
-                const jitter = (h % 500) / 500 - 0.5; // ±0.5
-                const x = contextXMin + ((col + 0.5) / cols) * contextXSpan + jitter * 10;
-                const y = Math.max(20, contextY - row * 24);
+                const jitter = (h % 500) / 500 - 0.5;
+                const x = stripXMin + ((col + 0.5) / cols) * stripXSpan + jitter * 10;
+                const y = Math.max(20, stripY - row * 24);
                 positions.set(n.id, { x, y });
             });
         }
@@ -315,6 +516,7 @@
         visibilityState: VisibilityState;
         isDestination: 0 | 1;
         isOnRoute: 0 | 1;
+        isBackbone: 0 | 1;
         routeIds: string;
         nodeSize: number;
         fillColor: string;
@@ -338,11 +540,203 @@
     const BAD_CHOICE_FILL = '#6b7280';       // dull grey body
     const BAD_CHOICE_BORDER = '#dc2626';     // red outline — "you picked this as priority but it isn't on any line"
 
-    // Build a set of on-route nodes that have no outgoing blocker edge to
-    // another incomplete on-route node. Under the schema we're adopting here,
-    // every blocker edge (parent flipped, depends_on, soft_depends_on) points
-    // from the blocked node to its blocker — so "no outgoing blocker edge" ⇒
-    // nothing is stopping this node from starting.
+    // A starting station is an on-route node with no incomplete blocker via
+    // depends_on / soft_depends_on. Parent edges don't count — a parent epic
+    // isn't a blocker of its child. Backbone (project/epic/goal) nodes are
+    // excluded — they're structural, not actionable entry points.
+    // ─── Epic-as-line linearisation ─────────────────────────────────────────
+    //
+    // Easy case for "turn a web into a line": a node with children. The line
+    // is the post-order traversal of its incomplete subtree — leaves first,
+    // each parent after all its descendants, the root (terminal) last.
+    // Real-world ordering: children sorted by `_raw.order` (frontmatter
+    // `order:` field), then priority asc, then label.
+    //
+    // A node is claimed by the first terminal whose subtree contains it; this
+    // keeps multi-parent nodes from appearing on multiple lines and bending
+    // the geometry. Cross-terminal blockers stay as ordinary depends_on edges
+    // and remain visible on top of the lines.
+
+    interface EpicLine {
+        terminalId: string;
+        stops: string[]; // descendants in post-order, terminal last
+    }
+
+    function postOrderEpicLine(
+        rootId: string,
+        parentDown: Map<string, Set<string>>,
+        nodeById: Map<string, GraphNode>,
+        forbidden: Set<string>, // read-only: nodes to never enter
+        depthCap: number = 8,
+    ): string[] {
+        const stops: string[] = [];
+        const visited = new Set<string>();
+        function visit(id: string, depth: number): void {
+            if (depth > depthCap) return;
+            if (visited.has(id)) return;
+            visited.add(id);
+            const kids = Array.from(parentDown.get(id) ?? new Set<string>())
+                .filter(c => {
+                    if (forbidden.has(c)) return false;
+                    if (visited.has(c)) return false;
+                    const cn = nodeById.get(c);
+                    return !!cn && isIncomplete(cn);
+                })
+                .sort((a, b) => {
+                    const na = nodeById.get(a)!;
+                    const nb = nodeById.get(b)!;
+                    const oa = (na as any)._raw?.order ?? Number.MAX_SAFE_INTEGER;
+                    const ob = (nb as any)._raw?.order ?? Number.MAX_SAFE_INTEGER;
+                    if (oa !== ob) return oa - ob;
+                    if (na.priority !== nb.priority) return na.priority - nb.priority;
+                    return (na.label || '').localeCompare(nb.label || '');
+                });
+            for (const k of kids) {
+                visit(k, depth + 1);
+                stops.push(k);
+            }
+        }
+        visit(rootId, 0);
+        stops.push(rootId);
+        return stops;
+    }
+
+    function computeEpicLines(
+        destinations: GraphNode[],
+        nodes: GraphNode[],
+        edges: GraphEdge[],
+    ): { lines: EpicLine[]; membership: Map<string, string> } {
+        const { parentDown, parentUp } = buildDirectedAdjacency(nodes, edges);
+        const nodeById = new Map(nodes.map(n => [n.id, n]));
+        const allTargetIds = new Set(destinations.map(d => d.id));
+        const claimed = new Set<string>();
+        const lines: EpicLine[] = [];
+        const membership = new Map<string, string>();
+
+        // Bucket: targets-with-children (own epic) vs leaf targets (borrow).
+        const withKids: GraphNode[] = [];
+        const leaves: GraphNode[] = [];
+        for (const t of destinations) {
+            const ownKids = Array.from(parentDown.get(t.id) ?? new Set<string>())
+                .filter(c => {
+                    const cn = nodeById.get(c);
+                    return !!cn && isIncomplete(cn);
+                });
+            (ownKids.length > 0 ? withKids : leaves).push(t);
+        }
+
+        const recordLine = (terminalId: string, stops: string[]): void => {
+            if (stops.length <= 1) return;
+            lines.push({ terminalId, stops });
+            for (const s of stops) {
+                if (s !== terminalId) {
+                    membership.set(s, terminalId);
+                    claimed.add(s);
+                }
+            }
+        };
+
+        // Pass 1: targets that have children own their subtree first. Other
+        // terminals are excluded so a sibling-target leaf doesn't poach.
+        for (const t of withKids) {
+            const forbidden = new Set(claimed);
+            for (const otherId of allTargetIds) if (otherId !== t.id) forbidden.add(otherId);
+            const stops = postOrderEpicLine(t.id, parentDown, nodeById, forbidden);
+            recordLine(t.id, stops);
+        }
+
+        // Pass 2: leaf targets borrow their containing epic's remaining
+        // descendants. All target ids are forbidden — the line ends at the
+        // terminal, not through another target. Nodes already claimed by a
+        // with-kids line ARE forbidden (that subtree has a dedicated line).
+        // But nodes that two leaf targets both see as siblings are NOT
+        // forbidden: both lines include them; the node's position is pinned
+        // to whichever line records it first.
+        for (const t of leaves) {
+            const parent = parentUp.get(t.id);
+            if (!parent || !nodeById.has(parent)) continue;
+            const forbidden = new Set(claimed);
+            for (const otherId of allTargetIds) forbidden.add(otherId);
+            const subtree = postOrderEpicLine(parent, parentDown, nodeById, forbidden);
+            const sibs = subtree.slice(0, -1); // drop the parent root
+            if (sibs.length === 0) continue;
+            const stops = [...sibs, t.id];
+            if (stops.length <= 1) continue;
+            lines.push({ terminalId: t.id, stops });
+            for (const s of sibs) {
+                if (!membership.has(s)) membership.set(s, t.id);
+            }
+        }
+
+        return { lines, membership };
+    }
+
+    // Undirected adjacency over the parent / depends_on / soft_depends_on
+    // edges that route discovery already walks. Used by `computePathsToTerminals`
+    // to find the shortest visual path from a station to each of its terminals.
+    function buildRouteAdjacency(
+        nodes: GraphNode[],
+        edges: GraphEdge[],
+    ): Map<string, Set<string>> {
+        const adj = new Map<string, Set<string>>();
+        for (const n of nodes) adj.set(n.id, new Set());
+        for (const e of edges) {
+            if (e.type !== 'parent' && e.type !== 'depends_on' && e.type !== 'soft_depends_on') continue;
+            const src = typeof e.source === 'object' ? e.source.id : e.source;
+            const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+            if (!adj.has(src) || !adj.has(tgt)) continue;
+            if (src === tgt) continue;
+            adj.get(src)!.add(tgt);
+            adj.get(tgt)!.add(src);
+        }
+        return adj;
+    }
+
+    // Shortest path from `nodeId` to each terminal it serves. BFS is run on
+    // the subgraph of nodes that also serve that terminal — preserves the
+    // route semantics from `computeRouteData` while collapsing edge
+    // directionality (a station above a terminal can reach it via either
+    // parent up-walks, parent-subtree fans, or blocker chains).
+    function computePathsToTerminals(
+        nodeId: string,
+        routeData: RouteData,
+        adj: Map<string, Set<string>>,
+    ): Map<string, string[]> {
+        const out = new Map<string, string[]>();
+        const myRoutes = routeData.routes.get(nodeId);
+        if (!myRoutes || myRoutes.size === 0) return out;
+        for (const destId of myRoutes) {
+            if (destId === nodeId) continue;
+            const onRoute = (id: string) =>
+                id === destId || (routeData.routes.get(id)?.has(destId) ?? false);
+            const prev = new Map<string, string | null>([[nodeId, null]]);
+            const q: string[] = [nodeId];
+            let found = false;
+            while (q.length) {
+                const cur = q.shift()!;
+                if (cur === destId) { found = true; break; }
+                const nbrs = adj.get(cur);
+                if (!nbrs) continue;
+                for (const n of nbrs) {
+                    if (prev.has(n)) continue;
+                    if (!onRoute(n)) continue;
+                    prev.set(n, cur);
+                    q.push(n);
+                }
+            }
+            if (!found) continue;
+            const path: string[] = [];
+            let cur: string | null = destId;
+            while (cur !== null) {
+                path.push(cur);
+                cur = prev.get(cur) ?? null;
+            }
+            path.reverse();
+            out.set(destId, path);
+        }
+        return out;
+    }
+
     function computeStartingStations(
         nodes: GraphNode[],
         edges: GraphEdge[],
@@ -355,6 +749,7 @@
         const nodeById = new Map(nodes.map(n => [n.id, n]));
         const hasBlocker = new Set<string>();
         for (const e of edges) {
+            if (e.type !== 'depends_on' && e.type !== 'soft_depends_on') continue;
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             if (!onRoute.has(src)) continue;
@@ -368,10 +763,16 @@
             const n = nodeById.get(id);
             if (!n) continue;
             if (!isIncomplete(n)) continue;
-            if (routeData.destIndex.has(id)) continue; // terminals keep their own fill
+            if (routeData.destIndex.has(id)) continue;
+            if (BACKBONE_TYPES.has((n.type || '').toLowerCase())) continue;
             if (!hasBlocker.has(id)) starts.add(id);
         }
         return starts;
+    }
+
+    function truncate(s: string, n: number): string {
+        if (!s) return '';
+        return s.length <= n ? s : s.slice(0, n - 1) + '…';
     }
 
     function getNodeData(node: GraphNode, routeData: RouteData, startingStations: Set<string>): NodeData {
@@ -381,13 +782,15 @@
         const isStart = startingStations.has(node.id);
         const visibilityState = priorityVisibility(node.priority);
         const completed = !isIncomplete(node);
+        const typeLower = (node.type || '').toLowerCase();
+        const isBackbone = BACKBONE_TYPES.has(typeLower);
 
         let nodeSize: number;
         let fillColor: string;
         let borderColor: string;
         let displayLabel: string;
 
-        const isPriorityStation = !isDestination && node.priority <= 1 && isIncomplete(node) && (node.type || '').toLowerCase() !== 'target';
+        const isPriorityStation = !isDestination && node.priority <= 1 && isIncomplete(node) && typeLower !== 'target';
         const isBadChoice = isPriorityStation && !isOnRoute;
 
         if (isDestination) {
@@ -399,19 +802,33 @@
             nodeSize = 14;
             fillColor = BAD_CHOICE_FILL;
             borderColor = BAD_CHOICE_BORDER;
-            displayLabel = '';
+            displayLabel = truncate(node.label, 40);
+        } else if (isOnRoute && isBackbone) {
+            // Epic / project / goal backbones — larger, squared, dim. These
+            // anchor the line structurally but aren't the work itself.
+            nodeSize = 18;
+            fillColor = '#475569';
+            borderColor = '#cbd5e1';
+            displayLabel = truncate(node.label, 36);
         } else if (isStart) {
-            nodeSize = isPriorityStation ? 14 : 10;
+            nodeSize = isPriorityStation ? 16 : 12;
             fillColor = START_FILL;
             borderColor = '#ffffff';
-            displayLabel = '';
+            displayLabel = truncate(node.label, 40);
         } else if (isPriorityStation) {
-            nodeSize = 14;
+            nodeSize = 16;
+            fillColor = STATION_FILL;
+            borderColor = 'rgba(255,255,255,0.45)';
+            displayLabel = truncate(node.label, 40);
+        } else if (isOnRoute) {
+            // A station on a terminal's line — sub-task or blocker. Give it a
+            // visible body + a label so the line is readable, not just dots.
+            nodeSize = 12;
             fillColor = STATION_FILL;
             borderColor = 'rgba(255,255,255,0.35)';
-            displayLabel = '';
+            displayLabel = truncate(node.label, 40);
         } else {
-            nodeSize = isOnRoute ? 7 : 3;
+            nodeSize = 3;
             fillColor = STATION_FILL;
             borderColor = 'rgba(255,255,255,0.08)';
             displayLabel = '';
@@ -429,6 +846,7 @@
             visibilityState,
             isDestination: isDestination ? 1 : 0,
             isOnRoute: isOnRoute ? 1 : 0,
+            isBackbone: (isOnRoute && isBackbone) ? 1 : 0,
             routeIds: Array.from(rs).join(','),
             nodeSize,
             fillColor,
@@ -487,15 +905,21 @@
     // ─── Cytoscape lifecycle ────────────────────────────────────────────────
 
     function buildGraph() {
-        if (!containerEl || !$graphData) return;
+        // Use the pre-filter prepared graph so route discovery can see
+        // completed children, low-priority blockers, and structural ancestors
+        // that the UI filter chain would otherwise hide. Per-node visibility
+        // (priority/status filters) is still applied via `visibilityState`.
+        const sourceGraph = $preparedGraphData ?? $graphData;
+        if (!containerEl || !sourceGraph) return;
+        if (sim) { sim.stop(); sim = null; simNodes = []; }
         if (cy) { cy.destroy(); cy = null; }
 
         const width = containerEl.clientWidth || 1200;
         const height = containerEl.clientHeight || 800;
 
-        const allMetroNodes = $graphData.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
+        const allMetroNodes = sourceGraph.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
         const nodeByIdAll = new Map(allMetroNodes.map(n => [n.id, n]));
-        const allMetroEdges = $graphData.links.filter(e => {
+        const allMetroEdges = sourceGraph.links.filter(e => {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             return nodeByIdAll.has(src) && nodeByIdAll.has(tgt);
@@ -531,8 +955,11 @@
             return nodeById.has(src) && nodeById.has(tgt);
         });
 
-        const positions = computePositions(metroNodes, routeData, width, height);
+        const { lines: epicLines, membership: lineMembership } =
+            computeEpicLines(routeData.destinations, metroNodes, metroEdges);
+        const positions = computePositions(metroNodes, metroEdges, routeData, width, height, epicLines);
         const startingStations = computeStartingStations(metroNodes, metroEdges, routeData);
+        const routeAdj = buildRouteAdjacency(metroNodes, metroEdges);
 
         const cyNodes = metroNodes.map(n => ({
             data: getNodeData(n, routeData, startingStations),
@@ -577,6 +1004,7 @@
                             lineColor: getProjectLineColor(dest?.project),
                             edgeOpacity: perStrokeOpacity,
                             edgeWidth,
+                            pathDestId: destId,
                         },
                     });
                 });
@@ -595,10 +1023,39 @@
                         lineColor,
                         edgeOpacity: baseOpacity,
                         edgeWidth,
+                        pathDestId: isOnRoute && shared.length === 1 ? shared[0] : '',
                     },
                 });
             }
         });
+
+        // Epic-line connectors: one thick stroke per consecutive (stop_i,
+        // stop_i+1) pair, project-coloured. These overlay the underlying
+        // parent/dependency edges so the line reads as a single sweep.
+        for (const line of epicLines) {
+            const dest = destById.get(line.terminalId);
+            const lineColor = getProjectLineColor(dest?.project);
+            for (let i = 0; i < line.stops.length - 1; i++) {
+                const a = line.stops[i];
+                const b = line.stops[i + 1];
+                if (!nodeById.has(a) || !nodeById.has(b)) continue;
+                cyEdges.push({
+                    data: {
+                        id: `line_${line.terminalId}_${i}`,
+                        source: a,
+                        target: b,
+                        edgeRole: 'line',
+                        visibilityState: 'bright',
+                        isOnRoute: 1,
+                        lineColor,
+                        edgeOpacity: 0.95,
+                        edgeWidth: 8,
+                        pathDestId: line.terminalId,
+                        isLine: 1,
+                    },
+                });
+            }
+        }
 
         cy = cytoscape({
             container: containerEl,
@@ -618,6 +1075,46 @@
                         'opacity': 'data(nodeOpacity)',
                         'label': '',
                         'text-opacity': 0,
+                    } as any,
+                },
+                // Stations with a displayLabel — route stations (sub-tasks /
+                // blockers), priority stations, bad choices. Labels hidden at
+                // far zoom so the overview stays clean.
+                {
+                    selector: 'node[isOnRoute = 1][isDestination = 0][isBackbone = 0]',
+                    style: {
+                        'label': 'data(displayLabel)',
+                        'text-opacity': 1,
+                        'color': '#cbd5e1',
+                        'font-size': 9,
+                        'text-outline-color': '#0b0f17',
+                        'text-outline-width': 2,
+                        'text-valign': 'center',
+                        'text-halign': 'right',
+                        'text-margin-x': 6,
+                        'text-max-width': '180px',
+                        'text-wrap': 'wrap',
+                        'min-zoomed-font-size': 8,
+                    } as any,
+                },
+                // Backbones — epic/project/goal on route. Squared, muted, small label.
+                {
+                    selector: 'node[isBackbone = 1]',
+                    style: {
+                        'shape': 'round-rectangle',
+                        'label': 'data(displayLabel)',
+                        'text-opacity': 1,
+                        'color': '#e2e8f0',
+                        'font-size': 10,
+                        'font-weight': '600',
+                        'text-outline-color': '#0b0f17',
+                        'text-outline-width': 2,
+                        'text-valign': 'center',
+                        'text-halign': 'right',
+                        'text-margin-x': 8,
+                        'text-max-width': '200px',
+                        'text-wrap': 'wrap',
+                        'min-zoomed-font-size': 7,
                     } as any,
                 },
                 // Terminals — big, priority-coloured, always labelled
@@ -659,6 +1156,19 @@
                         'haystack-radius': 0,
                     } as any,
                 },
+                // Epic-line connector — thick, project-coloured, opaque,
+                // sits above the muted route strokes so the line dominates.
+                {
+                    selector: 'edge[isLine = 1]',
+                    style: {
+                        'width': 'data(edgeWidth)',
+                        'line-color': 'data(lineColor)',
+                        'opacity': 0.85,
+                        'curve-style': 'haystack',
+                        'haystack-radius': 0,
+                        'z-index': 80,
+                    } as any,
+                },
                 // Non-route edges — thin grey dashed backdrop
                 {
                     selector: 'edge[isOnRoute = 0][visibilityState != "hidden"]',
@@ -695,6 +1205,20 @@
                     selector: '.route-active',
                     style: { 'opacity': 1 } as any,
                 },
+                // Edges on a computed path-to-terminal: project-coloured, thick,
+                // raised above the rest. Multi-terminal stations emit one .on-path
+                // stroke per destination — alpha compositing blends overlaps.
+                {
+                    selector: 'edge.on-path',
+                    style: {
+                        'line-color': 'data(lineColor)',
+                        'width': 7,
+                        'opacity': 0.95,
+                        'z-index': 100,
+                        'curve-style': 'haystack',
+                        'haystack-radius': 0,
+                    } as any,
+                },
                 {
                     selector: '.dimmed',
                     style: { 'opacity': 0.15 } as any,
@@ -715,24 +1239,89 @@
         setTimeout(() => { if (cy) cy.fit(undefined, 60); }, 0);
         (window as any).__cy = cy;
 
+        // Kick off the persistent force simulation so edges pull nodes together
+        // live, and dragging a terminal tows its whole network.
+        startSimulation(metroNodes, metroEdges, positions, routeData, lineMembership);
+        warmSimulation(160);
+        // Push warmed positions into cytoscape before the first paint settles
+        if (cy) {
+            cy.batch(() => {
+                for (const f of simNodes) {
+                    const n = cy!.getElementById(f.id);
+                    if (n.length) n.position({ x: f.x, y: f.y });
+                }
+            });
+            setTimeout(() => cy?.fit(undefined, 60), 0);
+        }
+
         // ── Interactions ──
 
-        // Keep a reference to the currently-highlighted destination (toggle)
+        // Drag: pin the dragged node in the simulation so the rest of the
+        // network is pulled along. Reheat the sim to keep motion alive.
+        const simById = new Map<string, FNode>(simNodes.map(f => [f.id, f]));
+
+        cy.on('grab', 'node', (evt) => {
+            const id = evt.target.id();
+            const f = simById.get(id);
+            if (!f) return;
+            const pos = evt.target.position();
+            f.fx = pos.x;
+            f.fy = pos.y;
+            if (sim) sim.alphaTarget(0.3).restart();
+        });
+
+        cy.on('drag', 'node', (evt) => {
+            const id = evt.target.id();
+            const f = simById.get(id);
+            if (!f) return;
+            const pos = evt.target.position();
+            f.fx = pos.x;
+            f.fy = pos.y;
+        });
+
+        cy.on('free', 'node', (evt) => {
+            const id = evt.target.id();
+            const f = simById.get(id);
+            if (!f) return;
+            // Terminals and backbones keep their pin. Everything else releases.
+            const isDest = evt.target.data('isDestination') === 1;
+            const isBackbone = evt.target.data('isBackbone') === 1;
+            if (!isDest && !isBackbone) {
+                f.fx = null;
+                f.fy = null;
+            } else {
+                // Update anchor so simulation's x/y forces respect the new home
+                f.anchorX = f.fx ?? f.x;
+                f.anchorY = f.fy ?? f.y;
+            }
+            if (sim) sim.alphaTarget(0);
+        });
+
+        // Persistent highlight state — set by tap, cleared by tapping the same
+        // node again or empty space. Stations and terminals are tracked
+        // separately so each toggles independently.
         let activeHighlightDestId: string | null = null;
+        let activeHighlightStationId: string | null = null;
 
         function clearHighlight() {
             if (!cy) return;
-            cy.elements().removeClass('not-path').removeClass('route-active');
+            cy.elements()
+                .removeClass('not-path')
+                .removeClass('route-active')
+                .removeClass('on-path');
             activeHighlightDestId = null;
+            activeHighlightStationId = null;
         }
 
+        // Terminal tap: keep the existing "show every station on this line"
+        // fan — the terminal IS the path's endpoint, so the right answer is
+        // the whole route, not a single thread.
         function highlightForNode(nodeId: string) {
             if (!cy) return;
             const rs = routeData.routes.get(nodeId);
             if (!rs || rs.size === 0) { clearHighlight(); return; }
             cy.batch(() => {
-                cy!.elements().addClass('not-path').removeClass('route-active');
-                // Any node whose routes share at least one destination with the tapped node
+                cy!.elements().addClass('not-path').removeClass('route-active').removeClass('on-path');
                 cy!.nodes().forEach(n => {
                     const nodeRoutes = routeData.routes.get(n.id()) ?? new Set();
                     for (const r of rs) {
@@ -742,10 +1331,50 @@
                         }
                     }
                 });
-                // Edges that connect two highlighted nodes
                 cy!.edges().forEach(e => {
                     if (e.source().hasClass('route-active') && e.target().hasClass('route-active')) {
                         e.removeClass('not-path').addClass('route-active');
+                    }
+                });
+            });
+        }
+
+        // Station tap: draw one bright polyline per terminal the station
+        // serves. Edges on a path get .on-path so the project-colour stroke
+        // overrides the muted route style; everything else dims via .not-path.
+        function highlightPathFromStation(nodeId: string) {
+            if (!cy) return;
+            const paths = computePathsToTerminals(nodeId, routeData, routeAdj);
+            if (paths.size === 0) { clearHighlight(); return; }
+
+            const pathNodes = new Set<string>();
+            const pathEdgePairs = new Map<string, Set<string>>();
+            for (const [destId, nodes] of paths) {
+                const set = new Set<string>();
+                for (let i = 0; i < nodes.length - 1; i++) {
+                    const a = nodes[i];
+                    const b = nodes[i + 1];
+                    set.add(a < b ? `${a}|${b}` : `${b}|${a}`);
+                    pathNodes.add(a);
+                    pathNodes.add(b);
+                }
+                pathEdgePairs.set(destId, set);
+            }
+
+            cy.batch(() => {
+                cy!.elements().addClass('not-path').removeClass('route-active').removeClass('on-path');
+                cy!.nodes().forEach(n => {
+                    if (pathNodes.has(n.id())) {
+                        n.removeClass('not-path').addClass('route-active');
+                    }
+                });
+                cy!.edges().forEach(e => {
+                    const src = e.source().id();
+                    const tgt = e.target().id();
+                    const key = src < tgt ? `${src}|${tgt}` : `${tgt}|${src}`;
+                    const destId = e.data('pathDestId');
+                    if (destId && pathEdgePairs.get(destId)?.has(key)) {
+                        e.removeClass('not-path').addClass('route-active').addClass('on-path');
                     }
                 });
             });
@@ -758,12 +1387,18 @@
                 if (activeHighlightDestId === id) {
                     clearHighlight();
                 } else {
+                    clearHighlight();
                     activeHighlightDestId = id;
                     highlightForNode(id);
                 }
             } else {
-                activeHighlightDestId = null;
-                highlightForNode(id);
+                if (activeHighlightStationId === id) {
+                    clearHighlight();
+                } else {
+                    clearHighlight();
+                    activeHighlightStationId = id;
+                    highlightPathFromStation(id);
+                }
                 toggleSelection(id);
             }
         });
@@ -825,18 +1460,20 @@
     // positions — useful after filter changes. The control is surfaced to the
     // user as "Recompute" in Metro mode (see parent view chrome).
     export function toggleRunning() {
-        if (!cy || !containerEl || !$graphData) return;
+        const sourceGraph = $preparedGraphData ?? $graphData;
+        if (!cy || !containerEl || !sourceGraph) return;
         const width = containerEl.clientWidth || 1200;
         const height = containerEl.clientHeight || 800;
-        const metroNodes = $graphData.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
+        const metroNodes = sourceGraph.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
         const nodeById = new Map(metroNodes.map(n => [n.id, n]));
-        const metroEdges = $graphData.links.filter(e => {
+        const metroEdges = sourceGraph.links.filter(e => {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             return nodeById.has(src) && nodeById.has(tgt);
         });
         const routeData = computeRouteData(metroNodes, metroEdges);
-        const positions = computePositions(metroNodes, routeData, width, height);
+        const { lines: epicLines } = computeEpicLines(routeData.destinations, metroNodes, metroEdges);
+        const positions = computePositions(metroNodes, metroEdges, routeData, width, height, epicLines);
 
         running = true;
         let pending = 0;
@@ -864,8 +1501,8 @@
     // Rebuild on structural changes
     let lastStructureKey = '';
     let lastShowContext = showContext;
-    $: if (containerEl && $graphData && ($graphStructureKey !== lastStructureKey || showContext !== lastShowContext)) {
-        lastStructureKey = $graphStructureKey;
+    $: if (containerEl && ($preparedGraphData || $graphData) && ($preparedStructureKey !== lastStructureKey || showContext !== lastShowContext)) {
+        lastStructureKey = $preparedStructureKey;
         lastShowContext = showContext;
         buildGraph();
     }
@@ -873,11 +1510,12 @@
     // Refresh node/edge visibility data when priority filters change but
     // structure doesn't. Edges may have been split into per-route strokes —
     // we iterate cy's actual edges and refresh each by source/target.
-    $: if (cy && $graphData && $graphStructureKey === lastStructureKey) {
+    $: if (cy && ($preparedGraphData || $graphData) && $preparedStructureKey === lastStructureKey) {
         const cyInstance = cy;
-        const nodeById = new Map($graphData.nodes.map(n => [n.id, n]));
-        const allMetroNodes = $graphData.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
-        const allMetroEdges = $graphData.links.filter(e => {
+        const sourceGraph = $preparedGraphData ?? $graphData!;
+        const nodeById = new Map(sourceGraph.nodes.map(n => [n.id, n]));
+        const allMetroNodes = sourceGraph.nodes.filter(n => !HIDDEN_TYPES.has((n.type || '').toLowerCase()));
+        const allMetroEdges = sourceGraph.links.filter(e => {
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             return nodeById.has(src) && nodeById.has(tgt);
@@ -892,6 +1530,7 @@
         }
 
         cyInstance.edges().forEach(cyEdge => {
+            if (cyEdge.data('isLine') === 1) return; // line connectors keep their bright state
             const src = cyEdge.source().id();
             const tgt = cyEdge.target().id();
             const sourceNode = nodeById.get(src) as any;
@@ -918,6 +1557,7 @@
     }
 
     onDestroy(() => {
+        if (sim) { sim.stop(); sim = null; simNodes = []; }
         if (cy) cy.destroy();
     });
 </script>
