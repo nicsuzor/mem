@@ -8,6 +8,7 @@ import {
     COMPLETED_STATUSES,
     TYPE_SHAPE,
     TYPE_BADGE,
+    resolveStatusAlias,
 } from './constants';
 import { projectBorderColor } from './projectUtils';
 
@@ -286,7 +287,7 @@ export function prepareGraphData(
     for (const node of rawNodes) {
         const nid = node.id;
         const nodeType = node.node_type || "";
-        const status = (node.status || "inbox").toLowerCase();
+        const status = resolveStatusAlias((node.status || "inbox").toLowerCase());
         const priority = typeof node.priority === 'number' ? node.priority : 2;
         const dw = node.downstream_weight || 0;
         const scope = typeof node.scope === 'number' ? node.scope : 0;
