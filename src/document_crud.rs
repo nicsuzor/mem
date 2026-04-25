@@ -126,6 +126,21 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         }
     }
 
+    // Validation
+    if !crate::graph::is_valid_node_type(&fields.doc_type) {
+        anyhow::bail!("Invalid node type: {}", fields.doc_type);
+    }
+    if let Some(ref status) = fields.status {
+        if !crate::graph::is_valid_status(status) {
+            anyhow::bail!("Invalid status: {}", status);
+        }
+    }
+    if let Some(priority) = fields.priority {
+        if !crate::graph::is_valid_priority(priority) {
+            anyhow::bail!("Invalid priority: {}. Must be between 0 and 4.", priority);
+        }
+    }
+
     let type_prefix = match fields.doc_type.as_str() {
         "task" | "epic" => "task",
         "project" => "proj",
@@ -388,6 +403,29 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
              can be root-level."
         );
     }
+
+    // Validation
+    if let Some(ref t) = fields.task_type {
+        if !crate::graph::is_valid_node_type(t) {
+            anyhow::bail!("Invalid task type: {}", t);
+        }
+    }
+    if let Some(ref status) = fields.status {
+        if !crate::graph::is_valid_status(status) {
+            anyhow::bail!("Invalid status: {}", status);
+        }
+    }
+    if let Some(priority) = fields.priority {
+        if !crate::graph::is_valid_priority(priority) {
+            anyhow::bail!("Invalid priority: {}. Must be between 0 and 4.", priority);
+        }
+    }
+    if let Some(ref effort) = fields.effort {
+        if !crate::graph::is_valid_effort(effort) {
+            anyhow::bail!("Invalid effort: {}. Expected duration like '1d', '2h', '1w'.", effort);
+        }
+    }
+
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: sanitize to prevent path traversal
@@ -431,7 +469,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     ));
     fm.push_str(&format!(
         "status: {}\n",
-        fields.status.as_deref().unwrap_or("draft")
+        fields.status.as_deref().unwrap_or("inbox")
     ));
 
     if let Some(p) = fields.priority {
@@ -548,6 +586,12 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
         }
     }
 
+    // Validation
+    let mem_type = fields.memory_type.as_deref().unwrap_or("memory");
+    if !crate::graph::is_valid_node_type(mem_type) {
+        anyhow::bail!("Invalid memory type: {}", mem_type);
+    }
+
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: use as-is for both frontmatter and filename
@@ -658,6 +702,57 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
             }
             continue;
         }
+
+        // Validation for updated fields
+        match key.as_str() {
+            "status" => {
+                if let Some(s) = value.as_str() {
+                    if !crate::graph::is_valid_status(s) {
+                        anyhow::bail!("Invalid status: {}", s);
+                    }
+
+                    // Check for backwards transition
+                    if let Some(old_status) = fm.get("status").and_then(|v| v.as_str()) {
+                        let old_rank = crate::graph::status_rank(old_status);
+                        let new_rank = crate::graph::status_rank(s);
+                        if new_rank >= 0 && old_rank >= 0 && new_rank < old_rank {
+                            // Backwards transition — we allow it but maybe we should log?
+                            // The task says "flagged (warn, not block)".
+                            // In this context, we don't have a good way to "warn" without blocking
+                            // unless we use a logger.
+                            tracing::warn!(
+                                "Backwards status transition detected: {} -> {}",
+                                old_status,
+                                s
+                            );
+                        }
+                    }
+                }
+            }
+            "type" => {
+                if let Some(t) = value.as_str() {
+                    if !crate::graph::is_valid_node_type(t) {
+                        anyhow::bail!("Invalid node type: {}", t);
+                    }
+                }
+            }
+            "priority" => {
+                if let Some(p) = value.as_i64() {
+                    if !crate::graph::is_valid_priority(p as i32) {
+                        anyhow::bail!("Invalid priority: {}. Must be between 0 and 4.", p);
+                    }
+                }
+            }
+            "effort" => {
+                if let Some(e) = value.as_str() {
+                    if !crate::graph::is_valid_effort(e) {
+                        anyhow::bail!("Invalid effort: {}. Expected duration like '1d', '2h', '1w'.", e);
+                    }
+                }
+            }
+            _ => {}
+        }
+
         if value.is_null() {
             fm.remove(&key);
         } else {

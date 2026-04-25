@@ -38,6 +38,8 @@ pub struct FilterSet {
     pub orphan: Option<bool>,
     /// Substring match on title (case-insensitive)
     pub title_contains: Option<String>,
+    /// Match assignee
+    pub assignee: Option<String>,
     /// Match complexity tag
     pub complexity: Option<String>,
     /// File path contains directory
@@ -61,6 +63,7 @@ impl FilterSet {
             && self.stale_days.is_none()
             && self.orphan.is_none()
             && self.title_contains.is_none()
+            && self.assignee.is_none()
             && self.complexity.is_none()
             && self.directory.is_none()
             && self.weight_gte.is_none()
@@ -131,6 +134,9 @@ impl FilterSet {
         }
         if let Some(ref t) = self.title_contains {
             parts.push(format!("title_contains=\"{t}\""));
+        }
+        if let Some(ref a) = self.assignee {
+            parts.push(format!("assignee={a}"));
         }
         if let Some(ref c) = self.complexity {
             parts.push(format!("complexity={c}"));
@@ -240,6 +246,13 @@ impl FilterSet {
             }
         }
 
+        // Assignee
+        if let Some(ref assignee) = self.assignee {
+            if node.assignee.as_deref() != Some(assignee.as_str()) {
+                return false;
+            }
+        }
+
         // Complexity
         if let Some(ref complexity) = self.complexity {
             if node.complexity.as_deref() != Some(complexity.as_str()) {
@@ -293,6 +306,7 @@ pub fn parse_filter_set(args: &serde_json::Value) -> FilterSet {
         stale_days: args.get("stale_days").and_then(|v| v.as_u64()),
         orphan: args.get("orphan").and_then(|v| v.as_bool()),
         title_contains: args.get("title_contains").and_then(|v| v.as_str().map(String::from)),
+        assignee: args.get("assignee").and_then(|v| v.as_str().map(String::from)),
         complexity: args.get("complexity").and_then(|v| v.as_str().map(String::from)),
         directory: args.get("directory").and_then(|v| v.as_str().map(String::from)),
         weight_gte: args.get("weight_gte").and_then(|v| v.as_u64().map(|n| n as u32)),

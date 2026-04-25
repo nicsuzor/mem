@@ -38,7 +38,59 @@ pub fn batch_update(
     }
 
     let updates_map = match updates.as_object() {
-        Some(m) => m,
+        Some(m) => {
+            // Early validation of update fields
+            for (key, value) in m {
+                match key.as_str() {
+                    "status" => {
+                        if let Some(s) = value.as_str() {
+                            if !crate::graph::is_valid_status(s) {
+                                summary.errors.push(TaskError {
+                                    id: "".to_string(),
+                                    error: format!("Invalid status: {}", s),
+                                });
+                                return summary;
+                            }
+                        }
+                    }
+                    "type" => {
+                        if let Some(t) = value.as_str() {
+                            if !crate::graph::is_valid_node_type(t) {
+                                summary.errors.push(TaskError {
+                                    id: "".to_string(),
+                                    error: format!("Invalid document type: {}", t),
+                                });
+                                return summary;
+                            }
+                        }
+                    }
+                    "priority" => {
+                        if let Some(p) = value.as_i64() {
+                            if !crate::graph::is_valid_priority(p as i32) {
+                                summary.errors.push(TaskError {
+                                    id: "".to_string(),
+                                    error: format!("Invalid priority: {}. Must be between 0 and 4.", p),
+                                });
+                                return summary;
+                            }
+                        }
+                    }
+                    "effort" => {
+                        if let Some(e) = value.as_str() {
+                            if !crate::graph::is_valid_effort(e) {
+                                summary.errors.push(TaskError {
+                                    id: "".to_string(),
+                                    error: format!("Invalid effort: {}. Expected duration string like '1d', '2h', '1w'.", e),
+                                });
+                                return summary;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            m
+        }
         None => {
             summary.errors.push(TaskError {
                 id: "".to_string(),
