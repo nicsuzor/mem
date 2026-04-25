@@ -256,8 +256,9 @@ pub fn resolve_status_alias(status: &str) -> &str {
         | "done" | "blocked" | "paused" | "someday" | "cancelled" => status,
 
         // Legacy "active" (old taxonomy collapsed ready/queued/in_progress into
-        // one label). Historical usage was closest to "pullable" — treat as queued.
-        "active" => "queued",
+        // one label). Map to "ready" — let the auto-computed leaf-with-no-unmet-deps
+        // signal decide dispatchability rather than implicitly promoting to queued.
+        "active" => "ready",
 
         // Inbox-family: untriaged capture
         "todo" | "open" | "draft" | "early-scaffold" | "planning" | "seed" => "inbox",

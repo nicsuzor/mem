@@ -1579,7 +1579,7 @@ mod tests {
     #[test]
     fn fixes_status_alias() {
         let fixed = fix_str("---\ntitle: Test\nstatus: active\ntype: note\n---\n\nBody.\n");
-        assert!(fixed.contains("status: queued"), "Got: {}", fixed);
+        assert!(fixed.contains("status: ready"), "Got: {}", fixed);
         assert!(!fixed.contains("status: active"));
     }
 
