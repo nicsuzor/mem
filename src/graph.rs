@@ -345,11 +345,15 @@ pub fn status_group(status: Option<&str>) -> &'static str {
 pub const TASK_TYPES: &[&str] = &["task", "project", "epic", "learn"];
 
 /// All recognized canonical node type values.
+///
+/// `target` is an accepted alias for `goal` — both represent user-declared strategic
+/// priorities. Existing nodes with `type: target` parse correctly; the linter maps
+/// `target` → `goal` in auto-fix mode.
 pub const VALID_NODE_TYPES: &[&str] = &[
     // Actionable
     "project", "epic", "task", "learn",
     // Reference
-    "goal", "note", "knowledge", "memory", "contact",
+    "goal", "target", "note", "knowledge", "memory", "contact",
     "document", "reference", "review", "case", "spec",
     // Structural / log
     "index", "daily", "session-log", "audit-report",

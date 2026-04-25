@@ -209,7 +209,7 @@ fn resolve_type_alias(t: &str) -> &'static str {
         "spec" | "design" => "spec",
         "audit" | "audit-report" => "audit-report",
         "reference" => "reference",
-        "goal" => "goal",
+        "goal" | "target" => "goal",
         "instructions" | "role" | "agent" | "bundle" => "document",
         _ => "document",
     }
