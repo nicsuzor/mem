@@ -5,6 +5,7 @@ import {
     MUTED_FILL,
     MUTED_TEXT,
     INCOMPLETE_STATUSES,
+    COMPLETED_STATUSES,
     TYPE_SHAPE,
     TYPE_BADGE,
 } from './constants';
@@ -305,7 +306,7 @@ export function prepareGraphData(
         const modified = node.modified || null;
 
         let typeScale = TYPE_BASE_SCALE[nodeType] ?? 1.0;
-        if (['done', 'completed', 'cancelled'].includes(status)) {
+        if (COMPLETED_STATUSES.has(status)) {
             typeScale *= 0.6;
         }
         const weightFactor = dw > 0 ? 1 + Math.log1p(dw) * 0.3 : 1.0;

@@ -410,8 +410,8 @@
         }
 
         nodes.forEach((n) => {
-            if (["done", "completed", "cancelled"].includes(n.status)) n.opacity = 0.4;
-            else if (n.status === "active") n.opacity = 0.8;
+            if (COMPLETED_STATUSES.has(n.status)) n.opacity = 0.4;
+            else if (n.status === "in_progress") n.opacity = 0.8;
             else n.opacity = 0.6;
 
             if (isFocus && focusSet) {

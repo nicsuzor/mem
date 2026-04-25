@@ -9,7 +9,18 @@
         toggleMultiSelect,
         toggleSelectedTask,
     } from "../../stores/queueActions";
-    import { PRIORITIES, COMPLETED_STATUSES } from "../../data/constants";
+    import { PRIORITIES, COMPLETED_STATUSES, INCOMPLETE_STATUSES, STATUS_FILLS, STATUS_TEXT, STATUS_LABELS } from "../../data/constants";
+
+    function statusChipStyle(status: string | undefined) {
+        const s = status || 'inbox';
+        const fill = STATUS_FILLS[s] ?? '#1f2937';
+        const text = STATUS_TEXT[s] ?? '#e5e7eb';
+        return `background:${fill};color:${text};border-color:${fill};`;
+    }
+    function statusChipLabel(status: string | undefined) {
+        const s = status || 'inbox';
+        return STATUS_LABELS[s] ?? s.toUpperCase().replace('_', ' ');
+    }
     import { projectHue } from "../../data/projectUtils";
     import TaskEditorView from "./TaskEditorView.svelte";
     import StatusFilterBar from "../shared/StatusFilterBar.svelte";
@@ -92,11 +103,13 @@
 
         let matchesTab = false;
         if (currentTab === 'ACTIVE_TASKS') {
-            matchesTab = !['done', 'completed', 'cancelled', 'deferred', 'paused', 'backlog'].includes(n.status);
+            // Open work that is currently being acted on or pullable.
+            matchesTab = INCOMPLETE_STATUSES.has(n.status) && n.status !== 'someday' && n.status !== 'paused';
         } else if (currentTab === 'COMPLETED') {
-            matchesTab = ['done', 'completed'].includes(n.status);
+            matchesTab = n.status === 'done';
         } else if (currentTab === 'BACKLOG') {
-            matchesTab = ['backlog', 'deferred', 'paused', 'cancelled'].includes(n.status);
+            // Parked / deferred / explicitly cancelled work — anything not "in flight".
+            matchesTab = ['paused', 'someday', 'cancelled'].includes(n.status);
         }
 
         let matchesSearch = true;
@@ -308,8 +321,9 @@
                                     {task.id.length > 12 ? task.id.substring(0, 12) + '...' : task.id}
                                 </td>
                                 <td class="px-4 py-4">
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border {task.status === 'in_progress' ? 'bg-primary/20 text-primary border-primary/30' : 'bg-primary/5 text-primary/60 border-primary/20'} uppercase">
-                                        {task.status}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border uppercase {task.status === 'in_progress' ? 'animate-pulse' : ''}"
+                                          style={statusChipStyle(task.status)}>
+                                        {statusChipLabel(task.status)}
                                     </span>
                                 </td>
                                 <td class="px-4 py-4">
