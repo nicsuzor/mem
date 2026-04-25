@@ -504,7 +504,7 @@ fn check_frontmatter(
 
     // Required: type
     if let Some(t) = fm.get("type").and_then(|v| v.as_str()) {
-        if !VALID_NODE_TYPES.contains(&t) {
+        if !graph::is_valid_node_type(t) {
             let mapped = resolve_type_alias(t);
             diags.push(Diagnostic {
                 severity: Severity::Style,
@@ -539,12 +539,12 @@ fn check_frontmatter(
                 fixable: true,
             });
         }
-        if !VALID_STATUSES.contains(&canonical) {
+        if !graph::is_valid_status(canonical) {
             diags.push(Diagnostic {
                 severity: Severity::Warning,
                 rule: "fm-unknown-status",
                 message: format!(
-                    "Unknown status '{}' → will fix to 'active'",
+                    "Unknown status '{}' → will fix to 'inbox'",
                     raw_status,
                 ),
                 line: None,
@@ -564,7 +564,7 @@ fn check_frontmatter(
     // Priority validation
     if let Some(p) = fm.get("priority") {
         if let Some(n) = p.as_i64() {
-            if !(0..=4).contains(&n) {
+            if !graph::is_valid_priority(n as i32) {
                 diags.push(Diagnostic {
                     severity: Severity::Warning,
                     rule: "fm-priority-range",
@@ -589,6 +589,22 @@ fn check_frontmatter(
                 severity: Severity::Error,
                 rule: "fm-priority-type",
                 message: "'priority' must be an integer".into(),
+                line: None,
+                fixable: false,
+            });
+        }
+    }
+
+    // Effort validation
+    if let Some(effort) = fm.get("effort").and_then(|v| v.as_str()) {
+        if !graph::is_valid_effort(effort) {
+            diags.push(Diagnostic {
+                severity: Severity::Warning,
+                rule: "fm-invalid-effort",
+                message: format!(
+                    "Unrecognised effort value '{}' — expected duration string like '1d', '2h', '1w'",
+                    effort
+                ),
                 line: None,
                 fixable: false,
             });
@@ -973,13 +989,13 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, 
             }
         }
 
-        // Fix 5b: Fix unknown status → canonical (via alias or fallback to active)
+        // Fix 5b: Fix unknown status → canonical (via alias or fallback to inbox)
         if let Some(raw_status) = fm.get("status").and_then(|v| v.as_str()) {
             let canonical = graph::resolve_status_alias(raw_status);
-            if !VALID_STATUSES.contains(&canonical) {
-                // Status is truly unknown even after alias resolution — default to active
+            if !graph::is_valid_status(canonical) {
+                // Status is truly unknown even after alias resolution — default to inbox
                 let pattern = format!("status: {}", raw_status);
-                let replacement = "status: active".to_string();
+                let replacement = "status: inbox".to_string();
                 result = result.replacen(&pattern, &replacement, 1);
             }
         }

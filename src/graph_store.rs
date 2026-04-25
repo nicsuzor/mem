@@ -732,133 +732,100 @@ impl GraphStore {
         Ok(written)
     }
 
-/// Helper to parse duration strings into days.
-///
-/// Supports:
-/// - 1d = 1
-/// - 1w = 7
-/// - 2h = ceil(2/8) = 1 (8h workday)
-/// - 5 = 5 (bare number = days)
-pub(crate) fn parse_effort_days(effort: &str) -> Option<i64> {
-    let effort = effort.trim().to_lowercase();
-    if effort.is_empty() {
-        return None;
-    }
+    /// Compute focus scores for all nodes.
+    ///
+    /// Score based on priority, deadline urgency, staleness, and downstream weight.
+    /// Results are stored in node.focus_score.
+    fn compute_focus_scores(nodes: &mut [GraphNode]) {
+        let today = chrono::Utc::now().date_naive();
+        for node in nodes.iter_mut() {
+            let pri = node.priority.unwrap_or(2);
+            let mut score: i64 = match pri {
+                0 => 10000,
+                1 => 5000,
+                _ => 0,
+            };
+            if let Some(ref due) = node.due {
+                let len = std::cmp::min(10, due.len());
+                if let Ok(due_date) =
+                    chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+                {
+                    let days_until = (due_date - today).num_days();
+                    let effort_days = node
+                        .effort
+                        .as_deref()
+                        .and_then(crate::graph::parse_effort_days)
+                        .unwrap_or(3);
 
-    if effort.ends_with('w') {
-        effort[..effort.len() - 1]
-            .parse::<f64>()
-            .ok()
-            .map(|w| (w * 7.0).ceil() as i64)
-    } else if effort.ends_with('d') {
-        effort[..effort.len() - 1]
-            .parse::<f64>()
-            .ok()
-            .map(|d| d.ceil() as i64)
-    } else if effort.ends_with('h') {
-        effort[..effort.len() - 1]
-            .parse::<f64>()
-            .ok()
-            .map(|h| (h / 8.0).ceil() as i64)
-    } else {
-        effort.parse::<f64>().ok().map(|d| d.ceil() as i64)
-    }
-}
-
-/// Compute focus scores for all nodes.
-///
-/// Score based on priority, deadline urgency, staleness, and downstream weight.
-/// Results are stored in node.focus_score.
-fn compute_focus_scores(nodes: &mut [GraphNode]) {
-    let today = chrono::Utc::now().date_naive();
-    for node in nodes.iter_mut() {
-        let pri = node.priority.unwrap_or(2);
-        let mut score: i64 = match pri {
-            0 => 10000,
-            1 => 5000,
-            _ => 0,
-        };
-        if let Some(ref due) = node.due {
-            let len = std::cmp::min(10, due.len());
-            if let Ok(due_date) =
-                chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
-            {
-                let days_until = (due_date - today).num_days();
-                let effort_days = node
-                    .effort
-                    .as_deref()
-                    .and_then(GraphStore::parse_effort_days)
-                    .unwrap_or(3);
-
-                let mut deadline_score = if days_until < 0 {
-                    8000 + std::cmp::min((-days_until) * 200, 4000)
-                } else {
-                    let ratio = effort_days as f64 / (days_until.max(1) as f64);
-                    if ratio >= 1.0 {
-                        6000
-                    } else if ratio > 0.5 {
-                        // linear interpolation: 0.5 -> 2000, 1.0 -> 6000
-                        2000 + ((ratio - 0.5) * 8000.0) as i64
-                    } else if days_until <= 30 {
-                        1000
+                    let mut deadline_score = if days_until < 0 {
+                        8000 + std::cmp::min((-days_until) * 200, 4000)
                     } else {
-                        0
-                    }
-                };
+                        let ratio = effort_days as f64 / (days_until.max(1) as f64);
+                        if ratio >= 1.0 {
+                            6000
+                        } else if ratio > 0.5 {
+                            // linear interpolation: 0.5 -> 2000, 1.0 -> 6000
+                            2000 + ((ratio - 0.5) * 8000.0) as i64
+                        } else if days_until <= 30 {
+                            1000
+                        } else {
+                            0
+                        }
+                    };
 
-                if node.consequence.is_some() {
-                    deadline_score = (deadline_score as f64 * 1.5) as i64;
+                    if node.consequence.is_some() {
+                        deadline_score = (deadline_score as f64 * 1.5) as i64;
+                    }
+                    score += deadline_score;
                 }
-                score += deadline_score;
             }
-        }
-        if pri >= 2 {
-            if let Some(ref created) = node.created {
-                if created.len() >= 10 {
-                    if let Ok(created_dt) =
-                        chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d")
-                    {
-                        let days = (today - created_dt).num_days();
-                        score += std::cmp::min(days.max(0), 200);
+            if pri >= 2 {
+                if let Some(ref created) = node.created {
+                    if created.len() >= 10 {
+                        if let Ok(created_dt) =
+                            chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d")
+                        {
+                            let days = (today - created_dt).num_days();
+                            score += std::cmp::min(days.max(0), 200);
+                        }
                     }
                 }
             }
-        }
-        score += (node.downstream_weight * 10.0) as i64;
-        // Stakeholder waiting urgency: someone external is waiting on this task.
-        // Base +2000 (someone is waiting at all), growing +200/day, capped at +8000 total.
-        if node.stakeholder.is_some() {
-            let anchor = node.waiting_since.as_ref().or(node.created.as_ref());
-            if let Some(anchor_str) = anchor {
-                let len = std::cmp::min(10, anchor_str.len());
-                if let Ok(anchor_date) = chrono::NaiveDate::parse_from_str(
-                    &anchor_str[..anchor_str.floor_char_boundary(len)],
-                    "%Y-%m-%d",
-                ) {
-                    let days = (today - anchor_date).num_days().max(0);
-                    score += 2000 + std::cmp::min(days * 200, 6000);
+            score += (node.downstream_weight * 10.0) as i64;
+            // Stakeholder waiting urgency: someone external is waiting on this task.
+            // Base +2000 (someone is waiting at all), growing +200/day, capped at +8000 total.
+            if node.stakeholder.is_some() {
+                let anchor = node.waiting_since.as_ref().or(node.created.as_ref());
+                if let Some(anchor_str) = anchor {
+                    let len = std::cmp::min(10, anchor_str.len());
+                    if let Ok(anchor_date) = chrono::NaiveDate::parse_from_str(
+                        &anchor_str[..anchor_str.floor_char_boundary(len)],
+                        "%Y-%m-%d",
+                    ) {
+                        let days = (today - anchor_date).num_days().max(0);
+                        score += 2000 + std::cmp::min(days * 200, 6000);
+                    } else {
+                        score += 2000; // stakeholder set but unparseable date
+                    }
                 } else {
-                    score += 2000; // stakeholder set but unparseable date
+                    score += 2000; // stakeholder set but no date at all
                 }
-            } else {
-                score += 2000; // stakeholder set but no date at all
             }
+            node.focus_score = Some(score);
         }
-        node.focus_score = Some(score);
     }
-}
 
-/// Compute focus picks: top ready tasks ranked by pre-computed focus_score.
-pub fn focus_picks(&self, max: usize) -> Vec<String> {
-    let mut scored: Vec<(&GraphNode, i64)> = self.ready
-        .iter()
-        .filter_map(|id| self.nodes.get(id))
-        .map(|t| (t, t.focus_score.unwrap_or(0)))
-        .collect();
+    /// Compute focus picks: top ready tasks ranked by pre-computed focus_score.
+    pub fn focus_picks(&self, max: usize) -> Vec<String> {
+        let mut scored: Vec<(&GraphNode, i64)> = self.ready
+            .iter()
+            .filter_map(|id| self.nodes.get(id))
+            .map(|t| (t, t.focus_score.unwrap_or(0)))
+            .collect();
 
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-    scored.into_iter().take(max).map(|(t, _)| t.id.clone()).collect()
-}
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.into_iter().take(max).map(|(t, _)| t.id.clone()).collect()
+    }
 
     /// Full graph as JSON — all task nodes and their edges.
     pub fn output_json(&self) -> Result<String> {

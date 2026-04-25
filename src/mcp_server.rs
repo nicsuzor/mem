@@ -1289,7 +1289,7 @@ impl PkbSearchServer {
         let effort_days = node
             .effort
             .as_deref()
-            .and_then(crate::graph_store::GraphStore::parse_effort_days)
+            .and_then(crate::graph::parse_effort_days)
             .unwrap_or(3);
         let urgency_ratio: Option<f64> = days_until_due.map(|d| {
             (effort_days as f64 / d.max(1) as f64).min(1.0)

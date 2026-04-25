@@ -28,6 +28,15 @@ pub fn batch_reclassify(
 ) -> BatchSummary {
     let mut summary = BatchSummary::new("reclassify", dry_run);
 
+    // Early validation: ensure new_type is canonical
+    if !crate::graph::is_valid_node_type(new_type) {
+        summary.errors.push(TaskError {
+            id: "".to_string(),
+            error: format!("Invalid document type: {}", new_type),
+        });
+        return summary;
+    }
+
     let matched_ids = filters.resolve(graph);
     summary.matched = matched_ids.len();
 

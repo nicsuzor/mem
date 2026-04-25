@@ -289,6 +289,76 @@ pub fn resolve_status_alias(status: &str) -> &str {
     }
 }
 
+/// Returns true if the status is a valid canonical status.
+pub fn is_valid_status(status: &str) -> bool {
+    VALID_STATUSES.contains(&status)
+}
+
+/// Returns true if the node type is a valid canonical node type.
+pub fn is_valid_node_type(node_type: &str) -> bool {
+    VALID_NODE_TYPES.contains(&node_type)
+}
+
+/// Returns true if the priority is within the valid range [0, 4].
+pub fn is_valid_priority(priority: i32) -> bool {
+    (0..=4).contains(&priority)
+}
+
+/// Returns true if the effort string is a valid duration (e.g., "1d", "2h", "1w", "0.5d").
+pub fn is_valid_effort(effort: &str) -> bool {
+    parse_effort_days(effort).is_some()
+}
+
+/// Returns a rank for statuses to detect backwards transitions.
+/// Higher rank = further along in the lifecycle.
+pub fn status_rank(status: &str) -> i32 {
+    match status {
+        "inbox" => 0,
+        "ready" => 1,
+        "queued" => 2,
+        "in_progress" => 3,
+        "review" => 4,
+        "merge_ready" => 5,
+        "done" => 6,
+        // Side states are generally ranked low but high enough to not flag everything
+        "blocked" | "paused" | "someday" | "cancelled" => -1,
+        _ => 0,
+    }
+}
+
+/// Helper to parse duration strings into days.
+///
+/// Supports:
+/// - 1d = 1
+/// - 1w = 7
+/// - 2h = ceil(2/8) = 1 (8h workday)
+/// - 5 = 5 (bare number = days)
+pub fn parse_effort_days(effort: &str) -> Option<i64> {
+    let effort = effort.trim().to_lowercase();
+    if effort.is_empty() {
+        return None;
+    }
+
+    if effort.ends_with('w') {
+        effort[..effort.len() - 1]
+            .parse::<f64>()
+            .ok()
+            .map(|w| (w * 7.0).ceil() as i64)
+    } else if effort.ends_with('d') {
+        effort[..effort.len() - 1]
+            .parse::<f64>()
+            .ok()
+            .map(|d| d.ceil() as i64)
+    } else if effort.ends_with('h') {
+        effort[..effort.len() - 1]
+            .parse::<f64>()
+            .ok()
+            .map(|h| (h / 8.0).ceil() as i64)
+    } else {
+        effort.parse::<f64>().ok().map(|d| d.ceil() as i64)
+    }
+}
+
 // ── Canonical status and type values ────────────────────────────────────
 
 /// All recognized canonical status values (post-alias resolution).
