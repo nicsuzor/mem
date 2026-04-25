@@ -195,6 +195,12 @@
             );
         }
 
+        if ($filters.minCriticality > 0) {
+            fNodes = fNodes.filter(n =>
+                STRUCTURAL_TYPES.has(n.type) || ((n as any).criticality ?? 0) >= $filters.minCriticality
+            );
+        }
+
         const edgeVisibilityFor = (edge: GraphEdge) => {
             if (edge.type === 'parent') return $filters.edgeParent;
             if (edge.type === 'depends_on') return $filters.edgeDependencies;

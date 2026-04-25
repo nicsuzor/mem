@@ -63,6 +63,17 @@
             <span class="chip-count">{count}</span>
         </button>
     {/each}
+    <div class="separator"></div>
+    <button
+        class="status-chip"
+        class:active={$filters.minCriticality > 0}
+        style="--chip-color: #f59e0b"
+        onclick={() => filters.update(f => ({ ...f, minCriticality: f.minCriticality > 0 ? 0 : 0.4 }))}
+        title="Show only high-criticality tasks (criticality ≥ 40%)"
+    >
+        <span class="chip-dot"></span>
+        <span class="chip-label">HIGH_CRIT</span>
+    </button>
 </div>
 
 <style>
@@ -76,6 +87,14 @@
         scrollbar-width: none;
     }
     .status-filter-bar::-webkit-scrollbar { display: none; }
+
+    .separator {
+        width: 1px;
+        height: 18px;
+        background: color-mix(in srgb, currentColor 15%, transparent);
+        flex-shrink: 0;
+        margin: 0 4px;
+    }
 
     .status-chip {
         display: inline-flex;

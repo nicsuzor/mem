@@ -124,6 +124,12 @@
         } else if (sortField === 'assignee') {
             valA = a.assignee || 'zzzz';
             valB = b.assignee || 'zzzz';
+        } else if (sortField === 'criticality') {
+            valA = (a as any).criticality ?? 0;
+            valB = (b as any).criticality ?? 0;
+        } else if (sortField === 'uncertainty') {
+            valA = (a as any).uncertainty ?? 0;
+            valB = (b as any).uncertainty ?? 0;
         } else {
             valA = a.label || '';
             valB = b.label || '';
@@ -267,6 +273,8 @@
                             <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest cursor-pointer hover:bg-primary/20 transition-colors" onclick={() => toggleSort('label')}>Task_Name {sortField === 'label' ? (sortAsc ? '▲' : '▼') : ''}</th>
                             <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-32 cursor-pointer hover:bg-primary/20 transition-colors" onclick={() => toggleSort('assignee')}>Assignee {sortField === 'assignee' ? (sortAsc ? '▲' : '▼') : ''}</th>
                             <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-28 cursor-pointer hover:bg-primary/20 transition-colors" onclick={() => toggleSort('priority')}>Priority {sortField === 'priority' ? (sortAsc ? '▲' : '▼') : ''}</th>
+                            <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-28 cursor-pointer hover:bg-primary/20 transition-colors" onclick={() => toggleSort('criticality')} title="Sort by criticality (impact × priority weight)">Crit {sortField === 'criticality' ? (sortAsc ? '▲' : '▼') : ''}</th>
+                            <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-28 cursor-pointer hover:bg-primary/20 transition-colors" onclick={() => toggleSort('uncertainty')} title="Sort by uncertainty (missing spec, unresolved scope, etc.)">Uncert {sortField === 'uncertainty' ? (sortAsc ? '▲' : '▼') : ''}</th>
                             <th class="px-4 py-3 text-[10px] font-bold text-primary/70 uppercase tracking-widest w-48 text-right">Actions</th>
                         </tr>
                     </thead>
@@ -325,6 +333,30 @@
                                         <span class="size-1.5 rounded-full" style="background-color: {PRIORITIES[task.priority ?? 2]?.color ?? '#6c757d'};"></span>
                                         {PRIORITIES[task.priority ?? 2]?.short ?? 'ACTV'}
                                     </span>
+                                </td>
+                                <td class="px-4 py-4">
+                                    {#if ((task as any).criticality ?? 0) > 0}
+                                        <div class="flex flex-col gap-0.5" title="Criticality: {Math.round(((task as any).criticality ?? 0) * 100)}%">
+                                            <div class="h-1 w-16 rounded-full bg-primary/10 overflow-hidden">
+                                                <div class="h-full rounded-full" style="width:{Math.round(((task as any).criticality ?? 0) * 100)}%; background: color-mix(in srgb, #f59e0b {40 + Math.round(((task as any).criticality ?? 0) * 60)}%, #374151)"></div>
+                                            </div>
+                                            <span class="text-[8px] font-mono text-primary/50">{Math.round(((task as any).criticality ?? 0) * 100)}%</span>
+                                        </div>
+                                    {:else}
+                                        <span class="text-[8px] text-primary/20">—</span>
+                                    {/if}
+                                </td>
+                                <td class="px-4 py-4">
+                                    {#if ((task as any).uncertainty ?? 0) > 0}
+                                        <div class="flex flex-col gap-0.5" title="Uncertainty: {Math.round(((task as any).uncertainty ?? 0) * 100)}%">
+                                            <div class="h-1 w-16 rounded-full bg-primary/10 overflow-hidden">
+                                                <div class="h-full rounded-full bg-slate-400/60" style="width:{Math.round(((task as any).uncertainty ?? 0) * 100)}%"></div>
+                                            </div>
+                                            <span class="text-[8px] font-mono text-primary/50">{Math.round(((task as any).uncertainty ?? 0) * 100)}%</span>
+                                        </div>
+                                    {:else}
+                                        <span class="text-[8px] text-primary/20">—</span>
+                                    {/if}
                                 </td>
                                 <td class="px-4 py-4 text-right">
                                     <div class="flex items-center justify-end gap-1">

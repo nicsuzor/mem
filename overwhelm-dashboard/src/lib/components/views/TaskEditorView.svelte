@@ -7,7 +7,8 @@
     const HIDDEN_METADATA_KEYS = new Set([
         'body', 'id', 'title', 'label', 'node_type', 'status', 'priority', 'project', 'assignee',
         'layouts', 'x', 'y', 'depth', 'maxDepth', 'lines', 'dw', 'downstream_weight', 'modified',
-        'created', 'isLeaf', 'parent', 'fullTitle', '_safe_parent', 'filter_dimmed', 'path', 'refile'
+        'created', 'isLeaf', 'parent', 'fullTitle', '_safe_parent', 'filter_dimmed', 'path', 'refile',
+        'scope', 'uncertainty', 'criticality',
     ]);
 
     // Canonical status lifecycle (see aops-core/TAXONOMY.md):
@@ -572,6 +573,42 @@
                                 {/if}
                             </div>
                         </section>
+
+                        {#if (task as any).criticality > 0 || (task as any).uncertainty > 0 || (task as any).scope > 0}
+                        <section class="rounded-sm border border-primary/15 bg-black/15 p-3 space-y-2">
+                            <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45 border-b border-primary/10 pb-1">Computed Properties</div>
+
+                            <!-- Criticality -->
+                            <div class="space-y-0.5">
+                                <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
+                                    <span class="text-primary/45">Criticality</span>
+                                    <span class="font-bold" style="color: {(task as any).criticality > 0.6 ? '#f59e0b' : (task as any).criticality > 0.3 ? '#d97706' : '#a3a3a3'}">{Math.round((task as any).criticality * 100)}%</span>
+                                </div>
+                                <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
+                                    <div class="h-full rounded-full transition-all" style="width:{Math.round((task as any).criticality * 100)}%; background: color-mix(in srgb, #f59e0b {40 + Math.round((task as any).criticality * 60)}%, #374151)"></div>
+                                </div>
+                            </div>
+
+                            <!-- Uncertainty -->
+                            <div class="space-y-0.5">
+                                <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
+                                    <span class="text-primary/45">Uncertainty</span>
+                                    <span class="font-bold" style="color: {(task as any).uncertainty > 0.6 ? '#94a3b8' : (task as any).uncertainty > 0.3 ? '#64748b' : '#a3a3a3'}">{Math.round((task as any).uncertainty * 100)}%</span>
+                                </div>
+                                <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
+                                    <div class="h-full rounded-full transition-all" style="width:{Math.round((task as any).uncertainty * 100)}%; background: color-mix(in srgb, #94a3b8 {40 + Math.round((task as any).uncertainty * 60)}%, #374151)"></div>
+                                </div>
+                            </div>
+
+                            <!-- Scope -->
+                            {#if (task as any).scope > 0}
+                            <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
+                                <span class="text-primary/45">Scope</span>
+                                <span class="font-bold text-primary/70">{(task as any).scope} descendant{(task as any).scope === 1 ? '' : 's'}</span>
+                            </div>
+                            {/if}
+                        </section>
+                        {/if}
 
                         <section class="space-y-2">
                             <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Local Context</span>

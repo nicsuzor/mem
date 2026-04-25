@@ -30,6 +30,9 @@ export interface GraphNode {
     stakeholder: boolean;
     structural: boolean;
     dw: number;
+    scope: number;
+    uncertainty: number;
+    criticality: number;
     totalLeafCount: number;
     modified: number | null;
     badge: string;
@@ -285,6 +288,9 @@ export function prepareGraphData(
         const status = (node.status || "inbox").toLowerCase();
         const priority = typeof node.priority === 'number' ? node.priority : 2;
         const dw = node.downstream_weight || 0;
+        const scope = typeof node.scope === 'number' ? node.scope : 0;
+        const uncertainty = typeof node.uncertainty === 'number' ? node.uncertainty : 0;
+        const criticality = typeof node.criticality === 'number' ? node.criticality : 0;
         const stakeholder = node.stakeholder_exposure || false;
         const depth = node.depth || 0;
         const isStructural = structuralIds.has(nid);
@@ -345,10 +351,20 @@ export function prepareGraphData(
             textCol = interpolateColor(baseText, MUTED_TEXT, desaturation);
         }
 
+        // Criticality: blend fill toward amber to signal high-impact nodes
+        if (!isStructural && criticality > 0) {
+            fill = interpolateColor(fill, '#f59e0b', criticality * 0.30);
+            textCol = interpolateColor(textCol, '#92400e', criticality * 0.25);
+        }
+
         let opacity = 1.0;
         if (!isStructural && dw === 0) {
             const hasEdges = validEdges.some(e => e.source === nid || e.target === nid);
             if (!hasEdges) opacity = 0.5;
+        }
+        // Uncertainty: dim nodes proportionally to how uncertain they are
+        if (!isStructural && uncertainty > 0) {
+            opacity = Math.max(0.3, opacity - uncertainty * 0.35);
         }
 
         const isIncomplete = INCOMPLETE_STATUSES.has(status);
@@ -358,6 +374,10 @@ export function prepareGraphData(
         let borderWidth = 1.5 + Math.min(Math.log1p(dw) * 0.5, 2.5);
         if (priority <= 1 && isIncomplete) {
             borderWidth = Math.max(borderWidth, 3);
+        }
+        // Criticality: widen border to draw visual attention
+        if (!isStructural && criticality > 0) {
+            borderWidth = Math.min(borderWidth + criticality * 2.5, 6);
         }
 
         const shape = TYPE_SHAPE[nodeType] || "rect";
@@ -384,6 +404,9 @@ export function prepareGraphData(
             stakeholder,
             structural: isStructural,
             dw: Math.round(dw * 10) / 10,
+            scope,
+            uncertainty: Math.round(uncertainty * 100) / 100,
+            criticality: Math.round(criticality * 100) / 100,
             totalLeafCount: parentIdsInGraph.has(nid) ? (totalLeafCountCache.get(nid) || 0) : 0,
             modified,
             badge,
