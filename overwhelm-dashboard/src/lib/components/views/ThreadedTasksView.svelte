@@ -153,7 +153,13 @@
         return 0;
     }) : [];
 
-    $: activeCount = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && !COMPLETED_STATUSES.has(n.status)).length : 0;
+    // Mirrors the ACTIVE_TASKS tab filter so the header count matches what is shown.
+    $: activeCount = $graphData ? $graphData.nodes.filter(n =>
+        n.type === 'task'
+        && INCOMPLETE_STATUSES.has(n.status)
+        && n.status !== 'paused'
+        && n.status !== 'someday'
+    ).length : 0;
 </script>
 
 <div class="flex flex-1 overflow-hidden h-full relative" data-component="task-list">
