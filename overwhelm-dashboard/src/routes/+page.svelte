@@ -31,6 +31,7 @@
     import { filters } from "$lib/stores/filters";
     import { selection } from "$lib/stores/selection";
     import { browser } from "$app/environment";
+    import { INCOMPLETE_STATUSES, COMPLETED_STATUSES } from "$lib/data/constants";
 
     export let data: any;
 
@@ -165,9 +166,9 @@
 
             // Determine status visibility
             let statusVis = 'bright';
-            const isActive = ["active", "ready", "inbox", "todo", "in_progress", "review", "waiting", "decomposing", "dormant"].includes(n.status);
             const isBlocked = n.status === "blocked";
-            const isCompleted = ["done", "completed", "cancelled", "historical", "deferred", "paused", "seed", "early-scaffold"].includes(n.status);
+            const isCompleted = COMPLETED_STATUSES.has(n.status);
+            const isActive = !isBlocked && !isCompleted && INCOMPLETE_STATUSES.has(n.status);
 
             if (isActive) statusVis = $filters.statusActive;
             else if (isBlocked) statusVis = $filters.statusBlocked;
@@ -409,8 +410,8 @@
         }
 
         nodes.forEach((n) => {
-            if (["done", "completed", "cancelled"].includes(n.status)) n.opacity = 0.4;
-            else if (n.status === "active") n.opacity = 0.8;
+            if (COMPLETED_STATUSES.has(n.status)) n.opacity = 0.4;
+            else if (n.status === "in_progress") n.opacity = 0.8;
             else n.opacity = 0.6;
 
             if (isFocus && focusSet) {

@@ -2,7 +2,7 @@
     import { graphData, updateGraphTaskNode } from "../../stores/graph";
     import HierarchyTree from "./HierarchyTree.svelte";
     import { describeTaskMutation, taskOperations } from "../../stores/taskOperations";
-    import { PRIORITIES, STATUS_FILLS, STATUS_TEXT } from "../../data/constants";
+    import { PRIORITIES, STATUS_FILLS, STATUS_TEXT, COMPLETED_STATUSES } from "../../data/constants";
 
     const HIDDEN_METADATA_KEYS = new Set([
         'body', 'id', 'title', 'label', 'node_type', 'status', 'priority', 'project', 'assignee',
@@ -147,7 +147,7 @@
         taskId && $graphData
             ? $graphData.nodes.filter(n =>
                 n.parent === taskId &&
-                !['done', 'completed', 'cancelled'].includes(n.status)
+                !COMPLETED_STATUSES.has(n.status)
             )
             : []
     );
@@ -202,14 +202,6 @@
                 });
             }
         }
-    }
-
-    function handleArchive() {
-        setStatus('done');
-    }
-
-    function handleDecompose() {
-        setStatus('in_progress');
     }
 
     let refileMarked = $derived(Boolean((task as any)?._raw?.refile));
@@ -467,8 +459,8 @@
                                 {/if}
                                 {#each WORKFLOW_ACTIONS as action}
                                     <button
-                                        class={stateCardClass(action.status, action.status === 'ready' ? 'ready' : action.status === 'decomposing' ? 'active' : 'neutral')}
-                                        onclick={() => action.status === 'decomposing' ? handleDecompose() : setStatus(action.status)}
+                                        class={stateCardClass(action.status, STATE_DETAILS[action.status]?.tone ?? 'neutral')}
+                                        onclick={() => setStatus(action.status)}
                                     >
                                         <span class="material-symbols-outlined text-[14px]">{action.icon}</span>
                                         <span class="min-w-0">
@@ -478,7 +470,7 @@
                                 {/each}
                                 {#each TERMINAL_ACTIONS as action}
                                     <button
-                                        class={stateCardClass(action.status, action.status === 'cancelled' ? 'danger' : 'neutral')}
+                                        class={stateCardClass(action.status, STATE_DETAILS[action.status]?.tone ?? 'neutral')}
                                         onclick={() => setStatus(action.status)}
                                     >
                                         <span class="material-symbols-outlined text-[14px]">{action.icon}</span>

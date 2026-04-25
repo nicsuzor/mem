@@ -46,7 +46,7 @@
             await fetch('/api/task/status', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: session.id, status: 'active' }), // Demote from in_progress
+                body: JSON.stringify({ id: session.id, status: 'queued' }), // Demote from in_progress (was legacy 'active')
             });
             // Let the graph sync interval handle the UI update
         } catch (e) {
@@ -66,7 +66,7 @@
                 fetch('/api/task/status', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: s.id, status: 'active' }),
+                    body: JSON.stringify({ id: s.id, status: 'queued' }),
                 })
             ));
         } catch (e) {

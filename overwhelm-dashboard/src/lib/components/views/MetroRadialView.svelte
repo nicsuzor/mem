@@ -346,7 +346,7 @@
     }
 
     function isInProgress(n?: GraphNode): boolean {
-        return !!n && (n.status === 'in_progress' || n.status === 'active');
+        return !!n && n.status === 'in_progress';
     }
 
     // ── You-are-here: in_progress tasks get a pulse ring

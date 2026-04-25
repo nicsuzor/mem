@@ -5,6 +5,18 @@
     import { copyToClipboard } from "../../data/utils";
     import TaskActionButtons from "../shared/TaskActionButtons.svelte";
     import AssigneeBadge from "../shared/AssigneeBadge.svelte";
+    import { INCOMPLETE_STATUSES, STATUS_FILLS, STATUS_TEXT, STATUS_LABELS } from "../../data/constants";
+
+    function statusChipStyle(status: string | undefined) {
+        const s = status || 'inbox';
+        const fill = STATUS_FILLS[s] ?? '#1f2937';
+        const text = STATUS_TEXT[s] ?? '#e5e7eb';
+        return `background:${fill};color:${text};border-color:${fill};`;
+    }
+    function statusChipLabel(status: string | undefined) {
+        const s = status || 'inbox';
+        return STATUS_LABELS[s] ?? s.toUpperCase().replace('_', ' ');
+    }
     export let projectProjects: string[] = [];
     export let projectData: any = {};
 
@@ -60,7 +72,7 @@
             {@const members = projectMembers.get(project) || [project]}
             {@const meta = members.reduce((acc, p) => ({ ...acc, ...(projectData.meta?.[p] || {}) }), {} as any)}
             {@const allEpics = members.flatMap(p => (projectData.meta?.[p] || {}).epics || []).filter(e => e.hasPriorityTask)}
-            {@const storeTasks = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && members.includes(n.project || '') && ['active', 'in_progress', 'blocked'].includes(n.status)) : []}
+            {@const storeTasks = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && members.includes(n.project || '') && INCOMPLETE_STATUSES.has(n.status)) : []}
             {@const tasks = storeTasks.length > 0 ? storeTasks : members.flatMap(p => projectData.tasks?.[p] || [])}
             {@const accomplishments = members.flatMap(p => projectData.accomplishments?.[p] || [])}
             {@const sessions = members.flatMap(p => projectData.sessions?.[p] || [])}
@@ -135,13 +147,8 @@
 
                                         <AssigneeBadge assignee={task.assignee} compact={true} />
                                         <span class="text-xs text-primary/90 flex-1">{task.title || task.label}</span>
-                                        <span class="text-[10px] font-bold px-1 py-0.5 shrink-0 {
-                                            task.status === 'in_progress' ? 'bg-primary text-black animate-pulse' :
-                                            task.status === 'blocked' ? 'bg-red-900/50 text-red-400 border border-red-500/40' :
-                                            task.status === 'waiting' ? 'bg-yellow-900/30 text-yellow-400 border border-yellow-500/40' :
-                                            task.status === 'review' ? 'bg-purple-900/30 text-purple-400 border border-purple-500/40' :
-                                            'bg-primary/10 text-primary/50 border border-primary/20'
-                                        }">{(task.status || 'active').toUpperCase().replace('_', ' ')}</span>
+                                        <span class="text-[10px] font-bold px-1 py-0.5 shrink-0 border rounded-sm {task.status === 'in_progress' ? 'animate-pulse' : ''}"
+                                              style={statusChipStyle(task.status)}>{statusChipLabel(task.status)}</span>
                                         {#if taskId}
                                             <TaskActionButtons taskId={taskId} />
                                         {/if}

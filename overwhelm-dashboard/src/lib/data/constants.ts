@@ -137,21 +137,31 @@ export const PRIORITY_BORDERS: Record<number, string> = Object.fromEntries(
     PRIORITIES.map(p => [p.value, p.color])
 );
 
-export const INCOMPLETE_STATUSES = new Set([
+// Open-work set — matches mem's ACTIVE_STATUSES ∪ BLOCKED_STATUSES
+// (see src/graph.rs and aops-core/TAXONOMY.md). Aliases (active, draft,
+// waiting, decomposing, todo, …) are normalised upstream by the mem server,
+// so they should never reach the dashboard.
+export const INCOMPLETE_STATUSES = new Set<string>([
     "inbox",
-    "draft",
     "ready",
     "queued",
-    "active",
     "in_progress",
-    "blocked",
-    "waiting",
-    "review",
     "merge_ready",
-    "decomposing",
-    "todo",
-    "pending",
+    "review",
+    "blocked",
+    "paused",
+    "someday",
 ]);
+
+// Terminal set — `done` and `cancelled` only.
+export const COMPLETED_STATUSES = new Set<string>(["done", "cancelled"]);
+
+// Self-consistency guard: legend palette and order must agree.
+// Throws at module load if the keys ever diverge.
+if (STATUS_ORDER.length !== Object.keys(STATUS_FILLS).length
+    || STATUS_ORDER.some(s => !(s in STATUS_FILLS))) {
+    throw new Error("STATUS_ORDER and STATUS_FILLS keys must match");
+}
 
 export const MUTED_FILL = "#e8eaed";
 export const MUTED_TEXT = "#9ca3af";
