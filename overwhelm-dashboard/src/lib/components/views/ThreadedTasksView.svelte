@@ -9,7 +9,7 @@
         toggleMultiSelect,
         toggleSelectedTask,
     } from "../../stores/queueActions";
-    import { PRIORITIES } from "../../data/constants";
+    import { PRIORITIES, COMPLETED_STATUSES } from "../../data/constants";
     import { projectHue } from "../../data/projectUtils";
     import TaskEditorView from "./TaskEditorView.svelte";
     import StatusFilterBar from "../shared/StatusFilterBar.svelte";
@@ -140,7 +140,7 @@
         return 0;
     }) : [];
 
-    $: activeCount = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && !['done', 'completed', 'cancelled', 'deferred', 'paused', 'backlog'].includes(n.status)).length : 0;
+    $: activeCount = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && !COMPLETED_STATUSES.has(n.status)).length : 0;
 </script>
 
 <div class="flex flex-1 overflow-hidden h-full relative" data-component="task-list">

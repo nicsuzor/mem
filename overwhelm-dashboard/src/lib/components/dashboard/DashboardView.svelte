@@ -5,6 +5,7 @@
     import ActiveSessions from "./ActiveSessions.svelte";
     import SynthesisPanel from "./SynthesisPanel.svelte";
     import ProjectDashboard from "./ProjectDashboard.svelte";
+    import { INCOMPLETE_STATUSES, COMPLETED_STATUSES } from "../../data/constants";
 
     // Pseudo-projects come from $AOPS_SESSIONS/projects.json (loaded server-side).
     $: pseudoProjects = new Set<string>(data?.dashboardData?.projects_config?.pseudo_projects || []);
@@ -36,7 +37,7 @@
             const p = proj as string;
             const projTasks = gd.nodes.filter((n: any) =>
                 n.type === 'task' && n.project === p &&
-                ['active', 'in_progress', 'blocked', 'waiting', 'review'].includes(n.status)
+                INCOMPLETE_STATUSES.has(n.status)
             );
             result.tasks[p] = projTasks.length > 0 ? projTasks : (serverData.tasks?.[p] || []);
 
@@ -44,13 +45,13 @@
 
             const projEpics = gd.nodes.filter((n: any) =>
                 n.type === 'epic' && n.project === p &&
-                !['done', 'completed', 'cancelled'].includes(n.status)
+                !COMPLETED_STATUSES.has(n.status)
             );
             if (projEpics.length > 0) {
                 result.meta[p].epics = projEpics.map((e: any) => {
                     const children = gd.nodes.filter((n: any) => n.parent === e.id);
-                    const done = children.filter((n: any) => ['done', 'completed'].includes(n.status)).length;
-                    const outstandingChildren = children.filter((n: any) => !['done', 'completed', 'cancelled'].includes(n.status));
+                    const done = children.filter((n: any) => n.status === 'done').length;
+                    const outstandingChildren = children.filter((n: any) => !COMPLETED_STATUSES.has(n.status));
                     const hasPriorityTask = outstandingChildren.some((n: any) => n.priority === 0 || n.priority === 1);
                     return { id: e.id, title: e.label, progress: { completed: done, total: children.length }, hasPriorityTask };
                 });

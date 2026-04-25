@@ -5,6 +5,7 @@
     import { copyToClipboard } from "../../data/utils";
     import TaskActionButtons from "../shared/TaskActionButtons.svelte";
     import AssigneeBadge from "../shared/AssigneeBadge.svelte";
+    import { INCOMPLETE_STATUSES } from "../../data/constants";
     export let projectProjects: string[] = [];
     export let projectData: any = {};
 
@@ -60,7 +61,7 @@
             {@const members = projectMembers.get(project) || [project]}
             {@const meta = members.reduce((acc, p) => ({ ...acc, ...(projectData.meta?.[p] || {}) }), {} as any)}
             {@const allEpics = members.flatMap(p => (projectData.meta?.[p] || {}).epics || []).filter(e => e.hasPriorityTask)}
-            {@const storeTasks = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && members.includes(n.project || '') && ['active', 'in_progress', 'blocked'].includes(n.status)) : []}
+            {@const storeTasks = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && members.includes(n.project || '') && INCOMPLETE_STATUSES.has(n.status)) : []}
             {@const tasks = storeTasks.length > 0 ? storeTasks : members.flatMap(p => projectData.tasks?.[p] || [])}
             {@const accomplishments = members.flatMap(p => projectData.accomplishments?.[p] || [])}
             {@const sessions = members.flatMap(p => projectData.sessions?.[p] || [])}
