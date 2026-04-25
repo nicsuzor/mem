@@ -100,6 +100,16 @@
     );
 
     let currentPriority = $derived(PRIORITIES.find((priority) => priority.value === (t?.priority ?? 2)) ?? PRIORITIES[2]);
+
+    // Downstream weight, normalised against the max in the graph using the
+    // same log1p scaling that drives node size + saturation in the visuals.
+    let maxWeight = $derived(
+        $graphData ? Math.max(1, ...$graphData.nodes.map(n => (n as any).dw || 0)) : 1
+    );
+    let weightRaw = $derived((task as any)?.dw ?? 0);
+    let weightNorm = $derived(
+        weightRaw > 0 ? Math.min(Math.log1p(weightRaw) / Math.log1p(maxWeight), 1.0) : 0
+    );
     let currentStateDetails = $derived(STATE_DETAILS[t?.status || ''] ?? {
         label: t?.status || 'Unknown',
         icon: 'help',
@@ -566,9 +576,22 @@
                             </div>
                         </section>
 
-                        {#if (task as any).criticality > 0 || (task as any).uncertainty > 0 || (task as any).scope > 0}
+                        {#if (task as any).criticality > 0 || (task as any).uncertainty > 0 || (task as any).scope > 0 || weightRaw > 0}
                         <section class="rounded-sm border border-primary/15 bg-black/15 p-3 space-y-2">
                             <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45 border-b border-primary/10 pb-1">Computed Properties</div>
+
+                            <!-- Weight (downstream_weight, log-normalised against graph max) -->
+                            {#if weightRaw > 0}
+                            <div class="space-y-0.5" title="Downstream weight: log1p(dw)/log1p(max). Drives node size + fill saturation in graph views.">
+                                <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
+                                    <span class="text-primary/45">Weight</span>
+                                    <span class="font-bold" style="color: {weightNorm > 0.6 ? '#42d4f4' : weightNorm > 0.3 ? '#3aa9c4' : '#a3a3a3'}">{weightRaw.toFixed(1)} <span class="text-primary/40">({Math.round(weightNorm * 100)}%)</span></span>
+                                </div>
+                                <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
+                                    <div class="h-full rounded-full transition-all" style="width:{Math.round(weightNorm * 100)}%; background: color-mix(in srgb, #42d4f4 {40 + Math.round(weightNorm * 60)}%, #374151)"></div>
+                                </div>
+                            </div>
+                            {/if}
 
                             <!-- Criticality -->
                             <div class="space-y-0.5">
