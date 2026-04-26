@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.15](https://github.com/nicsuzor/mem/compare/v0.3.14...v0.3.15) - 2026-04-26
+
+### Fixed
+
+- *(ci)* cover release build and repair test references ([#251](https://github.com/nicsuzor/mem/pull/251))
+- *(mem)* add missing TaskFields and FilterSet fields
+
+### Other
+
+- update weight
+- sessions
+- update display
+- front page logic
+- colpy id
+- *(dashboard)* decouple dashboard from synthesis.json
+
 ## [0.3.14](https://github.com/nicsuzor/mem/compare/v0.3.13...v0.3.14) - 2026-04-26
 
 ### Added
