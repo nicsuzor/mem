@@ -56,6 +56,8 @@ pub struct DocumentFields {
     pub due: Option<String>,
     pub confidence: Option<f64>,
     pub supersedes: Option<String>,
+    pub severity: Option<i32>,
+    pub goal_type: Option<String>,
     pub stakeholder: Option<String>,
     pub waiting_since: Option<String>,
     pub contributes_to: Vec<serde_json::Value>,
@@ -76,6 +78,8 @@ pub struct TaskFields {
     pub complexity: Option<String>,
     pub effort: Option<String>,
     pub consequence: Option<String>,
+    pub severity: Option<i32>,
+    pub goal_type: Option<String>,
     pub body: Option<String>,
     pub stakeholder: Option<String>,
     pub waiting_since: Option<String>,
@@ -255,6 +259,14 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     if let Some(ref s) = fields.supersedes {
         fm.push_str(&format!("supersedes: \"{}\"\n", s.replace('"', "\\\"")));
+    }
+
+    if let Some(sev) = fields.severity {
+        append_severity_field(&mut fm, sev);
+    }
+
+    if let Some(ref gt) = fields.goal_type {
+        append_goal_type_field(&mut fm, gt);
     }
 
     if let Some(ref due) = fields.due {
@@ -514,6 +526,14 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     if let Some(ref consequence) = fields.consequence {
         fm.push_str(&format!("consequence: \"{}\"\n", consequence.replace('"', "\\\"")));
+    }
+
+    if let Some(sev) = fields.severity {
+        append_severity_field(&mut fm, sev);
+    }
+
+    if let Some(ref gt) = fields.goal_type {
+        append_goal_type_field(&mut fm, gt);
     }
 
     if let Some(ref stakeholder) = fields.stakeholder {
@@ -872,6 +892,14 @@ pub fn delete_document(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Failed to delete: {}", abs_path.display()))?;
 
     Ok(abs_path)
+}
+
+fn append_severity_field(fm: &mut String, sev: i32) {
+    fm.push_str(&format!("severity: {}\n", sev));
+}
+
+fn append_goal_type_field(fm: &mut String, gt: &str) {
+    fm.push_str(&format!("goal_type: {}\n", gt));
 }
 
 /// Generate a new random document ID: `{prefix}-{8 random hex chars}`.

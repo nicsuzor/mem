@@ -291,9 +291,14 @@ impl GraphStore {
             .filter(|n| n.task_id.is_some())
             .collect();
         tasks.sort_by(|a, b| {
-            a.priority
-                .unwrap_or(2)
-                .cmp(&b.priority.unwrap_or(2))
+            b.severity
+                .unwrap_or(0)
+                .cmp(&a.severity.unwrap_or(0))
+                .then(
+                    a.priority
+                        .unwrap_or(2)
+                        .cmp(&b.priority.unwrap_or(2))
+                )
                 .then(
                     b.downstream_weight
                         .partial_cmp(&a.downstream_weight)
@@ -740,8 +745,17 @@ impl GraphStore {
         let today = chrono::Utc::now().date_naive();
         for node in nodes.iter_mut() {
             let pri = node.priority.unwrap_or(2);
+            let sev = node.severity.unwrap_or(0);
             let mut score: i64 = match pri {
                 0 => 10000,
+                1 => 5000,
+                _ => 0,
+            };
+            // Severity bonus (lexicographic for SEV4)
+            score += match sev {
+                4 => 100000,
+                3 => 20000,
+                2 => 10000,
                 1 => 5000,
                 _ => 0,
             };
@@ -1729,13 +1743,19 @@ fn classify_tasks(
         }
     }
 
-    // Sort ready by effective_priority (propagated), then downstream_weight DESC, then order, then title
+    // Sort ready by severity DESC (lexicographic short-circuit), then effective_priority (propagated),
+    // then downstream_weight DESC, then order, then title
     ready.sort_by(|a, b| {
         let na = nodes.get(a).unwrap();
         let nb = nodes.get(b).unwrap();
-        na.effective_priority
-            .unwrap_or(2)
-            .cmp(&nb.effective_priority.unwrap_or(2))
+        nb.severity
+            .unwrap_or(0)
+            .cmp(&na.severity.unwrap_or(0))
+            .then(
+                na.effective_priority
+                    .unwrap_or(2)
+                    .cmp(&nb.effective_priority.unwrap_or(2)),
+            )
             .then(
                 nb.downstream_weight
                     .partial_cmp(&na.downstream_weight)
@@ -2902,5 +2922,48 @@ mod tests {
         assert_eq!(b.project.as_deref(), Some("Project A"), "Epic B should inherit Project A and ignore 'Wrong Project'");
         assert_eq!(c.project.as_deref(), Some("Project A"), "Task C should inherit Project A via Epic B");
         assert_eq!(d.project, None, "Task D should have no project since 'Project E' in frontmatter must be ignored");
+    }
+
+    #[test]
+    fn test_sev4_lexicographic_sorting() {
+        let mut make_with_sev = |id: &str, priority: i32, severity: Option<i32>| -> PkbDocument {
+            let mut fm = serde_json::Map::new();
+            fm.insert("title".to_string(), serde_json::json!(id));
+            fm.insert("type".to_string(), serde_json::json!("task"));
+            fm.insert("status".to_string(), serde_json::json!("active"));
+            fm.insert("id".to_string(), serde_json::json!(id));
+            fm.insert("priority".to_string(), serde_json::json!(priority));
+            if let Some(sev) = severity {
+                fm.insert("severity".to_string(), serde_json::json!(sev));
+            }
+            PkbDocument {
+                path: std::path::PathBuf::from(format!("tasks/{}.md", id)),
+                title: id.to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("active".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm)),
+                content_hash: "test".to_string(),
+            }
+        };
+
+        let docs = vec![
+            // high-pri-low-sev: P0, SEV2
+            make_with_sev("high-pri-low-sev", 0, Some(2)),
+            // low-pri-high-sev: P2, SEV4
+            make_with_sev("low-pri-high-sev", 2, Some(4)),
+            // mid-pri-mid-sev: P1, SEV3
+            make_with_sev("mid-pri-mid-sev", 1, Some(3)),
+        ];
+        let graph = GraphStore::build(&docs, std::path::Path::new("/tmp/test-sev-pkb"));
+        let ready = graph.ready_tasks();
+        let ready_ids: Vec<&str> = ready.iter().map(|n| n.id.as_str()).collect();
+
+        // SEV4 must come first, even if lower priority
+        assert_eq!(ready_ids[0], "low-pri-high-sev");
+        assert_eq!(ready_ids[1], "mid-pri-mid-sev");
+        assert_eq!(ready_ids[2], "high-pri-low-sev");
     }
 }

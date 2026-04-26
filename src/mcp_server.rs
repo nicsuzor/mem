@@ -16,6 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+const GOAL_TYPE_ENUM: &[&str] = &["committed", "aspirational", "learning"];
+
 // =============================================================================
 // MCP SERVER
 // =============================================================================
@@ -584,6 +586,14 @@ impl PkbSearchServer {
             effort: args.get("effort").and_then(|v| v.as_str()).map(String::from),
             consequence: args
                 .get("consequence")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            severity: args
+                .get("severity")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32),
+            goal_type: args
+                .get("goal_type")
                 .and_then(|v| v.as_str())
                 .map(String::from),
             body: args.get("body").and_then(|v| v.as_str()).map(String::from),
@@ -1317,6 +1327,8 @@ impl PkbSearchServer {
             "focus_score": node.focus_score,
             "effort": node.effort,
             "consequence": node.consequence,
+            "severity": node.severity,
+            "goal_type": node.goal_type,
             "days_until_due": days_until_due,
             "urgency_ratio": urgency_ratio,
             "scope": node.scope,
@@ -1461,6 +1473,14 @@ impl PkbSearchServer {
             confidence: args.get("confidence").and_then(|v| v.as_f64()),
             supersedes: args
                 .get("supersedes")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            severity: args
+                .get("severity")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32),
+            goal_type: args
+                .get("goal_type")
                 .and_then(|v| v.as_str())
                 .map(String::from),
             dir: args.get("dir").and_then(|v| v.as_str()).map(String::from),
@@ -2724,6 +2744,11 @@ impl PkbSearchServer {
             .get("priority")
             .and_then(|v| v.as_i64())
             .map(|v| v as i32);
+        let severity = args
+            .get("severity")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+        let goal_type = args.get("goal_type").and_then(|v| v.as_str());
         let assignee = args.get("assignee").and_then(|v| v.as_str());
         let project = args.get("project").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
@@ -2780,6 +2805,17 @@ impl PkbSearchServer {
 
         if let Some(pri) = priority {
             tasks.retain(|t| t.effective_priority.unwrap_or(4) <= pri);
+        }
+        if let Some(sev) = severity {
+            tasks.retain(|t| t.severity == Some(sev));
+        }
+        if let Some(gt) = goal_type {
+            tasks.retain(|t| {
+                t.goal_type
+                    .as_deref()
+                    .map(|g| g.eq_ignore_ascii_case(gt))
+                    .unwrap_or(false)
+            });
         }
         if let Some(a) = assignee {
             tasks.retain(|t| {
@@ -4063,7 +4099,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Returns structured JSON matching get_task shape. Always provide a parent to maintain graph integrity.",
+                "Create a new task markdown file with YAML frontmatter. Supports the Birnbaum importance model via `contributes_to` and severity-based prioritization. Always provide a parent to maintain graph integrity.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4078,6 +4114,8 @@ impl PkbSearchServer {
                         "complexity": { "type": "string" },
                         "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w'. Parser converts to days." },
                         "consequence": { "type": "string", "description": "Narrative description of what happens if this task is not done or fails." },
+                        "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes. SEV4 is lexicographic." },
+                        "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
                         "body": { "type": "string", "description": "Markdown body" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
@@ -4147,6 +4185,8 @@ impl PkbSearchServer {
                         "due": { "type": "string", "description": "Due date" },
                         "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
                         "supersedes": { "type": "string", "description": "ID of document this one replaces" },
+                        "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes." },
+                        "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
                         "dir": { "type": "string", "description": "Override subdirectory placement" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." }
@@ -4230,13 +4270,15 @@ impl PkbSearchServer {
             .with_title("Release Task"),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers. Supports sorting by focus score.",
+                "List tasks with smart filtering. Supports sorting by focus score (incorporating lexicographic severity and exponential decay). Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "project": { "type": "string", "description": "Filter by project name (case-insensitive). Returns tasks whose computed project field (nearest ancestor with node_type=project) matches." },
                         "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, done, etc." },
                         "priority": { "type": "integer", "description": "Filter to tasks whose effective priority (own or any downstream task via blocks/parent) ≤ N. E.g. priority=0 returns every task that touches a P0, including its blockers." },
+                        "severity": { "type": "integer", "description": "Filter by exact severity" },
+                        "goal_type": { "type": "string", "description": "Filter by goal type" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
@@ -4375,7 +4417,9 @@ impl PkbSearchServer {
                                     "body": { "type": "string" },
                                     "stakeholder": { "type": "string" },
                                     "waiting_since": { "type": "string" },
-                                    "due": { "type": "string" },
+                                    "consequence": { "type": "string" },
+                                    "severity": { "type": "integer" },
+                                    "goal_type": { "type": "string" },
                                     "project": { "type": "string", "description": "Override project field (defaults to parent's project)" }
                                 },
                                 "required": ["title"]
