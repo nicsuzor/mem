@@ -555,27 +555,6 @@
                             </div>
                         </section>
 
-                        <section class="rounded-sm border border-primary/15 bg-black/15">
-                            <div class="flex items-center justify-between border-b border-primary/10 px-3 py-2">
-                                <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45">Description</div>
-                                {#if description.trim()}
-                                    <button class="text-primary/35 hover:text-primary transition-colors flex items-center gap-1 text-[9px] uppercase tracking-[0.14em]" onclick={() => copyToClipboard(description)}>
-                                        Copy
-                                        <span class="material-symbols-outlined text-[10px]">content_copy</span>
-                                    </button>
-                                {/if}
-                            </div>
-                            <div class="max-h-[24rem] overflow-y-auto px-4 py-3 custom-scrollbar">
-                                {#if loadingBody}
-                                    <div class="text-[11px] text-primary/40">Syncing description…</div>
-                                {:else if description.trim()}
-                                    <div class="select-text whitespace-pre-wrap text-[12px] leading-6 text-primary/88">{description}</div>
-                                {:else}
-                                    <div class="text-[11px] italic text-primary/30">No task description is available.</div>
-                                {/if}
-                            </div>
-                        </section>
-
                         {#if (task as any).criticality > 0 || (task as any).uncertainty > 0 || (task as any).scope > 0 || weightRaw > 0}
                         <section class="rounded-sm border border-primary/15 bg-black/15 p-3 space-y-2">
                             <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45 border-b border-primary/10 pb-1">Computed Properties</div>
@@ -624,6 +603,27 @@
                             {/if}
                         </section>
                         {/if}
+
+                        <section class="rounded-sm border border-primary/15 bg-black/15">
+                            <div class="flex items-center justify-between border-b border-primary/10 px-3 py-2">
+                                <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45">Description</div>
+                                {#if description.trim()}
+                                    <button class="text-primary/35 hover:text-primary transition-colors flex items-center gap-1 text-[9px] uppercase tracking-[0.14em]" onclick={() => copyToClipboard(description)}>
+                                        Copy
+                                        <span class="material-symbols-outlined text-[10px]">content_copy</span>
+                                    </button>
+                                {/if}
+                            </div>
+                            <div class="max-h-[24rem] overflow-y-auto px-4 py-3 custom-scrollbar">
+                                {#if loadingBody}
+                                    <div class="text-[11px] text-primary/40">Syncing description…</div>
+                                {:else if description.trim()}
+                                    <div class="select-text whitespace-pre-wrap text-[12px] leading-6 text-primary/88">{description}</div>
+                                {:else}
+                                    <div class="text-[11px] italic text-primary/30">No task description is available.</div>
+                                {/if}
+                            </div>
+                        </section>
 
                         <section class="space-y-2">
                             <span class="text-[9px] font-bold uppercase tracking-widest text-primary/50 block border-b border-primary/10 pb-1">Local Context</span>
