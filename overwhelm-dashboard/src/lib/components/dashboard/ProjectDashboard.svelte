@@ -43,17 +43,21 @@
         return map;
     })();
 
-    // Only show projects that have at least one epic with an outstanding P0/P1 task
-    $: priorityProjects = mergedProjects.filter(project => {
+    // Show projects that have any activity (tasks, accomplishments, or sessions)
+    $: activeProjects = mergedProjects.filter(project => {
         const members = projectMembers.get(project) || [project];
-        const allEpics = members.flatMap(p => (projectData.meta?.[p] || {}).epics || []);
-        return allEpics.some(e => e.hasPriorityTask);
+        const storeTasks = $graphData ? $graphData.nodes.filter(n => n.type === 'task' && members.includes(n.project || '') && INCOMPLETE_STATUSES.has(n.status)) : [];
+        const tasks = storeTasks.length > 0 ? storeTasks : members.flatMap(p => projectData.tasks?.[p] || []);
+        const accomplishments = members.flatMap(p => projectData.accomplishments?.[p] || []);
+        const sessions = members.flatMap(p => projectData.sessions?.[p] || []);
+        
+        return tasks.length > 0 || accomplishments.length > 0 || sessions.length > 0;
     });
 
-    $: hasData = priorityProjects.length > 0;
+    $: hasData = activeProjects.length > 0;
 
     // Sort by most recent session timestamp as per spec
-    $: sortedProjects = [...priorityProjects].sort((a, b) => {
+    $: sortedProjects = [...activeProjects].sort((a, b) => {
         const aMembers = projectMembers.get(a) || [a];
         const bMembers = projectMembers.get(b) || [b];
         const aLatest = Math.max(...aMembers.map(p => (projectData.meta?.[p] || {}).latest_session || 0));

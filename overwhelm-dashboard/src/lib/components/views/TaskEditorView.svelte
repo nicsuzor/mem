@@ -555,7 +555,7 @@
                             </div>
                         </section>
 
-                        {#if (task as any).criticality > 0 || (task as any).uncertainty > 0 || (task as any).scope > 0 || weightRaw > 0}
+                        {#if (task as any).criticality > 0 || (task as any).uncertainty > 0 || (task as any).scope > 0 || weightRaw > 0 || (task as any).focusScore > 0}
                         <section class="rounded-sm border border-primary/15 bg-black/15 p-3 space-y-2">
                             <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45 border-b border-primary/10 pb-1">Computed Properties</div>
 
@@ -599,6 +599,14 @@
                             <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
                                 <span class="text-primary/45">Scope</span>
                                 <span class="font-bold text-primary/70">{(task as any).scope} descendant{(task as any).scope === 1 ? '' : 's'}</span>
+                            </div>
+                            {/if}
+
+                            <!-- Focus Score -->
+                            {#if (task as any).focusScore > 0}
+                            <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
+                                <span class="text-primary/45">Focus Score</span>
+                                <span class="font-bold text-[#a78bfa]">{(task as any).focusScore}</span>
                             </div>
                             {/if}
                         </section>
