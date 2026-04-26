@@ -45,17 +45,20 @@
     function selectProject(p: string | 'ALL') {
         filters.update(f => {
             if (p === 'ALL') {
-                return { ...f, hiddenProjects: [] };
+                return { ...f, hiddenProjects: [], soloProject: null };
             } else {
-                return { ...f, hiddenProjects: projects.filter(proj => proj !== p) };
+                // When explicitly selecting a project in the sidebar, use soloProject
+                return { ...f, hiddenProjects: [], soloProject: p };
             }
         });
     }
 
-    $: isAllProjects = ($filters.hiddenProjects?.length ?? 0) === 0;
+    $: isAllProjects = ($filters.hiddenProjects?.length ?? 0) === 0 && !$filters.soloProject;
     // Determine which project is active in the sidebar.
-    // If exactly one project is visible (all others are hidden), consider it active.
-    $: activeProject = isAllProjects ? 'ALL' :
+    // If soloProject is set, it's the active one.
+    // Otherwise, if exactly one project is visible (all others are hidden), consider it active.
+    $: activeProject = $filters.soloProject ? $filters.soloProject : 
+        isAllProjects ? 'ALL' :
         (projects.length > 0 && ($filters.hiddenProjects?.length ?? 0) === projects.length - 1)
         ? projects.find(p => !($filters.hiddenProjects?.includes(p)))
         : 'MIXED';

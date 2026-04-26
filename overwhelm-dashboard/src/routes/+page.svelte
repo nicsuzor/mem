@@ -135,7 +135,10 @@
         const previousNodesById = new Map(($graphData?.nodes || []).map((node) => [node.id, node]));
         const previousLinksByKey = new Map(($graphData?.links || []).map((link) => [edgeIdentity(link), link]));
 
-        const prepared = prepareGraphData(rawGraph);
+        const prepared = prepareGraphData(rawGraph, new Set(), {
+            hiddenProjects: $filters.hiddenProjects,
+            soloProject: $filters.soloProject
+        });
         // Expose the pre-filter prepared graph for views that need completeness
         // (Metro route discovery walks completed/low-priority nodes that the UI
         // filters normally hide).
@@ -157,11 +160,6 @@
 
         // Tri-state Visibility Filters
         fNodes = fNodes.filter(n => {
-            // Projects are still boolean
-            if (($filters.hiddenProjects?.length ?? 0) > 0 && $filters.hiddenProjects.includes(n.project || "")) {
-                return false;
-            }
-
             let visState = 'bright';
 
             // Determine status visibility
