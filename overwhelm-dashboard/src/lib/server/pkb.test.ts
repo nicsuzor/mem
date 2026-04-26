@@ -105,6 +105,64 @@ describe('PKB HTTP MCP server', () => {
         // Should still return a valid response, even if 0 results
         expect(text).toBeDefined();
     });
+
+    // AC 2 from task-491ce1f9: dashboard write actions must reliably reach the
+    // PKB MCP server and the change must be visible on reload. Exercises the
+    // same get_task / update_task call surface used by /api/task/status.
+    //
+    // Mutate-and-restore pattern: picks an existing task, adds a unique
+    // marker tag, asserts the marker round-trips through update -> get,
+    // then restores the original tags. Non-destructive.
+    it('round-trip: update_task -> get_task observes the change', async () => {
+        requireServer();
+
+        // Find any existing task. Skip when the PKB is empty (sandbox case).
+        const listText = extractText(
+            await client.callTool({
+                name: 'list_tasks',
+                arguments: { limit: 1 },
+            }),
+        );
+        const idMatch = listText.match(/\b([a-z]+-[0-9a-f]{6,})\b/i);
+        if (!idMatch) {
+            console.warn('round-trip test: no existing tasks in PKB — skipping');
+            return;
+        }
+        const taskId = idMatch[1];
+        const marker = `roundtrip-${Date.now()}`;
+
+        const beforeJson = JSON.parse(
+            extractText(await client.callTool({ name: 'get_task', arguments: { id: taskId } })),
+        );
+        const originalTags: string[] = Array.isArray(beforeJson.frontmatter?.tags)
+            ? [...beforeJson.frontmatter.tags]
+            : [];
+
+        try {
+            const updateResult = await client.callTool({
+                name: 'update_task',
+                arguments: {
+                    id: taskId,
+                    updates: { tags: [...originalTags, marker] },
+                },
+            });
+            const updateText = extractText(updateResult);
+            expect(updateText.toLowerCase()).not.toContain('error');
+
+            const afterJson = JSON.parse(
+                extractText(await client.callTool({ name: 'get_task', arguments: { id: taskId } })),
+            );
+            expect(afterJson.frontmatter?.tags).toContain(marker);
+        } finally {
+            // Restore even if assertion above failed.
+            await client
+                .callTool({
+                    name: 'update_task',
+                    arguments: { id: taskId, updates: { tags: originalTags } },
+                })
+                .catch(() => {});
+        }
+    }, 20_000);
 });
 
 function extractText(result: Awaited<ReturnType<Client['callTool']>>): string {
