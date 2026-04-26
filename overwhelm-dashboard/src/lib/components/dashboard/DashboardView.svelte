@@ -15,7 +15,6 @@
     // Session data comes exclusively from server-side sources (synthesis.json / session-state files).
     // No client-side fallback — if the pipeline isn't producing data, the UI shows errors.
     $: activeSessionsData = data?.dashboardData?.active_agents || [];
-    $: staleSessionsData = data?.dashboardData?.stale_sessions || [];
     $: pipelineErrors = data?.dashboardData?.pipeline_errors || [];
     $: pathData = data?.dashboardData?.path || { activity: [], abandoned_work: [] };
 
@@ -118,25 +117,23 @@
     </div>
 
     <!-- PRIORITY 1: What's running + what needs you (above the fold) -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div class="lg:col-span-2 border border-primary/30 bg-surface p-4">
+    <div class="flex flex-col gap-6">
+        <div class="border border-primary/30 bg-surface p-4">
             <ActiveSessions
                 sessions={interactiveSessions}
-                staleSessions={staleSessionsData}
                 needsYou={data?.dashboardData?.needs_you || []}
-                title="CURRENT ACTIVITY"
+                title="RECENT SESSIONS"
             />
         </div>
-        <div class="border border-primary/20 bg-surface/50 p-4">
-            <ActiveSessions
-                sessions={backgroundSessions}
-                pausedSessions={[]}
-                staleSessions={[]}
-                needsYou={[]}
-                title="BACKGROUND ACTIVITY"
-                compact={true}
-            />
-        </div>
+        {#if backgroundSessions.length > 0}
+            <div class="border border-primary/20 bg-surface/50 p-4">
+                <ActiveSessions
+                    sessions={backgroundSessions}
+                    title="BACKGROUND ACTIVITY"
+                    compact={true}
+                />
+            </div>
+        {/if}
     </div>
 
     <!-- PRIORITY 2: Project details (sessions + tasks) -->

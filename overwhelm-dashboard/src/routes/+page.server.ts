@@ -154,10 +154,6 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
         // Prompt count: only what the cron captured — may be incomplete for running sessions
         const promptCount = timeline.filter((e: any) => e.type === 'user_prompt').length;
 
-        let bucket: 'active' | 'stale';
-        if (hoursAgo < 24) bucket = 'active';
-        else bucket = 'stale';
-
         let statusBadge: string;
         if (data.outcome === 'success') statusBadge = 'completed';
         else if (data.outcome) statusBadge = 'abandoned';
@@ -177,7 +173,6 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             prompts: allPrompts,
             is_active: minutesAgo < 10,
             last_modified: st.mtimeMs,
-            bucket,
             statusBadge: statusBadge, // Renaming to camelCase for clarity, but mapped below
             status_badge: statusBadge,
             needs_you: false,
@@ -298,14 +293,13 @@ function buildPathData(summaries: any[]): any {
 
 export const load = async () => {
     const [sessions, summaries, projectsConfig] = await Promise.all([
-        findActiveSessions(48), // Fetch 48h to populate stale bucket
+        findActiveSessions(24), // Fetch 24h of all sessions
         loadRecentSummaries(3),
         loadProjectsConfig(),
     ]);
 
-    // Bucket sessions by recency
-    const activeSessions = sessions.filter(s => s.bucket === 'active');
-    const staleSessions = sessions.filter(s => s.bucket === 'stale');
+    // All sessions are active within the 24h window
+    const activeSessions = sessions;
     const needsYouSessions = sessions.filter(s => s.needs_you);
 
     // Build project-level data: prefer graph data (via client), synthesis enriches
@@ -372,7 +366,6 @@ export const load = async () => {
             ],
             // Bucketed sessions for triage display
             active_agents: activeSessions,
-            stale_sessions: staleSessions,
             needs_you: needsYouSessions,
             synthesis: null,
             

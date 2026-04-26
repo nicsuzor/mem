@@ -5,13 +5,11 @@
 
     let { 
         sessions = [], 
-        staleSessions = [], 
         needsYou = [], 
         title = "CURRENT ACTIVITY",
         compact = false
     }: {
         sessions?: any[];
-        staleSessions?: any[];
         needsYou?: any[];
         title?: string;
         compact?: boolean;
@@ -36,42 +34,7 @@
         return `${diffHrs}h ago`;
     }
 
-    async function dismissStaleSession(session: any) {
-        if (session.source !== 'pkb' || !session.id || isSubmitting) return;
-        isSubmitting = true;
-        try {
-            await fetch('/api/task/status', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: session.id, status: 'queued' }), // Demote from in_progress (was legacy 'active')
-            });
-            // Let the graph sync interval handle the UI update
-        } catch (e) {
-            console.error('Failed to dismiss session', e);
-        } finally {
-            isSubmitting = false;
-        }
-    }
 
-    async function dismissAllStale() {
-        if (isSubmitting) return;
-        isSubmitting = true;
-        try {
-            // Dismiss all pkb-sourced stale sessions
-            const pkbStale = staleSessions.filter(s => s.source === 'pkb' && s.id);
-            await Promise.all(pkbStale.map(s => 
-                fetch('/api/task/status', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: s.id, status: 'queued' }),
-                })
-            ));
-        } catch (e) {
-            console.error('Failed to dismiss all sessions', e);
-        } finally {
-            isSubmitting = false;
-        }
-    }
 
     const BADGE_STYLES: Record<string, { label: string; class: string }> = {
         running: { label: 'RUNNING', class: 'bg-primary text-black animate-pulse' },
@@ -175,43 +138,4 @@
             </div>
         {/if}
     </div>
-
-    <!-- Stale Sessions (>24h) — archive prompt per spec -->
-    {#if staleSessions.length > 0}
-        <div class="flex flex-col gap-2 mt-2">
-            {#each staleSessions.slice(0, 5) as session}
-                <div class="flex items-center gap-3 border border-primary/20 bg-primary/5 p-3">
-                    <span class="material-symbols-outlined text-[16px] text-primary/40">inventory_2</span>
-                    <div class="flex flex-col gap-1 flex-1 min-w-0">
-                        <div class="flex items-center gap-2">
-                            {#if session.project}
-                                <span class="text-[9px] font-bold px-1 py-0.5"
-                                      style="background: {projectBgTint(session.project)}; color: {projectColor(session.project)}; border: 1px solid {projectBorderColor(session.project)};">{session.project}</span>
-                            {/if}
-                            <span class="text-[10px] text-primary/50">{session.time_display}</span>
-                        </div>
-                        <span class="text-xs text-primary/70 truncate" title={session.description}>{session.description}</span>
-                    </div>
-                    <div class="flex items-center gap-2 shrink-0">
-                        {#if session.id}
-                            <button class="text-[10px] font-bold tracking-widest text-primary/50 hover:text-primary border border-primary/20 hover:border-primary/50 px-2 py-1 transition-colors"
-                                    onclick={() => toggleSelection(session.id)}>
-                                REVIEW
-                            </button>
-                        {/if}
-                        {#if session.source === 'pkb'}
-                            <button class="text-[10px] font-bold tracking-widest text-primary/30 hover:text-primary/60 px-2 py-1 transition-colors disabled:opacity-50"
-                                    disabled={isSubmitting}
-                                    onclick={() => dismissStaleSession(session)}>
-                                DISMISS
-                            </button>
-                        {/if}
-                    </div>
-                </div>
-            {/each}
-            {#if staleSessions.length > 5}
-                <div class="text-xs text-primary/50 pl-2">+ {staleSessions.length - 5} more stale sessions</div>
-            {/if}
-        </div>
-    {/if}
 </div>
