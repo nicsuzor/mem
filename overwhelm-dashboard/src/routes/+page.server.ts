@@ -14,18 +14,33 @@ async function readJson(path: string): Promise<any | null> {
     }
 }
 
-async function loadSynthesis(): Promise<any | null> {
-    if (!AOPS_SESSIONS) return null;
-    const path = join(AOPS_SESSIONS, 'synthesis.json');
-    const data = await readJson(path);
-    if (!data) return null;
-
-    try {
-        const st = await stat(path);
-        data._age_minutes = (Date.now() - st.mtimeMs) / 60000;
-    } catch { /* ignore */ }
-
-    return data;
+function buildDailyStory(summaries: any[]): any {
+    const story: string[] = [];
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    
+    for (const s of summaries) {
+        const stTime = s.date ? new Date(s.date).getTime() : 0;
+        if (stTime < cutoff) continue;
+        
+        const proj = s.project || 'unknown';
+        const accomplishments = s.accomplishments || [];
+        
+        if (accomplishments.length > 0) {
+            for (const acc of accomplishments) {
+                story.push(`[${proj}] ${acc}`);
+            }
+        } else if (s.summary) {
+            story.push(`[${proj}] ${s.summary}`);
+        } else if (s.timeline_events) {
+            const firstPrompt = s.timeline_events.find((e: any) => e.type === 'user_prompt');
+            if (firstPrompt && firstPrompt.description) {
+                // Shorten description if it's too long
+                const desc = firstPrompt.description.slice(0, 150) + (firstPrompt.description.length > 150 ? '...' : '');
+                story.push(`[${proj}] ${desc}`);
+            }
+        }
+    }
+    return story.length > 0 ? { story } : null;
 }
 
 interface ProjectsConfig {
@@ -274,8 +289,7 @@ function buildPathData(summaries: any[]): any {
 }
 
 export const load = async () => {
-    const [synthesis, sessions, summaries, projectsConfig] = await Promise.all([
-        loadSynthesis(),
+    const [sessions, summaries, projectsConfig] = await Promise.all([
         findActiveSessions(48), // Fetch 48h to populate stale bucket
         loadRecentSummaries(3),
         loadProjectsConfig(),
@@ -304,11 +318,7 @@ export const load = async () => {
         }
     });
 
-    if (synthesis?.sessions?.by_project) {
-        Object.keys(synthesis.sessions.by_project).forEach(p => {
-            if (!pseudoProjects.has(p)) projectSet.add(p);
-        });
-    }
+    // Removed synthesis session fallback
 
     const projectProjects = Array.from(projectSet).sort((a, b) => {
         const aLatest = projectLatestSession.get(a) || 0;
@@ -323,41 +333,44 @@ export const load = async () => {
         };
         projectData.tasks[proj] = [];
         projectData.sessions[proj] = sessions.filter(s => s.project === proj);
-        projectData.accomplishments[proj] = synthesis
-            ? (synthesis.accomplishments?.items || [])
-                .filter((a: any) => a.project === proj)
-                .map((a: any) => ({ description: a.text }))
-            : [];
+        const projAccomplishments: any[] = [];
+        const seen = new Set<string>();
+        for (const s of summaries) {
+            if (s.project !== proj) continue;
+            const accs = s.accomplishments || [];
+            if (accs.length > 0) {
+                for (const text of accs) {
+                    if (!seen.has(text)) {
+                        seen.add(text);
+                        projAccomplishments.push({ description: text });
+                    }
+                }
+            } else if (s.summary) {
+                if (!seen.has(s.summary)) {
+                    seen.add(s.summary);
+                    projAccomplishments.push({ description: s.summary });
+                }
+            }
+        }
+        projectData.accomplishments[proj] = projAccomplishments;
     }
 
     // Pipeline health — fail fast and loud when data sources are missing
-    const synthesisPipelineOk = synthesis !== null;
-    const dailyStoryOk = (synthesis?.daily_story != null || synthesis?.narrative != null);
     const summariesDirOk = AOPS_SESSIONS !== '';
+    const dailyStory = buildDailyStory(summaries);
 
     return {
         dashboardData: {
             pipeline_errors: [
                 ...(!summariesDirOk ? ['$AOPS_SESSIONS not set — session discovery disabled'] : []),
-                ...(!synthesisPipelineOk ? ['synthesis.json not found or unreadable — is /daily running?'] : []),
-                ...(synthesisPipelineOk && !dailyStoryOk ? ['synthesis.json has no narrative — run /daily to generate'] : []),
             ],
             // Bucketed sessions for triage display
             active_agents: activeSessions,
             paused_sessions: pausedSessions,
             stale_sessions: staleSessions,
             needs_you: needsYouSessions,
-            synthesis: synthesis ? {
-                _age_minutes: synthesis._age_minutes,
-                sessions: synthesis.sessions,
-                alignment: synthesis.alignment,
-                waiting_on: synthesis.waiting_on,
-                // Add metadata for observability
-                last_run: synthesis.generated,
-                exit_code: synthesis.exit_code, 
-                input_completeness: synthesis.input_completeness
-            } : null,
-            daily_story: synthesis?.daily_story ? { story: synthesis.daily_story } : (synthesis?.narrative ? { story: synthesis.narrative } : null),
+            synthesis: null,
+            daily_story: dailyStory,
             
             project_projects: projectProjects,
             project_data: projectData,

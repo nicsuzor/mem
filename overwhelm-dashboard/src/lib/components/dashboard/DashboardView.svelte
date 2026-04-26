@@ -145,7 +145,6 @@
     <!-- PRIORITY 2: Today's Story (narrative context recovery) -->
     <div class="border border-primary/30 bg-surface p-4">
         <SynthesisPanel
-            synthesis={data?.dashboardData?.synthesis}
             dailyStory={data?.dashboardData?.daily_story}
         />
     </div>

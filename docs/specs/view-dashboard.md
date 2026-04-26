@@ -95,13 +95,12 @@ The dashboard exists because Nic's brain can't hold all this state. He needs an 
 
 ### 2. Where You Left Off + Focus Synthesis
 
-**Data source:** `synthesis.json` is the **single source of truth** for all session data displayed in the dashboard. The dashboard does NOT read session state files or transcripts directly — all session context is pre-extracted by `synthesize_dashboard.py` (run on cron via `repo-sync-cron.sh`).
+**Data source:** Session files within `~/.aops/sessions/summaries/` are the **single source of truth** for all session data displayed in the dashboard. The dashboard dynamically parses these files to reconstruct activity and narratives in real-time, eliminating the need for periodic `synthesis.json` generation.
 
-**What synthesis.json must contain per session:**
+**What session summaries must contain:**
 
-- `user_prompts` — all user prompts from covered sessions (already extracted by transcript pipeline as `[timestamp, role, text]` tuples; **TODO: synthesize_dashboard.py must pass these through to synthesis.json** — currently omitted)
 - `session_id`, `project`, `summary`, `outcome`, `accomplishments`, `duration_minutes`
-- Aggregated narrative, alignment, blockers, skill insights
+- `timeline_events` — sequence of user prompts and system actions to reconstruct the session narrative
 
 **Session cards** for context recovery:
 
@@ -109,13 +108,11 @@ The dashboard exists because Nic's brain can't hold all this state. He needs an 
 - **Paused sessions** (4-24h): Collapsed cards with outcome, accomplishment summary, reentry point. Subdued styling.
 - **Stale sessions** (>24h): Archive prompt with count. "N stale sessions — [Archive All] [Review] [Dismiss]"
 
-**Focus synthesis** (aggregated from same `synthesis.json`):
+**Focus synthesis** (dynamically reconstructed from recent session summaries):
 
-- 3-5 bullet narrative summary of today's story
+- Aggregated narrative summary of recent activity grouped by project
 - Status cards: accomplishments, alignment, blockers
-- Session insights: skill compliance, corrections, context gaps
-- Staleness indicator (STALE badge if >60 minutes)
-- Graceful fallback when missing: message + regeneration hint. **When synthesis is stale or low-quality, the dashboard must surface the 'why' (e.g., last cron run, exit code).**
+- Derived session insights from recent timeline events
 
 **Critical rule:** Sessions must show the user's initial prompt, not agent-generated descriptions. If a session can't answer "what was I doing?", it's filtered out.
 
@@ -253,10 +250,8 @@ It does NOT try to: recommend ONE thing to do, hide options, force single-focus,
 
 ### Synthesis
 
-- [ ] Narrative panel shows 3-5 bullet summary of today's story.
-- [ ] Staleness clearly indicated when >60 minutes.
-- [ ] Graceful fallback when synthesis.json missing (message + regeneration hint).
-- [ ] **Dashboard surfaces *why* synthesis is stale/low-quality (e.g., cron exit code).**
+- [ ] Narrative panel dynamically reconstructs recent activity grouped by project.
+- [ ] Fallbacks provided when no recent activity is found in session summaries.
 
 ### Project Boxes
 
