@@ -492,6 +492,15 @@ enum Commands {
         /// HTTP listen address (default: 127.0.0.1)
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
+
+        /// Allowed values for the incoming `Host` header (rmcp 1.5+ enforces
+        /// a loopback-only allowlist by default and 403s everything else).
+        /// Pass each public hostname:port the server is reachable as, e.g.
+        /// `--allowed-hosts services-new.example.ts.net:8026`. Repeat the
+        /// flag or comma-separate to allow multiple. When empty, falls back
+        /// to rmcp's default loopback allowlist.
+        #[arg(long, value_delimiter = ',')]
+        allowed_hosts: Vec<String>,
     },
 
     /// Find potential duplicate tasks
@@ -2764,7 +2773,12 @@ async fn main() -> Result<()> {
             println!();
         }
 
-        Commands::Mcp { http, port, host } => {
+        Commands::Mcp {
+            http,
+            port,
+            host,
+            allowed_hosts,
+        } => {
             let embedder = embedder.unwrap();
             let store = store.unwrap();
 
@@ -2811,10 +2825,14 @@ async fn main() -> Result<()> {
                 };
 
                 let ct = tokio_util::sync::CancellationToken::new();
-                let config = StreamableHttpServerConfig::default()
+                let mut config = StreamableHttpServerConfig::default()
                     .with_sse_keep_alive(Some(std::time::Duration::from_secs(30)))
                     .with_stateful_mode(true)
                     .with_cancellation_token(ct.clone());
+                if !allowed_hosts.is_empty() {
+                    config = config.with_allowed_hosts(allowed_hosts);
+                }
+                eprintln!("   Allowed Host headers: {:?}", config.allowed_hosts);
 
                 let session_manager = std::sync::Arc::new(LocalSessionManager::default());
 
