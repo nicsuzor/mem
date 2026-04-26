@@ -111,7 +111,7 @@
                      role="button" tabindex="0" onclick={() => toggleExpand(session.session_id)} onkeydown={(e) => { if(e.key === 'Enter') toggleExpand(session.session_id); }}>
                     <span class="text-[10px] text-primary/60 min-w-[55px]">{formatTimeAgo(session.started_at)}</span>
                     
-                    {#if !compact && session.session_id}
+                    {#if session.session_id}
                         <button class="text-[9px] font-bold bg-primary/20 text-primary/60 px-1 py-0.5 hover:bg-primary/40 transition-colors shrink-0" 
                                 onclick={(e) => { e.stopPropagation(); copyToClipboard(session.session_id); }}
                                 title="Click to copy session ID: {session.session_id}">

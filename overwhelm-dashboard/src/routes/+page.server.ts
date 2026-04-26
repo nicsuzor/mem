@@ -14,6 +14,29 @@ async function readJson(path: string): Promise<any | null> {
     }
 }
 
+function extractCleanPrompt(timeline: any[]): string {
+    if (!timeline || !Array.isArray(timeline)) return '';
+    for (const evt of timeline) {
+        if (evt.type !== 'user_prompt') continue;
+        const desc = (evt.description || '').trim();
+        if (!desc) continue;
+        
+        // Skip bash I/O noise and slash commands
+        if (desc.includes('<bash-input>') || desc.includes('<bash-stdout>') || /^\/\w/.test(desc)) continue;
+        
+        // Skip framework/automation noise
+        if (desc.includes('▶ Task bound') || desc.includes('Compliance report ready')) continue;
+        
+        // Clean up scheduled task preamble
+        if (desc.includes('<scheduled-task')) {
+            return 'Scheduled: ' + (desc.match(/name="([^"]+)"/)?.[1] || 'task');
+        }
+        
+        return desc;
+    }
+    return '';
+}
+
 function buildDailyStory(summaries: any[]): any {
     const story: string[] = [];
     const cutoff = Date.now() - 24 * 3600 * 1000;
@@ -32,10 +55,10 @@ function buildDailyStory(summaries: any[]): any {
         } else if (s.summary) {
             story.push(`[${proj}] ${s.summary}`);
         } else if (s.timeline_events) {
-            const firstPrompt = s.timeline_events.find((e: any) => e.type === 'user_prompt');
-            if (firstPrompt && firstPrompt.description) {
+            const cleanPrompt = extractCleanPrompt(s.timeline_events);
+            if (cleanPrompt) {
                 // Shorten description if it's too long
-                const desc = firstPrompt.description.slice(0, 150) + (firstPrompt.description.length > 150 ? '...' : '');
+                const desc = cleanPrompt.slice(0, 150) + (cleanPrompt.length > 150 ? '...' : '');
                 story.push(`[${proj}] ${desc}`);
             }
         }
@@ -110,27 +133,29 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
         const isPolecat = stem.includes('polecat');
         const isCrew = stem.includes('crew');
         const isScheduled = stem.includes('scheduled');
-        const sessionType: 'polecat' | 'crew' | 'scheduled' | 'interactive' =
-            isPolecat ? 'polecat' : isCrew ? 'crew' : isScheduled ? 'scheduled' : 'interactive';
+        const isGha = stem.includes('gha');
+        const sessionType: 'polecat' | 'crew' | 'scheduled' | 'gha' | 'interactive' =
+            isPolecat ? 'polecat' : isCrew ? 'crew' : isScheduled ? 'scheduled' : isGha ? 'gha' : 'interactive';
 
         // Extract the first meaningful user prompt from timeline as description
         // This is the best context for "what was this session about?"
         const timeline: any[] = data.timeline_events || [];
-        let firstPrompt = '';
-        for (const evt of timeline) {
-            if (evt.type !== 'user_prompt') continue;
-            const desc = evt.description || '';
-            // Skip bash I/O noise and slash commands
-            if (desc.includes('<bash-input>') || desc.includes('<bash-stdout>') || /^\/\w/.test(desc)) continue;
-            // Clean up scheduled task preamble
-            if (desc.includes('<scheduled-task')) {
-                firstPrompt = 'Scheduled: ' + (desc.match(/name="([^"]+)"/)?.[1] || 'task');
-                break;
+        const cleanPrompt = extractCleanPrompt(timeline);
+        let description = data.summary || (cleanPrompt ? cleanPrompt.slice(0, 300) : '');
+        
+        if (!description) {
+            // Fallback for sessions with no meaningful prompt
+            if (sessionType === 'polecat') description = 'Autonomous Polecat worker';
+            else if (sessionType === 'crew') description = 'Crew swarm session';
+            else if (sessionType === 'scheduled') description = 'Scheduled cron task';
+            else if (sessionType === 'gha') description = 'GitHub Actions workflow';
+            else if (timeline.length > 0 && timeline[0].description) {
+                // If it's an interactive session but has only noise, show truncated raw noise
+                description = timeline[0].description.slice(0, 80).replace(/\n/g, ' ') + '...';
+            } else {
+                description = 'Active session (no description)';
             }
-            firstPrompt = desc.slice(0, 300);
-            break;
         }
-        const description = data.summary || firstPrompt || '';
 
         // All clean user prompts for expand view
         const allPrompts: string[] = [];

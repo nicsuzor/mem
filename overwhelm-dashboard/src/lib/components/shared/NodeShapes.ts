@@ -172,7 +172,7 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
         // Outer glow hexagon
         const off = EPIC_OUTER_OFFSET;
         const c2 = Math.min((shh + off) * 0.5, EPIC_OUTER_CORNER_RADIUS);
-        const pts2 = `${-(shw+off) + c2},${-(shh+off)} ${(shw+off) - c2},${-(shh+off)} ${shw+off},${0} ${(shw+off) - c2},${shh+off} ${-(shw+off) + c2},${shh+off} ${-(shw+off)},${0}`;
+        const pts2 = `${-(shw + off) + c2},${-(shh + off)} ${(shw + off) - c2},${-(shh + off)} ${shw + off},${0} ${(shw + off) - c2},${shh + off} ${-(shw + off) + c2},${shh + off} ${-(shw + off)},${0}`;
 
         g.append("polygon").attr("points", pts2)
             .attr("fill", "none").attr("stroke", epicStroke).attr("stroke-width", EPIC_OUTER_STROKE_WIDTH)
@@ -631,7 +631,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     // that guarantees >= 4.5:1 contrast ratio
     function relativeLuminance(hex: string): number {
         if (!hex || !hex.startsWith('#') || hex.length < 7) return 0;
-        const srgb = [hex.slice(1,3), hex.slice(3,5), hex.slice(5,7)]
+        const srgb = [hex.slice(1, 3), hex.slice(3, 5), hex.slice(5, 7)]
             .map(c => { const v = parseInt(c, 16) / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
         return 0.2126 * srgb[0] + 0.7152 * srgb[1] + 0.0722 * srgb[2];
     }
@@ -1021,11 +1021,11 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         // Text always rendered; visibility toggled by zoom handler in CirclePackView
         renderWrappedTextInCircle(g, r, d.label || '', d.status);
     }
-    }
+}
 
-    function pad(r: number) {
+function pad(r: number) {
     return Math.min(20, r * 0.15);
-    }
+}
 
 
 export function buildArcNode(g: d3.Selection<SVGGElement, any, null, undefined>, d: any, isSelected = false) {

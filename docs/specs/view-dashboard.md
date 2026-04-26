@@ -252,7 +252,7 @@ It does NOT try to: recommend ONE thing to do, hide options, force single-focus,
 
 - [ ] Narrative panel dynamically reconstructs recent activity grouped by project.
 - [ ] Fallbacks provided when no recent activity is found in session summaries.
-
+    
 ### Project Boxes
 
 - [ ] Projects sorted by activity (**most recent session timestamp**).
