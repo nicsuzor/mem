@@ -158,10 +158,25 @@ function classifyEdge(sourceId: string, targetId: string, nodeById: Map<string, 
 
 export function prepareGraphData(
     graph: { nodes?: any[]; edges?: any[]; ready?: string[]; blocked?: string[]; focus?: string[] },
-    structuralIds: Set<string> = new Set()
+    structuralIds: Set<string> = new Set(),
+    options: {
+        hiddenProjects?: string[];
+        soloProject?: string | null;
+    } = {}
 ): PreparedGraph {
     let rawNodes = (graph.nodes || []).map(n => ({ ...n }));
     let rawEdges = (graph.edges || []).map(e => ({ ...e }));
+
+    // Apply project filters at the source
+    if (options.soloProject) {
+        rawNodes = rawNodes.filter(n => n.project === options.soloProject);
+    } else if (options.hiddenProjects && options.hiddenProjects.length > 0) {
+        rawNodes = rawNodes.filter(n => !options.hiddenProjects!.includes(n.project || ""));
+    }
+
+    // Prune edges referencing filtered-out nodes
+    const filteredNodeIds = new Set(rawNodes.map(n => n.id));
+    rawEdges = rawEdges.filter(e => filteredNodeIds.has(e.source) && filteredNodeIds.has(e.target));
 
     const initialNodeById = new Map<string, any>(rawNodes.map(n => [n.id, n]));
     const initialNodeIds = new Set(rawNodes.map(n => n.id));

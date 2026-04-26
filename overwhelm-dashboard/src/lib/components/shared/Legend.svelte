@@ -63,8 +63,15 @@
         });
     }
 
+    function toggleSolo(project: string) {
+        filters.update(f => ({
+            ...f,
+            soloProject: f.soloProject === project ? null : project
+        }));
+    }
+
     function toggleAllProjects() {
-        filters.update(f => ({ ...f, hiddenProjects: [] }));
+        filters.update(f => ({ ...f, hiddenProjects: [], soloProject: null }));
     }
 
     function edgeOpacityForLegend(vis: VisibilityState): number {
@@ -197,29 +204,38 @@
                 <span class="legend-section-title">PROJECTS (CLICK TO TOGGLE)</span>
                 <button
                     class="legend-item"
-                    class:dimmed={($filters.hiddenProjects?.length ?? 0) > 0}
+                    class:dimmed={($filters.hiddenProjects?.length ?? 0) > 0 || $filters.soloProject}
                     on:click={toggleAllProjects}
                 >
                     <div class="legend-box" style="background: #666; border-radius: 50%;"></div>
                     <span class="legend-label">ALL PROJECTS</span>
-                    {#if ($filters.hiddenProjects?.length ?? 0) === 0}
+                    {#if ($filters.hiddenProjects?.length ?? 0) === 0 && !$filters.soloProject}
                         <span class="filter-badge">ON</span>
                     {/if}
                 </button>
                 <div class="project-list" class:expanded={showAllProjects}>
                     {#each visibleProjects as proj}
-                        <button
-                            class="legend-item"
-                            class:dimmed={$filters.hiddenProjects?.includes(proj)}
-                            on:click={() => toggleProject(proj)}
-                            title="Toggle {proj}"
-                        >
-                            <div class="legend-box project-swatch" style="background: {projectColor(proj)};"></div>
-                            <span class="legend-label">{(proj || '').toUpperCase()}</span>
-                            {#if !($filters.hiddenProjects?.includes(proj))}
-                                <span class="filter-badge">ON</span>
-                            {/if}
-                        </button>
+                        <div class="project-row" class:dimmed={$filters.hiddenProjects?.includes(proj) || ($filters.soloProject && $filters.soloProject !== proj)}>
+                            <button
+                                class="legend-item project-main"
+                                on:click={() => toggleProject(proj)}
+                                title="Toggle {proj}"
+                            >
+                                <div class="legend-box project-swatch" style="background: {projectColor(proj)};"></div>
+                                <span class="legend-label">{(proj || '').toUpperCase()}</span>
+                                {#if !($filters.hiddenProjects?.includes(proj)) && (!$filters.soloProject || $filters.soloProject === proj)}
+                                    <span class="filter-badge">ON</span>
+                                {/if}
+                            </button>
+                            <button 
+                                class="solo-action" 
+                                class:active={$filters.soloProject === proj}
+                                on:click={() => toggleSolo(proj)}
+                                title="Solo this project"
+                            >
+                                {$filters.soloProject === proj ? 'SOLOED' : 'SOLO'}
+                            </button>
+                        </div>
                     {/each}
                 </div>
                 {#if hasOverflow}
@@ -321,6 +337,46 @@
     .legend-item.dimmed .legend-label {
         opacity: 0.35;
         text-decoration: line-through;
+    }
+
+    .project-row {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        transition: opacity 0.15s;
+    }
+
+    .project-row.dimmed {
+        opacity: 0.4;
+    }
+
+    .project-main {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .solo-action {
+        font-size: 8px;
+        font-weight: 900;
+        color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+        background: color-mix(in srgb, var(--color-primary) 5%, transparent);
+        padding: 2px 5px;
+        border-radius: 4px;
+        cursor: pointer;
+        border: 1px solid transparent;
+        transition: all 0.15s;
+        flex-shrink: 0;
+    }
+
+    .solo-action:hover {
+        background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+        color: var(--color-primary);
+    }
+
+    .solo-action.active {
+        background: #f59e0b;
+        color: #fff;
+        border-color: #d97706;
     }
 
     .legend-label {
