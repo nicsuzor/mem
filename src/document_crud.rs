@@ -262,11 +262,11 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     if let Some(sev) = fields.severity {
-        fm.push_str(&format!("severity: {}\n", sev));
+        append_severity_field(&mut fm, sev);
     }
 
     if let Some(ref gt) = fields.goal_type {
-        fm.push_str(&format!("goal_type: {}\n", gt));
+        append_goal_type_field(&mut fm, gt);
     }
 
     if let Some(ref due) = fields.due {
@@ -529,11 +529,11 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     }
 
     if let Some(sev) = fields.severity {
-        fm.push_str(&format!("severity: {}\n", sev));
+        append_severity_field(&mut fm, sev);
     }
 
     if let Some(ref gt) = fields.goal_type {
-        fm.push_str(&format!("goal_type: {}\n", gt));
+        append_goal_type_field(&mut fm, gt);
     }
 
     if let Some(ref stakeholder) = fields.stakeholder {
@@ -892,6 +892,14 @@ pub fn delete_document(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Failed to delete: {}", abs_path.display()))?;
 
     Ok(abs_path)
+}
+
+fn append_severity_field(fm: &mut String, sev: i32) {
+    fm.push_str(&format!("severity: {}\n", sev));
+}
+
+fn append_goal_type_field(fm: &mut String, gt: &str) {
+    fm.push_str(&format!("goal_type: {}\n", gt));
 }
 
 /// Generate a new random document ID: `{prefix}-{8 random hex chars}`.

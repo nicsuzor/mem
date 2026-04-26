@@ -16,6 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+const GOAL_TYPE_ENUM: &[&str] = &["committed", "aspirational", "learning"];
+
 // =============================================================================
 // MCP SERVER
 // =============================================================================
@@ -4113,7 +4115,7 @@ impl PkbSearchServer {
                         "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w'. Parser converts to days." },
                         "consequence": { "type": "string", "description": "Narrative description of what happens if this task is not done or fails." },
                         "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes. SEV4 is lexicographic." },
-                        "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": ["committed", "aspirational", "learning"] },
+                        "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
                         "body": { "type": "string", "description": "Markdown body" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
@@ -4184,7 +4186,7 @@ impl PkbSearchServer {
                         "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
                         "supersedes": { "type": "string", "description": "ID of document this one replaces" },
                         "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes." },
-                        "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning." },
+                        "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
                         "dir": { "type": "string", "description": "Override subdirectory placement" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." }

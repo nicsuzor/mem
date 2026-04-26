@@ -610,10 +610,12 @@ impl GraphNode {
             .and_then(|f| f.get("consequence").and_then(|v| v.as_str()).map(String::from));
         let severity = fm
             .as_ref()
-            .and_then(|f| f.get("severity").and_then(|v| v.as_i64()).map(|v| v as i32));
+            .and_then(|f| f.get("severity").and_then(|v| v.as_i64()).map(|v| v as i32))
+            .filter(|&s| (0..=4).contains(&s));
         let goal_type = fm
             .as_ref()
-            .and_then(|f| f.get("goal_type").and_then(|v| v.as_str()).map(String::from));
+            .and_then(|f| f.get("goal_type").and_then(|v| v.as_str()).map(String::from))
+            .filter(|gt| matches!(gt.as_str(), "committed" | "aspirational" | "learning"));
         let goals = fm
             .as_ref()
             .map(|f| parse_string_array(f, "goals"))
