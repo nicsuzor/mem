@@ -47,33 +47,33 @@ export const TYPE_SHAPE: Record<string, string> = {
 // with branches: review, blocked, paused, someday, cancelled.
 // Labels chosen for distinguishable hue per lifecycle stage.
 export const STATUS_FILLS: Record<string, string> = {
-    inbox:       "#38bdf8",  // sky — captured, untriaged
-    ready:       "#86efac",  // light lime — decomposed + unblocked (auto)
-    queued:      "#4ade80",  // lime — human-gated, dispatchable
+    inbox: "#38bdf8",  // sky — captured, untriaged
+    ready: "#0cb4f7ff",  // cyan — decomposed + unblocked (auto)
+    queued: "#0ddd4cff",  // lime — human-gated, dispatchable
     in_progress: "#a78bfa",  // violet — claimed, in flight
     merge_ready: "#fbbf24",  // amber — awaiting merge
-    review:      "#fb923c",  // orange — needs attention
-    blocked:     "#f87171",  // red — external blocker
-    paused:      "#94a3b8",  // slate — in-flight, deferred
-    someday:     "#64748b",  // dark slate — parked idea
-    done:        "#6ee7b7",  // mint — success
-    cancelled:   "#475569",  // grey — dropped
+    review: "#fb923c",  // orange — needs attention
+    blocked: "#f87171",  // red — external blocker
+    paused: "#94a3b8",  // slate — in-flight, deferred
+    someday: "#64748b",  // dark slate — parked idea
+    done: "#6ee7b7",  // mint — success
+    cancelled: "#475569",  // grey — dropped
 };
 
 // Readable text color paired with each STATUS_FILLS value.
 // Bright fills (sky, lime, amber, mint) get dark text; dim fills get light text.
 export const STATUS_TEXT: Record<string, string> = {
-    inbox:       "#0a1929",
-    ready:       "#0a2015",
-    queued:      "#0a2015",
+    inbox: "#0a1929",
+    ready: "#0a2015",
+    queued: "#0a2015",
     in_progress: "#14102a",
     merge_ready: "#2a1e05",
-    review:      "#2a1608",
-    blocked:     "#2a0a0a",
-    paused:      "#141a24",
-    someday:     "#eef2f8",
-    done:        "#0a2015",
-    cancelled:   "#eef2f8",
+    review: "#2a1608",
+    blocked: "#2a0a0a",
+    paused: "#141a24",
+    someday: "#eef2f8",
+    done: "#0a2015",
+    cancelled: "#eef2f8",
 };
 
 // Canonical display order + labels for status (used by filter bar and legend).
@@ -84,17 +84,17 @@ export const STATUS_ORDER = [
 ] as const;
 
 export const STATUS_LABELS: Record<string, string> = {
-    inbox:       'INBOX',
-    ready:       'READY',
-    queued:      'QUEUED',
+    inbox: 'INBOX',
+    ready: 'READY',
+    queued: 'QUEUED',
     in_progress: 'IN PROGRESS',
     merge_ready: 'MERGE',
-    review:      'REVIEW',
-    blocked:     'BLOCKED',
-    paused:      'PAUSED',
-    someday:     'SOMEDAY',
-    done:        'DONE',
-    cancelled:   'CANCELLED',
+    review: 'REVIEW',
+    blocked: 'BLOCKED',
+    paused: 'PAUSED',
+    someday: 'SOMEDAY',
+    done: 'DONE',
+    cancelled: 'CANCELLED',
 };
 
 // Coarse buckets surfaced by the mem graph's `status_group` (active/blocked/completed).
@@ -128,9 +128,9 @@ export const ASSIGNEE_DEFAULT = "#6c757d";
 export const PRIORITIES = [
     { value: 0, label: 'CRITICAL', short: 'CRIT', color: '#dc3545' },
     { value: 1, label: 'INTENDED', short: 'INTD', color: '#f59e0b' },
-    { value: 2, label: 'ACTIVE',   short: 'ACTV', color: '#4f8fda' },
-    { value: 3, label: 'PLANNED',  short: 'PLAN', color: '#7b86c9' },
-    { value: 4, label: 'BACKLOG',  short: 'BKLG', color: '#8c96a3' },
+    { value: 2, label: 'ACTIVE', short: 'ACTV', color: '#4f8fda' },
+    { value: 3, label: 'PLANNED', short: 'PLAN', color: '#7b86c9' },
+    { value: 4, label: 'BACKLOG', short: 'BKLG', color: '#8c96a3' },
 ] as const;
 
 export const PRIORITY_BORDERS: Record<number, string> = Object.fromEntries(
