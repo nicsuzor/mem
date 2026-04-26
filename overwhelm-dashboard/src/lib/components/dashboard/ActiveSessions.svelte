@@ -63,7 +63,7 @@
 
     <!-- Active Sessions (< 4h) — full cards -->
     <div class="flex flex-col gap-2">
-        {#each (compact ? sessions.slice(0, 15) : sessions.slice(0, 8)) as session}
+        {#each sessions as session}
             {@const expanded = !!expandedSessions[session.session_id]}
             {@const timeline = session.prompts || []}
             {@const shortId = (session.session_id || "").slice(-8)}
