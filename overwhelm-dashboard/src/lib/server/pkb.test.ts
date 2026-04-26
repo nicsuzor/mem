@@ -123,7 +123,7 @@ describe('PKB HTTP MCP server', () => {
                 arguments: { limit: 1 },
             }),
         );
-        const idMatch = listText.match(/\b((?:task|aops|epic|framework|spike|polecat)-[0-9a-f]{6,})\b/);
+        const idMatch = listText.match(/\b([a-z]+-[0-9a-f]{6,})\b/i);
         if (!idMatch) {
             console.warn('round-trip test: no existing tasks in PKB — skipping');
             return;
