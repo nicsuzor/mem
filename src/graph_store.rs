@@ -2675,12 +2675,12 @@ mod tests {
 
     #[test]
     fn test_parse_effort_days() {
-        assert_eq!(GraphStore::parse_effort_days("1d"), Some(1));
-        assert_eq!(GraphStore::parse_effort_days("1w"), Some(7));
-        assert_eq!(GraphStore::parse_effort_days("2h"), Some(1));
-        assert_eq!(GraphStore::parse_effort_days("10h"), Some(2));
-        assert_eq!(GraphStore::parse_effort_days("5"), Some(5));
-        assert_eq!(GraphStore::parse_effort_days(""), None);
+        assert_eq!(crate::graph::parse_effort_days("1d"), Some(1));
+        assert_eq!(crate::graph::parse_effort_days("1w"), Some(7));
+        assert_eq!(crate::graph::parse_effort_days("2h"), Some(1));
+        assert_eq!(crate::graph::parse_effort_days("10h"), Some(2));
+        assert_eq!(crate::graph::parse_effort_days("5"), Some(5));
+        assert_eq!(crate::graph::parse_effort_days(""), None);
     }
 
     #[test]
