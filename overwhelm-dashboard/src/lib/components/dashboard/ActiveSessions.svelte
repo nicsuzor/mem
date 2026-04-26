@@ -5,21 +5,18 @@
 
     let { 
         sessions = [], 
-        pausedSessions = [], 
         staleSessions = [], 
         needsYou = [], 
         title = "CURRENT ACTIVITY",
         compact = false
     }: {
         sessions?: any[];
-        pausedSessions?: any[];
         staleSessions?: any[];
         needsYou?: any[];
         title?: string;
         compact?: boolean;
     } = $props();
 
-    let showPaused = $state(false);
     let isSubmitting = $state(false);
     let expandedSessions = $state<Record<string, boolean>>({});
 
@@ -80,7 +77,8 @@
         running: { label: 'RUNNING', class: 'bg-primary text-black animate-pulse' },
         needs_you: { label: 'NEEDS YOU', class: 'bg-red-500 text-white animate-pulse' },
         errored: { label: 'ERRORED', class: 'bg-red-700 text-white' },
-        completed: { label: 'DONE', class: 'bg-green-700 text-white' },
+        completed: { label: 'DONE', class: 'bg-green-900/40 text-green-400 border border-green-500/30' },
+        abandoned: { label: 'ABANDONED', class: 'bg-primary/10 text-primary/40 border border-primary/20 line-through' },
         paused: { label: 'PAUSED', class: 'bg-primary/30 text-primary/70' },
         idle: { label: 'IDLE', class: 'bg-primary/20 text-primary/50' },
     };
@@ -104,7 +102,7 @@
     <div class="flex flex-col gap-2">
         {#each (compact ? sessions.slice(0, 15) : sessions.slice(0, 8)) as session}
             {@const expanded = !!expandedSessions[session.session_id]}
-            {@const extraPrompts = (session.prompts || []).slice(1)}
+            {@const timeline = session.prompts || []}
             {@const shortId = (session.session_id || "").slice(-8)}
             <div class="bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors">
                 <div class="flex items-center gap-4 p-2 cursor-pointer"
@@ -134,11 +132,38 @@
                         <span class="text-[10px] font-bold px-1.5 py-0.5 {badge.class} shrink-0">{badge.label}</span>
                     {/if}
                 </div>
-                {#if expanded && extraPrompts.length > 0}
-                    <div class="flex flex-col gap-1 px-4 pb-2 border-t border-primary/10">
-                        {#each extraPrompts as prompt}
-                            <p class="text-[11px] text-primary/60 py-1 border-b border-primary/5 last:border-0 whitespace-pre-wrap break-words">{prompt}</p>
-                        {/each}
+                {#if expanded}
+                    <div class="flex flex-col gap-3 px-4 py-3 border-t border-primary/10 bg-black/20">
+                        {#if session.accomplishments?.length > 0}
+                            <div class="flex flex-col gap-1">
+                                <span class="text-[10px] font-bold text-green-500 tracking-widest uppercase">Accomplishments</span>
+                                {#each session.accomplishments as acc}
+                                    <div class="text-[11px] text-primary/80 flex gap-2"><span class="text-green-500">›</span> {acc}</div>
+                                {/each}
+                            </div>
+                        {/if}
+                        {#if session.friction_points?.length > 0}
+                            <div class="flex flex-col gap-1">
+                                <span class="text-[10px] font-bold text-yellow-500 tracking-widest uppercase">Friction Points</span>
+                                {#each session.friction_points as fp}
+                                    <div class="text-[11px] text-primary/80 flex gap-2"><span class="text-yellow-500">!</span> {fp}</div>
+                                {/each}
+                            </div>
+                        {/if}
+                        {#if session.outcome}
+                            <div class="flex flex-col gap-1">
+                                <span class="text-[10px] font-bold text-primary/50 tracking-widest uppercase">Outcome</span>
+                                <div class="text-[11px] text-primary/60">{session.outcome}</div>
+                            </div>
+                        {/if}
+                        {#if timeline.length > 0}
+                            <div class="flex flex-col gap-1 mt-1">
+                                <span class="text-[10px] font-bold text-primary/50 tracking-widest uppercase">Timeline</span>
+                                {#each timeline as prompt}
+                                    <p class="text-[11px] text-primary/60 py-1 border-b border-primary/5 last:border-0 whitespace-pre-wrap break-words">›_ {prompt}</p>
+                                {/each}
+                            </div>
+                        {/if}
                     </div>
                 {/if}
             </div>
@@ -150,39 +175,6 @@
             </div>
         {/if}
     </div>
-
-    <!-- Paused Sessions (4-24h) — collapsed, expandable -->
-    {#if pausedSessions.length > 0}
-        <button
-            class="flex items-center gap-2 text-[10px] font-bold tracking-widest text-primary/50 hover:text-primary transition-colors cursor-pointer border-t border-primary/10 pt-3"
-            onclick={() => showPaused = !showPaused}
-        >
-            <span class="material-symbols-outlined text-[14px]">{showPaused ? 'expand_less' : 'expand_more'}</span>
-            PAUSED ({pausedSessions.length}) — 4-24h ago
-        </button>
-        {#if showPaused}
-            <div class="flex flex-col gap-1 opacity-60">
-                {#each pausedSessions.slice(0, 10) as session}
-                    <div class="flex items-center gap-4 bg-primary/3 border-l border-primary/20 p-1.5 text-xs cursor-pointer hover:bg-primary/10"
-                         role="button" tabindex="0" onclick={() => { if(session.id) toggleSelection(session.id); }} onkeydown={(e) => { if(e.key === 'Enter' && session.id) toggleSelection(session.id); }}>
-                        <span class="text-[10px] text-primary/40 min-w-[55px]">{session.time_display}</span>
-                        {#if session.project}
-                            <span class="text-[10px] font-bold px-1.5 py-0.5"
-                                  style="background: {projectBgTint(session.project)}; color: {projectColor(session.project)}; border: 1px solid {projectBorderColor(session.project)};">{session.project}</span>
-                        {/if}
-                        <span class="text-primary/60 truncate flex-1" title={session.description}>{session.description}</span>
-                        {#if session.status_badge}
-                            {@const badge = BADGE_STYLES[session.status_badge] || BADGE_STYLES.paused}
-                            <span class="text-[9px] font-bold px-1 py-0.5 {badge.class} shrink-0">{badge.label}</span>
-                        {/if}
-                    </div>
-                {/each}
-                {#if pausedSessions.length > 10}
-                    <div class="text-[10px] text-primary/30 italic pl-2">+ {pausedSessions.length - 10} more paused</div>
-                {/if}
-            </div>
-        {/if}
-    {/if}
 
     <!-- Stale Sessions (>24h) — archive prompt per spec -->
     {#if staleSessions.length > 0}

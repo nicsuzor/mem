@@ -3,7 +3,6 @@
 
     import { graphData } from "../../stores/graph";
     import ActiveSessions from "./ActiveSessions.svelte";
-    import SynthesisPanel from "./SynthesisPanel.svelte";
     import ProjectDashboard from "./ProjectDashboard.svelte";
     import { INCOMPLETE_STATUSES, COMPLETED_STATUSES } from "../../data/constants";
 
@@ -16,7 +15,6 @@
     // Session data comes exclusively from server-side sources (synthesis.json / session-state files).
     // No client-side fallback — if the pipeline isn't producing data, the UI shows errors.
     $: activeSessionsData = data?.dashboardData?.active_agents || [];
-    $: pausedSessionsData = data?.dashboardData?.paused_sessions || [];
     $: staleSessionsData = data?.dashboardData?.stale_sessions || [];
     $: pipelineErrors = data?.dashboardData?.pipeline_errors || [];
     $: pathData = data?.dashboardData?.path || { activity: [], abandoned_work: [] };
@@ -124,7 +122,6 @@
         <div class="lg:col-span-2 border border-primary/30 bg-surface p-4">
             <ActiveSessions
                 sessions={interactiveSessions}
-                pausedSessions={pausedSessionsData}
                 staleSessions={staleSessionsData}
                 needsYou={data?.dashboardData?.needs_you || []}
                 title="CURRENT ACTIVITY"
@@ -142,14 +139,7 @@
         </div>
     </div>
 
-    <!-- PRIORITY 2: Today's Story (narrative context recovery) -->
-    <div class="border border-primary/30 bg-surface p-4">
-        <SynthesisPanel
-            dailyStory={data?.dashboardData?.daily_story}
-        />
-    </div>
-
-    <!-- PRIORITY 3: Project details (sessions + tasks) -->
+    <!-- PRIORITY 2: Project details (sessions + tasks) -->
     <div class="border border-primary/30 bg-surface p-4">
         <ProjectDashboard
             projectProjects={enrichedProjects}

@@ -37,34 +37,7 @@ function extractCleanPrompt(timeline: any[]): string {
     return '';
 }
 
-function buildDailyStory(summaries: any[]): any {
-    const story: string[] = [];
-    const cutoff = Date.now() - 24 * 3600 * 1000;
-    
-    for (const s of summaries) {
-        const stTime = s.date ? new Date(s.date).getTime() : 0;
-        if (stTime < cutoff) continue;
-        
-        const proj = s.project || 'unknown';
-        const accomplishments = s.accomplishments || [];
-        
-        if (accomplishments.length > 0) {
-            for (const acc of accomplishments) {
-                story.push(`[${proj}] ${acc}`);
-            }
-        } else if (s.summary) {
-            story.push(`[${proj}] ${s.summary}`);
-        } else if (s.timeline_events) {
-            const cleanPrompt = extractCleanPrompt(s.timeline_events);
-            if (cleanPrompt) {
-                // Shorten description if it's too long
-                const desc = cleanPrompt.slice(0, 150) + (cleanPrompt.length > 150 ? '...' : '');
-                story.push(`[${proj}] ${desc}`);
-            }
-        }
-    }
-    return story.length > 0 ? { story } : null;
-}
+
 
 interface ProjectsConfig {
     pseudo_projects: string[];
@@ -121,9 +94,7 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
         const data = await readJson(filePath);
         if (!data) continue;
 
-        // Sessions with an outcome have finished — skip them
-        if (data.outcome) continue;
-
+        // Include all sessions within 24h; outcomes are now valid
         const project = data.project || 'unknown';
         const minutesAgo = (Date.now() - st.mtimeMs) / 60000;
         const hoursAgo = minutesAgo / 60;
@@ -140,8 +111,16 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
         // Extract the first meaningful user prompt from timeline as description
         // This is the best context for "what was this session about?"
         const timeline: any[] = data.timeline_events || [];
+        // Use accomplishments/summary for completed sessions, otherwise fallback to clean prompt
         const cleanPrompt = extractCleanPrompt(timeline);
-        let description = data.summary || (cleanPrompt ? cleanPrompt.slice(0, 300) : '');
+        let description = '';
+        if (data.accomplishments && data.accomplishments.length > 0) {
+            description = data.accomplishments[0];
+        } else if (data.summary) {
+            description = data.summary;
+        } else if (cleanPrompt) {
+            description = cleanPrompt.slice(0, 300);
+        }
         
         if (!description) {
             // Fallback for sessions with no meaningful prompt
@@ -175,15 +154,15 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
         // Prompt count: only what the cron captured — may be incomplete for running sessions
         const promptCount = timeline.filter((e: any) => e.type === 'user_prompt').length;
 
-        let bucket: 'active' | 'paused' | 'stale';
-        if (hoursAgo < 4) bucket = 'active';
-        else if (hoursAgo < 24) bucket = 'paused';
+        let bucket: 'active' | 'stale';
+        if (hoursAgo < 24) bucket = 'active';
         else bucket = 'stale';
 
         let statusBadge: string;
-        if (minutesAgo < 10) statusBadge = 'running';
-        else if (hoursAgo < 1) statusBadge = 'idle';
-        else statusBadge = 'paused';
+        if (data.outcome === 'success') statusBadge = 'completed';
+        else if (data.outcome) statusBadge = 'abandoned';
+        else if (minutesAgo < 10) statusBadge = 'running';
+        else statusBadge = 'idle';
 
         results.push({
             session_id: data.session_id || '',
@@ -199,9 +178,13 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             is_active: minutesAgo < 10,
             last_modified: st.mtimeMs,
             bucket,
+            statusBadge: statusBadge, // Renaming to camelCase for clarity, but mapped below
             status_badge: statusBadge,
             needs_you: false,
             source: 'summaries',
+            outcome: data.outcome || null,
+            accomplishments: data.accomplishments || [],
+            friction_points: data.friction_points || []
         });
     }
 
@@ -322,7 +305,6 @@ export const load = async () => {
 
     // Bucket sessions by recency
     const activeSessions = sessions.filter(s => s.bucket === 'active');
-    const pausedSessions = sessions.filter(s => s.bucket === 'paused');
     const staleSessions = sessions.filter(s => s.bucket === 'stale');
     const needsYouSessions = sessions.filter(s => s.needs_you);
 
@@ -382,7 +364,6 @@ export const load = async () => {
 
     // Pipeline health — fail fast and loud when data sources are missing
     const summariesDirOk = AOPS_SESSIONS !== '';
-    const dailyStory = buildDailyStory(summaries);
 
     return {
         dashboardData: {
@@ -391,11 +372,9 @@ export const load = async () => {
             ],
             // Bucketed sessions for triage display
             active_agents: activeSessions,
-            paused_sessions: pausedSessions,
             stale_sessions: staleSessions,
             needs_you: needsYouSessions,
             synthesis: null,
-            daily_story: dailyStory,
             
             project_projects: projectProjects,
             project_data: projectData,
