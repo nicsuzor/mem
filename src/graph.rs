@@ -54,6 +54,35 @@ pub struct Edge {
     pub edge_type: EdgeType,
 }
 
+/// A contribution relationship from one node to another (strategic priority).
+///
+/// Implements the Birnbaum importance model where weights are Renooij-Witteman
+/// verbal terms mapped to non-linear anchors.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ContributesTo {
+    /// Target node ID this node contributes to.
+    pub to: String,
+    /// Verbal weight term (e.g. "Expected", "Probable", "Certain").
+    pub weight: String,
+    /// Mandatory single-sentence justification for the weight.
+    pub why: String,
+    /// Current decayed weight value (computed at runtime).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_weight: Option<f64>,
+    /// Optional provenance (ID of prototype this edge inherits from).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inherits_from: Option<String>,
+    /// Longitudinal calibration history (Brier scores).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub brier_history: Vec<f64>,
+    /// Last interaction timestamp (feeds decay trigger).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_interacted: Option<String>,
+    /// Stated-Revealed Divergence signal.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub anomaly_flag: bool,
+}
+
 /// A graph node extracted from a PKB document.
 ///
 /// Contains all metadata needed for graph building, task management,
@@ -111,7 +140,7 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub goals: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub contributes_to: Vec<serde_json::Value>,
+    pub contributes_to: Vec<ContributesTo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub follow_up_tasks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,6 +149,12 @@ pub struct GraphNode {
     pub effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consequence: Option<String>,
+    /// Severity ladder (0-4) for target nodes. SEV4 is lexicographic.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<i32>,
+    /// Goal classification: committed | aspirational | learning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -573,6 +608,12 @@ impl GraphNode {
         let consequence = fm
             .as_ref()
             .and_then(|f| f.get("consequence").and_then(|v| v.as_str()).map(String::from));
+        let severity = fm
+            .as_ref()
+            .and_then(|f| f.get("severity").and_then(|v| v.as_i64()).map(|v| v as i32));
+        let goal_type = fm
+            .as_ref()
+            .and_then(|f| f.get("goal_type").and_then(|v| v.as_str()).map(String::from));
         let goals = fm
             .as_ref()
             .map(|f| parse_string_array(f, "goals"))
@@ -580,8 +621,7 @@ impl GraphNode {
         let contributes_to = fm
             .as_ref()
             .and_then(|f| f.get("contributes_to"))
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.clone())
+            .and_then(|v| serde_json::from_value::<Vec<ContributesTo>>(v.clone()).ok())
             .unwrap_or_default();
         let follow_up_tasks = fm
             .as_ref()
@@ -736,6 +776,8 @@ impl GraphNode {
             complexity,
             effort,
             consequence,
+            severity,
+            goal_type,
             source,
             confidence,
             supersedes,

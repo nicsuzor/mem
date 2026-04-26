@@ -56,6 +56,8 @@ pub struct DocumentFields {
     pub due: Option<String>,
     pub confidence: Option<f64>,
     pub supersedes: Option<String>,
+    pub severity: Option<i32>,
+    pub goal_type: Option<String>,
     pub stakeholder: Option<String>,
     pub waiting_since: Option<String>,
     pub contributes_to: Vec<serde_json::Value>,
@@ -76,6 +78,8 @@ pub struct TaskFields {
     pub complexity: Option<String>,
     pub effort: Option<String>,
     pub consequence: Option<String>,
+    pub severity: Option<i32>,
+    pub goal_type: Option<String>,
     pub body: Option<String>,
     pub stakeholder: Option<String>,
     pub waiting_since: Option<String>,
@@ -255,6 +259,14 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     if let Some(ref s) = fields.supersedes {
         fm.push_str(&format!("supersedes: \"{}\"\n", s.replace('"', "\\\"")));
+    }
+
+    if let Some(sev) = fields.severity {
+        fm.push_str(&format!("severity: {}\n", sev));
+    }
+
+    if let Some(ref gt) = fields.goal_type {
+        fm.push_str(&format!("goal_type: {}\n", gt));
     }
 
     if let Some(ref due) = fields.due {
@@ -514,6 +526,14 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     if let Some(ref consequence) = fields.consequence {
         fm.push_str(&format!("consequence: \"{}\"\n", consequence.replace('"', "\\\"")));
+    }
+
+    if let Some(sev) = fields.severity {
+        fm.push_str(&format!("severity: {}\n", sev));
+    }
+
+    if let Some(ref gt) = fields.goal_type {
+        fm.push_str(&format!("goal_type: {}\n", gt));
     }
 
     if let Some(ref stakeholder) = fields.stakeholder {
