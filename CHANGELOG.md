@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.14](https://github.com/nicsuzor/mem/compare/v0.3.13...v0.3.14) - 2026-04-26
+
+### Added
+
+- *(mem)* integrate new weight model infrastructure ([#248](https://github.com/nicsuzor/mem/pull/248))
+- *(overwhelm-dashboard)* show computed properties above description in task detail ([#249](https://github.com/nicsuzor/mem/pull/249))
+- *(mem)* align linter and API on field validation ([#245](https://github.com/nicsuzor/mem/pull/245))
+- *(overwhelm-dashboard)* display scope, uncertainty, and criticality (#task-7cd8b34b)
+- *(graph)* add target as goal alias; rewrite focus scoring spec to match implementation
+- *(overwhelm-dashboard)* unify status palette across filter + task cards ([#241](https://github.com/nicsuzor/mem/pull/241))
+- *(metro)* radial targets + live drag + sub-task drawing ([#240](https://github.com/nicsuzor/mem/pull/240))
+- *(dashboard)* reconcile spec and impl — repos as projects, interactive split, ID display ([#239](https://github.com/nicsuzor/mem/pull/239))
+- *(task_search)* add type filter to return epics or specific types ([#235](https://github.com/nicsuzor/mem/pull/235))
+- *(mcp)* add hierarchical listing to list_tasks and new get_tree tool ([#236](https://github.com/nicsuzor/mem/pull/236))
+- *(dashboard)* non-blocking async notifications with retry ([#232](https://github.com/nicsuzor/mem/pull/232))
+- *(dashboard)* queue-view quick actions + human/auto badge + bulk triage ([#233](https://github.com/nicsuzor/mem/pull/233))
+- *(metro)* target-anchored layout inspired by Tokyo railways demo ([#225](https://github.com/nicsuzor/mem/pull/225))
+- *(pkb-server)* default new tasks to draft status ([#224](https://github.com/nicsuzor/mem/pull/224))
+
+### Fixed
+
+- *(overwhelm-dashboard)* legacy alias normalisation + downstream weight in detail pane ([#244](https://github.com/nicsuzor/mem/pull/244))
+- *(overwhelm-dashboard)* sync status filtering with canonical taxonomy ([#242](https://github.com/nicsuzor/mem/pull/242))
+- *(metro)* address QA defects on routes, layout, interchanges, tooltips ([#231](https://github.com/nicsuzor/mem/pull/231))
+- *(pkb-server)* inherit parent project in decompose_task subtasks ([#227](https://github.com/nicsuzor/mem/pull/227))
+- *(mcp)* repair duplicated rebuild_graph_for_pkb_document merge (#230 followup) ([#234](https://github.com/nicsuzor/mem/pull/234))
+- *(mcp)* reduce PKB tool signature friction ([#229](https://github.com/nicsuzor/mem/pull/229))
+
+### Other
+
+- Add positive project filter to dashboard (solo mode) ([#247](https://github.com/nicsuzor/mem/pull/247))
+- *(overwhelm-dashboard)* round-trip persistence test for PKB MCP writes ([#246](https://github.com/nicsuzor/mem/pull/246))
+- formatting
+- update ready - active status
+- align task status taxonomy with canonical (inbox→ready→queued→in_progress→merge_ready→done) ([#238](https://github.com/nicsuzor/mem/pull/238))
+- Revert "feat(mcp): add hierarchical listing to list_tasks and new get_tree to…" ([#237](https://github.com/nicsuzor/mem/pull/237))
+- audit CORE.md — remove absolute paths, add fail-fast halt rule ([#226](https://github.com/nicsuzor/mem/pull/226))
+- *(mcp)* cut write-path latency for update_task / complete_task / create_task ([#230](https://github.com/nicsuzor/mem/pull/230))
+- remove TUI from pkb tool ([#228](https://github.com/nicsuzor/mem/pull/228))
+
 ## [0.3.13](https://github.com/nicsuzor/mem/compare/v0.3.12...v0.3.13) - 2026-04-23
 
 ### Fixed
