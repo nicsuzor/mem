@@ -555,7 +555,7 @@
                             </div>
                         </section>
 
-                        {#if (task as any).criticality > 0 || (task as any).uncertainty > 0 || (task as any).scope > 0 || weightRaw > 0 || (task as any).focusScore > 0}
+                        {#if t.criticality > 0 || t.uncertainty > 0 || t.scope > 0 || weightRaw > 0 || t.focusScore > 0}
                         <section class="rounded-sm border border-primary/15 bg-black/15 p-3 space-y-2">
                             <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45 border-b border-primary/10 pb-1">Computed Properties</div>
 
@@ -576,10 +576,10 @@
                             <div class="space-y-0.5">
                                 <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
                                     <span class="text-primary/45">Criticality</span>
-                                    <span class="font-bold" style="color: {(task as any).criticality > 0.6 ? '#f59e0b' : (task as any).criticality > 0.3 ? '#d97706' : '#a3a3a3'}">{Math.round((task as any).criticality * 100)}%</span>
+                                    <span class="font-bold" style="color: {t.criticality > 0.6 ? '#f59e0b' : t.criticality > 0.3 ? '#d97706' : '#a3a3a3'}">{Math.round(t.criticality * 100)}%</span>
                                 </div>
                                 <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
-                                    <div class="h-full rounded-full transition-all" style="width:{Math.round((task as any).criticality * 100)}%; background: color-mix(in srgb, #f59e0b {40 + Math.round((task as any).criticality * 60)}%, #374151)"></div>
+                                    <div class="h-full rounded-full transition-all" style="width:{Math.round(t.criticality * 100)}%; background: color-mix(in srgb, #f59e0b {40 + Math.round(t.criticality * 60)}%, #374151)"></div>
                                 </div>
                             </div>
 
@@ -587,26 +587,26 @@
                             <div class="space-y-0.5">
                                 <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
                                     <span class="text-primary/45">Uncertainty</span>
-                                    <span class="font-bold" style="color: {(task as any).uncertainty > 0.6 ? '#94a3b8' : (task as any).uncertainty > 0.3 ? '#64748b' : '#a3a3a3'}">{Math.round((task as any).uncertainty * 100)}%</span>
+                                    <span class="font-bold" style="color: {t.uncertainty > 0.6 ? '#94a3b8' : t.uncertainty > 0.3 ? '#64748b' : '#a3a3a3'}">{Math.round(t.uncertainty * 100)}%</span>
                                 </div>
                                 <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
-                                    <div class="h-full rounded-full transition-all" style="width:{Math.round((task as any).uncertainty * 100)}%; background: color-mix(in srgb, #94a3b8 {40 + Math.round((task as any).uncertainty * 60)}%, #374151)"></div>
+                                    <div class="h-full rounded-full transition-all" style="width:{Math.round(t.uncertainty * 100)}%; background: color-mix(in srgb, #94a3b8 {40 + Math.round(t.uncertainty * 60)}%, #374151)"></div>
                                 </div>
                             </div>
 
                             <!-- Scope -->
-                            {#if (task as any).scope > 0}
+                            {#if t.scope > 0}
                             <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
                                 <span class="text-primary/45">Scope</span>
-                                <span class="font-bold text-primary/70">{(task as any).scope} descendant{(task as any).scope === 1 ? '' : 's'}</span>
+                                <span class="font-bold text-primary/70">{t.scope} descendant{t.scope === 1 ? '' : 's'}</span>
                             </div>
                             {/if}
 
                             <!-- Focus Score -->
-                            {#if (task as any).focusScore > 0}
+                            {#if t.focusScore > 0}
                             <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
                                 <span class="text-primary/45">Focus Score</span>
-                                <span class="font-bold text-[#a78bfa]">{(task as any).focusScore}</span>
+                                <span class="font-bold text-[#a78bfa]">{t.focusScore}</span>
                             </div>
                             {/if}
                         </section>
