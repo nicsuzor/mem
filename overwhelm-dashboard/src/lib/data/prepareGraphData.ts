@@ -174,6 +174,10 @@ export function prepareGraphData(
         rawNodes = rawNodes.filter(n => !options.hiddenProjects!.includes(n.project || ""));
     }
 
+    // Prune edges referencing filtered-out nodes
+    const filteredNodeIds = new Set(rawNodes.map(n => n.id));
+    rawEdges = rawEdges.filter(e => filteredNodeIds.has(e.source) && filteredNodeIds.has(e.target));
+
     const initialNodeById = new Map<string, any>(rawNodes.map(n => [n.id, n]));
     const initialNodeIds = new Set(rawNodes.map(n => n.id));
 
