@@ -2866,6 +2866,7 @@ fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
         stale_days: args.stale.as_ref().and_then(parse_duration_days),
         orphan: if args.orphan { Some(true) } else { None },
         title_contains: args.title_contains.clone(),
+        assignee: None,
         complexity: args.complexity.clone(),
         directory: args.directory.clone(),
         weight_gte: args.weight_gte,

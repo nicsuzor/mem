@@ -2531,6 +2531,14 @@ impl PkbSearchServer {
                     .get("status")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                severity: subtask
+                    .get("severity")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                goal_type: subtask
+                    .get("goal_type")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 session_id: None,
                 issue_url: None,
                 follow_up_tasks: vec![],
