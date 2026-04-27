@@ -1316,6 +1316,7 @@ impl PkbSearchServer {
             "parent": parent,
             "goals": node.goals,
             "contributes_to": node.contributes_to,
+            "contributed_by": node.contributed_by,
             "follow_up_tasks": node.follow_up_tasks,
             "priority": node.priority.unwrap_or(2),
             "effective_priority": node.effective_priority.unwrap_or(node.priority.unwrap_or(2)),

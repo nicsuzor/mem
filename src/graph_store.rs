@@ -154,7 +154,7 @@ impl GraphStore {
             .collect();
 
         // 4. Compute inverse relationships on nodes
-        compute_inverses(&mut nodes, &edges);
+        compute_inverses(&mut nodes, &edges, &id_map, &path_to_id);
 
         // 5. Compute degree metrics (indegree/outdegree)
         compute_degree_metrics(&mut nodes, &edges);
@@ -980,6 +980,20 @@ fn recency_signal(modified: &DateTime<Utc>, now: &DateTime<Utc>) -> f64 {
 // Internal build helpers
 // ===========================================================================
 
+/// Resolve a `contributes_to` target reference to a canonical node ID.
+///
+/// Centralises the resolution call used in both `build_node_edges` (to emit
+/// `ContributesTo` edges) and `compute_inverses` (to populate
+/// `ContributesTo::resolved_to`), so both stay in sync when resolution logic
+/// changes.
+fn resolve_ct_ref(
+    to: &str,
+    id_map: &HashMap<String, String>,
+    path_to_id: &HashMap<String, String>,
+) -> Option<String> {
+    graph::resolve_ref(to, id_map, path_to_id)
+}
+
 /// Build all edges originating from a single node.
 fn build_node_edges(
     n: &GraphNode,
@@ -1089,6 +1103,19 @@ fn build_node_edges(
         }
     }
 
+    // contributes_to -> ContributesTo edge
+    for ct in &n.contributes_to {
+        if let Some(target_id) = resolve_ct_ref(&ct.to, id_map, path_to_id) {
+            if n.id != target_id {
+                edges.push(Edge {
+                    source: n.id.clone(),
+                    target: target_id,
+                    edge_type: EdgeType::ContributesTo,
+                });
+            }
+        }
+    }
+
     // supersedes -> Supersedes edge (this -> old memory)
     if let Some(ref old_id_ref) = n.supersedes {
         if let Some(target_id) = graph::resolve_ref(old_id_ref, id_map, path_to_id) {
@@ -1113,7 +1140,14 @@ fn build_node_edges(
 ///   target.soft_blocks += source
 /// For each Parent edge (source is child of target):
 ///   target.children += source
-fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
+/// For each ContributesTo edge (source contributes to target):
+///   target.contributed_by += source
+fn compute_inverses(
+    nodes: &mut [GraphNode],
+    edges: &[Edge],
+    id_map: &HashMap<String, String>,
+    path_to_id: &HashMap<String, String>,
+) {
     let id_to_idx: HashMap<String, usize> = nodes
         .iter()
         .enumerate()
@@ -1127,11 +1161,19 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
         .map(|n| n.id.clone())
         .collect();
 
+    // Resolve contributes_to.resolved_to on each node
+    for node in nodes.iter_mut() {
+        for ct in node.contributes_to.iter_mut() {
+            ct.resolved_to = resolve_ct_ref(&ct.to, id_map, path_to_id);
+        }
+    }
+
     // Collect updates to avoid borrow issues
     let mut block_updates: Vec<(usize, String)> = Vec::new(); // (target_idx, source_id)
     let mut soft_block_updates: Vec<(usize, String)> = Vec::new();
     let mut children_updates: Vec<(usize, String)> = Vec::new();
     let mut subtask_updates: Vec<(usize, String)> = Vec::new();
+    let mut contributed_by_updates: Vec<(usize, String)> = Vec::new();
     // Resolve parent field: raw frontmatter value → actual node ID
     let mut parent_updates: Vec<(usize, String)> = Vec::new(); // (child_idx, resolved_parent_id)
 
@@ -1162,6 +1204,12 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
                     parent_updates.push((child_idx, edge.target.clone()));
                 }
             }
+            EdgeType::ContributesTo => {
+                // source contributes to target -> target is contributed to by source
+                if let Some(&idx) = id_to_idx.get(&edge.target) {
+                    contributed_by_updates.push((idx, edge.source.clone()));
+                }
+            }
             EdgeType::Link | EdgeType::Supersedes => {}
         }
     }
@@ -1186,6 +1234,11 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
             nodes[idx].subtasks.push(subtask_id);
         }
     }
+    for (idx, contributor_id) in contributed_by_updates {
+        if !nodes[idx].contributed_by.contains(&contributor_id) {
+            nodes[idx].contributed_by.push(contributor_id);
+        }
+    }
     // Resolve parent fields: replace raw frontmatter references with actual node IDs.
     // This ensures node.parent matches node.id values throughout the graph,
     // so treemap hierarchy, project computation, and frontend lookups all work correctly.
@@ -1199,6 +1252,7 @@ fn compute_inverses(nodes: &mut [GraphNode], edges: &[Edge]) {
         deduplicate_vec(&mut node.soft_blocks);
         deduplicate_vec(&mut node.children);
         deduplicate_vec(&mut node.subtasks);
+        deduplicate_vec(&mut node.contributed_by);
         deduplicate_vec(&mut node.depends_on);
         deduplicate_vec(&mut node.soft_depends_on);
         node.leaf = node.children.is_empty();
@@ -1370,6 +1424,13 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
                     neighbors.push((idx, 0.5));
                 }
             }
+            for ct in &n.contributes_to {
+                if let Some(resolved) = &ct.resolved_to {
+                    if let Some(&idx) = id_to_idx.get(resolved) {
+                        neighbors.push((idx, ct.numeric_weight()));
+                    }
+                }
+            }
             neighbors
         })
         .collect();
@@ -1381,7 +1442,7 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
     for start_idx in 0..num_nodes {
         let mut total_weight: f64 = 0.0;
         let mut stakeholder_found = false;
-        
+
         visited.fill(false);
         visited[start_idx] = true;
         queue.clear();
@@ -1443,6 +1504,13 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
             for cid in &n.children {
                 if let Some(&idx) = id_to_idx.get(cid) {
                     neighbors.push(idx);
+                }
+            }
+            for ct in &n.contributes_to {
+                if let Some(resolved) = &ct.resolved_to {
+                    if let Some(&idx) = id_to_idx.get(resolved) {
+                        neighbors.push(idx);
+                    }
                 }
             }
             neighbors
@@ -1508,8 +1576,22 @@ fn compute_blocking_urgency(nodes: &mut [GraphNode]) {
                 if status == "in_progress" {
                     urgency = 1.0;
                     break;
-                } else if status == "active" {
+                } else if status == "active" || status == "ready" || status == "queued" {
                     urgency = 0.5f64.max(urgency);
+                }
+            }
+        }
+        if urgency < 1.0 {
+            for ct in &node.contributes_to {
+                if let Some(target_id) = &ct.resolved_to {
+                    if let Some(status) = id_to_status.get(target_id) {
+                        if status == "in_progress" {
+                            urgency = 1.0;
+                            break;
+                        } else if status == "active" || status == "ready" || status == "queued" {
+                            urgency = 0.5f64.max(urgency);
+                        }
+                    }
                 }
             }
         }
@@ -1815,11 +1897,14 @@ fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
         }
     }
 
-    // Build upstream adjacency from edges (parent, depends_on, soft_depends_on only)
+    // Build upstream adjacency from edges (parent, depends_on, soft_depends_on, contributes_to)
     let mut upstream_of: HashMap<&str, Vec<&str>> = HashMap::new();
     for edge in edges {
         match edge.edge_type {
-            EdgeType::Parent | EdgeType::DependsOn | EdgeType::SoftDependsOn => {
+            EdgeType::Parent
+            | EdgeType::DependsOn
+            | EdgeType::SoftDependsOn
+            | EdgeType::ContributesTo => {
                 if all_ids.contains(edge.target.as_str()) {
                     upstream_of
                         .entry(edge.source.as_str())

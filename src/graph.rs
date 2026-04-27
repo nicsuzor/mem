@@ -31,6 +31,9 @@ pub enum EdgeType {
     /// Supersedes relationship (this node replaces the target)
     #[serde(rename = "supersedes")]
     Supersedes,
+    /// Strategic contribution (importance propagation) — blue line
+    #[serde(rename = "contributes_to")]
+    ContributesTo,
 }
 
 impl EdgeType {
@@ -41,6 +44,7 @@ impl EdgeType {
             EdgeType::Parent => "parent",
             EdgeType::Link => "link",
             EdgeType::Supersedes => "supersedes",
+            EdgeType::ContributesTo => "contributes_to",
         }
     }
 }
@@ -69,6 +73,9 @@ pub struct ContributesTo {
     /// Current decayed weight value (computed at runtime).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_weight: Option<f64>,
+    /// Resolved target node ID (computed at build time, not serialized).
+    #[serde(skip)]
+    pub resolved_to: Option<String>,
     /// Optional provenance (ID of prototype this edge inherits from).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inherits_from: Option<String>,
@@ -81,6 +88,29 @@ pub struct ContributesTo {
     /// Stated-Revealed Divergence signal.
     #[serde(default, skip_serializing_if = "is_false")]
     pub anomaly_flag: bool,
+}
+
+impl ContributesTo {
+    /// Map verbal Renooij-Witteman terms to non-linear importance anchors.
+    ///
+    /// Based on academicOps core calibration for strategic priority:
+    /// - Certain: 1.0 (Direct mechanical link, e.g. subdeadline)
+    /// - Probable: 0.8 (Strong strategic alignment)
+    /// - Expected: 0.5 (Standard contribution)
+    /// - Possible: 0.2 (Weak or aspirational alignment)
+    /// - Unlikely: 0.05 (Negligible impact)
+    /// - Impossible: 0.0
+    pub fn numeric_weight(&self) -> f64 {
+        match self.weight.to_lowercase().as_str() {
+            "certain" | "almost certain" => 1.0,
+            "very probable" | "probable" | "highly likely" => 0.8,
+            "expected" | "likely" => 0.5,
+            "possible" | "perhaps" | "maybe" => 0.2,
+            "unlikely" | "very unlikely" | "almost impossible" => 0.05,
+            "impossible" | "none" => 0.0,
+            _ => 0.3, // default "soft" contribution for unknown terms
+        }
+    }
 }
 
 /// A graph node extracted from a PKB document.
@@ -141,6 +171,8 @@ pub struct GraphNode {
     pub goals: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub contributes_to: Vec<ContributesTo>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub contributed_by: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub follow_up_tasks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -460,7 +492,7 @@ pub const VALID_NODE_TYPES: &[&str] = &[
     "project", "epic", "task", "learn",
     // Reference
     "goal", "target", "note", "knowledge", "memory", "contact",
-    "document", "reference", "review", "case", "spec",
+    "document", "reference", "review", "case", "spec", "prototype",
     // Structural / log
     "index", "daily", "session-log", "audit-report",
 ];
@@ -760,6 +792,7 @@ impl GraphNode {
             order,
             parent,
             contributes_to,
+            contributed_by: Vec::new(),
             follow_up_tasks,
             depends_on,
             soft_depends_on,
