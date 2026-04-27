@@ -1359,7 +1359,7 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
 
         assert!(content.contains("type: task"), "default type should be 'task': {content}");
-        assert!(content.contains("status: draft"), "default status should be 'draft': {content}");
+        assert!(content.contains("status: inbox"), "default status should be 'inbox': {content}");
         assert!(!content.contains("project:"), "project should not appear when None: {content}");
     }
 }

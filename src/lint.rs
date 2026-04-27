@@ -1652,7 +1652,7 @@ mod tests {
     #[test]
     fn fixes_truly_unknown_status() {
         let fixed = fix_str("---\ntitle: Test\ntype: note\nstatus: banana\n---\n\nBody.\n");
-        assert!(fixed.contains("status: active"), "unknown status should become active, got: {}", fixed);
+        assert!(fixed.contains("status: inbox"), "unknown status should become inbox, got: {}", fixed);
     }
 
     #[test]
