@@ -23,6 +23,10 @@ pub struct LocalContext {
     pub depends_on: Vec<ContextNode>,
     /// What completing this node would unblock.
     pub blocks: Vec<ContextNode>,
+    /// Strategic contribution (what this node contributes to).
+    pub contributes_to: Vec<ContextNode>,
+    /// What nodes contribute to this one.
+    pub contributed_by: Vec<ContextNode>,
     pub is_orphan: bool,
 }
 
@@ -118,6 +122,29 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         })
         .collect();
 
+    let contributes_to: Vec<_> = node.contributes_to.iter()
+        .filter_map(|ct| ct.resolved_to.as_ref())
+        .filter_map(|id| gs.get_node(id))
+        .map(|n| ContextNode {
+            id: n.id.clone(),
+            label: n.label.clone(),
+            node_type: n.node_type.clone(),
+            status: n.status.clone(),
+            priority: n.priority,
+        })
+        .collect();
+
+    let contributed_by: Vec<_> = node.contributed_by.iter()
+        .filter_map(|id| gs.get_node(id))
+        .map(|n| ContextNode {
+            id: n.id.clone(),
+            label: n.label.clone(),
+            node_type: n.node_type.clone(),
+            status: n.status.clone(),
+            priority: n.priority,
+        })
+        .collect();
+
     Some(LocalContext {
         target,
         is_orphan: parents.is_empty(),
@@ -127,6 +154,8 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         children_total,
         depends_on,
         blocks,
+        contributes_to,
+        contributed_by,
     })
 }
 
@@ -233,6 +262,21 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
         lines.push(format!("    \x1b[2mblocks:\x1b[0m"));
         for blocked in &ctx.blocks {
             lines.push(format!("      \x1b[36m→ {}\x1b[0m", fmt_node(blocked)));
+        }
+    }
+
+    // --- Contributions ---
+    if !ctx.contributes_to.is_empty() {
+        lines.push(format!("    \x1b[2mcontributes to:\x1b[0m"));
+        for target in &ctx.contributes_to {
+            lines.push(format!("      \x1b[1;34m↗ {}\x1b[0m", fmt_node(target)));
+        }
+    }
+
+    if !ctx.contributed_by.is_empty() {
+        lines.push(format!("    \x1b[2mcontributed by:\x1b[0m"));
+        for source in &ctx.contributed_by {
+            lines.push(format!("      \x1b[34m↙ {}\x1b[0m", fmt_node(source)));
         }
     }
 
