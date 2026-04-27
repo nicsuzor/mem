@@ -1735,7 +1735,7 @@ fn classify_tasks(
         let node = nodes.get(id).unwrap();
         if effectively_blocked.contains(id) {
             blocked.push(id.clone());
-        } else if node.leaf && node.status.as_deref().unwrap_or("queued") == "queued" {
+        } else if node.leaf && matches!(node.status.as_deref().unwrap_or("ready"), "ready" | "queued") {
             // Only claimable types — epics/projects/goals/containers are graph structure, not work items
             if CLAIMABLE_TYPES.contains(&node.node_type.as_deref().unwrap_or("")) {
                 ready.push(id.clone());
@@ -2494,16 +2494,16 @@ mod tests {
     }
 
     #[test]
-    fn test_ready_excludes_draft_tasks() {
-        // Draft tasks are not yet promoted to the ready queue — they need
+    fn test_ready_excludes_inbox_tasks() {
+        // Inbox tasks are not yet promoted to the ready queue — they need
         // review (AC / estimate / priority) before they become actionable.
         let docs = vec![
-            make_doc("tasks/task-draft.md", "Draft Task", "task", "draft", "task-draft", None, &[]),
+            make_doc("tasks/task-inbox.md", "Inbox Task", "task", "inbox", "task-inbox", None, &[]),
             make_doc("tasks/task-active.md", "Active Task", "task", "active", "task-active", None, &[]),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let ready_ids: Vec<&str> = graph.ready_tasks().iter().map(|n| n.id.as_str()).collect();
-        assert!(!ready_ids.contains(&"task-draft"), "draft tasks must not appear in ready");
+        assert!(!ready_ids.contains(&"task-inbox"), "inbox tasks must not appear in ready");
         assert!(ready_ids.contains(&"task-active"), "active tasks must appear in ready");
     }
 
