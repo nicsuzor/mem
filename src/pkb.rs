@@ -34,6 +34,13 @@ pub struct PkbDocument {
 }
 
 impl PkbDocument {
+    /// Hash of the body (markdown content only, no YAML frontmatter).
+    /// Used to detect whether re-embedding is needed — frontmatter-only
+    /// changes (status, priority, etc.) leave this hash unchanged.
+    pub fn body_hash(&self) -> String {
+        blake3::hash(self.body.as_bytes()).to_hex().to_string()
+    }
+
     /// Build a text representation suitable for embedding.
     /// Combines title, tags, and body for semantic richness.
     pub fn embedding_text(&self) -> String {
