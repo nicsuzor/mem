@@ -1735,7 +1735,7 @@ fn classify_tasks(
         let node = nodes.get(id).unwrap();
         if effectively_blocked.contains(id) {
             blocked.push(id.clone());
-        } else if node.leaf && matches!(node.status.as_deref().unwrap_or("ready"), "ready" | "queued") {
+        } else if node.leaf && matches!(node.status.as_deref().unwrap_or("inbox"), "ready" | "queued") {
             // Only claimable types — epics/projects/goals/containers are graph structure, not work items
             if CLAIMABLE_TYPES.contains(&node.node_type.as_deref().unwrap_or("")) {
                 ready.push(id.clone());
