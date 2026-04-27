@@ -184,8 +184,18 @@ impl VectorStore {
         let body_chunks =
             embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
 
-        let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
-        let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
+        // Optimization: if the text chunks haven't changed, reuse existing embeddings
+        let chunk_embeddings = if let Some(existing) = self.documents.get(&path_str) {
+            if existing.chunk_texts == chunks {
+                existing.chunk_embeddings.clone()
+            } else {
+                let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
+                embedder.encode_batch(&chunk_refs)?
+            }
+        } else {
+            let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
+            embedder.encode_batch(&chunk_refs)?
+        };
 
         let (id, confidence) = Self::extract_frontmatter_fields(doc);
 
