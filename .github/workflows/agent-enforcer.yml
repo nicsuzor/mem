@@ -1,0 +1,36 @@
+# Agent: Enforcer Review (Shim)
+# Personality: Universal standards enforcer — axiom compliance reviewer.
+# This shim triggers on the completion of "PR Review Pipeline".
+
+name: "Agent: Enforcer Review (Shim)"
+
+on:
+  workflow_run:
+    workflows:
+      - "PR Review Pipeline"
+    types: [completed]
+    branches-ignore:
+      - main
+      - 'release-please*'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        type: string
+        required: true
+      ref:
+        description: 'Git ref to checkout'
+        type: string
+        required: true
+
+jobs:
+  enforcer:
+    # Reusable workflow from academicOps
+    uses: nicsuzor/academicOps/.github/workflows/agent-enforcer.yml@pipeline-v1
+    # Note: agent-enforcer.yml extracts PR info from workflow_run context if inputs are empty
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      ref: ${{ inputs.ref || '' }}
+    secrets:
+      AOPS_BOT_GH_TOKEN: ${{ secrets.AOPS_BOT_GH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
