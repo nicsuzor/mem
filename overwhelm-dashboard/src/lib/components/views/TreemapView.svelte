@@ -118,7 +118,7 @@
                     return 1;
                 }
                 case 'equal': return 1;
-                default: return Math.max(MIN_NODE_WEIGHT, Math.log1p(d.focusScore ?? 0) || MIN_NODE_WEIGHT);
+                default: return Math.max(MIN_NODE_WEIGHT, Math.sqrt(d.focusScore ?? 0) || MIN_NODE_WEIGHT);
             }
         });
 
