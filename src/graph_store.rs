@@ -980,6 +980,20 @@ fn recency_signal(modified: &DateTime<Utc>, now: &DateTime<Utc>) -> f64 {
 // Internal build helpers
 // ===========================================================================
 
+/// Resolve a `contributes_to` target reference to a canonical node ID.
+///
+/// Centralises the resolution call used in both `build_node_edges` (to emit
+/// `ContributesTo` edges) and `compute_inverses` (to populate
+/// `ContributesTo::resolved_to`), so both stay in sync when resolution logic
+/// changes.
+fn resolve_ct_ref(
+    to: &str,
+    id_map: &HashMap<String, String>,
+    path_to_id: &HashMap<String, String>,
+) -> Option<String> {
+    graph::resolve_ref(to, id_map, path_to_id)
+}
+
 /// Build all edges originating from a single node.
 fn build_node_edges(
     n: &GraphNode,
@@ -1091,7 +1105,7 @@ fn build_node_edges(
 
     // contributes_to -> ContributesTo edge
     for ct in &n.contributes_to {
-        if let Some(target_id) = graph::resolve_ref(&ct.to, id_map, path_to_id) {
+        if let Some(target_id) = resolve_ct_ref(&ct.to, id_map, path_to_id) {
             if n.id != target_id {
                 edges.push(Edge {
                     source: n.id.clone(),
@@ -1150,7 +1164,7 @@ fn compute_inverses(
     // Resolve contributes_to.resolved_to on each node
     for node in nodes.iter_mut() {
         for ct in node.contributes_to.iter_mut() {
-            ct.resolved_to = crate::graph::resolve_ref(&ct.to, id_map, path_to_id);
+            ct.resolved_to = resolve_ct_ref(&ct.to, id_map, path_to_id);
         }
     }
 
@@ -1407,7 +1421,7 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
         let mut has_stakeholder = false;
         let mut visited: HashSet<String> = HashSet::new();
         // Queue: (id, depth, edge_factor) where edge_factor < 1.0 for soft/child edges
-        let mut queue: Vec<(String, u32, f64)> = Vec::new();
+        let mut queue: VecDeque<(String, u32, f64)> = VecDeque::new();
 
         let status_ok = |id: &str| -> bool {
             id_to_idx
@@ -1421,33 +1435,33 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
         if let Some(blocked) = blocks_map.get(start_id) {
             for bid in blocked {
                 if status_ok(bid) {
-                    queue.push((bid.clone(), 1, 1.0));
+                    queue.push_back((bid.clone(), 1, 1.0));
                 }
             }
         }
         if let Some(soft_blocked) = soft_blocks_map.get(start_id) {
             for sbid in soft_blocked {
                 if status_ok(sbid) {
-                    queue.push((sbid.clone(), 1, 0.3));
+                    queue.push_back((sbid.clone(), 1, 0.3));
                 }
             }
         }
         if let Some(ch) = children_map.get(start_id) {
             for cid in ch {
                 if status_ok(cid) {
-                    queue.push((cid.clone(), 1, 0.5));
+                    queue.push_back((cid.clone(), 1, 0.5));
                 }
             }
         }
         if let Some(contributions) = contributes_map.get(start_id) {
             for (tid, weight) in contributions {
                 if status_ok(tid) {
-                    queue.push((tid.clone(), 1, *weight));
+                    queue.push_back((tid.clone(), 1, *weight));
                 }
             }
         }
 
-        while let Some((tid, depth, edge_factor)) = queue.pop() {
+        while let Some((tid, depth, edge_factor)) = queue.pop_front() {
             if !visited.insert(tid.clone()) {
                 continue;
             }
@@ -1461,28 +1475,28 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
             if let Some(next_blocks) = blocks_map.get(&tid) {
                 for next in next_blocks {
                     if !visited.contains(next) {
-                        queue.push((next.clone(), depth + 1, edge_factor));
+                        queue.push_back((next.clone(), depth + 1, edge_factor));
                     }
                 }
             }
             if let Some(next_soft) = soft_blocks_map.get(&tid) {
                 for next in next_soft {
                     if !visited.contains(next) {
-                        queue.push((next.clone(), depth + 1, edge_factor * 0.3));
+                        queue.push_back((next.clone(), depth + 1, edge_factor * 0.3));
                     }
                 }
             }
             if let Some(next_ch) = children_map.get(&tid) {
                 for next in next_ch {
                     if !visited.contains(next) {
-                        queue.push((next.clone(), depth + 1, edge_factor * 0.5));
+                        queue.push_back((next.clone(), depth + 1, edge_factor * 0.5));
                     }
                 }
             }
             if let Some(next_contributions) = contributes_map.get(&tid) {
                 for (next_id, weight) in next_contributions {
                     if !visited.contains(next_id) {
-                        queue.push((next_id.clone(), depth + 1, edge_factor * weight));
+                        queue.push_back((next_id.clone(), depth + 1, edge_factor * weight));
                     }
                 }
             }
