@@ -1,0 +1,44 @@
+name: "PR Review Pipeline"
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+jobs:
+  # ─── Step 0: Initialize ──────────────────────────────────────────
+  # Set merge-prep-status to pending immediately. This ensures the PR
+  # stays "yellow" until the Merge-Prep Agent triages reviews.
+  initialize:
+    name: Initialize
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set pending status
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
+            -f state="pending" \
+            -f context="merge-prep-status" \
+            -f description="Waiting for bazaar window and triage..."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─── Step 1: Rust CI ──────────────────────────────────────────────
+  # This project uses Rust, so we run cargo checks here.
+  check:
+    name: Rust CI
+    needs: [initialize]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check no tracked files are gitignored
+        run: |
+          ignored=$(git ls-files -ci --exclude-standard)
+          if [ -n "$ignored" ]; then
+            echo "These files are tracked but gitignored (breaks release-plz):"
+            echo "$ignored"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check
+      - run: cargo test
+      - run: cargo build --release
