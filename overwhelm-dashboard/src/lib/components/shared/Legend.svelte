@@ -66,12 +66,22 @@
     function toggleSolo(project: string) {
         filters.update(f => ({
             ...f,
-            soloProject: f.soloProject === project ? null : project
+            hiddenProjects: availableProjects.filter(p => p !== project)
         }));
     }
 
     function toggleAllProjects() {
-        filters.update(f => ({ ...f, hiddenProjects: [], soloProject: null }));
+        filters.update(f => {
+            if ((f.hiddenProjects?.length ?? 0) > 0) {
+                return { ...f, hiddenProjects: [] };
+            } else {
+                return { ...f, hiddenProjects: [...availableProjects] };
+            }
+        });
+    }
+
+    function hideAllProjects() {
+        filters.update(f => ({ ...f, hiddenProjects: [...availableProjects] }));
     }
 
     function edgeOpacityForLegend(vis: VisibilityState): number {
@@ -109,9 +119,7 @@
         };
     })() : null;
 
-    $: availableProjects = $graphData
-        ? Array.from(new Set($graphData.nodes.map((n) => n.project).filter((p): p is string => !!p))).sort()
-        : [];
+    $: availableProjects = $graphData?.allProjects || [];
 
     $: visibleProjects = showAllProjects
         ? availableProjects
@@ -202,20 +210,28 @@
             <!-- Project filter with color swatches -->
             <div class="legend-section">
                 <span class="legend-section-title">PROJECTS (CLICK TO TOGGLE)</span>
-                <button
-                    class="legend-item"
-                    class:dimmed={($filters.hiddenProjects?.length ?? 0) > 0 || $filters.soloProject}
-                    on:click={toggleAllProjects}
-                >
-                    <div class="legend-box" style="background: #666; border-radius: 50%;"></div>
-                    <span class="legend-label">ALL PROJECTS</span>
-                    {#if ($filters.hiddenProjects?.length ?? 0) === 0 && !$filters.soloProject}
-                        <span class="filter-badge">ON</span>
-                    {/if}
-                </button>
+                <div class="project-row" class:dimmed={($filters.hiddenProjects?.length ?? 0) === availableProjects.length}>
+                    <button
+                        class="legend-item project-main"
+                        on:click={toggleAllProjects}
+                    >
+                        <div class="legend-box" style="background: #666; border-radius: 50%;"></div>
+                        <span class="legend-label">ALL PROJECTS</span>
+                        {#if ($filters.hiddenProjects?.length ?? 0) === 0}
+                            <span class="filter-badge">ON</span>
+                        {/if}
+                    </button>
+                    <button 
+                        class="solo-action" 
+                        on:click={hideAllProjects}
+                        title="Hide all projects"
+                    >
+                        NONE
+                    </button>
+                </div>
                 <div class="project-list" class:expanded={showAllProjects}>
                     {#each visibleProjects as proj}
-                        <div class="project-row" class:dimmed={$filters.hiddenProjects?.includes(proj) || ($filters.soloProject && $filters.soloProject !== proj)}>
+                        <div class="project-row" class:dimmed={$filters.hiddenProjects?.includes(proj)}>
                             <button
                                 class="legend-item project-main"
                                 on:click={() => toggleProject(proj)}
@@ -223,17 +239,16 @@
                             >
                                 <div class="legend-box project-swatch" style="background: {projectColor(proj)};"></div>
                                 <span class="legend-label">{(proj || '').toUpperCase()}</span>
-                                {#if !($filters.hiddenProjects?.includes(proj)) && (!$filters.soloProject || $filters.soloProject === proj)}
+                                {#if !($filters.hiddenProjects?.includes(proj))}
                                     <span class="filter-badge">ON</span>
                                 {/if}
                             </button>
                             <button 
                                 class="solo-action" 
-                                class:active={$filters.soloProject === proj}
                                 on:click={() => toggleSolo(proj)}
                                 title="Solo this project"
                             >
-                                {$filters.soloProject === proj ? 'SOLOED' : 'SOLO'}
+                                SOLO
                             </button>
                         </div>
                     {/each}

@@ -137,8 +137,7 @@
         const previousLinksByKey = new Map(($graphData?.links || []).map((link) => [edgeIdentity(link), link]));
 
         const prepared = prepareGraphData(rawGraph, new Set(), {
-            hiddenProjects: $filters.hiddenProjects,
-            soloProject: $filters.soloProject
+            hiddenProjects: $filters.hiddenProjects
         });
         // Expose the pre-filter prepared graph for views that need completeness
         // (Metro route discovery walks completed/low-priority nodes that the UI

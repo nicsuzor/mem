@@ -34,7 +34,7 @@
     let sortAsc = true;
 
     // Build the directory tree (Goals -> Projects -> Epics/Tasks)
-    $: projects = $graphData ? Array.from(new Set($graphData.nodes.map(n => n.project).filter((p): p is string => !!p))).sort() : [];
+    $: projects = $graphData?.allProjects || [];
 
     let expandedProjects: Record<string, boolean> = {};
 
@@ -45,20 +45,18 @@
     function selectProject(p: string | 'ALL') {
         filters.update(f => {
             if (p === 'ALL') {
-                return { ...f, hiddenProjects: [], soloProject: null };
+                return { ...f, hiddenProjects: [] };
             } else {
-                // When explicitly selecting a project in the sidebar, use soloProject
-                return { ...f, hiddenProjects: [], soloProject: p };
+                // When explicitly selecting a project in the sidebar, hide all other projects
+                return { ...f, hiddenProjects: projects.filter(proj => proj !== p) };
             }
         });
     }
 
-    $: isAllProjects = ($filters.hiddenProjects?.length ?? 0) === 0 && !$filters.soloProject;
+    $: isAllProjects = ($filters.hiddenProjects?.length ?? 0) === 0;
     // Determine which project is active in the sidebar.
-    // If soloProject is set, it's the active one.
-    // Otherwise, if exactly one project is visible (all others are hidden), consider it active.
-    $: activeProject = $filters.soloProject ? $filters.soloProject : 
-        isAllProjects ? 'ALL' :
+    // If exactly one project is visible (all others are hidden), consider it active.
+    $: activeProject = isAllProjects ? 'ALL' :
         (projects.length > 0 && ($filters.hiddenProjects?.length ?? 0) === projects.length - 1)
         ? projects.find(p => !($filters.hiddenProjects?.includes(p)))
         : 'MIXED';

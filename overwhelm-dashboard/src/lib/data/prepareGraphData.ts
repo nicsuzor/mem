@@ -84,6 +84,7 @@ export interface PreparedGraph {
     readyIds: Set<string>;
     blockedIds: Set<string>;
     focusIds: Set<string>;
+    allProjects: string[];
 }
 
 function estimateTextWidth(text: string, fontSize: number): number {
@@ -161,16 +162,15 @@ export function prepareGraphData(
     structuralIds: Set<string> = new Set(),
     options: {
         hiddenProjects?: string[];
-        soloProject?: string | null;
     } = {}
 ): PreparedGraph {
     let rawNodes = (graph.nodes || []).map(n => ({ ...n }));
     let rawEdges = (graph.edges || []).map(e => ({ ...e }));
 
+    const allProjects = Array.from(new Set(rawNodes.map(n => n.project).filter((p): p is string => !!p))).sort();
+
     // Apply project filters at the source
-    if (options.soloProject) {
-        rawNodes = rawNodes.filter(n => n.project === options.soloProject);
-    } else if (options.hiddenProjects && options.hiddenProjects.length > 0) {
+    if (options.hiddenProjects && options.hiddenProjects.length > 0) {
         rawNodes = rawNodes.filter(n => !options.hiddenProjects!.includes(n.project || ""));
     }
 
@@ -530,5 +530,6 @@ export function prepareGraphData(
         readyIds: new Set(graph.ready || []),
         blockedIds: new Set(graph.blocked || []),
         focusIds: new Set(graph.focus || []),
+        allProjects,
     };
 }
