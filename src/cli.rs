@@ -2734,7 +2734,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Stats { sort } => {
-            let stats = mem::telemetry::get_stats(&pkb_root);
+            let stats = mem::telemetry::get_stats();
             if stats.is_empty() {
                 println!("No telemetry data found.");
                 return Ok(());
