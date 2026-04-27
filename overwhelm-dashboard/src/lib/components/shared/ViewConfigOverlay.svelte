@@ -13,9 +13,9 @@
     $: hasLiveControls = isForce || isGroups || isCircle || isArc || isTreemap;
 
     const WEIGHT_MODES = [
-        { value: 'sqrt', label: '√ DW' },
+        { value: 'sqrt', label: '√ FOCUS' },
         { value: 'priority', label: 'PRIORITY' },
-        { value: 'dw-bucket', label: 'DW BUCKET' },
+        { value: 'focus-bucket', label: 'FOCUS BUCKET' },
         { value: 'equal', label: 'EQUAL' },
     ] as const;
 </script>

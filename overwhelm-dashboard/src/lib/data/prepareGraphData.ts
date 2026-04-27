@@ -290,12 +290,12 @@ export function prepareGraphData(
     const validEdges = rawEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
     const maxDepth = Math.max(0, ...rawNodes.map(n => n.depth || 0));
 
-    const weights = rawNodes.map(n => n.downstream_weight || 0);
-    let maxWeight = Math.max(1, ...weights);
-    if (maxWeight === 0) maxWeight = 1;
+    const focusScores = rawNodes.map(n => n.focus_score || 0);
+    let maxFocusScore = Math.max(1, ...focusScores);
+    if (maxFocusScore === 0) maxFocusScore = 1;
 
-    const targetWeight = new Map<string, number>(
-        rawNodes.map(n => [n.id, n.downstream_weight || 0])
+    const targetFocusScore = new Map<string, number>(
+        rawNodes.map(n => [n.id, n.focus_score || 0])
     );
 
     const d3Nodes: GraphNode[] = [];
@@ -316,6 +316,7 @@ export function prepareGraphData(
 
         const priority = typeof node.priority === 'number' ? node.priority : 2;
         const dw = node.downstream_weight || 0;
+        const focusScore = node.focus_score || 0;
         const scope = typeof node.scope === 'number' ? node.scope : 0;
         const uncertainty = typeof node.uncertainty === 'number' ? node.uncertainty : 0;
         const criticality = typeof node.criticality === 'number' ? node.criticality : 0;
@@ -336,7 +337,9 @@ export function prepareGraphData(
         if (COMPLETED_STATUSES.has(status)) {
             typeScale *= 0.6;
         }
-        const weightFactor = dw > 0 ? 1 + Math.log1p(dw) * 0.3 : 1.0;
+        // Focus score ranges from 0 up to 10000+. We use log1p to compress the scale so it doesn't blow up nodes.
+        // A focus score of 10000 -> log1p(10000) ~= 9.2. Scaling by 0.15 makes the max boost around 2.38x.
+        const weightFactor = focusScore > 0 ? 1 + Math.log1p(focusScore) * 0.15 : 1.0;
         const scale = typeScale * weightFactor;
 
         const baseFont = 10;
@@ -359,9 +362,9 @@ export function prepareGraphData(
             fill = "#e2e8f0";
             textCol = "#94a3b8";
         } else {
-            const weightNorm = Math.min(Math.log1p(dw) / Math.log1p(maxWeight), 1.0);
+            const weightNorm = Math.min(Math.log1p(focusScore) / Math.log1p(maxFocusScore), 1.0);
             const baseFill = STATUS_FILLS[status] || "#f1f5f9";
-            // Weight-based desaturation: low-weight nodes slightly muted
+            // Weight-based desaturation: low-focus nodes slightly muted
             let desaturation = Math.max(0, 0.4 - weightNorm * 0.4);
             // Recency emphasis: stale nodes desaturate further
             if (modified) {
@@ -472,9 +475,9 @@ export function prepareGraphData(
             color = "#ef4444"; // Red — dependency edges draw attention to the blocker
             width = 3.5;
             dash = "";
-            const tw = targetWeight.get(edge.target) || 0;
-            if (tw > 0 && maxWeight > 0) {
-                const critRatio = Math.min(Math.log1p(tw) / Math.log1p(maxWeight), 1.0);
+            const tw = targetFocusScore.get(edge.target) || 0;
+            if (tw > 0 && maxFocusScore > 0) {
+                const critRatio = Math.min(Math.log1p(tw) / Math.log1p(maxFocusScore), 1.0);
                 if (critRatio > 0.5) {
                     width = 3.0 + critRatio * 2.0;
                 }

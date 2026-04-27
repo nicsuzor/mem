@@ -31,7 +31,7 @@ export const viewSettings = writable({
     colaHandleDisconnected: true,
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
-    treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'dw-bucket' | 'equal',
+    treemapWeightMode: 'priority' as 'sqrt' | 'priority' | 'focus-bucket' | 'equal',
     arcFocusedOnly: true,
     showFocusHighlight: true,
     activeOverlay: null as string | null, // legacy overlay field; keep until older callers are removed

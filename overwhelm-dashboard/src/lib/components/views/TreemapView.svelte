@@ -110,15 +110,15 @@
                     if (d.priority <= 1) return 3;
                     return 2;
                 }
-                case 'dw-bucket': {
-                    const s = Math.sqrt(d.dw ?? 0);
-                    if (s > 5) return 4;
-                    if (s > 2) return 3;
-                    if (s > 1) return 2;
+                case 'focus-bucket': {
+                    const s = d.focusScore ?? 0;
+                    if (s > 5000) return 4;
+                    if (s > 1000) return 3;
+                    if (s > 100) return 2;
                     return 1;
                 }
                 case 'equal': return 1;
-                default: return Math.max(MIN_NODE_WEIGHT, Math.sqrt(d.dw ?? 0) || MIN_NODE_WEIGHT);
+                default: return Math.max(MIN_NODE_WEIGHT, Math.log1p(d.focusScore ?? 0) || MIN_NODE_WEIGHT);
             }
         });
 

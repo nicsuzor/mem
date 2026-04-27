@@ -101,14 +101,14 @@
 
     let currentPriority = $derived(PRIORITIES.find((priority) => priority.value === (t?.priority ?? 2)) ?? PRIORITIES[2]);
 
-    // Downstream weight, normalised against the max in the graph using the
+    // Focus score, normalised against the max in the graph using the
     // same log1p scaling that drives node size + saturation in the visuals.
-    let maxWeight = $derived(
-        $graphData ? Math.max(1, ...$graphData.nodes.map(n => (n as any).dw || 0)) : 1
+    let maxFocus = $derived(
+        $graphData ? Math.max(1, ...$graphData.nodes.map(n => (n as any).focusScore || 0)) : 1
     );
-    let weightRaw = $derived((task as any)?.dw ?? 0);
-    let weightNorm = $derived(
-        weightRaw > 0 ? Math.min(Math.log1p(weightRaw) / Math.log1p(maxWeight), 1.0) : 0
+    let focusRaw = $derived((task as any)?.focusScore ?? 0);
+    let focusNorm = $derived(
+        focusRaw > 0 ? Math.min(Math.log1p(focusRaw) / Math.log1p(maxFocus), 1.0) : 0
     );
     let currentStateDetails = $derived(STATE_DETAILS[t?.status || ''] ?? {
         label: t?.status || 'Unknown',
@@ -555,19 +555,19 @@
                             </div>
                         </section>
 
-                        {#if t.criticality > 0 || t.uncertainty > 0 || t.scope > 0 || weightRaw > 0 || t.focusScore > 0}
+                        {#if t.criticality > 0 || t.uncertainty > 0 || t.scope > 0 || focusRaw > 0}
                         <section class="rounded-sm border border-primary/15 bg-black/15 p-3 space-y-2">
                             <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45 border-b border-primary/10 pb-1">Computed Properties</div>
 
-                            <!-- Weight (downstream_weight, log-normalised against graph max) -->
-                            {#if weightRaw > 0}
-                            <div class="space-y-0.5" title="Downstream weight: log1p(dw)/log1p(max). Drives node size + fill saturation in graph views.">
+                            <!-- Focus Score (log-normalised against graph max) -->
+                            {#if focusRaw > 0}
+                            <div class="space-y-0.5" title="Focus Score: log1p(focusScore)/log1p(max). Drives node size + fill saturation in graph views.">
                                 <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
-                                    <span class="text-primary/45">Weight</span>
-                                    <span class="font-bold" style="color: {weightNorm > 0.6 ? '#42d4f4' : weightNorm > 0.3 ? '#3aa9c4' : '#a3a3a3'}">{weightRaw.toFixed(1)} <span class="text-primary/40">({Math.round(weightNorm * 100)}%)</span></span>
+                                    <span class="text-primary/45">Focus Score</span>
+                                    <span class="font-bold" style="color: {focusNorm > 0.6 ? '#a78bfa' : focusNorm > 0.3 ? '#8b5cf6' : '#a3a3a3'}">{focusRaw.toFixed(0)} <span class="text-primary/40">({Math.round(focusNorm * 100)}%)</span></span>
                                 </div>
                                 <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
-                                    <div class="h-full rounded-full transition-all" style="width:{Math.round(weightNorm * 100)}%; background: color-mix(in srgb, #42d4f4 {40 + Math.round(weightNorm * 60)}%, #374151)"></div>
+                                    <div class="h-full rounded-full transition-all" style="width:{Math.round(focusNorm * 100)}%; background: color-mix(in srgb, #a78bfa {40 + Math.round(focusNorm * 60)}%, #374151)"></div>
                                 </div>
                             </div>
                             {/if}
@@ -602,13 +602,7 @@
                             </div>
                             {/if}
 
-                            <!-- Focus Score -->
-                            {#if t.focusScore > 0}
-                            <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
-                                <span class="text-primary/45">Focus Score</span>
-                                <span class="font-bold text-[#a78bfa]">{t.focusScore}</span>
-                            </div>
-                            {/if}
+
                         </section>
                         {/if}
 
