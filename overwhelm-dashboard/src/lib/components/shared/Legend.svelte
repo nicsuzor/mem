@@ -2,16 +2,8 @@
     import { filters, cycleVisibility, type VisibilityState } from '../../stores/filters';
     import { graphData } from '../../stores/graph';
     import { viewSettings } from '../../stores/viewSettings';
-    import { PRIORITIES, STATUS_FILLS, STATUS_LABELS, STATUS_ORDER, STATUS_TEXT } from '../../data/constants';
+    import { PRIORITIES } from '../../data/constants';
     import { projectColor } from '../../data/projectUtils';
-
-    // STATUS legend documents the fill-color encoding (matches StatusFilterBar).
-    const statusItems = STATUS_ORDER.map(s => ({
-        status: s,
-        label: STATUS_LABELS[s],
-        fill: STATUS_FILLS[s],
-        text: STATUS_TEXT[s],
-    }));
 
     let showAllProjects = false;
     const MAX_VISIBLE_PROJECTS = 6;
@@ -139,18 +131,7 @@
                 </button>
             </div>
 
-            <!-- STATUS legend: background/fill encoding. Matches StatusFilterBar. -->
-            <div class="legend-section">
-                <span class="legend-section-title">STATUS (FILL)</span>
-                {#each statusItems as item}
-                    <div class="legend-item legend-static-item" title="Status: {item.status}">
-                        <div class="legend-box status-swatch" style="background: {item.fill}; color: {item.text};">
-                            <span class="status-swatch-letter">{item.label.charAt(0)}</span>
-                        </div>
-                        <span class="legend-label">{item.label}</span>
-                    </div>
-                {/each}
-            </div>
+
 
             <!-- Priority filter (click to cycle: bright → half → hidden) -->
             <div class="legend-section">
@@ -434,21 +415,6 @@
         height: 10px;
     }
 
-    .status-swatch {
-        width: 14px;
-        height: 14px;
-        border-radius: 3px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 8px;
-        font-weight: 900;
-        letter-spacing: 0;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-    }
-    .status-swatch-letter {
-        line-height: 1;
-    }
 
     .legend-line {
         width: 16px;
