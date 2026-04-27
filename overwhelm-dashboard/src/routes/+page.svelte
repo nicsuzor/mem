@@ -16,6 +16,7 @@
     import DashboardView from "$lib/components/dashboard/DashboardView.svelte";
     import ThreadedTasksView from "$lib/components/views/ThreadedTasksView.svelte";
     import StatusFilterBar from "$lib/components/shared/StatusFilterBar.svelte";
+    import SessionMetadataView from "$lib/components/views/SessionMetadataView.svelte";
 
     import {
         prepareGraphData,
@@ -439,10 +440,14 @@
     {#if $viewSettings.mainTab === "Threaded Tasks"}
         <section class="col-span-12 flex flex-col h-full bg-background overflow-hidden transition-all"><ThreadedTasksView /></section>
     {:else if $viewSettings.mainTab === "Dashboard"}
-        <section class="{$selection.activeNodeId ? 'col-span-9' : 'col-span-12'} bg-background overflow-y-auto custom-scrollbar transition-all"><DashboardView {data} /></section>
+        <section class="{$selection.activeNodeId || $selection.activeSessionId ? 'col-span-9' : 'col-span-12'} bg-background overflow-y-auto custom-scrollbar transition-all"><DashboardView {data} /></section>
         {#if $selection.activeNodeId}
         <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar">
             <TaskEditorView taskId={$selection.activeNodeId} onclose={() => selection.update(s => ({...s, activeNodeId: null}))} />
+        </aside>
+        {:else if $selection.activeSessionId}
+        <aside class="col-span-3 bg-background flex flex-col h-full overflow-y-auto custom-scrollbar">
+            <SessionMetadataView sessionId={$selection.activeSessionId} sessionData={data?.dashboardData?.active_agents || []} onclose={() => selection.update(s => ({...s, activeSessionId: null}))} />
         </aside>
         {/if}
     {:else}

@@ -1,7 +1,7 @@
 <script lang="ts">
     import { projectColor, projectBgTint, projectBorderColor } from "../../data/projectUtils";
     import { copyToClipboard } from "../../data/utils";
-    import { toggleSelection } from "../../stores/selection";
+    import { toggleSelection, toggleSessionSelection } from "../../stores/selection";
 
     let { 
         sessions = [], 
@@ -36,6 +36,22 @@
 
 
 
+    function getTooltip(session: any): string {
+        let tooltip = session.description || '';
+        if (session.token_metrics) {
+            const tm = session.token_metrics;
+            const t = tm.totals || {};
+            const e = tm.efficiency || {};
+            const input = t.input_tokens ? Math.round(t.input_tokens/1000) + 'k' : '0';
+            const output = t.output_tokens ? Math.round(t.output_tokens/1000) + 'k' : '0';
+            const cacheHit = e.cache_hit_rate ? Math.round(e.cache_hit_rate * 100) + '%' : '0%';
+            const tpm = e.tokens_per_minute ? Math.round(e.tokens_per_minute) : '0';
+            
+            tooltip += `\n\nTokens: In ${input} | Out ${output} | Cache: ${cacheHit} | Speed: ${tpm} tpm`;
+        }
+        return tooltip;
+    }
+
     const BADGE_STYLES: Record<string, { label: string; class: string }> = {
         running: { label: 'RUNNING', class: 'bg-primary text-black animate-pulse' },
         needs_you: { label: 'NEEDS YOU', class: 'bg-red-500 text-white animate-pulse' },
@@ -67,24 +83,31 @@
             {@const expanded = !!expandedSessions[session.session_id]}
             {@const timeline = session.prompts || []}
             {@const shortId = (session.session_id || "").slice(-8)}
-            <div class="bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors">
+            <div class="bg-primary/5 border-l-2 {session.needs_you ? 'border-red-500' : 'border-primary/50'} hover:bg-primary/10 transition-colors" title={getTooltip(session)}>
                 <div class="flex items-center gap-4 p-2 cursor-pointer"
                      role="button" tabindex="0" onclick={() => toggleExpand(session.session_id)} onkeydown={(e) => { if(e.key === 'Enter') toggleExpand(session.session_id); }}>
                     <span class="text-[10px] text-primary/60 min-w-[55px]">{formatTimeAgo(session.started_at)}</span>
                     
                     {#if session.session_id}
-                        <button class="text-[9px] font-bold bg-primary/20 text-primary/60 px-1 py-0.5 hover:bg-primary/40 transition-colors shrink-0" 
-                                onclick={(e) => { e.stopPropagation(); copyToClipboard(session.session_id); }}
-                                title="Click to copy session ID: {session.session_id}">
-                            {shortId}
-                        </button>
+                        <div class="flex items-center gap-1 shrink-0">
+                            <button class="text-[9px] font-bold bg-primary/20 text-primary/60 px-1 py-0.5 hover:bg-primary/40 transition-colors" 
+                                    onclick={(e) => { e.stopPropagation(); copyToClipboard(session.session_id); }}
+                                    title="Click to copy session ID: {session.session_id}">
+                                {shortId}
+                            </button>
+                            <button class="text-[9px] font-bold bg-primary/20 text-primary/60 px-1 py-0.5 hover:bg-primary/40 transition-colors" 
+                                    onclick={(e) => { e.stopPropagation(); toggleSessionSelection(session.session_id); }}
+                                    title="View detailed session metadata">
+                                <span class="material-symbols-outlined text-[12px] leading-none">info</span>
+                            </button>
+                        </div>
                     {/if}
 
                     {#if session.project}
                         <span class="text-[10px] font-bold px-2 py-0.5"
                               style="background: {projectBgTint(session.project)}; color: {projectColor(session.project)}; border: 1px solid {projectBorderColor(session.project)};">{session.project}</span>
                     {/if}
-                    <span class="text-xs text-primary/90 flex-1 {expanded ? 'whitespace-pre-wrap break-words' : 'truncate'}" title={session.description}>
+                    <span class="text-xs text-primary/90 flex-1 {expanded ? 'whitespace-pre-wrap break-words' : 'truncate'}">
                         {session.description}
                     </span>
                     {#if session.prompt_count != null && !compact}

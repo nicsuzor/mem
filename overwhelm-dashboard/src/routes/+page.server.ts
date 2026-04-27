@@ -173,13 +173,18 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             prompts: allPrompts,
             is_active: minutesAgo < 10,
             last_modified: st.mtimeMs,
-            statusBadge: statusBadge, // Renaming to camelCase for clarity, but mapped below
+            statusBadge: statusBadge,
             status_badge: statusBadge,
             needs_you: false,
             source: 'summaries',
             outcome: data.outcome || null,
             accomplishments: data.accomplishments || [],
-            friction_points: data.friction_points || []
+            friction_points: data.friction_points || [],
+            token_metrics: data.token_metrics || null,
+            hostname: data.hostname || null,
+            provider: data.provider || null,
+            machine: data.machine || null,
+            task_id: data.task_id || null
         });
     }
 
