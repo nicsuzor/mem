@@ -16,10 +16,9 @@ The pipeline consists of four shim workflows:
 To install this pipeline on a new repository:
 
 1. Copy the shim files from `.github/workflows/` to your repository.
-2. Ensure you have the following secrets configured:
+2. Ensure you have the following secrets configured (Note: `GITHUB_TOKEN` is provided by default):
    - `AOPS_BOT_GH_TOKEN`: A PAT with `contents: write`, `pull-requests: write`, `statuses: write`, and `actions: read/write`.
    - `CLAUDE_CODE_OAUTH_TOKEN`: OAuth token for the Claude agent.
-   - `GITHUB_TOKEN`: The standard GitHub token (provided by default).
 3. Pin the workflows to a stable tag (e.g., `@pipeline-v1`) in the `uses:` declarations.
 
 ## Rollback Procedure
