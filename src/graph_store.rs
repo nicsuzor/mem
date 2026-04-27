@@ -1343,6 +1343,36 @@ fn compute_project_field(nodes: &mut [GraphNode]) {
     }
 }
 
+/// Enqueue a neighbour for BFS if not yet visited; marks visited on enqueue.
+#[inline]
+fn bfs_enqueue(
+    neighbor_idx: usize,
+    depth: usize,
+    factor: f64,
+    visited: &mut [bool],
+    queue: &mut VecDeque<(usize, usize, f64)>,
+) {
+    if !visited[neighbor_idx] {
+        visited[neighbor_idx] = true;
+        queue.push_back((neighbor_idx, depth, factor));
+    }
+}
+
+/// Push a neighbour onto a DFS stack if unvisited and not completed;
+/// marks visited on push to avoid duplicate processing.
+#[inline]
+fn dfs_push_if_active(
+    neighbor_idx: usize,
+    status_completed: &[bool],
+    visited: &mut [bool],
+    stack: &mut Vec<usize>,
+) {
+    if !visited[neighbor_idx] && !status_completed[neighbor_idx] {
+        visited[neighbor_idx] = true;
+        stack.push(neighbor_idx);
+    }
+}
+
 /// Compute downstream_weight and stakeholder_exposure via BFS through
 /// blocks/soft_blocks. Mirrors the logic from fast-indexer main.rs.
 fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
@@ -1354,16 +1384,11 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
-    // Pre-compute base weight for non-excluded nodes
-    let base_weights: HashMap<String, f64> = nodes
-        .iter()
-        .filter(|n| {
-            n.status
-                .as_deref()
-                .map(|s| !excluded.contains(s))
-                .unwrap_or(false)
-        })
-        .map(|n| {
+    // Pre-compute base weights and has_due flag
+    let mut base_weights = vec![0.0; nodes.len()];
+    let mut has_due = vec![false; nodes.len()];
+    for (i, n) in nodes.iter().enumerate() {
+        if !n.status.as_deref().map(|s| excluded.contains(s)).unwrap_or(true) {
             let pw = match n.priority.unwrap_or(2) {
                 0 => 5.0,
                 1 => 3.0,
@@ -1372,143 +1397,80 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
                 _ => 0.5,
             };
             let dm = if n.due.is_some() { 2.0 } else { 1.0 };
-            (n.id.clone(), pw * dm)
-        })
-        .collect();
+            base_weights[i] = pw * dm;
+            if n.due.is_some() {
+                has_due[i] = true;
+            }
+        }
+    }
 
-    let has_due: HashSet<String> = nodes
-        .iter()
-        .filter(|n| {
-            n.due.is_some()
-                && n.status
-                    .as_deref()
-                    .map(|s| !excluded.contains(s))
-                    .unwrap_or(false)
-        })
-        .map(|n| n.id.clone())
-        .collect();
-
-    // Snapshot blocks/soft_blocks/children to avoid borrow issues
-    let blocks_map: HashMap<String, Vec<String>> = nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.blocks.clone()))
-        .collect();
-    let soft_blocks_map: HashMap<String, Vec<String>> = nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.soft_blocks.clone()))
-        .collect();
-    let children_map: HashMap<String, Vec<String>> = nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.children.clone()))
-        .collect();
-    let contributes_map: HashMap<String, Vec<(String, f64)>> = nodes
+    // Pre-build adjacency lists with indices
+    let adj: Vec<Vec<(usize, f64)>> = nodes
         .iter()
         .map(|n| {
-            let resolved: Vec<(String, f64)> = n.contributes_to
-                .iter()
-                .filter_map(|ct| {
-                    ct.resolved_to.as_ref().map(|id| (id.clone(), ct.numeric_weight()))
-                })
-                .collect();
-            (n.id.clone(), resolved)
+            let mut neighbors = Vec::new();
+            for bid in &n.blocks {
+                if let Some(&idx) = id_to_idx.get(bid) {
+                    neighbors.push((idx, 1.0));
+                }
+            }
+            for sbid in &n.soft_blocks {
+                if let Some(&idx) = id_to_idx.get(sbid) {
+                    neighbors.push((idx, 0.3));
+                }
+            }
+            for cid in &n.children {
+                if let Some(&idx) = id_to_idx.get(cid) {
+                    neighbors.push((idx, 0.5));
+                }
+            }
+            for ct in &n.contributes_to {
+                if let Some(resolved) = &ct.resolved_to {
+                    if let Some(&idx) = id_to_idx.get(resolved) {
+                        neighbors.push((idx, ct.numeric_weight()));
+                    }
+                }
+            }
+            neighbors
         })
         .collect();
 
-    let all_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    let num_nodes = nodes.len();
+    let mut visited = vec![false; num_nodes];
+    let mut queue = VecDeque::new();
 
-    for start_id in &all_ids {
+    for start_idx in 0..num_nodes {
         let mut total_weight: f64 = 0.0;
-        let mut has_stakeholder = false;
-        let mut visited: HashSet<String> = HashSet::new();
-        // Queue: (id, depth, edge_factor) where edge_factor < 1.0 for soft/child edges
-        let mut queue: VecDeque<(String, u32, f64)> = VecDeque::new();
+        let mut stakeholder_found = false;
 
-        let status_ok = |id: &str| -> bool {
-            id_to_idx
-                .get(id)
-                .and_then(|&idx| nodes[idx].status.as_deref())
-                .map(|s| !excluded.contains(s))
-                .unwrap_or(false)
-        };
+        visited.fill(false);
+        visited[start_idx] = true;
+        queue.clear();
 
-        // Seed with direct blocks, soft_blocks, children, and contributions
-        if let Some(blocked) = blocks_map.get(start_id) {
-            for bid in blocked {
-                if status_ok(bid) {
-                    queue.push_back((bid.clone(), 1, 1.0));
-                }
-            }
-        }
-        if let Some(soft_blocked) = soft_blocks_map.get(start_id) {
-            for sbid in soft_blocked {
-                if status_ok(sbid) {
-                    queue.push_back((sbid.clone(), 1, 0.3));
-                }
-            }
-        }
-        if let Some(ch) = children_map.get(start_id) {
-            for cid in ch {
-                if status_ok(cid) {
-                    queue.push_back((cid.clone(), 1, 0.5));
-                }
-            }
-        }
-        if let Some(contributions) = contributes_map.get(start_id) {
-            for (tid, weight) in contributions {
-                if status_ok(tid) {
-                    queue.push_back((tid.clone(), 1, *weight));
-                }
-            }
+        for &(neighbor_idx, factor) in &adj[start_idx] {
+            bfs_enqueue(neighbor_idx, 1, factor, &mut visited, &mut queue);
         }
 
         while let Some((tid, depth, edge_factor)) = queue.pop_front() {
-            if !visited.insert(tid.clone()) {
-                continue;
-            }
-            if let Some(&bw) = base_weights.get(&tid) {
+            let bw = base_weights[tid];
+            if bw > 0.0 {
                 let depth_decay = 1.0 / (depth as f64);
                 total_weight += depth_decay * bw * edge_factor;
             }
-            if has_due.contains(&tid) {
-                has_stakeholder = true;
+            if has_due[tid] {
+                stakeholder_found = true;
             }
-            if let Some(next_blocks) = blocks_map.get(&tid) {
-                for next in next_blocks {
-                    if !visited.contains(next) {
-                        queue.push_back((next.clone(), depth + 1, edge_factor));
-                    }
-                }
-            }
-            if let Some(next_soft) = soft_blocks_map.get(&tid) {
-                for next in next_soft {
-                    if !visited.contains(next) {
-                        queue.push_back((next.clone(), depth + 1, edge_factor * 0.3));
-                    }
-                }
-            }
-            if let Some(next_ch) = children_map.get(&tid) {
-                for next in next_ch {
-                    if !visited.contains(next) {
-                        queue.push_back((next.clone(), depth + 1, edge_factor * 0.5));
-                    }
-                }
-            }
-            if let Some(next_contributions) = contributes_map.get(&tid) {
-                for (next_id, weight) in next_contributions {
-                    if !visited.contains(next_id) {
-                        queue.push_back((next_id.clone(), depth + 1, edge_factor * weight));
-                    }
+
+            if depth < 20 {
+                for &(neighbor_idx, factor) in &adj[tid] {
+                    bfs_enqueue(neighbor_idx, depth + 1, edge_factor * factor, &mut visited, &mut queue);
                 }
             }
         }
 
-        if let Some(&idx) = id_to_idx.get(start_id) {
-            nodes[idx].downstream_weight = (total_weight * 100.0).round() / 100.0;
-            // stakeholder_exposure: true if downstream has due-dated tasks OR this task
-            // has an explicit stakeholder (someone external is waiting)
-            nodes[idx].stakeholder_exposure =
-                has_stakeholder || nodes[idx].stakeholder.is_some();
-        }
+        nodes[start_idx].downstream_weight = (total_weight * 100.0).round() / 100.0;
+        nodes[start_idx].stakeholder_exposure =
+            stakeholder_found || nodes[start_idx].stakeholder.is_some();
     }
 }
 
@@ -1525,95 +1487,73 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
-    let blocks_map: HashMap<String, Vec<String>> = nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.blocks.clone()))
-        .collect();
-    let soft_blocks_map: HashMap<String, Vec<String>> = nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.soft_blocks.clone()))
-        .collect();
-    let children_map: HashMap<String, Vec<String>> = nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.children.clone()))
-        .collect();
-    let contributes_map: HashMap<String, Vec<String>> = nodes
+    let adj: Vec<Vec<usize>> = nodes
         .iter()
         .map(|n| {
-            let resolved: Vec<String> = n.contributes_to
-                .iter()
-                .filter_map(|ct| ct.resolved_to.clone())
-                .collect();
-            (n.id.clone(), resolved)
-        })
-        .collect();
-
-    // Snapshot priorities to avoid borrow conflicts during mutation
-    let priority_map: HashMap<String, i32> = nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.priority.unwrap_or(2)))
-        .collect();
-    let status_map: HashMap<String, bool> = nodes
-        .iter()
-        .map(|n| {
-            let completed = n.status.as_deref().map(|s| excluded.contains(s)).unwrap_or(false);
-            (n.id.clone(), completed)
-        })
-        .collect();
-
-    let all_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
-
-    for start_id in &all_ids {
-        let own_priority = priority_map.get(start_id.as_str()).copied().unwrap_or(2);
-        let mut min_priority = own_priority;
-        let mut visited: HashSet<String> = HashSet::new();
-        visited.insert(start_id.clone());
-        let mut queue: Vec<String> = Vec::new();
-
-        for neighbours in [
-            blocks_map.get(start_id),
-            soft_blocks_map.get(start_id),
-            children_map.get(start_id),
-            contributes_map.get(start_id),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            for id in neighbours {
-                if !status_map.get(id.as_str()).copied().unwrap_or(true) {
-                    queue.push(id.clone());
+            let mut neighbors = Vec::new();
+            for bid in &n.blocks {
+                if let Some(&idx) = id_to_idx.get(bid) {
+                    neighbors.push(idx);
                 }
             }
-        }
-
-        while let Some(tid) = queue.pop() {
-            if !visited.insert(tid.clone()) {
-                continue;
+            for sbid in &n.soft_blocks {
+                if let Some(&idx) = id_to_idx.get(sbid) {
+                    neighbors.push(idx);
+                }
             }
-            let pri = priority_map.get(tid.as_str()).copied().unwrap_or(2);
-            if pri < min_priority {
-                min_priority = pri;
+            for cid in &n.children {
+                if let Some(&idx) = id_to_idx.get(cid) {
+                    neighbors.push(idx);
+                }
             }
-            for neighbours in [
-                blocks_map.get(&tid),
-                soft_blocks_map.get(&tid),
-                children_map.get(&tid),
-                contributes_map.get(&tid),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                for id in neighbours {
-                    if !visited.contains(id) && !status_map.get(id.as_str()).copied().unwrap_or(true) {
-                        queue.push(id.clone());
+            for ct in &n.contributes_to {
+                if let Some(resolved) = &ct.resolved_to {
+                    if let Some(&idx) = id_to_idx.get(resolved) {
+                        neighbors.push(idx);
                     }
                 }
             }
+            neighbors
+        })
+        .collect();
+
+    let priorities: Vec<i32> = nodes
+        .iter()
+        .map(|n| n.priority.unwrap_or(2))
+        .collect();
+
+    let status_completed: Vec<bool> = nodes
+        .iter()
+        .map(|n| n.status.as_deref().map(|s| excluded.contains(s)).unwrap_or(false))
+        .collect();
+
+    let num_nodes = nodes.len();
+    let mut visited = vec![false; num_nodes];
+    let mut stack = Vec::new();
+
+    for start_idx in 0..num_nodes {
+        let mut min_priority = priorities[start_idx];
+
+        visited.fill(false);
+        visited[start_idx] = true;
+        stack.clear();
+
+        for &neighbor_idx in &adj[start_idx] {
+            dfs_push_if_active(neighbor_idx, &status_completed, &mut visited, &mut stack);
         }
 
-        if let Some(&idx) = id_to_idx.get(start_id) {
-            nodes[idx].effective_priority = Some(min_priority);
+        while let Some(tid) = stack.pop() {
+            let p = priorities[tid];
+            if p < min_priority {
+                min_priority = p;
+            }
+
+            for &neighbor_idx in &adj[tid] {
+                dfs_push_if_active(neighbor_idx, &status_completed, &mut visited, &mut stack);
+            }
         }
+
+        nodes[start_idx].effective_priority = Some(min_priority);
     }
 }
 
@@ -1841,7 +1781,7 @@ fn classify_tasks(
         let node = nodes.get(id).unwrap();
         if effectively_blocked.contains(id) {
             blocked.push(id.clone());
-        } else if node.leaf && node.status.as_deref().unwrap_or("queued") == "queued" {
+        } else if node.leaf && matches!(node.status.as_deref().unwrap_or("inbox"), "ready" | "queued") {
             // Only claimable types — epics/projects/goals/containers are graph structure, not work items
             if CLAIMABLE_TYPES.contains(&node.node_type.as_deref().unwrap_or("")) {
                 ready.push(id.clone());
@@ -2603,16 +2543,16 @@ mod tests {
     }
 
     #[test]
-    fn test_ready_excludes_draft_tasks() {
-        // Draft tasks are not yet promoted to the ready queue — they need
+    fn test_ready_excludes_inbox_tasks() {
+        // Inbox tasks are not yet promoted to the ready queue — they need
         // review (AC / estimate / priority) before they become actionable.
         let docs = vec![
-            make_doc("tasks/task-draft.md", "Draft Task", "task", "draft", "task-draft", None, &[]),
+            make_doc("tasks/task-inbox.md", "Inbox Task", "task", "inbox", "task-inbox", None, &[]),
             make_doc("tasks/task-active.md", "Active Task", "task", "active", "task-active", None, &[]),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let ready_ids: Vec<&str> = graph.ready_tasks().iter().map(|n| n.id.as_str()).collect();
-        assert!(!ready_ids.contains(&"task-draft"), "draft tasks must not appear in ready");
+        assert!(!ready_ids.contains(&"task-inbox"), "inbox tasks must not appear in ready");
         assert!(ready_ids.contains(&"task-active"), "active tasks must appear in ready");
     }
 
