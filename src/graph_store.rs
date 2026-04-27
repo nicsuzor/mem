@@ -1289,6 +1289,36 @@ fn compute_project_field(nodes: &mut [GraphNode]) {
     }
 }
 
+/// Enqueue a neighbour for BFS if not yet visited; marks visited on enqueue.
+#[inline]
+fn bfs_enqueue(
+    neighbor_idx: usize,
+    depth: usize,
+    factor: f64,
+    visited: &mut [bool],
+    queue: &mut VecDeque<(usize, usize, f64)>,
+) {
+    if !visited[neighbor_idx] {
+        visited[neighbor_idx] = true;
+        queue.push_back((neighbor_idx, depth, factor));
+    }
+}
+
+/// Push a neighbour onto a DFS stack if unvisited and not completed;
+/// marks visited on push to avoid duplicate processing.
+#[inline]
+fn dfs_push_if_active(
+    neighbor_idx: usize,
+    status_completed: &[bool],
+    visited: &mut [bool],
+    stack: &mut Vec<usize>,
+) {
+    if !visited[neighbor_idx] && !status_completed[neighbor_idx] {
+        visited[neighbor_idx] = true;
+        stack.push(neighbor_idx);
+    }
+}
+
 /// Compute downstream_weight and stakeholder_exposure via BFS through
 /// blocks/soft_blocks. Mirrors the logic from fast-indexer main.rs.
 fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
@@ -1357,8 +1387,7 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
         queue.clear();
 
         for &(neighbor_idx, factor) in &adj[start_idx] {
-            queue.push_back((neighbor_idx, 1, factor));
-            visited[neighbor_idx] = true;
+            bfs_enqueue(neighbor_idx, 1, factor, &mut visited, &mut queue);
         }
 
         while let Some((tid, depth, edge_factor)) = queue.pop_front() {
@@ -1373,10 +1402,7 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
 
             if depth < 20 {
                 for &(neighbor_idx, factor) in &adj[tid] {
-                    if !visited[neighbor_idx] {
-                        visited[neighbor_idx] = true;
-                        queue.push_back((neighbor_idx, depth + 1, edge_factor * factor));
-                    }
+                    bfs_enqueue(neighbor_idx, depth + 1, edge_factor * factor, &mut visited, &mut queue);
                 }
             }
         }
@@ -1435,36 +1461,27 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
 
     let num_nodes = nodes.len();
     let mut visited = vec![false; num_nodes];
-    let mut queue = Vec::new();
+    let mut stack = Vec::new();
 
     for start_idx in 0..num_nodes {
         let mut min_priority = priorities[start_idx];
-        
+
         visited.fill(false);
         visited[start_idx] = true;
-        queue.clear();
+        stack.clear();
 
         for &neighbor_idx in &adj[start_idx] {
-            if !status_completed[neighbor_idx] {
-                queue.push(neighbor_idx);
-            }
+            dfs_push_if_active(neighbor_idx, &status_completed, &mut visited, &mut stack);
         }
 
-        while let Some(tid) = queue.pop() {
-            if visited[tid] {
-                continue;
-            }
-            visited[tid] = true;
-            
+        while let Some(tid) = stack.pop() {
             let p = priorities[tid];
             if p < min_priority {
                 min_priority = p;
             }
 
             for &neighbor_idx in &adj[tid] {
-                if !visited[neighbor_idx] && !status_completed[neighbor_idx] {
-                    queue.push(neighbor_idx);
-                }
+                dfs_push_if_active(neighbor_idx, &status_completed, &mut visited, &mut stack);
             }
         }
 

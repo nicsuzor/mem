@@ -35,6 +35,10 @@ pub struct DocumentEntry {
     /// Content hash (blake3, hex-encoded) — used for staleness detection
     #[serde(default)]
     pub content_hash: Option<String>,
+    /// Hash of the markdown body only (no YAML frontmatter).
+    /// When this matches the incoming doc, embeddings are reused without calling the model.
+    #[serde(default)]
+    pub body_hash: Option<String>,
     /// Embedding vectors for each chunk of the document
     pub chunk_embeddings: Vec<Vec<f32>>,
     /// The text chunks that were embedded (for returning snippets)
@@ -183,18 +187,25 @@ impl VectorStore {
         let chunks = embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
         let body_chunks =
             embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
+        let incoming_body_hash = doc.body_hash();
 
-        // Optimization: if the text chunks haven't changed, reuse existing embeddings
-        let chunk_embeddings = if let Some(existing) = self.documents.get(&path_str) {
-            if existing.chunk_texts == chunks {
+        // Reuse existing embeddings when the markdown body (and thus semantic content)
+        // hasn't changed. Frontmatter-only updates (status, priority, …) skip the ~1 s
+        // embedding step via this body-hash comparison.
+        let chunk_embeddings = match self.documents.get(&path_str) {
+            Some(existing)
+                if existing
+                    .body_hash
+                    .as_deref()
+                    .map(|h| h == incoming_body_hash)
+                    .unwrap_or(false) =>
+            {
                 existing.chunk_embeddings.clone()
-            } else {
+            }
+            _ => {
                 let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
                 embedder.encode_batch(&chunk_refs)?
             }
-        } else {
-            let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
-            embedder.encode_batch(&chunk_refs)?
         };
 
         let (id, confidence) = Self::extract_frontmatter_fields(doc);
@@ -208,6 +219,7 @@ impl VectorStore {
             id,
             confidence,
             content_hash: Some(doc.content_hash.clone()),
+            body_hash: Some(incoming_body_hash),
             chunk_embeddings,
             chunk_texts: chunks,
             body_chunks,
@@ -237,6 +249,7 @@ impl VectorStore {
             id,
             confidence,
             content_hash: Some(doc.content_hash.clone()),
+            body_hash: Some(doc.body_hash()),
             chunk_embeddings,
             chunk_texts: chunks,
             body_chunks,
@@ -445,6 +458,7 @@ mod tests {
             id: id.map(String::from),
             confidence,
             content_hash: Some("test_hash_123".to_string()),
+            body_hash: Some("test_body_hash_123".to_string()),
             chunk_embeddings: vec![embedding],
             chunk_texts: vec![format!("body of {title}")],
             body_chunks: vec![format!("body of {title}")],
