@@ -245,8 +245,12 @@
                         {@const stroke = target ? '#f59e0b' : (p.node.project ? projectColor(p.node.project) : '#475569')}
                         {@const shared = shareCount(p.node.id)}
                         <g class="node" class:target={target}
+                           role="button" tabindex="0"
+                           aria-label={`${target ? 'Target: ' : ''}${p.node.label}`}
                            transform={`translate(${p.x},${p.y})`}
-                           onclick={(e) => { e.stopPropagation(); toggleSelection(p.node.id); }}>
+                           onclick={(e) => { e.stopPropagation(); toggleSelection(p.node.id); }}
+                           onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelection(p.node.id); } }}>
+                            <title>{p.node.label} — {p.node.type} · P{p.node.priority ?? '?'} · {p.node.status}{p.node.criticality > 0 ? ` · crit ${p.node.criticality.toFixed(2)}` : ''}{shared > 1 ? ` · serves ${shared} targets` : ''}</title>
                             <rect width={NODE_W} height={NODE_H} rx="5"
                                   fill={target ? '#fef3c7' : nodeFill(p.node)}
                                   stroke={stroke} stroke-width={target ? 2.5 : 1.5}

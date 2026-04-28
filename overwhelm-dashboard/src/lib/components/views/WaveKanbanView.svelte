@@ -143,6 +143,7 @@
                                             class:blocked={task.status === 'blocked'}
                                             class:target={isTarget}
                                             style="border-left-color: {stroke}"
+                                            title={`${task.label}\n${task.type} · P${task.priority ?? '?'} · ${task.status}${task.criticality > 0 ? ` · crit ${task.criticality.toFixed(2)}` : ''}${chips.length > 1 ? `\nServes ${chips.length} targets` : ''}`}
                                             onclick={(e) => { e.stopPropagation(); toggleSelection(task.id); }}>
                                         <div class="card-row">
                                             <span class="status">{statusEmoji(task.status)}</span>

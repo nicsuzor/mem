@@ -253,19 +253,31 @@
                         : (p.d.node?.project ? projectColor(p.d.node.project) : '#475569')}
                     {@const hasChildren = (p.d.children?.length || 0) > 0 || p.collapsed}
                     {@const r = root ? 16 : target ? 14 : 10}
-                    <g class="hta-node" transform={`translate(${p.x},${p.y})`}>
+                    <g class="hta-node" transform={`translate(${p.x},${p.y})`}
+                       role="button" tabindex="0"
+                       aria-label={`${target ? 'Target: ' : root ? '' : ''}${p.d.label}`}
+                       onclick={(e) => { e.stopPropagation(); if (p.d.node) toggleSelection(p.d.id); }}
+                       onkeydown={(e) => { if (p.d.node && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleSelection(p.d.id); } }}>
+                        {#if p.d.node}
+                            <title>{p.d.label} — {p.d.node.type} · P{p.d.node.priority ?? '?'} · {p.d.node.status}</title>
+                        {:else}
+                            <title>{p.d.label}</title>
+                        {/if}
                         <circle r={r}
                                 fill={target ? '#fef3c7' : root ? '#1e293b' : nodeColor(p.d.node)}
                                 stroke={stroke} stroke-width={target ? 3 : root ? 2.5 : 1.5}
-                                opacity={p.d.node && isCompleted(p.d.node) ? 0.5 : 1}
-                                onclick={(e) => { e.stopPropagation(); if (p.d.node) toggleSelection(p.d.id); }}>
+                                opacity={p.d.node && isCompleted(p.d.node) ? 0.5 : 1}>
                         </circle>
                         {#if p.d.node && p.d.node.criticality > 0.5}
                             <circle r={r + 3} fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="2,2" opacity="0.7" />
                         {/if}
                         {#if hasChildren}
-                            <g class="collapse-toggle" transform={`translate(${r + 4}, ${-r - 2})`}
-                               onclick={(e) => { e.stopPropagation(); toggleCollapsed(p.d.id); }}>
+                            <g class="collapse-toggle"
+                               role="button" tabindex="0"
+                               aria-label={p.collapsed ? `Expand ${p.d.label}` : `Collapse ${p.d.label}`}
+                               transform={`translate(${r + 4}, ${-r - 2})`}
+                               onclick={(e) => { e.stopPropagation(); toggleCollapsed(p.d.id); }}
+                               onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleCollapsed(p.d.id); } }}>
                                 <circle r="7" fill="#0f172a" stroke="#64748b" stroke-width="1" />
                                 <text class="toggle-icon" x="0" y="3">{p.collapsed ? '+' : '−'}</text>
                             </g>

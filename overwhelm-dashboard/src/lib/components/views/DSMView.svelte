@@ -168,8 +168,12 @@
                 <!-- Row labels -->
                 {#each matrix.order as n, i}
                     <text class="row-label" class:target-row={isTarget(n.id)}
+                          role="button" tabindex="0"
+                          aria-label={`Row: ${n.label}`}
                           x={labelW - 6} y={labelH + i * cellSize + cellSize / 2 + 3}
-                          onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }}>
+                          onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }}
+                          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelection(n.id); } }}>
+                        <title>{n.label} — {n.type} · P{n.priority ?? '?'} · {n.status}</title>
                         {(isTarget(n.id) ? '◎ ' : '') + (n.label.length > 30 ? n.label.slice(0, 29) + '…' : n.label)}
                     </text>
                 {/each}
@@ -178,7 +182,11 @@
                 {#each matrix.order as n, i}
                     <g transform={`translate(${labelW + i * cellSize + cellSize / 2}, ${labelH - 6}) rotate(-55)`}>
                         <text class="col-label" class:target-row={isTarget(n.id)}
-                              onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }}>
+                              role="button" tabindex="0"
+                              aria-label={`Column: ${n.label}`}
+                              onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }}
+                              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelection(n.id); } }}>
+                            <title>{n.label} — {n.type} · P{n.priority ?? '?'} · {n.status}</title>
                             {(isTarget(n.id) ? '◎ ' : '') + (n.label.length > 30 ? n.label.slice(0, 29) + '…' : n.label)}
                         </text>
                     </g>
@@ -190,6 +198,8 @@
                         {@const cell = matrix.cells.get(`${r},${c}`)}
                         <rect class="cell"
                               class:hover={hovered && hovered.row === r && hovered.col === c}
+                              role={cell ? 'button' : undefined}
+                              tabindex={cell ? 0 : undefined}
                               x={labelW + c * cellSize}
                               y={labelH + r * cellSize}
                               width={cellSize - 1}
@@ -198,7 +208,12 @@
                               opacity={cell ? (isCompleted(rowNode) || isCompleted(colNode) ? 0.35 : 0.9) : 0}
                               onmouseenter={() => cell && (hovered = { row: r, col: c, type: cell.type })}
                               onmouseleave={() => hovered = null}
-                              onclick={(e) => { e.stopPropagation(); if (cell) toggleSelection(rowNode.id); }} />
+                              onclick={(e) => { e.stopPropagation(); if (cell) toggleSelection(rowNode.id); }}
+                              onkeydown={(e) => { if (cell && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleSelection(rowNode.id); } }}>
+                            {#if cell}
+                                <title>{rowNode.label} {cell.type === 'parent' ? '⊃ contains' : '→ depends on'} {colNode.label}</title>
+                            {/if}
+                        </rect>
                     {/each}
                 {/each}
             </svg>

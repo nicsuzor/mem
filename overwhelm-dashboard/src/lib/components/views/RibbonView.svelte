@@ -124,11 +124,21 @@
                     {@const r = l.ribbon}
                     <!-- Ribbon -->
                     <g class="ribbon"
+                       role="button" tabindex="0"
+                       aria-label={`Open most urgent task in ${r.target.label}`}
                        onclick={(e) => {
                            e.stopPropagation();
                            const next = mostUrgentLeaf(r.prereqs);
                            if (next) toggleSelection(next.id);
+                       }}
+                       onkeydown={(e) => {
+                           if (e.key === 'Enter' || e.key === ' ') {
+                               e.preventDefault();
+                               const next = mostUrgentLeaf(r.prereqs);
+                               if (next) toggleSelection(next.id);
+                           }
                        }}>
+                        <title>{r.target.label} — {r.prereqs.length} contributing tasks · {Math.round(r.progress * 100)}% done · click to open most urgent task</title>
                         <rect x={l.x} y={l.y} width={l.w} height={RIBBON_H} rx="6"
                               fill={r.color} opacity="0.18" stroke={r.color} stroke-width="1.5" />
                         <rect x={l.x} y={l.y} width={l.w * r.progress} height={RIBBON_H} rx="6"
@@ -175,7 +185,11 @@
 
                     <!-- Per-target node -->
                     <g class="target-node"
-                       onclick={(e) => { e.stopPropagation(); toggleSelection(r.target.id); }}>
+                       role="button" tabindex="0"
+                       aria-label={`Target: ${r.target.label}`}
+                       onclick={(e) => { e.stopPropagation(); toggleSelection(r.target.id); }}
+                       onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelection(r.target.id); } }}>
+                        <title>{r.target.label} — {r.target.type} · P{r.target.priority ?? '?'} · {r.target.status}</title>
                         <circle cx={l.targetX} cy={l.targetY} r={TARGET_R}
                                 fill="#fef3c7" stroke={r.color} stroke-width="3" />
                         <text class="target-icon" x={l.targetX} y={l.targetY - 1}>◎</text>
