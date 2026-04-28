@@ -110,7 +110,7 @@
     {:else}
         <div class="caption">
             <strong>Depth-Wave Kanban</strong>
-            <span class="meta">· {multi.targets.length} targets · {multi.nodes.length - multi.targets.length} prerequisite tasks · each column = parallel work at the same dependency depth</span>
+            <span class="meta">· {multi.targets.length} targets · {multi.nodes.length - multi.targets.length} contributing tasks · each column = parallel work at the same dependency depth · italic <em class="sib">contributes</em> = sibling under the target's project</span>
         </div>
         <div class="board">
             {#each waves as wave, wi}
@@ -154,6 +154,8 @@
                                             <span>P{task.priority ?? '?'}</span>
                                             {#if task.uncertainty > 0.3}<span class="uncertain">~{task.uncertainty.toFixed(1)}</span>{/if}
                                             {#if chips.length > 1}<span class="route">→ {chips.length} targets</span>{/if}
+                                            {#if multi.provenance.get(task.id) === 'sibling'}<span class="sib">contributes</span>{/if}
+                                            {#if multi.provenance.get(task.id) === 'ancestor'}<span class="anc">scope</span>{/if}
                                         </div>
                                     </button>
                                 {/each}
@@ -269,6 +271,8 @@
     }
     .uncertain { color: #fcd34d; }
     .route { color: #93c5fd; font-weight: 700; }
+    .sib { color: #a7f3d0; font-style: italic; }
+    .anc { color: #c4b5fd; font-style: italic; }
     .wave-arrow {
         align-self: center; font-size: 18px;
         opacity: 0.35; padding: 0 4px;

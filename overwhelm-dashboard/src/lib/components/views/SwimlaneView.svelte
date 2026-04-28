@@ -203,7 +203,7 @@
     {:else if layout}
         <div class="caption">
             <strong>Swimlane DAG</strong>
-            <span class="meta">· {multi.targets.length} target lanes · {multi.nodes.length - multi.targets.length} prerequisite tasks · ●n on a card = it serves N targets</span>
+            <span class="meta">· {multi.targets.length} lanes · {multi.nodes.length - multi.targets.length} contributing tasks · ●n badge = task serves N targets · dashed yellow = parent edge · solid grey = depends_on</span>
         </div>
         <div class="canvas-wrap">
             <svg width={layout.width} height={layout.height} class="canvas">

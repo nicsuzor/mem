@@ -31,6 +31,19 @@ export interface MultiTargetSubgraph {
     routes: Map<string, Set<string>>;
     /** node id -> minimum BFS distance to any target */
     distanceToNearest: Map<string, number>;
+    /**
+     * Per-node provenance: how the node entered the subgraph.
+     *  - "target":     it IS one of the picked targets
+     *  - "prereq":     reachable via depends_on / soft_depends_on / parent-down BFS
+     *                  from a target (a strict prerequisite)
+     *  - "ancestor":   walking parent-up from a target (the containing epic /
+     *                  project / area-of-work the target lives under)
+     *  - "sibling":    a sibling task under one of the target's ancestors —
+     *                  i.e. "other work in the same project that contributes
+     *                  to the same goal." Not a hard prerequisite, but the
+     *                  practical work that gets the target delivered.
+     */
+    provenance: Map<string, 'target' | 'prereq' | 'ancestor' | 'sibling'>;
 }
 
 const PREREQ_EDGE_TYPES = new Set(['depends_on', 'soft_depends_on', 'parent']);
@@ -132,31 +145,77 @@ export function extractSubgraph(graph: PreparedGraph, targetId: string): Extract
     return { targetId, nodes, edges, distanceFromTarget };
 }
 
+export interface MultiTargetExtractionOptions {
+    /** How many parent levels to walk up from each target (default 2). */
+    hopUp?: number;
+    /**
+     * Whether to fold sibling tasks under each ancestor into the
+     * subgraph as "contributing" work. Targets in the PKB tend to be
+     * leaf-shaped — without this, the prerequisite subgraph is almost
+     * empty, even when the project has dozens of incomplete tasks. The
+     * sibling fan surfaces the practical work that delivers the target.
+     * (default true)
+     */
+    includeSiblings?: boolean;
+}
+
 /**
  * Reverse-BFS from MULTIPLE targets at once. The result is the union of
  * every target's prerequisite subgraph; `routes` records, for each node,
  * which targets it contributes to (a node may serve multiple targets if
  * it's a shared prerequisite).
+ *
+ * Expansion rules per target (mirrors MetroRadialView's discovery so
+ * the views agree on what "the work to reach this goal" means):
+ *
+ *   1. The target itself.
+ *   2. Walk DOWN parent-edges (parent → child) and depends_on / soft_depends_on
+ *      from the target — its strict prerequisites.
+ *   3. Walk UP parent-edges to ancestors, up to `hopUp` levels — the
+ *      epic / project / area the target lives under.
+ *   4. From each ancestor, fold in its **sibling subtree**: incomplete
+ *      tasks that share an ancestor with the target. These are not
+ *      hard prerequisites in the depends_on sense, but they ARE the
+ *      practical work that delivers the goal (provenance: 'sibling').
+ *      Re-run prereq BFS from the siblings so their depends_on chains
+ *      come along too.
  */
 export function extractMultiTargetSubgraph(
     graph: PreparedGraph,
     targetIds: string[],
+    options: MultiTargetExtractionOptions = {},
 ): MultiTargetSubgraph {
-    const incoming = new Map<string, GraphEdge[]>();
+    const HOP_UP = options.hopUp ?? 2;
+    const INCLUDE_SIBLINGS = options.includeSiblings ?? true;
+
+    // ── Edge indexes
+    const prereqOut = new Map<string, GraphEdge[]>(); // node -> edges from it to its prereqs
+    const childrenOf = new Map<string, string[]>();   // parent -> children (from parent edges)
     for (const e of graph.links) {
-        if (!PREREQ_EDGE_TYPES.has(e.type)) continue;
-        const owner =
-            e.type === 'parent'
-                ? endpointId(e.source) // parent owns the child-prereq edge
-                : endpointId(e.source); // depender owns its dependency edge
-        const arr = incoming.get(owner) || [];
-        arr.push(e);
-        incoming.set(owner, arr);
+        const sid = endpointId(e.source);
+        const tid = endpointId(e.target);
+        if (e.type === 'parent') {
+            // After prepareGraphData flip: source = parent, target = child
+            const arr = prereqOut.get(sid) || [];
+            arr.push(e);
+            prereqOut.set(sid, arr);
+            const c = childrenOf.get(sid) || [];
+            c.push(tid);
+            childrenOf.set(sid, c);
+        } else if (e.type === 'depends_on' || e.type === 'soft_depends_on') {
+            // sid depends on tid — sid's prereq is tid
+            const arr = prereqOut.get(sid) || [];
+            arr.push(e);
+            prereqOut.set(sid, arr);
+        }
     }
+    const parentOf = new Map<string, string | null>();
+    for (const n of graph.nodes) parentOf.set(n.id, n.parent);
 
     const nodeById = new Map(graph.nodes.map(n => [n.id, n]));
     const routes = new Map<string, Set<string>>();
     const distanceToNearest = new Map<string, number>();
+    const provenance = new Map<string, 'target' | 'prereq' | 'ancestor' | 'sibling'>();
     const validTargets: GraphNode[] = [];
 
     const ensureRoute = (nid: string, tid: string) => {
@@ -164,42 +223,95 @@ export function extractMultiTargetSubgraph(
         s.add(tid);
         routes.set(nid, s);
     };
+    const setProv = (id: string, p: 'target' | 'prereq' | 'ancestor' | 'sibling') => {
+        // Provenance precedence: target > prereq > sibling > ancestor.
+        // (a node both directly required and inherited as ancestor should
+        // read as the stricter "prereq".)
+        const order = { target: 4, prereq: 3, sibling: 2, ancestor: 1 } as const;
+        const cur = provenance.get(id);
+        if (!cur || order[p] > order[cur]) provenance.set(id, p);
+    };
+
+    // BFS prereq closure from a seed set, attributing routes to a target id
+    const prereqClosure = (seeds: string[], tid: string, seedProv: 'target' | 'sibling') => {
+        const dist = new Map<string, number>();
+        const queue: string[] = [];
+        for (const s of seeds) {
+            if (!nodeById.has(s)) continue;
+            if (!dist.has(s)) {
+                dist.set(s, 0);
+                queue.push(s);
+                setProv(s, seedProv);
+                ensureRoute(s, tid);
+            }
+        }
+        while (queue.length > 0) {
+            const cur = queue.shift()!;
+            const d = dist.get(cur)!;
+            for (const e of prereqOut.get(cur) || []) {
+                const next = endpointId(e.target);
+                if (dist.has(next)) continue;
+                dist.set(next, d + 1);
+                ensureRoute(next, tid);
+                if (provenance.get(next) !== 'target') setProv(next, 'prereq');
+                queue.push(next);
+            }
+        }
+        for (const [id, d] of dist) {
+            const prev = distanceToNearest.get(id);
+            if (prev === undefined || d < prev) distanceToNearest.set(id, d);
+        }
+    };
 
     for (const tid of targetIds) {
         const t = nodeById.get(tid);
         if (!t) continue;
         validTargets.push(t);
+        setProv(tid, 'target');
 
-        // BFS from this target
-        const localDist = new Map<string, number>([[tid, 0]]);
-        ensureRoute(tid, tid);
-        const queue: string[] = [tid];
-        while (queue.length > 0) {
-            const cur = queue.shift()!;
-            const dist = localDist.get(cur)!;
-            for (const e of incoming.get(cur) || []) {
-                const next = endpointId(e.target);
-                if (localDist.has(next)) continue;
-                localDist.set(next, dist + 1);
-                ensureRoute(next, tid);
-                queue.push(next);
+        // 1+2. Strict prereq closure starting at the target itself
+        prereqClosure([tid], tid, 'target');
+
+        // 3+4. Ancestor walk and sibling fan
+        if (HOP_UP > 0 || INCLUDE_SIBLINGS) {
+            let cur = parentOf.get(tid) || null;
+            const siblingSeeds = new Set<string>();
+            for (let hop = 0; hop < HOP_UP && cur; hop++) {
+                ensureRoute(cur, tid);
+                if (provenance.get(cur) !== 'target' && provenance.get(cur) !== 'prereq') {
+                    setProv(cur, 'ancestor');
+                }
+                if (INCLUDE_SIBLINGS) {
+                    for (const sib of childrenOf.get(cur) || []) {
+                        if (sib === tid) continue;
+                        const sn = nodeById.get(sib);
+                        if (!sn) continue;
+                        // Skip noise: dailies, contacts, knowledge notes,
+                        // memories — they're not "the work."
+                        const skipTypes = new Set(['daily', 'contact', 'knowledge', 'memory', 'reference', 'note', 'index', 'session-log']);
+                        if (skipTypes.has((sn.type || '').toLowerCase())) continue;
+                        siblingSeeds.add(sib);
+                    }
+                }
+                cur = parentOf.get(cur) || null;
             }
-        }
-        // Fold into global distance-to-nearest
-        for (const [id, d] of localDist) {
-            const prev = distanceToNearest.get(id);
-            if (prev === undefined || d < prev) distanceToNearest.set(id, d);
+            if (siblingSeeds.size > 0) {
+                prereqClosure([...siblingSeeds], tid, 'sibling');
+            }
         }
     }
 
     const nodes = [...routes.keys()].map(id => nodeById.get(id)).filter((n): n is GraphNode => !!n);
     const visited = new Set(routes.keys());
+    // Edges: include parent + depends_on edges among visited nodes. We
+    // intentionally include parent edges where one endpoint is an ancestor
+    // — those are what visualise the project containment.
     const edges = graph.links.filter(e => {
         if (!PREREQ_EDGE_TYPES.has(e.type)) return false;
         return visited.has(endpointId(e.source)) && visited.has(endpointId(e.target));
     });
 
-    return { targets: validTargets, nodes, edges, routes, distanceToNearest };
+    return { targets: validTargets, nodes, edges, routes, distanceToNearest, provenance };
 }
 
 /**
