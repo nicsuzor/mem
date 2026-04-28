@@ -128,7 +128,7 @@
                                             class:blocked={task.status === 'blocked'}
                                             class:target={isTarget}
                                             style="border-left-color: {stroke}"
-                                            on:click|stopPropagation={() => toggleSelection(task.id)}>
+                                            onclick={(e) => { e.stopPropagation(); toggleSelection(task.id); }}>
                                         <div class="card-row">
                                             <span class="status">{statusEmoji(task.status)}</span>
                                             <span class="title">{task.label}</span>

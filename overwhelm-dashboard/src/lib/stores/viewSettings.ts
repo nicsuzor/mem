@@ -1,6 +1,10 @@
 import { writable } from 'svelte/store';
 
-export const VIEW_MODES = ['Treemap', 'Circle Pack', 'Force', 'Metro', 'Metro V2', 'Arc Diagram', 'Groups'] as const;
+export const VIEW_MODES = [
+    'Treemap', 'Circle Pack', 'Force', 'Metro', 'Metro V2', 'Arc Diagram', 'Groups',
+    // Experimental "path-to-goal" alternatives to ForceView
+    'Swimlanes', 'DSM', 'Ribbons', 'HTA Tree', 'Wave Kanban',
+] as const;
 export type ViewMode = typeof VIEW_MODES[number];
 
 export const viewSettings = writable({
@@ -53,6 +57,16 @@ export const getLayoutFromViewSettings = ($settings: any) => {
             return 'arc';
         case 'Groups':
             return 'groups';
+        case 'Swimlanes':
+            return 'swimlanes';
+        case 'DSM':
+            return 'dsm';
+        case 'Ribbons':
+            return 'ribbons';
+        case 'HTA Tree':
+            return 'hta';
+        case 'Wave Kanban':
+            return 'wave_kanban';
         default:
             return 'force';
     }

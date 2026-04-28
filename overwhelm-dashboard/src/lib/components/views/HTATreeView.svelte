@@ -209,10 +209,10 @@
             <strong>Hierarchical Task Analysis</strong>
             <span class="meta">· {subgraph.nodes.length} nodes · click chevrons to collapse · target = {target.label}</span>
             <div class="controls">
-                <button class:active={layoutMode === 'vertical'} on:click={() => layoutMode = 'vertical'}>Vertical</button>
-                <button class:active={layoutMode === 'radial'} on:click={() => layoutMode = 'radial'}>Radial</button>
-                <button on:click={() => collapsed = new Set()}>Expand all</button>
-                <button on:click={() => {
+                <button class:active={layoutMode === 'vertical'} onclick={() => layoutMode = 'vertical'}>Vertical</button>
+                <button class:active={layoutMode === 'radial'} onclick={() => layoutMode = 'radial'}>Radial</button>
+                <button onclick={() => collapsed = new Set()}>Expand all</button>
+                <button onclick={() => {
                     const next = new Set<string>();
                     function walk(d: TreeDatum, depth: number) {
                         if (depth >= 1 && (d.children?.length || 0) > 0) next.add(d.id);
@@ -245,13 +245,13 @@
                         <circle r={r} fill={isTarget ? '#fef3c7' : nodeColor(n)}
                                 stroke={stroke} stroke-width={isTarget ? 3 : 1.5}
                                 opacity={isCompleted(n) ? 0.5 : 1}
-                                on:click|stopPropagation={() => toggleSelection(n.id)} />
+                                onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }} />
                         {#if n.criticality > 0.5}
                             <circle r={r + 3} fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="2,2" opacity="0.7" />
                         {/if}
                         {#if hasChildren}
                             <g class="collapse-toggle" transform={`translate(${r + 4}, ${-r - 2})`}
-                               on:click|stopPropagation={() => toggleCollapsed(p.d.id)}>
+                               onclick={(e) => { e.stopPropagation(); toggleCollapsed(p.d.id); }}>
                                 <circle r="7" fill="#0f172a" stroke="#64748b" stroke-width="1" />
                                 <text class="toggle-icon" x="0" y="3">{p.collapsed ? '+' : '−'}</text>
                             </g>

@@ -12,6 +12,11 @@
     import ArcView from "$lib/components/views/ArcView.svelte";
     import MetroView from "$lib/components/views/MetroView.svelte";
     import MetroRadialView from "$lib/components/views/MetroRadialView.svelte";
+    import SwimlaneView from "$lib/components/views/SwimlaneView.svelte";
+    import DSMView from "$lib/components/views/DSMView.svelte";
+    import RibbonView from "$lib/components/views/RibbonView.svelte";
+    import HTATreeView from "$lib/components/views/HTATreeView.svelte";
+    import WaveKanbanView from "$lib/components/views/WaveKanbanView.svelte";
 
     import DashboardView from "$lib/components/dashboard/DashboardView.svelte";
     import ThreadedTasksView from "$lib/components/views/ThreadedTasksView.svelte";
@@ -467,6 +472,16 @@
                     <MetroView bind:this={metroViewRef} bind:running={metroRunning} showContext={metroShowContext} />
                 {:else if activeLayout === "metro_radial"}
                     <MetroRadialView />
+                {:else if activeLayout === "swimlanes"}
+                    <SwimlaneView />
+                {:else if activeLayout === "dsm"}
+                    <DSMView />
+                {:else if activeLayout === "ribbons"}
+                    <RibbonView />
+                {:else if activeLayout === "hta"}
+                    <HTATreeView />
+                {:else if activeLayout === "wave_kanban"}
+                    <WaveKanbanView />
                 {:else}
                     <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
                         {#if containerGroup}

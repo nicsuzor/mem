@@ -135,7 +135,7 @@
                 {#each matrix.order as n, i}
                     <text class="row-label" class:target-row={n.id === subgraph.targetId}
                           x={labelW - 6} y={labelH + i * cellSize + cellSize / 2 + 3}
-                          on:click|stopPropagation={() => toggleSelection(n.id)}>
+                          onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }}>
                         {n.label.length > 28 ? n.label.slice(0, 27) + '…' : n.label}
                     </text>
                 {/each}
@@ -144,7 +144,7 @@
                 {#each matrix.order as n, i}
                     <g transform={`translate(${labelW + i * cellSize + cellSize / 2}, ${labelH - 6}) rotate(-55)`}>
                         <text class="col-label" class:target-row={n.id === subgraph.targetId}
-                              on:click|stopPropagation={() => toggleSelection(n.id)}>
+                              onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }}>
                             {n.label.length > 28 ? n.label.slice(0, 27) + '…' : n.label}
                         </text>
                     </g>
@@ -162,9 +162,9 @@
                               height={cellSize - 1}
                               fill={cellFill(cell)}
                               opacity={cell ? (isCompleted(rowNode) || isCompleted(colNode) ? 0.35 : 0.9) : 0}
-                              on:mouseenter={() => cell && (hovered = { row: r, col: c, type: cell.type })}
-                              on:mouseleave={() => hovered = null}
-                              on:click|stopPropagation={() => cell && toggleSelection(rowNode.id)} />
+                              onmouseenter={() => cell && (hovered = { row: r, col: c, type: cell.type })}
+                              onmouseleave={() => hovered = null}
+                              onclick={(e) => { e.stopPropagation(); cell && toggleSelection(rowNode.id); }} />
                     {/each}
                 {/each}
             </svg>

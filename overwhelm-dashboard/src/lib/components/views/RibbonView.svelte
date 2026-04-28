@@ -117,7 +117,8 @@
                 <!-- Ribbons -->
                 {#each layout as l}
                     {@const r = l.ribbon}
-                    <g class="ribbon" on:click|stopPropagation={() => {
+                    <g class="ribbon" onclick={(e) => {
+                        e.stopPropagation();
                         const top = [...r.cluster].sort((a, b) => (b.focusScore||0)-(a.focusScore||0))[0];
                         if (top) toggleSelection(top.id);
                     }}>
@@ -157,7 +158,7 @@
                 {/each}
 
                 <!-- Target node -->
-                <g class="target" on:click|stopPropagation={() => target && toggleSelection(target.id)}>
+                <g class="target" onclick={(e) => { e.stopPropagation(); target && toggleSelection(target.id); }}>
                     <circle cx={targetX} cy={totalH / 2} r="34"
                             fill="#fef3c7" stroke="#f59e0b" stroke-width="3" />
                     <text class="target-icon" x={targetX} y={totalH / 2 - 4}>◎</text>

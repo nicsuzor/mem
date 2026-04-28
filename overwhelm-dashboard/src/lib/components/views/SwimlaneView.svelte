@@ -196,7 +196,7 @@
                     {#each lane.nodes as p}
                         {@const stroke = p.node.project ? projectColor(p.node.project) : '#475569'}
                         <g class="node" transform={`translate(${p.x},${p.y})`}
-                           on:click|stopPropagation={() => toggleSelection(p.node.id)}>
+                           onclick={(e) => { e.stopPropagation(); toggleSelection(p.node.id); }}>
                             <rect width={NODE_W} height={NODE_H} rx="5"
                                   fill={nodeFill(p.node)} stroke={stroke} stroke-width="1.5"
                                   opacity={isCompleted(p.node) ? 0.5 : 1} />
@@ -215,7 +215,7 @@
 
                 {#if layout.target}
                     <g class="node target-node" transform={`translate(${layout.target.x},${layout.target.y})`}
-                       on:click|stopPropagation={() => toggleSelection(layout.target.node.id)}>
+                       onclick={(e) => { e.stopPropagation(); toggleSelection(layout.target.node.id); }}>
                         <rect width={NODE_W} height={NODE_H} rx="5"
                               fill="#fef3c7" stroke="#f59e0b" stroke-width="3" />
                         <text class="node-text" x="8" y="14" fill="#78350f" font-weight="700">
