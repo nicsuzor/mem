@@ -8,3 +8,4 @@ graph.json
 
 .gemini/
 gha-creds-*.json
+.claude
