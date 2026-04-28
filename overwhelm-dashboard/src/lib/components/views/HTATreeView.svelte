@@ -4,58 +4,63 @@
     import { selection, toggleSelection } from '../../stores/selection';
     import { projectColor } from '../../data/projectUtils';
     import {
-        extractSubgraph,
-        pickDefaultTarget,
+        extractMultiTargetSubgraph,
+        pickAllTargets,
         isCompleted,
     } from '../../data/subgraphExtraction';
-    import type { GraphNode, GraphEdge } from '../../data/prepareGraphData';
+    import type { GraphNode } from '../../data/prepareGraphData';
 
     interface TreeDatum {
         id: string;
-        node: GraphNode;
+        label: string;
+        node: GraphNode | null;
         children?: TreeDatum[];
-        _children?: TreeDatum[]; // collapsed
-        depth?: number;
     }
 
-    $: targetId = $selection.focusNodeId || pickDefaultTarget($graphData);
-    $: subgraph = $graphData && targetId ? extractSubgraph($graphData, targetId) : null;
-    $: target = subgraph ? subgraph.nodes.find(n => n.id === subgraph.targetId) : null;
+    $: targets = pickAllTargets($graphData);
+    $: focusOverride = $selection.focusNodeId;
+    $: targetIds = focusOverride ? [focusOverride] : targets.map(t => t.id);
+    $: multi = $graphData && targetIds.length > 0
+        ? extractMultiTargetSubgraph($graphData, targetIds)
+        : null;
 
     function endpointId(e: string | GraphNode): string {
         return typeof e === 'object' ? e.id : e;
     }
 
-    /**
-     * Build a *tree* projection of the prerequisite DAG, rooted at target.
-     * Each prerequisite gets attached at its FIRST encounter (BFS), so
-     * shared prerequisites appear once near the top — preserving correctness
-     * (we never invent edges) at the cost of hiding redundant attachments.
-     */
-    function buildTree(sub: ReturnType<typeof extractSubgraph>): TreeDatum {
-        const targetNode = sub.nodes.find(n => n.id === sub.targetId)!;
-        const nodeById = new Map(sub.nodes.map(n => [n.id, n]));
+    function buildTree(multi: NonNullable<ReturnType<typeof extractMultiTargetSubgraph>>): TreeDatum {
+        const nodeById = new Map(multi.nodes.map(n => [n.id, n]));
         const prereqsOf = new Map<string, string[]>();
-        for (const n of sub.nodes) prereqsOf.set(n.id, []);
-        for (const e of sub.edges) {
+        for (const n of multi.nodes) prereqsOf.set(n.id, []);
+        for (const e of multi.edges) {
             const sid = endpointId(e.source);
             const tid = endpointId(e.target);
-            if (e.type === 'depends_on' || e.type === 'soft_depends_on') {
-                prereqsOf.get(sid)?.push(tid);
-            } else if (e.type === 'parent') {
-                // source = parent, target = child; child is prereq for parent
+            if (e.type === 'depends_on' || e.type === 'soft_depends_on' || e.type === 'parent') {
                 prereqsOf.get(sid)?.push(tid);
             }
         }
 
-        const placed = new Set<string>([sub.targetId]);
-        const root: TreeDatum = { id: sub.targetId, node: targetNode, children: [] };
-        const queue: TreeDatum[] = [root];
+        const root: TreeDatum = {
+            id: '__root__',
+            label: `${multi.targets.length} active targets`,
+            node: null,
+            children: [],
+        };
+        const placed = new Set<string>(['__root__']);
+        const queue: TreeDatum[] = [];
+
+        const orderedTargets = [...multi.targets].sort((a, b) =>
+            (a.priority ?? 4) - (b.priority ?? 4) || a.label.localeCompare(b.label));
+        for (const t of orderedTargets) {
+            const td: TreeDatum = { id: t.id, label: t.label, node: t, children: [] };
+            root.children!.push(td);
+            placed.add(t.id);
+            queue.push(td);
+        }
 
         while (queue.length > 0) {
             const cur = queue.shift()!;
             const prereqs = prereqsOf.get(cur.id) || [];
-            // Stable order: incomplete first, then by criticality desc
             prereqs.sort((a, b) => {
                 const na = nodeById.get(a)!;
                 const nb = nodeById.get(b)!;
@@ -69,7 +74,7 @@
                 placed.add(pid);
                 const pnode = nodeById.get(pid);
                 if (!pnode) continue;
-                const child: TreeDatum = { id: pid, node: pnode, children: [] };
+                const child: TreeDatum = { id: pid, label: pnode.label, node: pnode, children: [] };
                 cur.children!.push(child);
                 queue.push(child);
             }
@@ -77,10 +82,8 @@
         return root;
     }
 
-    $: treeData = subgraph ? buildTree(subgraph) : null;
+    $: treeData = multi ? buildTree(multi) : null;
 
-    // SVG container
-    let svgEl: SVGSVGElement;
     let collapsed = new Set<string>();
     let layoutMode: 'vertical' | 'radial' = 'vertical';
     let viewW = 1200;
@@ -98,17 +101,10 @@
         x: number; y: number;
         depth: number;
         collapsed: boolean;
+        hidden: number;
     }
-    interface PositionedLink {
-        x1: number; y1: number; x2: number; y2: number;
-    }
-
-    interface Render {
-        nodes: PositionedNode[];
-        links: PositionedLink[];
-        width: number;
-        height: number;
-    }
+    interface PositionedLink { x1: number; y1: number; x2: number; y2: number; }
+    interface Render { nodes: PositionedNode[]; links: PositionedLink[]; width: number; height: number; }
 
     function visibleHierarchy(root: TreeDatum, collapsed: Set<string>): TreeDatum {
         function walk(d: TreeDatum): TreeDatum {
@@ -117,14 +113,21 @@
         }
         return walk(root);
     }
+    function countDescendants(d: TreeDatum): number {
+        let c = 0;
+        for (const k of d.children || []) c += 1 + countDescendants(k);
+        return c;
+    }
 
     function buildRender(root: TreeDatum, layout: 'vertical' | 'radial'): Render {
         const visible = visibleHierarchy(root, collapsed);
         const h = d3.hierarchy<TreeDatum>(visible);
-        const total = h.descendants().length;
+        const idIndex = new Map<string, TreeDatum>();
+        function indexAll(d: TreeDatum) { idIndex.set(d.id, d); for (const k of d.children || []) indexAll(k); }
+        indexAll(root);
 
         if (layout === 'radial') {
-            const r = Math.min(viewW, viewH) / 2 - 80;
+            const r = Math.min(viewW, viewH) / 2 - 90;
             const tree = d3.tree<TreeDatum>().size([2 * Math.PI, r])
                 .separation((a, b) => (a.parent === b.parent ? 1 : 1.6) / Math.max(1, a.depth));
             tree(h);
@@ -132,12 +135,14 @@
             const nodes: PositionedNode[] = h.descendants().map(n => {
                 const angle = (n as any).x;
                 const radius = (n as any).y;
+                const original = idIndex.get(n.data.id) || n.data;
                 return {
                     d: n.data,
                     x: cx + radius * Math.cos(angle - Math.PI / 2),
                     y: cy + radius * Math.sin(angle - Math.PI / 2),
                     depth: n.depth,
                     collapsed: collapsed.has(n.data.id),
+                    hidden: collapsed.has(n.data.id) ? countDescendants(original) : 0,
                 };
             });
             const links: PositionedLink[] = h.links().map(l => {
@@ -152,8 +157,8 @@
             });
             return { nodes, links, width: viewW, height: viewH };
         } else {
-            const dx = 28; // vertical spacing per leaf
-            const dy = Math.max(180, viewW / Math.max(2, h.height + 1));
+            const dx = 26;
+            const dy = Math.max(220, viewW / Math.max(2, h.height + 1));
             const tree = d3.tree<TreeDatum>().nodeSize([dx, dy]);
             tree(h);
             let minX = Infinity, maxX = -Infinity;
@@ -163,90 +168,99 @@
                 if (x > maxX) maxX = x;
             });
             const offsetX = -minX + 30;
-            const nodes: PositionedNode[] = h.descendants().map(n => ({
-                d: n.data,
-                x: (n as any).y + 30,
-                y: (n as any).x + offsetX,
-                depth: n.depth,
-                collapsed: collapsed.has(n.data.id),
-            }));
+            const nodes: PositionedNode[] = h.descendants().map(n => {
+                const original = idIndex.get(n.data.id) || n.data;
+                return {
+                    d: n.data,
+                    x: (n as any).y + 30,
+                    y: (n as any).x + offsetX,
+                    depth: n.depth,
+                    collapsed: collapsed.has(n.data.id),
+                    hidden: collapsed.has(n.data.id) ? countDescendants(original) : 0,
+                };
+            });
             const links: PositionedLink[] = h.links().map(l => ({
                 x1: (l.source as any).y + 30,
                 y1: (l.source as any).x + offsetX,
                 x2: (l.target as any).y + 30,
                 y2: (l.target as any).x + offsetX,
             }));
-            const totalH = (maxX - minX) + 60;
-            const totalW = (h.height + 1) * dy + 200;
+            const totalH = (maxX - minX) + 80;
+            const totalW = (h.height + 1) * dy + 240;
             return { nodes, links, width: totalW, height: Math.max(viewH, totalH) };
         }
     }
 
     $: render = treeData ? buildRender(treeData, layoutMode) : null;
 
-    function nodeColor(n: GraphNode): string {
+    function nodeColor(n: GraphNode | null): string {
+        if (!n) return '#0f172a';
         if (isCompleted(n)) return '#1e293b';
         if (n.status === 'in_progress') return '#1e40af';
         if (n.status === 'blocked') return '#7f1d1d';
         return n.fill;
     }
-    function badge(d: TreeDatum) {
-        const total = countDescendants(d);
-        return total - 1; // exclude self
+    function isTarget(d: TreeDatum) {
+        return !!multi && multi.targets.some(t => t.id === d.id);
     }
-    function countDescendants(d: TreeDatum): number {
-        let c = 1;
-        for (const k of d.children || []) c += countDescendants(k);
-        return c;
-    }
+    function isRoot(d: TreeDatum) { return d.id === '__root__'; }
 </script>
 
 <div class="hta-root" data-component="hta-tree-view">
-    {#if !$graphData || !subgraph || !target || !render || !treeData}
+    {#if !$graphData || !multi || !render || !treeData}
         <div class="empty">Loading…</div>
+    {:else if multi.targets.length === 0}
+        <div class="empty">No active targets found.</div>
     {:else}
         <div class="caption">
             <strong>Hierarchical Task Analysis</strong>
-            <span class="meta">· {subgraph.nodes.length} nodes · click chevrons to collapse · target = {target.label}</span>
+            <span class="meta">
+                · {multi.targets.length} targets · {multi.nodes.length - multi.targets.length} prerequisite tasks
+                · click chevrons to collapse/expand
+            </span>
             <div class="controls">
                 <button class:active={layoutMode === 'vertical'} onclick={() => layoutMode = 'vertical'}>Vertical</button>
                 <button class:active={layoutMode === 'radial'} onclick={() => layoutMode = 'radial'}>Radial</button>
                 <button onclick={() => collapsed = new Set()}>Expand all</button>
                 <button onclick={() => {
                     const next = new Set<string>();
+                    if (multi) for (const t of multi.targets) next.add(t.id);
+                    collapsed = next;
+                }}>Targets only</button>
+                <button onclick={() => {
+                    const next = new Set<string>();
                     function walk(d: TreeDatum, depth: number) {
-                        if (depth >= 1 && (d.children?.length || 0) > 0) next.add(d.id);
+                        if (depth >= 2 && (d.children?.length || 0) > 0) next.add(d.id);
                         for (const k of d.children || []) walk(k, depth + 1);
                     }
                     if (treeData) walk(treeData, 0);
                     collapsed = next;
-                }}>Collapse to L1</button>
+                }}>Collapse to L2</button>
             </div>
         </div>
         <div class="canvas-wrap">
-            <svg bind:this={svgEl} width={render.width} height={render.height}>
-                <defs>
-                    <marker id="hta-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-                        <path d="M0,0 L8,4 L0,8 z" fill="#64748b" />
-                    </marker>
-                </defs>
+            <svg width={render.width} height={render.height}>
                 {#each render.links as l}
                     <path d={`M ${l.x1} ${l.y1} C ${(l.x1 + l.x2) / 2} ${l.y1}, ${(l.x1 + l.x2) / 2} ${l.y2}, ${l.x2} ${l.y2}`}
-                          fill="none" stroke="#475569" stroke-width="1.2" opacity="0.6" />
+                          fill="none" stroke="#475569" stroke-width="1.2" opacity="0.55" />
                 {/each}
 
                 {#each render.nodes as p}
-                    {@const n = p.d.node}
-                    {@const isTarget = n.id === target.id}
-                    {@const stroke = isTarget ? '#f59e0b' : (n.project ? projectColor(n.project) : '#475569')}
+                    {@const root = isRoot(p.d)}
+                    {@const target = isTarget(p.d)}
+                    {@const stroke = root ? '#cbd5e1'
+                        : target ? '#f59e0b'
+                        : (p.d.node?.project ? projectColor(p.d.node.project) : '#475569')}
                     {@const hasChildren = (p.d.children?.length || 0) > 0 || p.collapsed}
-                    {@const r = isTarget ? 14 : 10}
+                    {@const r = root ? 16 : target ? 14 : 10}
                     <g class="hta-node" transform={`translate(${p.x},${p.y})`}>
-                        <circle r={r} fill={isTarget ? '#fef3c7' : nodeColor(n)}
-                                stroke={stroke} stroke-width={isTarget ? 3 : 1.5}
-                                opacity={isCompleted(n) ? 0.5 : 1}
-                                onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }} />
-                        {#if n.criticality > 0.5}
+                        <circle r={r}
+                                fill={target ? '#fef3c7' : root ? '#1e293b' : nodeColor(p.d.node)}
+                                stroke={stroke} stroke-width={target ? 3 : root ? 2.5 : 1.5}
+                                opacity={p.d.node && isCompleted(p.d.node) ? 0.5 : 1}
+                                onclick={(e) => { e.stopPropagation(); if (p.d.node) toggleSelection(p.d.id); }}>
+                        </circle>
+                        {#if p.d.node && p.d.node.criticality > 0.5}
                             <circle r={r + 3} fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="2,2" opacity="0.7" />
                         {/if}
                         {#if hasChildren}
@@ -255,17 +269,18 @@
                                 <circle r="7" fill="#0f172a" stroke="#64748b" stroke-width="1" />
                                 <text class="toggle-icon" x="0" y="3">{p.collapsed ? '+' : '−'}</text>
                             </g>
-                            {#if p.collapsed}
-                                <text class="badge-count" x={r + 16} y={4}>+{badge(p.d)} hidden</text>
+                            {#if p.collapsed && p.hidden > 0}
+                                <text class="badge-count" x={r + 16} y={4}>+{p.hidden} hidden</text>
                             {/if}
                         {/if}
                         <text class="hta-label"
                               x={layoutMode === 'radial' ? 0 : r + 8}
                               y={layoutMode === 'radial' ? r + 14 : 4}
-                              fill={isCompleted(n) ? '#64748b' : '#cbd5e1'}
+                              fill={target ? '#fef3c7' : (p.d.node && isCompleted(p.d.node)) ? '#64748b' : '#cbd5e1'}
                               text-anchor={layoutMode === 'radial' ? 'middle' : 'start'}
-                              opacity={isCompleted(n) ? 0.5 : 1}>
-                            {n.label.length > 30 ? n.label.slice(0, 29) + '…' : n.label}
+                              font-weight={target || root ? '700' : '500'}
+                              opacity={p.d.node && isCompleted(p.d.node) ? 0.5 : 1}>
+                            {target ? '◎ ' : ''}{p.d.label.length > 32 ? p.d.label.slice(0, 31) + '…' : p.d.label}
                         </text>
                     </g>
                 {/each}

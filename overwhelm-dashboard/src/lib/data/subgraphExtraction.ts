@@ -1,5 +1,5 @@
 import type { GraphNode, GraphEdge, PreparedGraph } from './prepareGraphData';
-import { COMPLETED_STATUSES } from './constants';
+import { COMPLETED_STATUSES, INCOMPLETE_STATUSES } from './constants';
 
 /**
  * Subgraph extraction & layout helpers shared by experimental
@@ -23,6 +23,16 @@ export interface ExtractedSubgraph {
     distanceFromTarget: Map<string, number>;
 }
 
+export interface MultiTargetSubgraph {
+    targets: GraphNode[];
+    nodes: GraphNode[];
+    edges: GraphEdge[];
+    /** node id -> set of target ids this node contributes to */
+    routes: Map<string, Set<string>>;
+    /** node id -> minimum BFS distance to any target */
+    distanceToNearest: Map<string, number>;
+}
+
 const PREREQ_EDGE_TYPES = new Set(['depends_on', 'soft_depends_on', 'parent']);
 
 function endpointId(endpoint: string | GraphNode): string {
@@ -41,6 +51,26 @@ export function pickDefaultTarget(graph: PreparedGraph | null): string | null {
     const epic = ranked.find(n => n.type === 'epic');
     if (epic) return epic.id;
     return ranked[0]?.id ?? null;
+}
+
+/**
+ * Discover ALL active targets — incomplete nodes whose `node_type` is
+ * `target`, falling back to P0/P1 incomplete nodes if none exist.
+ * Mirrors the discovery rule used by MetroRadialView so the
+ * experimental views show the same destinations the user is steering by.
+ */
+export function pickAllTargets(graph: PreparedGraph | null): GraphNode[] {
+    if (!graph) return [];
+    const incomplete = graph.nodes.filter(n => INCOMPLETE_STATUSES.has(n.status));
+    const explicit = incomplete.filter(n => (n.type || '').toLowerCase() === 'target');
+    const pool = explicit.length > 0
+        ? explicit
+        : incomplete.filter(n => n.priority === 0 || n.priority === 1);
+    return pool.sort((a, b) =>
+        (a.priority ?? 4) - (b.priority ?? 4)
+        || (a.project || '').localeCompare(b.project || '')
+        || (a.label || '').localeCompare(b.label || '')
+    );
 }
 
 /**
@@ -100,6 +130,134 @@ export function extractSubgraph(graph: PreparedGraph, targetId: string): Extract
     });
 
     return { targetId, nodes, edges, distanceFromTarget };
+}
+
+/**
+ * Reverse-BFS from MULTIPLE targets at once. The result is the union of
+ * every target's prerequisite subgraph; `routes` records, for each node,
+ * which targets it contributes to (a node may serve multiple targets if
+ * it's a shared prerequisite).
+ */
+export function extractMultiTargetSubgraph(
+    graph: PreparedGraph,
+    targetIds: string[],
+): MultiTargetSubgraph {
+    const incoming = new Map<string, GraphEdge[]>();
+    for (const e of graph.links) {
+        if (!PREREQ_EDGE_TYPES.has(e.type)) continue;
+        const owner =
+            e.type === 'parent'
+                ? endpointId(e.source) // parent owns the child-prereq edge
+                : endpointId(e.source); // depender owns its dependency edge
+        const arr = incoming.get(owner) || [];
+        arr.push(e);
+        incoming.set(owner, arr);
+    }
+
+    const nodeById = new Map(graph.nodes.map(n => [n.id, n]));
+    const routes = new Map<string, Set<string>>();
+    const distanceToNearest = new Map<string, number>();
+    const validTargets: GraphNode[] = [];
+
+    const ensureRoute = (nid: string, tid: string) => {
+        const s = routes.get(nid) || new Set<string>();
+        s.add(tid);
+        routes.set(nid, s);
+    };
+
+    for (const tid of targetIds) {
+        const t = nodeById.get(tid);
+        if (!t) continue;
+        validTargets.push(t);
+
+        // BFS from this target
+        const localDist = new Map<string, number>([[tid, 0]]);
+        ensureRoute(tid, tid);
+        const queue: string[] = [tid];
+        while (queue.length > 0) {
+            const cur = queue.shift()!;
+            const dist = localDist.get(cur)!;
+            for (const e of incoming.get(cur) || []) {
+                const next = endpointId(e.target);
+                if (localDist.has(next)) continue;
+                localDist.set(next, dist + 1);
+                ensureRoute(next, tid);
+                queue.push(next);
+            }
+        }
+        // Fold into global distance-to-nearest
+        for (const [id, d] of localDist) {
+            const prev = distanceToNearest.get(id);
+            if (prev === undefined || d < prev) distanceToNearest.set(id, d);
+        }
+    }
+
+    const nodes = [...routes.keys()].map(id => nodeById.get(id)).filter((n): n is GraphNode => !!n);
+    const visited = new Set(routes.keys());
+    const edges = graph.links.filter(e => {
+        if (!PREREQ_EDGE_TYPES.has(e.type)) return false;
+        return visited.has(endpointId(e.source)) && visited.has(endpointId(e.target));
+    });
+
+    return { targets: validTargets, nodes, edges, routes, distanceToNearest };
+}
+
+/**
+ * Convenience wrapper: take a multi-target subgraph and turn it into a
+ * single-target shape suitable for the existing `computeDependencyDepth`
+ * and `findClusters` helpers — just by picking one of the targets to act
+ * as the centroid for distance bookkeeping. Cluster detection is unchanged
+ * since it ignores the target.
+ */
+export function multiAsExtracted(multi: MultiTargetSubgraph): ExtractedSubgraph {
+    return {
+        targetId: multi.targets[0]?.id ?? '',
+        nodes: multi.nodes,
+        edges: multi.edges,
+        distanceFromTarget: multi.distanceToNearest,
+    };
+}
+
+/**
+ * Connected components on a multi-target subgraph, treating ALL target
+ * nodes as cut points (so clusters are the truly independent paths
+ * upstream of the targets, never bridged through a target).
+ */
+export function findMultiClusters(multi: MultiTargetSubgraph): GraphNode[][] {
+    const targetSet = new Set(multi.targets.map(t => t.id));
+    const adj = new Map<string, Set<string>>();
+    multi.nodes.forEach(n => adj.set(n.id, new Set()));
+    for (const e of multi.edges) {
+        const sid = endpointId(e.source);
+        const tid = endpointId(e.target);
+        if (targetSet.has(sid) || targetSet.has(tid)) continue;
+        adj.get(sid)?.add(tid);
+        adj.get(tid)?.add(sid);
+    }
+    const seen = new Set<string>(targetSet);
+    const clusters: GraphNode[][] = [];
+    const nodeById = new Map(multi.nodes.map(n => [n.id, n]));
+    for (const n of multi.nodes) {
+        if (seen.has(n.id)) continue;
+        const stack = [n.id];
+        const comp: GraphNode[] = [];
+        while (stack.length) {
+            const cur = stack.pop()!;
+            if (seen.has(cur)) continue;
+            seen.add(cur);
+            const node = nodeById.get(cur);
+            if (node) comp.push(node);
+            for (const nb of adj.get(cur) || []) if (!seen.has(nb)) stack.push(nb);
+        }
+        if (comp.length > 0) clusters.push(comp);
+    }
+    clusters.sort((a, b) => {
+        if (b.length !== a.length) return b.length - a.length;
+        const fa = a.reduce((s, n) => s + (n.focusScore || 0), 0);
+        const fb = b.reduce((s, n) => s + (n.focusScore || 0), 0);
+        return fb - fa;
+    });
+    return clusters;
 }
 
 /**

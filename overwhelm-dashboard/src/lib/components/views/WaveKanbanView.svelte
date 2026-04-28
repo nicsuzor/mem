@@ -3,63 +3,69 @@
     import { selection, toggleSelection } from '../../stores/selection';
     import { projectColor } from '../../data/projectUtils';
     import {
-        extractSubgraph,
-        pickDefaultTarget,
+        extractMultiTargetSubgraph,
+        multiAsExtracted,
+        findMultiClusters,
+        pickAllTargets,
         computeDependencyDepth,
-        findClusters,
         clusterLabel,
         isCompleted,
     } from '../../data/subgraphExtraction';
     import type { GraphNode } from '../../data/prepareGraphData';
 
-    $: targetId = $selection.focusNodeId || pickDefaultTarget($graphData);
-    $: subgraph = $graphData && targetId ? extractSubgraph($graphData, targetId) : null;
-    $: depth = subgraph ? computeDependencyDepth(subgraph) : new Map<string, number>();
-    $: clusters = subgraph ? findClusters(subgraph) : [];
-    $: target = subgraph ? subgraph.nodes.find(n => n.id === subgraph.targetId) : null;
-
-    // Map each node to its cluster
+    $: targets = pickAllTargets($graphData);
+    $: focusOverride = $selection.focusNodeId;
+    $: targetIds = focusOverride ? [focusOverride] : targets.map(t => t.id);
+    $: multi = $graphData && targetIds.length > 0
+        ? extractMultiTargetSubgraph($graphData, targetIds)
+        : null;
+    $: extracted = multi ? multiAsExtracted(multi) : null;
+    $: depth = extracted ? computeDependencyDepth(extracted) : new Map<string, number>();
+    $: clusters = multi ? findMultiClusters(multi) : [];
     $: clusterIdx = (() => {
         const m = new Map<string, number>();
         clusters.forEach((c, i) => c.forEach(n => m.set(n.id, i)));
         return m;
     })();
+    $: targetSet = new Set(multi?.targets.map(t => t.id) ?? []);
 
     interface Wave {
         depth: number;
         groups: { clusterIndex: number; label: string; tasks: GraphNode[] }[];
     }
 
-    function buildWaves(sub: ReturnType<typeof extractSubgraph>, depth: Map<string, number>): Wave[] {
+    function buildWaves(
+        nodes: GraphNode[],
+        depth: Map<string, number>,
+        targetSet: Set<string>,
+    ): Wave[] {
         const byDepth = new Map<number, GraphNode[]>();
-        for (const n of sub.nodes) {
-            if (n.id === sub.targetId) continue;
+        let maxNonTargetDepth = 0;
+        for (const n of nodes) {
+            if (targetSet.has(n.id)) continue;
             const d = depth.get(n.id) ?? 0;
+            if (d > maxNonTargetDepth) maxNonTargetDepth = d;
             const arr = byDepth.get(d) || [];
             arr.push(n);
             byDepth.set(d, arr);
         }
-        const targetDepth = (depth.get(sub.targetId) ?? 0);
-        const tn = sub.nodes.find(n => n.id === sub.targetId);
-        if (tn) {
-            const arr = byDepth.get(targetDepth) || [];
-            arr.push(tn);
-            byDepth.set(targetDepth, arr);
-        }
+        const finishCol = maxNonTargetDepth + 1;
+        const targetNodes = nodes.filter(n => targetSet.has(n.id));
+        if (targetNodes.length > 0) byDepth.set(finishCol, targetNodes);
 
         const sortedDepths = [...byDepth.keys()].sort((a, b) => a - b);
         return sortedDepths.map(d => {
             const tasks = byDepth.get(d)!;
             const grouped = new Map<number, GraphNode[]>();
             for (const n of tasks) {
-                const ci = n.id === sub.targetId ? -1 : (clusterIdx.get(n.id) ?? -2);
+                const ci = targetSet.has(n.id) ? -1 : (clusterIdx.get(n.id) ?? -2);
                 const arr = grouped.get(ci) || [];
                 arr.push(n);
                 grouped.set(ci, arr);
             }
             const groups = [...grouped.entries()].map(([ci, tasks]) => {
                 tasks.sort((a, b) => (b.criticality - a.criticality) || a.label.localeCompare(b.label));
-                const label = ci === -1 ? '◎ TARGET'
+                const label = ci === -1 ? '◎ TARGETS'
                     : ci === -2 ? 'unsorted'
                     : clusterLabel(clusters[ci]);
                 return { clusterIndex: ci, label, tasks };
@@ -69,7 +75,7 @@
         });
     }
 
-    $: waves = subgraph ? buildWaves(subgraph, depth) : [];
+    $: waves = multi ? buildWaves(multi.nodes, depth, targetSet) : [];
 
     function statusEmoji(s: string): string {
         switch (s) {
@@ -88,15 +94,23 @@
         if (isFirst) return `Wave ${d} · ready now`;
         return `Wave ${d}`;
     }
+
+    function routeChips(id: string): string[] {
+        const r = multi?.routes.get(id);
+        if (!r) return [];
+        return [...r];
+    }
 </script>
 
 <div class="wave-root" data-component="wave-kanban-view">
-    {#if !$graphData || !subgraph || !target}
+    {#if !$graphData || !multi}
         <div class="empty">Loading…</div>
+    {:else if multi.targets.length === 0}
+        <div class="empty">No active targets found.</div>
     {:else}
         <div class="caption">
             <strong>Depth-Wave Kanban</strong>
-            <span class="meta">· each column = work that can run in parallel at the same dependency depth · target = {target.label}</span>
+            <span class="meta">· {multi.targets.length} targets · {multi.nodes.length - multi.targets.length} prerequisite tasks · each column = parallel work at the same dependency depth</span>
         </div>
         <div class="board">
             {#each waves as wave, wi}
@@ -120,8 +134,9 @@
                                     <span class="group-count">{group.tasks.length}</span>
                                 </div>
                                 {#each group.tasks as task}
-                                    {@const isTarget = task.id === target.id}
+                                    {@const isTarget = targetSet.has(task.id)}
                                     {@const stroke = isTarget ? '#f59e0b' : (task.project ? projectColor(task.project) : '#475569')}
+                                    {@const chips = isTarget ? [] : routeChips(task.id)}
                                     <button class="card"
                                             class:done={isCompleted(task)}
                                             class:in-progress={task.status === 'in_progress'}
@@ -138,7 +153,7 @@
                                             <span>{task.type}</span>
                                             <span>P{task.priority ?? '?'}</span>
                                             {#if task.uncertainty > 0.3}<span class="uncertain">~{task.uncertainty.toFixed(1)}</span>{/if}
-                                            {#if task.scope > 0}<span>s={task.scope}</span>{/if}
+                                            {#if chips.length > 1}<span class="route">→ {chips.length} targets</span>{/if}
                                         </div>
                                     </button>
                                 {/each}
@@ -192,79 +207,45 @@
         overflow: hidden;
     }
     .column.first { border-left: 3px solid #10b981; }
-    .column.last { border-right: 3px solid #f59e0b; }
+    .column.last { border-right: 3px solid #f59e0b; min-width: 290px; }
     .column header {
         padding: 8px 10px;
         background: rgba(148,163,184,0.06);
         border-bottom: 1px solid rgba(148,163,184,0.12);
     }
-    .col-title {
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.06em;
-    }
-    .col-meta {
-        font-size: 9px;
-        opacity: 0.6;
-        margin-top: 2px;
-    }
+    .col-title { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; }
+    .col-meta { font-size: 9px; opacity: 0.6; margin-top: 2px; }
     .progress-track {
-        margin-top: 5px;
-        height: 3px;
+        margin-top: 5px; height: 3px;
         background: rgba(148,163,184,0.15);
-        border-radius: 2px;
-        overflow: hidden;
+        border-radius: 2px; overflow: hidden;
     }
-    .progress-fill {
-        height: 100%;
-        background: linear-gradient(90deg, #10b981, #f59e0b);
-    }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #10b981, #f59e0b); }
     .col-body {
-        flex: 1;
-        overflow-y: auto;
-        padding: 8px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
+        flex: 1; overflow-y: auto; padding: 8px;
+        display: flex; flex-direction: column; gap: 10px;
     }
-    .group {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-    }
+    .group { display: flex; flex-direction: column; gap: 4px; }
     .group-label {
-        font-size: 9px;
-        font-weight: 700;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        opacity: 0.85;
-        display: flex;
-        align-items: center;
-        gap: 6px;
+        font-size: 9px; font-weight: 700; letter-spacing: 0.1em;
+        text-transform: uppercase; opacity: 0.85;
+        display: flex; align-items: center; gap: 6px;
     }
     .group-count {
         font-size: 8px;
         background: rgba(148,163,184,0.1);
-        padding: 1px 5px;
-        border-radius: 6px;
-        opacity: 0.7;
+        padding: 1px 5px; border-radius: 6px; opacity: 0.7;
     }
     .card {
         text-align: left;
         background: rgba(15,23,42,0.7);
         border: 1px solid rgba(148,163,184,0.18);
         border-left: 3px solid #475569;
-        padding: 6px 8px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-family: inherit;
-        color: inherit;
+        padding: 6px 8px; border-radius: 4px;
+        cursor: pointer; font-family: inherit; color: inherit;
         transition: transform 0.1s, background 0.1s;
     }
-    .card:hover {
-        background: rgba(30,41,59,0.9);
-        transform: translateX(2px);
-    }
+    .card:hover { background: rgba(30,41,59,0.9); transform: translateX(2px); }
     .card.done { opacity: 0.45; }
     .card.in-progress { background: rgba(30,64,175,0.2); }
     .card.blocked { background: rgba(127,29,29,0.2); }
@@ -273,39 +254,24 @@
         border-color: #f59e0b;
         box-shadow: 0 0 0 1px rgba(245,158,11,0.3);
     }
-    .card-row {
-        display: flex;
-        gap: 6px;
-        align-items: baseline;
-        font-size: 11px;
-    }
+    .card-row { display: flex; gap: 6px; align-items: baseline; font-size: 11px; }
     .status { width: 12px; flex-shrink: 0; opacity: 0.8; }
     .title {
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        flex: 1; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
         font-weight: 500;
     }
-    .crit {
-        color: #f59e0b;
-        font-weight: 700;
-    }
+    .crit { color: #f59e0b; font-weight: 700; }
     .card-meta {
-        margin-top: 3px;
-        font-size: 8.5px;
-        display: flex;
-        gap: 6px;
-        opacity: 0.55;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
+        margin-top: 3px; font-size: 8.5px;
+        display: flex; gap: 6px; opacity: 0.55;
+        text-transform: uppercase; letter-spacing: 0.04em;
     }
     .uncertain { color: #fcd34d; }
+    .route { color: #93c5fd; font-weight: 700; }
     .wave-arrow {
-        align-self: center;
-        font-size: 18px;
-        opacity: 0.35;
-        padding: 0 4px;
+        align-self: center; font-size: 18px;
+        opacity: 0.35; padding: 0 4px;
     }
     .empty { margin: auto; opacity: 0.6; font-size: 12px; }
 </style>
