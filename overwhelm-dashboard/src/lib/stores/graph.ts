@@ -1,7 +1,7 @@
 import { writable, derived } from 'svelte/store';
 import type { PreparedGraph } from '../data/prepareGraphData';
 import type { GraphNode } from '../data/prepareGraphData';
-import { STATUS_FILLS, STATUS_TEXT, COMPLETED_STATUSES, resolveStatusAlias } from '../data/constants';
+import { STATUS_FILLS, STATUS_TEXT } from '../data/constants';
 
 export const graphData = writable<PreparedGraph | null>(null);
 // Pre-filter, post-prepareGraphData view of the graph. Views that build
@@ -18,9 +18,7 @@ export interface TaskNodeUpdates {
     type?: string;
 }
 
-// Defence-in-depth: keep legacy aliases here so an un-normalised mid-flight
-// edit (e.g. user types 'completed' or 'archived') still fades the node.
-const FADED_STATUSES = new Set(['done', 'completed', 'cancelled', 'archived']);
+const FADED_STATUSES = new Set(['done', 'cancelled']);
 
 function cloneNodeSnapshot(node: GraphNode) {
     const mutableNode = node as any;
@@ -47,9 +45,6 @@ function restoreNodeSnapshot(node: GraphNode, snapshot: Record<string, unknown>)
 
 export function applyTaskNodeUpdates(node: GraphNode, updates: TaskNodeUpdates) {
     const { refile, ...nodeUpdates } = updates;
-    if (nodeUpdates.status) {
-        nodeUpdates.status = resolveStatusAlias(nodeUpdates.status);
-    }
     Object.assign(node, nodeUpdates);
 
     if (refile !== undefined) {

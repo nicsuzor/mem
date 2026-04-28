@@ -124,7 +124,7 @@
         function leafWeight(d: any): number {
             switch (weightMode) {
                 case 'priority': {
-                    if (['done', 'completed', 'cancelled'].includes(d.status)) return 1;
+                    if (d.status === 'done' || d.status === 'cancelled') return 1;
                     if ((d.priority ?? 5) <= 1) return 3;
                     return 2;
                 }

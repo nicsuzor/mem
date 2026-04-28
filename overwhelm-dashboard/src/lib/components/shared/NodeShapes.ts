@@ -813,7 +813,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 }
 
 function renderWrappedTextInCircle(g: d3.Selection<SVGGElement, any, null, undefined>, r: number, rawLabel: string, status?: string) {
-    const isCompleted = ['done', 'completed', 'cancelled'].includes(status || '');
+    const isCompleted = ['done', 'cancelled'].includes(status || '');
     const innerW = r * 1.4;
     const innerH = r * 1.5;
 
@@ -981,7 +981,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         }
     } else {
         // Leaf task circle — fill=status color, stroke=priority color
-        const isCompleted = ['done', 'completed', 'cancelled'].includes(d.status);
+        const isCompleted = ['done', 'cancelled'].includes(d.status);
         const baseStrokeW = isCompleted
             ? Math.max(0.3, Math.min(1, r * 0.01))
             : d.priority <= 1

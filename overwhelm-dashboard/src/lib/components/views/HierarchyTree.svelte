@@ -91,21 +91,24 @@
 
     function statusIcon(status: string): string {
         switch (status) {
-            case 'done': case 'completed': return '✓';
+            case 'done': return '✓';
+            case 'cancelled': return '✗';
             case 'blocked': return '✗';
-            case 'active': case 'in_progress': return '●';
-            case 'waiting': return '◷';
-            case 'decomposing': return '⊞';
+            case 'in_progress': return '●';
+            case 'review': return '◷';
+            case 'merge_ready': return '⊞';
             default: return '○';
         }
     }
 
     function statusColor(status: string): string {
         switch (status) {
-            case 'done': case 'completed': return 'text-green-500/60';
+            case 'done': return 'text-green-500/60';
+            case 'cancelled': return 'text-primary/30';
             case 'blocked': return 'text-red-400';
-            case 'active': case 'in_progress': return 'text-blue-400';
-            case 'waiting': return 'text-yellow-400';
+            case 'in_progress': return 'text-blue-400';
+            case 'review': return 'text-yellow-400';
+            case 'merge_ready': return 'text-amber-400';
             default: return 'text-primary/40';
         }
     }
@@ -213,7 +216,7 @@
                     <div class="child-row">
                         <span class="tree-connector">{isLast ? '└' : '├'}─</span>
                         <span class="status-icon {statusColor(child.status)}">{statusIcon(child.status)}</span>
-                        <button class="child-label" class:completed={['done', 'completed'].includes(child.status)} onclick={() => select(child.id)}>{child.label}</button>
+                        <button class="child-label" class:completed={child.status === 'done' || child.status === 'cancelled'} onclick={() => select(child.id)}>{child.label}</button>
                         <span class="child-priority">P{child.priority ?? '?'}</span>
                     </div>
                     {#if preview.length > 0}

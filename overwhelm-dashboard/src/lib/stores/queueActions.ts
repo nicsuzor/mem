@@ -9,11 +9,10 @@ import { writable, get } from 'svelte/store';
 import { updateGraphTaskNode } from './graph';
 import { describeTaskMutation, taskOperations } from './taskOperations';
 
-export type QuickStatus = 'done' | 'archived' | 'cancelled';
+export type QuickStatus = 'done' | 'cancelled';
 
 export const QUICK_ACTION_META: Record<QuickStatus, { label: string; icon: string; tone: 'success' | 'neutral' | 'danger' }> = {
     done: { label: 'Done', icon: 'check_circle', tone: 'success' },
-    archived: { label: 'Archive', icon: 'inventory_2', tone: 'neutral' },
     cancelled: { label: 'Cancel', icon: 'cancel', tone: 'danger' },
 };
 

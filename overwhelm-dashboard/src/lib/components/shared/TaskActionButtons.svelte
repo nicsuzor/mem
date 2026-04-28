@@ -10,7 +10,7 @@
         size?: 'sm' | 'md';
     };
 
-    let { taskId, actions = ['done', 'archived', 'cancelled'], hoverReveal = true, size = 'sm' }: Props = $props();
+    let { taskId, actions = ['done', 'cancelled'], hoverReveal = true, size = 'sm' }: Props = $props();
 
     let busy = $state<QuickStatus | null>(null);
 

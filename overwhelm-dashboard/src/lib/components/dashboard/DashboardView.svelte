@@ -47,10 +47,8 @@
             if (projEpics.length > 0) {
                 result.meta[p].epics = projEpics.map((e: any) => {
                     const children = gd.nodes.filter((n: any) => n.parent === e.id);
-                    // Defensive: server-side projectData may bypass mem's alias normalisation,
-                    // so accept the legacy 'completed' alias alongside canonical 'done'.
-                    const done = children.filter((n: any) => n.status === 'done' || n.status === 'completed').length;
-                    const outstandingChildren = children.filter((n: any) => !COMPLETED_STATUSES.has(n.status) && n.status !== 'completed');
+                    const done = children.filter((n: any) => n.status === 'done').length;
+                    const outstandingChildren = children.filter((n: any) => !COMPLETED_STATUSES.has(n.status));
                     const hasPriorityTask = outstandingChildren.some((n: any) => n.priority === 0 || n.priority === 1);
                     return { id: e.id, title: e.label, progress: { completed: done, total: children.length }, hasPriorityTask };
                 });
@@ -58,7 +56,7 @@
 
             if (!result.accomplishments[p] || result.accomplishments[p].length === 0) {
                 const doneTasks = gd.nodes
-                    .filter((n: any) => n.type === 'task' && n.project === p && ['done', 'completed'].includes(n.status))
+                    .filter((n: any) => n.type === 'task' && n.project === p && n.status === 'done')
                     .sort((a: any, b: any) => (b.modified || 0) - (a.modified || 0))
                     .slice(0, 5);
                 if (doneTasks.length > 0) {

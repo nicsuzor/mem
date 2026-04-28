@@ -24,7 +24,7 @@ export const filters = writable({
 
     minCriticality: 0 as number,
     hiddenProjects: [] as string[],
-    selectedStatuses: ['inbox', 'ready', 'todo', 'in_progress', 'active', 'review', 'waiting', 'decomposing', 'dormant', 'blocked'] as string[],
+    selectedStatuses: ['inbox', 'ready', 'queued', 'in_progress', 'merge_ready', 'review', 'blocked', 'paused', 'someday'] as string[],
 
     edgeDependencies: 'half' as VisibilityState,
     edgeReferences: 'hidden' as VisibilityState,

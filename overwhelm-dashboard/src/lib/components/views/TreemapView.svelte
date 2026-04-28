@@ -106,7 +106,7 @@
             if (d._isHierarchyParent) return 0;
             switch (weightMode) {
                 case 'priority': {
-                    if (d.status === 'done' || d.status === 'completed') return 1;
+                    if (d.status === 'done') return 1;
                     if (d.priority <= 1) return 3;
                     return 2;
                 }

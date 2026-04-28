@@ -8,7 +8,6 @@ import {
     COMPLETED_STATUSES,
     TYPE_SHAPE,
     TYPE_BADGE,
-    resolveStatusAlias,
 } from './constants';
 import { projectBorderColor } from './projectUtils';
 
@@ -302,17 +301,7 @@ export function prepareGraphData(
     for (const node of rawNodes) {
         const nid = node.id;
         const nodeType = node.node_type || "";
-        const rawStatus = node.status || "inbox";
-        const status = resolveStatusAlias(rawStatus.toLowerCase());
-        
-        // --- DIAGNOSTIC LOGGING ---
-        if (status === "in_progress" || rawStatus.toLowerCase() === "ready" || rawStatus.toLowerCase() === "active") {
-            console.log(`[Diagnostic] Node ${nid}: rawStatus="${rawStatus}", resolvedStatus="${status}"`);
-            if (status === "in_progress" && (rawStatus.toLowerCase() === "ready" || rawStatus.toLowerCase() === "active")) {
-                console.error(`[Diagnostic] CRITICAL MISMATCH: Node ${nid} was "${rawStatus}" but resolved to "in_progress"!`);
-            }
-        }
-        // --------------------------
+        const status = (node.status || "inbox").toLowerCase();
 
         const priority = typeof node.priority === 'number' ? node.priority : 2;
         const dw = node.downstream_weight || 0;

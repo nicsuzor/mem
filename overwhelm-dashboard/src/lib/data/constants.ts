@@ -156,34 +156,6 @@ export const INCOMPLETE_STATUSES = new Set<string>([
 // Terminal set — `done` and `cancelled` only.
 export const COMPLETED_STATUSES = new Set<string>(["done", "cancelled"]);
 
-// Mirrors src/graph.rs::resolve_status_alias. Normalise legacy/alternate
-// status spellings to the canonical 11. Anything unrecognised passes through
-// so the linter / dashboard can surface it. Defence-in-depth against data
-// paths that bypass mem's normalisation (e.g. server-side projectData,
-// stale .graph.json on disk, raw frontmatter accessed via _raw).
-const STATUS_ALIASES: Record<string, string> = {
-    active: "queued",
-    todo: "inbox", open: "inbox", draft: "inbox",
-    "early-scaffold": "inbox", planning: "inbox", seed: "inbox",
-    "in-progress": "in_progress", "in-preparation": "in_progress",
-    partial: "in_progress", decomposing: "in_progress",
-    in_review: "review", "in-review": "review", "ready-for-review": "review",
-    ISSUES_FOUND: "review", "conditionally-accepted": "review",
-    "revise-and-resubmit": "review", waiting: "review", invited: "review",
-    "awaiting-approval": "review", submitted: "review",
-    "merge-ready": "merge_ready",
-    complete: "done", completed: "done", closed: "done",
-    archived: "done", resolved: "done", "published-spir": "done",
-    historical: "done", accepted: "done",
-    dead: "cancelled",
-    deferred: "paused", dormant: "paused",
-};
-
-export function resolveStatusAlias(status: string | null | undefined): string {
-    if (!status) return "inbox";
-    return STATUS_ALIASES[status] ?? status;
-}
-
 // Self-consistency guard: legend palette and order must agree.
 // Throws at module load if the keys ever diverge.
 if (STATUS_ORDER.length !== Object.keys(STATUS_FILLS).length

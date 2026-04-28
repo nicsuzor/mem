@@ -32,7 +32,7 @@
             {$selectedTaskIds.size} selected
         </span>
         <span class="h-4 w-px bg-primary/30"></span>
-        {#each ['done', 'archived', 'cancelled'] as status (status)}
+        {#each ['done', 'cancelled'] as status (status)}
             {@const meta = QUICK_ACTION_META[status as QuickStatus]}
             <button
                 type="button"
