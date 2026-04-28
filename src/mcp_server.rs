@@ -3527,7 +3527,7 @@ impl PkbSearchServer {
     }
 
     fn handle_get_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let stats = crate::telemetry::get_stats(&self.pkb_root);
+        let stats = crate::telemetry::get_stats();
         let json = serde_json::to_string_pretty(&stats).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -3961,7 +3961,6 @@ impl ServerHandler for PkbSearchServer {
         };
 
         crate::telemetry::record_call(
-            &self.pkb_root,
             &effective_name,
             response_bytes,
             latency,
