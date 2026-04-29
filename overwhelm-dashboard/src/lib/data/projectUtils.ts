@@ -64,7 +64,10 @@ export function buildProjectRollupMap(nodes: GraphNode[]): Map<string, string> {
     // Build parent lookup
     const nodeById = new Map(nodes.map(n => [n.id, n]));
 
-    // Find the top-level project for each node
+    // Walk to the root of the parent chain and return the topmost ancestor's
+    // project field. With 'project' type nodes filtered out, this stops at
+    // whichever node sits closest to the root and still carries a project tag
+    // (typically a goal or top-level epic).
     function findMajorProject(node: GraphNode): string | null {
         let topProject: string | null = null;
         let cur: GraphNode | undefined = node;
@@ -72,25 +75,13 @@ export function buildProjectRollupMap(nodes: GraphNode[]): Map<string, string> {
         while (cur) {
             if (visited.has(cur.id)) break;
             visited.add(cur.id);
-            if (cur.type === 'project' || cur.type === 'goal') {
-                topProject = cur.project || cur.label || cur.id;
-            }
+            if (cur.project) topProject = cur.project;
             cur = cur.parent ? nodeById.get(cur.parent) : undefined;
         }
         return topProject;
     }
 
-    // Collect all unique project field values and their major project
-    const projectNodes = nodes.filter(n => n.type === 'project' || n.type === 'goal');
-    for (const pn of projectNodes) {
-        const major = findMajorProject(pn);
-        const projName = pn.project || pn.label || pn.id;
-        if (major && major !== projName) {
-            rollup.set(projName, major);
-        }
-    }
-
-    // Also map sub-project and epic names
+    // Map every distinct project field value to its major project
     for (const n of nodes) {
         if (!n.project) continue;
         if (rollup.has(n.project)) continue;

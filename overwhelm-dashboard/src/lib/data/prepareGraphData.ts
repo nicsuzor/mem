@@ -173,6 +173,34 @@ export function prepareGraphData(
         rawNodes = rawNodes.filter(n => !options.hiddenProjects!.includes(n.project || ""));
     }
 
+    // Drop 'project' type nodes from the graph. Children get re-parented to the
+    // project's parent (walking the chain so project-under-project collapses cleanly).
+    const projectTypeIds = new Set(
+        rawNodes.filter(n => (n.node_type || '').toLowerCase() === 'project').map(n => n.id)
+    );
+    if (projectTypeIds.size > 0) {
+        const parentOf = new Map<string, string | null>();
+        rawNodes.forEach(n => parentOf.set(n.id, n.parent || null));
+
+        const resolveAncestor = (parentId: string | null): string | null => {
+            const seen = new Set<string>();
+            let cur = parentId;
+            while (cur && projectTypeIds.has(cur)) {
+                if (seen.has(cur)) return null;
+                seen.add(cur);
+                cur = parentOf.get(cur) ?? null;
+            }
+            return cur;
+        };
+
+        rawNodes.forEach(n => {
+            if (n.parent && projectTypeIds.has(n.parent)) {
+                n.parent = resolveAncestor(n.parent);
+            }
+        });
+        rawNodes = rawNodes.filter(n => !projectTypeIds.has(n.id));
+    }
+
     // Prune edges referencing filtered-out nodes
     const filteredNodeIds = new Set(rawNodes.map(n => n.id));
     rawEdges = rawEdges.filter(e => filteredNodeIds.has(e.source) && filteredNodeIds.has(e.target));
