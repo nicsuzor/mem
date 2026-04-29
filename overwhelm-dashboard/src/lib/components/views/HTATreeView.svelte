@@ -15,6 +15,11 @@
         label: string;
         node: GraphNode | null;
         children?: TreeDatum[];
+        /** Pre-computed full-subtree descendant count, set once on the
+         *  original tree so it survives the visibleHierarchy() projection
+         *  used for collapsed nodes. Without this, a collapsed node has
+         *  `children = []` and the descendant count would always be 0. */
+        descendantCount?: number;
     }
 
     $: targets = pickAllTargets($graphData);
@@ -105,6 +110,15 @@
                 queue.push(child);
             }
         }
+        // Annotate every node with its full-subtree descendant count, so
+        // collapsed nodes can show a "+N hidden" badge that survives the
+        // visibleHierarchy() pruning step.
+        const annotateCount = (d: TreeDatum): number => {
+            const c = (d.children || []).reduce((acc, k) => acc + 1 + annotateCount(k), 0);
+            d.descendantCount = c;
+            return c;
+        };
+        annotateCount(root);
         return root;
     }
 
@@ -139,12 +153,6 @@
         }
         return walk(root);
     }
-    function countDescendants(d: TreeDatum): number {
-        let c = 0;
-        for (const k of d.children || []) c += 1 + countDescendants(k);
-        return c;
-    }
-
     function buildRender(root: TreeDatum, layout: 'vertical' | 'radial'): Render {
         const visible = visibleHierarchy(root, collapsed);
         const h = d3.hierarchy<TreeDatum>(visible);
@@ -168,7 +176,7 @@
                     y: cy + radius * Math.sin(angle - Math.PI / 2),
                     depth: n.depth,
                     collapsed: collapsed.has(n.data.id),
-                    hidden: collapsed.has(n.data.id) ? countDescendants(original) : 0,
+                    hidden: collapsed.has(n.data.id) ? (original.descendantCount ?? 0) : 0,
                 };
             });
             const links: PositionedLink[] = h.links().map(l => {
@@ -202,7 +210,7 @@
                     y: (n as any).x + offsetX,
                     depth: n.depth,
                     collapsed: collapsed.has(n.data.id),
-                    hidden: collapsed.has(n.data.id) ? countDescendants(original) : 0,
+                    hidden: collapsed.has(n.data.id) ? (original.descendantCount ?? 0) : 0,
                 };
             });
             const links: PositionedLink[] = h.links().map(l => ({
@@ -266,9 +274,15 @@
         </div>
         <div class="canvas-wrap">
             <svg width={render.width} height={render.height}>
+                <defs>
+                    <marker id="hta-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+                        <path d="M0,0 L7,3.5 L0,7 z" fill="#64748b" />
+                    </marker>
+                </defs>
                 {#each render.links as l}
                     <path d={`M ${l.x1} ${l.y1} C ${(l.x1 + l.x2) / 2} ${l.y1}, ${(l.x1 + l.x2) / 2} ${l.y2}, ${l.x2} ${l.y2}`}
-                          fill="none" stroke="#475569" stroke-width="1.2" opacity="0.55" />
+                          fill="none" stroke="#475569" stroke-width="1.2" opacity="0.55"
+                          marker-end="url(#hta-arrow)" />
                 {/each}
 
                 {#each render.nodes as p}

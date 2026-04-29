@@ -124,10 +124,10 @@ export function extractSubgraph(graph: PreparedGraph, targetId: string): Extract
         const dist = distanceFromTarget.get(cur)!;
         const out = incoming.get(cur) || [];
         for (const e of out) {
-            const next =
-                e.type === 'parent'
-                    ? endpointId(e.target) // child of cur
-                    : endpointId(e.target); // dependency of cur
+            // For both parent and depends_on edges, target endpoint is the
+            // node we want to walk into next (child for parent-down, prereq
+            // for depends_on).
+            const next = endpointId(e.target);
             if (visited.has(next)) continue;
             visited.add(next);
             distanceFromTarget.set(next, dist + 1);

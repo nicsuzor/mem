@@ -204,29 +204,29 @@
                     {/if}
                 {/each}
 
-                <!-- Cells -->
-                {#each matrix.order as rowNode, r}
-                    {#each matrix.order as colNode, c}
-                        {@const cell = matrix.cells.get(`${r},${c}`)}
-                        <rect class="cell"
-                              class:hover={hovered && hovered.row === r && hovered.col === c}
-                              role={cell ? 'button' : undefined}
-                              tabindex={cell ? 0 : undefined}
-                              x={labelW + c * cellSize}
-                              y={labelH + r * cellSize}
-                              width={cellSize - 1}
-                              height={cellSize - 1}
-                              fill={cellFill(cell)}
-                              opacity={cell ? (isCompleted(rowNode) || isCompleted(colNode) ? 0.35 : 0.9) : 0}
-                              onmouseenter={() => cell && (hovered = { row: r, col: c, type: cell.type })}
-                              onmouseleave={() => hovered = null}
-                              onclick={(e) => { e.stopPropagation(); if (cell) toggleSelection(rowNode.id); }}
-                              onkeydown={(e) => { if (cell && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleSelection(rowNode.id); } }}>
-                            {#if cell}
-                                <title>{rowNode.label} {cell.type === 'parent' ? '⊃ contains' : '→ depends on'} {colNode.label}</title>
-                            {/if}
-                        </rect>
-                    {/each}
+                <!-- Cells: only render where a real edge exists. With N nodes
+                     and dense N×N rendering an empty matrix would emit
+                     N² SVG elements (200k+ at our scale), so we iterate
+                     the populated cell map directly instead. -->
+                {#each [...matrix.cells.entries()] as [key, cell] (key)}
+                    {@const [r, c] = key.split(',').map(Number)}
+                    {@const rowNode = matrix.order[r]}
+                    {@const colNode = matrix.order[c]}
+                    <rect class="cell"
+                          class:hover={hovered && hovered.row === r && hovered.col === c}
+                          role="button" tabindex="0"
+                          x={labelW + c * cellSize}
+                          y={labelH + r * cellSize}
+                          width={cellSize - 1}
+                          height={cellSize - 1}
+                          fill={cellFill(cell)}
+                          opacity={isCompleted(rowNode) || isCompleted(colNode) ? 0.35 : 0.9}
+                          onmouseenter={() => (hovered = { row: r, col: c, type: cell.type })}
+                          onmouseleave={() => hovered = null}
+                          onclick={(e) => { e.stopPropagation(); toggleSelection(rowNode.id); }}
+                          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelection(rowNode.id); } }}>
+                        <title>{rowNode.label} {cell.type === 'parent' ? '⊃ contains' : '→ depends on'} {colNode.label}</title>
+                    </rect>
                 {/each}
             </svg>
             {#if hovered}

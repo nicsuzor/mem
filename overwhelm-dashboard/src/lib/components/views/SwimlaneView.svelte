@@ -42,7 +42,7 @@
     }
     interface Layout {
         lanes: LaneLayout[];
-        edges: { x1: number; y1: number; x2: number; y2: number; cross: boolean; type: string }[];
+        edges: { x1: number; y1: number; x2: number; y2: number; type: string }[];
         width: number; height: number;
         sharedBridges: { x1: number; y1: number; x2: number; y2: number }[];
     }
@@ -161,14 +161,12 @@
             // Only draw edges within the same lane to keep visual clarity;
             // cross-lane edges are surfaced via the "+N targets" badges
             // instead of spaghetti lines.
-            const cross = a.lane !== b.lane;
-            if (cross) continue;
+            if (a.lane !== b.lane) continue;
             drawEdges.push({
                 x1: a.x + NODE_W,
                 y1: a.y + NODE_H / 2,
                 x2: b.x,
                 y2: b.y + NODE_H / 2,
-                cross,
                 type: e.type,
             });
         }
