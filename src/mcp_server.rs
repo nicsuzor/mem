@@ -1309,15 +1309,14 @@ impl PkbSearchServer {
             .contributes_to
             .iter()
             .map(|c| {
-                let mut res = serde_json::json!({
-                    "to": c.to,
-                    "stated_weight": c.stated_weight,
-                    "justification": c.justification,
-                });
-                if let Some(n) = graph.get_node(&c.to) {
+                let mut res = serde_json::to_value(c).unwrap_or_else(|_| serde_json::json!({}));
+                let target_id = c.resolved_to.as_deref().unwrap_or(&c.to);
+                if let Some(n) = graph.resolve(target_id) {
                     if let Some(obj) = res.as_object_mut() {
                         obj.insert("title".to_string(), serde_json::json!(n.label));
-                        obj.insert("status".to_string(), serde_json::json!(n.status));
+                        if let Some(ref s) = n.status {
+                            obj.insert("status".to_string(), serde_json::json!(s));
+                        }
                     }
                 }
                 res
