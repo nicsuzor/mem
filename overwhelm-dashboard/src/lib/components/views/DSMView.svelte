@@ -103,7 +103,13 @@
 
     $: matrix = multi ? buildMatrix(multi, depth) : null;
 
-    $: cellSize = matrix ? Math.max(6, Math.min(22, Math.floor(720 / Math.max(1, matrix.size)))) : 12;
+    // Cell size: when there are many nodes we still want each cell clickable.
+    // Floor at 9px (clickable) and cap at 22px. Labels become noisy when the
+    // cell is smaller than the label's natural line height — we hide non-target
+    // labels below that threshold and only show targets + every Nth tick.
+    $: cellSize = matrix ? Math.max(9, Math.min(22, Math.floor(900 / Math.max(1, matrix.size)))) : 12;
+    $: labelStride = cellSize >= 12 ? 1 : Math.ceil(12 / cellSize);
+    $: showAllLabels = cellSize >= 12;
     const labelW = 240;
     const labelH = 240;
 
@@ -165,31 +171,37 @@
                       y2={labelH + matrix.size * cellSize}
                       stroke="rgba(148,163,184,0.3)" stroke-dasharray="3,3" />
 
-                <!-- Row labels -->
+                <!-- Row labels: always show targets, others only if cells are big enough or every Nth -->
                 {#each matrix.order as n, i}
-                    <text class="row-label" class:target-row={isTarget(n.id)}
-                          role="button" tabindex="0"
-                          aria-label={`Row: ${n.label}`}
-                          x={labelW - 6} y={labelH + i * cellSize + cellSize / 2 + 3}
-                          onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }}
-                          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelection(n.id); } }}>
-                        <title>{n.label} — {n.type} · P{n.priority ?? '?'} · {n.status}</title>
-                        {(isTarget(n.id) ? '◎ ' : '') + (n.label.length > 30 ? n.label.slice(0, 29) + '…' : n.label)}
-                    </text>
-                {/each}
-
-                <!-- Column labels -->
-                {#each matrix.order as n, i}
-                    <g transform={`translate(${labelW + i * cellSize + cellSize / 2}, ${labelH - 6}) rotate(-55)`}>
-                        <text class="col-label" class:target-row={isTarget(n.id)}
+                    {@const tgt = isTarget(n.id)}
+                    {#if tgt || showAllLabels || i % labelStride === 0}
+                        <text class="row-label" class:target-row={tgt}
                               role="button" tabindex="0"
-                              aria-label={`Column: ${n.label}`}
+                              aria-label={`Row: ${n.label}`}
+                              x={labelW - 6} y={labelH + i * cellSize + cellSize / 2 + 3}
                               onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }}
                               onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelection(n.id); } }}>
                             <title>{n.label} — {n.type} · P{n.priority ?? '?'} · {n.status}</title>
-                            {(isTarget(n.id) ? '◎ ' : '') + (n.label.length > 30 ? n.label.slice(0, 29) + '…' : n.label)}
+                            {(tgt ? '◎ ' : '') + (n.label.length > 30 ? n.label.slice(0, 29) + '…' : n.label)}
                         </text>
-                    </g>
+                    {/if}
+                {/each}
+
+                <!-- Column labels: same density rule -->
+                {#each matrix.order as n, i}
+                    {@const tgt = isTarget(n.id)}
+                    {#if tgt || showAllLabels || i % labelStride === 0}
+                        <g transform={`translate(${labelW + i * cellSize + cellSize / 2}, ${labelH - 6}) rotate(-55)`}>
+                            <text class="col-label" class:target-row={tgt}
+                                  role="button" tabindex="0"
+                                  aria-label={`Column: ${n.label}`}
+                                  onclick={(e) => { e.stopPropagation(); toggleSelection(n.id); }}
+                                  onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelection(n.id); } }}>
+                                <title>{n.label} — {n.type} · P{n.priority ?? '?'} · {n.status}</title>
+                                {(tgt ? '◎ ' : '') + (n.label.length > 30 ? n.label.slice(0, 29) + '…' : n.label)}
+                            </text>
+                        </g>
+                    {/if}
                 {/each}
 
                 <!-- Cells -->

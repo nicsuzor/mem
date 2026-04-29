@@ -30,6 +30,8 @@
 
     function buildTree(multi: NonNullable<ReturnType<typeof extractMultiTargetSubgraph>>): TreeDatum {
         const nodeById = new Map(multi.nodes.map(n => [n.id, n]));
+
+        // Direct prereq map (depends_on + parent-down) per node
         const prereqsOf = new Map<string, string[]>();
         for (const n of multi.nodes) prereqsOf.set(n.id, []);
         for (const e of multi.edges) {
@@ -37,6 +39,21 @@
             const tid = endpointId(e.target);
             if (e.type === 'depends_on' || e.type === 'soft_depends_on' || e.type === 'parent') {
                 prereqsOf.get(sid)?.push(tid);
+            }
+        }
+
+        // For each target, also gather its "contributing" set: any node whose
+        // route contains this target AND whose provenance is sibling/ancestor.
+        // These nodes are not formally on a depends_on chain from the target,
+        // but they are the work the target's project owns. Group them under
+        // the target so the tree actually shows what's being worked on.
+        const contributingByTarget = new Map<string, string[]>();
+        for (const t of multi.targets) contributingByTarget.set(t.id, []);
+        for (const [nid, ts] of multi.routes) {
+            const prov = multi.provenance.get(nid);
+            if (prov !== 'sibling' && prov !== 'ancestor') continue;
+            for (const tid of ts) {
+                contributingByTarget.get(tid)?.push(nid);
             }
         }
 
@@ -58,18 +75,27 @@
             queue.push(td);
         }
 
+        const sortBy = (a: string, b: string) => {
+            const na = nodeById.get(a)!;
+            const nb = nodeById.get(b)!;
+            const ca = isCompleted(na) ? 1 : 0;
+            const cb = isCompleted(nb) ? 1 : 0;
+            if (ca !== cb) return ca - cb;
+            return (nb.criticality || 0) - (na.criticality || 0)
+                || (na.priority ?? 4) - (nb.priority ?? 4)
+                || na.label.localeCompare(nb.label);
+        };
+
         while (queue.length > 0) {
             const cur = queue.shift()!;
-            const prereqs = prereqsOf.get(cur.id) || [];
-            prereqs.sort((a, b) => {
-                const na = nodeById.get(a)!;
-                const nb = nodeById.get(b)!;
-                const ca = isCompleted(na) ? 1 : 0;
-                const cb = isCompleted(nb) ? 1 : 0;
-                if (ca !== cb) return ca - cb;
-                return (nb.criticality || 0) - (na.criticality || 0);
-            });
-            for (const pid of prereqs) {
+
+            // Build the child set: strict prereqs PLUS contributing nodes (only
+            // for targets — they're the only ones with a populated map).
+            const candidates = new Set<string>(prereqsOf.get(cur.id) || []);
+            for (const cid of contributingByTarget.get(cur.id) || []) candidates.add(cid);
+
+            const ordered = [...candidates].sort(sortBy);
+            for (const pid of ordered) {
                 if (placed.has(pid)) continue;
                 placed.add(pid);
                 const pnode = nodeById.get(pid);
