@@ -208,7 +208,10 @@
         const edgeVisibilityFor = (edge: GraphEdge) => {
             if (edge.type === 'parent') return $filters.edgeParent;
             if (edge.type === 'depends_on') return $filters.edgeDependencies;
-            if (edge.type === 'ref' || edge.type === 'soft_depends_on') return $filters.edgeReferences;
+            if (edge.type === 'soft_depends_on') return $filters.edgeSoftDependencies;
+            if (edge.type === 'contributes_to') return $filters.edgeContributes;
+            if (edge.type === 'similar_to') return $filters.edgeSimilar;
+            if (edge.type === 'ref') return $filters.edgeReferences;
             return 'bright';
         };
 

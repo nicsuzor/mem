@@ -46,7 +46,7 @@ export interface MultiTargetSubgraph {
     provenance: Map<string, 'target' | 'prereq' | 'ancestor' | 'sibling'>;
 }
 
-const PREREQ_EDGE_TYPES = new Set(['depends_on', 'soft_depends_on', 'parent']);
+const PREREQ_EDGE_TYPES = new Set(['depends_on', 'soft_depends_on', 'parent', 'contributes_to']);
 
 function endpointId(endpoint: string | GraphNode): string {
     return typeof endpoint === 'object' ? endpoint.id : endpoint;
@@ -101,7 +101,8 @@ export function extractSubgraph(graph: PreparedGraph, targetId: string): Extract
         //                 -> child is a prereq for parent (must complete to bubble up)
         // In both cases, we want to walk from a node to its prereqs.
         // So we index by the node that "needs" something else.
-        if (e.type === 'depends_on' || e.type === 'soft_depends_on') {
+        if (e.type === 'depends_on' || e.type === 'soft_depends_on' || e.type === 'contributes_to') {
+            // sid depends on / contributes to tid -> tid is a prereq for sid
             const sid = endpointId(e.source);
             const arr = incoming.get(sid) || [];
             arr.push(e);

@@ -26,8 +26,11 @@ export const filters = writable({
     hiddenProjects: [] as string[],
     selectedStatuses: ['inbox', 'ready', 'queued', 'in_progress', 'merge_ready', 'review', 'blocked', 'paused', 'someday'] as string[],
 
-    edgeDependencies: 'half' as VisibilityState,
-    edgeReferences: 'hidden' as VisibilityState,
     edgeParent: 'bright' as VisibilityState,
+    edgeDependencies: 'bright' as VisibilityState,        // depends_on (hard)
+    edgeSoftDependencies: 'bright' as VisibilityState,    // soft_depends_on
+    edgeContributes: 'bright' as VisibilityState,         // contributes_to
+    edgeSimilar: 'hidden' as VisibilityState,             // similar_to (noisy by default)
+    edgeReferences: 'hidden' as VisibilityState,          // link / wikilink
     edgeIntraGroup: 'bright' as VisibilityState,
 });

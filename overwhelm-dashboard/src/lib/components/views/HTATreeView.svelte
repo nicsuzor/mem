@@ -20,6 +20,8 @@
          *  used for collapsed nodes. Without this, a collapsed node has
          *  `children = []` and the descendant count would always be 0. */
         descendantCount?: number;
+        /** Edge type connecting this node to its parent in the rendered tree. */
+        edgeType?: string;
     }
 
     $: targets = pickAllTargets($graphData);
@@ -38,12 +40,18 @@
 
         // Direct prereq map (depends_on + parent-down) per node
         const prereqsOf = new Map<string, string[]>();
+        // edgeTypeBetween[`${sid}-${tid}`] = type, used so the rendered link can
+        // be coloured by the actual edge type rather than collapsing them to "tree".
+        const edgeTypeBetween = new Map<string, string>();
         for (const n of multi.nodes) prereqsOf.set(n.id, []);
         for (const e of multi.edges) {
             const sid = endpointId(e.source);
             const tid = endpointId(e.target);
-            if (e.type === 'depends_on' || e.type === 'soft_depends_on' || e.type === 'parent') {
+            if (e.type === 'depends_on' || e.type === 'soft_depends_on' || e.type === 'parent' || e.type === 'contributes_to') {
                 prereqsOf.get(sid)?.push(tid);
+                // First edge type wins (depends_on > soft > contributes > parent prefer).
+                const key = `${sid}-${tid}`;
+                if (!edgeTypeBetween.has(key)) edgeTypeBetween.set(key, e.type);
             }
         }
 
@@ -105,7 +113,8 @@
                 placed.add(pid);
                 const pnode = nodeById.get(pid);
                 if (!pnode) continue;
-                const child: TreeDatum = { id: pid, label: pnode.label, node: pnode, children: [] };
+                const etype = edgeTypeBetween.get(`${cur.id}-${pid}`) || 'parent';
+                const child: TreeDatum = { id: pid, label: pnode.label, node: pnode, children: [], edgeType: etype };
                 cur.children!.push(child);
                 queue.push(child);
             }
@@ -143,7 +152,7 @@
         collapsed: boolean;
         hidden: number;
     }
-    interface PositionedLink { x1: number; y1: number; x2: number; y2: number; }
+    interface PositionedLink { x1: number; y1: number; x2: number; y2: number; type: string; sourceLabel: string; targetLabel: string; }
     interface Render { nodes: PositionedNode[]; links: PositionedLink[]; width: number; height: number; }
 
     function visibleHierarchy(root: TreeDatum, collapsed: Set<string>): TreeDatum {
@@ -187,6 +196,9 @@
                     y1: cy + sr * Math.sin(sa - Math.PI / 2),
                     x2: cx + tr * Math.cos(ta - Math.PI / 2),
                     y2: cy + tr * Math.sin(ta - Math.PI / 2),
+                    type: (l.target as any).data.edgeType || 'parent',
+                    sourceLabel: (l.source as any).data.label || '',
+                    targetLabel: (l.target as any).data.label || '',
                 };
             });
             return { nodes, links, width: viewW, height: viewH };
@@ -218,6 +230,9 @@
                 y1: (l.source as any).x + offsetX,
                 x2: (l.target as any).y + 30,
                 y2: (l.target as any).x + offsetX,
+                type: (l.target as any).data.edgeType || 'parent',
+                sourceLabel: (l.source as any).data.label || '',
+                targetLabel: (l.target as any).data.label || '',
             }));
             const totalH = (maxX - minX) + 80;
             const totalW = (h.height + 1) * dy + 240;
@@ -238,6 +253,28 @@
         return !!multi && multi.targets.some(t => t.id === d.id);
     }
     function isRoot(d: TreeDatum) { return d.id === '__root__'; }
+
+    function edgeColor(t: string): string {
+        if (t === 'depends_on') return '#ef4444';
+        if (t === 'soft_depends_on') return '#9ca3af';
+        if (t === 'contributes_to') return '#10b981';
+        if (t === 'similar_to') return '#c4b5fd';
+        if (t === 'parent') return '#475569';
+        return '#475569';
+    }
+    function edgeDash(t: string): string {
+        if (t === 'soft_depends_on') return '6,3';
+        if (t === 'similar_to') return '1,4';
+        return '';
+    }
+    function edgeRel(t: string): string {
+        if (t === 'depends_on') return 'depends on';
+        if (t === 'soft_depends_on') return 'soft-depends on';
+        if (t === 'contributes_to') return 'contributes to';
+        if (t === 'similar_to') return 'similar to';
+        if (t === 'parent') return 'contains';
+        return 'links to';
+    }
 </script>
 
 <div class="hta-root" data-component="hta-tree-view">
@@ -281,8 +318,14 @@
                 </defs>
                 {#each render.links as l}
                     <path d={`M ${l.x1} ${l.y1} C ${(l.x1 + l.x2) / 2} ${l.y1}, ${(l.x1 + l.x2) / 2} ${l.y2}, ${l.x2} ${l.y2}`}
-                          fill="none" stroke="#475569" stroke-width="1.2" opacity="0.55"
-                          marker-end="url(#hta-arrow)" />
+                          fill="none"
+                          stroke={edgeColor(l.type)}
+                          stroke-width={l.type === 'depends_on' ? 1.8 : l.type === 'similar_to' ? 0.9 : 1.2}
+                          stroke-dasharray={edgeDash(l.type)}
+                          opacity={l.type === 'similar_to' ? 0.4 : 0.55}
+                          marker-end="url(#hta-arrow)">
+                        <title>{l.sourceLabel} {edgeRel(l.type)} {l.targetLabel}</title>
+                    </path>
                 {/each}
 
                 {#each render.nodes as p}

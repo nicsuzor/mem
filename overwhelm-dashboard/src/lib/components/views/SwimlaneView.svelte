@@ -42,7 +42,7 @@
     }
     interface Layout {
         lanes: LaneLayout[];
-        edges: { x1: number; y1: number; x2: number; y2: number; type: string }[];
+        edges: { x1: number; y1: number; x2: number; y2: number; type: string; sourceLabel: string; targetLabel: string }[];
         width: number; height: number;
         sharedBridges: { x1: number; y1: number; x2: number; y2: number }[];
     }
@@ -168,6 +168,8 @@
                 x2: b.x,
                 y2: b.y + NODE_H / 2,
                 type: e.type,
+                sourceLabel: a.node.label,
+                targetLabel: b.node.label,
             });
         }
 
@@ -201,13 +203,22 @@
     {:else if layout}
         <div class="caption">
             <strong>Swimlane DAG</strong>
-            <span class="meta">· {multi.targets.length} lanes · {multi.nodes.length - multi.targets.length} contributing tasks · ●n badge = task serves N targets · dashed yellow = parent edge · solid grey = depends_on</span>
+            <span class="meta">· {multi.targets.length} lanes · {multi.nodes.length - multi.targets.length} contributing tasks · ●n badge = task serves N targets · yellow = parent · red = depends_on · gray dashed = soft · green = contributes_to</span>
         </div>
         <div class="canvas-wrap">
             <svg width={layout.width} height={layout.height} class="canvas">
                 <defs>
-                    <marker id="sw-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
-                        <path d="M0,0 L9,4.5 L0,9 z" fill="#94a3b8" />
+                    <marker id="sw-arrow-depends" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+                        <path d="M0,0 L9,4.5 L0,9 z" fill="#ef4444" />
+                    </marker>
+                    <marker id="sw-arrow-soft" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+                        <path d="M0,0 L9,4.5 L0,9 z" fill="#9ca3af" />
+                    </marker>
+                    <marker id="sw-arrow-contributes" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+                        <path d="M0,0 L9,4.5 L0,9 z" fill="#10b981" />
+                    </marker>
+                    <marker id="sw-arrow-similar" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+                        <path d="M0,0 L9,4.5 L0,9 z" fill="#c4b5fd" />
                     </marker>
                     <marker id="sw-arrow-parent" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
                         <path d="M0,0 L9,4.5 L0,9 z" fill="#facc15" />
@@ -229,12 +240,22 @@
 
                 {#each layout.edges as edge}
                     {@const dx = (edge.x2 - edge.x1) / 2}
+                    {@const marker = edge.type === 'parent' ? 'sw-arrow-parent'
+                        : edge.type === 'soft_depends_on' ? 'sw-arrow-soft'
+                        : edge.type === 'contributes_to' ? 'sw-arrow-contributes'
+                        : edge.type === 'similar_to' ? 'sw-arrow-similar'
+                        : 'sw-arrow-depends'}
                     <path
                         class="edge"
                         class:parent={edge.type === 'parent'}
+                        class:soft={edge.type === 'soft_depends_on'}
+                        class:contributes={edge.type === 'contributes_to'}
+                        class:similar={edge.type === 'similar_to'}
                         d={`M ${edge.x1} ${edge.y1} C ${edge.x1 + dx} ${edge.y1}, ${edge.x2 - dx} ${edge.y2}, ${edge.x2} ${edge.y2}`}
-                        marker-end={edge.type === 'parent' ? 'url(#sw-arrow-parent)' : 'url(#sw-arrow)'}
-                    />
+                        marker-end={`url(#${marker})`}
+                    >
+                        <title>{edge.sourceLabel} {edge.type.replace(/_/g, ' ')} {edge.targetLabel}</title>
+                    </path>
                 {/each}
 
                 {#each layout.lanes as lane}
@@ -324,14 +345,31 @@
     }
     .edge {
         fill: none;
-        stroke: #94a3b8;
-        stroke-width: 1.4;
-        opacity: 0.55;
+        stroke: #ef4444;
+        stroke-width: 1.6;
+        opacity: 0.7;
     }
     .edge.parent {
         stroke: #facc15;
         opacity: 0.45;
         stroke-dasharray: 1,4;
+    }
+    .edge.soft {
+        stroke: #9ca3af;
+        stroke-dasharray: 6,3;
+        stroke-width: 1.2;
+        opacity: 0.55;
+    }
+    .edge.contributes {
+        stroke: #10b981;
+        stroke-width: 1.6;
+        opacity: 0.6;
+    }
+    .edge.similar {
+        stroke: #c4b5fd;
+        stroke-dasharray: 1,4;
+        stroke-width: 0.9;
+        opacity: 0.4;
     }
     .node { cursor: pointer; }
     .node:hover rect { filter: brightness(1.2); }

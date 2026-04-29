@@ -22,7 +22,7 @@
     let hovered: { row: number; col: number; type: string } | null = null;
 
     interface Cell {
-        type: 'depends_on' | 'soft_depends_on' | 'parent';
+        type: 'depends_on' | 'soft_depends_on' | 'parent' | 'contributes_to';
     }
 
     interface Block {
@@ -94,6 +94,7 @@
             let type: Cell['type'];
             if (e.type === 'depends_on') type = 'depends_on';
             else if (e.type === 'soft_depends_on') type = 'soft_depends_on';
+            else if (e.type === 'contributes_to') type = 'contributes_to';
             else type = 'parent';
             cells.set(`${row},${col}`, { type });
         }
@@ -116,8 +117,16 @@
     function cellFill(c: Cell | undefined): string {
         if (!c) return 'transparent';
         if (c.type === 'depends_on') return '#ef4444';
-        if (c.type === 'soft_depends_on') return '#b91c1c';
+        if (c.type === 'soft_depends_on') return '#9ca3af';
+        if (c.type === 'contributes_to') return '#10b981';
         return '#facc15';
+    }
+
+    function cellRel(t: Cell['type']): string {
+        if (t === 'parent') return '⊃ contains';
+        if (t === 'contributes_to') return '↗ contributes to';
+        if (t === 'soft_depends_on') return '⇢ soft depends on';
+        return '→ depends on';
     }
 
     function isTarget(id: string) {
@@ -140,7 +149,8 @@
         </div>
         <div class="legend">
             <span><span class="swatch" style="background: #ef4444"></span> hard depends_on</span>
-            <span><span class="swatch" style="background: #b91c1c"></span> soft depends_on</span>
+            <span><span class="swatch" style="background: #9ca3af"></span> soft depends_on</span>
+            <span><span class="swatch" style="background: #10b981"></span> contributes_to</span>
             <span><span class="swatch" style="background: #facc15"></span> parent / contains</span>
             <span class="hint">cells above the diagonal = backward edges (cycles or bypasses)</span>
         </div>
@@ -225,7 +235,7 @@
                           onmouseleave={() => hovered = null}
                           onclick={(e) => { e.stopPropagation(); toggleSelection(rowNode.id); }}
                           onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSelection(rowNode.id); } }}>
-                        <title>{rowNode.label} {cell.type === 'parent' ? '⊃ contains' : '→ depends on'} {colNode.label}</title>
+                        <title>{rowNode.label} {cellRel(cell.type)} {colNode.label}</title>
                     </rect>
                 {/each}
             </svg>
@@ -234,7 +244,7 @@
                 {@const c = matrix.order[hovered.col]}
                 <div class="tooltip">
                     <div><strong>{r.label}</strong></div>
-                    <div class="tip-arrow">{hovered.type === 'parent' ? '⊃ contains' : '→ depends on'}</div>
+                    <div class="tip-arrow">{cellRel(hovered.type as Cell['type'])}</div>
                     <div><strong>{c.label}</strong></div>
                 </div>
             {/if}

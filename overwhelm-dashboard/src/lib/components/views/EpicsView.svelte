@@ -72,6 +72,9 @@
             if (typeof l.source !== 'object' || typeof l.target !== 'object') return false;
             if (l.type === 'parent' && $filters.edgeParent === 'hidden') return false;
             if (l.type === 'depends_on' && $filters.edgeDependencies === 'hidden') return false;
+            if (l.type === 'soft_depends_on' && $filters.edgeSoftDependencies === 'hidden') return false;
+            if (l.type === 'contributes_to' && $filters.edgeContributes === 'hidden') return false;
+            if (l.type === 'similar_to' && $filters.edgeSimilar === 'hidden') return false;
             if (l.type === 'ref' && $filters.edgeReferences === 'hidden') return false;
             return true;
         }).map((l: any) => {
@@ -84,7 +87,10 @@
             } else if (l.type === 'depends_on') {
                 length = $viewSettings.colaLinkDistDependsOn;
                 weight = $viewSettings.colaLinkWeightDependsOn;
-            } else if (l.type === 'ref' || l.type === 'soft_depends_on') {
+            } else if (l.type === 'contributes_to') {
+                length = $viewSettings.colaLinkDistDependsOn;
+                weight = $viewSettings.colaLinkWeightDependsOn * 0.7;
+            } else if (l.type === 'ref' || l.type === 'soft_depends_on' || l.type === 'similar_to') {
                 length = $viewSettings.colaLinkDistRef;
                 weight = $viewSettings.colaLinkWeightRef;
             }
@@ -391,7 +397,7 @@
 
     $: {
         const sk = $graphStructureKey;
-        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}|${$viewSettings.colaHandleDisconnected}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaLinkDistIntraParent}|${$viewSettings.colaLinkWeightIntraParent}|${$viewSettings.colaLinkDistInterParent}|${$viewSettings.colaLinkWeightInterParent}|${$viewSettings.colaLinkDistDependsOn}|${$viewSettings.colaLinkWeightDependsOn}|${$viewSettings.colaLinkDistRef}|${$viewSettings.colaLinkWeightRef}|${$filters.edgeDependencies}|${$filters.edgeReferences}|${$filters.edgeParent}`;
+        const cp = `${$viewSettings.colaLinkLength}|${$viewSettings.colaConvergence}|${$viewSettings.colaHandleDisconnected}|${$viewSettings.colaGroupPadding}|${$viewSettings.colaLinkDistIntraParent}|${$viewSettings.colaLinkWeightIntraParent}|${$viewSettings.colaLinkDistInterParent}|${$viewSettings.colaLinkWeightInterParent}|${$viewSettings.colaLinkDistDependsOn}|${$viewSettings.colaLinkWeightDependsOn}|${$viewSettings.colaLinkDistRef}|${$viewSettings.colaLinkWeightRef}|${$filters.edgeDependencies}|${$filters.edgeReferences}|${$filters.edgeParent}|${$filters.edgeSoftDependencies}|${$filters.edgeContributes}|${$filters.edgeSimilar}`;
         if (containerGroup && $graphData && nodesLayer && hullLayer) {
             if (sk !== lastStructureKey) {
                 lastStructureKey = sk;
