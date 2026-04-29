@@ -14,6 +14,45 @@ async function readJson(path: string): Promise<any | null> {
     }
 }
 
+// A hash-like project value is what the session writer produces when it can't determine
+// the real project — typically a UUID fragment or git-worktree-name suffix gets stuffed
+// into the field. Pure hex 6+ chars catches those; real project names ("aops", "academicOps",
+// "gemini-02446f", "polecat-e2e-test-718304b2") all contain non-hex characters or separators.
+function isHashLikeProject(name: string | null | undefined): boolean {
+    if (!name) return false;
+    return /^[0-9a-f]{6,}$/i.test(name);
+}
+
+// Best-effort recovery of the real project for a session whose project field was clobbered
+// with a hash. Returns the canonical project name (preserving casing from the valid set) or null.
+function recoverProject(data: any, validProjects: Set<string>): string | null {
+    const parts: string[] = [];
+    if (typeof data.summary === 'string') parts.push(data.summary);
+    if (Array.isArray(data.accomplishments)) parts.push(...data.accomplishments.filter((s: any) => typeof s === 'string'));
+    if (Array.isArray(data.friction_points)) parts.push(...data.friction_points.filter((s: any) => typeof s === 'string'));
+    const text = parts.join(' ');
+    if (!text) return null;
+
+    // 1. github.com/<owner>/<repo> — canonical project usually equals repo name
+    const ghMatches = [...text.matchAll(/github\.com\/[\w.-]+\/([\w.-]+)/gi)];
+    for (const m of ghMatches) {
+        const repo = m[1].replace(/\.git$/i, '');
+        for (const p of validProjects) {
+            if (p.toLowerCase() === repo.toLowerCase()) return p;
+        }
+    }
+
+    // 2. Task ID prefix like "aops-e17e4e64", "brain-12ab", etc.
+    for (const p of validProjects) {
+        if (p.length < 2) continue;
+        const escaped = p.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+        const re = new RegExp(`\\b${escaped}-[0-9a-f]{4,}\\b`, 'i');
+        if (re.test(text)) return p;
+    }
+
+    return null;
+}
+
 function extractCleanPrompt(timeline: any[]): string {
     if (!timeline || !Array.isArray(timeline)) return '';
     for (const evt of timeline) {
@@ -81,6 +120,11 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
     });
     const candidates = files.filter(f => f.endsWith('.json') && prefixes.some(p => f.startsWith(p)));
 
+    // First pass: read every recent summary, build the set of "real" project names
+    // (anything non-empty, non-'unknown', not hash-like).
+    type Entry = { filename: string; filePath: string; mtimeMs: number; data: any };
+    const entries: Entry[] = [];
+    const validProjects = new Set<string>();
     for (const filename of candidates) {
         const filePath = join(summariesDir, filename);
         let st;
@@ -94,19 +138,46 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
         const data = await readJson(filePath);
         if (!data) continue;
 
+        entries.push({ filename, filePath, mtimeMs: st.mtimeMs, data });
+        const p = data.project;
+        if (typeof p === 'string' && p && p !== 'unknown' && !isHashLikeProject(p)) {
+            validProjects.add(p);
+        }
+    }
+
+    // Second pass: classify each session, recovering or demoting hash-projected ones.
+    for (const { filename, mtimeMs, data } of entries) {
         // Include all sessions within 24h; outcomes are now valid
-        const project = data.project || 'unknown';
-        const minutesAgo = (Date.now() - st.mtimeMs) / 60000;
+        const rawProject: string = data.project || 'unknown';
+        let project = rawProject;
+        let projectOrphaned = false;
+        if (isHashLikeProject(rawProject)) {
+            const recovered = recoverProject(data, validProjects);
+            if (recovered) {
+                project = recovered;
+            } else {
+                project = 'unattributed';
+                projectOrphaned = true;
+            }
+        }
+        const minutesAgo = (Date.now() - mtimeMs) / 60000;
         const hoursAgo = minutesAgo / 60;
 
-        // Classify session type from filename
+        // Classify session type from filename. Sessions whose project we couldn't recover
+        // are demoted to 'orphan' so the dashboard buckets them as background activity
+        // instead of treating them as full interactive sessions.
         const stem = filename.replace('.json', '');
         const isPolecat = stem.includes('polecat');
         const isCrew = stem.includes('crew');
         const isScheduled = stem.includes('scheduled');
         const isGha = stem.includes('gha');
-        const sessionType: 'polecat' | 'crew' | 'scheduled' | 'gha' | 'interactive' =
-            isPolecat ? 'polecat' : isCrew ? 'crew' : isScheduled ? 'scheduled' : isGha ? 'gha' : 'interactive';
+        const sessionType: 'polecat' | 'crew' | 'scheduled' | 'gha' | 'orphan' | 'interactive' =
+            isPolecat ? 'polecat'
+            : isCrew ? 'crew'
+            : isScheduled ? 'scheduled'
+            : isGha ? 'gha'
+            : projectOrphaned ? 'orphan'
+            : 'interactive';
 
         // Extract the first meaningful user prompt from timeline as description
         // This is the best context for "what was this session about?"
@@ -165,14 +236,14 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             project,
             description,
             session_type: sessionType,
-            started_at: data.date || new Date(st.mtimeMs).toISOString(),
+            started_at: data.date || new Date(mtimeMs).toISOString(),
             time_display: minutesAgo < 60 ? `${Math.round(minutesAgo)}m ago` : `${Math.round(hoursAgo)}h ago`,
             duration_min: durationMin,
             prompt_count: promptCount,
             id: data.session_id || stem,
             prompts: allPrompts,
             is_active: minutesAgo < 10,
-            last_modified: st.mtimeMs,
+            last_modified: mtimeMs,
             statusBadge: statusBadge,
             status_badge: statusBadge,
             needs_you: false,
@@ -221,6 +292,24 @@ async function loadRecentSummaries(days = 3): Promise<any[]> {
             summaries.push(data);
         }
     }
+
+    // Normalize hash-clobbered project fields the same way findActiveSessions does, so
+    // recovered sessions feed into the right project's accomplishments rollup and orphans
+    // don't pollute project lists.
+    const validProjects = new Set<string>();
+    for (const s of summaries) {
+        const p = s.project;
+        if (typeof p === 'string' && p && p !== 'unknown' && !isHashLikeProject(p)) {
+            validProjects.add(p);
+        }
+    }
+    for (const s of summaries) {
+        if (isHashLikeProject(s.project)) {
+            const recovered = recoverProject(s, validProjects);
+            s.project = recovered ?? 'unattributed';
+        }
+    }
+
     return summaries;
 }
 
@@ -315,7 +404,7 @@ export const load = async () => {
     const pseudoProjects = new Set(projectsConfig.pseudo_projects);
 
     sessions.forEach(s => {
-        if (s.project && !pseudoProjects.has(s.project)) {
+        if (s.project && s.project !== 'unattributed' && !pseudoProjects.has(s.project)) {
             projectSet.add(s.project);
             const currentLatest = projectLatestSession.get(s.project) || 0;
             if (s.last_modified > currentLatest) {
