@@ -70,6 +70,39 @@ impl PkbSearchServer {
         }
     }
 
+    /// Build an absolute-path -> &GraphNode index from the graph for O(1) lookups.
+    fn build_path_to_node_map<'g>(
+        &self,
+        graph: &'g crate::graph_store::GraphStore,
+    ) -> std::collections::HashMap<String, &'g crate::graph::GraphNode> {
+        graph
+            .nodes()
+            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n))
+            .collect()
+    }
+
+    /// Build an absolute-path -> short ID map (task_id when present, else node id).
+    fn build_path_to_id_map(
+        &self,
+        graph: &crate::graph_store::GraphStore,
+    ) -> std::collections::HashMap<String, String> {
+        graph
+            .nodes()
+            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n.id.clone()))
+            .collect()
+    }
+
+    /// Look up a node in a path_map using a path that may be relative or absolute.
+    fn lookup_node<'a, 'g>(
+        &self,
+        path_map: &'a std::collections::HashMap<String, &'g crate::graph::GraphNode>,
+        path: &Path,
+    ) -> Option<&'g crate::graph::GraphNode> {
+        path_map
+            .get(self.abs_path(path).to_string_lossy().as_ref())
+            .copied()
+    }
+
     /// Validate that completion_evidence is present and non-empty.
     fn require_evidence(evidence: Option<&str>) -> Result<&str, McpError> {
         let ev = evidence.ok_or_else(|| McpError {
@@ -342,12 +375,9 @@ impl PkbSearchServer {
         let showing = page.len();
 
         // Build path -> short ID map via graph
-        let path_map: std::collections::HashMap<String, String> = {
+        let path_map = {
             let graph = self.graph.read();
-            graph
-                .nodes()
-                .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n.task_id.clone().unwrap_or(n.id.clone())))
-                .collect()
+            self.build_path_to_id_map(&graph)
         };
 
         let mut output =
@@ -424,10 +454,7 @@ impl PkbSearchServer {
         let graph = self.graph.read();
 
         // Build path -> node index for O(1) lookups instead of O(n) per result
-        let path_map: std::collections::HashMap<String, &crate::graph::GraphNode> = graph
-            .nodes()
-            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n))
-            .collect();
+        let path_map = self.build_path_to_node_map(&graph);
 
         let mut output = String::new();
         let mut count = 0;
@@ -468,8 +495,7 @@ impl PkbSearchServer {
             ));
 
             // O(1) path lookup via pre-built index
-            let path_str = r.path.to_string_lossy();
-            if let Some(node) = path_map.get(&*path_str) {
+            if let Some(node) = self.lookup_node(&path_map, &r.path) {
                 let id = node.task_id.as_deref().unwrap_or(&node.id);
                 output.push_str(&format!("**ID:** `{id}`\n"));
                 if let Some(ref s) = node.status {
@@ -962,16 +988,12 @@ impl PkbSearchServer {
 
         // Score and sort results
         let graph = self.graph.read();
-        let path_map: std::collections::HashMap<String, &crate::graph::GraphNode> = graph
-            .nodes()
-            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n))
-            .collect();
+        let path_map = self.build_path_to_node_map(&graph);
 
         let mut scored: Vec<_> = results
             .iter()
             .map(|r| {
-                let path_str = r.path.to_string_lossy();
-                let node = path_map.get(&*path_str);
+                let node = self.lookup_node(&path_map, &r.path);
                 let node_id = node.map(|n| n.id.clone());
 
                 let boost = node_id
@@ -1005,8 +1027,7 @@ impl PkbSearchServer {
         );
 
         for (i, (r, score)) in scored.iter().enumerate() {
-            let path_str = r.path.to_string_lossy();
-            let node = path_map.get(&*path_str);
+            let node = self.lookup_node(&path_map, &r.path);
             let display_id = node
                 .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
                 .unwrap_or("?");
@@ -2114,10 +2135,7 @@ impl PkbSearchServer {
         let graph = self.graph.read();
 
         // Build path -> node index
-        let path_map: std::collections::HashMap<String, &crate::graph::GraphNode> = graph
-            .nodes()
-            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n))
-            .collect();
+        let path_map = self.build_path_to_node_map(&graph);
 
         let memory_types = ["memory", "note", "insight", "observation"];
         let mut scored_results = Vec::new();
@@ -2141,9 +2159,8 @@ impl PkbSearchServer {
                 }
             }
 
-            let path_str = r.path.to_string_lossy();
-            let confidence = path_map
-                .get(&*path_str)
+            let confidence = self
+                .lookup_node(&path_map, &r.path)
                 .and_then(|n| n.confidence)
                 .unwrap_or(1.0);
 
@@ -2170,8 +2187,7 @@ impl PkbSearchServer {
             ));
 
             // Check if superseded and get display ID
-            let path_str = r.path.to_string_lossy();
-            let display_id = if let Some(node) = path_map.get(&*path_str) {
+            let display_id = if let Some(node) = self.lookup_node(&path_map, &r.path) {
                 let incoming = graph.get_incoming_edges(&node.id);
                 let superseders: Vec<_> = incoming
                     .iter()
@@ -2270,10 +2286,7 @@ impl PkbSearchServer {
 
         // Build path -> ID map
         let graph = self.graph.read();
-        let path_map: std::collections::HashMap<String, String> = graph
-            .nodes()
-            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n.task_id.clone().unwrap_or(n.id.clone())))
-            .collect();
+        let path_map = self.build_path_to_id_map(&graph);
 
         for r in &matching {
             output.push_str(&format!("- **{}**", r.title));
@@ -2281,7 +2294,10 @@ impl PkbSearchServer {
                 output.push_str(&format!(" [{dt}]"));
             }
             output.push_str(&format!(" ({})", r.tags.join(", ")));
-            let id = path_map.get(&r.path.to_string_lossy().to_string()).cloned().unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            let id = path_map
+                .get(self.abs_path(&r.path).to_string_lossy().as_ref())
+                .cloned()
+                .unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
             output.push_str(&format!(" — `{id}`\n"));
         }
 
@@ -2331,17 +2347,17 @@ impl PkbSearchServer {
 
         // Build path -> ID map
         let graph = self.graph.read();
-        let path_map: std::collections::HashMap<String, String> = graph
-            .nodes()
-            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n.task_id.clone().unwrap_or(n.id.clone())))
-            .collect();
+        let path_map = self.build_path_to_id_map(&graph);
 
         for r in &memories {
             output.push_str(&format!("- **{}**", r.title));
             if !r.tags.is_empty() {
                 output.push_str(&format!(" ({})", r.tags.join(", ")));
             }
-            let id = path_map.get(&r.path.to_string_lossy().to_string()).cloned().unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            let id = path_map
+                .get(self.abs_path(&r.path).to_string_lossy().as_ref())
+                .cloned()
+                .unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
             output.push_str(&format!(" — `{id}`\n"));
         }
 
