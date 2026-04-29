@@ -27,8 +27,11 @@ pub struct PkbDocument {
     pub modified: Option<String>,
     /// Full body content (without frontmatter)
     pub body: String,
-    /// Content hash (blake3, hex-encoded) for change detection
+    /// Content hash (blake3, hex-encoded) of the BODY ONLY.
+    /// Used for skipping re-embedding when only frontmatter changed.
     pub content_hash: String,
+    /// Hash of the FULL file (blake3, hex-encoded) for change detection.
+    pub file_hash: String,
     /// Frontmatter fields as JSON for metadata queries
     pub frontmatter: Option<serde_json::Value>,
 }
@@ -38,7 +41,7 @@ impl PkbDocument {
     /// Used to detect whether re-embedding is needed — frontmatter-only
     /// changes (status, priority, etc.) leave this hash unchanged.
     pub fn body_hash(&self) -> String {
-        blake3::hash(self.body.as_bytes()).to_hex().to_string()
+        self.content_hash.clone()
     }
 
     /// Build a text representation suitable for embedding.
@@ -106,7 +109,7 @@ fn extract_tags(frontmatter: &Option<serde_json::Value>, content: &str) -> Vec<S
 pub fn parse_file(path: &Path) -> Option<PkbDocument> {
     // Read file as bytes for hash computation, then convert to string
     let content_bytes = std::fs::read(path).ok()?;
-    let content_hash = compute_content_hash(&content_bytes);
+    let file_hash = compute_content_hash(&content_bytes);
     let content = String::from_utf8(content_bytes).ok()?;
 
     let modified = std::fs::metadata(path)
@@ -143,6 +146,9 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         .as_ref()
         .and_then(|fm| fm.get("status").and_then(|v| v.as_str()).map(String::from));
 
+    let body = result.content.trim().to_string();
+    let content_hash = compute_content_hash(body.as_bytes());
+
     Some(PkbDocument {
         path: path.to_path_buf(),
         title,
@@ -150,8 +156,9 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         doc_type,
         status,
         modified,
-        body: result.content.trim().to_string(),
+        body,
         content_hash,
+        file_hash,
         frontmatter: fm_data,
     })
 }

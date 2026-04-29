@@ -4891,6 +4891,7 @@ mod tests {
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
             content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
         }
     }
 
@@ -4930,6 +4931,7 @@ mod tests {
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
             content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
         }
     }
 

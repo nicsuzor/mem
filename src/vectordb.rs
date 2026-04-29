@@ -32,11 +32,15 @@ pub struct DocumentEntry {
     /// Confidence level (0.0 - 1.0)
     #[serde(default)]
     pub confidence: Option<f64>,
-    /// Content hash (blake3, hex-encoded) — used for staleness detection
+    /// Hash of the markdown body only (no YAML frontmatter).
+    /// Used for skipping re-embedding when only frontmatter changed.
     #[serde(default)]
     pub content_hash: Option<String>,
+    /// Hash of the FULL file (blake3, hex-encoded) — used for metadata staleness detection
+    #[serde(default)]
+    pub file_hash: Option<String>,
     /// Hash of the markdown body only (no YAML frontmatter).
-    /// When this matches the incoming doc, embeddings are reused without calling the model.
+    /// Deprecated: use content_hash instead.
     #[serde(default)]
     pub body_hash: Option<String>,
     /// Embedding vectors for each chunk of the document
@@ -160,13 +164,23 @@ impl VectorStore {
         self.documents.is_empty()
     }
 
-    /// Check if a document needs re-indexing based on content hash
-    pub fn needs_update(&self, path: &str, content_hash: &str) -> bool {
+    /// Check if a document needs re-indexing (metadata OR body change)
+    pub fn needs_update(&self, path: &str, file_hash: &str) -> bool {
         match self.documents.get(path) {
-            Some(entry) => match &entry.content_hash {
-                Some(stored) if !stored.is_empty() => stored != content_hash,
-                _ => true, // None or empty → always needs update
-            },
+            Some(entry) => {
+                // Prefer file_hash if present
+                if let Some(stored_file) = &entry.file_hash {
+                    if !stored_file.is_empty() {
+                        return stored_file != file_hash;
+                    }
+                }
+                // Fallback to content_hash (legacy compatibility: old stores
+                // used content_hash for the full file)
+                match &entry.content_hash {
+                    Some(stored) if !stored.is_empty() => stored != file_hash,
+                    _ => true,
+                }
+            }
             None => true,
         }
     }
@@ -195,10 +209,13 @@ impl VectorStore {
         let chunk_embeddings = match self.documents.get(&path_str) {
             Some(existing)
                 if existing
-                    .body_hash
+                    .content_hash
                     .as_deref()
-                    .map(|h| h == incoming_body_hash)
-                    .unwrap_or(false) =>
+                    .map_or(false, |h| h == incoming_body_hash)
+                    || existing
+                        .body_hash
+                        .as_deref()
+                        .map_or(false, |h| h == incoming_body_hash) =>
             {
                 existing.chunk_embeddings.clone()
             }
@@ -218,7 +235,8 @@ impl VectorStore {
             tags: doc.tags.clone(),
             id,
             confidence,
-            content_hash: Some(doc.content_hash.clone()),
+            content_hash: Some(incoming_body_hash.clone()),
+            file_hash: Some(doc.file_hash.clone()),
             body_hash: Some(incoming_body_hash),
             chunk_embeddings,
             chunk_texts: chunks,
@@ -240,6 +258,7 @@ impl VectorStore {
         let (id, confidence) = Self::extract_frontmatter_fields(doc);
         let body_chunks =
             embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
+        let body_hash = doc.body_hash();
         let entry = DocumentEntry {
             path: doc.path.clone(),
             title: doc.title.clone(),
@@ -248,14 +267,17 @@ impl VectorStore {
             tags: doc.tags.clone(),
             id,
             confidence,
-            content_hash: Some(doc.content_hash.clone()),
-            body_hash: Some(doc.body_hash()),
+            content_hash: Some(body_hash.clone()),
+            file_hash: Some(doc.file_hash.clone()),
+            body_hash: Some(body_hash),
             chunk_embeddings,
             chunk_texts: chunks,
             body_chunks,
         };
+
         self.documents.insert(path_str, entry);
     }
+
 
     /// Remove a single document by its absolute path string.
     ///
@@ -458,6 +480,7 @@ mod tests {
             id: id.map(String::from),
             confidence,
             content_hash: Some("test_hash_123".to_string()),
+            file_hash: Some("test_hash_123".to_string()),
             body_hash: Some("test_body_hash_123".to_string()),
             chunk_embeddings: vec![embedding],
             chunk_texts: vec![format!("body of {title}")],
@@ -761,6 +784,7 @@ mod tests {
             tags: vec!["test".to_string()],
             frontmatter: None,
             content_hash: "test_doc_hash".to_string(),
+            file_hash: "test_doc_hash".to_string(),
         };
         store.insert_precomputed(&doc, vec!["chunk1".to_string()], vec![vec![1.0, 0.0, 0.0]]);
         assert_eq!(store.len(), 1);
@@ -799,6 +823,7 @@ mod tests {
                 tags: vec![],
                 frontmatter: None,
                 content_hash: "hash_a".to_string(),
+                file_hash: "hash_a".to_string(),
             };
             sa.insert_precomputed(&doc_a, vec!["A".to_string()], vec![vec![1.0, 0.0, 0.0]]);
             sa.save(&db_path).unwrap();
@@ -820,6 +845,7 @@ mod tests {
                 tags: vec![],
                 frontmatter: None,
                 content_hash: "hash_b".to_string(),
+                file_hash: "hash_b".to_string(),
             };
             sb.insert_precomputed(&doc_b, vec!["B".to_string()], vec![vec![0.0, 1.0, 0.0]]);
             sb.save(&db_path).unwrap();
