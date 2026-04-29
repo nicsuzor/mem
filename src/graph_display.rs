@@ -27,6 +27,8 @@ pub struct LocalContext {
     pub contributes_to: Vec<ContextNode>,
     /// What nodes contribute to this one.
     pub contributed_by: Vec<ContextNode>,
+    /// Semantically similar nodes (automatically discovered).
+    pub similar_to: Vec<ContextNode>,
     pub is_orphan: bool,
 }
 
@@ -145,6 +147,18 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         })
         .collect();
 
+    let similar_to: Vec<_> = gs.get_outgoing_edges(node_id).iter()
+        .filter(|e| matches!(e.edge_type, crate::graph::EdgeType::SimilarTo))
+        .filter_map(|e| gs.get_node(&e.target))
+        .map(|n| ContextNode {
+            id: n.id.clone(),
+            label: n.label.clone(),
+            node_type: n.node_type.clone(),
+            status: n.status.clone(),
+            priority: n.priority,
+        })
+        .collect();
+
     Some(LocalContext {
         target,
         is_orphan: parents.is_empty(),
@@ -156,6 +170,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         blocks,
         contributes_to,
         contributed_by,
+        similar_to,
     })
 }
 
@@ -277,6 +292,14 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
         lines.push(format!("    \x1b[2mcontributed by:\x1b[0m"));
         for source in &ctx.contributed_by {
             lines.push(format!("      \x1b[34m↙ {}\x1b[0m", fmt_node(source)));
+        }
+    }
+
+    // --- Similar to ---
+    if !ctx.similar_to.is_empty() {
+        lines.push(format!("    \x1b[2msimilar to:\x1b[0m"));
+        for sim in &ctx.similar_to {
+            lines.push(format!("      \x1b[2m≈ {}\x1b[0m", fmt_node(sim)));
         }
     }
 

@@ -34,6 +34,9 @@ pub enum EdgeType {
     /// Strategic contribution (importance propagation) — blue line
     #[serde(rename = "contributes_to")]
     ContributesTo,
+    /// Semantic similarity relationship (automatically discovered) — gray line
+    #[serde(rename = "similar_to")]
+    SimilarTo,
 }
 
 impl EdgeType {
@@ -45,6 +48,7 @@ impl EdgeType {
             EdgeType::Link => "link",
             EdgeType::Supersedes => "supersedes",
             EdgeType::ContributesTo => "contributes_to",
+            EdgeType::SimilarTo => "similar_to",
         }
     }
 }
