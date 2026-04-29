@@ -8,6 +8,10 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+static TASK_ID_PREFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([a-z]{1,10}-[a-z0-9]+)-").unwrap());
 
 // ===========================================================================
 // Types
@@ -735,8 +739,7 @@ impl GraphNode {
         // Task ID prefix pattern (e.g. "aops-123" from "aops-123-do-something.md")
         if let Some(stem) = doc.path.file_stem() {
             let stem_str = stem.to_string_lossy();
-            let task_re = Regex::new(r"^([a-z]{1,4}-[a-z0-9]+)-").unwrap();
-            if let Some(cap) = task_re.captures(&stem_str) {
+            if let Some(cap) = TASK_ID_PREFIX_RE.captures(&stem_str) {
                 if let Some(m) = cap.get(1) {
                     permalinks.push(m.as_str().to_lowercase());
                 }

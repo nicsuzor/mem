@@ -62,15 +62,6 @@ impl PkbSearchServer {
         self
     }
 
-    fn resolve_path(&self, path_str: &str) -> PathBuf {
-        let path = Path::new(path_str);
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.pkb_root.join(path)
-        }
-    }
-
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
     fn abs_path(&self, rel: &Path) -> PathBuf {
         if rel.is_absolute() {
@@ -78,6 +69,39 @@ impl PkbSearchServer {
         } else {
             self.pkb_root.join(rel)
         }
+    }
+
+    /// Build an absolute-path -> &GraphNode index from the graph for O(1) lookups.
+    fn build_path_to_node_map<'g>(
+        &self,
+        graph: &'g crate::graph_store::GraphStore,
+    ) -> std::collections::HashMap<String, &'g crate::graph::GraphNode> {
+        graph
+            .nodes()
+            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n))
+            .collect()
+    }
+
+    /// Build an absolute-path -> short ID map (task_id when present, else node id).
+    fn build_path_to_id_map(
+        &self,
+        graph: &crate::graph_store::GraphStore,
+    ) -> std::collections::HashMap<String, String> {
+        graph
+            .nodes()
+            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n.id.clone()))
+            .collect()
+    }
+
+    /// Look up a node in a path_map using a path that may be relative or absolute.
+    fn lookup_node<'a, 'g>(
+        &self,
+        path_map: &'a std::collections::HashMap<String, &'g crate::graph::GraphNode>,
+        path: &Path,
+    ) -> Option<&'g crate::graph::GraphNode> {
+        path_map
+            .get(self.abs_path(path).to_string_lossy().as_ref())
+            .copied()
     }
 
     /// Validate that completion_evidence is present and non-empty.
@@ -281,32 +305,41 @@ impl PkbSearchServer {
     // =========================================================================
 
     fn handle_get_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        // Accept `id` (preferred) or `path` (legacy) — both resolve via the graph
+        if args.get("path").is_some() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("The 'path' parameter is no longer supported. Please use 'id' instead (supports ID, filename stem, or title)."),
+                data: None,
+            });
+        }
+
         let query = args
             .get("id")
             .and_then(|v| v.as_str())
-            .or_else(|| args.get("path").and_then(|v| v.as_str()))
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: id (or path)"),
+                message: Cow::from("Missing required parameter: id"),
                 data: None,
             })?;
 
         // Try ID/flexible resolution first (covers IDs, filename stems, titles, permalinks)
-        let path = {
+        let (path, label) = {
             let graph = self.graph.read();
             if let Some(node) = graph.resolve(query) {
-                self.abs_path(&node.path)
+                (self.abs_path(&node.path), node.label.clone())
             } else {
-                // Fall back to treating the value as a literal path
-                self.resolve_path(query)
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!("Document not found: {query}")),
+                    data: None,
+                });
             }
         };
 
         if !path.exists() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(format!("File not found: {}", path.display())),
+                message: Cow::from(format!("File not found for ID '{query}': {}", path.display())),
                 data: None,
             });
         }
@@ -319,7 +352,7 @@ impl PkbSearchServer {
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "## {}\n\n{}",
-            path.display(),
+            label,
             content
         ))]))
     }
@@ -351,10 +384,20 @@ impl PkbSearchServer {
             .collect();
         let showing = page.len();
 
+        // Build path -> short ID map via graph
+        let path_map = {
+            let graph = self.graph.read();
+            self.build_path_to_id_map(&graph)
+        };
+
         let mut output =
             format!("**{total} documents found** (showing {showing}, offset {offset})\n\n");
 
         for r in &page {
+            let id = path_map
+                .get(&self.abs_path(&r.path).to_string_lossy().to_string())
+                .cloned()
+                .unwrap_or_else(|| r.id.clone().unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()));
             output.push_str(&format!("- **{}**", r.title));
             if let Some(ref dt) = r.doc_type {
                 output.push_str(&format!(" [{dt}]"));
@@ -362,7 +405,7 @@ impl PkbSearchServer {
             if !r.tags.is_empty() {
                 output.push_str(&format!(" ({})", r.tags.join(", ")));
             }
-            output.push_str(&format!(" — `{}`", r.path.display()));
+            output.push_str(&format!(" — `{id}`"));
             output.push('\n');
         }
 
@@ -421,10 +464,7 @@ impl PkbSearchServer {
         let graph = self.graph.read();
 
         // Build path -> node index for O(1) lookups instead of O(n) per result
-        let path_map: std::collections::HashMap<String, &crate::graph::GraphNode> = graph
-            .nodes()
-            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n))
-            .collect();
+        let path_map = self.build_path_to_node_map(&graph);
 
         let mut output = String::new();
         let mut count = 0;
@@ -463,11 +503,11 @@ impl PkbSearchServer {
                 "### {}. {} (score: {:.3})\n",
                 count, r.title, r.score
             ));
-            output.push_str(&format!("**Path:** `{}`\n", r.path.display()));
 
             // O(1) path lookup via pre-built index
-            let path_str = r.path.to_string_lossy();
-            if let Some(node) = path_map.get(&*path_str) {
+            if let Some(node) = self.lookup_node(&path_map, &r.path) {
+                let id = node.task_id.as_deref().unwrap_or(&node.id);
+                output.push_str(&format!("**ID:** `{id}`\n"));
                 if let Some(ref s) = node.status {
                     output.push_str(&format!("**Status:** {s}\n"));
                 }
@@ -811,10 +851,6 @@ impl PkbSearchServer {
 
         let node_id = node.id.clone();
         let mut output = format!("## {} — {}\n\n", node_id, node.label);
-        output.push_str(&format!(
-            "**Path:** `{}`\n",
-            self.abs_path(&node.path).display()
-        ));
 
         if let Some(ref t) = node.node_type {
             output.push_str(&format!("**Type:** {t}\n"));
@@ -962,14 +998,13 @@ impl PkbSearchServer {
 
         // Score and sort results
         let graph = self.graph.read();
+        let path_map = self.build_path_to_node_map(&graph);
+
         let mut scored: Vec<_> = results
             .iter()
             .map(|r| {
-                let path_str = r.path.to_string_lossy();
-                let node_id = graph
-                    .nodes()
-                    .find(|n| self.abs_path(&n.path).to_string_lossy() == path_str)
-                    .map(|n| n.id.clone());
+                let node = self.lookup_node(&path_map, &r.path);
+                let node_id = node.map(|n| n.id.clone());
 
                 let boost = node_id
                     .as_ref()
@@ -1002,13 +1037,18 @@ impl PkbSearchServer {
         );
 
         for (i, (r, score)) in scored.iter().enumerate() {
+            let node = self.lookup_node(&path_map, &r.path);
+            let display_id = node
+                .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
+                .unwrap_or("?");
+
             output.push_str(&format!(
                 "### {}. {} (score: {:.3})\n",
                 i + 1,
                 r.title,
                 score
             ));
-            output.push_str(&format!("**Path:** `{}`\n", r.path.display()));
+            output.push_str(&format!("**ID:** `{display_id}`\n"));
             if let Some(ref dt) = r.doc_type {
                 output.push_str(&format!("**Type:** {dt}\n"));
             }
@@ -1170,7 +1210,8 @@ impl PkbSearchServer {
             if let Some(ref t) = node.node_type {
                 output.push_str(&format!(" [{t}]"));
             }
-            output.push_str(&format!(" — `{}`\n", self.abs_path(&node.path).display()));
+            let cid = node.task_id.as_deref().unwrap_or(&node.id);
+            output.push_str(&format!(" — `{cid}`\n"));
         }
 
         if total > max {
@@ -1373,9 +1414,9 @@ impl PkbSearchServer {
             .collect();
 
         let result = serde_json::json!({
+            "id": node.task_id.as_deref().unwrap_or(&node.id),
             "frontmatter": frontmatter,
             "body": body,
-            "path": abs_path.to_string_lossy(),
             "depends_on": depends_on,
             "blocks": blocks,
             "children": children,
@@ -1610,14 +1651,20 @@ impl PkbSearchServer {
     }
 
     fn handle_append_to_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        // Accept `id` (preferred) or `path` (alias) — both resolve via the graph
+        if args.get("path").is_some() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("The 'path' parameter is no longer supported. Please use 'id' instead."),
+                data: None,
+            });
+        }
+
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
-            .or_else(|| args.get("path").and_then(|v| v.as_str()))
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: id (or path)"),
+                message: Cow::from("Missing required parameter: id"),
                 data: None,
             })?;
 
@@ -2138,10 +2185,7 @@ impl PkbSearchServer {
         let graph = self.graph.read();
 
         // Build path -> node index
-        let path_map: std::collections::HashMap<String, &crate::graph::GraphNode> = graph
-            .nodes()
-            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n))
-            .collect();
+        let path_map = self.build_path_to_node_map(&graph);
 
         let memory_types = ["memory", "note", "insight", "observation"];
         let mut scored_results = Vec::new();
@@ -2165,9 +2209,8 @@ impl PkbSearchServer {
                 }
             }
 
-            let path_str = r.path.to_string_lossy();
-            let confidence = path_map
-                .get(&*path_str)
+            let confidence = self
+                .lookup_node(&path_map, &r.path)
                 .and_then(|n| n.confidence)
                 .unwrap_or(1.0);
 
@@ -2193,9 +2236,8 @@ impl PkbSearchServer {
                 count, r.title, r.score, confidence
             ));
 
-            // Check if superseded
-            let path_str = r.path.to_string_lossy();
-            if let Some(node) = path_map.get(&*path_str) {
+            // Check if superseded and get display ID
+            let display_id = if let Some(node) = self.lookup_node(&path_map, &r.path) {
                 let incoming = graph.get_incoming_edges(&node.id);
                 let superseders: Vec<_> = incoming
                     .iter()
@@ -2211,9 +2253,11 @@ impl PkbSearchServer {
                         edge.source, superseder_label
                     ));
                 }
-            }
-
-            output.push_str(&format!("**Path:** `{}`\n", r.path.display()));
+                node.task_id.as_deref().unwrap_or(&node.id).to_string()
+            } else {
+                "?".to_string()
+            };
+            output.push_str(&format!("**ID:** `{display_id}`\n"));
             if !r.tags.is_empty() {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
             }
@@ -2289,13 +2333,22 @@ impl PkbSearchServer {
 
         let total = matching.len();
         let mut output = format!("**{total} documents with tags [{}]**\n\n", tags.join(", "));
+
+        // Build path -> ID map
+        let graph = self.graph.read();
+        let path_map = self.build_path_to_id_map(&graph);
+
         for r in &matching {
             output.push_str(&format!("- **{}**", r.title));
             if let Some(ref dt) = r.doc_type {
                 output.push_str(&format!(" [{dt}]"));
             }
             output.push_str(&format!(" ({})", r.tags.join(", ")));
-            output.push_str(&format!(" — `{}`\n", r.path.display()));
+            let id = path_map
+                .get(self.abs_path(&r.path).to_string_lossy().as_ref())
+                .cloned()
+                .unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            output.push_str(&format!(" — `{id}`\n"));
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -2341,12 +2394,21 @@ impl PkbSearchServer {
 
         let total = memories.len();
         let mut output = format!("**{total} memories**\n\n");
+
+        // Build path -> ID map
+        let graph = self.graph.read();
+        let path_map = self.build_path_to_id_map(&graph);
+
         for r in &memories {
             output.push_str(&format!("- **{}**", r.title));
             if !r.tags.is_empty() {
                 output.push_str(&format!(" ({})", r.tags.join(", ")));
             }
-            output.push_str(&format!(" — `{}`\n", r.path.display()));
+            let id = path_map
+                .get(self.abs_path(&r.path).to_string_lossy().as_ref())
+                .cloned()
+                .unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            output.push_str(&format!(" — `{id}`\n"));
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -3171,10 +3233,21 @@ impl PkbSearchServer {
     }
 
     fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        // Accept either `path` or `id` — resolve id via graph if path not given
-        let path = if let Some(path_str) = args.get("path").and_then(|v| v.as_str()) {
-            self.resolve_path(path_str)
-        } else if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
+        if args.get("path").is_some() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("The 'path' parameter is no longer supported. Please use 'id' instead."),
+                data: None,
+            });
+        }
+
+        let id = args.get("id").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("Missing required parameter: id"),
+            data: None,
+        })?;
+
+        let path = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -3182,19 +3255,13 @@ impl PkbSearchServer {
                 data: None,
             })?;
             self.abs_path(&node.path)
-        } else {
-            return Err(McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: path or id"),
-                data: None,
-            });
         };
 
         // Accept two forms for convenience:
         //   1. Nested: {"id": "...", "updates": {"status": "done"}}
         //   2. Flat:   {"id": "...", "status": "done"}
         // If `updates` is present, it wins. Otherwise collect top-level fields.
-        const ROUTING_KEYS: &[&str] = &["id", "path", "updates"];
+        const ROUTING_KEYS: &[&str] = &["id", "updates"];
         let updates: serde_json::Map<String, serde_json::Value> =
             if let Some(nested) = args.get("updates").and_then(|v| v.as_object()) {
                 nested.clone()
@@ -3293,8 +3360,7 @@ impl PkbSearchServer {
             .unwrap_or_default();
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Task updated: `{}`{hint}",
-            path.display()
+            "Task updated: `{id}`{hint}"
         ))]))
     }
 
@@ -4121,13 +4187,13 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_document",
-                "Read the full contents of a specific PKB document. Use when you need the complete text for analysis. Supports flexible ID resolution.",
+                "Read the full contents of a specific PKB document. Use when you need the complete text for analysis. ONLY accepts short-form ID (e.g. task-xxx), filename stem, or title.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Document ID, filename stem, title, or permalink (preferred — uses flexible resolution)" },
-                        "path": { "type": "string", "description": "Path to document (legacy — use id instead)" }
-                    }
+                        "id": { "type": "string", "description": "Document ID, filename stem, title, or permalink (uses flexible resolution)" }
+                    },
+                    "required": ["id"]
                 }))
                 .unwrap(),
             )
@@ -4282,16 +4348,15 @@ impl PkbSearchServer {
             .with_title("Create Document"),
             Tool::new(
                 "append",
-                "Append timestamped content to an existing document. Use for logging progress, adding references, or updating a 'log' section. Not idempotent.",
+                "Append timestamped content to an existing document by ID. Use for logging progress, adding references, or updating a 'log' section. Not idempotent.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
-                        "path": { "type": "string", "description": "Alias for id — path-style reference also resolves via the graph" },
                         "content": { "type": "string", "description": "Content to append (will be timestamped)" },
                         "section": { "type": "string", "description": "Optional target section heading (e.g. 'Log', 'References'). Creates section if not found." }
                     },
-                    "required": ["content"]
+                    "required": ["id", "content"]
                 }))
                 .unwrap(),
             )
@@ -4394,10 +4459,9 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, title)" },
-                        "path": { "type": "string", "description": "Path to task file (alias for id)" },
-                        "updates": { "type": "object", "description": "Optional nested form. JSON object of fields to update (null to remove a field). If omitted, any top-level fields other than id/path/updates are treated as fields to update." }
+                        "updates": { "type": "object", "description": "Optional nested form. JSON object of fields to update (null to remove a field). If omitted, any top-level fields other than id/updates are treated as fields to update." }
                     },
-                    "required": []
+                    "required": ["id"]
                 }))
                 .unwrap(),
             )
@@ -4611,7 +4675,6 @@ impl PkbSearchServer {
                         "stale_days": { "type": "integer", "description": "Filter: not modified in N days" },
                         "orphan": { "type": "boolean", "description": "Filter: no parent and no project" },
                         "title_contains": { "type": "string", "description": "Filter: title substring (case-insensitive)" },
-                        "directory": { "type": "string", "description": "Filter: file path contains directory" },
                         "weight_gte": { "type": "integer", "description": "Filter: downstream weight >= N" },
                         "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on" },
                         "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
