@@ -20,7 +20,7 @@ mod tests {
 
         let mut updates = HashMap::new();
         let contributes_to = json!([
-            {"to": "task-9c33dd1b", "weight": "Certain", "why": "interim subdeadline"}
+            {"to": "task-9c33dd1b", "stated_weight": "Certain", "justification": "interim subdeadline"}
         ]);
         updates.insert("contributes_to".to_string(), contributes_to.clone());
         updates.insert("severity".to_string(), json!("high"));
@@ -33,6 +33,6 @@ mod tests {
         assert!(content.contains("severity: high") || content.contains("severity: \"high\""), "severity should be present");
         assert!(content.contains("contributes_to:"), "contributes_to should be present");
         assert!(content.contains("to: task-9c33dd1b") || content.contains("to: \"task-9c33dd1b\""), "nested field 'to' should be present");
-        assert!(content.contains("weight: Certain") || content.contains("weight: \"Certain\""), "nested field 'weight' should be present");
+        assert!(content.contains("stated_weight: Certain") || content.contains("stated_weight: \"Certain\""), "nested field 'stated_weight' should be present");
     }
 }

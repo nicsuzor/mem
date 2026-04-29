@@ -67,9 +67,11 @@ pub struct ContributesTo {
     /// Target node ID this node contributes to.
     pub to: String,
     /// Verbal weight term (e.g. "Expected", "Probable", "Certain").
-    pub weight: String,
+    #[serde(alias = "weight")]
+    pub stated_weight: String,
     /// Mandatory single-sentence justification for the weight.
-    pub why: String,
+    #[serde(alias = "why")]
+    pub justification: String,
     /// Current decayed weight value (computed at runtime).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_weight: Option<f64>,
@@ -94,20 +96,22 @@ impl ContributesTo {
     /// Map verbal Renooij-Witteman terms to non-linear importance anchors.
     ///
     /// Based on academicOps core calibration for strategic priority:
-    /// - Certain: 1.0 (Direct mechanical link, e.g. subdeadline)
-    /// - Probable: 0.8 (Strong strategic alignment)
-    /// - Expected: 0.5 (Standard contribution)
-    /// - Possible: 0.2 (Weak or aspirational alignment)
-    /// - Unlikely: 0.05 (Negligible impact)
-    /// - Impossible: 0.0
+    /// - Certain: 1.00
+    /// - Probable: 0.85
+    /// - Expected: 0.75
+    /// - Fifty-Fifty: 0.50
+    /// - Uncertain: 0.25
+    /// - Improbable: 0.15
+    /// - Impossible: 0.00
     pub fn numeric_weight(&self) -> f64 {
-        match self.weight.to_lowercase().as_str() {
-            "certain" | "almost certain" => 1.0,
-            "very probable" | "probable" | "highly likely" => 0.8,
-            "expected" | "likely" => 0.5,
-            "possible" | "perhaps" | "maybe" => 0.2,
-            "unlikely" | "very unlikely" | "almost impossible" => 0.05,
-            "impossible" | "none" => 0.0,
+        match self.stated_weight.to_lowercase().as_str() {
+            "certain" | "almost certain" => 1.00,
+            "very probable" | "probable" | "highly likely" => 0.85,
+            "expected" | "likely" => 0.75,
+            "fifty-fifty" | "even chance" => 0.50,
+            "uncertain" | "possible" | "perhaps" | "maybe" => 0.25,
+            "improbable" | "unlikely" | "very unlikely" | "almost impossible" => 0.15,
+            "impossible" | "none" => 0.00,
             _ => 0.3, // default "soft" contribution for unknown terms
         }
     }
