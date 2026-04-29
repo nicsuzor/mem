@@ -846,21 +846,42 @@ impl GraphStore {
             .collect();
 
         scored.sort_by(|a, b| b.1.cmp(&a.1));
-        let mut result: Vec<String> = scored.into_iter().take(max).map(|(t, _)| t.id.clone()).collect();
 
-        // Status-independent surfacing (spec §3.1): append any non-completed nodes
-        // with urgency >= 10000 that are not already in the result set.
-        let result_set: std::collections::HashSet<String> = result.iter().cloned().collect();
+        let mut result: Vec<String> = Vec::with_capacity(max);
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let completed_statuses = crate::graph::COMPLETED_STATUSES;
-        for node in self.nodes.values() {
+
+        // 1. Status-independent surfacing first (spec §3.1): non-completed nodes with
+        //    urgency >= 10000 take priority over the regular ready queue, otherwise
+        //    they would be crowded out when the ready set already fills `max` slots.
+        let mut urgent: Vec<&GraphNode> = self
+            .nodes
+            .values()
+            .filter(|n| {
+                n.urgency >= 10000.0
+                    && !completed_statuses.contains(&n.status.as_deref().unwrap_or(""))
+            })
+            .collect();
+        urgent.sort_by(|a, b| {
+            b.urgency
+                .partial_cmp(&a.urgency)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for node in urgent {
             if result.len() >= max {
                 break;
             }
-            let status = node.status.as_deref().unwrap_or("");
-            if completed_statuses.contains(&status) {
-                continue;
+            if seen.insert(node.id.clone()) {
+                result.push(node.id.clone());
             }
-            if node.urgency >= 10000.0 && !result_set.contains(&node.id) {
+        }
+
+        // 2. Fill remaining slots with top-scored ready tasks.
+        for (node, _) in scored {
+            if result.len() >= max {
+                break;
+            }
+            if seen.insert(node.id.clone()) {
                 result.push(node.id.clone());
             }
         }
@@ -1631,6 +1652,8 @@ fn compute_blocking_urgency(nodes: &mut [GraphNode]) {
 /// - S_lex: Lexicographic score based on severity (SEV4 = 10^4 override).
 /// - W_edge: Propagation factor (DependsOn=1.0, SoftDependsOn=0.3, ContributesTo=verbal).
 /// - f(Slack): Piecewise-exponential on Least Slack Time (LST).
+const MAX_URGENCY_PROPAGATION_DEPTH: u32 = 20;
+
 fn compute_urgency(nodes: &mut [GraphNode]) {
     let today = chrono::Utc::now().date_naive();
     let num_nodes = nodes.len();
@@ -1717,11 +1740,11 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
         for &(neighbor_idx, factor) in &adj[start_idx] {
             if !visited[neighbor_idx] {
                 visited[neighbor_idx] = true;
-                queue.push_back((neighbor_idx, factor));
+                queue.push_back((neighbor_idx, factor, 1u32));
             }
         }
 
-        while let Some((tid, path_factor)) = queue.pop_front() {
+        while let Some((tid, path_factor, depth)) = queue.pop_front() {
             // Update max propagated S_lex * path weight
             let s = s_lex[tid] * path_factor;
             if s > propagated_s_lex[start_idx] {
@@ -1732,12 +1755,12 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
                 min_slacks[start_idx] = slacks[tid];
             }
 
-            // Limit search depth to 20 to prevent runaway on huge graphs
-            if queue.len() < 1000 {
+            // Limit traversal depth to 20 to bound work on long chains.
+            if depth < MAX_URGENCY_PROPAGATION_DEPTH {
                 for &(next_idx, next_factor) in &adj[tid] {
                     if !visited[next_idx] {
                         visited[next_idx] = true;
-                        queue.push_back((next_idx, path_factor * next_factor));
+                        queue.push_back((next_idx, path_factor * next_factor, depth + 1));
                     }
                 }
             }
