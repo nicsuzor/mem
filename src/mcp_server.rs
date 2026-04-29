@@ -61,15 +61,6 @@ impl PkbSearchServer {
         self
     }
 
-    fn resolve_path(&self, path_str: &str) -> PathBuf {
-        let path = Path::new(path_str);
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.pkb_root.join(path)
-        }
-    }
-
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
     fn abs_path(&self, rel: &Path) -> PathBuf {
         if rel.is_absolute() {
@@ -350,11 +341,23 @@ impl PkbSearchServer {
             .collect();
         let showing = page.len();
 
+        // Build path -> short ID map via graph
+        let path_map: std::collections::HashMap<String, String> = {
+            let graph = self.graph.read();
+            graph
+                .nodes()
+                .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n.task_id.clone().unwrap_or(n.id.clone())))
+                .collect()
+        };
+
         let mut output =
             format!("**{total} documents found** (showing {showing}, offset {offset})\n\n");
 
         for r in &page {
-            let id = r.task_id.as_deref().unwrap_or(&r.id);
+            let id = path_map
+                .get(&self.abs_path(&r.path).to_string_lossy().to_string())
+                .cloned()
+                .unwrap_or_else(|| r.id.clone().unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()));
             output.push_str(&format!("- **{}**", r.title));
             if let Some(ref dt) = r.doc_type {
                 output.push_str(&format!(" [{dt}]"));
@@ -1577,14 +1580,20 @@ impl PkbSearchServer {
     }
 
     fn handle_append_to_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        // Accept `id` (preferred) or `path` (alias) — both resolve via the graph
+        if args.get("path").is_some() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("The 'path' parameter is no longer supported. Please use 'id' instead."),
+                data: None,
+            });
+        }
+
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
-            .or_else(|| args.get("path").and_then(|v| v.as_str()))
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: id (or path)"),
+                message: Cow::from("Missing required parameter: id"),
                 data: None,
             })?;
 
@@ -2160,9 +2169,9 @@ impl PkbSearchServer {
                 count, r.title, r.score, confidence
             ));
 
-            // Check if superseded
+            // Check if superseded and get display ID
             let path_str = r.path.to_string_lossy();
-            if let Some(node) = path_map.get(&*path_str) {
+            let display_id = if let Some(node) = path_map.get(&*path_str) {
                 let incoming = graph.get_incoming_edges(&node.id);
                 let superseders: Vec<_> = incoming
                     .iter()
@@ -2178,11 +2187,10 @@ impl PkbSearchServer {
                         edge.source, superseder_label
                     ));
                 }
-            }
-
-            let display_id = node
-                .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
-                .unwrap_or("?");
+                node.task_id.as_deref().unwrap_or(&node.id).to_string()
+            } else {
+                "?".to_string()
+            };
             output.push_str(&format!("**ID:** `{display_id}`\n"));
             if !r.tags.is_empty() {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
