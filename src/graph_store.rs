@@ -3227,6 +3227,7 @@ mod tests {
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
                 content_hash: "test".to_string(),
+                file_hash: "test".to_string(),
             }
         };
 
