@@ -836,6 +836,8 @@ impl GraphStore {
     }
 
     /// Compute focus picks: top ready tasks ranked by pre-computed focus_score.
+    /// Status-independent surfacing (spec §3.1): imminent deadlines (urgency >= 10000)
+    /// appear regardless of status — in_progress and blocked tasks are included.
     pub fn focus_picks(&self, max: usize) -> Vec<String> {
         let mut scored: Vec<(&GraphNode, i64)> = self.ready
             .iter()
@@ -844,7 +846,25 @@ impl GraphStore {
             .collect();
 
         scored.sort_by(|a, b| b.1.cmp(&a.1));
-        scored.into_iter().take(max).map(|(t, _)| t.id.clone()).collect()
+        let mut result: Vec<String> = scored.into_iter().take(max).map(|(t, _)| t.id.clone()).collect();
+
+        // Status-independent surfacing (spec §3.1): append any non-completed nodes
+        // with urgency >= 10000 that are not already in the result set.
+        let result_set: std::collections::HashSet<String> = result.iter().cloned().collect();
+        let completed_statuses = crate::graph::COMPLETED_STATUSES;
+        for node in self.nodes.values() {
+            if result.len() >= max {
+                break;
+            }
+            let status = node.status.as_deref().unwrap_or("");
+            if completed_statuses.contains(&status) {
+                continue;
+            }
+            if node.urgency >= 10000.0 && !result_set.contains(&node.id) {
+                result.push(node.id.clone());
+            }
+        }
+        result
     }
 
     /// Full graph as JSON — all task nodes and their edges.
@@ -1626,12 +1646,13 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
     let mut slacks = vec![100.0; num_nodes]; // Default slack 100 days (effectively far future)
 
     for (i, n) in nodes.iter().enumerate() {
-        // S_lex: SEV4 = 10000, else 10^severity
-        if n.severity == Some(4) {
-            s_lex[i] = 10000.0;
+        // S_lex: SEV4+committed -> lexicographic override (spec §1.3);
+        // aspirational/learning targets use linear scalar; cap severity at 3 for non-committed.
+        s_lex[i] = if n.severity == Some(4) && n.goal_type.as_deref() == Some("committed") {
+            10000.0
         } else {
-            s_lex[i] = 10.0f64.powi(n.severity.unwrap_or(0));
-        }
+            10.0f64.powi(n.severity.unwrap_or(0).min(3))
+        };
 
         // Calculate slack if due date exists
         if let Some(ref due) = n.due {
@@ -1723,20 +1744,26 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
         }
     }
 
-    // 4. Final urgency calculation using piecewise-exponential f(Slack)
+    // 4. Final urgency calculation using piecewise-exponential f(Slack) (spec §3.1)
+    const SAFE_HORIZON: f64 = 30.0;
+    let k = 10.0_f64.ln() / SAFE_HORIZON;
     for i in 0..num_nodes {
-        if nodes[i].severity == Some(4) {
-            // Lexicographic override for SEV4 targets
+        let slack = min_slacks[i];
+        // f(Slack): piecewise-exponential with ε=0.001 floor (spec §3.1)
+        let f_s = if slack > SAFE_HORIZON {
+            0.001  // negligible; beyond safe horizon
+        } else if slack > 0.0 {
+            (k * (SAFE_HORIZON - slack)).exp()
+        } else {
+            1.0  // overdue or at deadline: unlock full S_lex (spec §3.1)
+        };
+        // Apply committed SEV4 guard at final site too (spec §1.3):
+        // overdue committed SEV4 stays at constant 10000, not unbounded.
+        let is_committed_sev4 = nodes[i].severity == Some(4)
+            && nodes[i].goal_type.as_deref() == Some("committed");
+        if is_committed_sev4 && slack <= 0.0 {
             nodes[i].urgency = 10000.0;
         } else {
-            let slack = min_slacks[i];
-            let f_s = if slack < 0.0 {
-                // Overdue: grows exponentially
-                (-slack / 2.0).exp()
-            } else {
-                // Future: decays exponentially
-                (-slack / 10.0).exp()
-            };
             nodes[i].urgency = propagated_s_lex[i] * f_s;
         }
     }
@@ -3166,13 +3193,18 @@ mod tests {
 
     #[test]
     fn test_urgency_propagation() {
-        let mut make_with_due = |id: &str, sev: i32, due: Option<&str>, blocks: &[&str]| -> PkbDocument {
+        // Helper: make a PkbDocument with given fields for urgency tests.
+        let make_node = |id: &str, sev: i32, goal_type: Option<&str>, due: Option<&str>,
+                         status: &str, blocks: &[&str]| -> PkbDocument {
             let mut fm = serde_json::Map::new();
             fm.insert("title".to_string(), serde_json::json!(id));
             fm.insert("type".to_string(), serde_json::json!("task"));
-            fm.insert("status".to_string(), serde_json::json!("ready"));
+            fm.insert("status".to_string(), serde_json::json!(status));
             fm.insert("id".to_string(), serde_json::json!(id));
             fm.insert("severity".to_string(), serde_json::json!(sev));
+            if let Some(gt) = goal_type {
+                fm.insert("goal_type".to_string(), serde_json::json!(gt));
+            }
             if let Some(d) = due {
                 fm.insert("due".to_string(), serde_json::json!(d));
             }
@@ -3184,7 +3216,7 @@ mod tests {
                 title: id.to_string(),
                 body: String::new(),
                 doc_type: Some("task".to_string()),
-                status: Some("ready".to_string()),
+                status: Some(status.to_string()),
                 modified: None,
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
@@ -3193,29 +3225,63 @@ mod tests {
         };
 
         let today = chrono::Utc::now().date_naive();
-        let due_date = today + chrono::Duration::try_days(5).unwrap();
-        let due_str = due_date.format("%Y-%m-%d").to_string();
+        // Slack = due_in_5 - effort(3) = 2 days, within SAFE_HORIZON=30.
+        // f(2) = exp(k*(30-2)) = 10^(28/30) ≈ 8.610
+        let due_5d = (today + chrono::Duration::try_days(5).unwrap()).format("%Y-%m-%d").to_string();
+        // Overdue: slack = (-2) - 3 = -5 days (due 2 days ago, effort 3).
+        let due_neg2d = (today - chrono::Duration::try_days(2).unwrap()).format("%Y-%m-%d").to_string();
 
         let docs = vec![
-            // target: SEV4, due in 5 days. Urgency should be 10000 (constant override)
-            make_with_due("target-sev4", 4, Some(&due_str), &[]),
-            // blocker: SEV2, blocks target-sev4. Should inherit urgency from target-sev4.
-            make_with_due("blocker", 2, None, &["target-sev4"]),
+            // Assertion 1: SEV4 committed target -> s_lex=10000; due in 5d -> urgency = 10000 * f(2) >> 10000
+            make_node("target-committed", 4, Some("committed"), Some(&due_5d), "ready", &[]),
+            // Assertion 2: SEV4 aspirational target -> s_lex=10^min(4,3)=1000 (linear), not 10000
+            make_node("target-aspirational", 4, Some("aspirational"), Some(&due_5d), "ready", &[]),
+            // Assertion 3: contributor to committed target (SEV2, blocks it)
+            make_node("contrib", 2, None, None, "ready", &["target-committed"]),
+            // Assertion 4: overdue committed SEV4 target -> slack<0 -> urgency=10000 constant
+            make_node("target-overdue-committed", 4, Some("committed"), Some(&due_neg2d), "ready", &[]),
+            // Assertion 5: in_progress task with high urgency -> should appear in focus_picks
+            make_node("inprogress-urgent", 4, Some("committed"), Some(&due_5d), "in_progress", &[]),
         ];
 
-        let graph = GraphStore::build(&docs, std::path::Path::new("/tmp/test-urgency-pkb"));
-        
-        let target = graph.get_node("target-sev4").unwrap();
-        let blocker = graph.get_node("blocker").unwrap();
+        let graph = GraphStore::build(&docs, std::path::Path::new("/tmp/test-urgency-pkb2"));
 
-        assert_eq!(target.urgency, 10000.0, "SEV4 target should have constant urgency 10000");
-        
-        // blocker inherits 10000.0 * W_edge (1.0) * f(Slack)
-        // blocker has no due date, effort default 3.
-        // It inherits slack from target (5 days - 3 effort = 2 days).
-        // f(2 days) = exp(-2 / 10) = exp(-0.2) approx 0.818
-        // blocker urgency approx 10000 * 0.818 = 8180
-        assert!(blocker.urgency > 8000.0, "Blocker should inherit high urgency from SEV4 target, got {}", blocker.urgency);
-        assert!(blocker.urgency < 9000.0, "Blocker urgency should be decayed by slack, got {}", blocker.urgency);
+        let committed = graph.get_node("target-committed").unwrap();
+        let aspirational = graph.get_node("target-aspirational").unwrap();
+        let contrib = graph.get_node("contrib").unwrap();
+        let overdue = graph.get_node("target-overdue-committed").unwrap();
+        let inprogress = graph.get_node("inprogress-urgent").unwrap();
+
+        // 1. SEV4 committed: urgency = 10000 * f(slack=2) >> 10000
+        //    f(2) = exp(ln(10)/30*(30-2)) = 10^(28/30) ≈ 8.610, so urgency ≈ 86100
+        assert!(committed.urgency > 10000.0,
+            "SEV4 committed target in future should have urgency > 10000 due to f(slack), got {}",
+            committed.urgency);
+
+        // 2. SEV4 aspirational: s_lex = 10^min(4,3) = 1000 (linear, not lexicographic)
+        //    urgency = 1000 * f(slack=2) ≈ 8610 — well under 10000
+        assert!(aspirational.urgency < 10000.0,
+            "SEV4 aspirational target must NOT get lexicographic override, got {}",
+            aspirational.urgency);
+        assert!(aspirational.urgency > 100.0,
+            "SEV4 aspirational target should still have meaningful urgency, got {}",
+            aspirational.urgency);
+
+        // 3. Contributor inherits urgency from committed target (slack propagated, s_lex propagated)
+        assert!(contrib.urgency > 10000.0,
+            "Contributor to SEV4 committed target should inherit high urgency, got {}",
+            contrib.urgency);
+
+        // 4. Overdue committed SEV4: slack <= 0 -> constant 10000 (not unbounded growth)
+        //    This is the overdue guard: urgency = 10000.0 exactly
+        assert_eq!(overdue.urgency, 10000.0,
+            "Overdue SEV4 committed target must have urgency=10000 (bounded), got {}",
+            overdue.urgency);
+
+        // 5. Status-independent surfacing: in_progress task with urgency >= 10000
+        //    should appear in focus_picks output
+        let focus = graph.focus_picks(50);
+        assert!(focus.contains(&"inprogress-urgent".to_string()),
+            "in_progress task with SEV4 committed urgency must appear in focus_picks via status-independent scan");
     }
 }
