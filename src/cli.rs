@@ -714,10 +714,6 @@ struct BatchFilterArgs {
     #[arg(long)]
     complexity: Option<String>,
 
-    /// Filter by directory path
-    #[arg(long)]
-    directory: Option<String>,
-
     /// Filter by minimum downstream weight
     #[arg(long)]
     weight_gte: Option<u32>,
@@ -2886,7 +2882,6 @@ fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
         title_contains: args.title_contains.clone(),
         assignee: None,
         complexity: args.complexity.clone(),
-        directory: args.directory.clone(),
         weight_gte: args.weight_gte,
     }
 }
