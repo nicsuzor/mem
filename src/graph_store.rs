@@ -2157,6 +2157,7 @@ mod tests {
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
             content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
         }
     }
 
@@ -2237,6 +2238,7 @@ mod tests {
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
                 content_hash: "test".to_string(),
+                file_hash: "test".to_string(),
             }
         };
 
@@ -2719,6 +2721,7 @@ mod tests {
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
             content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
         }
     }
 
@@ -2945,6 +2948,7 @@ mod tests {
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm_b)),
                 content_hash: "test_hash".to_string(),
+                file_hash: "test_hash".to_string(),
             },
             make_doc("tasks/c.md", "Task C", "task", "active", "task-c", Some("epic-b"), &[]),
             PkbDocument {
@@ -2957,6 +2961,7 @@ mod tests {
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm_d)),
                 content_hash: "test_hash".to_string(),
+                file_hash: "test_hash".to_string(),
             },
         ];
 
@@ -2995,6 +3000,7 @@ mod tests {
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
                 content_hash: "test".to_string(),
+                file_hash: "test".to_string(),
             }
         };
 

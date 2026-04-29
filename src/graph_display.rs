@@ -338,6 +338,7 @@ mod tests {
             frontmatter: Some(serde_json::Value::Object(fm)),
             modified: None,
             content_hash: String::new(),
+            file_hash: String::new(),
         }
     }
 

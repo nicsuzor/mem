@@ -47,18 +47,18 @@ pub fn check_index_staleness(
         .count()
 }
 
-/// Compute relative path string and blake3 content hash for a file.
+/// Compute relative path string and blake3 file hash for a file.
 fn rel_path_and_hash(
     pkb_root: &std::path::Path,
     file_path: &std::path::Path,
 ) -> (String, String) {
     let rel_path = file_path.strip_prefix(pkb_root).unwrap_or(file_path);
     let path_str = rel_path.to_string_lossy().to_string();
-    let content_hash = std::fs::read(file_path)
+    let file_hash = std::fs::read(file_path)
         .ok()
         .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
         .unwrap_or_default();
-    (path_str, content_hash)
+    (path_str, file_hash)
 }
 
 /// Index PKB files into the vector store. Returns (indexed, removed, total).
@@ -96,15 +96,16 @@ pub fn index_pkb(
     };
 
     let mut docs_to_index: Vec<pkb::PkbDocument> = Vec::new();
+    let mut metadata_only_updates: Vec<pkb::PkbDocument> = Vec::new();
     let mut all_chunks: Vec<String> = Vec::new();
     let mut chunk_map: Vec<(usize, usize, usize)> = Vec::new();
 
     for file_path in &files {
-        let (path_str, content_hash) = rel_path_and_hash(pkb_root, file_path);
+        let (path_str, file_hash) = rel_path_and_hash(pkb_root, file_path);
 
         let needs_update = force_all || {
             let store = store.read();
-            store.needs_update(&path_str, &content_hash)
+            store.needs_update(&path_str, &file_hash)
         };
 
         if !needs_update {
@@ -112,6 +113,29 @@ pub fn index_pkb(
         }
 
         if let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) {
+            // Check if only frontmatter changed by comparing body hash (doc.content_hash)
+            let body_unchanged = {
+                let store = store.read();
+                if let Some(existing) = store.get_entry(&path_str) {
+                    existing
+                        .content_hash
+                        .as_deref()
+                        .map(|h| h == doc.content_hash)
+                        .or_else(|| {
+                            // Fallback to deprecated body_hash for old stores
+                            existing.body_hash.as_deref().map(|h| h == doc.content_hash)
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            };
+
+            if body_unchanged {
+                metadata_only_updates.push(doc);
+                continue;
+            }
+
             let embedding_text = doc.embedding_text();
             let chunks =
                 embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
@@ -125,10 +149,30 @@ pub fn index_pkb(
         }
     }
 
+    let mut indexed = 0;
+
+    // Process metadata-only updates first (cheap)
+    if !metadata_only_updates.is_empty() {
+        let mut store = store.write();
+        let count = metadata_only_updates.len();
+        for doc in metadata_only_updates {
+            let path_str = doc.path.to_string_lossy().to_string();
+            if let Some(existing) = store.get_entry(&path_str) {
+                let embeddings = existing.chunk_embeddings.clone();
+                let chunks = existing.chunk_texts.clone();
+                store.insert_precomputed(&doc, chunks, embeddings);
+                indexed += 1;
+            }
+        }
+        tracing::info!("Applied {indexed} metadata-only updates (skipped re-embedding)");
+    }
+
     if docs_to_index.is_empty() {
         let total = store.read().len();
-        tracing::info!("Indexing complete: 0 indexed, {removed} removed, {total} total");
-        return (0, removed, total);
+        tracing::info!(
+            "Indexing complete: {indexed} updated, {removed} removed, {total} total"
+        );
+        return (indexed, removed, total);
     }
 
     tracing::info!(
