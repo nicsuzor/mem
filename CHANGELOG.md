@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.19](https://github.com/nicsuzor/mem/compare/v0.3.18...v0.3.19) - 2026-04-29
+
+### Added
+
+- implement semantic similarity edges via vector proximity ([#269](https://github.com/nicsuzor/mem/pull/269))
+
+### Fixed
+
+- move telemetry.jsonl out of pkb_root to per-host state dir ([#262](https://github.com/nicsuzor/mem/pull/262))
+- repair 7 tests broken by status taxonomy + weight model drift ([#258](https://github.com/nicsuzor/mem/pull/258))
+
+### Other
+
+- [mem] Implement lexicographic urgency propagation (rebased + spec-conformance fixes) ([#271](https://github.com/nicsuzor/mem/pull/271))
+- skip re-embedding when only frontmatter changed ([#267](https://github.com/nicsuzor/mem/pull/267))
+- Implement contributes_to storage and verbal mapping ([#265](https://github.com/nicsuzor/mem/pull/265))
+- Five experimental path-to-goal visualisations for overwhelm dashboard ([#264](https://github.com/nicsuzor/mem/pull/264))
+- exclude local worktreess
+- dash updates
+- Implement contributes_to parser + BFS integration ([#259](https://github.com/nicsuzor/mem/pull/259))
+- Install reusable pipeline on nicsuzor/mem ([#261](https://github.com/nicsuzor/mem/pull/261))
+- optimize update_task write-path latency ([#257](https://github.com/nicsuzor/mem/pull/257))
+- remove status from legend
+- enable clipping remote
+- update project filtering
+- power law sizing
+- increase size
+- square sizing
+- update sizes
+- tooltip
+
 ## [0.3.18](https://github.com/nicsuzor/mem/compare/v0.3.17...v0.3.18) - 2026-04-26
 
 ### Added
