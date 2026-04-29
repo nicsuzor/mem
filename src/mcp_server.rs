@@ -1305,6 +1305,24 @@ impl PkbSearchServer {
             (effort_days as f64 / d.max(1) as f64).min(1.0)
         });
 
+        let contributes_to: Vec<serde_json::Value> = node
+            .contributes_to
+            .iter()
+            .map(|c| {
+                let mut res = serde_json::to_value(c).unwrap_or_else(|_| serde_json::json!({}));
+                let target_id = c.resolved_to.as_deref().unwrap_or(&c.to);
+                if let Some(n) = graph.resolve(target_id) {
+                    if let Some(obj) = res.as_object_mut() {
+                        obj.insert("title".to_string(), serde_json::json!(n.label));
+                        if let Some(ref s) = n.status {
+                            obj.insert("status".to_string(), serde_json::json!(s));
+                        }
+                    }
+                }
+                res
+            })
+            .collect();
+
         let result = serde_json::json!({
             "frontmatter": frontmatter,
             "body": body,
@@ -1315,7 +1333,7 @@ impl PkbSearchServer {
             "subtasks": subtask_nodes_sorted,
             "parent": parent,
             "goals": node.goals,
-            "contributes_to": node.contributes_to,
+            "contributes_to": contributes_to,
             "contributed_by": node.contributed_by,
             "follow_up_tasks": node.follow_up_tasks,
             "priority": node.priority.unwrap_or(2),
