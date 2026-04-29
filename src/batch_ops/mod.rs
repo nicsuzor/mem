@@ -8,6 +8,7 @@ pub mod epics;
 pub mod filters;
 pub mod reclassify;
 pub mod reparent;
+pub mod similarity;
 pub mod stats;
 pub mod update;
 

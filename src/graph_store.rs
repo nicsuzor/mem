@@ -71,7 +71,13 @@ impl GraphStore {
     /// 6. Classify ready/blocked tasks
     pub fn build(docs: &[PkbDocument], pkb_root: &Path) -> Self {
         let nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
-        Self::build_internal(nodes, pkb_root, true)
+        Self::build_internal(nodes, pkb_root, true, None)
+    }
+
+    /// Build a complete graph from parsed PKB documents, including similarity edges.
+    pub fn build_with_store(docs: &[PkbDocument], pkb_root: &Path, store: &crate::vectordb::VectorStore) -> Self {
+        let nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
+        Self::build_internal(nodes, pkb_root, true, Some(store))
     }
 
     /// Build from a directory: scan, parse (with relative paths), build graph.
@@ -91,7 +97,7 @@ impl GraphStore {
     /// directory walk.
     pub fn rebuild_from_nodes(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
         let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
-        Self::build_internal(nodes_vec, pkb_root, true)
+        Self::build_internal(nodes_vec, pkb_root, true, None)
     }
 
     /// Fast incremental rebuild: skips centrality metrics (PageRank, betweenness).
@@ -102,15 +108,29 @@ impl GraphStore {
     /// are preserved (they drift slowly until the next full rebuild).
     pub fn rebuild_from_nodes_fast(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
         let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
-        Self::build_internal(nodes_vec, pkb_root, false)
+        Self::build_internal(nodes_vec, pkb_root, false, None)
+    }
+
+    /// Fast incremental rebuild with similarity edges.
+    pub fn rebuild_from_nodes_fast_with_store(
+        nodes: HashMap<String, GraphNode>,
+        pkb_root: &Path,
+        store: &crate::vectordb::VectorStore,
+    ) -> Self {
+        let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
+        Self::build_internal(nodes_vec, pkb_root, false, Some(store))
     }
 
     /// Internal helper to build GraphStore from a vector of nodes.
     ///
-    /// This is the core pipeline shared by build() and rebuild_from_nodes().
     /// When `include_centrality` is false, PageRank and betweenness computation
     /// are skipped — any pre-existing values on the input nodes are retained.
-    fn build_internal(mut nodes: Vec<GraphNode>, pkb_root: &Path, include_centrality: bool) -> Self {
+    fn build_internal(
+        mut nodes: Vec<GraphNode>,
+        pkb_root: &Path,
+        include_centrality: bool,
+        opt_store: Option<&crate::vectordb::VectorStore>,
+    ) -> Self {
         // 2. Build lookup maps
         // Node paths may be relative — reconstruct absolute for canonicalize & link resolution
         let mut id_map: HashMap<String, String> = HashMap::new(); // permalink -> abs_path
@@ -185,7 +205,18 @@ impl GraphStore {
         // 9. Compute project field (nearest ancestor with node_type == "project")
         compute_project_field(&mut nodes);
 
-        // 9. Compute reachable set (upstream BFS from active leaves)
+        // 9b. Compute similarity edges if vector store is provided
+        // threshold 0.85 as default for materialised edges
+        let similarity_edges = if let Some(store) = opt_store {
+            compute_similarity_edges(&nodes, &edges, store, 0.85)
+        } else {
+            vec![]
+        };
+
+        let mut edges = edges;
+        edges.extend(similarity_edges);
+
+        // 9c. Compute reachable set (upstream BFS from active leaves)
         //    Mark nodes reachable from active leaves via BFS.
         let reachable_set = find_reachable_set(&nodes, &edges);
         for node in &mut nodes {
@@ -1257,6 +1288,87 @@ fn compute_inverses(
         deduplicate_vec(&mut node.soft_depends_on);
         node.leaf = node.children.is_empty();
     }
+}
+
+/// Compute semantic similarity edges between nodes based on vector proximity.
+///
+/// Skips pairs that already share an explicit edge (in either direction).
+fn compute_similarity_edges(
+    nodes: &[GraphNode],
+    existing_edges: &[Edge],
+    store: &crate::vectordb::VectorStore,
+    threshold: f64,
+) -> Vec<Edge> {
+    let mut similarity_edges = Vec::new();
+    let n = nodes.len();
+    if n < 2 {
+        return vec![];
+    }
+
+    // Pre-build adjacency set for O(1) existence check
+    let mut explicit_adj: HashSet<(String, String)> = HashSet::with_capacity(existing_edges.len() * 2);
+    for e in existing_edges {
+        explicit_adj.insert((e.source.clone(), e.target.clone()));
+        explicit_adj.insert((e.target.clone(), e.source.clone()));
+    }
+
+    // Pre-fetch all embeddings
+    let embeddings: Vec<Option<Vec<f32>>> = nodes
+        .iter()
+        .map(|node| {
+            let path = node.path.to_string_lossy();
+            let entry = store.get_entry(&path).or_else(|| {
+                let stripped = path.strip_prefix("tasks/").unwrap_or(&path);
+                store.get_entry(stripped)
+            });
+            entry.and_then(|e| crate::batch_ops::similarity::average_embedding(&e.chunk_embeddings))
+        })
+        .collect();
+
+    // Pairwise comparison (parallel)
+    // We use rayon to parallelize the outer loop for performance on 1000+ nodes
+    use rayon::prelude::*;
+
+    let results: Vec<Vec<Edge>> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let mut local_edges = Vec::new();
+            let node_a = &nodes[i];
+            let emb_a = match &embeddings[i] {
+                Some(e) => e,
+                None => return local_edges,
+            };
+
+            for j in (i + 1)..n {
+                let node_b = &nodes[j];
+                let emb_b = match &embeddings[j] {
+                    Some(e) => e,
+                    None => continue,
+                };
+
+                // Skip if explicit edge exists
+                if explicit_adj.contains(&(node_a.id.clone(), node_b.id.clone())) {
+                    continue;
+                }
+
+                let score = crate::distance::cosine_similarity(emb_a, emb_b) as f64;
+                if score >= threshold {
+                    local_edges.push(Edge {
+                        source: node_a.id.clone(),
+                        target: node_b.id.clone(),
+                        edge_type: EdgeType::SimilarTo,
+                    });
+                }
+            }
+            local_edges
+        })
+        .collect();
+
+    for batch in results {
+        similarity_edges.extend(batch);
+    }
+
+    similarity_edges
 }
 
 /// Compute indegree and outdegree for each node.

@@ -532,6 +532,27 @@ enum Commands {
         #[arg(short, long, default_value = "count")]
         sort: String,
     },
+
+    /// Find nodes semantically similar to a given node
+    Similarity {
+        /// Node ID (flexible resolution)
+        id: String,
+
+        /// Similarity threshold (0.0-1.0, default: 0.85)
+        #[arg(short, long, default_value_t = 0.85)]
+        threshold: f64,
+
+        /// Maximum results to show
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: usize,
+    },
+
+    /// Run empirical analysis on semantic similarity across the whole PKB
+    SimilarityBench {
+        /// Similarity threshold (0.0-1.0, default: 0.85)
+        #[arg(short, long, default_value_t = 0.85)]
+        threshold: f64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -747,9 +768,22 @@ fn load_store(db_path: &PathBuf, dim: usize) -> Result<Arc<RwLock<vectordb::Vect
     )))
 }
 
-/// Build the knowledge graph from the PKB directory.
-fn load_graph(pkb_root: &std::path::Path, _db_path: &std::path::Path) -> graph_store::GraphStore {
-    graph_store::GraphStore::build_from_directory(pkb_root)
+/// Build the knowledge graph from the PKB directory, optionally including similarity edges.
+fn load_graph(
+    pkb_root: &std::path::Path,
+    _db_path: &std::path::Path,
+    opt_store: Option<&vectordb::VectorStore>,
+) -> graph_store::GraphStore {
+    let files = crate::pkb::scan_directory_all(pkb_root);
+    let docs: Vec<crate::pkb::PkbDocument> = files
+        .par_iter()
+        .filter_map(|p| crate::pkb::parse_file_relative(p, pkb_root))
+        .collect();
+
+    match opt_store {
+        Some(store) => graph_store::GraphStore::build_with_store(&docs, pkb_root, store),
+        None => graph_store::GraphStore::build(&docs, pkb_root),
+    }
 }
 
 #[tokio::main]
@@ -817,6 +851,8 @@ async fn main() -> Result<()> {
             | Commands::Memories { .. }
             | Commands::Forget { .. }
             | Commands::Duplicates { .. }
+            | Commands::Similarity { .. }
+            | Commands::SimilarityBench { .. }
     );
 
     let (embedder, store) = if needs_embedder {
@@ -1005,7 +1041,7 @@ async fn main() -> Result<()> {
             }
 
             // Graph stats
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
             println!("Graph:       {} nodes, {} edges", gs.node_count(), gs.edge_count());
 
             let ready = gs.ready_tasks().len();
@@ -1020,7 +1056,7 @@ async fn main() -> Result<()> {
             flat,
             sort,
         } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             let tasks: Vec<&graph::GraphNode> = match filter {
                 TaskFilter::Blocked => gs.blocked_tasks(),
@@ -1313,7 +1349,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Focus { limit } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
             let tasks = gs.ready_tasks();
 
             if tasks.is_empty() {
@@ -1332,7 +1368,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Show { id } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             match gs.resolve(&id) {
                 Some(node) => {
@@ -1444,7 +1480,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Deps { id, tree } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             if gs.get_node(&id).is_none() {
                 eprintln!("Task not found: {id}");
@@ -1475,7 +1511,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Metrics { id } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
             let node_ids: Vec<String> = gs.nodes().map(|n| n.id.clone()).collect();
             let edges = gs.edges();
 
@@ -1728,7 +1764,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             match gs.resolve(&id) {
                 Some(node) => {
@@ -1753,7 +1789,7 @@ async fn main() -> Result<()> {
 
         Commands::Delete { id } => {
             // Try graph resolution first, fall back to filesystem glob
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             let (path, label) = match gs.resolve(&id) {
                 Some(node) => (abs_node_path(&node.path, &pkb_root), node.label.clone()),
@@ -1806,7 +1842,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Done { id } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             match gs.get_node(&id) {
                 Some(node) => {
@@ -1835,7 +1871,7 @@ async fn main() -> Result<()> {
             assignee,
             tags,
         } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             match gs.get_node(&id) {
                 Some(node) => {
@@ -1879,7 +1915,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Context { id, hops } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             match gs.resolve(&id) {
                 Some(node) => {
@@ -1985,7 +2021,7 @@ async fn main() -> Result<()> {
             to,
             max_paths,
         } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             let from_node = match gs.resolve(&from) {
                 Some(n) => n,
@@ -2035,7 +2071,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Orphans { node_type, project: _ } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
             let mut orphans = gs.orphans();
 
             if let Some(ref t) = node_type {
@@ -2080,7 +2116,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Graph { format, output } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             match format.to_lowercase().as_str() {
                 "all" => {
@@ -2309,7 +2345,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Forget { id } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             match gs.resolve(&id) {
                 Some(node) => {
@@ -2408,7 +2444,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Blocks { id, tree: _ } => {
-            let gs = load_graph(&pkb_root, &db_path);
+            let gs = load_graph(&pkb_root, &db_path, None);
 
             if gs.get_node(&id).is_none() {
                 eprintln!("Task not found: {id}");
@@ -2673,12 +2709,12 @@ async fn main() -> Result<()> {
         }
 
         Commands::Batch(batch_cmd) => {
-            let graph = load_graph(&pkb_root, &db_path);
+            let graph = load_graph(&pkb_root, &db_path, None);
             handle_batch_command(batch_cmd, &graph, &pkb_root)?;
         }
 
         Commands::GraphStats { project: _ } => {
-            let graph = load_graph(&pkb_root, &db_path);
+            let graph = load_graph(&pkb_root, &db_path, None);
             let stats = mem::batch_ops::stats::graph_stats(&graph);
             print!("{}", stats.display());
         }
@@ -2690,7 +2726,7 @@ async fn main() -> Result<()> {
             semantic_threshold,
             limit,
         } => {
-            let graph = load_graph(&pkb_root, &db_path);
+            let graph = load_graph(&pkb_root, &db_path, None);
             let store = load_store(&db_path, embeddings::EMBEDDING_DIM)?;
 
             let filters = mem::batch_ops::filters::FilterSet::default();
@@ -2729,6 +2765,58 @@ async fn main() -> Result<()> {
                         println!("  {marker} {:<24} {}", task.id, task.title);
                     }
                     println!();
+                }
+            }
+        }
+
+        Commands::Similarity { id, threshold, limit } => {
+            let store = load_store(&db_path, embeddings::EMBEDDING_DIM)?;
+            let store_read = store.read();
+            let graph = load_graph(&pkb_root, &db_path, Some(&store_read));
+
+            let neighbors = mem::batch_ops::similarity::find_neighbors(&id, &graph, &store_read, threshold, limit);
+
+            if neighbors.is_empty() {
+                println!("No similar nodes found for '{}' above threshold {:.2}", id, threshold);
+            } else {
+                println!("Semantic neighbors for '{}' (threshold {:.2}):\n", id, threshold);
+                println!("  {:<24} {:<48} {:<8} {}", "ID", "Title", "Score", "Edge");
+                println!("  {}", "─".repeat(88));
+                for n in neighbors {
+                    let edge = if n.is_explicit_edge { "explicit" } else { "none" };
+                    println!("  {:<24} {:<48} {:<8.3} {}", n.id, n.title, n.score, edge);
+                }
+            }
+        }
+
+        Commands::SimilarityBench { threshold } => {
+            let store = load_store(&db_path, embeddings::EMBEDDING_DIM)?;
+            let store_read = store.read();
+            let graph = load_graph(&pkb_root, &db_path, Some(&store_read));
+
+            let report = mem::batch_ops::similarity::run_analysis(&graph, &store_read, threshold);
+
+            println!("Semantic Similarity Analysis (threshold {:.2})", threshold);
+            println!("{}\n", "═".repeat(45));
+            println!("Nodes checked:        {:>8}", report.total_nodes);
+            println!("Pairs checked:        {:>8}", report.total_pairs_checked);
+            println!("Similarity edges:     {:>8}", report.similarity_edges_found);
+            println!("Explicit edges:       {:>8} (skipped)", report.explicit_edges_skipped);
+            
+            let density = if report.total_pairs_checked > 0 {
+                report.similarity_edges_found as f64 / report.total_pairs_checked as f64
+            } else {
+                0.0
+            };
+            println!("Graph density delta:  {:>8.4}%", density * 100.0);
+
+            if !report.sample_neighbors.is_empty() {
+                println!("\nTop Sample Similarity Pairs (not explicitly linked):");
+                println!("  {:<24} <──> {:<24} {:<8}", "Source", "Target", "Score");
+                println!("  {}", "─".repeat(64));
+                for sample in report.sample_neighbors {
+                    println!("  {:<24} <──> {:<24} {:<8.3}", sample.source_id, sample.target_id, sample.score);
+                    println!("    {:<24}      {:<24}", sample.source_title, sample.target_title);
                 }
             }
         }

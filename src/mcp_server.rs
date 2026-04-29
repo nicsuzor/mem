@@ -15,6 +15,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use rayon::prelude::*;
 
 const GOAL_TYPE_ENUM: &[&str] = &["committed", "aspirational", "learning"];
 
@@ -123,7 +124,14 @@ impl PkbSearchServer {
 
     /// Full rebuild of the graph store from disk (for batch operations).
     fn rebuild_graph(&self) {
-        let new_graph = GraphStore::build_from_directory(&self.pkb_root);
+        let store = self.store.read();
+        let files = crate::pkb::scan_directory_all(&self.pkb_root);
+        let docs: Vec<crate::pkb::PkbDocument> = files
+            .par_iter()
+            .filter_map(|p| crate::pkb::parse_file_relative(p, &self.pkb_root))
+            .collect();
+
+        let new_graph = GraphStore::build_with_store(&docs, &self.pkb_root, &store);
         *self.graph.write() = new_graph;
     }
 
@@ -151,7 +159,9 @@ impl PkbSearchServer {
         });
 
         nodes.insert(node.id.clone(), node);
-        let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
+
+        let store = self.store.read();
+        let new_graph = GraphStore::rebuild_from_nodes_fast_with_store(nodes, &self.pkb_root, &store);
         *self.graph.write() = new_graph;
     }
 
@@ -1165,6 +1175,45 @@ impl PkbSearchServer {
 
         if total > max {
             output.push_str(&format!("\n...and {} more\n", total - max));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_get_semantic_neighbors(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let threshold = args.get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.85);
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+
+        let graph = self.graph.read();
+        let store = self.store.read();
+
+        let neighbors = crate::batch_ops::similarity::find_neighbors(id, &graph, &store, threshold, limit);
+
+        if neighbors.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No semantic neighbors found for '{}' above threshold {:.2}.",
+                id, threshold
+            ))]));
+        }
+
+        let mut output = format!(
+            "## Semantic Neighbors for `{id}` (threshold {:.2})\n\n**{} neighbor(s) found**\n\n",
+            threshold,
+            neighbors.len()
+        );
+
+        for n in neighbors {
+            let edge = if n.is_explicit_edge { " (explicitly linked)" } else { "" };
+            output.push_str(&format!("- **{}** (`{}`): score {:.3}{}\n", n.title, n.id, n.score, edge));
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -3952,6 +4001,7 @@ impl ServerHandler for PkbSearchServer {
             "pkb_context" => self.handle_pkb_context(&args),
             "pkb_trace" => self.handle_pkb_trace(&args),
             "pkb_orphans" => self.handle_pkb_orphans(&args),
+            "get_semantic_neighbors" => self.handle_get_semantic_neighbors(&args),
             "batch_update" => self.handle_batch_update(&args),
             "batch_reparent" => self.handle_batch_reparent(&args),
             "batch_archive" => self.handle_batch_archive(&args),
@@ -4611,6 +4661,22 @@ impl PkbSearchServer {
             )
             .with_title("Batch Archive Tasks")
             .with_annotations(ToolAnnotations::new().destructive(true)),
+            Tool::new(
+                "get_semantic_neighbors",
+                "Find nodes semantically similar to a given node based on vector proximity of embeddings. Returns a list of nodes that are related by content even if not explicitly linked in the graph.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Node ID, task ID, filename stem, or title (flexible resolution)" },
+                        "threshold": { "type": "number", "description": "Cosine similarity threshold (0.0-1.0, default: 0.85). Higher is more restrictive." },
+                        "limit": { "type": "integer", "description": "Maximum number of neighbors to return (default: 10)." }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Find Semantic Neighbors")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "graph_stats",
                 "Get a summary of PKB health, including task distribution by status/priority, orphan counts, and disconnected clusters. Read-only.",
