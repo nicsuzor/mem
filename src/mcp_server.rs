@@ -1350,6 +1350,7 @@ impl PkbSearchServer {
             "goal_type": node.goal_type,
             "days_until_due": days_until_due,
             "urgency_ratio": urgency_ratio,
+            "urgency": node.urgency,
             "scope": node.scope,
             "uncertainty": node.uncertainty,
             "criticality": node.criticality,
@@ -2901,6 +2902,7 @@ impl PkbSearchServer {
                         "scope": t.scope,
                         "uncertainty": t.uncertainty,
                         "criticality": t.criticality,
+                        "urgency": t.urgency,
                         "due": t.due,
                         "effort": t.effort,
                         "consequence": t.consequence,
@@ -2943,13 +2945,13 @@ impl PkbSearchServer {
             }
             out
         } else if is_ready {
-            // Ready view: table with Weight column, sorted by priority + downstream weight
+            // Ready view: table with Weight column, sorted by urgency
             let mut out = format!(
-                "**{total} ready tasks** (showing {}, sorted by priority + downstream weight)\n\n",
+                "**{total} ready tasks** (showing {}, sorted by urgency)\n\n",
                 tasks.len()
             );
             let today = chrono::Utc::now().date_naive();
-            out.push_str("| # | ID | Pri | Weight | Crit | U | Due | Title |\n|---|---|---|---|---|---|---|---|\n");
+            out.push_str("| # | ID | Pri | Weight | Crit | Urg | Due | Title |\n|---|---|---|---|---|---|---|---|\n");
             for (i, t) in tasks.iter().enumerate() {
                 let id = t.task_id.as_deref().unwrap_or(&t.id);
                 let weight = if t.downstream_weight > 0.0 {
@@ -2966,8 +2968,14 @@ impl PkbSearchServer {
                 } else {
                     "-".to_string()
                 };
-                let unc = if t.uncertainty > 0.0 {
-                    format!("{:.2}", t.uncertainty)
+                let urg = if t.urgency > 0.0 {
+                    if t.urgency >= 10000.0 {
+                        "SEV4".to_string()
+                    } else if t.urgency >= 100.0 {
+                        format!("{:.0}", t.urgency)
+                    } else {
+                        format!("{:.1}", t.urgency)
+                    }
                 } else {
                     "-".to_string()
                 };
@@ -2994,7 +3002,7 @@ impl PkbSearchServer {
                     t.priority.unwrap_or(2),
                     weight,
                     crit,
-                    unc,
+                    urg,
                     due_str,
                     t.label
                 ));

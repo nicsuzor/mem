@@ -265,6 +265,10 @@ pub struct GraphNode {
     /// Never written back to frontmatter; skip serialization to avoid polluting YAML.
     #[serde(skip)]
     pub effective_priority: Option<i32>,
+    /// Computed: lexicographic urgency propagation.
+    /// Formula: Urgency = S_lex * W_edge * f(Slack)
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub urgency: f64,
 }
 
 /// An assumption attached to a planning node.
@@ -844,6 +848,7 @@ impl GraphNode {
             uncertainty: 0.0,
             criticality: 0.0,
             effective_priority: None,
+            urgency: 0.0,
         }
     }
 }

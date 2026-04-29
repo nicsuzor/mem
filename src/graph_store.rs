@@ -173,6 +173,7 @@ impl GraphStore {
         // 7b. Compute effective_priority (min priority in downstream cone)
         compute_effective_priority(&mut nodes);
         compute_blocking_urgency(&mut nodes);
+        compute_urgency(&mut nodes);
 
         // 8. Compute derived properties: scope, uncertainty, criticality
         compute_scope(&mut nodes);
@@ -291,9 +292,14 @@ impl GraphStore {
             .filter(|n| n.task_id.is_some())
             .collect();
         tasks.sort_by(|a, b| {
-            b.severity
-                .unwrap_or(0)
-                .cmp(&a.severity.unwrap_or(0))
+            b.urgency
+                .partial_cmp(&a.urgency)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(
+                    b.severity
+                        .unwrap_or(0)
+                        .cmp(&a.severity.unwrap_or(0))
+                )
                 .then(
                     a.priority
                         .unwrap_or(2)
@@ -1599,6 +1605,143 @@ fn compute_blocking_urgency(nodes: &mut [GraphNode]) {
     }
 }
 
+/// Compute lexicographic urgency propagation.
+///
+/// Formula: Urgency = S_lex * W_edge * f(Slack)
+/// - S_lex: Lexicographic score based on severity (SEV4 = 10^4 override).
+/// - W_edge: Propagation factor (DependsOn=1.0, SoftDependsOn=0.3, ContributesTo=verbal).
+/// - f(Slack): Piecewise-exponential on Least Slack Time (LST).
+fn compute_urgency(nodes: &mut [GraphNode]) {
+    let today = chrono::Utc::now().date_naive();
+    let num_nodes = nodes.len();
+
+    let id_to_idx: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    // 1. Pre-compute base S_lex and own Slack for each node
+    let mut s_lex = vec![0.0; num_nodes];
+    let mut slacks = vec![100.0; num_nodes]; // Default slack 100 days (effectively far future)
+
+    for (i, n) in nodes.iter().enumerate() {
+        // S_lex: SEV4 = 10000, else 10^severity
+        if n.severity == Some(4) {
+            s_lex[i] = 10000.0;
+        } else {
+            s_lex[i] = 10.0f64.powi(n.severity.unwrap_or(0));
+        }
+
+        // Calculate slack if due date exists
+        if let Some(ref due) = n.due {
+            let len = std::cmp::min(10, due.len());
+            if let Ok(due_date) = chrono::NaiveDate::parse_from_str(
+                &due[..due.floor_char_boundary(len)],
+                "%Y-%m-%d",
+            ) {
+                let effort_days = n
+                    .effort
+                    .as_deref()
+                    .and_then(crate::graph::parse_effort_days)
+                    .unwrap_or(3);
+                slacks[i] = (due_date - today).num_days() as f64 - effort_days as f64;
+            }
+        }
+    }
+
+    // 2. Pre-build adjacency for propagation (Urgency flows from blocked node to blocker)
+    let adj: Vec<Vec<(usize, f64)>> = nodes
+        .iter()
+        .map(|n| {
+            let mut neighbors = Vec::new();
+            for bid in &n.blocks {
+                if let Some(&idx) = id_to_idx.get(bid) {
+                    neighbors.push((idx, 1.0));
+                }
+            }
+            for sbid in &n.soft_blocks {
+                if let Some(&idx) = id_to_idx.get(sbid) {
+                    neighbors.push((idx, 0.3));
+                }
+            }
+            for cid in &n.children {
+                if let Some(&idx) = id_to_idx.get(cid) {
+                    neighbors.push((idx, 0.5));
+                }
+            }
+            for ct in &n.contributes_to {
+                if let Some(resolved) = &ct.resolved_to {
+                    if let Some(&idx) = id_to_idx.get(resolved) {
+                        neighbors.push((idx, ct.numeric_weight()));
+                    }
+                }
+            }
+            neighbors
+        })
+        .collect();
+
+    // 3. Compute propagated S_lex and LST via BFS
+    let mut propagated_s_lex = s_lex.clone();
+    let mut min_slacks = slacks.clone();
+
+    let mut visited = vec![false; num_nodes];
+    let mut queue = VecDeque::new();
+
+    for start_idx in 0..num_nodes {
+        visited.fill(false);
+        visited[start_idx] = true;
+        queue.clear();
+
+        for &(neighbor_idx, factor) in &adj[start_idx] {
+            if !visited[neighbor_idx] {
+                visited[neighbor_idx] = true;
+                queue.push_back((neighbor_idx, factor));
+            }
+        }
+
+        while let Some((tid, path_factor)) = queue.pop_front() {
+            // Update max propagated S_lex * path weight
+            let s = s_lex[tid] * path_factor;
+            if s > propagated_s_lex[start_idx] {
+                propagated_s_lex[start_idx] = s;
+            }
+            // Update Least Slack Time (min slack in downstream cone)
+            if slacks[tid] < min_slacks[start_idx] {
+                min_slacks[start_idx] = slacks[tid];
+            }
+
+            // Limit search depth to 20 to prevent runaway on huge graphs
+            if queue.len() < 1000 {
+                for &(next_idx, next_factor) in &adj[tid] {
+                    if !visited[next_idx] {
+                        visited[next_idx] = true;
+                        queue.push_back((next_idx, path_factor * next_factor));
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Final urgency calculation using piecewise-exponential f(Slack)
+    for i in 0..num_nodes {
+        if nodes[i].severity == Some(4) {
+            // Lexicographic override for SEV4 targets
+            nodes[i].urgency = 10000.0;
+        } else {
+            let slack = min_slacks[i];
+            let f_s = if slack < 0.0 {
+                // Overdue: grows exponentially
+                (-slack / 2.0).exp()
+            } else {
+                // Future: decays exponentially
+                (-slack / 10.0).exp()
+            };
+            nodes[i].urgency = propagated_s_lex[i] * f_s;
+        }
+    }
+}
+
 /// Compute scope (subtree size) for each node via recursive descendant count.
 ///
 /// Called after `compute_inverses` so `node.children` is fully populated.
@@ -1789,14 +1932,19 @@ fn classify_tasks(
         }
     }
 
-    // Sort ready by severity DESC (lexicographic short-circuit), then effective_priority (propagated),
+    // Sort ready by urgency DESC, then severity DESC, then effective_priority (propagated),
     // then downstream_weight DESC, then order, then title
     ready.sort_by(|a, b| {
         let na = nodes.get(a).unwrap();
         let nb = nodes.get(b).unwrap();
-        nb.severity
-            .unwrap_or(0)
-            .cmp(&na.severity.unwrap_or(0))
+        nb.urgency
+            .partial_cmp(&na.urgency)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(
+                nb.severity
+                    .unwrap_or(0)
+                    .cmp(&na.severity.unwrap_or(0))
+            )
             .then(
                 na.effective_priority
                     .unwrap_or(2)
@@ -3020,5 +3168,60 @@ mod tests {
         assert_eq!(ready_ids[0], "low-pri-high-sev");
         assert_eq!(ready_ids[1], "mid-pri-mid-sev");
         assert_eq!(ready_ids[2], "high-pri-low-sev");
+    }
+
+    #[test]
+    fn test_urgency_propagation() {
+        let mut make_with_due = |id: &str, sev: i32, due: Option<&str>, blocks: &[&str]| -> PkbDocument {
+            let mut fm = serde_json::Map::new();
+            fm.insert("title".to_string(), serde_json::json!(id));
+            fm.insert("type".to_string(), serde_json::json!("task"));
+            fm.insert("status".to_string(), serde_json::json!("ready"));
+            fm.insert("id".to_string(), serde_json::json!(id));
+            fm.insert("severity".to_string(), serde_json::json!(sev));
+            if let Some(d) = due {
+                fm.insert("due".to_string(), serde_json::json!(d));
+            }
+            if !blocks.is_empty() {
+                fm.insert("blocks".to_string(), serde_json::json!(blocks));
+            }
+            PkbDocument {
+                path: std::path::PathBuf::from(format!("tasks/{}.md", id)),
+                title: id.to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("ready".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm)),
+                content_hash: "test".to_string(),
+            }
+        };
+
+        let today = chrono::Utc::now().date_naive();
+        let due_date = today + chrono::Duration::try_days(5).unwrap();
+        let due_str = due_date.format("%Y-%m-%d").to_string();
+
+        let docs = vec![
+            // target: SEV4, due in 5 days. Urgency should be 10000 (constant override)
+            make_with_due("target-sev4", 4, Some(&due_str), &[]),
+            // blocker: SEV2, blocks target-sev4. Should inherit urgency from target-sev4.
+            make_with_due("blocker", 2, None, &["target-sev4"]),
+        ];
+
+        let graph = GraphStore::build(&docs, std::path::Path::new("/tmp/test-urgency-pkb"));
+        
+        let target = graph.get_node("target-sev4").unwrap();
+        let blocker = graph.get_node("blocker").unwrap();
+
+        assert_eq!(target.urgency, 10000.0, "SEV4 target should have constant urgency 10000");
+        
+        // blocker inherits 10000.0 * W_edge (1.0) * f(Slack)
+        // blocker has no due date, effort default 3.
+        // It inherits slack from target (5 days - 3 effort = 2 days).
+        // f(2 days) = exp(-2 / 10) = exp(-0.2) approx 0.818
+        // blocker urgency approx 10000 * 0.818 = 8180
+        assert!(blocker.urgency > 8000.0, "Blocker should inherit high urgency from SEV4 target, got {}", blocker.urgency);
+        assert!(blocker.urgency < 9000.0, "Blocker urgency should be decayed by slack, got {}", blocker.urgency);
     }
 }
