@@ -1958,6 +1958,11 @@ fn build_resolution_map(nodes: &HashMap<String, GraphNode>) -> HashMap<String, S
                 .or_insert_with(|| id.clone());
         }
 
+        // Permalinks (includes task ID prefix, explicit permalink, and explicit ID)
+        for pl in &node.permalinks {
+            map.entry(pl.clone()).or_insert_with(|| id.clone());
+        }
+
         // Title / label
         let label_key = node.label.to_lowercase();
         if !label_key.is_empty() {

@@ -42,8 +42,6 @@ pub struct FilterSet {
     pub assignee: Option<String>,
     /// Match complexity tag
     pub complexity: Option<String>,
-    /// File path contains directory
-    pub directory: Option<String>,
     /// Downstream weight >= N
     pub weight_gte: Option<u32>,
 }
@@ -65,7 +63,6 @@ impl FilterSet {
             && self.title_contains.is_none()
             && self.assignee.is_none()
             && self.complexity.is_none()
-            && self.directory.is_none()
             && self.weight_gte.is_none()
     }
 
@@ -140,9 +137,6 @@ impl FilterSet {
         }
         if let Some(ref c) = self.complexity {
             parts.push(format!("complexity={c}"));
-        }
-        if let Some(ref d) = self.directory {
-            parts.push(format!("directory={d}"));
         }
         if let Some(w) = self.weight_gte {
             parts.push(format!("weight>={w}"));
@@ -260,14 +254,6 @@ impl FilterSet {
             }
         }
 
-        // Directory filter (path contains)
-        if let Some(ref dir) = self.directory {
-            let path_str = node.path.to_string_lossy();
-            if !path_str.contains(dir.as_str()) {
-                return false;
-            }
-        }
-
         // Downstream weight >= N
         if let Some(weight_gte) = self.weight_gte {
             if node.downstream_weight < weight_gte as f64 {
@@ -308,7 +294,6 @@ pub fn parse_filter_set(args: &serde_json::Value) -> FilterSet {
         title_contains: args.get("title_contains").and_then(|v| v.as_str().map(String::from)),
         assignee: args.get("assignee").and_then(|v| v.as_str().map(String::from)),
         complexity: args.get("complexity").and_then(|v| v.as_str().map(String::from)),
-        directory: args.get("directory").and_then(|v| v.as_str().map(String::from)),
         weight_gte: args.get("weight_gte").and_then(|v| v.as_u64().map(|n| n as u32)),
     }
 }
