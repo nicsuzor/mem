@@ -211,13 +211,11 @@ impl VectorStore {
                 if existing
                     .content_hash
                     .as_deref()
-                    .map(|h| h == incoming_body_hash)
-                    .or_else(|| {
-                        // Fallback to deprecated body_hash if content_hash didn't match
-                        // or wasn't present (old store)
-                        existing.body_hash.as_deref().map(|h| h == incoming_body_hash)
-                    })
-                    .unwrap_or(false) =>
+                    .map_or(false, |h| h == incoming_body_hash)
+                    || existing
+                        .body_hash
+                        .as_deref()
+                        .map_or(false, |h| h == incoming_body_hash) =>
             {
                 existing.chunk_embeddings.clone()
             }
@@ -482,6 +480,7 @@ mod tests {
             id: id.map(String::from),
             confidence,
             content_hash: Some("test_hash_123".to_string()),
+            file_hash: Some("test_hash_123".to_string()),
             body_hash: Some("test_body_hash_123".to_string()),
             chunk_embeddings: vec![embedding],
             chunk_texts: vec![format!("body of {title}")],

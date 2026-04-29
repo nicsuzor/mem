@@ -117,15 +117,11 @@ pub fn index_pkb(
             let body_unchanged = {
                 let store = store.read();
                 if let Some(existing) = store.get_entry(&path_str) {
-                    existing
-                        .content_hash
-                        .as_deref()
-                        .map(|h| h == doc.content_hash)
-                        .or_else(|| {
-                            // Fallback to deprecated body_hash for old stores
-                            existing.body_hash.as_deref().map(|h| h == doc.content_hash)
-                        })
-                        .unwrap_or(false)
+                    // Check content_hash (body-only hash, new) or body_hash (deprecated).
+                    // Use explicit OR so a non-matching content_hash does not suppress
+                    // the body_hash fallback (old stores used content_hash for full file).
+                    existing.content_hash.as_deref().map_or(false, |h| h == doc.content_hash)
+                        || existing.body_hash.as_deref().map_or(false, |h| h == doc.content_hash)
                 } else {
                     false
                 }
@@ -154,12 +150,14 @@ pub fn index_pkb(
     // Process metadata-only updates first (cheap)
     if !metadata_only_updates.is_empty() {
         let mut store = store.write();
-        let count = metadata_only_updates.len();
         for doc in metadata_only_updates {
             let path_str = doc.path.to_string_lossy().to_string();
-            if let Some(existing) = store.get_entry(&path_str) {
-                let embeddings = existing.chunk_embeddings.clone();
-                let chunks = existing.chunk_texts.clone();
+            // Extract data in a separate scope so the immutable borrow of `store`
+            // is released before the mutable borrow in insert_precomputed.
+            let existing_data = store
+                .get_entry(&path_str)
+                .map(|e| (e.chunk_embeddings.clone(), e.chunk_texts.clone()));
+            if let Some((embeddings, chunks)) = existing_data {
                 store.insert_precomputed(&doc, chunks, embeddings);
                 indexed += 1;
             }
@@ -316,5 +314,81 @@ mod stdout_guard {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embeddings::{Embedder, EMBEDDING_DIM};
+    use crate::vectordb::VectorStore;
+    use std::sync::Arc;
+    use parking_lot::RwLock;
+
+    /// Regression test: a frontmatter-only change must NOT trigger encode_batch.
+    ///
+    /// Strategy: pre-seed the store with a sentinel embedding vector that is
+    /// distinguishable from the dummy embedder's zero output. After calling
+    /// index_pkb with a file whose body is unchanged but frontmatter differs,
+    /// the sentinel must still be present — proving encode_batch was never called.
+    #[test]
+    fn frontmatter_only_update_skips_encode_batch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+        let db_path = pkb_root.join("test.db");
+        let file_path = pkb_root.join("task.md");
+
+        // Write initial file with frontmatter + body
+        let initial_content = "---\nstatus: inbox\ntitle: Test Task\n---\n\nThis is the body text.";
+        std::fs::write(&file_path, initial_content).unwrap();
+
+        // Parse the file with relative path so store keys match what index_pkb uses
+        let parsed = crate::pkb::parse_file_relative(&file_path, pkb_root).expect("parse initial file");
+        let body_hash = parsed.content_hash.clone();
+
+        // Build sentinel embeddings (non-zero, so distinguishable from dummy output)
+        let sentinel_dim = EMBEDDING_DIM;
+        let mut sentinel = vec![0.0f32; sentinel_dim];
+        sentinel[0] = 99.0;
+
+        // Pre-seed the store with these sentinel embeddings
+        let store = Arc::new(RwLock::new(VectorStore::new(sentinel_dim)));
+        {
+            let mut w = store.write();
+            w.insert_precomputed(
+                &parsed,
+                vec!["This is the body text.".to_string()],
+                vec![sentinel.clone()],
+            );
+        }
+
+        // Now mutate only the frontmatter (change status: inbox → active)
+        let updated_content = "---\nstatus: active\ntitle: Test Task\n---\n\nThis is the body text.";
+        std::fs::write(&file_path, updated_content).unwrap();
+
+        // Run index_pkb with a dummy embedder (returns zero vectors if called)
+        let embedder = Embedder::new_dummy();
+        let (indexed, removed, _total) = index_pkb(pkb_root, &db_path, &store, &embedder, false);
+
+        // Exactly 1 metadata-only update should have been processed
+        assert_eq!(indexed, 1, "expected 1 metadata-only update");
+        assert_eq!(removed, 0, "no documents should have been removed");
+
+        // Sentinel embedding must still be present — if encode_batch had been called
+        // the dummy embedder would have replaced it with zero vectors
+        let rel_path = "task.md";
+        let entry = store.read().get_entry(rel_path).expect("entry must exist").clone();
+        let stored_embedding = &entry.chunk_embeddings[0];
+        assert_eq!(
+            stored_embedding[0], 99.0,
+            "embedding[0] should be sentinel 99.0 — encode_batch must not have been called"
+        );
+
+        // Verify body hash is preserved (not overwritten with full-file hash)
+        assert_eq!(
+            entry.content_hash.as_deref(),
+            Some(body_hash.as_str()),
+            "content_hash must still be the body-only hash"
+        );
     }
 }
