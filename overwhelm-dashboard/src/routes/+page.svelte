@@ -37,7 +37,7 @@
     import { filters } from "$lib/stores/filters";
     import { selection } from "$lib/stores/selection";
     import { browser } from "$app/environment";
-    import { INCOMPLETE_STATUSES, COMPLETED_STATUSES } from "$lib/data/constants";
+    import { COMPLETED_STATUSES, STRUCTURAL_TYPES } from "$lib/data/constants";
 
     export let data: any;
 
@@ -156,26 +156,15 @@
         // Only include real task types with explicit ID and status
         // Structural types (epic, project, goal) are always included — they often lack task_id or explicit status
         const TASK_TYPES = new Set(["task", "goal", "project", "epic", "bug", "feature", "learn", "action", "subproject", "target"]);
-        const STRUCTURAL_TYPES = new Set(["epic", "project", "goal"]);
         fNodes = fNodes.filter(n => {
             if (!TASK_TYPES.has(n.type)) return false;
             if (STRUCTURAL_TYPES.has(n.type)) return true;
-            return n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "";
+            return n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "" && n.status !== "inbox";
         });
 
         // Tri-state Visibility Filters
         fNodes = fNodes.filter(n => {
             let visState = 'bright';
-
-            // Determine status visibility
-            let statusVis = 'bright';
-            const isBlocked = n.status === "blocked";
-            const isCompleted = COMPLETED_STATUSES.has(n.status);
-            const isActive = !isBlocked && !isCompleted && (INCOMPLETE_STATUSES.has(n.status) || n.status === 'inbox');
-
-            if (isActive) statusVis = ($filters as any).statusActive ?? 'bright';
-            else if (isBlocked) statusVis = ($filters as any).statusBlocked ?? 'bright';
-            else if (isCompleted) statusVis = ($filters as any).statusCompleted ?? 'bright';
 
             let priVis = 'bright';
             if (!STRUCTURAL_TYPES.has(n.type)) {

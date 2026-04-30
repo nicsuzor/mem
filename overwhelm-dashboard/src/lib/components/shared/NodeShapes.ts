@@ -1,7 +1,7 @@
 import * as d3 from 'd3';
 import type { GraphNode } from '../../data/prepareGraphData';
 import { projectHue } from '../../data/projectUtils';
-import { INCOMPLETE_STATUSES, PRIORITY_BORDERS as SHARED_PRIORITY_BORDERS, STATUS_FILLS } from '../../data/constants';
+import { INCOMPLETE_STATUSES, PRIORITY_BORDERS as SHARED_PRIORITY_BORDERS, STATUS_FILLS, STRUCTURAL_TYPES } from '../../data/constants';
 
 function escapeHtml(str: string): string {
     return str
@@ -361,7 +361,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
 
     // Determine visual tier
     const isEpicTier = !d._isProjectContainer && !d._isOverflow && isParent
-        && ['epic', 'goal', 'project'].includes(d.type);
+        && STRUCTURAL_TYPES.has(d.type);
 
     // ── TIER 1: Project containers — explicit bounded regions ──
     if (d._isProjectContainer) {

@@ -27,8 +27,7 @@ test('Verify graph view and interactions', async ({ page }) => {
   // Many Svelte/Tailwind apps use class names like 'bg-blue-500' or similar for active states.
   // I'll check for a common pattern or just assert it's clicked.
   // Actually, I'll inspect the element's classes.
-  const classes = await forceButton.evaluate(el => el.className);
-  console.log('Force button classes:', classes);
+  await expect(forceButton).toHaveClass(/bg-primary\/15/);
   
   // 4. Take a screenshot of the new layout.
   await page.screenshot({ path: '/workspace/graph_layout.png', fullPage: true });
@@ -36,5 +35,5 @@ test('Verify graph view and interactions', async ({ page }) => {
   // 5. Verify the status filter bar is still visible at the top of the graph area.
   // I'll look for text like "Filters" or status names like "Ready", "Blocked", "Done" if they are common.
   // Or look for a container that looks like a filter bar.
-  await expect(page.getByText('Filters', { exact: false }).or(page.getByText('Ready'))).toBeVisible();
+  await expect(page.getByRole('toolbar', { name: 'Status filter' })).toBeVisible();
 });
