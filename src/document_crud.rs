@@ -446,8 +446,18 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             (safe_id, filename)
         }
         None => {
-            // Use type as prefix when available, otherwise "task"
-            let prefix = fields.task_type.as_deref().unwrap_or("task");
+            // Prefix source: use `project` when set so IDs/filenames are
+            // namespaced like `aops-<hash>` / `aops-<hash>-<slug>.md`.
+            // Fallback when project is missing: literal `"task"` to preserve
+            // legacy behaviour for projectless / ad-hoc tasks (yields
+            // `task-<hash>` / `task-<hash>-<slug>.md`). The `task_type` field
+            // is intentionally NOT used here — it is captured in the
+            // frontmatter `type:` field, not the ID prefix.
+            let prefix = fields
+                .project
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("task");
             let id = generate_id(prefix);
             let slug = slugify(&fields.title);
             let filename = format!("{}-{}.md", id, slug);
@@ -1334,11 +1344,74 @@ mod tests {
         assert!(content.contains("type: epic"), "type field should be written: {content}");
         assert!(content.contains("status: in_progress"), "status field should be written: {content}");
         assert!(content.contains("project: aops"), "project field should be written: {content}");
-        // ID should use the type as prefix
+        // ID should use the PROJECT as prefix (not task_type) — see
+        // create_task: regression task-381788fb. Filename inherits the
+        // project-prefixed ID.
         assert!(
-            path.file_name().unwrap().to_string_lossy().starts_with("epic-"),
-            "filename should use type prefix: {:?}",
+            path.file_name().unwrap().to_string_lossy().starts_with("aops-"),
+            "filename should use project prefix: {:?}",
             path.file_name()
+        );
+    }
+
+    #[test]
+    fn create_task_uses_project_as_id_prefix() {
+        // Regression: task-381788fb. create_task(project="aops", title="Foo")
+        // must produce ID `aops-<hash>` and filename `aops-<hash>-foo.md`.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Foo".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let filename = path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            filename.starts_with("aops-") && filename.ends_with("-foo.md"),
+            "filename must be aops-<hash>-foo.md, got {filename}"
+        );
+
+        let content = fs::read_to_string(&path).unwrap();
+        // Frontmatter id must match the project-prefixed ID (which is also
+        // the filename stem minus the slug).
+        let expected_id_prefix = "id: aops-";
+        assert!(
+            content.contains(expected_id_prefix),
+            "frontmatter id must start with `aops-`: {content}"
+        );
+    }
+
+    #[test]
+    fn create_task_without_project_falls_back_to_task_prefix() {
+        // Documented fallback: when `project` is missing, the ID prefix is
+        // the literal string "task" (preserving pre-regression behaviour for
+        // projectless / ad-hoc tasks).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Orphan task".to_string(),
+            parent: Some("parent-001".to_string()),
+            task_type: Some("epic".to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let filename = path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            filename.starts_with("task-"),
+            "without project, prefix must fall back to 'task-', got {filename}"
+        );
+        // task_type must NOT leak into the ID prefix.
+        assert!(
+            !filename.starts_with("epic-"),
+            "task_type must not be used as ID prefix: {filename}"
         );
     }
 
