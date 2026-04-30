@@ -18,7 +18,6 @@ test('capture screenshot and check nav', async ({ page }) => {
       .filter(t => t.length > 0);
   });
   
-  console.log('NAV_BUTTONS_START');
-  console.log(JSON.stringify(navButtons));
-  console.log('NAV_BUTTONS_END');
+  const expectedButtons = ['DASHBOARD', 'GRAPH', 'TASKS', 'Menu'];
+  expect(navButtons).toEqual(expect.arrayContaining(expectedButtons));
 });
