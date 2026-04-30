@@ -27,8 +27,7 @@ test('Verify graph view and interactions', async ({ page }) => {
   // Many Svelte/Tailwind apps use class names like 'bg-blue-500' or similar for active states.
   // I'll check for a common pattern or just assert it's clicked.
   // Actually, I'll inspect the element's classes.
-  const classes = await forceButton.evaluate(el => el.className);
-  console.log('Force button classes:', classes);
+  await expect(forceButton).toHaveClass(/bg-primary\/15/);
   
   // 4. Take a screenshot of the new layout.
   await page.screenshot({ path: '/workspace/graph_layout.png', fullPage: true });
