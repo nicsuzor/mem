@@ -203,8 +203,8 @@ export function extractMultiTargetSubgraph(
             const c = childrenOf.get(sid) || [];
             c.push(tid);
             childrenOf.set(sid, c);
-        } else if (e.type === 'depends_on' || e.type === 'soft_depends_on') {
-            // sid depends on tid — sid's prereq is tid
+        } else if (e.type === 'depends_on' || e.type === 'soft_depends_on' || e.type === 'contributes_to') {
+            // sid depends on / contributes to tid — tid is a prereq for sid
             const arr = prereqOut.get(sid) || [];
             arr.push(e);
             prereqOut.set(sid, arr);

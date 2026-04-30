@@ -49,9 +49,20 @@
             const tid = endpointId(e.target);
             if (e.type === 'depends_on' || e.type === 'soft_depends_on' || e.type === 'parent' || e.type === 'contributes_to') {
                 prereqsOf.get(sid)?.push(tid);
-                // First edge type wins (depends_on > soft > contributes > parent prefer).
+                // Edge-type precedence so the rendered link reflects the most
+                // significant relationship between two nodes when more than one
+                // edge connects them: depends_on > soft_depends_on > contributes_to > parent.
                 const key = `${sid}-${tid}`;
-                if (!edgeTypeBetween.has(key)) edgeTypeBetween.set(key, e.type);
+                const weights: Record<string, number> = {
+                    depends_on: 4,
+                    soft_depends_on: 3,
+                    contributes_to: 2,
+                    parent: 1,
+                };
+                const cur = edgeTypeBetween.get(key);
+                if (!cur || (weights[e.type] ?? 0) > (weights[cur] ?? 0)) {
+                    edgeTypeBetween.set(key, e.type);
+                }
             }
         }
 
