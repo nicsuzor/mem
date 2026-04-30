@@ -596,6 +596,19 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        let project = args
+            .get("project")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Missing required parameter: project. Every task must declare a \
+                     project (e.g. 'aops', 'mem', 'adhoc-sessions').",
+                ),
+                data: None,
+            })?;
+
         let fields = crate::document_crud::TaskFields {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
@@ -659,10 +672,7 @@ impl PkbSearchServer {
                 .get("due")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            project: args
-                .get("project")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            project: Some(project.to_string()),
             task_type: args
                 .get("type")
                 .and_then(|v| v.as_str())
@@ -783,13 +793,34 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        // Validate parent exists
+        // Validate parent exists and has a project (subtasks inherit project from parent)
         {
             let graph = self.graph.read();
-            if graph.resolve(parent_id).is_none() {
+            let parent_node = graph.resolve(parent_id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Parent task not found: {parent_id}")),
+                data: None,
+            })?;
+
+            let parent_has_project = crate::pkb::parse_file_relative(
+                &self.abs_path(&parent_node.path),
+                &self.pkb_root,
+            )
+            .and_then(|doc| doc.frontmatter)
+            .and_then(|fm| {
+                fm.get("project")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+            })
+            .unwrap_or(false);
+
+            if !parent_has_project {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!("Parent task not found: {parent_id}")),
+                    message: Cow::from(format!(
+                        "Parent task '{parent_id}' has no `project` field. Subtasks \
+                         inherit the parent's project — set the parent's project first."
+                    )),
                     data: None,
                 });
             }
@@ -1855,6 +1886,7 @@ impl PkbSearchServer {
         let fields = crate::document_crud::TaskFields {
             title,
             parent: Some("adhoc-sessions".to_string()),
+            project: Some("adhoc-sessions".to_string()),
             tags: vec!["adhoc".to_string(), "session-release".to_string()],
             session_id: args.get("session_id").and_then(|v| v.as_str()).map(String::from),
             issue_url: args.get("issue_url").and_then(|v| v.as_str()).map(String::from),
@@ -2517,6 +2549,18 @@ impl PkbSearchServer {
                 }
             }
         };
+
+        // Subtasks created via decompose inherit the parent's project. Reject early if
+        // the parent has none, rather than producing tasks that fail at create_task.
+        let parent_project = parent_project.ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!(
+                "Parent task '{parent_id}' has no `project` field. Subtasks inherit \
+                 the parent's project — set it first or pass `project` per-subtask."
+            )),
+            data: None,
+        })?;
+        let parent_project = Some(parent_project);
 
         // First pass: assign IDs to all subtasks and build title map for cross-references
         let mut subtask_ids: Vec<String> = Vec::with_capacity(subtasks.len());
@@ -4249,7 +4293,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Supports the Birnbaum importance model via `contributes_to` and severity-based prioritization. Always provide a parent to maintain graph integrity.",
+                "Create a new task markdown file with YAML frontmatter. Requires `parent` and `project`. Supports the Birnbaum importance model via `contributes_to` and severity-based prioritization.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4270,11 +4314,11 @@ impl PkbSearchServer {
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
-                        "project": { "type": "string", "description": "Project identifier (e.g. 'aops')" },
+                        "project": { "type": "string", "description": "Project identifier (required, e.g. 'aops', 'mem', 'adhoc-sessions')" },
                         "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, project." },
                         "status": { "type": "string", "description": "Task status (default: 'draft' — new tasks start as draft and are excluded from ready queue until promoted to 'active'). Also accepts: active, blocked, done, merge_ready, in_progress, etc." }
                     },
-                    "required": ["title"]
+                    "required": ["title", "project"]
                 }))
                 .unwrap(),
             )

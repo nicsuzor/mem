@@ -416,6 +416,14 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         );
     }
 
+    // project is required — every task must belong to a project for routing/filtering
+    if fields.project.as_deref().map(str::is_empty).unwrap_or(true) {
+        anyhow::bail!(
+            "project is required: every task must declare a project (e.g. 'aops', \
+             'mem', 'adhoc-sessions'). Set fields.project before calling create_task."
+        );
+    }
+
     // Validation
     if let Some(ref t) = fields.task_type {
         if !crate::graph::is_valid_node_type(t) {
@@ -1352,6 +1360,7 @@ mod tests {
         let fields = TaskFields {
             title: "Default metadata task".to_string(),
             parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
             ..Default::default()
         };
 
@@ -1360,7 +1369,48 @@ mod tests {
 
         assert!(content.contains("type: task"), "default type should be 'task': {content}");
         assert!(content.contains("status: inbox"), "default status should be 'inbox': {content}");
-        assert!(!content.contains("project:"), "project should not appear when None: {content}");
+        assert!(content.contains("project: aops"), "project should be written: {content}");
+    }
+
+    #[test]
+    fn create_task_rejects_missing_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        let fields = TaskFields {
+            title: "No project task".to_string(),
+            parent: Some("parent-001".to_string()),
+            ..Default::default()
+        };
+
+        let err = create_task(root, fields).unwrap_err();
+        assert!(
+            err.to_string().contains("project is required"),
+            "error should mention project requirement: {err}"
+        );
+    }
+
+    #[test]
+    fn create_task_rejects_empty_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        let fields = TaskFields {
+            title: "Empty project task".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some(String::new()),
+            ..Default::default()
+        };
+
+        let err = create_task(root, fields).unwrap_err();
+        assert!(
+            err.to_string().contains("project is required"),
+            "error should mention project requirement: {err}"
+        );
     }
 }
 
