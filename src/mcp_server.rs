@@ -2938,6 +2938,15 @@ impl PkbSearchServer {
         let goal_type = args.get("goal_type").and_then(|v| v.as_str());
         let assignee = args.get("assignee").and_then(|v| v.as_str());
         let project = args.get("project").and_then(|v| v.as_str());
+        let tags: Vec<String> = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
         let include_subtasks = args
             .get("include_subtasks")
@@ -3018,6 +3027,12 @@ impl PkbSearchServer {
                     .as_deref()
                     .map(|pr| pr.eq_ignore_ascii_case(p))
                     .unwrap_or(false)
+            });
+        }
+        if !tags.is_empty() {
+            tasks.retain(|t| {
+                tags.iter()
+                    .all(|want| t.tags.iter().any(|have| have.eq_ignore_ascii_case(want)))
             });
         }
 
@@ -4477,6 +4492,7 @@ impl PkbSearchServer {
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags. A task matches iff every requested tag is present in its frontmatter `tags` array (AND, case-insensitive)." },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
                         "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
@@ -5342,6 +5358,126 @@ mod tests {
         // Either empty JSON tasks array or "No tasks found" message
         let is_empty = text.contains("No tasks found") || text.contains("\"tasks\":[]") || text.contains("\"tasks\": []");
         assert!(is_empty, "non-existent project should return empty: {}", text);
+    }
+
+    // ── Tag filtering ──
+
+    fn make_doc_with_tags(
+        path: &str,
+        title: &str,
+        id: &str,
+        tags: &[&str],
+    ) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), json!(title));
+        fm.insert("type".to_string(), json!("task"));
+        fm.insert("status".to_string(), json!("active"));
+        fm.insert("id".to_string(), json!(id));
+        if !tags.is_empty() {
+            fm.insert("tags".to_string(), json!(tags));
+        }
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        }
+    }
+
+    fn build_tag_test_server() -> PkbSearchServer {
+        let docs = vec![
+            make_doc_with_tags("tasks/t-overwhelm.md", "Overwhelm task", "t-overwhelm", &["overwhelm", "rust"]),
+            make_doc_with_tags("tasks/t-overwhelm-only.md", "Overwhelm only", "t-overwhelm-only", &["overwhelm"]),
+            make_doc_with_tags("tasks/t-rust-only.md", "Rust only", "t-rust-only", &["rust"]),
+            make_doc_with_tags("tasks/t-untagged.md", "Untagged task", "t-untagged", &[]),
+            make_doc_with_tags("tasks/t-other.md", "Other task", "t-other", &["misc"]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-tags"));
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            PathBuf::from("/tmp/test-pkb-tags"),
+            PathBuf::from("/tmp/test-pkb-tags/db"),
+            Arc::new(RwLock::new(graph)),
+        )
+    }
+
+    #[test]
+    fn test_list_tasks_single_tag_filter() {
+        let server = build_tag_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"tags": ["overwhelm"], "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert!(ids.contains(&"t-overwhelm".to_string()));
+        assert!(ids.contains(&"t-overwhelm-only".to_string()));
+        assert!(!ids.contains(&"t-rust-only".to_string()));
+        assert!(!ids.contains(&"t-untagged".to_string()));
+        assert!(!ids.contains(&"t-other".to_string()));
+    }
+
+    #[test]
+    fn test_list_tasks_multi_tag_and_filter() {
+        let server = build_tag_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"tags": ["overwhelm", "rust"], "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert_eq!(ids, vec!["t-overwhelm".to_string()]);
+    }
+
+    #[test]
+    fn test_list_tasks_tag_no_match_returns_empty() {
+        let server = build_tag_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"tags": ["does-not-exist"], "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_list_tasks_tag_filter_excludes_untagged() {
+        let server = build_tag_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"tags": ["overwhelm"], "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert!(!ids.contains(&"t-untagged".to_string()));
+    }
+
+    #[test]
+    fn test_list_tasks_tag_filter_case_insensitive() {
+        let server = build_tag_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"tags": ["OVERWHELM"], "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert!(ids.contains(&"t-overwhelm".to_string()));
+        assert!(ids.contains(&"t-overwhelm-only".to_string()));
+    }
+
+    #[test]
+    fn test_list_tasks_schema_includes_tags_parameter() {
+        let tools = PkbSearchServer::get_all_tools();
+        let list_tasks_tool = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "list_tasks")
+            .expect("list_tasks tool should exist");
+        let schema = serde_json::to_string(&list_tasks_tool.input_schema).unwrap();
+        assert!(
+            schema.contains("\"tags\""),
+            "list_tasks schema should include 'tags' parameter, got: {}",
+            schema
+        );
     }
 
     // ── AC6: tool schema includes project parameter ──
