@@ -167,16 +167,6 @@
         fNodes = fNodes.filter(n => {
             let visState = 'bright';
 
-            // Determine status visibility
-            let statusVis = 'bright';
-            const isBlocked = n.status === "blocked";
-            const isCompleted = COMPLETED_STATUSES.has(n.status);
-            const isActive = !isBlocked && !isCompleted && INCOMPLETE_STATUSES.has(n.status);
-
-            if (isActive) statusVis = $filters.statusActive;
-            else if (isBlocked) statusVis = $filters.statusBlocked;
-            else if (isCompleted) statusVis = $filters.statusCompleted;
-
             let priVis = 'bright';
             if (!STRUCTURAL_TYPES.has(n.type)) {
                 if (n.priority === 0) priVis = $filters.priority0;
@@ -186,8 +176,8 @@
                 else if (n.priority === 4) priVis = $filters.priority4;
             }
 
-            if (statusVis === 'hidden' || priVis === 'hidden') return false;
-            if (statusVis === 'half' || priVis === 'half') visState = 'half';
+            if (priVis === 'hidden') return false;
+            if (priVis === 'half') visState = 'half';
 
             (n as any).filter_dimmed = (visState === 'half');
             return true;
