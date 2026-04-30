@@ -154,10 +154,12 @@ impl GraphStore {
         }
 
         // 3. Build edges from links and frontmatter refs
+        let _t_edges = std::time::Instant::now();
         let edges: Vec<Edge> = nodes
             .par_iter()
             .flat_map(|n| build_node_edges(n, &id_map, &path_to_id, pkb_root))
             .collect();
+        tracing::debug!(target: "perf::graph_rebuild", phase = "build_edges", n_nodes = nodes.len(), n_edges = edges.len(), elapsed_ms = _t_edges.elapsed().as_secs_f64() * 1000.0);
 
         // Deduplicate edges by (source, target, type)
         let mut seen: HashSet<(String, String, String)> = HashSet::new();
@@ -208,11 +210,13 @@ impl GraphStore {
 
         // 9b. Compute similarity edges if vector store is provided
         // threshold 0.85 as default for materialised edges
+        let _t_sim = std::time::Instant::now();
         let similarity_edges = if let Some(store) = opt_store {
             compute_similarity_edges(&nodes, &edges, store, 0.85)
         } else {
             vec![]
         };
+        tracing::debug!(target: "perf::graph_rebuild", phase = "similarity_edges", n_nodes = nodes.len(), n_sim_edges = similarity_edges.len(), elapsed_ms = _t_sim.elapsed().as_secs_f64() * 1000.0);
 
         let mut edges = edges;
         edges.extend(similarity_edges);
