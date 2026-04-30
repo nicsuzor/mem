@@ -17,8 +17,8 @@ jobs:
     name: Release-plz
     runs-on: ubuntu-latest
     outputs:
-      releases_created: ${{ steps.release.outputs.releases_created }}
-      tag: ${{ steps.get-tag.outputs.tag }}
+      build_tag: ${{ steps.detect-build.outputs.build_tag }}
+      build_reason: ${{ steps.detect-build.outputs.reason }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,15 +40,55 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: get-tag
-        if: steps.release.outputs.releases_created == 'true'
+      # Decide whether build-release should fire and for which tag.
+      #
+      # Two paths trigger a build:
+      #   1. Fresh release: release-plz created a release this run.
+      #   2. Recovery: a tag exists at HEAD but its GitHub release has fewer
+      #      than EXPECTED_ASSETS binaries. This happens when a prior push
+      #      was concurrency-cancelled mid-run after release-plz had already
+      #      created the tag + release, leaving the gated build-release
+      #      skipped on the successor run (which then sees "Already
+      #      published"). v0.3.14 and v0.3.19 shipped with 0 assets via this
+      #      race; this step makes the workflow self-healing.
+      - id: detect-build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_ASSETS: "2"
+          RELEASES_CREATED: ${{ steps.release.outputs.releases_created }}
+          RELEASES_JSON: ${{ steps.release.outputs.releases }}
         run: |
-          TAG=$(echo '${{ steps.release.outputs.releases }}' | jq -r '.[0].tag')
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [[ "$RELEASES_CREATED" == "true" ]]; then
+            TAG=$(jq -r '.[0].tag' <<<"$RELEASES_JSON")
+            echo "build_tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "reason=fresh_release" >> "$GITHUB_OUTPUT"
+            echo "Fresh release $TAG — will build."
+            exit 0
+          fi
+
+          HEAD_TAG=$(git tag --points-at HEAD | head -n1)
+          if [[ -z "$HEAD_TAG" ]]; then
+            echo "No tag at HEAD; nothing to do."
+            exit 0
+          fi
+
+          ASSET_COUNT=$(gh release view "$HEAD_TAG" --json assets --jq '.assets | length' 2>/dev/null || echo missing)
+          if [[ "$ASSET_COUNT" == "missing" ]]; then
+            echo "Tag $HEAD_TAG has no GitHub release; nothing to recover."
+            exit 0
+          fi
+          if (( ASSET_COUNT < EXPECTED_ASSETS )); then
+            echo "Tag $HEAD_TAG release has $ASSET_COUNT < $EXPECTED_ASSETS assets — triggering recovery build."
+            echo "build_tag=$HEAD_TAG" >> "$GITHUB_OUTPUT"
+            echo "reason=recovery" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $HEAD_TAG release already has $ASSET_COUNT assets; no rebuild needed."
+          fi
 
   build-release:
     needs: release-plz
-    if: needs.release-plz.outputs.releases_created == 'true'
+    if: needs.release-plz.outputs.build_tag != ''
     uses: ./.github/workflows/build-release.yml
     with:
-      tag: ${{ needs.release-plz.outputs.tag }}
+      tag: ${{ needs.release-plz.outputs.build_tag }}
