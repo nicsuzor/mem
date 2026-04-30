@@ -171,7 +171,7 @@ fn get_node_embedding(id: &str, path: &str, store: &VectorStore) -> Option<Vec<f
     }
 }
 
-fn average_embedding(embeddings: &[Vec<f32>]) -> Option<Vec<f32>> {
+pub(crate) fn average_embedding(embeddings: &[Vec<f32>]) -> Option<Vec<f32>> {
     if embeddings.is_empty() {
         return None;
     }

@@ -770,6 +770,7 @@ fn load_graph(
     _db_path: &std::path::Path,
     opt_store: Option<&vectordb::VectorStore>,
 ) -> graph_store::GraphStore {
+    use rayon::prelude::*;
     let files = crate::pkb::scan_directory_all(pkb_root);
     let docs: Vec<crate::pkb::PkbDocument> = files
         .par_iter()
