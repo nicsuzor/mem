@@ -8,6 +8,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use parking_lot::RwLock;
 use rmcp::ServiceExt;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::path::PathBuf;
 use std::sync::Arc;
 

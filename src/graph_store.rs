@@ -1288,7 +1288,7 @@ fn compute_inverses(
                     contributed_by_updates.push((idx, edge.source.clone()));
                 }
             }
-            EdgeType::Link | EdgeType::Supersedes => {}
+            EdgeType::Link | EdgeType::Supersedes | EdgeType::SimilarTo => {}
         }
     }
 
