@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.21](https://github.com/nicsuzor/mem/compare/v0.3.20...v0.3.21) - 2026-04-30
+
+### Other
+
+- make release pipeline self-healing + manually recoverable ([#277](https://github.com/nicsuzor/mem/pull/277))
+
 ## [0.3.20](https://github.com/nicsuzor/mem/compare/v0.3.19...v0.3.20) - 2026-04-30
 
 ### Added
