@@ -675,6 +675,173 @@ fn test_http_error_unknown_tool() {
     );
 }
 
+/// Regression test for task-3c672195 / PR for "PKB semantic search returns no
+/// results". Seeds a temp PKB with a single uniquely-keyed document, reindexes
+/// it via the `pkb` CLI, then runs an MCP HTTP search for a query that should
+/// match only that document, and asserts the document appears in the results.
+///
+/// Skips gracefully if the BGE-M3 ONNX model is not available locally
+/// (CI that does not pre-cache the model would otherwise have to download
+/// ~2 GB on every run).
+#[test]
+fn test_http_seeded_search_returns_seeded_doc() {
+    use std::fs;
+    let dir = match tempfile::tempdir() {
+        Ok(d) => d,
+        Err(_) => {
+            eprintln!("SKIP: could not create tempdir");
+            return;
+        }
+    };
+    let pkb_root = dir.path();
+    let db_path = pkb_root.join("test_index.bin");
+
+    // A unique, unmistakable phrase so the search has an obvious top hit.
+    let unique_phrase = "xyzzyplugh-quokka-photoluminescent";
+    let seed_md = format!(
+        "---\ntitle: Seeded Search Marker\ntype: note\n---\n\n\
+         This document exists only to prove search is wired up. \
+         The unique marker phrase is {unique_phrase} which should be \
+         the dominant signal in any embedding of this content."
+    );
+    fs::write(pkb_root.join("seeded.md"), seed_md).expect("write seed file");
+    fs::write(
+        pkb_root.join("decoy.md"),
+        "---\ntitle: Decoy\ntype: note\n---\n\nUnrelated weather report — \
+         yesterday was sunny, tomorrow may rain.",
+    )
+    .expect("write decoy file");
+
+    // Run `pkb reindex` against the temp PKB. If the embedder cannot init
+    // (no ONNX model cached, no network), skip — we cannot drive search
+    // meaningfully without it.
+    let pkb_root_str = pkb_root.to_string_lossy().to_string();
+    let db_path_str = db_path.to_string_lossy().to_string();
+    let reindex = Command::new(pkb_binary())
+        .args([
+            "--pkb-root",
+            &pkb_root_str,
+            "--db-path",
+            &db_path_str,
+            "reindex",
+        ])
+        .env("AOPS_OFFLINE", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+
+    let output = match reindex {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("SKIP: failed to spawn pkb reindex: {e}");
+            return;
+        }
+    };
+    if !output.status.success() {
+        eprintln!(
+            "SKIP: reindex failed (likely no cached ONNX model). stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    // Spawn an MCP HTTP daemon against the temp PKB.
+    let port = free_port();
+    let mut child = Command::new(pkb_binary())
+        .args([
+            "--pkb-root",
+            &pkb_root_str,
+            "--db-path",
+            &db_path_str,
+            "mcp",
+            "--http",
+            "--port",
+            &port.to_string(),
+        ])
+        .env("AOPS_OFFLINE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn pkb mcp --http");
+
+    // Wait for the daemon to bind the port.
+    let start = Instant::now();
+    let timeout = Duration::from_secs(30);
+    let mut ready = false;
+    while start.elapsed() < timeout {
+        if std::net::TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(200),
+        )
+        .is_ok()
+        {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if !ready {
+        child.kill().ok();
+        panic!("MCP HTTP server on port {port} not ready after {timeout:?}");
+    }
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Forcibly target the local daemon — the http_post helper otherwise
+    // honours PKB_MCP_URL and would silently exercise the user's production
+    // server, which would defeat the seeded-search assertion entirely.
+    let prior_pkb_mcp_url = std::env::var("PKB_MCP_URL").ok();
+    std::env::remove_var("PKB_MCP_URL");
+
+    let result = (|| -> Value {
+        let (status, headers, body) =
+            http_post(port, &initialize_request(1), None);
+        assert_eq!(status, 200, "initialize failed: {body}");
+        let session_id = headers
+            .get("mcp-session-id")
+            .expect("missing session id")
+            .clone();
+
+        let (_status, _, _) = http_post(
+            port,
+            &jsonrpc_notification("notifications/initialized"),
+            Some(&session_id),
+        );
+
+        http_call_tool(
+            port,
+            &session_id,
+            2,
+            "search",
+            json!({"query": unique_phrase, "limit": 5}),
+        )
+    })();
+
+    if let Some(v) = prior_pkb_mcp_url {
+        std::env::set_var("PKB_MCP_URL", v);
+    }
+
+    child.kill().ok();
+    child.wait().ok();
+
+    let result_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    // The acceptance criterion: a query with an obvious hit must return
+    // non-empty results, and the seeded document must be among them.
+    assert!(
+        !result_text.contains("No results found"),
+        "search returned 'No results found' for a query that should match a \
+         seeded document. Full response: {result}"
+    );
+    assert!(
+        result_text.contains("Seeded Search Marker"),
+        "search did not surface the seeded document. Response: {result_text}"
+    );
+}
+
 #[test]
 fn test_http_concurrent_sessions() {
     let server = HttpServer::start();
