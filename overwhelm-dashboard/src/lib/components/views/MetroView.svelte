@@ -945,6 +945,9 @@
         // flagged as priority but not serving any declared target. Keep them
         // visible so the user can see them, just not anchored.
         const metroNodes = allMetroNodes.filter(n => {
+            const matchesStatus = $filters.selectedStatuses.length === 0 || $filters.selectedStatuses.includes(n.status);
+            if (!matchesStatus && !EPIC_TYPES.has(n.type)) return false;
+
             const onRoute = (routeData.routes.get(n.id)?.size ?? 0) > 0;
             if (onRoute) return true;
             if (isIncomplete(n) && n.priority <= 1 && (n.type || '').toLowerCase() !== 'target') return true;

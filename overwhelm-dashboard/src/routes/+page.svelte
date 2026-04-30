@@ -160,12 +160,22 @@
         fNodes = fNodes.filter(n => {
             if (!TASK_TYPES.has(n.type)) return false;
             if (STRUCTURAL_TYPES.has(n.type)) return true;
-            return n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "" && n.status !== "inbox";
+            return n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "";
         });
 
         // Tri-state Visibility Filters
         fNodes = fNodes.filter(n => {
             let visState = 'bright';
+
+            // Determine status visibility
+            let statusVis = 'bright';
+            const isBlocked = n.status === "blocked";
+            const isCompleted = COMPLETED_STATUSES.has(n.status);
+            const isActive = !isBlocked && !isCompleted && (INCOMPLETE_STATUSES.has(n.status) || n.status === 'inbox');
+
+            if (isActive) statusVis = ($filters as any).statusActive ?? 'bright';
+            else if (isBlocked) statusVis = ($filters as any).statusBlocked ?? 'bright';
+            else if (isCompleted) statusVis = ($filters as any).statusCompleted ?? 'bright';
 
             let priVis = 'bright';
             if (!STRUCTURAL_TYPES.has(n.type)) {

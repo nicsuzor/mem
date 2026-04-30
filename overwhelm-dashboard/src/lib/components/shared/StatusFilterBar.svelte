@@ -1,17 +1,16 @@
 <script lang="ts">
     import { filters } from '../../stores/filters';
     import { graphData } from '../../stores/graph';
-    import { STATUS_FILLS, STATUS_LABELS, STATUS_ORDER } from '../../data/constants';
+    import { STATUS_FILLS, STATUS_LABELS, GROWTH_TAXONOMY } from '../../data/constants';
 
-    // Chips follow the canonical lifecycle in aops-core/TAXONOMY.md and consume the
-    // canonical palette from constants.ts — so chip color == card fill color for the
-    // same status ("green in the filter" = "green on the card").
+    // Chips follow the growth taxonomy:
+    // incoming, seed, growing, active, blocked, dormant, complete, dead
     const STATUS_GROUPS = [
         { label: 'ALL', statuses: [] as string[], color: '#94a3b8' },
-        ...STATUS_ORDER.map(s => ({
-            label: STATUS_LABELS[s],
-            statuses: [s],
-            color: STATUS_FILLS[s],
+        ...GROWTH_TAXONOMY.map(g => ({
+            label: g.label,
+            statuses: [...g.statuses],
+            color: g.color,
         })),
     ];
 

@@ -344,10 +344,10 @@ pub fn resolve_status_alias(status: &str) -> &str {
         "active" => "ready",
 
         // Inbox-family: untriaged capture
-        "todo" | "open" | "draft" | "early-scaffold" | "planning" | "seed" => "inbox",
+        "todo" | "open" | "draft" | "early-scaffold" | "planning" | "seed" | "incoming" => "inbox",
 
         // In-progress spellings (decomposing = was active work mid-flight)
-        "in-progress" | "in-preparation" | "partial" | "decomposing" => "in_progress",
+        "in-progress" | "in-preparation" | "partial" | "decomposing" | "growing" => "in_progress",
 
         // Review-family: awaiting human or external decision
         "in_review" | "in-review" | "ready-for-review" | "ISSUES_FOUND"

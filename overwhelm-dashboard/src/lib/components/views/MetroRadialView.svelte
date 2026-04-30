@@ -2,6 +2,7 @@
     import { onMount, onDestroy } from 'svelte';
     import { preparedGraphData } from '../../stores/graph';
     import { selection, toggleSelection } from '../../stores/selection';
+    import { filters } from '../../stores/filters';
     import { INCOMPLETE_STATUSES } from '../../data/constants';
     import { projectColor } from '../../data/projectUtils';
     import type { GraphNode } from '../../data/prepareGraphData';
@@ -189,8 +190,13 @@
                     }
                     // Rank by next-action-ness: status readiness, priority, recency
                     const statusOrderLocal: Record<string, number> = {
-                        in_progress: 0, review: 1, ready: 2, active: 3,
-                        todo: 4, inbox: 5, waiting: 6, blocked: 7, dormant: 8,
+                        inbox: 0,
+                        in_progress: 1, queued: 1, review: 1, merge_ready: 1,
+                        ready: 2,
+                        blocked: 3,
+                        paused: 4, someday: 4,
+                        done: 5,
+                        cancelled: 6,
                     };
                     bag.sort((a, b) => {
                         const sa = statusOrderLocal[a.status] ?? 9;
@@ -222,15 +228,25 @@
         //    shared node legitimately appears in multiple lines' stop lists.
         //    That's what produces interchanges.)
         const statusOrder: Record<string, number> = {
-            in_progress: 0, review: 1, ready: 2, active: 3, todo: 4,
-            inbox: 5, waiting: 6, blocked: 7, dormant: 8,
+            inbox: 0,
+            in_progress: 1, queued: 1, review: 1, merge_ready: 1,
+            ready: 2,
+            blocked: 3,
+            paused: 4, someday: 4,
+            done: 5,
+            cancelled: 6,
         };
 
         for (const line of newLines) {
             const mine: GraphNode[] = [];
             for (const [nid, destSet] of routes) {
                 if (destSet.has(line.terminalId) && nid !== line.terminalId) {
-                    mine.push(byId.get(nid)!);
+                    const n = byId.get(nid)!;
+                    // Apply status filter
+                    const matchesStatus = $filters.selectedStatuses.length === 0 || $filters.selectedStatuses.includes(n.status);
+                    if (matchesStatus || ['epic', 'goal', 'project'].includes((n.type || '').toLowerCase())) {
+                        mine.push(n);
+                    }
                 }
             }
             // Timeline ordering: later in journey = closer to terminus.
