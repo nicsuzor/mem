@@ -7,7 +7,7 @@ A fast, local semantic search engine and knowledge graph for your personal knowl
 ## Features
 
 - **Semantic search** — BGE-M3 embeddings (1024-dim) via ONNX Runtime, with hybrid graph-proximity boosting
-- **Knowledge graph** — Automatic relationship extraction from YAML frontmatter (`depends_on`, `parent`, `tags`, etc.), with PageRank, betweenness centrality, and path tracing
+- **Knowledge graph** — Seven edge types extracted from frontmatter (`parent`, `depends_on`, `soft_depends_on`, `supersedes`, `contributes_to`) and body (`link` from wikilinks), plus auto-discovered `similar_to` edges from semantic similarity. PageRank, betweenness centrality, and path tracing
 - **Task management** — Create, prioritize, and track tasks with dependency graphs; `ready` and `blocked` filters use graph analysis
 - **Memory system** — Store and retrieve observations, notes, and insights with semantic search
 - **MCP server** — 40 tools for AI assistants over stdio transport
@@ -121,6 +121,22 @@ All frontmatter fields are optional. Files without frontmatter are indexed by fi
 | **Reference** | `note`, `knowledge`, `memory`, `contact` |
 
 Actionable types are used for task management (ready/blocked analysis, dependency graphs, focus picks). Reference types appear in search and the knowledge graph but are excluded from task workflows.
+
+### Edge types
+
+The knowledge graph has seven edge types. Some are derived from frontmatter, others are computed automatically.
+
+| Edge type | Source | Affects ready/blocked? | Affects importance propagation? | Notes |
+|-----------|--------|-------------------------|----------------------------------|-------|
+| `parent` | `parent:` frontmatter or `children:` list | ✅ (via unfinished children) | ✅ | Hierarchy |
+| `depends_on` | `depends_on:` list | ✅ blocks task | ✅ | Hard dependency |
+| `soft_depends_on` | `soft_depends_on:` list | ❌ | ✅ | Informational ordering |
+| `link` | `[[wikilinks]]` and markdown links in body | ❌ | ❌ | Cross-references; counted as backlinks |
+| `supersedes` | `supersedes:` frontmatter | ❌ | ❌ | This node replaces the target |
+| `contributes_to` | `contributes_to:` list with verbal weights | ❌ | ✅ | Strategic priority (Birnbaum importance with Renooij-Witteman terms) |
+| `similar_to` | Computed from BGE-M3 embeddings (cosine ≥ 0.85) | ❌ | ❌ | Auto-discovered semantic similarity; appears in `pkb_context` and `pkb_trace` |
+
+`similar_to` edges are materialised when the graph is built with the vector store available (e.g. via the MCP server). They participate in pathfinding (`pkb_trace`) and context display (`pkb_context`) but are deliberately excluded from blocking analysis and ready/blocked classification — semantic similarity is informational, not causal.
 
 ## CLI Commands
 
@@ -236,6 +252,8 @@ project_clustering = 0.5  # Strength of same-project attraction (0 = off)
 max_displacement = 10.0   # Per-node per-iteration movement cap
 
 # Edge attraction by type: [strength, ideal_distance]
+# Tunable subset; other edge types (supersedes, contributes_to, similar_to)
+# render with default weights. See "Edge types" above for full list.
 [edges]
 parent = [1.0, 40.0]
 depends_on = [0.15, 200.0]
