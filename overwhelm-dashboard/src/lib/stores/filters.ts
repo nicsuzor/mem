@@ -10,9 +10,6 @@ export function cycleVisibility(current: VisibilityState): VisibilityState {
 }
 
 export const filters = writable({
-    statusActive: 'bright' as VisibilityState,
-    statusBlocked: 'bright' as VisibilityState,
-    statusCompleted: 'hidden' as VisibilityState,
     statusOrphans: 'hidden' as VisibilityState,
 
     // Default critical priorities to full visibility; the rest start half-visible.
