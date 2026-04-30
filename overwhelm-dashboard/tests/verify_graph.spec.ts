@@ -35,5 +35,5 @@ test('Verify graph view and interactions', async ({ page }) => {
   // 5. Verify the status filter bar is still visible at the top of the graph area.
   // I'll look for text like "Filters" or status names like "Ready", "Blocked", "Done" if they are common.
   // Or look for a container that looks like a filter bar.
-  await expect(page.getByText('Filters', { exact: false }).or(page.getByText('Ready'))).toBeVisible();
+  await expect(page.getByRole('toolbar', { name: 'Status filter' })).toBeVisible();
 });
