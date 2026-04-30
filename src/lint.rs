@@ -150,6 +150,12 @@ const KNOWN_KEYS: &[&str] = &[
     "metadata",
     "contributes_to",
     "follow_up_tasks",
+    // Target / prototype node fields (spec multi-parent-edges §1.1, §1.6)
+    "severity",
+    "goal_type",
+    "consequence",
+    "edge_template",
+    "goals",
     "session_id",
     "issue_url",
     "release_summary",

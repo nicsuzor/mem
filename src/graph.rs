@@ -277,6 +277,14 @@ pub struct GraphNode {
     /// Formula: Urgency = S_lex * W_edge * f(Slack)
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub urgency: f64,
+    /// Edge template for `type: prototype` nodes (spec multi-parent-edges §1.6).
+    /// Resolved at edge-creation time per §2.5.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge_template: Option<EdgeTemplate>,
+    /// Structured parse warnings collected during frontmatter validation.
+    /// Surfaced by the linter and `/maintain`; non-fatal at parse time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parse_warnings: Vec<ParseWarning>,
 }
 
 /// An assumption attached to a planning node.
@@ -285,6 +293,37 @@ pub struct Assumption {
     pub text: String,
     #[serde(default = "default_assumption_status")]
     pub status: String,
+}
+
+/// Edge template for `type: prototype` nodes (spec multi-parent-edges §1.6).
+///
+/// A prototype is class-like: at edge-creation time, fields are inherited
+/// onto the freshly-created edge and may be overridden at the call site.
+/// All fields are optional — overrides are applied only when present.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct EdgeTemplate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consequence: Option<String>,
+}
+
+/// A structured frontmatter parse error/warning.
+///
+/// Returned via [`GraphNode::parse_warnings`] when a known field has the wrong
+/// shape (e.g. non-integer severity, unknown goal_type). The node is still
+/// constructed with the offending field dropped, so this is non-fatal — but
+/// the linter and `/maintain` surface these as actionable parse errors.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ParseWarning {
+    /// Frontmatter key that failed validation (e.g. "severity").
+    pub field: String,
+    /// Human-readable error reason (e.g. "expected integer 0..=4, got string \"high\"").
+    pub message: String,
 }
 
 fn default_assumption_status() -> String {
@@ -656,14 +695,154 @@ impl GraphNode {
         let consequence = fm
             .as_ref()
             .and_then(|f| f.get("consequence").and_then(|v| v.as_str()).map(String::from));
-        let severity = fm
-            .as_ref()
-            .and_then(|f| f.get("severity").and_then(|v| v.as_i64()).map(|v| v as i32))
-            .filter(|&s| (0..=4).contains(&s));
-        let goal_type = fm
-            .as_ref()
-            .and_then(|f| f.get("goal_type").and_then(|v| v.as_str()).map(String::from))
-            .filter(|gt| matches!(gt.as_str(), "committed" | "aspirational" | "learning"));
+        let mut parse_warnings: Vec<ParseWarning> = Vec::new();
+
+        // Severity: integer 0..=4. Anything else is rejected with a structured warning.
+        let severity = match fm.as_ref().and_then(|f| f.get("severity")) {
+            Some(v) => {
+                if let Some(n) = v.as_i64() {
+                    if (0..=4).contains(&n) {
+                        Some(n as i32)
+                    } else {
+                        parse_warnings.push(ParseWarning {
+                            field: "severity".to_string(),
+                            message: format!("severity {n} out of range; expected integer 0..=4"),
+                        });
+                        None
+                    }
+                } else if !v.is_null() {
+                    parse_warnings.push(ParseWarning {
+                        field: "severity".to_string(),
+                        message: format!(
+                            "severity must be an integer 0..=4; got {}",
+                            v
+                        ),
+                    });
+                    None
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+
+        // goal_type: enum { committed, aspirational, learning }.
+        let goal_type = match fm.as_ref().and_then(|f| f.get("goal_type")) {
+            Some(v) => {
+                if let Some(s) = v.as_str() {
+                    if matches!(s, "committed" | "aspirational" | "learning") {
+                        Some(s.to_string())
+                    } else {
+                        parse_warnings.push(ParseWarning {
+                            field: "goal_type".to_string(),
+                            message: format!(
+                                "goal_type \"{s}\" not in {{committed, aspirational, learning}}"
+                            ),
+                        });
+                        None
+                    }
+                } else if !v.is_null() {
+                    parse_warnings.push(ParseWarning {
+                        field: "goal_type".to_string(),
+                        message: format!("goal_type must be a string; got {v}"),
+                    });
+                    None
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        // edge_template: nested object on `type: prototype` nodes (spec §1.6).
+        // Each sub-field is validated with the same rules as the corresponding
+        // top-level field on a target node.
+        let edge_template = fm.as_ref().and_then(|f| f.get("edge_template")).and_then(|v| {
+            if !v.is_object() {
+                if !v.is_null() {
+                    parse_warnings.push(ParseWarning {
+                        field: "edge_template".to_string(),
+                        message: format!("edge_template must be a mapping; got {v}"),
+                    });
+                }
+                return None;
+            }
+            let tmpl_severity = match v.get("severity") {
+                Some(sv) => {
+                    if let Some(n) = sv.as_i64() {
+                        if (0..=4).contains(&n) {
+                            Some(n as i32)
+                        } else {
+                            parse_warnings.push(ParseWarning {
+                                field: "edge_template.severity".to_string(),
+                                message: format!(
+                                    "edge_template.severity {n} out of range; expected integer 0..=4"
+                                ),
+                            });
+                            None
+                        }
+                    } else if !sv.is_null() {
+                        parse_warnings.push(ParseWarning {
+                            field: "edge_template.severity".to_string(),
+                            message: format!(
+                                "edge_template.severity must be an integer 0..=4; got {sv}"
+                            ),
+                        });
+                        None
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            };
+            let tmpl_goal_type = match v.get("goal_type") {
+                Some(gv) => {
+                    if let Some(s) = gv.as_str() {
+                        if matches!(s, "committed" | "aspirational" | "learning") {
+                            Some(s.to_string())
+                        } else {
+                            parse_warnings.push(ParseWarning {
+                                field: "edge_template.goal_type".to_string(),
+                                message: format!(
+                                    "edge_template.goal_type \"{s}\" not in {{committed, aspirational, learning}}"
+                                ),
+                            });
+                            None
+                        }
+                    } else if !gv.is_null() {
+                        parse_warnings.push(ParseWarning {
+                            field: "edge_template.goal_type".to_string(),
+                            message: format!("edge_template.goal_type must be a string; got {gv}"),
+                        });
+                        None
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            };
+            let tmpl_weight = v
+                .get("weight")
+                .and_then(|wv| wv.as_str().map(String::from));
+            let tmpl_consequence = v
+                .get("consequence")
+                .and_then(|cv| cv.as_str().map(String::from));
+            // Only return Some if at least one field is present.
+            if tmpl_severity.is_none()
+                && tmpl_goal_type.is_none()
+                && tmpl_weight.is_none()
+                && tmpl_consequence.is_none()
+            {
+                None
+            } else {
+                Some(EdgeTemplate {
+                    severity: tmpl_severity,
+                    goal_type: tmpl_goal_type,
+                    weight: tmpl_weight,
+                    consequence: tmpl_consequence,
+                })
+            }
+        });
+
         let goals = fm
             .as_ref()
             .map(|f| parse_string_array(f, "goals"))
@@ -856,6 +1035,191 @@ impl GraphNode {
             criticality: 0.0,
             effective_priority: None,
             urgency: 0.0,
+            edge_template,
+            parse_warnings,
         }
+    }
+}
+
+#[cfg(test)]
+mod target_prototype_tests {
+    //! Tests for spec multi-parent-edges §1.1 (target nodes) and §1.6 (prototype nodes).
+    use super::*;
+    use crate::pkb::PkbDocument;
+    use serde_json::json;
+
+    fn doc_with_fm(fm: serde_json::Value) -> PkbDocument {
+        PkbDocument {
+            path: PathBuf::from("/tmp/fixture.md"),
+            title: "Fixture".to_string(),
+            tags: vec![],
+            doc_type: fm
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            status: None,
+            modified: None,
+            body: "Body text.".to_string(),
+            content_hash: "h".to_string(),
+            file_hash: "h".to_string(),
+            frontmatter: Some(fm),
+        }
+    }
+
+    #[test]
+    fn parses_sev4_target_node() {
+        let fm = json!({
+            "id": "target-01",
+            "type": "target",
+            "severity": 4,
+            "due": "2026-12-31",
+            "consequence": "Lab loses funding.",
+            "goal_type": "committed",
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.node_type.as_deref(), Some("target"));
+        assert_eq!(n.severity, Some(4));
+        assert_eq!(n.goal_type.as_deref(), Some("committed"));
+        assert_eq!(n.consequence.as_deref(), Some("Lab loses funding."));
+        assert_eq!(n.due.as_deref(), Some("2026-12-31"));
+        assert!(n.parse_warnings.is_empty());
+        assert!(n.edge_template.is_none());
+    }
+
+    #[test]
+    fn parses_sev3_target_node() {
+        let fm = json!({
+            "id": "target-02",
+            "type": "target",
+            "severity": 3,
+            "due": "2026-09-01",
+            "consequence": "Reviewer 2 escalates.",
+            "goal_type": "committed",
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.severity, Some(3));
+        assert_eq!(n.goal_type.as_deref(), Some("committed"));
+        assert!(n.parse_warnings.is_empty());
+    }
+
+    #[test]
+    fn parses_sev2_aspirational_target() {
+        let fm = json!({
+            "id": "target-03",
+            "type": "target",
+            "severity": 2,
+            "consequence": "Misses internal stretch goal.",
+            "goal_type": "aspirational",
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.severity, Some(2));
+        assert_eq!(n.goal_type.as_deref(), Some("aspirational"));
+        // Aspirational + missing due is allowed at parser level (no LST slack required).
+        assert!(n.due.is_none());
+        assert!(n.parse_warnings.is_empty());
+    }
+
+    #[test]
+    fn parses_prototype_with_edge_template() {
+        let fm = json!({
+            "id": "proto-01",
+            "type": "prototype",
+            "edge_template": {
+                "severity": 3,
+                "goal_type": "committed",
+                "weight": "Probable",
+                "consequence": "Inherited consequence prose.",
+            },
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.node_type.as_deref(), Some("prototype"));
+        let tmpl = n.edge_template.expect("edge_template should parse");
+        assert_eq!(tmpl.severity, Some(3));
+        assert_eq!(tmpl.goal_type.as_deref(), Some("committed"));
+        assert_eq!(tmpl.weight.as_deref(), Some("Probable"));
+        assert_eq!(tmpl.consequence.as_deref(), Some("Inherited consequence prose."));
+        // Prototype is class-like — no `due` at the node level.
+        assert!(n.due.is_none());
+        assert!(n.parse_warnings.is_empty());
+    }
+
+    #[test]
+    fn rejects_severity_out_of_range() {
+        let fm = json!({
+            "id": "target-bad",
+            "type": "target",
+            "severity": 7,
+            "consequence": "x",
+            "goal_type": "committed",
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.severity, None);
+        assert_eq!(n.parse_warnings.len(), 1);
+        assert_eq!(n.parse_warnings[0].field, "severity");
+        assert!(n.parse_warnings[0].message.contains("out of range"));
+    }
+
+    #[test]
+    fn rejects_severity_non_integer() {
+        let fm = json!({
+            "id": "target-bad2",
+            "type": "target",
+            "severity": "high",
+            "goal_type": "committed",
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.severity, None);
+        assert_eq!(n.parse_warnings.len(), 1);
+        assert_eq!(n.parse_warnings[0].field, "severity");
+    }
+
+    #[test]
+    fn rejects_unknown_goal_type() {
+        let fm = json!({
+            "id": "target-bad3",
+            "type": "target",
+            "severity": 2,
+            "goal_type": "wishful",
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.goal_type, None);
+        assert_eq!(n.parse_warnings.len(), 1);
+        assert_eq!(n.parse_warnings[0].field, "goal_type");
+        assert!(n.parse_warnings[0].message.contains("wishful"));
+    }
+
+    #[test]
+    fn missing_consequence_is_warning_not_block() {
+        // Parser does NOT enforce consequence presence — that's /maintain's job.
+        let fm = json!({
+            "id": "target-no-cons",
+            "type": "target",
+            "severity": 1,
+            "goal_type": "learning",
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.severity, Some(1));
+        assert!(n.consequence.is_none());
+        assert!(n.parse_warnings.is_empty());
+    }
+
+    #[test]
+    fn edge_template_with_invalid_severity_warns() {
+        let fm = json!({
+            "id": "proto-bad",
+            "type": "prototype",
+            "edge_template": {
+                "severity": 99,
+                "goal_type": "committed",
+            },
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        let tmpl = n.edge_template.expect("partial template still returns Some");
+        assert_eq!(tmpl.severity, None);
+        assert_eq!(tmpl.goal_type.as_deref(), Some("committed"));
+        assert!(n
+            .parse_warnings
+            .iter()
+            .any(|w| w.field == "edge_template.severity"));
     }
 }
