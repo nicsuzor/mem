@@ -153,7 +153,65 @@ function classifyEdge(sourceId: string, targetId: string, nodeById: Map<string, 
     if (source.parent === targetId) return 'parent';
     if (source.depends_on?.includes(targetId)) return 'depends_on';
     if (source.soft_depends_on?.includes(targetId)) return 'soft_depends_on';
+    if (Array.isArray(source.contributes_to) && source.contributes_to.some((c: any) =>
+        (typeof c === 'string' ? c : c?.to) === targetId)) return 'contributes_to';
     return 'link';
+}
+
+/**
+ * Style a graph edge by its semantic type. Returns d3 stroke attributes plus a
+ * canonicalised type label used by the views and the filter store.
+ *
+ * Canonical types after this function:
+ *   parent | depends_on | soft_depends_on | contributes_to | similar_to | ref
+ *
+ * `link` and `wikilink` are folded into `ref` (the existing convention used
+ * across the dashboard for "wikilink-style references").
+ */
+export function styleEdge(rawType: string, ctx?: {
+    targetFocusScore?: number;
+    maxFocusScore?: number;
+}): { type: string; color: string; width: number; dash: string } {
+    const t = (rawType || '').toLowerCase();
+    if (t === 'parent') {
+        return { type: 'parent', color: '#facc15', width: 3.5, dash: '' };
+    }
+    if (t === 'depends_on') {
+        let width = 3.5;
+        const tw = ctx?.targetFocusScore ?? 0;
+        const mw = ctx?.maxFocusScore ?? 0;
+        if (tw > 0 && mw > 0) {
+            const critRatio = Math.min(Math.log1p(tw) / Math.log1p(mw), 1.0);
+            if (critRatio > 0.5) width = 3.0 + critRatio * 2.0;
+        }
+        return { type: 'depends_on', color: '#ef4444', width, dash: '' };
+    }
+    if (t === 'soft_depends_on') {
+        return { type: 'soft_depends_on', color: '#9ca3af', width: 2.0, dash: '6,3' };
+    }
+    if (t === 'contributes_to') {
+        return { type: 'contributes_to', color: '#10b981', width: 2.5, dash: '' };
+    }
+    if (t === 'similar_to') {
+        return { type: 'similar_to', color: '#c4b5fd', width: 1.0, dash: '1,4' };
+    }
+    // link / wikilink / supersedes / unknown -> ref
+    return { type: 'ref', color: '#a3a3a3', width: 1.5, dash: '4,3' };
+}
+
+/** Filter store key for an edge type. Returns null if no filter applies. */
+export function edgeFilterKey(type: string): string | null {
+    switch (type) {
+        case 'parent': return 'edgeParent';
+        case 'depends_on': return 'edgeDependencies';
+        case 'soft_depends_on': return 'edgeSoftDependencies';
+        case 'contributes_to': return 'edgeContributes';
+        case 'similar_to': return 'edgeSimilar';
+        case 'ref':
+        case 'link':
+        case 'wikilink': return 'edgeReferences';
+        default: return null;
+    }
 }
 
 export function prepareGraphData(
@@ -475,44 +533,16 @@ export function prepareGraphData(
 
     const d3Links: GraphEdge[] = [];
     for (const edge of validEdges) {
-        let etype = edge.type || classifyEdge(edge.source, edge.target, nodeById);
-        if (['link', 'wikilink'].includes(etype)) {
-            etype = 'ref';
-        }
-
-        let color: string;
-        let width: number;
-        let dash: string;
-
-        if (etype === 'parent') {
-            color = "#facc15"; // Yellow for containment/parent
-            width = 3.5;
-            dash = "";
-        } else if (etype === 'depends_on') {
-            color = "#ef4444"; // Red — dependency edges draw attention to the blocker
-            width = 3.5;
-            dash = "";
-            const tw = targetFocusScore.get(edge.target) || 0;
-            if (tw > 0 && maxFocusScore > 0) {
-                const critRatio = Math.min(Math.log1p(tw) / Math.log1p(maxFocusScore), 1.0);
-                if (critRatio > 0.5) {
-                    width = 3.0 + critRatio * 2.0;
-                }
-            }
-        } else if (etype === 'soft_depends_on') {
-            color = "#b91c1c"; // Muted red — softer version of dependency
-            width = 2.0;
-            dash = "6,3";
-        } else {
-            color = "#a3a3a3"; // Lighter grey for references
-            width = 1.5;
-            dash = "4,3";
-        }
+        const rawType = edge.type || classifyEdge(edge.source, edge.target, nodeById);
+        const styled = styleEdge(rawType, {
+            targetFocusScore: targetFocusScore.get(edge.target) || 0,
+            maxFocusScore,
+        });
 
         // Flip parent direction so arrows point parent -> child
         let linkSource = edge.source;
         let linkTarget = edge.target;
-        if (etype === 'parent') {
+        if (styled.type === 'parent') {
             linkSource = edge.target;
             linkTarget = edge.source;
         }
@@ -520,10 +550,10 @@ export function prepareGraphData(
         d3Links.push({
             source: linkSource,
             target: linkTarget,
-            type: etype,
-            color,
-            width: Math.round(width * 10) / 10,
-            dash,
+            type: styled.type,
+            color: styled.color,
+            width: Math.round(styled.width * 10) / 10,
+            dash: styled.dash,
         });
     }
 

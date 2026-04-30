@@ -19,7 +19,10 @@
     const edgeTypes = [
         { key: 'edgeParent', label: 'PARENT', color: '#facc15', dash: false },
         { key: 'edgeIntraGroup', label: 'INTRA-GROUP', color: '#3b82f6', dash: false },
-        { key: 'edgeDependencies', label: 'DEPENDENCIES', color: '#ef4444', dash: false },
+        { key: 'edgeDependencies', label: 'DEPENDS ON', color: '#ef4444', dash: false },
+        { key: 'edgeSoftDependencies', label: 'SOFT DEPENDS', color: '#9ca3af', dash: true },
+        { key: 'edgeContributes', label: 'CONTRIBUTES TO', color: '#10b981', dash: false },
+        { key: 'edgeSimilar', label: 'SIMILAR TO', color: '#c4b5fd', dash: true },
         { key: 'edgeReferences', label: 'REFERENCES', color: '#a3a3a3', dash: true },
     ] as const;
 
@@ -107,7 +110,10 @@
             edgeParent: links.filter((l: any) => l.type === 'parent').length,
             edgeIntraGroup: 0, // dynamic count not tracked in base graphData
             edgeDependencies: links.filter((l: any) => l.type === 'depends_on').length,
-            edgeReferences: links.filter((l: any) => l.type === 'ref' || l.type === 'soft_depends_on').length,
+            edgeSoftDependencies: links.filter((l: any) => l.type === 'soft_depends_on').length,
+            edgeContributes: links.filter((l: any) => l.type === 'contributes_to').length,
+            edgeSimilar: links.filter((l: any) => l.type === 'similar_to').length,
+            edgeReferences: links.filter((l: any) => l.type === 'ref').length,
         };
     })() : null;
 

@@ -135,7 +135,9 @@
             if (e.type === 'parent') {
                 parentDown.get(src)!.add(tgt);
                 parentUp.set(tgt, src);
-            } else if (e.type === 'depends_on' || e.type === 'soft_depends_on') {
+            } else if (e.type === 'depends_on' || e.type === 'soft_depends_on' || e.type === 'contributes_to') {
+                // Treat contributes_to as a route-relevant edge: the contributor
+                // serves the contributed-to target, just like a soft dependency.
                 blockersOut.get(src)!.add(tgt);
             }
         }
@@ -681,7 +683,7 @@
         const adj = new Map<string, Set<string>>();
         for (const n of nodes) adj.set(n.id, new Set());
         for (const e of edges) {
-            if (e.type !== 'parent' && e.type !== 'depends_on' && e.type !== 'soft_depends_on') continue;
+            if (e.type !== 'parent' && e.type !== 'depends_on' && e.type !== 'soft_depends_on' && e.type !== 'contributes_to') continue;
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             if (!adj.has(src) || !adj.has(tgt)) continue;
@@ -749,7 +751,7 @@
         const nodeById = new Map(nodes.map(n => [n.id, n]));
         const hasBlocker = new Set<string>();
         for (const e of edges) {
-            if (e.type !== 'depends_on' && e.type !== 'soft_depends_on') continue;
+            if (e.type !== 'depends_on' && e.type !== 'soft_depends_on' && e.type !== 'contributes_to') continue;
             const src = typeof e.source === 'object' ? e.source.id : e.source;
             const tgt = typeof e.target === 'object' ? e.target.id : e.target;
             if (!onRoute.has(src)) continue;
