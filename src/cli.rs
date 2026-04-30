@@ -176,6 +176,12 @@ enum Commands {
         #[arg(long)]
         parent: Option<String>,
 
+        /// Allow creating the task even if --parent does not resolve to an
+        /// existing node. Without this flag, an unresolvable parent ID is a
+        /// hard error (prevents silent orphan creation).
+        #[arg(long)]
+        allow_missing_parent: bool,
+
         /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
         #[arg(short, long)]
         priority: Option<i32>,
@@ -1624,6 +1630,7 @@ async fn main() -> Result<()> {
         Commands::New {
             title,
             parent,
+            allow_missing_parent,
             priority,
             project: _,
             tags,
@@ -1636,6 +1643,29 @@ async fn main() -> Result<()> {
             if title_str.is_empty() {
                 eprintln!("Error: title cannot be empty");
                 std::process::exit(1);
+            }
+
+            // Referential-integrity check: reject (or warn on) an unresolvable
+            // parent ID. Default = reject — silently dropping the parent edge
+            // accretes orphans no one notices (task-89b2af87).
+            if let Some(ref parent_id) = parent {
+                let gs = load_graph(&pkb_root, &db_path, None);
+                if gs.resolve(parent_id).is_none() {
+                    if allow_missing_parent {
+                        eprintln!(
+                            "Warning: parent ID '{parent_id}' not found in PKB. \
+                             Proceeding because --allow-missing-parent was given. \
+                             The created task will reference a non-existent parent."
+                        );
+                    } else {
+                        eprintln!(
+                            "Error: parent ID '{parent_id}' not found in PKB. \
+                             Create the parent first, fix the ID, or pass \
+                             --allow-missing-parent to override."
+                        );
+                        std::process::exit(1);
+                    }
+                }
             }
 
             let fields = document_crud::TaskFields {

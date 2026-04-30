@@ -711,19 +711,32 @@ impl PkbSearchServer {
             });
         }
 
-        // Validate parent exists in the PKB graph
+        // Validate parent exists in the PKB graph. Rejects by default to
+        // prevent silent orphan creation (task-89b2af87). Caller can pass
+        // `allow_missing_parent: true` to downgrade to a warning.
         {
+            let allow_missing = args
+                .get("allow_missing_parent")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let graph = self.graph.read();
             if let Some(ref parent_id) = fields.parent {
                 if graph.resolve(parent_id).is_none() {
-                    return Err(McpError {
-                        code: ErrorCode::INVALID_PARAMS,
-                        message: Cow::from(format!(
-                            "Parent '{}' not found in PKB. Create the parent node first or verify the ID.",
+                    if allow_missing {
+                        tracing::warn!(
+                            "create_task: parent '{}' not found in PKB; proceeding because allow_missing_parent=true",
                             parent_id
-                        )),
-                        data: None,
-                    });
+                        );
+                    } else {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(format!(
+                                "Parent '{}' not found in PKB. Create the parent node first, fix the ID, or pass allow_missing_parent=true to override.",
+                                parent_id
+                            )),
+                            data: None,
+                        });
+                    }
                 }
             }
         }
@@ -3285,6 +3298,39 @@ impl PkbSearchServer {
             });
         }
 
+        // Referential-integrity check on parent change. Reject by default —
+        // silent acceptance of an invalid parent reparents the task to nowhere
+        // (task-89b2af87). Caller can pass `allow_missing_parent: true` to
+        // downgrade to a warning.
+        if let Some(new_parent_val) = updates.get("parent") {
+            // Treat null / empty string as "clear parent" — no validation needed.
+            let new_parent = new_parent_val.as_str().unwrap_or("").trim();
+            if !new_parent.is_empty() {
+                let allow_missing = args
+                    .get("allow_missing_parent")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let graph = self.graph.read();
+                if graph.resolve(new_parent).is_none() {
+                    if allow_missing {
+                        tracing::warn!(
+                            "update_task: parent '{}' not found in PKB; proceeding because allow_missing_parent=true",
+                            new_parent
+                        );
+                    } else {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(format!(
+                                "Parent '{}' not found in PKB. Create the parent first, fix the ID, or pass allow_missing_parent=true.",
+                                new_parent
+                            )),
+                            data: None,
+                        });
+                    }
+                }
+            }
+        }
+
         // When setting status to "done", require completion_evidence
         let setting_done = updates
             .get("status")
@@ -5310,6 +5356,88 @@ mod tests {
             schema.contains("\"project\""),
             "list_tasks schema should include 'project' parameter, got: {}",
             schema
+        );
+    }
+
+    // ── Parent referential integrity (task-89b2af87) ───────────────────────
+
+    #[test]
+    fn test_create_task_rejects_nonexistent_parent() {
+        let server = build_test_server();
+        let err = server
+            .handle_create_task(&json!({
+                "title": "test",
+                "parent": "task-does-not-exist"
+            }))
+            .expect_err("expected rejection on missing parent");
+        let msg = err.message.to_string();
+        assert!(
+            msg.contains("task-does-not-exist") && msg.to_lowercase().contains("not found"),
+            "error should mention the missing ID and 'not found'; got: {msg}"
+        );
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "should be INVALID_PARAMS, got: {:?}",
+            err.code
+        );
+    }
+
+    #[test]
+    fn test_create_task_rejects_nonexistent_parent_even_with_explicit_id() {
+        // Verify the validation runs regardless of whether a custom id was passed.
+        let server = build_test_server();
+        let err = server
+            .handle_create_task(&json!({
+                "title": "test",
+                "id": "task-89b2af87-child",
+                "parent": "task-does-not-exist"
+            }))
+            .expect_err("expected rejection on missing parent");
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "should be INVALID_PARAMS"
+        );
+    }
+
+    #[test]
+    fn test_update_task_rejects_reparent_to_nonexistent() {
+        let server = build_test_server();
+        // task-a1 exists in the seeded graph; try to reparent it to a missing node.
+        let err = server
+            .handle_update_task(&json!({
+                "id": "task-a1",
+                "parent": "task-does-not-exist"
+            }))
+            .expect_err("expected rejection on reparent to missing node");
+        let msg = err.message.to_string();
+        assert!(
+            msg.contains("task-does-not-exist"),
+            "error should name the missing ID; got: {msg}"
+        );
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "should be INVALID_PARAMS"
+        );
+    }
+
+    #[test]
+    fn test_update_task_allows_clearing_parent_with_null() {
+        // Setting parent to "" (or null) should not trigger the resolver — clearing
+        // the parent edge is a legitimate operation distinct from reparenting.
+        // The update will fail downstream because the test server's pkb_root is a
+        // bogus path, but it must NOT fail on parent-validation grounds.
+        let server = build_test_server();
+        let err = server
+            .handle_update_task(&json!({
+                "id": "task-a1",
+                "parent": ""
+            }))
+            .expect_err("test server has no real disk file");
+        // The failure should NOT be the parent-validation error.
+        assert!(
+            !err.message.contains("not found in PKB"),
+            "empty parent should bypass referential check; got: {}",
+            err.message
         );
     }
 }
