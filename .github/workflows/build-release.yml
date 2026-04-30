@@ -12,6 +12,21 @@ on:
         required: false
         type: boolean
         default: false
+  # Allow manual recovery for a tag whose release exists but is missing
+  # binaries (e.g. when the gated build-release was skipped after a cancelled
+  # release-plz run created the tag+release ahead of the next push). The
+  # release-plz workflow also auto-detects this and re-fires build-release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag for the release (e.g. v0.3.19)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as pre-release"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
