@@ -2871,16 +2871,31 @@ async fn main() -> Result<()> {
             eprintln!("🔍 PKB Search MCP Server starting...");
             eprintln!("   PKB root: {}", pkb_root.display());
             eprintln!("   DB path:  {}", db_path.display());
+            eprintln!(
+                "   Embeddings: BGE-M3 ({}-dim)",
+                embedder.dimension()
+            );
 
             // Check index freshness
             eprintln!("   Checking index freshness...");
             let stale_count = mem::check_index_staleness(&pkb_root, &store);
             let total = store.read().len();
+            // Surface the document count and any silently-empty embedding entries
+            // — empty chunk_embeddings cannot match any query and produce zero
+            // search hits without an error. See task-3c672195.
+            let empty_embedding_docs = store.read().count_docs_missing_embeddings();
             if stale_count > 0 {
                 eprintln!("   ⚠ Index is stale: {stale_count} document(s) need re-indexing.");
                 eprintln!("   Run `pkb reindex` to update the search index.");
             } else {
                 eprintln!("   ✓ Index is fresh ({total} documents)");
+            }
+            if empty_embedding_docs > 0 {
+                eprintln!(
+                    "   ⚠ {empty_embedding_docs} document(s) have empty embeddings \
+                     and will not appear in search results. Run `pkb reindex --force` \
+                     to rebuild the index."
+                );
             }
 
             // Build graph store
