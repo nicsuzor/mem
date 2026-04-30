@@ -596,6 +596,40 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        // Surface silent-drop bugs at runtime: log which keys the caller passed and
+        // which ones we don't recognise (so they get dropped before reaching disk).
+        // task-16fe56e6 — friction was previously invisible because callers had no
+        // way to tell the server had ignored their `project`/`type`/`status`/`body`.
+        if let Some(obj) = args.as_object() {
+            const KNOWN_KEYS: &[&str] = &[
+                "title", "task_title", "id", "parent", "priority", "tags", "depends_on",
+                "assignee", "complexity", "effort", "consequence", "severity", "goal_type",
+                "body", "stakeholder", "waiting_since", "due", "project", "type", "status",
+                "session_id", "issue_url", "follow_up_tasks", "release_summary", "contributes_to",
+            ];
+            let received: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
+            let unknown: Vec<&str> = received
+                .iter()
+                .copied()
+                .filter(|k| !KNOWN_KEYS.contains(k))
+                .collect();
+            tracing::info!(
+                target: "pkb::create_task",
+                title = %title,
+                received_keys = ?received,
+                unknown_keys = ?unknown,
+                "create_task invocation"
+            );
+            if !unknown.is_empty() {
+                tracing::warn!(
+                    target: "pkb::create_task",
+                    unknown_keys = ?unknown,
+                    "create_task received unknown keys — these fields will NOT be written. \
+                     Pass them via update_task or extend the create_task schema."
+                );
+            }
+        }
+
         let fields = crate::document_crud::TaskFields {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
@@ -746,23 +780,37 @@ impl PkbSearchServer {
             self.rebuild_graph();
         }
 
-        // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4")
+        // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4").
+        // generate_id() always emits exactly 8 hex chars, so anchor the pattern to {8}
+        // rather than `+` — keeps an accidental hex-shaped slug suffix from being absorbed.
         let task_id = path
             .file_stem()
             .map(|s| {
                 let stem = s.to_string_lossy();
-                // Match standard ID pattern: prefix-hexchars
                 static RE: std::sync::LazyLock<regex::Regex> =
-                    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]+").unwrap());
+                    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]{8}").unwrap());
                 RE.find(&stem)
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_else(|| stem.to_string())
             })
             .unwrap_or_default();
 
-        // Return structured JSON matching get_task shape
+        // Return structured JSON matching get_task shape. If the post-create graph
+        // lookup fails (graph rebuild raced or the file landed in an un-scanned
+        // location), fail loudly with the file path — silently returning null
+        // frontmatter (the original 2026-04-30 regression mode) hides the bug.
         let get_args = serde_json::json!({ "id": task_id });
-        self.handle_get_task(&get_args)
+        self.handle_get_task(&get_args).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!(
+                "create_task wrote {} but the new node is not yet visible in the graph \
+                 (id={task_id}). Underlying lookup error: {}. \
+                 The file is on disk — retry get_task in a moment.",
+                path.display(),
+                e.message,
+            )),
+            data: None,
+        })
     }
 
     fn handle_create_subtask(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
