@@ -84,33 +84,18 @@ export const STATUS_ORDER = [
 ] as const;
 
 export const STATUS_LABELS: Record<string, string> = {
-    inbox: 'INCOMING',
-    ready: 'ACTIVE',
-    queued: 'GROWING',
-    in_progress: 'GROWING',
-    merge_ready: 'GROWING',
-    review: 'GROWING',
+    inbox: 'INBOX',
+    ready: 'READY',
+    queued: 'QUEUED',
+    in_progress: 'IN PROGRESS',
+    merge_ready: 'MERGE',
+    review: 'REVIEW',
     blocked: 'BLOCKED',
-    paused: 'DORMANT',
-    someday: 'DORMANT',
-    done: 'COMPLETE',
-    cancelled: 'DEAD',
+    paused: 'PAUSED',
+    someday: 'SOMEDAY',
+    done: 'DONE',
+    cancelled: 'CANCELLED',
 };
-
-/**
- * Growth taxonomy groups for UI filtering and display.
- * Maps growth terms to sets of technical statuses.
- */
-export const GROWTH_TAXONOMY = [
-    { label: 'INCOMING', statuses: ['inbox'], color: STATUS_FILLS.inbox },
-    { label: 'SEED', statuses: ['inbox'], color: STATUS_FILLS.inbox }, // Note: both map to inbox technical status
-    { label: 'GROWING', statuses: ['in_progress', 'queued', 'merge_ready', 'review'], color: STATUS_FILLS.in_progress },
-    { label: 'ACTIVE', statuses: ['ready'], color: STATUS_FILLS.ready },
-    { label: 'BLOCKED', statuses: ['blocked'], color: STATUS_FILLS.blocked },
-    { label: 'DORMANT', statuses: ['paused', 'someday'], color: STATUS_FILLS.paused },
-    { label: 'COMPLETE', statuses: ['done'], color: STATUS_FILLS.done },
-    { label: 'DEAD', statuses: ['cancelled'], color: STATUS_FILLS.cancelled },
-] as const;
 
 // Coarse buckets surfaced by the mem graph's `status_group` (active/blocked/completed).
 // Note: `active` here is the coarse group label (open work), not the retired `active` status.
