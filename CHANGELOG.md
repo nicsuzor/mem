@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.20](https://github.com/nicsuzor/mem/compare/v0.3.19...v0.3.20) - 2026-04-30
+
+### Added
+
+- *(overwhelm-dashboard)* full edge type support across all graph views ([#274](https://github.com/nicsuzor/mem/pull/274))
+
+### Fixed
+
+- *(overwhelm-dashboard)* demote hash-projected sessions to background activity ([#272](https://github.com/nicsuzor/mem/pull/272))
+
+### Other
+
+- projects
+- release v0.3.19 ([#256](https://github.com/nicsuzor/mem/pull/256))
+
 ## [0.3.19](https://github.com/nicsuzor/mem/compare/v0.3.18...v0.3.19) - 2026-04-29
 
 ### Added
