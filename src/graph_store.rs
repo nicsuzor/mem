@@ -453,6 +453,48 @@ impl GraphStore {
     }
 
     // -----------------------------------------------------------------------
+    // Parent-chain helpers
+    // -----------------------------------------------------------------------
+
+    /// Walk the parent chain starting at `start` looking for `target`. If the
+    /// target is reached (including when `start == target`), returns the chain
+    /// from `start` to (and including) `target` as canonical IDs. Returns
+    /// `None` if the chain terminates at a root, hits an unknown node, or
+    /// loops back on itself without ever touching `target`.
+    ///
+    /// Used to reject parent-chain cycles before they're written. Bounded at
+    /// 256 hops as a defensive limit against malformed graphs.
+    pub fn parent_chain_to(&self, start: &str, target: &str) -> Option<Vec<String>> {
+        let target_canonical = self
+            .resolve(target)
+            .map(|n| n.id.clone())
+            .unwrap_or_else(|| target.to_string());
+
+        let mut current = self.resolve(start).map(|n| n.id.clone())?;
+        let mut chain: Vec<String> = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+
+        for _ in 0..256 {
+            if !visited.insert(current.clone()) {
+                return None;
+            }
+            chain.push(current.clone());
+            if current == target_canonical {
+                return Some(chain);
+            }
+            let parent_id = match self.nodes.get(&current).and_then(|n| n.parent.as_deref()) {
+                Some(p) => p.to_string(),
+                None => return None,
+            };
+            current = self
+                .resolve(&parent_id)
+                .map(|n| n.id.clone())
+                .unwrap_or(parent_id);
+        }
+        None
+    }
+
+    // -----------------------------------------------------------------------
     // Backlinks
     // -----------------------------------------------------------------------
 
@@ -2784,6 +2826,40 @@ mod tests {
     fn test_resolve_nonexistent() {
         let graph = build_test_graph();
         assert!(graph.resolve("ghost").is_none());
+    }
+
+    // ── parent_chain_to ──
+
+    #[test]
+    fn test_parent_chain_to_reaches_target() {
+        // task-a has parent epic-1; walking from task-a reaches epic-1.
+        let graph = build_test_graph();
+        let chain = graph.parent_chain_to("task-a", "epic-1");
+        assert!(chain.is_some(), "parent chain should reach epic-1");
+        let chain = chain.unwrap();
+        assert_eq!(chain.first().map(|s| s.as_str()), Some("task-a"));
+        assert_eq!(chain.last().map(|s| s.as_str()), Some("epic-1"));
+    }
+
+    #[test]
+    fn test_parent_chain_to_reflexive() {
+        // start == target should return Some([target]).
+        let graph = build_test_graph();
+        let chain = graph.parent_chain_to("epic-1", "epic-1");
+        assert_eq!(chain, Some(vec!["epic-1".to_string()]));
+    }
+
+    #[test]
+    fn test_parent_chain_to_unreachable() {
+        // task-a's chain is [task-a, epic-1]; task-b is not in it.
+        let graph = build_test_graph();
+        assert!(graph.parent_chain_to("task-a", "task-b").is_none());
+    }
+
+    #[test]
+    fn test_parent_chain_to_unknown_start() {
+        let graph = build_test_graph();
+        assert!(graph.parent_chain_to("nonexistent", "epic-1").is_none());
     }
 
     #[test]

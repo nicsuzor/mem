@@ -1550,35 +1550,6 @@ mod tests {
     }
 
     #[test]
-    fn create_task_without_project_falls_back_to_task_prefix() {
-        // Documented fallback: when `project` is missing, the ID prefix is
-        // the literal string "task" (preserving pre-regression behaviour for
-        // projectless / ad-hoc tasks).
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        fs::create_dir_all(root.join("tasks")).unwrap();
-
-        let fields = TaskFields {
-            title: "Orphan task".to_string(),
-            parent: Some("parent-001".to_string()),
-            task_type: Some("epic".to_string()),
-            ..Default::default()
-        };
-
-        let path = create_task(root, fields).unwrap();
-        let filename = path.file_name().unwrap().to_string_lossy().to_string();
-        assert!(
-            filename.starts_with("task-"),
-            "without project, prefix must fall back to 'task-', got {filename}"
-        );
-        // task_type must NOT leak into the ID prefix.
-        assert!(
-            !filename.starts_with("epic-"),
-            "task_type must not be used as ID prefix: {filename}"
-        );
-    }
-
-    #[test]
     fn create_task_defaults_type_and_status() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -1655,6 +1626,7 @@ mod tests {
         let fields = TaskFields {
             title: "Body roundtrip task".to_string(),
             parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
             body: Some(body.to_string()),
             ..Default::default()
         };
@@ -1691,6 +1663,7 @@ mod tests {
         let fields = TaskFields {
             title: "Bare-minimum task".to_string(),
             parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
             ..Default::default()
         };
 
@@ -1751,6 +1724,7 @@ mod tests {
         let fields = TaskFields {
             title: "OSB instance".into(),
             parent: Some("task-b9d6ff7e".into()),
+            project: Some("aops".into()),
             contributes_to: vec![edge],
             ..Default::default()
         };
@@ -1794,6 +1768,7 @@ mod tests {
         let fields = TaskFields {
             title: "Override instance".into(),
             parent: Some("task-b9d6ff7e".into()),
+            project: Some("aops".into()),
             contributes_to: vec![edge],
             ..Default::default()
         };
@@ -1824,6 +1799,7 @@ mod tests {
         let fields = TaskFields {
             title: "Round-trip task".into(),
             parent: Some("task-b9d6ff7e".into()),
+            project: Some("aops".into()),
             contributes_to: vec![edge],
             ..Default::default()
         };
@@ -1862,6 +1838,7 @@ mod tests {
         let fields = TaskFields {
             title: "Plain edge".into(),
             parent: Some("parent-001".into()),
+            project: Some("aops".into()),
             contributes_to: vec![edge],
             ..Default::default()
         };
@@ -1887,6 +1864,7 @@ mod tests {
         let fields = TaskFields {
             title: "Dangling inherits".into(),
             parent: Some("parent-001".into()),
+            project: Some("aops".into()),
             contributes_to: vec![edge],
             ..Default::default()
         };
@@ -1909,6 +1887,7 @@ mod tests {
         let fields = TaskFields {
             title: "Will gain edge later".into(),
             parent: Some("task-b9d6ff7e".into()),
+            project: Some("aops".into()),
             ..Default::default()
         };
         let task_path = create_task(&root, fields).unwrap();
