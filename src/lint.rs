@@ -1274,7 +1274,40 @@ pub fn lint_directory(
             .filter(|scc| scc.len() > 1)
             .collect();
 
+        // Parent-only adjacency for the parent-cycle rule. Parent/child must
+        // be a DAG; depends_on / blocks / soft_blocks may still be circular.
+        let mut parent_adj: HashMap<String, Vec<String>> = HashMap::new();
+        for (id, (parent, _doc_type)) in &ancestor_map {
+            if let Some(p) = parent {
+                parent_adj.insert(id.clone(), vec![p.clone()]);
+            }
+        }
+        let parent_cycles: Vec<Vec<String>> = crate::graph_store::tarjan_scc(&parent_adj)
+            .into_iter()
+            .filter(|scc| scc.len() > 1)
+            .collect();
+
         let mut diag_map: HashMap<PathBuf, Diagnostic> = HashMap::new();
+        // Parent cycles take precedence over the combined dep-hard-cycle diagnostic
+        // because parent/child is the constraint that's actually being violated.
+        for cycle in &parent_cycles {
+            let cycle_ids = cycle.join(", ");
+            for node_id in cycle {
+                if let Some(path) = id_to_path.get(node_id.as_str()) {
+                    diag_map.entry(path.clone()).or_insert_with(|| Diagnostic {
+                        severity: Severity::Error,
+                        rule: "parent-cycle",
+                        message: format!(
+                            "Node '{}' is part of a parent/child cycle: [{}]. Parent/child \
+                             hierarchy must be a DAG.",
+                            node_id, cycle_ids
+                        ),
+                        line: None,
+                        fixable: false,
+                    });
+                }
+            }
+        }
         for cycle in &cycles {
             let cycle_ids = cycle.join(", ");
             for node_id in cycle {
@@ -1781,5 +1814,68 @@ mod tests {
         // Should NOT get fm-unknown-key for body — it's a known key with its own rule
         assert!(!diags.iter().any(|d| d.rule == "fm-unknown-key" && d.message.contains("'body'")),
             "should not get fm-unknown-key for body");
+    }
+
+    #[test]
+    fn detects_parent_cycle_in_directory() {
+        // Two-node parent cycle: a's parent is b, b's parent is a.
+        // The directory-level cycle pass should flag both files with `parent-cycle`.
+        let dir = tempfile::tempdir().unwrap();
+        let a_path = dir.path().join("task-a.md");
+        let b_path = dir.path().join("task-b.md");
+        std::fs::write(
+            &a_path,
+            "---\nid: task-aaaaaaaa\ntitle: A\ntype: task\nstatus: ready\nparent: task-bbbbbbbb\n---\n\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &b_path,
+            "---\nid: task-bbbbbbbb\ntitle: B\ntype: task\nstatus: ready\nparent: task-aaaaaaaa\n---\n\nbody\n",
+        )
+        .unwrap();
+
+        let (results, _summary) = lint_directory(dir.path(), false, true);
+        let all_diags: Vec<&Diagnostic> = results
+            .iter()
+            .flat_map(|r| r.diagnostics.iter())
+            .collect();
+        assert!(
+            all_diags.iter().any(|d| d.rule == "parent-cycle"),
+            "expected parent-cycle diagnostic, got: {:?}",
+            all_diags
+        );
+    }
+
+    #[test]
+    fn no_parent_cycle_for_dag() {
+        // Linear chain: leaf -> mid -> root. No cycle expected.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("root.md"),
+            "---\nid: epic-aaaaaaaa\ntitle: Root\ntype: epic\nstatus: ready\n---\n\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("mid.md"),
+            "---\nid: task-bbbbbbbb\ntitle: Mid\ntype: task\nstatus: ready\nparent: epic-aaaaaaaa\n---\n\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("leaf.md"),
+            "---\nid: task-cccccccc\ntitle: Leaf\ntype: task\nstatus: ready\nparent: task-bbbbbbbb\n---\n\nbody\n",
+        )
+        .unwrap();
+
+        let (results, _summary) = lint_directory(dir.path(), false, true);
+        let parent_cycle_diags: Vec<&Diagnostic> = results
+            .iter()
+            .flat_map(|r| r.diagnostics.iter())
+            .filter(|d| d.rule == "parent-cycle")
+            .collect();
+        assert!(
+            parent_cycle_diags.is_empty(),
+            "did not expect parent-cycle diagnostics for a DAG, got: {:?}",
+            parent_cycle_diags
+        );
     }
 }

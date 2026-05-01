@@ -768,6 +768,17 @@ impl PkbSearchServer {
                         data: None,
                     });
                 }
+                // Reject parent/child cycles. Only relevant when an explicit `id`
+                // is supplied (an auto-generated id cannot already be a parent).
+                if let Some(ref child_id) = fields.id {
+                    if let Err(msg) = graph.would_create_parent_cycle(child_id, parent_id) {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(msg),
+                            data: None,
+                        });
+                    }
+                }
             }
         }
 
@@ -870,6 +881,16 @@ impl PkbSearchServer {
                     )),
                     data: None,
                 });
+            }
+            // Optional caller-supplied `id` — reject parent/child cycles.
+            if let Some(child_id) = args.get("id").and_then(|v| v.as_str()) {
+                if let Err(msg) = graph.would_create_parent_cycle(child_id, parent_id) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
             }
         }
 
@@ -3389,6 +3410,18 @@ impl PkbSearchServer {
                 ),
                 data: None,
             });
+        }
+
+        // Reject parent/child cycles when `parent` is being updated.
+        if let Some(new_parent) = updates.get("parent").and_then(|v| v.as_str()) {
+            let graph = self.graph.read();
+            if let Err(msg) = graph.would_create_parent_cycle(id, new_parent) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(msg),
+                    data: None,
+                });
+            }
         }
 
         // When setting status to "done", require completion_evidence
