@@ -1292,22 +1292,30 @@
             const edgeRole = getEdgeRole(edge.type);
             const sourceVisibility = priorityVisibility(sourceNode.priority);
             const targetVisibility = priorityVisibility(targetNode.priority);
-            const visibilityState = getEdgeVisibilityState(
-                sourceVisibility,
-                targetVisibility,
-            );
-            const fallback = getProjectLineColor(
-                sourceNode.project || targetNode.project,
-            );
-            const baseOpacity = getEdgeOpacity(visibilityState, isOnRoute);
-            const edgeWidth = getEdgeWidth(edgeRole, isOnRoute);
-
+            const visibilityState = getEdgeVisibilityState(sourceVisibility, targetVisibility);
+            
+            let typeVis: VisibilityState = "hidden";
+            
             const sParent = (sourceNode as any)?._safe_parent;
             const tParent = (targetNode as any)?._safe_parent;
             const parentIds = new Set(Array.from(nodeById.values()).map(n => (n as any)._safe_parent).filter(Boolean));
             const isIntraGroup = (sParent && sParent === tParent) ||
                                  (tParent === sourceNode?.id && !parentIds.has(targetNode?.id)) ||
                                  (sParent === targetNode?.id && !parentIds.has(sourceNode?.id));
+
+            if (edge.type === "parent") typeVis = isIntraGroup ? $filters.edgeIntraGroup : $filters.edgeParent;
+            else if (edge.type === "depends_on") typeVis = $filters.edgeDependencies;
+            else if (edge.type === "soft_depends_on") typeVis = $filters.edgeSoftDependencies;
+            else if (edge.type === "contributes_to") typeVis = $filters.edgeContributes;
+            else if (edge.type === "similar_to") typeVis = $filters.edgeSimilar;
+            else if (edge.type === "ref") typeVis = $filters.edgeReferences;
+
+            let finalVisibilityState = visibilityState;
+            if (typeVis === "hidden" || visibilityState === "hidden") {
+                finalVisibilityState = "hidden";
+            } else if (typeVis === "half" && visibilityState === "bright") {
+                finalVisibilityState = "half";
+            }
 
             let linkColor = "#6b7280";
             let linkDash = "solid";
@@ -1328,10 +1336,12 @@
                 linkColor = "#a3a3a3";
                 linkDash = "dashed";
             }
+            
+            const edgeWidth = getEdgeWidth(edgeRole, isOnRoute);
 
             if (isOnRoute && shared.length >= 2) {
                 // Emit one stroke per shared destination (blended by compositing).
-                const perStrokeOpacity = baseOpacity * 0.85;
+                const perStrokeOpacity = getEdgeOpacity(finalVisibilityState, isOnRoute) * 0.85;
                 shared.forEach((destId, k) => {
                     cyEdges.push({
                         data: {
@@ -1339,7 +1349,9 @@
                             source: src,
                             target: tgt,
                             edgeRole,
-                            visibilityState,
+                            edgeType: edge.type,
+                            isIntraGroup,
+                            visibilityState: finalVisibilityState,
                             isOnRoute: 1,
                             linkColor,
                             linkDash,
@@ -1356,11 +1368,13 @@
                         source: src,
                         target: tgt,
                         edgeRole,
-                        visibilityState,
+                        edgeType: edge.type,
+                        isIntraGroup,
+                        visibilityState: finalVisibilityState,
                         isOnRoute: isOnRoute ? 1 : 0,
                         linkColor,
                         linkDash,
-                        edgeOpacity: baseOpacity,
+                        edgeOpacity: getEdgeOpacity(finalVisibilityState, isOnRoute),
                         edgeWidth,
                         pathDestId:
                             isOnRoute && shared.length === 1 ? shared[0] : "",
@@ -2020,6 +2034,9 @@
             if (cyEdge.data("isLine") === 1) return; // line connectors keep their bright state
             const src = cyEdge.source().id();
             const tgt = cyEdge.target().id();
+            const edgeType = cyEdge.data("edgeType");
+            const isIntraGroup = cyEdge.data("isIntraGroup");
+            
             const sourceNode = nodeById.get(src) as any;
             const targetNode = nodeById.get(tgt) as any;
             if (!sourceNode || !targetNode) return;
@@ -2027,10 +2044,26 @@
             const targetRoutes = routeData.routes.get(tgt) ?? new Set();
             const shared = sharedRouteIds(sourceRoutes, targetRoutes);
             const isOnRoute = shared.length >= 1;
-            const visibilityState = getEdgeVisibilityState(
-                priorityVisibility(sourceNode.priority),
-                priorityVisibility(targetNode.priority),
-            );
+            
+            const sourceVisibility = priorityVisibility(sourceNode.priority);
+            const targetVisibility = priorityVisibility(targetNode.priority);
+            const nodeVisState = getEdgeVisibilityState(sourceVisibility, targetVisibility);
+            
+            let typeVis: VisibilityState = "hidden";
+            if (edgeType === "parent") typeVis = isIntraGroup ? $filters.edgeIntraGroup : $filters.edgeParent;
+            else if (edgeType === "depends_on") typeVis = $filters.edgeDependencies;
+            else if (edgeType === "soft_depends_on") typeVis = $filters.edgeSoftDependencies;
+            else if (edgeType === "contributes_to") typeVis = $filters.edgeContributes;
+            else if (edgeType === "similar_to") typeVis = $filters.edgeSimilar;
+            else if (edgeType === "ref") typeVis = $filters.edgeReferences;
+            
+            let visibilityState = nodeVisState;
+            if (typeVis === "hidden" || nodeVisState === "hidden") {
+                visibilityState = "hidden";
+            } else if (typeVis === "half" && nodeVisState === "bright") {
+                visibilityState = "half";
+            }
+            
             cyEdge.data("visibilityState", visibilityState);
             cyEdge.data("isOnRoute", isOnRoute ? 1 : 0);
             cyEdge.data(
@@ -2047,9 +2080,12 @@
     }
 
     // Reactively update layout when settings change
-    $: if (cy && $viewSettings) {
+    $: if (cy && $viewSettings && $filters) {
         const algo = $viewSettings.metroAlgorithm || 'force';
         
+        const nById = new Map(currentMetroNodes.map(n => [n.id, n]));
+        const parentIds = new Set(Array.from(nById.values()).map(n => (n as any)._safe_parent).filter(Boolean));
+
         if (algo === 'force') {
             cy.edges().removeClass('layout-elk');
             if (!sim) {
@@ -2079,6 +2115,32 @@
                         return dist;
                     })
                     .strength((l: any) => {
+                        const sid = typeof l.source === 'object' ? l.source.id : l.source;
+                        const tid = typeof l.target === 'object' ? l.target.id : l.target;
+                        const sourceNode = nById.get(sid) as any;
+                        const targetNode = nById.get(tid) as any;
+                        if (!sourceNode || !targetNode) return 0;
+                        
+                        const sParent = sourceNode._safe_parent;
+                        const tParent = targetNode._safe_parent;
+                        const isIntraGroup = (sParent && sParent === tParent) ||
+                                             (tParent === sid && !parentIds.has(tid)) ||
+                                             (sParent === tid && !parentIds.has(sid));
+
+                        let typeVis: VisibilityState = "hidden";
+                        if (l.type === "parent") typeVis = isIntraGroup ? $filters.edgeIntraGroup : $filters.edgeParent;
+                        else if (l.type === "depends_on") typeVis = $filters.edgeDependencies;
+                        else if (l.type === "soft_depends_on") typeVis = $filters.edgeSoftDependencies;
+                        else if (l.type === "contributes_to") typeVis = $filters.edgeContributes;
+                        else if (l.type === "similar_to") typeVis = $filters.edgeSimilar;
+                        else if (l.type === "ref") typeVis = $filters.edgeReferences;
+
+                        const sVis = priorityVisibility(sourceNode.priority);
+                        const tVis = priorityVisibility(targetNode.priority);
+                        const nodeVis = getEdgeVisibilityState(sVis, tVis);
+                        
+                        if (typeVis === "hidden" || typeVis === "half" || nodeVis === "hidden") return 0;
+
                         if (l.type === "parent") return $viewSettings.colaLinkWeightIntraParent;
                         if (l.type === "depends_on") return $viewSettings.colaLinkWeightDependsOn;
                         if (l.type === "soft_depends_on") return $viewSettings.colaLinkWeightDependsOn * 0.5;
@@ -2094,7 +2156,11 @@
         } else if (algo === 'elk') {
             cy.edges().addClass('layout-elk');
             if (sim) { sim.stop(); sim = null; }
-            cy.layout({
+            const activeEles = cy.elements().filter((ele) => {
+                if (ele.isNode()) return ele.data('visibilityState') !== 'hidden';
+                return ele.data('visibilityState') === 'bright';
+            });
+            activeEles.layout({
                 name: 'elk',
                 fit: true,
                 padding: 60,
@@ -2110,7 +2176,11 @@
         } else if (algo === 'cola') {
             cy.edges().removeClass('layout-elk');
             if (sim) { sim.stop(); sim = null; }
-            cy.layout({
+            const activeEles = cy.elements().filter((ele) => {
+                if (ele.isNode()) return ele.data('visibilityState') !== 'hidden';
+                return ele.data('visibilityState') === 'bright';
+            });
+            activeEles.layout({
                 name: 'cola',
                 fit: true,
                 padding: 60,
@@ -2118,7 +2188,13 @@
                 edgeLengthVal: $viewSettings.colaLinkDistRef,
                 animate: true,
                 randomize: true,
-                maxSimulationTime: 2000
+                convergenceThreshold: $viewSettings.colaConvergence,
+                maxSimulationTime: 60000,
+                // Increase iteration phases so it explores the space (higher entropy)
+                // before getting locked down by overlap constraints
+                unconstrIter: 40,
+                userConstIter: 40,
+                allConstIter: 40
             } as any).run();
         }
     }
