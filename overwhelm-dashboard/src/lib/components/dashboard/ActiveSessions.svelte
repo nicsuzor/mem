@@ -91,6 +91,9 @@
         abandoned: { label: 'ABANDONED', class: 'bg-primary/10 text-primary/40 border border-primary/20 line-through' },
         paused: { label: 'PAUSED', class: 'bg-primary/30 text-primary/70' },
         idle: { label: 'IDLE', class: 'bg-primary/20 text-primary/50' },
+        // task-76f676a6: 'drifted' = silent >4h with no outcome — distinct from idle so a
+        // ghost session doesn't masquerade as "user is thinking".
+        drifted: { label: 'DRIFTED', class: 'bg-orange-900/30 text-orange-400/80 border border-orange-500/30' },
     };
 </script>
 

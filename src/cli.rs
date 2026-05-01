@@ -195,6 +195,12 @@ enum Commands {
         #[arg(long)]
         parent: Option<String>,
 
+        /// Allow creating the task even if --parent does not resolve to an
+        /// existing node. Without this flag, an unresolvable parent ID is a
+        /// hard error (prevents silent orphan creation).
+        #[arg(long)]
+        allow_missing_parent: bool,
+
         /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
         #[arg(short, long)]
         priority: Option<i32>,
@@ -809,6 +815,80 @@ fn load_graph(
     match opt_store {
         Some(store) => graph_store::GraphStore::build_with_store(&docs, pkb_root, store),
         None => graph_store::GraphStore::build(&docs, pkb_root),
+    }
+}
+
+/// Detect whether the local PKB checkout is likely stale relative to a remote MCP server.
+///
+/// The CLI reads from the local filesystem; when a remote MCP server (e.g. one set
+/// via `PKB_MCP_URL`) is the canonical writer, freshly-created nodes are not visible
+/// to the CLI until the local checkout is synced (typically a 5-min cron pull).
+///
+/// Returns `Some(reason)` if we believe the local view is stale, `None` otherwise.
+/// See: task-84f6de68 ("CLI ↔ MCP visibility gap").
+fn detect_stale_local_pkb(pkb_root: &std::path::Path) -> Option<String> {
+    // Only warn if a remote MCP server is configured. If `PKB_MCP_URL` is unset,
+    // the local CLI and MCP server are reading the same disk and there's no gap.
+    let mcp_url = std::env::var("PKB_MCP_URL").ok()?;
+    if mcp_url.is_empty() {
+        return None;
+    }
+
+    // Try to find the most recent git commit timestamp under pkb_root.
+    // If git is unavailable or the dir is not a repo, fall back to "warn".
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(pkb_root)
+        .args(["log", "-1", "--format=%ct"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return Some(format!(
+            "PKB_MCP_URL is set ({mcp_url}) but local PKB at {} is not a git repo — \
+             cannot verify freshness",
+            pkb_root.display()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let last_commit_ts: i64 = stdout.trim().parse().ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    let age_secs = now.saturating_sub(last_commit_ts);
+
+    // 60s threshold — if the last sync was more than a minute ago, freshly-created
+    // nodes from the remote MCP may not have landed yet.
+    if age_secs > 60 {
+        let mins = age_secs / 60;
+        Some(format!(
+            "local PKB last synced {mins}m ago (remote MCP at {mcp_url}); \
+             cron pulls every 5m"
+        ))
+    } else {
+        None
+    }
+}
+
+/// Print a loud, actionable warning when an ID lookup fails AND we suspect the
+/// local CLI view lags the canonical MCP server.
+fn print_staleness_warning(pkb_root: &std::path::Path, missing_id: &str) {
+    if let Some(reason) = detect_stale_local_pkb(pkb_root) {
+        eprintln!();
+        eprintln!("\x1b[33m  ⚠  Possible CLI ↔ MCP visibility gap\x1b[0m");
+        eprintln!("     {reason}");
+        eprintln!(
+            "     If '{missing_id}' was just created via MCP tools, the local checkout"
+        );
+        eprintln!("     hasn't synced yet. Try one of:");
+        eprintln!("       • query via MCP: get_task / search (canonical, always fresh)");
+        eprintln!(
+            "       • wait for next cron sync (~5m) or run repo-sync-cron.sh manually"
+        );
+        eprintln!("     See task-84f6de68 for context.");
+        eprintln!();
     }
 }
 
@@ -1500,6 +1580,7 @@ async fn main() -> Result<()> {
                 }
                 None => {
                     eprintln!("Document not found: {id}");
+                    print_staleness_warning(&pkb_root, &id);
                     std::process::exit(1);
                 }
             }
@@ -1518,6 +1599,7 @@ async fn main() -> Result<()> {
                 Some(n) => n,
                 None => {
                     eprintln!("Task not found: {id}");
+                    print_staleness_warning(&pkb_root, &id);
                     std::process::exit(1);
                 }
             };
@@ -1657,6 +1739,7 @@ async fn main() -> Result<()> {
         Commands::New {
             title,
             parent,
+            allow_missing_parent,
             priority,
             project,
             tags,
@@ -1678,6 +1761,29 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             };
+
+            // Referential-integrity check: reject (or warn on) an unresolvable
+            // parent ID. Default = reject — silently dropping the parent edge
+            // accretes orphans no one notices (task-89b2af87).
+            if let Some(ref parent_id) = parent {
+                let gs = load_graph(&pkb_root, &db_path, None);
+                if gs.resolve(parent_id).is_none() {
+                    if allow_missing_parent {
+                        eprintln!(
+                            "Warning: parent ID '{parent_id}' not found in PKB. \
+                             Proceeding because --allow-missing-parent was given. \
+                             The created task will reference a non-existent parent."
+                        );
+                    } else {
+                        eprintln!(
+                            "Error: parent ID '{parent_id}' not found in PKB. \
+                             Create the parent first, fix the ID, or pass \
+                             --allow-missing-parent to override."
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
 
             let fields = document_crud::TaskFields {
                 title: title_str,
