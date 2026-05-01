@@ -37,7 +37,7 @@
     import { filters } from "$lib/stores/filters";
     import { selection } from "$lib/stores/selection";
     import { browser } from "$app/environment";
-    import { INCOMPLETE_STATUSES, COMPLETED_STATUSES } from "$lib/data/constants";
+    import { COMPLETED_STATUSES, STRUCTURAL_TYPES } from "$lib/data/constants";
 
     export let data: any;
 
@@ -156,7 +156,6 @@
         // Only include real task types with explicit ID and status
         // Structural types (epic, project, goal) are always included — they often lack task_id or explicit status
         const TASK_TYPES = new Set(["task", "goal", "project", "epic", "bug", "feature", "learn", "action", "subproject", "target"]);
-        const STRUCTURAL_TYPES = new Set(["epic", "project", "goal"]);
         fNodes = fNodes.filter(n => {
             if (!TASK_TYPES.has(n.type)) return false;
             if (STRUCTURAL_TYPES.has(n.type)) return true;

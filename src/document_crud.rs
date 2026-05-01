@@ -282,7 +282,8 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     if !fields.contributes_to.is_empty() {
-        if let Ok(yaml) = serde_yaml::to_string(&fields.contributes_to) {
+        let resolved = materialise_edge_inheritance(root, fields.contributes_to);
+        if let Ok(yaml) = serde_yaml::to_string(&resolved) {
             fm.push_str("contributes_to:\n");
             for line in yaml.trim_start_matches("---\n").lines() {
                 if !line.is_empty() {
@@ -416,6 +417,14 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         );
     }
 
+    // project is required — every task must belong to a project for routing/filtering
+    if fields.project.as_deref().map(str::is_empty).unwrap_or(true) {
+        anyhow::bail!(
+            "project is required: every task must declare a project (e.g. 'aops', \
+             'mem', 'adhoc-sessions'). Set fields.project before calling create_task."
+        );
+    }
+
     // Validation
     if let Some(ref t) = fields.task_type {
         if !crate::graph::is_valid_node_type(t) {
@@ -446,8 +455,18 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             (safe_id, filename)
         }
         None => {
-            // Use type as prefix when available, otherwise "task"
-            let prefix = fields.task_type.as_deref().unwrap_or("task");
+            // Prefix source: use `project` when set so IDs/filenames are
+            // namespaced like `aops-<hash>` / `aops-<hash>-<slug>.md`.
+            // Fallback when project is missing: literal `"task"` to preserve
+            // legacy behaviour for projectless / ad-hoc tasks (yields
+            // `task-<hash>` / `task-<hash>-<slug>.md`). The `task_type` field
+            // is intentionally NOT used here — it is captured in the
+            // frontmatter `type:` field, not the ID prefix.
+            let prefix = fields
+                .project
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("task");
             let id = generate_id(prefix);
             let slug = slugify(&fields.title);
             let filename = format!("{}-{}.md", id, slug);
@@ -571,7 +590,8 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     }
 
     if !fields.contributes_to.is_empty() {
-        if let Ok(yaml) = serde_yaml::to_string(&fields.contributes_to) {
+        let resolved = materialise_edge_inheritance(root, fields.contributes_to);
+        if let Ok(yaml) = serde_yaml::to_string(&resolved) {
             fm.push_str("contributes_to:\n");
             for line in yaml.trim_start_matches("---\n").lines() {
                 if !line.is_empty() {
@@ -683,6 +703,144 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     Ok(path)
 }
 
+// =========================================================================
+// `inherits_from:` edge resolution (one-time copy at creation)
+// =========================================================================
+
+/// Locate a markdown file in the PKB by node ID.
+///
+/// Scans the PKB directory for a file whose frontmatter `id` matches `node_id`,
+/// or whose filename stem (with `.md` stripped) equals `node_id`. Returns the
+/// first match. Used to resolve `inherits_from:` references on edge YAML.
+fn find_node_file(pkb_root: &Path, node_id: &str) -> Option<PathBuf> {
+    // Fast path: try common locations by stem before scanning the whole tree.
+    for sub in &["tasks", "projects", "goals", "notes", "memories", ""] {
+        let candidate = if sub.is_empty() {
+            pkb_root.join(format!("{}.md", node_id))
+        } else {
+            pkb_root.join(sub).join(format!("{}.md", node_id))
+        };
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    // Slow path: scan the PKB and match by frontmatter id or filename stem.
+    for path in crate::pkb::scan_directory_all(pkb_root) {
+        // Match by stem prefix (e.g. "task-abc123-some-title.md" -> "task-abc123")
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if stem == node_id || stem.starts_with(&format!("{}-", node_id)) {
+                return Some(path);
+            }
+        }
+        // Match by frontmatter id
+        if let Some(doc) = crate::pkb::parse_file(&path) {
+            if let Some(fm) = doc.frontmatter.as_ref() {
+                if fm.get("id").and_then(|v| v.as_str()) == Some(node_id) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Read a prototype node's `edge_template` map (if any).
+///
+/// Returns `None` if the prototype file cannot be located or has no
+/// `edge_template` mapping. Type is not enforced (any node can declare
+/// an `edge_template`) so that prototypes can be promoted/demoted without
+/// rewriting referencing edges.
+fn read_edge_template(
+    pkb_root: &Path,
+    prototype_id: &str,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let path = find_node_file(pkb_root, prototype_id)?;
+    let doc = crate::pkb::parse_file(&path)?;
+    let fm = doc.frontmatter?;
+    let tmpl = fm.get("edge_template")?.as_object()?.clone();
+    Some(tmpl)
+}
+
+/// Edge fields that may be inherited from a prototype's `edge_template`.
+///
+/// Per spec §2.5: `weight`/`stated_weight`, `consequence`, `goal_type`,
+/// `severity`, `justification`/`why`. Resolution order: instance > template.
+const EDGE_TEMPLATE_FIELDS: &[&str] = &[
+    "weight",
+    "stated_weight",
+    "consequence",
+    "goal_type",
+    "severity",
+    "justification",
+    "why",
+];
+
+/// Materialise `inherits_from:` references on `contributes_to` edges.
+///
+/// For each edge with `inherits_from: <prototype-id>`, fetches the prototype's
+/// `edge_template` map and copies any field listed in [`EDGE_TEMPLATE_FIELDS`]
+/// onto the edge — but only if the edge does NOT already declare that field
+/// (instance > template). The `inherits_from:` key is preserved on the edge as
+/// a provenance breadcrumb (it is NOT a live reference).
+///
+/// Resolution is one-time at write time. Subsequent edits to the prototype's
+/// `edge_template` will NOT retroactively rewrite edges that have already
+/// been materialised.
+///
+/// Edges without `inherits_from:` and edges whose prototype cannot be located
+/// pass through unchanged. Resolution failures are silent (the edge is left
+/// as-is) — validation is the caller's job.
+pub fn materialise_edge_inheritance(
+    pkb_root: &Path,
+    edges: Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    edges
+        .into_iter()
+        .map(|edge| materialise_one_edge(pkb_root, edge))
+        .collect()
+}
+
+fn materialise_one_edge(pkb_root: &Path, edge: serde_json::Value) -> serde_json::Value {
+    let mut obj = match edge {
+        serde_json::Value::Object(m) => m,
+        other => return other,
+    };
+
+    let prototype_id = match obj.get("inherits_from").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return serde_json::Value::Object(obj),
+    };
+
+    let template = match read_edge_template(pkb_root, &prototype_id) {
+        Some(t) => t,
+        None => return serde_json::Value::Object(obj),
+    };
+
+    // Treat `weight` and `stated_weight` as the same field for the
+    // override check (and likewise `justification`/`why`).
+    let weight_set = obj.contains_key("weight") || obj.contains_key("stated_weight");
+    let justification_set = obj.contains_key("justification") || obj.contains_key("why");
+
+    for (key, value) in template.iter() {
+        if !EDGE_TEMPLATE_FIELDS.contains(&key.as_str()) {
+            continue;
+        }
+        let already_set = match key.as_str() {
+            "weight" | "stated_weight" => weight_set,
+            "justification" | "why" => justification_set,
+            other => obj.contains_key(other),
+        };
+        if already_set {
+            continue;
+        }
+        obj.insert(key.clone(), value.clone());
+    }
+
+    serde_json::Value::Object(obj)
+}
+
 /// Keys that belong in the markdown body, not YAML frontmatter.
 /// If any of these appear in `updates`, they update the body section instead of frontmatter.
 const FRONTMATTER_EXCLUDED_KEYS: &[&str] = &["body", "content"];
@@ -775,6 +933,21 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
 
         if value.is_null() {
             fm.remove(&key);
+        } else if key == "contributes_to" {
+            // Materialise `inherits_from:` edge inheritance at write time (one-time copy).
+            // Infer pkb_root from the file path: <pkb_root>/<subdir>/<file.md>.
+            let pkb_root = path
+                .parent()
+                .and_then(|p| p.parent())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            let edges = match value {
+                serde_json::Value::Array(arr) => arr,
+                serde_json::Value::Null => Vec::new(),
+                other => vec![other],
+            };
+            let resolved = materialise_edge_inheritance(&pkb_root, edges);
+            fm.insert(key, serde_json::Value::Array(resolved));
         } else {
             fm.insert(key, value);
         }
@@ -1334,11 +1507,74 @@ mod tests {
         assert!(content.contains("type: epic"), "type field should be written: {content}");
         assert!(content.contains("status: in_progress"), "status field should be written: {content}");
         assert!(content.contains("project: aops"), "project field should be written: {content}");
-        // ID should use the type as prefix
+        // ID should use the PROJECT as prefix (not task_type) — see
+        // create_task: regression task-381788fb. Filename inherits the
+        // project-prefixed ID.
         assert!(
-            path.file_name().unwrap().to_string_lossy().starts_with("epic-"),
-            "filename should use type prefix: {:?}",
+            path.file_name().unwrap().to_string_lossy().starts_with("aops-"),
+            "filename should use project prefix: {:?}",
             path.file_name()
+        );
+    }
+
+    #[test]
+    fn create_task_uses_project_as_id_prefix() {
+        // Regression: task-381788fb. create_task(project="aops", title="Foo")
+        // must produce ID `aops-<hash>` and filename `aops-<hash>-foo.md`.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Foo".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let filename = path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            filename.starts_with("aops-") && filename.ends_with("-foo.md"),
+            "filename must be aops-<hash>-foo.md, got {filename}"
+        );
+
+        let content = fs::read_to_string(&path).unwrap();
+        // Frontmatter id must match the project-prefixed ID (which is also
+        // the filename stem minus the slug).
+        let expected_id_prefix = "id: aops-";
+        assert!(
+            content.contains(expected_id_prefix),
+            "frontmatter id must start with `aops-`: {content}"
+        );
+    }
+
+    #[test]
+    fn create_task_without_project_falls_back_to_task_prefix() {
+        // Documented fallback: when `project` is missing, the ID prefix is
+        // the literal string "task" (preserving pre-regression behaviour for
+        // projectless / ad-hoc tasks).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Orphan task".to_string(),
+            parent: Some("parent-001".to_string()),
+            task_type: Some("epic".to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let filename = path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            filename.starts_with("task-"),
+            "without project, prefix must fall back to 'task-', got {filename}"
+        );
+        // task_type must NOT leak into the ID prefix.
+        assert!(
+            !filename.starts_with("epic-"),
+            "task_type must not be used as ID prefix: {filename}"
         );
     }
 
@@ -1352,6 +1588,7 @@ mod tests {
         let fields = TaskFields {
             title: "Default metadata task".to_string(),
             parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
             ..Default::default()
         };
 
@@ -1360,7 +1597,336 @@ mod tests {
 
         assert!(content.contains("type: task"), "default type should be 'task': {content}");
         assert!(content.contains("status: inbox"), "default status should be 'inbox': {content}");
-        assert!(!content.contains("project:"), "project should not appear when None: {content}");
+        assert!(content.contains("project: aops"), "project should be written: {content}");
+    }
+
+    #[test]
+    fn create_task_rejects_missing_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        let fields = TaskFields {
+            title: "No project task".to_string(),
+            parent: Some("parent-001".to_string()),
+            ..Default::default()
+        };
+
+        let err = create_task(root, fields).unwrap_err();
+        assert!(
+            err.to_string().contains("project is required"),
+            "error should mention project requirement: {err}"
+        );
+    }
+
+    #[test]
+    fn create_task_rejects_empty_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        let fields = TaskFields {
+            title: "Empty project task".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some(String::new()),
+            ..Default::default()
+        };
+
+        let err = create_task(root, fields).unwrap_err();
+        assert!(
+            err.to_string().contains("project is required"),
+            "error should mention project requirement: {err}"
+        );
+    }
+
+    #[test]
+    fn create_task_writes_body_verbatim() {
+        // Regression: create_task was reportedly silently dropping the body, leaving
+        // only `# <title>` on disk. Confirm a multi-line body — including headings,
+        // lists, and blank lines — is preserved verbatim.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        let body = "## Problem\n\nWhen X happens, Y goes wrong.\n\n## AC\n\n- [ ] item 1\n- [ ] item 2\n";
+        let fields = TaskFields {
+            title: "Body roundtrip task".to_string(),
+            parent: Some("parent-001".to_string()),
+            body: Some(body.to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        // The body must appear verbatim *after* the closing frontmatter delimiter.
+        let after_fm = content.split("---\n\n").nth(1).unwrap_or("");
+        assert!(
+            after_fm.contains(body),
+            "body should be written verbatim after frontmatter; got after_fm:\n{after_fm}"
+        );
+        // Belt-and-braces: the synthesised fallback `# <title>` must NOT appear when a
+        // body was supplied (otherwise we'd be appending a stray heading).
+        assert!(
+            !after_fm.starts_with("# Body roundtrip task\n"),
+            "fallback `# <title>` heading should NOT appear when body is supplied: {after_fm}"
+        );
+    }
+
+    #[test]
+    fn create_task_always_writes_id_title_type() {
+        // Regression: re-confirmation 2026-04-30 — the on-disk frontmatter was
+        // observed to be missing `id:`, `title:`, and `type:` fields. The canonical
+        // create_task path MUST always write all three (the server generates the
+        // ID, knows the title, and defaults type=task).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        // Minimal fields — no explicit id, no explicit type
+        let fields = TaskFields {
+            title: "Bare-minimum task".to_string(),
+            parent: Some("parent-001".to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        // Frontmatter section is between the first two `---` delimiters
+        let frontmatter = content
+            .strip_prefix("---\n")
+            .and_then(|s| s.split_once("\n---\n"))
+            .map(|(fm, _)| fm)
+            .expect("file must have YAML frontmatter delimiters");
+
+        // All three fields must be present, with non-empty values.
+        let has_field = |key: &str| -> bool {
+            frontmatter
+                .lines()
+                .any(|line| line.starts_with(&format!("{key}: ")) && line.len() > key.len() + 2)
+        };
+        assert!(has_field("id"), "id: must always be written; frontmatter:\n{frontmatter}");
+        assert!(has_field("title"), "title: must always be written; frontmatter:\n{frontmatter}");
+        assert!(has_field("type"), "type: must always be written; frontmatter:\n{frontmatter}");
+        assert!(has_field("status"), "status: must always be written; frontmatter:\n{frontmatter}");
+    }
+
+    // =====================================================================
+    // `inherits_from:` edge resolution tests (task-74d9c9db)
+    // =====================================================================
+
+    /// Set up a PKB tmpdir with a single prototype node.
+    fn setup_pkb_with_prototype(template_yaml: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+        fs::create_dir_all(root.join("notes")).unwrap();
+
+        let proto_path = root.join("notes").join("task-b9d6ff7e.md");
+        let content = format!(
+            "---\nid: task-b9d6ff7e\ntitle: \"OSB voting prototype\"\ntype: prototype\n{}---\n\n# Body\n",
+            template_yaml
+        );
+        fs::write(&proto_path, content).unwrap();
+        (tmp, root)
+    }
+
+    #[test]
+    fn inherits_from_materialises_template_fields_at_creation() {
+        let (_tmp, root) = setup_pkb_with_prototype(
+            "edge_template:\n  weight: Certain\n  goal_type: committed\n  severity: 3\n  consequence: \"OSB obligation\"\n",
+        );
+
+        let edge = serde_json::json!({
+            "to": "task-b9d6ff7e",
+            "inherits_from": "task-b9d6ff7e",
+            "justification": "contractual OSB voting obligation"
+        });
+
+        let fields = TaskFields {
+            title: "OSB instance".into(),
+            parent: Some("task-b9d6ff7e".into()),
+            contributes_to: vec![edge],
+            ..Default::default()
+        };
+
+        let path = create_task(&root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        // Template fields materialised onto the edge YAML.
+        assert!(content.contains("weight: Certain"), "weight from template: {content}");
+        assert!(content.contains("goal_type: committed"), "goal_type from template: {content}");
+        assert!(content.contains("severity: 3"), "severity from template: {content}");
+        assert!(
+            content.contains("consequence: OSB obligation") || content.contains("consequence: 'OSB obligation'") || content.contains("consequence: \"OSB obligation\""),
+            "consequence from template: {content}"
+        );
+        // Provenance preserved.
+        assert!(
+            content.contains("inherits_from: task-b9d6ff7e"),
+            "inherits_from preserved as provenance: {content}"
+        );
+        // Instance-set field preserved.
+        assert!(
+            content.contains("contractual OSB voting obligation"),
+            "instance justification preserved: {content}"
+        );
+    }
+
+    #[test]
+    fn inherits_from_instance_field_wins_over_template() {
+        let (_tmp, root) = setup_pkb_with_prototype(
+            "edge_template:\n  weight: Certain\n  goal_type: committed\n  severity: 3\n",
+        );
+
+        let edge = serde_json::json!({
+            "to": "task-b9d6ff7e",
+            "inherits_from": "task-b9d6ff7e",
+            "weight": "Expected",
+            "justification": "instance override"
+        });
+
+        let fields = TaskFields {
+            title: "Override instance".into(),
+            parent: Some("task-b9d6ff7e".into()),
+            contributes_to: vec![edge],
+            ..Default::default()
+        };
+
+        let path = create_task(&root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        // Instance weight wins.
+        assert!(content.contains("weight: Expected"), "instance weight wins: {content}");
+        assert!(!content.contains("weight: Certain"), "template weight NOT applied: {content}");
+        // Other template fields fill gaps.
+        assert!(content.contains("goal_type: committed"), "template goal_type fills gap: {content}");
+        assert!(content.contains("severity: 3"), "template severity fills gap: {content}");
+    }
+
+    #[test]
+    fn editing_prototype_does_not_rewrite_existing_edges() {
+        let (_tmp, root) = setup_pkb_with_prototype(
+            "edge_template:\n  weight: Certain\n  goal_type: committed\n  severity: 3\n",
+        );
+
+        // 1. Create edge — materialised with weight: Certain.
+        let edge = serde_json::json!({
+            "to": "task-b9d6ff7e",
+            "inherits_from": "task-b9d6ff7e",
+            "justification": "first beliefs"
+        });
+        let fields = TaskFields {
+            title: "Round-trip task".into(),
+            parent: Some("task-b9d6ff7e".into()),
+            contributes_to: vec![edge],
+            ..Default::default()
+        };
+        let edge_path = create_task(&root, fields).unwrap();
+        let original = fs::read_to_string(&edge_path).unwrap();
+        assert!(original.contains("weight: Certain"));
+        assert!(original.contains("severity: 3"));
+
+        // 2. Edit prototype — rewrite edge_template with new values.
+        let proto_path = root.join("notes").join("task-b9d6ff7e.md");
+        fs::write(
+            &proto_path,
+            "---\nid: task-b9d6ff7e\ntitle: \"OSB voting prototype\"\ntype: prototype\nedge_template:\n  weight: Improbable\n  goal_type: aspirational\n  severity: 0\n---\n\n# Body\n",
+        )
+        .unwrap();
+
+        // 3. Existing edge file MUST NOT be rewritten.
+        let after = fs::read_to_string(&edge_path).unwrap();
+        assert_eq!(original, after, "existing edge file untouched by prototype edit");
+        assert!(after.contains("weight: Certain"), "old materialised value still on edge");
+        assert!(!after.contains("weight: Improbable"), "new template value not applied");
+    }
+
+    #[test]
+    fn edge_without_inherits_from_passes_through_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let edge = serde_json::json!({
+            "to": "some-target",
+            "weight": "Probable",
+            "justification": "no inheritance here"
+        });
+
+        let fields = TaskFields {
+            title: "Plain edge".into(),
+            parent: Some("parent-001".into()),
+            contributes_to: vec![edge],
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("weight: Probable"));
+        assert!(!content.contains("inherits_from"));
+    }
+
+    #[test]
+    fn inherits_from_with_missing_prototype_passes_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let edge = serde_json::json!({
+            "to": "task-missing",
+            "inherits_from": "task-missing",
+            "weight": "Expected"
+        });
+
+        let fields = TaskFields {
+            title: "Dangling inherits".into(),
+            parent: Some("parent-001".into()),
+            contributes_to: vec![edge],
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        // Edge written; provenance preserved; no extra fields synthesized.
+        assert!(content.contains("inherits_from: task-missing"));
+        assert!(content.contains("weight: Expected"));
+        assert!(!content.contains("severity:"));
+    }
+
+    #[test]
+    fn update_document_materialises_inheritance_on_contributes_to() {
+        let (_tmp, root) = setup_pkb_with_prototype(
+            "edge_template:\n  weight: Certain\n  goal_type: committed\n  severity: 3\n",
+        );
+
+        // Create a plain task without contributes_to.
+        let fields = TaskFields {
+            title: "Will gain edge later".into(),
+            parent: Some("task-b9d6ff7e".into()),
+            ..Default::default()
+        };
+        let task_path = create_task(&root, fields).unwrap();
+
+        // Update with contributes_to via update_document.
+        let edge = serde_json::json!([{
+            "to": "task-b9d6ff7e",
+            "inherits_from": "task-b9d6ff7e",
+            "justification": "added later"
+        }]);
+        let mut updates = HashMap::new();
+        updates.insert("contributes_to".to_string(), edge);
+        update_document(&task_path, updates).unwrap();
+
+        let content = fs::read_to_string(&task_path).unwrap();
+        assert!(content.contains("weight: Certain"), "materialised weight: {content}");
+        assert!(content.contains("severity: 3"), "materialised severity: {content}");
+        assert!(content.contains("inherits_from: task-b9d6ff7e"), "provenance preserved: {content}");
     }
 }
 
