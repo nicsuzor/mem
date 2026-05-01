@@ -22,6 +22,7 @@
     import ThreadedTasksView from "$lib/components/views/ThreadedTasksView.svelte";
     import StatusFilterBar from "$lib/components/shared/StatusFilterBar.svelte";
     import SessionMetadataView from "$lib/components/views/SessionMetadataView.svelte";
+    import InsightsView from "$lib/components/views/InsightsView.svelte";
 
     import {
         prepareGraphData,
@@ -435,6 +436,8 @@
 {:else}
     {#if $viewSettings.mainTab === "Threaded Tasks"}
         <section class="col-span-12 flex flex-col h-full bg-background overflow-hidden transition-all"><ThreadedTasksView /></section>
+    {:else if $viewSettings.mainTab === "Insights"}
+        <section class="col-span-12 flex flex-col h-full bg-background overflow-hidden transition-all"><InsightsView /></section>
     {:else if $viewSettings.mainTab === "Dashboard"}
         <section class="{$selection.activeNodeId || $selection.activeSessionId ? 'col-span-9' : 'col-span-12'} bg-background overflow-y-auto custom-scrollbar transition-all"><DashboardView {data} /></section>
         {#if $selection.activeNodeId}

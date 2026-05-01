@@ -8,7 +8,7 @@
 	let { children } = $props();
 	let mobileMenuOpen = $state(false);
 
-	function openTab(tab: 'Dashboard' | 'Task Graph' | 'Threaded Tasks', mode?: typeof VIEW_MODES[number]) {
+	function openTab(tab: 'Dashboard' | 'Task Graph' | 'Threaded Tasks' | 'Insights', mode?: typeof VIEW_MODES[number]) {
 		$viewSettings.mainTab = tab;
 		if (mode) {
 			$viewSettings.viewMode = mode;
@@ -62,6 +62,15 @@
 				aria-current={$viewSettings.mainTab === 'Threaded Tasks' ? 'page' : undefined}
 			>
 				TASKS
+			</button>
+
+			<button
+				class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Insights' ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
+				onclick={() => openTab('Insights')}
+				aria-label="Go to Insights"
+				aria-current={$viewSettings.mainTab === 'Insights' ? 'page' : undefined}
+			>
+				INSIGHTS
 			</button>
 		</nav>
 	</div>
@@ -120,6 +129,15 @@
 					aria-current={$viewSettings.mainTab === 'Threaded Tasks' ? 'page' : undefined}
 				>
 					Tasks
+				</button>
+
+				<button
+					class="mobile-nav-link {$viewSettings.mainTab === 'Insights' ? 'mobile-nav-link-active' : ''}"
+					onclick={() => openTab('Insights')}
+					aria-label="Go to Insights"
+					aria-current={$viewSettings.mainTab === 'Insights' ? 'page' : undefined}
+				>
+					Insights
 				</button>
 			</nav>
 		</div>

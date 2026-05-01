@@ -8,7 +8,7 @@ export const VIEW_MODES = [
 export type ViewMode = typeof VIEW_MODES[number];
 
 export const viewSettings = writable({
-    mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph'
+    mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph' or 'Insights'
     viewMode: 'Treemap',  // "Treemap", "Circle Pack", "Force", "Arc Diagram"
     showLegend: true,
     showGraphConfig: false,
