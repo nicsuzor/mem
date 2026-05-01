@@ -4,18 +4,31 @@
     import { graphData } from "../../stores/graph";
     import { filters } from "../../stores/filters";
     import { toggleSelection, selection } from "../../stores/selection";
-    import { buildTreemapNode, treemapHeaderMetrics } from "../shared/NodeShapes";
+    import {
+        buildTreemapNode,
+        treemapHeaderMetrics,
+    } from "../shared/NodeShapes";
     import { routeTreemapEdges } from "../shared/EdgeRenderer";
     import { viewSettings } from "../../stores/viewSettings";
     import type { GraphEdge } from "../../data/prepareGraphData";
 
-    let { containerGroup, width = 2000, height = 1000 } = $props<{ containerGroup: SVGGElement | null; width?: number; height?: number }>();
+    let {
+        containerGroup,
+        width = 2000,
+        height = 1000,
+    } = $props<{
+        containerGroup: SVGGElement | null;
+        width?: number;
+        height?: number;
+    }>();
 
     let nodesLayer = $state<SVGGElement>(undefined!);
     let edgesLayer = $state<SVGGElement>(undefined!);
 
     const canvasW = 3000;
-    const canvasH = $derived(canvasW * (height && width ? height / width : 0.5));
+    const canvasH = $derived(
+        canvasW * (height && width ? height / width : 0.5),
+    );
 
     // Reactive state for the computed layout
     let visibleNodes = $state<any[]>([]);
@@ -48,7 +61,10 @@
                     const needsHighlight = isSelected || isHovered;
 
                     const lastState = (d as any)._lastHighlight;
-                    if (g.selectAll("*").empty() || lastState !== needsHighlight) {
+                    if (
+                        g.selectAll("*").empty() ||
+                        lastState !== needsHighlight
+                    ) {
                         g.selectAll("*").remove();
                         buildTreemapNode(g, d, needsHighlight);
                         (d as any)._lastHighlight = needsHighlight;
@@ -61,23 +77,35 @@
         const nodes = data.nodes;
         const virtualRootId = "__treemap_root__";
         const nodeIdSet = new Set(nodes.map((n: any) => n.id));
-        const projectRootId = ($filters as any).projectFilter as string | undefined;
+        const projectRootId = ($filters as any).projectFilter as
+            | string
+            | undefined;
 
         let stratifyNodes: any[];
         let rootId: string;
 
         if (projectRootId && nodeIdSet.has(projectRootId)) {
             rootId = projectRootId;
-            stratifyNodes = nodes.map((n: any) => ({
-                ...n,
-                parent: (n.parent && nodeIdSet.has(n.parent) && n.id !== rootId) ? n.parent : (n.id === rootId ? "" : "__ignore__")
-            })).filter((n: any) => n.parent !== "__ignore__");
+            stratifyNodes = nodes
+                .map((n: any) => ({
+                    ...n,
+                    parent:
+                        n.parent && nodeIdSet.has(n.parent) && n.id !== rootId
+                            ? n.parent
+                            : n.id === rootId
+                              ? ""
+                              : "__ignore__",
+                }))
+                .filter((n: any) => n.parent !== "__ignore__");
         } else {
             rootId = virtualRootId;
-            stratifyNodes = [{ id: rootId, parent: "", type: "root", label: "ROOT" }];
+            stratifyNodes = [
+                { id: rootId, parent: "", type: "root", label: "ROOT" },
+            ];
 
             for (const n of nodes) {
-                const effectiveParent = (n.parent && nodeIdSet.has(n.parent)) ? n.parent : rootId;
+                const effectiveParent =
+                    n.parent && nodeIdSet.has(n.parent) ? n.parent : rootId;
                 stratifyNodes.push({ ...n, parent: effectiveParent });
             }
         }
@@ -94,37 +122,47 @@
         }
 
         const MIN_NODE_WEIGHT = 1;
-        const weightMode = $viewSettings.treemapWeightMode || 'sqrt';
+        const weightMode = $viewSettings.treemapWeightMode || "sqrt";
 
         // Mark hierarchy parents — d.children on raw data is always undefined
         // since parent-child is defined by parent ID, not nested arrays.
         // Without this, every node (including parents) gets its own weight,
         // inflating containers beyond what their children fill.
-        root.each((node: any) => { node.data._isHierarchyParent = !!node.children; });
+        root.each((node: any) => {
+            node.data._isHierarchyParent = !!node.children;
+        });
 
-        root.sum(d => {
+        root.sum((d) => {
             if (d._isHierarchyParent) return 0;
             switch (weightMode) {
-                case 'priority': {
-                    if (d.status === 'done') return 1;
+                case "priority": {
+                    if (d.status === "done") return 1;
                     if (d.priority <= 1) return 3;
                     return 2;
                 }
-                case 'focus-bucket': {
+                case "focus-bucket": {
                     const s = d.focusScore ?? 0;
                     if (s > 5000) return 4;
                     if (s > 1000) return 3;
                     if (s > 100) return 2;
                     return 1;
                 }
-                case 'equal': return 1;
-                //default: return Math.max(MIN_NODE_WEIGHT, Math.sqrt(d.focusScore ?? 0) || MIN_NODE_WEIGHT);
-                default: return Math.max(MIN_NODE_WEIGHT, Math.pow(d.focusScore ?? 0) || MIN_NODE_WEIGHT);
+                case "equal":
+                    return 1;
+                default:
+                    return Math.max(
+                        MIN_NODE_WEIGHT,
+                        Math.sqrt(d.focusScore ?? 0) || MIN_NODE_WEIGHT,
+                    );
+                // default: return Math.max(MIN_NODE_WEIGHT, Math.pow(d.focusScore ?? 0) || MIN_NODE_WEIGHT);
             }
         });
 
         // STABLE SORT: Tie-break with ID to prevent jumping on re-renders
-        root.sort((a, b) => (b.value || 0) - (a.value || 0) || a.id!.localeCompare(b.id!));
+        root.sort(
+            (a, b) =>
+                (b.value || 0) - (a.value || 0) || a.id!.localeCompare(b.id!),
+        );
 
         // Use the same header height computation as the renderer
         function estimateHeaderHeight(node: any): number {
@@ -132,17 +170,26 @@
             if (!node.children) return 0; // leaves don't need header padding
             const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
             const h = (node.y1 ?? canvasH) - (node.y0 ?? 0);
-            const label = node.data?.label || '';
+            const label = node.data?.label || "";
             if (!label || w < 25) return 14;
             return treemapHeaderMetrics(w, h, label, node.depth).headerH;
         }
 
-        const treemap = d3.treemap<any>()
+        const treemap = d3
+            .treemap<any>()
             .size([canvasW, canvasH])
-            .paddingInner((node: any) => node.depth <= 1 ? 14 : node.depth <= 2 ? 6 : 5)
-            .paddingBottom((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
-            .paddingLeft((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
-            .paddingRight((node: any) => node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4)
+            .paddingInner((node: any) =>
+                node.depth <= 1 ? 14 : node.depth <= 2 ? 6 : 5,
+            )
+            .paddingBottom((node: any) =>
+                node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4,
+            )
+            .paddingLeft((node: any) =>
+                node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4,
+            )
+            .paddingRight((node: any) =>
+                node.depth <= 1 ? 10 : node.depth <= 2 ? 5 : 4,
+            )
             .paddingTop((node: any) => estimateHeaderHeight(node))
             .tile(d3.treemapSquarify.ratio(1.618))
             .round(true);
@@ -172,7 +219,10 @@
             .filter((n: any) => {
                 const l = layoutMap.get(n.id);
                 if (l && (l.w >= 8 || l.h >= 8)) {
-                    n.x = l.x; n.y = l.y; n._lw = l.w; n._lh = l.h;
+                    n.x = l.x;
+                    n.y = l.y;
+                    n._lw = l.w;
+                    n._lh = l.h;
                     n.depth = l.depth;
                     n._isLeaf = l.isLeaf;
                     n._leafCount = l.leafCount;
@@ -204,22 +254,24 @@
                 toggleSelection(d.id);
             })
             .on("mouseenter", (e, d) => {
-                selection.update(s => ({ ...s, hoveredNodeId: d.id }));
+                selection.update((s) => ({ ...s, hoveredNodeId: d.id }));
             })
             .on("mouseleave", () => {
-                selection.update(s => ({ ...s, hoveredNodeId: null }));
+                selection.update((s) => ({ ...s, hoveredNodeId: null }));
             });
 
         // Current selection state for initial build
         const activeNodeId = $selection.activeNodeId;
         const hoveredNodeId = $selection.hoveredNodeId;
 
-        const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
+        const focusIds: Set<string> =
+            ($graphData as any)?.focusIds || new Set();
         const showFocus = $viewSettings.showFocusHighlight && focusIds.size > 0;
 
         nEls.each(function (d) {
             const g = d3.select(this);
-            const needsHighlight = d.id === activeNodeId || d.id === hoveredNodeId;
+            const needsHighlight =
+                d.id === activeNodeId || d.id === hoveredNodeId;
             g.selectAll("*").remove();
             buildTreemapNode(g, d, needsHighlight);
             (d as any)._lastHighlight = needsHighlight;
@@ -229,9 +281,12 @@
                 const focusW = d._lw || d.w;
                 const focusH = d._lh || d.h;
                 g.append("rect")
-                    .attr("x", -focusW / 2).attr("y", -focusH / 2)
-                    .attr("width", Math.min(3, focusW)).attr("height", focusH)
-                    .attr("fill", "#f59e0b").attr("opacity", 0.9);
+                    .attr("x", -focusW / 2)
+                    .attr("y", -focusH / 2)
+                    .attr("width", Math.min(3, focusW))
+                    .attr("height", focusH)
+                    .attr("fill", "#f59e0b")
+                    .attr("opacity", 0.9);
             }
         });
 
@@ -244,7 +299,7 @@
                 return 0.65;
             });
         } else {
-            nEls.style("opacity", (d: any) => d.filter_dimmed ? 0.65 : null);
+            nEls.style("opacity", (d: any) => (d.filter_dimmed ? 0.65 : null));
         }
 
         const eEls = d3

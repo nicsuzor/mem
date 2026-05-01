@@ -13,6 +13,7 @@ export const viewSettings = writable({
     showLegend: true,
     showGraphConfig: false,
     topNLeaves: 80,
+    metroAlgorithm: 'force' as 'force' | 'elk' | 'cola',
     colaLinkLength: 600,   // ideal link length (general, used by Metro)
 
     // Link-specific forces

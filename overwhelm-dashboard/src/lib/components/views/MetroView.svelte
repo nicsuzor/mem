@@ -15,6 +15,12 @@
     // owns x-coords and the d3-force simulation does not run. Flip to
     // true to re-enable the live force simulation for debugging.
     const enableForceSim = true;
+    // @ts-ignore
+    import elk from "cytoscape-elk";
+    // @ts-ignore
+    import cola from "cytoscape-cola";
+    cytoscape.use(elk);
+    cytoscape.use(cola);
     import {
         graphData,
         preparedGraphData,
@@ -50,6 +56,15 @@
     }> = [];
 
     export let running = false;
+    let lastMetroHash = "";
+
+    // Saved state for layout switching
+    let currentMetroNodes: GraphNode[] = [];
+    let currentMetroEdges: GraphEdge[] = [];
+    let currentPositions: Map<string, { x: number; y: number }> = new Map();
+    let currentRouteData: any = null;
+    let currentLineMembership: Map<string, string> = new Map();
+
     // Context stations (nodes on no route) are noise for the "routes to
     // destinations" question — hidden by default. Toggle via the `Show context`
     // control; when enabled, only the top-N by downstream_weight render.
@@ -1247,6 +1262,12 @@
         );
         const routeAdj = buildRouteAdjacency(metroNodes, metroEdges);
 
+        currentMetroNodes = metroNodes;
+        currentMetroEdges = metroEdges;
+        currentPositions = positions;
+        currentRouteData = routeData;
+        currentLineMembership = lineMembership;
+
         const cyNodes = metroNodes.map((n) => ({
             data: getNodeData(n, routeData, startingStations),
             position: positions.get(n.id) ?? { x: width / 2, y: height / 2 },
@@ -1281,11 +1302,37 @@
             const baseOpacity = getEdgeOpacity(visibilityState, isOnRoute);
             const edgeWidth = getEdgeWidth(edgeRole, isOnRoute);
 
+            const sParent = (sourceNode as any)?._safe_parent;
+            const tParent = (targetNode as any)?._safe_parent;
+            const parentIds = new Set(Array.from(nodeById.values()).map(n => (n as any)._safe_parent).filter(Boolean));
+            const isIntraGroup = (sParent && sParent === tParent) ||
+                                 (tParent === sourceNode?.id && !parentIds.has(targetNode?.id)) ||
+                                 (sParent === targetNode?.id && !parentIds.has(sourceNode?.id));
+
+            let linkColor = "#6b7280";
+            let linkDash = "solid";
+
+            if (edge.type === "parent") {
+                linkColor = isIntraGroup ? "#3b82f6" : "#facc15"; // Blue for intra, Yellow for inter
+            } else if (edge.type === "depends_on") {
+                linkColor = "#ef4444";
+            } else if (edge.type === "soft_depends_on") {
+                linkColor = "#9ca3af";
+                linkDash = "dashed";
+            } else if (edge.type === "contributes_to") {
+                linkColor = "#10b981";
+            } else if (edge.type === "similar_to") {
+                linkColor = "#c4b5fd";
+                linkDash = "dashed";
+            } else if (edge.type === "ref") {
+                linkColor = "#a3a3a3";
+                linkDash = "dashed";
+            }
+
             if (isOnRoute && shared.length >= 2) {
                 // Emit one stroke per shared destination (blended by compositing).
                 const perStrokeOpacity = baseOpacity * 0.85;
                 shared.forEach((destId, k) => {
-                    const dest = destById.get(destId);
                     cyEdges.push({
                         data: {
                             id: `e${index}_r${k}`,
@@ -1294,7 +1341,8 @@
                             edgeRole,
                             visibilityState,
                             isOnRoute: 1,
-                            lineColor: getProjectLineColor(dest?.project),
+                            linkColor,
+                            linkDash,
                             edgeOpacity: perStrokeOpacity,
                             edgeWidth,
                             pathDestId: destId,
@@ -1302,9 +1350,6 @@
                     });
                 });
             } else {
-                const lineColor = isOnRoute
-                    ? getEdgeLineColor(shared, destById, fallback)
-                    : "#6b7280";
                 cyEdges.push({
                     data: {
                         id: `e${index}`,
@@ -1313,7 +1358,8 @@
                         edgeRole,
                         visibilityState,
                         isOnRoute: isOnRoute ? 1 : 0,
-                        lineColor,
+                        linkColor,
+                        linkDash,
                         edgeOpacity: baseOpacity,
                         edgeWidth,
                         pathDestId:
@@ -1473,13 +1519,14 @@
                     selector: 'node[visibilityState = "hidden"]',
                     style: { display: "none" } as any,
                 },
-                // Route edges — uniform
+                // Route edges — styled by underlying edge type
                 {
                     selector:
                         'edge[isOnRoute = 1][visibilityState != "hidden"]',
                     style: {
                         width: "data(edgeWidth)",
-                        "line-color": "#94a3b8",
+                        "line-color": "data(linkColor)",
+                        "line-style": "data(linkDash)",
                         opacity: 0.5,
                         "curve-style": "haystack",
                         "haystack-radius": 0,
@@ -1498,16 +1545,16 @@
                         "z-index": 80,
                     } as any,
                 },
-                // Non-route edges — thin grey dashed backdrop
+                // Non-route edges — styled by underlying edge type
                 {
                     selector:
                         'edge[isOnRoute = 0][visibilityState != "hidden"]',
                     style: {
-                        width: 1,
-                        "line-color": "#475569",
+                        width: 1.5,
+                        "line-color": "data(linkColor)",
+                        "line-style": "data(linkDash)",
                         opacity: 0.2,
                         "curve-style": "straight",
-                        "line-style": "dashed",
                     } as any,
                 },
                 {
@@ -1990,22 +2037,79 @@
         if (node.length) node.select();
     }
 
-    // Reactively update simulation link forces when settings change
-    $: if (sim && $viewSettings) {
-        sim.force("link")
-            .distance((l: any) => {
-                if (l.type === "parent") return $viewSettings.colaLinkDistIntraParent;
-                if (l.type === "depends_on") return $viewSettings.colaLinkDistDependsOn;
-                if (l.type === "soft_depends_on") return ($viewSettings.colaLinkDistDependsOn + $viewSettings.colaLinkDistRef) / 2;
-                return $viewSettings.colaLinkDistRef;
-            })
-            .strength((l: any) => {
-                if (l.type === "parent") return $viewSettings.colaLinkWeightIntraParent;
-                if (l.type === "depends_on") return $viewSettings.colaLinkWeightDependsOn;
-                if (l.type === "soft_depends_on") return $viewSettings.colaLinkWeightDependsOn * 0.5;
-                return $viewSettings.colaLinkWeightRef;
-            });
-        sim.alpha(0.3).restart();
+    // Reactively update layout when settings change
+    $: if (cy && $viewSettings) {
+        const algo = $viewSettings.metroAlgorithm || 'force';
+        
+        if (algo === 'force') {
+            if (!sim) {
+                startSimulation(
+                    currentMetroNodes,
+                    currentMetroEdges,
+                    currentPositions,
+                    currentRouteData,
+                    currentLineMembership
+                );
+                warmSimulation(160);
+                cy.batch(() => {
+                    for (const f of simNodes) {
+                        const n = cy!.getElementById(f.id);
+                        if (n.length) n.position({ x: f.x, y: f.y });
+                    }
+                });
+                setTimeout(() => cy?.fit(undefined, 60), 0);
+            }
+            if (sim) {
+                sim.force("link")
+                    .distance((l: any) => {
+                        let dist = $viewSettings.colaLinkDistRef;
+                        if (l.type === "parent") dist = $viewSettings.colaLinkDistIntraParent;
+                        else if (l.type === "depends_on") dist = $viewSettings.colaLinkDistDependsOn;
+                        else if (l.type === "soft_depends_on") dist = ($viewSettings.colaLinkDistDependsOn + $viewSettings.colaLinkDistRef) / 2;
+                        return dist;
+                    })
+                    .strength((l: any) => {
+                        if (l.type === "parent") return $viewSettings.colaLinkWeightIntraParent;
+                        if (l.type === "depends_on") return $viewSettings.colaLinkWeightDependsOn;
+                        if (l.type === "soft_depends_on") return $viewSettings.colaLinkWeightDependsOn * 0.5;
+                        return $viewSettings.colaLinkWeightRef;
+                    });
+                
+                sim.force("collide", forceCollide<FNode>().radius((d) => d.radius).strength(0.9));
+                sim.force("x", forceX<FNode>((d) => d.anchorX).strength(0.04));
+                sim.force("y", forceY<FNode>((d) => d.anchorY).strength(0.04));
+                
+                sim.alpha(0.3).restart();
+            }
+        } else if (algo === 'elk') {
+            if (sim) { sim.stop(); sim = null; }
+            cy.layout({
+                name: 'elk',
+                fit: true,
+                padding: 60,
+                animate: true,
+                animationDuration: 500,
+                elk: {
+                    algorithm: 'layered',
+                    'elk.direction': 'DOWN',
+                    'elk.edgeRouting': 'ORTHOGONAL',
+                    'elk.spacing.nodeNode': 60,
+                    'elk.layered.spacing.nodeNodeBetweenLayers': 80
+                }
+            } as any).run();
+        } else if (algo === 'cola') {
+            if (sim) { sim.stop(); sim = null; }
+            cy.layout({
+                name: 'cola',
+                fit: true,
+                padding: 60,
+                nodeSpacing: 40,
+                edgeLengthVal: $viewSettings.colaLinkDistRef,
+                animate: true,
+                randomize: true,
+                maxSimulationTime: 2000
+            } as any).run();
+        }
     }
 
     onDestroy(() => {

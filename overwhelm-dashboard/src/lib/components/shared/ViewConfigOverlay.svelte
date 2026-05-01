@@ -18,6 +18,12 @@
         { value: 'focus-bucket', label: 'FOCUS BUCKET' },
         { value: 'equal', label: 'EQUAL' },
     ] as const;
+
+    const METRO_ALGORITHMS = [
+        { value: 'force', label: 'Force (Organic)' },
+        { value: 'elk', label: 'ELK (Orthogonal Grid)' },
+        { value: 'cola', label: 'Cola (Constraint-based)' },
+    ] as const;
 </script>
 
 {#if hasLiveControls}
@@ -135,6 +141,25 @@
                         </label>
                     </div>
 
+                {/if}
+
+                {#if isMetro}
+                    <div class="space-y-2 pt-2 border-t border-primary/5">
+                        <span class="text-[9px] text-primary/50 uppercase font-bold">Layout_Algorithm</span>
+                        <div class="flex flex-col gap-1">
+                            {#each METRO_ALGORITHMS as algo}
+                                <button
+                                    class="px-2 py-1.5 text-[9px] font-bold uppercase tracking-wider border rounded-sm transition-all cursor-pointer text-left
+                                        {$viewSettings.metroAlgorithm === algo.value
+                                            ? 'bg-primary text-background border-primary'
+                                            : 'bg-primary/5 text-primary/60 border-primary/20 hover:border-primary/40'}"
+                                    onclick={() => viewSettings.update(s => ({ ...s, metroAlgorithm: algo.value }))}
+                                >
+                                    {algo.label}
+                                </button>
+                            {/each}
+                        </div>
+                    </div>
                 {/if}
 
                 {#if isCircle}

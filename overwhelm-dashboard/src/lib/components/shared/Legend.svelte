@@ -17,19 +17,13 @@
     }));
 
     const edgeTypes = [
-        { key: 'edgeParent', label: 'PARENT', color: '#facc15', dash: false },
+        { key: 'edgeParent', label: 'PARENT (INTER-GROUP)', color: '#facc15', dash: false },
         { key: 'edgeIntraGroup', label: 'INTRA-GROUP', color: '#3b82f6', dash: false },
         { key: 'edgeDependencies', label: 'DEPENDS ON', color: '#ef4444', dash: false },
         { key: 'edgeSoftDependencies', label: 'SOFT DEPENDS', color: '#9ca3af', dash: true },
         { key: 'edgeContributes', label: 'CONTRIBUTES TO', color: '#10b981', dash: false },
         { key: 'edgeSimilar', label: 'SIMILAR TO', color: '#c4b5fd', dash: true },
         { key: 'edgeReferences', label: 'REFERENCES', color: '#a3a3a3', dash: true },
-    ] as const;
-
-    const metroEdgeTypes = [
-        { key: 'edgeParent', label: 'ROUTE (PARENT)', color: '#42d4f4', dash: false, note: 'Haystack stroke coloured by destination project; thick, semi-transparent, blends at interchanges' },
-        { key: 'edgeDependencies', label: 'ROUTE (DEPENDENCY)', color: '#f59e0b', dash: false, note: 'Same haystack stroke but with a triangle arrow toward the blocker' },
-        { key: 'edgeReferences', label: 'OFF-ROUTE', color: '#6b7280', dash: true, note: 'Thin grey dashed link — not on the route to any destination' },
     ] as const;
 
     const metroNodeTypes = [
@@ -160,7 +154,7 @@
             <!-- Edge visibility (click to cycle: bright → half → hidden) -->
             <div class="legend-section">
                 <span class="legend-section-title">EDGES</span>
-                {#each (isMetroLegend ? metroEdgeTypes : edgeTypes) as edge}
+                {#each edgeTypes as edge}
                     {@const vis = $filters[edge.key as keyof typeof $filters] as VisibilityState}
                     <button
                         class="legend-item"
@@ -173,9 +167,7 @@
                         <span class="legend-label">{edge.label}{!isMetroLegend && edgeCounts ? ` [${edgeCounts[edge.key as keyof typeof edgeCounts]}]` : ''}</span>
                         <span class="edge-state">{stateLabel(vis)}</span>
                     </button>
-                    {#if isMetroLegend && 'note' in edge}
-                        <div class="legend-note">{edge.note}</div>
-                    {/if}
+
                 {/each}
             </div>
 
