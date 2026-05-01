@@ -1597,6 +1597,15 @@
                     } as any,
                 },
                 {
+                    selector: "edge.layout-elk",
+                    style: {
+                        "curve-style": "taxi",
+                        "taxi-direction": "downward",
+                        "taxi-turn": 20,
+                        "taxi-turn-min-distance": 5
+                    } as any,
+                },
+                {
                     selector: ".dimmed",
                     style: { opacity: 0.15 } as any,
                 },
@@ -2042,6 +2051,7 @@
         const algo = $viewSettings.metroAlgorithm || 'force';
         
         if (algo === 'force') {
+            cy.edges().removeClass('layout-elk');
             if (!sim) {
                 startSimulation(
                     currentMetroNodes,
@@ -2082,6 +2092,7 @@
                 sim.alpha(0.3).restart();
             }
         } else if (algo === 'elk') {
+            cy.edges().addClass('layout-elk');
             if (sim) { sim.stop(); sim = null; }
             cy.layout({
                 name: 'elk',
@@ -2092,12 +2103,12 @@
                 elk: {
                     algorithm: 'layered',
                     'elk.direction': 'DOWN',
-                    'elk.edgeRouting': 'ORTHOGONAL',
                     'elk.spacing.nodeNode': 60,
                     'elk.layered.spacing.nodeNodeBetweenLayers': 80
                 }
             } as any).run();
         } else if (algo === 'cola') {
+            cy.edges().removeClass('layout-elk');
             if (sim) { sim.stop(); sim = null; }
             cy.layout({
                 name: 'cola',
