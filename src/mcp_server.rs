@@ -62,6 +62,13 @@ impl PkbSearchServer {
         self
     }
 
+    /// Public sync entry to `handle_update_task` for benchmarking. Not part
+    /// of the MCP API. Refs task-a4dcc039.
+    #[doc(hidden)]
+    pub fn bench_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_update_task(args)
+    }
+
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
     fn abs_path(&self, rel: &Path) -> PathBuf {
         if rel.is_absolute() {
@@ -166,7 +173,9 @@ impl PkbSearchServer {
         let abs_path = self.abs_path(&doc.path);
         let mut node = crate::graph::GraphNode::from_pkb_document(doc);
 
+        let _t_clone = std::time::Instant::now();
         let mut nodes = self.graph.read().nodes_cloned();
+        tracing::debug!(target: "perf::graph_rebuild", phase = "nodes_cloned", n_nodes = nodes.len(), elapsed_ms = _t_clone.elapsed().as_secs_f64() * 1000.0);
 
         // Carry over centrality scores from the prior node with the same id
         // so the fast-path rebuild doesn't zero them out.
@@ -284,8 +293,12 @@ impl PkbSearchServer {
             );
             return;
         }
+        let _t_upsert = std::time::Instant::now();
         let _ = self.store.write().upsert(doc, &self.embedder);
+        tracing::debug!(target: "perf::vector", phase = "store_upsert_inmem", elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0);
+        let _t_save = std::time::Instant::now();
         self.save_store();
+        tracing::debug!(target: "perf::vector", phase = "save_store_dispatch", elapsed_ms = _t_save.elapsed().as_secs_f64() * 1000.0);
     }
 
     /// Remove a document from the vector store if the index is not locked.
@@ -3465,11 +3478,18 @@ impl PkbSearchServer {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
+        // Per-phase timing for write-path perf investigation (task-a4dcc039).
+        // Emitted at debug; set RUST_LOG=mem::mcp_server=debug to observe.
+        let t_total = std::time::Instant::now();
+
+        let t = std::time::Instant::now();
         crate::document_crud::update_document(&path, update_map).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to update task: {e}")),
             data: None,
         })?;
+        let elapsed_write = t.elapsed();
+        tracing::debug!(target: "perf::update_task", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
         // Append completion evidence to body when completing via update_task
         if let Some(evidence) = evidence_text {
@@ -3478,13 +3498,29 @@ impl PkbSearchServer {
             }
         }
 
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+        let t = std::time::Instant::now();
+        let parsed = crate::pkb::parse_file_relative(&path, &self.pkb_root);
+        let elapsed_parse = t.elapsed();
+        tracing::debug!(target: "perf::update_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
+
+        if let Some(doc) = parsed {
+            let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
+            let elapsed_graph = t.elapsed();
+            tracing::debug!(target: "perf::update_task", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
+
+            let t = std::time::Instant::now();
             self.try_upsert_document(&doc);
+            let elapsed_upsert = t.elapsed();
+            tracing::debug!(target: "perf::update_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
             tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            let t = std::time::Instant::now();
             self.rebuild_graph();
+            tracing::debug!(target: "perf::update_task", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
         }
+
+        tracing::debug!(target: "perf::update_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         // Soft warning if setting a terminal status via update_task instead of release_task
         let terminal_statuses = ["merge_ready", "done", "review", "blocked", "cancelled"];
