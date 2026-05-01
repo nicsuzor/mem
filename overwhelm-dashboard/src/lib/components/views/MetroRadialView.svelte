@@ -2,7 +2,8 @@
     import { onMount, onDestroy } from 'svelte';
     import { preparedGraphData } from '../../stores/graph';
     import { selection, toggleSelection } from '../../stores/selection';
-    import { INCOMPLETE_STATUSES } from '../../data/constants';
+    import { filters } from '../../stores/filters';
+    import { INCOMPLETE_STATUSES, STATUS_RANK, STRUCTURAL_TYPES } from '../../data/constants';
     import { projectColor } from '../../data/projectUtils';
     import type { GraphNode } from '../../data/prepareGraphData';
 
@@ -188,13 +189,9 @@
                         if (!frontier.length) break;
                     }
                     // Rank by next-action-ness: status readiness, priority, recency
-                    const statusOrderLocal: Record<string, number> = {
-                        in_progress: 0, review: 1, ready: 2, active: 3,
-                        todo: 4, inbox: 5, waiting: 6, blocked: 7, dormant: 8,
-                    };
                     bag.sort((a, b) => {
-                        const sa = statusOrderLocal[a.status] ?? 9;
-                        const sb = statusOrderLocal[b.status] ?? 9;
+                        const sa = STATUS_RANK[a.status] ?? 9;
+                        const sb = STATUS_RANK[b.status] ?? 9;
                         if (sa !== sb) return sa - sb;
                         const pa = a.priority ?? 4, pb = b.priority ?? 4;
                         if (pa !== pb) return pa - pb;
@@ -221,16 +218,16 @@
         //    (A node belongs to EVERY line whose route set contains it — so a
         //    shared node legitimately appears in multiple lines' stop lists.
         //    That's what produces interchanges.)
-        const statusOrder: Record<string, number> = {
-            in_progress: 0, review: 1, ready: 2, active: 3, todo: 4,
-            inbox: 5, waiting: 6, blocked: 7, dormant: 8,
-        };
-
         for (const line of newLines) {
             const mine: GraphNode[] = [];
             for (const [nid, destSet] of routes) {
                 if (destSet.has(line.terminalId) && nid !== line.terminalId) {
-                    mine.push(byId.get(nid)!);
+                    const n = byId.get(nid)!;
+                    // Apply status filter
+                    const matchesStatus = $filters.selectedStatuses.length === 0 || $filters.selectedStatuses.includes(n.status);
+                    if (matchesStatus || STRUCTURAL_TYPES.has((n.type || '').toLowerCase())) {
+                        mine.push(n);
+                    }
                 }
             }
             // Timeline ordering: later in journey = closer to terminus.
@@ -240,8 +237,8 @@
                 // earlier = less urgent (higher priority number, further from ready)
                 const pa = a.priority ?? 4, pb = b.priority ?? 4;
                 if (pa !== pb) return pb - pa; // desc
-                const sa = statusOrder[a.status] ?? 9;
-                const sb = statusOrder[b.status] ?? 9;
+                const sa = STATUS_RANK[a.status] ?? 9;
+                const sb = STATUS_RANK[b.status] ?? 9;
                 if (sa !== sb) return sb - sa; // desc (ready→terminus end)
                 return a.id.localeCompare(b.id);
             });

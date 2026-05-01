@@ -151,13 +151,32 @@ enum Commands {
         id: String,
     },
 
-    /// Show dependency tree for a task
+    /// Show the dependency neighbourhood of a task: upstream blockers, the
+    /// task itself, and downstream dependents — as a single ASCII tree.
+    #[command(alias = "neighbourhood")]
     Deps {
         /// Task ID
         id: String,
 
-        /// Show as tree
+        /// Recursion depth in each direction (default: 2)
+        #[arg(short, long, default_value_t = 2)]
+        depth: usize,
+
+        /// Hide soft (informational) dependencies
         #[arg(long)]
+        no_soft: bool,
+
+        /// Hide parent-child edges in the downstream view
+        /// (relevant for epics/projects)
+        #[arg(long)]
+        no_children: bool,
+
+        /// Strip ANSI colour codes — produces clean text suitable for LLM tools
+        #[arg(long)]
+        plain: bool,
+
+        /// Legacy: kept for backwards compat. The new view is always a tree.
+        #[arg(long, hide = true)]
         tree: bool,
     },
 
@@ -402,13 +421,22 @@ enum Commands {
         limit: usize,
     },
 
-    /// Show what completing a task would unblock
+    /// Show what completing a task would unblock — downstream view of the
+    /// dependency neighbourhood (`pkb deps` shows both directions).
     Blocks {
         /// Task ID
         id: String,
 
-        /// Show as tree
+        /// Recursion depth (default: 3)
+        #[arg(short, long, default_value_t = 3)]
+        depth: usize,
+
+        /// Strip ANSI colour codes — clean text for LLM tools
         #[arg(long)]
+        plain: bool,
+
+        /// Legacy: kept for backwards compat.
+        #[arg(long, hide = true)]
         tree: bool,
     },
 
@@ -1552,36 +1580,41 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Deps { id, tree } => {
+        Commands::Deps {
+            id,
+            depth,
+            no_soft,
+            no_children,
+            plain,
+            tree: _,
+        } => {
             let gs = load_graph(&pkb_root, &db_path, None);
-
-            if gs.get_node(&id).is_none() {
-                eprintln!("Task not found: {id}");
-                print_staleness_warning(&pkb_root, &id);
-                std::process::exit(1);
-            }
-
-            let deps = gs.dependency_tree(&id);
-            if deps.is_empty() {
-                println!("No dependencies for {id}");
-                return Ok(());
-            }
-
+            let target = match gs.resolve(&id) {
+                Some(n) => n,
+                None => {
+                    eprintln!("Task not found: {id}");
+                    print_staleness_warning(&pkb_root, &id);
+                    std::process::exit(1);
+                }
+            };
+            let opts = graph_display::NeighbourhoodOpts {
+                upstream_depth: depth,
+                downstream_depth: depth,
+                include_soft: !no_soft,
+                include_children: !no_children,
+                plain,
+            };
             println!();
-            for (dep_id, depth) in &deps {
-                let indent = if tree {
-                    "  ".repeat(*depth)
-                } else {
-                    "  ".to_string()
-                };
-                let label = gs.get_node(dep_id).map(|n| n.label.as_str()).unwrap_or("?");
-                let status = gs
-                    .get_node(dep_id)
-                    .and_then(|n| n.status.as_deref())
-                    .unwrap_or("?");
-                println!("{indent}{dep_id} [{status}] {label}");
+            for line in graph_display::render_neighbourhood(&gs, &target.id, &opts) {
+                println!("  {line}");
             }
             println!();
+            if !plain {
+                println!(
+                    "  \x1b[2mTip: pkb context {id}  — semantic + graph neighbourhood\x1b[0m"
+                );
+                println!();
+            }
         }
 
         Commands::Metrics { id } => {
@@ -1701,7 +1734,7 @@ async fn main() -> Result<()> {
             title,
             parent,
             priority,
-            project: _,
+            project,
             tags,
             depends_on,
             assignee,
@@ -1714,10 +1747,19 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
+            let project = match project.filter(|s| !s.is_empty()) {
+                Some(p) => p,
+                None => {
+                    eprintln!("Error: --project is required (e.g. --project aops)");
+                    std::process::exit(1);
+                }
+            };
+
             let fields = document_crud::TaskFields {
                 title: title_str,
                 parent,
                 priority,
+                project: Some(project),
                 tags: tags.unwrap_or_default(),
                 depends_on: depends_on.unwrap_or_default(),
                 assignee,
@@ -2081,6 +2123,10 @@ async fn main() -> Result<()> {
                         }
                     }
 
+                    println!();
+                    println!(
+                        "  \x1b[2mTip: pkb deps {node_id}  — focused dependency tree (upstream + downstream)\x1b[0m"
+                    );
                     println!();
                 }
                 None => {
@@ -2517,34 +2563,38 @@ async fn main() -> Result<()> {
             println!("  {} memories", memories.len());
         }
 
-        Commands::Blocks { id, tree: _ } => {
+        Commands::Blocks {
+            id,
+            depth,
+            plain,
+            tree: _,
+        } => {
             let gs = load_graph(&pkb_root, &db_path, None);
-
-            if gs.get_node(&id).is_none() {
-                eprintln!("Task not found: {id}");
-                std::process::exit(1);
-            }
-
-            let blocks = gs.blocks_tree(&id);
-            if blocks.is_empty() {
-                println!("Completing {id} would not unblock any tasks.");
-                return Ok(());
-            }
-
+            let target = match gs.resolve(&id) {
+                Some(n) => n,
+                None => {
+                    eprintln!("Task not found: {id}");
+                    std::process::exit(1);
+                }
+            };
+            let opts = graph_display::NeighbourhoodOpts {
+                upstream_depth: 0,
+                downstream_depth: depth,
+                include_soft: true,
+                include_children: false,
+                plain,
+            };
             println!();
-            for (blocked_id, depth) in &blocks {
-                let indent = "  ".repeat(*depth);
-                let label = gs
-                    .get_node(blocked_id)
-                    .map(|n| n.label.as_str())
-                    .unwrap_or("?");
-                let status = gs
-                    .get_node(blocked_id)
-                    .and_then(|n| n.status.as_deref())
-                    .unwrap_or("?");
-                println!("{indent}{blocked_id} [{status}] {label}");
+            for line in graph_display::render_neighbourhood(&gs, &target.id, &opts) {
+                println!("  {line}");
             }
             println!();
+            if !plain {
+                println!(
+                    "  \x1b[2mTip: pkb deps {id}  — full upstream + downstream tree\x1b[0m"
+                );
+                println!();
+            }
         }
 
         Commands::RenameId { old, new } => {
@@ -2947,16 +2997,31 @@ async fn main() -> Result<()> {
             eprintln!("🔍 PKB Search MCP Server starting...");
             eprintln!("   PKB root: {}", pkb_root.display());
             eprintln!("   DB path:  {}", db_path.display());
+            eprintln!(
+                "   Embeddings: BGE-M3 ({}-dim)",
+                embedder.dimension()
+            );
 
             // Check index freshness
             eprintln!("   Checking index freshness...");
             let stale_count = mem::check_index_staleness(&pkb_root, &store);
             let total = store.read().len();
+            // Surface the document count and any silently-empty embedding entries
+            // — empty chunk_embeddings cannot match any query and produce zero
+            // search hits without an error. See task-3c672195.
+            let empty_embedding_docs = store.read().count_docs_missing_embeddings();
             if stale_count > 0 {
                 eprintln!("   ⚠ Index is stale: {stale_count} document(s) need re-indexing.");
                 eprintln!("   Run `pkb reindex` to update the search index.");
             } else {
                 eprintln!("   ✓ Index is fresh ({total} documents)");
+            }
+            if empty_embedding_docs > 0 {
+                eprintln!(
+                    "   ⚠ {empty_embedding_docs} document(s) have empty embeddings \
+                     and will not appear in search results. Run `pkb reindex --force` \
+                     to rebuild the index."
+                );
             }
 
             // Build graph store
