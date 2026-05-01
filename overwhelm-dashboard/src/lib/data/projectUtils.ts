@@ -53,6 +53,36 @@ export function isMeaninglessName(name: string): boolean {
 }
 
 /**
+ * Identify the set of project names that are "top-level" — i.e. their corresponding
+ * project-type node has no project-type ancestor with a different name. Used by the
+ * dashboard's project card grid to roll sub-projects into their parent (overwhelm-dashboard,
+ * network-planning) instead of rendering them as standalone cards.
+ *
+ * Returns an empty set if the graph contains no project-type nodes (in which case callers
+ * should fall back to showing every project rather than hiding them all). See
+ * overwhelm-dashboard-0402943e.
+ */
+export function buildTopLevelProjectSet(nodes: GraphNode[]): Set<string> {
+    const nodeById = new Map(nodes.map(n => [n.id, n]));
+    const topLevel = new Set<string>();
+
+    for (const n of nodes) {
+        if (n.type !== 'project' || !n.project) continue;
+        let isTop = true;
+        let cur = n.parent ? nodeById.get(n.parent) : undefined;
+        const visited = new Set<string>();
+        while (cur && !visited.has(cur.id)) {
+            visited.add(cur.id);
+            if (cur.type === 'project') { isTop = false; break; }
+            cur = cur.parent ? nodeById.get(cur.parent) : undefined;
+        }
+        if (isTop) topLevel.add(n.project);
+    }
+
+    return topLevel;
+}
+
+/**
  * Build a map from all project names (including sub-projects) to their
  * top-level "major project" name, using the graph hierarchy.
  *

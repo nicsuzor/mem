@@ -59,22 +59,40 @@ function extractCleanPrompt(timeline: any[]): string {
         if (evt.type !== 'user_prompt') continue;
         const desc = (evt.description || '').trim();
         if (!desc) continue;
-        
+
         // Skip bash I/O noise and slash commands
         if (desc.includes('<bash-input>') || desc.includes('<bash-stdout>') || /^\/\w/.test(desc)) continue;
-        
+
         // Skip framework/automation noise
         if (desc.includes('▶ Task bound') || desc.includes('Compliance report ready')) continue;
-        
+
         // Clean up scheduled task preamble
         if (desc.includes('<scheduled-task')) {
             return 'Scheduled: ' + (desc.match(/name="([^"]+)"/)?.[1] || 'task');
         }
-        
+
         return desc;
     }
     return '';
 }
+
+const PR_URL_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
+
+// Scan timeline for any GitHub PR URL — used to infer DONE when /dump never ran.
+function detectPrInTimeline(timeline: any[]): string | null {
+    if (!Array.isArray(timeline)) return null;
+    for (const evt of timeline) {
+        const desc = evt?.description || '';
+        const m = desc.match(PR_URL_RE);
+        if (m) return m[0];
+    }
+    return null;
+}
+
+// Status thresholds
+const RUNNING_WINDOW_MIN = 10;
+const IDLE_TO_DRIFTED_MIN = 4 * 60;     // >4h silent w/ no outcome → drifted
+const DONE_INFER_AFTER_PR_MIN = 60;     // PR filed + 1h quiet → infer done
 
 
 
@@ -94,24 +112,34 @@ async function loadProjectsConfig(): Promise<ProjectsConfig> {
 
 /**
  * Find active sessions from $AOPS_SESSIONS/summaries/.
- * A session is "current" if: it has a summary file, no outcome (not finished via /dump),
- * and was written to in the last `hours` hours.
+ *
+ * Returns:
+ *   active     — sessions modified in the last `hours` hours, sorted newest-first.
+ *   staleCount — count of sessions modified between `hours`h and `staleHoursMax`h ago.
+ *                These are hidden from the main list and surfaced as an archive prompt
+ *                (see task-4acd3722).
  */
-async function findActiveSessions(hours = 4): Promise<any[]> {
-    if (!AOPS_SESSIONS) return [];
+async function findActiveSessions(
+    hours = 24,
+    staleHoursMax = 72,
+): Promise<{ active: any[]; staleCount: number }> {
+    if (!AOPS_SESSIONS) return { active: [], staleCount: 0 };
     const summariesDir = join(AOPS_SESSIONS, 'summaries');
     const cutoff = Date.now() - hours * 3600 * 1000;
+    const staleCutoff = Date.now() - staleHoursMax * 3600 * 1000;
     const results: any[] = [];
+    let staleCount = 0;
 
     let files: string[];
     try {
         files = await readdir(summariesDir);
     } catch {
-        return results;
+        return { active: results, staleCount: 0 };
     }
 
-    // Generate prefixes for today, yesterday, and the day before to handle 48h cutoff and local timezones
-    const prefixes = [0, 1, 2, 3].map(days => {
+    // Generate prefixes spanning the wider stale window so we can count >24h sessions too.
+    const prefixDays = Math.max(4, Math.ceil(staleHoursMax / 24) + 1);
+    const prefixes = Array.from({ length: prefixDays }, (_, i) => i).map(days => {
         const d = new Date(Date.now() - days * 86400000);
         const y = d.getFullYear();
         const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -121,7 +149,7 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
     const candidates = files.filter(f => f.endsWith('.json') && prefixes.some(p => f.startsWith(p)));
 
     // First pass: read every recent summary, build the set of "real" project names
-    // (anything non-empty, non-'unknown', not hash-like).
+    // (anything non-empty, non-'unknown', not hash-like). Also count stale entries.
     type Entry = { filename: string; filePath: string; mtimeMs: number; data: any };
     const entries: Entry[] = [];
     const validProjects = new Set<string>();
@@ -133,7 +161,11 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
         } catch {
             continue;
         }
-        if (st.mtimeMs < cutoff) continue;
+        if (st.mtimeMs < staleCutoff) continue;
+        if (st.mtimeMs < cutoff) {
+            staleCount++;
+            continue;
+        }
 
         const data = await readJson(filePath);
         if (!data) continue;
@@ -225,10 +257,16 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
         // Prompt count: only what the cron captured — may be incomplete for running sessions
         const promptCount = timeline.filter((e: any) => e.type === 'user_prompt').length;
 
+        // Status taxonomy: completed (terminal success — explicit /dump or inferred via PR),
+        // abandoned (terminal failure outcome), running (<10m), idle (10m–4h, no outcome),
+        // drifted (>4h silent, no outcome — probably ghost). See task-76f676a6.
+        const prUrl: string | null = data.pr_url || detectPrInTimeline(timeline);
         let statusBadge: string;
         if (data.outcome === 'success') statusBadge = 'completed';
         else if (data.outcome) statusBadge = 'abandoned';
-        else if (minutesAgo < 10) statusBadge = 'running';
+        else if (prUrl && minutesAgo > DONE_INFER_AFTER_PR_MIN) statusBadge = 'completed';
+        else if (minutesAgo < RUNNING_WINDOW_MIN) statusBadge = 'running';
+        else if (minutesAgo > IDLE_TO_DRIFTED_MIN) statusBadge = 'drifted';
         else statusBadge = 'idle';
 
         results.push({
@@ -236,6 +274,9 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             project,
             description,
             session_type: sessionType,
+            // `surface` is the spec name (task-6f7f9f85) — same value as session_type, kept
+            // dual-named while consumers migrate.
+            surface: sessionType,
             started_at: data.date || new Date(mtimeMs).toISOString(),
             time_display: minutesAgo < 60 ? `${Math.round(minutesAgo)}m ago` : `${Math.round(hoursAgo)}h ago`,
             duration_min: durationMin,
@@ -249,6 +290,7 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
             needs_you: false,
             source: 'summaries',
             outcome: data.outcome || null,
+            pr_url: prUrl,
             accomplishments: data.accomplishments || [],
             friction_points: data.friction_points || [],
             token_metrics: data.token_metrics || null,
@@ -260,7 +302,7 @@ async function findActiveSessions(hours = 4): Promise<any[]> {
     }
 
     results.sort((a, b) => b.last_modified - a.last_modified);
-    return results;
+    return { active: results, staleCount };
 }
 
 async function loadRecentSummaries(days = 3): Promise<any[]> {
@@ -386,11 +428,14 @@ function buildPathData(summaries: any[]): any {
 }
 
 export const load = async () => {
-    const [sessions, summaries, projectsConfig] = await Promise.all([
-        findActiveSessions(24), // Fetch 24h of all sessions
+    const [sessionsResult, summaries, projectsConfig] = await Promise.all([
+        findActiveSessions(24, 72), // 24h main window + count stale up to 72h
         loadRecentSummaries(3),
         loadProjectsConfig(),
     ]);
+
+    const sessions = sessionsResult.active;
+    const staleCount = sessionsResult.staleCount;
 
     // All sessions are active within the 24h window
     const activeSessions = sessions;
@@ -430,20 +475,29 @@ export const load = async () => {
         projectData.sessions[proj] = sessions.filter(s => s.project === proj);
         const projAccomplishments: any[] = [];
         const seen = new Set<string>();
+        // Accomplishments feed the project card's "Recently Completed" lane. Polecat
+        // sessions go through the same pipeline (task-6f7f9f85), but we tag their
+        // entries with surface='polecat' so the UI can badge them as autonomous output.
         for (const s of summaries) {
             if (s.project !== proj) continue;
+            const filename: string = s._filename || '';
+            const surface = filename.includes('polecat') ? 'polecat'
+                : filename.includes('crew') ? 'crew'
+                : filename.includes('scheduled') ? 'scheduled'
+                : filename.includes('gha') ? 'gha'
+                : 'interactive';
             const accs = s.accomplishments || [];
             if (accs.length > 0) {
                 for (const text of accs) {
                     if (!seen.has(text)) {
                         seen.add(text);
-                        projAccomplishments.push({ description: text });
+                        projAccomplishments.push({ description: text, surface, session_id: s.session_id });
                     }
                 }
             } else if (s.summary) {
                 if (!seen.has(s.summary)) {
                     seen.add(s.summary);
-                    projAccomplishments.push({ description: s.summary });
+                    projAccomplishments.push({ description: s.summary, surface, session_id: s.session_id });
                 }
             }
         }
@@ -461,8 +515,9 @@ export const load = async () => {
             // Bucketed sessions for triage display
             active_agents: activeSessions,
             needs_you: needsYouSessions,
+            stale_count: staleCount,
             synthesis: null,
-            
+
             project_projects: projectProjects,
             project_data: projectData,
             path: buildPathData(summaries),
