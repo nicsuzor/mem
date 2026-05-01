@@ -24,22 +24,49 @@ export async function GET() {
                 if (!data.token_metrics) continue;
 
                 const date = data.date || file.slice(0, 8);
-                const project = data.project || data.repo || 'unknown';
-                const taskId = data.task_id || 'unknown';
-                const provider = data.provider || 'unknown';
-                const duration = data.token_metrics?.efficiency?.session_duration_minutes || 0;
                 
+                // Timeline events text for heuristics
+                let fullText = '';
+                if (data.timeline_events) {
+                    fullText = data.timeline_events.map((e: any) => e.description || '').join(' ');
+                }
+
+                // PR extraction
                 let prUrl = data.pr_url || null;
-                if (!prUrl && data.timeline_events) {
-                    for (const evt of data.timeline_events) {
-                        const m = (evt.description || '').match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/);
-                        if (m) {
-                            prUrl = m[0];
-                            break;
+                if (!prUrl) {
+                    const m = fullText.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/);
+                    if (m) prUrl = m[0];
+                }
+                const pr = prUrl || 'none';
+
+                // Project extraction
+                let project = data.project || data.repo;
+                if (!project || /^[0-9a-f]{6,}$/i.test(project)) {
+                    // Try to recover from PR URL
+                    if (prUrl) {
+                        const prMatch = prUrl.match(/github\.com\/[\w.-]+\/([\w.-]+)/i);
+                        if (prMatch) project = prMatch[1];
+                    }
+                    // Try to recover from filename e.g., 20260501-1149-hash-project-slug.json
+                    if (!project || /^[0-9a-f]{6,}$/i.test(project)) {
+                        const parts = file.split('-');
+                        if (parts.length >= 4) {
+                            project = parts[3];
                         }
                     }
                 }
-                const pr = prUrl || 'none';
+                project = project || 'unknown';
+
+                // Task ID extraction
+                let taskId = data.task_id;
+                if (!taskId || taskId === 'unknown') {
+                    const taskMatch = fullText.match(/\b([a-zA-Z]+-[0-9a-f]{4,})\b/i);
+                    if (taskMatch) taskId = taskMatch[1];
+                }
+                taskId = taskId || 'unknown';
+
+                const provider = data.provider || 'unknown';
+                const duration = data.token_metrics?.efficiency?.session_duration_minutes || 0;
 
                 const byAgent = data.token_metrics?.by_agent || {};
                 
