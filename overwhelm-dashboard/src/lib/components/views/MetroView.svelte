@@ -2185,7 +2185,14 @@
                 fit: true,
                 padding: 60,
                 nodeSpacing: 40,
-                edgeLengthVal: $viewSettings.colaLinkDistRef,
+                edgeLength: (edge: any) => {
+                    const edgeType = edge.data("edgeType");
+                    const isIntraGroup = edge.data("isIntraGroup");
+                    if (edgeType === "parent") return isIntraGroup ? $viewSettings.colaLinkDistIntraParent : $viewSettings.colaLinkDistInterParent;
+                    if (edgeType === "depends_on") return $viewSettings.colaLinkDistDependsOn;
+                    if (edgeType === "soft_depends_on") return ($viewSettings.colaLinkDistDependsOn + $viewSettings.colaLinkDistRef) / 2;
+                    return $viewSettings.colaLinkDistRef;
+                },
                 animate: true,
                 randomize: true,
                 convergenceThreshold: $viewSettings.colaConvergence,
