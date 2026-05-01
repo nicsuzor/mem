@@ -1550,6 +1550,8 @@ impl PkbSearchServer {
             "consequence": node.consequence,
             "severity": node.severity,
             "goal_type": node.goal_type,
+            "edge_template": node.edge_template,
+            "parse_warnings": node.parse_warnings,
             "days_until_due": days_until_due,
             "urgency_ratio": urgency_ratio,
             "urgency": node.urgency,
@@ -3157,6 +3159,9 @@ impl PkbSearchServer {
                         "due": t.due,
                         "effort": t.effort,
                         "consequence": t.consequence,
+                        "severity": t.severity,
+                        "goal_type": t.goal_type,
+                        "edge_template": t.edge_template,
                         "focus_score": t.focus_score,
                     })
                 })
