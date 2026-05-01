@@ -3061,6 +3061,7 @@ impl PkbSearchServer {
         let goal_type = args.get("goal_type").and_then(|v| v.as_str());
         let assignee = args.get("assignee").and_then(|v| v.as_str());
         let project = args.get("project").and_then(|v| v.as_str());
+        let focus_score_gte = args.get("focus_score_gte").and_then(|v| v.as_i64());
         let tags: Vec<String> = args
             .get("tags")
             .and_then(|v| v.as_array())
@@ -3157,6 +3158,10 @@ impl PkbSearchServer {
                 tags.iter()
                     .all(|want| t.tags.iter().any(|have| have.eq_ignore_ascii_case(want)))
             });
+        }
+
+        if let Some(min_score) = focus_score_gte {
+            tasks.retain(|t| t.focus_score.unwrap_or(0) >= min_score);
         }
 
         if !include_subtasks {
@@ -4683,6 +4688,7 @@ impl PkbSearchServer {
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags. A task matches iff every requested tag is present in its frontmatter `tags` array (AND, case-insensitive)." },
+                        "focus_score_gte": { "type": "integer", "description": "Filter to tasks whose composite focus_score (downstream_weight + pagerank + stakeholder_exposure, scaled) is ≥ N. Useful for surfacing high-impact ready work — focus_score is the canonical ranking signal; downstream_weight alone is just one component." },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
                         "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
@@ -5804,6 +5810,95 @@ mod tests {
         assert!(
             schema.contains("\"tags\""),
             "list_tasks schema should include 'tags' parameter, got: {}",
+            schema
+        );
+    }
+
+    // ── focus_score_gte filter ──
+
+    #[test]
+    fn test_list_tasks_focus_score_gte_filters_low_score_tasks() {
+        let server = build_test_server();
+        let unfiltered = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+            .unwrap();
+        let unfiltered_text = unfiltered
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        let unfiltered_val: serde_json::Value =
+            serde_json::from_str(&unfiltered_text).expect("ready listing should be JSON");
+        let unfiltered_tasks = unfiltered_val
+            .get("tasks")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(!unfiltered_tasks.is_empty(), "fixture should have ready tasks");
+
+        let filtered = server
+            .handle_list_tasks(&json!({
+                "status": "ready",
+                "focus_score_gte": 1,
+                "format": "json",
+            }))
+            .unwrap();
+        let filtered_text = filtered
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        if let Ok(filtered_val) = serde_json::from_str::<serde_json::Value>(&filtered_text) {
+            if let Some(tasks) = filtered_val.get("tasks").and_then(|t| t.as_array()) {
+                for t in tasks {
+                    let s = t
+                        .get("focus_score")
+                        .and_then(|v| v.as_i64())
+                        .expect("focus_score should be present");
+                    assert!(
+                        s >= 1,
+                        "focus_score_gte=1 should only return tasks with focus_score >= 1, got {}",
+                        s
+                    );
+                }
+                assert!(tasks.len() <= unfiltered_tasks.len());
+            }
+        }
+
+        let none = server
+            .handle_list_tasks(&json!({
+                "status": "ready",
+                "focus_score_gte": 1_000_000_000_i64,
+                "format": "json",
+            }))
+            .unwrap();
+        let none_text = none
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        let is_empty = none_text.contains("No tasks found")
+            || none_text.contains("No ready tasks")
+            || none_text.contains("\"tasks\":[]")
+            || none_text.contains("\"tasks\": []");
+        assert!(
+            is_empty,
+            "focus_score_gte=1e9 should return no tasks, got: {}",
+            none_text
+        );
+    }
+
+    #[test]
+    fn test_list_tasks_schema_includes_focus_score_gte_parameter() {
+        let tools = PkbSearchServer::get_all_tools();
+        let list_tasks_tool = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "list_tasks")
+            .expect("list_tasks tool should exist");
+        let schema = serde_json::to_string(&list_tasks_tool.input_schema).unwrap();
+        assert!(
+            schema.contains("\"focus_score_gte\""),
+            "list_tasks schema should include 'focus_score_gte' parameter, got: {}",
             schema
         );
     }
