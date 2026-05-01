@@ -377,6 +377,93 @@ pub fn is_valid_status(status: &str) -> bool {
     VALID_STATUSES.contains(&status)
 }
 
+/// Parse the canonical status set from the vendored `references/TAXONOMY.md`.
+///
+/// Reads the `## Status Values and Transitions` table and extracts every status
+/// token from the first column. Used by the `taxonomy_status_set_in_sync` test
+/// to guarantee `VALID_STATUSES` cannot drift from the spec.
+///
+/// The taxonomy file is embedded into the binary at compile time, so the check
+/// runs without filesystem access and the embedded snapshot is what ships.
+#[doc(hidden)]
+pub fn parse_canonical_statuses_from_taxonomy(md: &str) -> Vec<String> {
+    let mut statuses = Vec::new();
+    let mut in_status_section = false;
+    let mut header_seen = false;
+    for line in md.lines() {
+        if line.starts_with("## ") {
+            in_status_section = line.contains("Status Values and Transitions");
+            header_seen = false;
+            continue;
+        }
+        if !in_status_section {
+            continue;
+        }
+        let trimmed = line.trim();
+        // Match table rows: `| `token` | ... |`
+        if trimmed.starts_with('|') && trimmed.contains('`') {
+            // Skip the header separator row `| --- | --- |`
+            if trimmed.chars().filter(|&c| c == '-').count() > 3
+                && !trimmed.contains('`')
+            {
+                continue;
+            }
+            // Skip the header row "| Status | Meaning |" — it has no backticks
+            if !header_seen {
+                header_seen = true;
+            }
+            // Extract the first backtick-delimited token in the row
+            if let Some(start) = trimmed.find('`') {
+                if let Some(end_rel) = trimmed[start + 1..].find('`') {
+                    let token = &trimmed[start + 1..start + 1 + end_rel];
+                    if !token.is_empty() {
+                        statuses.push(token.to_string());
+                    }
+                }
+            }
+        } else if header_seen && trimmed.is_empty() {
+            // Blank line after the table ends the section
+            break;
+        }
+    }
+    statuses
+}
+
+#[cfg(test)]
+mod taxonomy_sync_tests {
+    use super::*;
+
+    /// The vendored snapshot of the canonical taxonomy. Re-sync from
+    /// `aops-core/skills/remember/references/TAXONOMY.md` whenever the spec
+    /// changes — this test will fail until `VALID_STATUSES` is updated to match.
+    const VENDORED_TAXONOMY: &str = include_str!("../references/TAXONOMY.md");
+
+    #[test]
+    fn taxonomy_status_set_in_sync() {
+        let parsed = parse_canonical_statuses_from_taxonomy(VENDORED_TAXONOMY);
+        assert!(
+            !parsed.is_empty(),
+            "Failed to parse any statuses from references/TAXONOMY.md — \
+             check that the '## Status Values and Transitions' table is intact"
+        );
+
+        let parsed_set: std::collections::BTreeSet<&str> =
+            parsed.iter().map(|s| s.as_str()).collect();
+        let code_set: std::collections::BTreeSet<&str> =
+            VALID_STATUSES.iter().copied().collect();
+
+        assert_eq!(
+            parsed_set, code_set,
+            "VALID_STATUSES drifted from references/TAXONOMY.md.\n\
+             Spec has: {:?}\n\
+             Code has: {:?}\n\
+             Either re-sync references/TAXONOMY.md or update VALID_STATUSES \
+             in src/graph.rs to match.",
+            parsed_set, code_set
+        );
+    }
+}
+
 /// Returns true if the node type is a valid canonical node type.
 pub fn is_valid_node_type(node_type: &str) -> bool {
     VALID_NODE_TYPES.contains(&node_type)
