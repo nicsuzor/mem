@@ -62,6 +62,13 @@ impl PkbSearchServer {
         self
     }
 
+    /// Public sync entry to `handle_update_task` for benchmarking. Not part
+    /// of the MCP API. Refs task-a4dcc039.
+    #[doc(hidden)]
+    pub fn bench_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_update_task(args)
+    }
+
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
     fn abs_path(&self, rel: &Path) -> PathBuf {
         if rel.is_absolute() {
@@ -166,7 +173,9 @@ impl PkbSearchServer {
         let abs_path = self.abs_path(&doc.path);
         let mut node = crate::graph::GraphNode::from_pkb_document(doc);
 
+        let _t_clone = std::time::Instant::now();
         let mut nodes = self.graph.read().nodes_cloned();
+        tracing::debug!(target: "perf::graph_rebuild", phase = "nodes_cloned", n_nodes = nodes.len(), elapsed_ms = _t_clone.elapsed().as_secs_f64() * 1000.0);
 
         // Carry over centrality scores from the prior node with the same id
         // so the fast-path rebuild doesn't zero them out.
@@ -284,8 +293,12 @@ impl PkbSearchServer {
             );
             return;
         }
+        let _t_upsert = std::time::Instant::now();
         let _ = self.store.write().upsert(doc, &self.embedder);
+        tracing::debug!(target: "perf::vector", phase = "store_upsert_inmem", elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0);
+        let _t_save = std::time::Instant::now();
         self.save_store();
+        tracing::debug!(target: "perf::vector", phase = "save_store_dispatch", elapsed_ms = _t_save.elapsed().as_secs_f64() * 1000.0);
     }
 
     /// Remove a document from the vector store if the index is not locked.
@@ -617,8 +630,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        // `project` is required for task creation.
-        let project_value = args
+        let project = args
             .get("project")
             .and_then(|v| v.as_str())
             .map(str::trim)
@@ -626,10 +638,40 @@ impl PkbSearchServer {
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
-                    "Missing required parameter: project. Every task must declare its project (e.g. project=\"mem\", project=\"aops\").",
+                    "Missing required parameter: project. Every task must declare a \
+                     project (e.g. 'aops', 'mem', 'adhoc-sessions').",
                 ),
                 data: None,
             })?;
+        if let Some(obj) = args.as_object() {
+            const KNOWN_KEYS: &[&str] = &[
+                "title", "task_title", "id", "parent", "priority", "tags", "depends_on",
+                "assignee", "complexity", "effort", "consequence", "severity", "goal_type",
+                "body", "stakeholder", "waiting_since", "due", "project", "type", "status",
+                "session_id", "issue_url", "follow_up_tasks", "release_summary", "contributes_to",
+            ];
+            let received: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
+            let unknown: Vec<&str> = received
+                .iter()
+                .copied()
+                .filter(|k| !KNOWN_KEYS.contains(k))
+                .collect();
+            tracing::info!(
+                target: "pkb::create_task",
+                title = %title,
+                received_keys = ?received,
+                unknown_keys = ?unknown,
+                "create_task invocation"
+            );
+            if !unknown.is_empty() {
+                tracing::warn!(
+                    target: "pkb::create_task",
+                    unknown_keys = ?unknown,
+                    "create_task received unknown keys — these fields will NOT be written. \
+                     Pass them via update_task or extend the create_task schema."
+                );
+            }
+        }
 
         let fields = crate::document_crud::TaskFields {
             title: title.to_string(),
@@ -694,7 +736,7 @@ impl PkbSearchServer {
                 .get("due")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            project: Some(project_value.to_string()),
+            project: Some(project.to_string()),
             task_type: args
                 .get("type")
                 .and_then(|v| v.as_str())
@@ -774,6 +816,17 @@ impl PkbSearchServer {
                         });
                     }
                 }
+                // Reject parent/child cycles. Only relevant when an explicit `id`
+                // is supplied (an auto-generated id cannot already be a parent).
+                if let Some(ref child_id) = fields.id {
+                    if let Err(msg) = graph.would_create_parent_cycle(child_id, parent_id) {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(msg),
+                            data: None,
+                        });
+                    }
+                }
             }
         }
 
@@ -795,23 +848,37 @@ impl PkbSearchServer {
             self.rebuild_graph();
         }
 
-        // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4")
+        // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4").
+        // generate_id() always emits exactly 8 hex chars, so anchor the pattern to {8}
+        // rather than `+` — keeps an accidental hex-shaped slug suffix from being absorbed.
         let task_id = path
             .file_stem()
             .map(|s| {
                 let stem = s.to_string_lossy();
-                // Match standard ID pattern: prefix-hexchars
                 static RE: std::sync::LazyLock<regex::Regex> =
-                    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]+").unwrap());
+                    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]{8}").unwrap());
                 RE.find(&stem)
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_else(|| stem.to_string())
             })
             .unwrap_or_default();
 
-        // Return structured JSON matching get_task shape
+        // Return structured JSON matching get_task shape. If the post-create graph
+        // lookup fails (graph rebuild raced or the file landed in an un-scanned
+        // location), fail loudly with the file path — silently returning null
+        // frontmatter (the original 2026-04-30 regression mode) hides the bug.
         let get_args = serde_json::json!({ "id": task_id });
-        self.handle_get_task(&get_args)
+        self.handle_get_task(&get_args).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!(
+                "create_task wrote {} but the new node is not yet visible in the graph \
+                 (id={task_id}). Underlying lookup error: {}. \
+                 The file is on disk — retry get_task in a moment.",
+                path.display(),
+                e.message,
+            )),
+            data: None,
+        })
     }
 
     fn handle_create_subtask(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -832,15 +899,46 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        // Validate parent exists
+        // Validate parent exists and has a project (subtasks inherit project from parent)
         {
             let graph = self.graph.read();
-            if graph.resolve(parent_id).is_none() {
+            let parent_node = graph.resolve(parent_id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Parent task not found: {parent_id}")),
+                data: None,
+            })?;
+
+            let parent_has_project = crate::pkb::parse_file_relative(
+                &self.abs_path(&parent_node.path),
+                &self.pkb_root,
+            )
+            .and_then(|doc| doc.frontmatter)
+            .and_then(|fm| {
+                fm.get("project")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+            })
+            .unwrap_or(false);
+
+            if !parent_has_project {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!("Parent task not found: {parent_id}")),
+                    message: Cow::from(format!(
+                        "Parent task '{parent_id}' has no `project` field. Subtasks \
+                         inherit the parent's project — set the parent's project first."
+                    )),
                     data: None,
                 });
+            }
+            // Optional caller-supplied `id` — reject parent/child cycles.
+            if let Some(child_id) = args.get("id").and_then(|v| v.as_str()) {
+                if let Err(msg) = graph.would_create_parent_cycle(child_id, parent_id) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
             }
         }
 
@@ -1487,6 +1585,8 @@ impl PkbSearchServer {
             "consequence": node.consequence,
             "severity": node.severity,
             "goal_type": node.goal_type,
+            "edge_template": node.edge_template,
+            "parse_warnings": node.parse_warnings,
             "days_until_due": days_until_due,
             "urgency_ratio": urgency_ratio,
             "urgency": node.urgency,
@@ -1904,6 +2004,7 @@ impl PkbSearchServer {
         let fields = crate::document_crud::TaskFields {
             title,
             parent: Some("adhoc-sessions".to_string()),
+            project: Some("adhoc-sessions".to_string()),
             tags: vec!["adhoc".to_string(), "session-release".to_string()],
             session_id: args.get("session_id").and_then(|v| v.as_str()).map(String::from),
             issue_url: args.get("issue_url").and_then(|v| v.as_str()).map(String::from),
@@ -2567,6 +2668,18 @@ impl PkbSearchServer {
             }
         };
 
+        // Subtasks created via decompose inherit the parent's project. Reject early if
+        // the parent has none, rather than producing tasks that fail at create_task.
+        let parent_project = parent_project.ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!(
+                "Parent task '{parent_id}' has no `project` field. Subtasks inherit \
+                 the parent's project — set it first or pass `project` per-subtask."
+            )),
+            data: None,
+        })?;
+        let parent_project = Some(parent_project);
+
         // First pass: assign IDs to all subtasks and build title map for cross-references
         let mut subtask_ids: Vec<String> = Vec::with_capacity(subtasks.len());
         let mut title_to_id: HashMap<String, String> = HashMap::new();
@@ -2939,6 +3052,15 @@ impl PkbSearchServer {
         let goal_type = args.get("goal_type").and_then(|v| v.as_str());
         let assignee = args.get("assignee").and_then(|v| v.as_str());
         let project = args.get("project").and_then(|v| v.as_str());
+        let tags: Vec<String> = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
         let include_subtasks = args
             .get("include_subtasks")
@@ -3021,6 +3143,12 @@ impl PkbSearchServer {
                     .unwrap_or(false)
             });
         }
+        if !tags.is_empty() {
+            tasks.retain(|t| {
+                tags.iter()
+                    .all(|want| t.tags.iter().any(|have| have.eq_ignore_ascii_case(want)))
+            });
+        }
 
         if !include_subtasks {
             tasks.retain(|t| t.node_type.as_deref() != Some("subtask"));
@@ -3066,6 +3194,9 @@ impl PkbSearchServer {
                         "due": t.due,
                         "effort": t.effort,
                         "consequence": t.consequence,
+                        "severity": t.severity,
+                        "goal_type": t.goal_type,
+                        "edge_template": t.edge_template,
                         "focus_score": t.focus_score,
                     })
                 })
@@ -3334,42 +3465,15 @@ impl PkbSearchServer {
             });
         }
 
-        // If the update changes `parent`, ensure the new chain doesn't form a cycle.
-        if let Some(new_parent_value) = updates.get("parent") {
-            if let Some(new_parent) = new_parent_value.as_str() {
-                let trimmed = new_parent.trim();
-                if !trimmed.is_empty() {
-                    let graph = self.graph.read();
-                    let self_node = graph.resolve(id).ok_or_else(|| McpError {
-                        code: ErrorCode::INVALID_PARAMS,
-                        message: Cow::from(format!("Document not found: {id}")),
-                        data: None,
-                    })?;
-                    let self_id = self_node.id.clone();
-                    let parent_node = graph.resolve(trimmed).ok_or_else(|| McpError {
-                        code: ErrorCode::INVALID_PARAMS,
-                        message: Cow::from(format!(
-                            "Parent '{}' not found in PKB. Create it first or verify the ID.",
-                            trimmed
-                        )),
-                        data: None,
-                    })?;
-                    let parent_canonical = parent_node.id.clone();
-                    if let Some(cycle_path) =
-                        graph.parent_chain_to(&parent_canonical, &self_id)
-                    {
-                        return Err(McpError {
-                            code: ErrorCode::INVALID_PARAMS,
-                            message: Cow::from(format!(
-                                "Refusing to set parent of '{}' to '{}': would form a cycle ({}). Parent/child relationships must be acyclic.",
-                                self_id,
-                                parent_canonical,
-                                cycle_path.join(" → ")
-                            )),
-                            data: None,
-                        });
-                    }
-                }
+        // Reject parent/child cycles when `parent` is being updated.
+        if let Some(new_parent) = updates.get("parent").and_then(|v| v.as_str()) {
+            let graph = self.graph.read();
+            if let Err(msg) = graph.would_create_parent_cycle(id, new_parent) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(msg),
+                    data: None,
+                });
             }
         }
 
@@ -3414,11 +3518,18 @@ impl PkbSearchServer {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
+        // Per-phase timing for write-path perf investigation (task-a4dcc039).
+        // Emitted at debug; set RUST_LOG=mem::mcp_server=debug to observe.
+        let t_total = std::time::Instant::now();
+
+        let t = std::time::Instant::now();
         crate::document_crud::update_document(&path, update_map).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to update task: {e}")),
             data: None,
         })?;
+        let elapsed_write = t.elapsed();
+        tracing::debug!(target: "perf::update_task", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
         // Append completion evidence to body when completing via update_task
         if let Some(evidence) = evidence_text {
@@ -3427,13 +3538,29 @@ impl PkbSearchServer {
             }
         }
 
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+        let t = std::time::Instant::now();
+        let parsed = crate::pkb::parse_file_relative(&path, &self.pkb_root);
+        let elapsed_parse = t.elapsed();
+        tracing::debug!(target: "perf::update_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
+
+        if let Some(doc) = parsed {
+            let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
+            let elapsed_graph = t.elapsed();
+            tracing::debug!(target: "perf::update_task", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
+
+            let t = std::time::Instant::now();
             self.try_upsert_document(&doc);
+            let elapsed_upsert = t.elapsed();
+            tracing::debug!(target: "perf::update_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
             tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            let t = std::time::Instant::now();
             self.rebuild_graph();
+            tracing::debug!(target: "perf::update_task", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
         }
+
+        tracing::debug!(target: "perf::update_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         // Soft warning if setting a terminal status via update_task instead of release_task
         let terminal_statuses = ["merge_ready", "done", "review", "blocked", "cancelled"];
@@ -4338,7 +4465,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Supports the Birnbaum importance model via `contributes_to` and severity-based prioritization. `project` and `parent` are both required: every task must declare which project it belongs to and where it sits in the hierarchy. Parent/child cycles are rejected at write time.",
+                "Create a new task markdown file with YAML frontmatter. Requires `parent` and `project`. Supports the Birnbaum importance model via `contributes_to` and severity-based prioritization. Parent/child cycles are rejected at write time.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4359,7 +4486,7 @@ impl PkbSearchServer {
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
-                        "project": { "type": "string", "description": "Project identifier (e.g. 'aops', 'mem'). Required — every task must declare its project." },
+                        "project": { "type": "string", "description": "Project identifier (required, e.g. 'aops', 'mem', 'adhoc-sessions')" },
                         "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, project." },
                         "status": { "type": "string", "description": "Task status (default: 'draft' — new tasks start as draft and are excluded from ready queue until promoted to 'active'). Also accepts: active, blocked, done, merge_ready, in_progress, etc." }
                     },
@@ -4518,6 +4645,7 @@ impl PkbSearchServer {
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags. A task matches iff every requested tag is present in its frontmatter `tags` array (AND, case-insensitive)." },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
                         "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
@@ -5452,8 +5580,9 @@ mod tests {
             .expect_err("self-parent should be rejected");
         let msg = format!("{}", err.message);
         assert!(
-            msg.to_lowercase().contains("cycle"),
-            "error should mention cycle, got: {msg}"
+            msg.to_lowercase().contains("cycle")
+                || msg.to_lowercase().contains("own parent"),
+            "error should mention cycle/own-parent, got: {msg}"
         );
     }
 
@@ -5470,8 +5599,9 @@ mod tests {
             .expect_err("descendant parent should be rejected");
         let msg = format!("{}", err.message);
         assert!(
-            msg.to_lowercase().contains("cycle"),
-            "error should mention cycle, got: {msg}"
+            msg.to_lowercase().contains("cycle")
+                || msg.to_lowercase().contains("circular"),
+            "error should mention cycle/circular, got: {msg}"
         );
     }
 
@@ -5518,6 +5648,126 @@ mod tests {
         assert!(
             desc.contains("focus_score"),
             "get_task description should mention focus_score, got: {desc}"
+        );
+    }
+
+    // ── Tag filtering ──
+
+    fn make_doc_with_tags(
+        path: &str,
+        title: &str,
+        id: &str,
+        tags: &[&str],
+    ) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), json!(title));
+        fm.insert("type".to_string(), json!("task"));
+        fm.insert("status".to_string(), json!("active"));
+        fm.insert("id".to_string(), json!(id));
+        if !tags.is_empty() {
+            fm.insert("tags".to_string(), json!(tags));
+        }
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        }
+    }
+
+    fn build_tag_test_server() -> PkbSearchServer {
+        let docs = vec![
+            make_doc_with_tags("tasks/t-overwhelm.md", "Overwhelm task", "t-overwhelm", &["overwhelm", "rust"]),
+            make_doc_with_tags("tasks/t-overwhelm-only.md", "Overwhelm only", "t-overwhelm-only", &["overwhelm"]),
+            make_doc_with_tags("tasks/t-rust-only.md", "Rust only", "t-rust-only", &["rust"]),
+            make_doc_with_tags("tasks/t-untagged.md", "Untagged task", "t-untagged", &[]),
+            make_doc_with_tags("tasks/t-other.md", "Other task", "t-other", &["misc"]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-tags"));
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            PathBuf::from("/tmp/test-pkb-tags"),
+            PathBuf::from("/tmp/test-pkb-tags/db"),
+            Arc::new(RwLock::new(graph)),
+        )
+    }
+
+    #[test]
+    fn test_list_tasks_single_tag_filter() {
+        let server = build_tag_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"tags": ["overwhelm"], "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert!(ids.contains(&"t-overwhelm".to_string()));
+        assert!(ids.contains(&"t-overwhelm-only".to_string()));
+        assert!(!ids.contains(&"t-rust-only".to_string()));
+        assert!(!ids.contains(&"t-untagged".to_string()));
+        assert!(!ids.contains(&"t-other".to_string()));
+    }
+
+    #[test]
+    fn test_list_tasks_multi_tag_and_filter() {
+        let server = build_tag_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"tags": ["overwhelm", "rust"], "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert_eq!(ids, vec!["t-overwhelm".to_string()]);
+    }
+
+    #[test]
+    fn test_list_tasks_tag_no_match_returns_empty() {
+        let server = build_tag_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"tags": ["does-not-exist"], "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_list_tasks_tag_filter_excludes_untagged() {
+        let server = build_tag_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"tags": ["overwhelm"], "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert!(!ids.contains(&"t-untagged".to_string()));
+    }
+
+    #[test]
+    fn test_list_tasks_tag_filter_case_insensitive() {
+        let server = build_tag_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"tags": ["OVERWHELM"], "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert!(ids.contains(&"t-overwhelm".to_string()));
+        assert!(ids.contains(&"t-overwhelm-only".to_string()));
+    }
+
+    #[test]
+    fn test_list_tasks_schema_includes_tags_parameter() {
+        let tools = PkbSearchServer::get_all_tools();
+        let list_tasks_tool = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "list_tasks")
+            .expect("list_tasks tool should exist");
+        let schema = serde_json::to_string(&list_tasks_tool.input_schema).unwrap();
+        assert!(
+            schema.contains("\"tags\""),
+            "list_tasks schema should include 'tags' parameter, got: {}",
+            schema
         );
     }
 

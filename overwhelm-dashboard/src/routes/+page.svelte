@@ -37,7 +37,7 @@
     import { filters } from "$lib/stores/filters";
     import { selection } from "$lib/stores/selection";
     import { browser } from "$app/environment";
-    import { INCOMPLETE_STATUSES, COMPLETED_STATUSES } from "$lib/data/constants";
+    import { COMPLETED_STATUSES, STRUCTURAL_TYPES } from "$lib/data/constants";
 
     export let data: any;
 
@@ -156,7 +156,6 @@
         // Only include real task types with explicit ID and status
         // Structural types (epic, project, goal) are always included — they often lack task_id or explicit status
         const TASK_TYPES = new Set(["task", "goal", "project", "epic", "bug", "feature", "learn", "action", "subproject", "target"]);
-        const STRUCTURAL_TYPES = new Set(["epic", "project", "goal"]);
         fNodes = fNodes.filter(n => {
             if (!TASK_TYPES.has(n.type)) return false;
             if (STRUCTURAL_TYPES.has(n.type)) return true;
@@ -167,16 +166,6 @@
         fNodes = fNodes.filter(n => {
             let visState = 'bright';
 
-            // Determine status visibility
-            let statusVis = 'bright';
-            const isBlocked = n.status === "blocked";
-            const isCompleted = COMPLETED_STATUSES.has(n.status);
-            const isActive = !isBlocked && !isCompleted && INCOMPLETE_STATUSES.has(n.status);
-
-            if (isActive) statusVis = $filters.statusActive;
-            else if (isBlocked) statusVis = $filters.statusBlocked;
-            else if (isCompleted) statusVis = $filters.statusCompleted;
-
             let priVis = 'bright';
             if (!STRUCTURAL_TYPES.has(n.type)) {
                 if (n.priority === 0) priVis = $filters.priority0;
@@ -186,8 +175,8 @@
                 else if (n.priority === 4) priVis = $filters.priority4;
             }
 
-            if (statusVis === 'hidden' || priVis === 'hidden') return false;
-            if (statusVis === 'half' || priVis === 'half') visState = 'half';
+            if (priVis === 'hidden') return false;
+            if (priVis === 'half') visState = 'half';
 
             (n as any).filter_dimmed = (visState === 'half');
             return true;

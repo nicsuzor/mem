@@ -154,10 +154,12 @@ impl GraphStore {
         }
 
         // 3. Build edges from links and frontmatter refs
+        let _t_edges = std::time::Instant::now();
         let edges: Vec<Edge> = nodes
             .par_iter()
             .flat_map(|n| build_node_edges(n, &id_map, &path_to_id, pkb_root))
             .collect();
+        tracing::debug!(target: "perf::graph_rebuild", phase = "build_edges", n_nodes = nodes.len(), n_edges = edges.len(), elapsed_ms = _t_edges.elapsed().as_secs_f64() * 1000.0);
 
         // Deduplicate edges by (source, target, type)
         let mut seen: HashSet<(String, String, String)> = HashSet::new();
@@ -208,11 +210,13 @@ impl GraphStore {
 
         // 9b. Compute similarity edges if vector store is provided
         // threshold 0.85 as default for materialised edges
+        let _t_sim = std::time::Instant::now();
         let similarity_edges = if let Some(store) = opt_store {
             compute_similarity_edges(&nodes, &edges, store, 0.85)
         } else {
             vec![]
         };
+        tracing::debug!(target: "perf::graph_rebuild", phase = "similarity_edges", n_nodes = nodes.len(), n_sim_edges = similarity_edges.len(), elapsed_ms = _t_sim.elapsed().as_secs_f64() * 1000.0);
 
         let mut edges = edges;
         edges.extend(similarity_edges);
@@ -773,6 +777,93 @@ impl GraphStore {
             .into_iter()
             .filter(|scc| scc.len() > 1)
             .count()
+    }
+
+    /// Validate that assigning `proposed_parent` as the parent of `child` would not
+    /// create a circular parent/child relationship.
+    ///
+    /// Walks the existing parent chain upward from `proposed_parent`. If the walk
+    /// reaches `child`, the assignment would close a cycle and is rejected. Self-
+    /// parenting (`child == proposed_parent`) is also rejected.
+    ///
+    /// Both IDs are resolved through `GraphStore::resolve` so callers may pass any
+    /// alias the resolver accepts (canonical ID, filename stem, permalink, etc.).
+    /// If a node cannot be resolved, this function returns `Ok(())` — reference
+    /// integrity is the caller's responsibility (see existing parent-exists checks).
+    ///
+    /// Parent/child must be a DAG. Other relationship types (depends_on, blocks,
+    /// soft_blocks, etc.) are unaffected and may remain circular.
+    pub fn would_create_parent_cycle(
+        &self,
+        child: &str,
+        proposed_parent: &str,
+    ) -> Result<(), String> {
+        // Resolve both endpoints to canonical IDs when possible.
+        let child_id = self
+            .resolve(child)
+            .map(|n| n.id.clone())
+            .unwrap_or_else(|| child.to_string());
+        let parent_id = self
+            .resolve(proposed_parent)
+            .map(|n| n.id.clone())
+            .unwrap_or_else(|| proposed_parent.to_string());
+
+        if child_id == parent_id {
+            return Err(format!(
+                "A task cannot be its own parent (id '{child_id}')."
+            ));
+        }
+
+        // Walk upward from the proposed parent. If we reach `child_id`, the
+        // assignment would close a cycle. A visited set guards against pre-
+        // existing cycles in the graph.
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut current = parent_id.clone();
+        loop {
+            if !visited.insert(current.clone()) {
+                // Pre-existing cycle in the parent chain — bail out without
+                // false-positive cycle reporting against `child`.
+                return Ok(());
+            }
+            if current == child_id {
+                return Err(format!(
+                    "Setting parent of '{child_id}' to '{parent_id}' would create a circular \
+                     parent/child relationship (parent chain reaches '{child_id}'). Parent/child \
+                     hierarchy must be a DAG."
+                ));
+            }
+            match self.nodes.get(&current).and_then(|n| n.parent.clone()) {
+                Some(next) => {
+                    let resolved = self
+                        .resolve(&next)
+                        .map(|n| n.id.clone())
+                        .unwrap_or(next);
+                    current = resolved;
+                }
+                None => return Ok(()),
+            }
+        }
+    }
+
+    /// Find all parent-only cycles in the graph.
+    ///
+    /// Returns a list of strongly connected components (size > 1) over the
+    /// `Parent` edge subgraph. Each inner vector contains the node IDs that
+    /// participate in one parent cycle.
+    pub fn find_parent_cycles(&self) -> Vec<Vec<String>> {
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+        for edge in &self.edges {
+            if matches!(edge.edge_type, EdgeType::Parent) {
+                adjacency
+                    .entry(edge.source.clone())
+                    .or_default()
+                    .push(edge.target.clone());
+            }
+        }
+        tarjan_scc(&adjacency)
+            .into_iter()
+            .filter(|scc| scc.len() > 1)
+            .collect()
     }
 
     // -----------------------------------------------------------------------
@@ -3506,5 +3597,69 @@ mod tests {
         let focus = graph.focus_picks(50);
         assert!(focus.contains(&"inprogress-urgent".to_string()),
             "in_progress task with SEV4 committed urgency must appear in focus_picks via status-independent scan");
+    }
+
+    // ── parent/child cycle detection ─────────────────────────────────────────
+
+    /// Build a small linear parent chain:  root → mid → leaf
+    fn build_parent_chain_graph() -> GraphStore {
+        let docs = vec![
+            make_doc("tasks/root.md", "Root", "epic", "active", "root", None, &[]),
+            make_doc("tasks/mid.md", "Mid", "task", "active", "mid", Some("root"), &[]),
+            make_doc("tasks/leaf.md", "Leaf", "task", "active", "leaf", Some("mid"), &[]),
+            make_doc("tasks/sib.md", "Sibling", "task", "active", "sib", Some("root"), &[]),
+        ];
+        GraphStore::build(&docs, Path::new("/tmp/test-pkb"))
+    }
+
+    #[test]
+    fn parent_cycle_self_parent_rejected() {
+        let g = build_parent_chain_graph();
+        let err = g.would_create_parent_cycle("leaf", "leaf").unwrap_err();
+        assert!(err.contains("cannot be its own parent"), "got: {err}");
+    }
+
+    #[test]
+    fn parent_cycle_two_node_rejected() {
+        // Existing chain: mid → root. Attempt to make root's parent be mid.
+        let g = build_parent_chain_graph();
+        let err = g.would_create_parent_cycle("root", "mid").unwrap_err();
+        assert!(err.contains("circular"), "got: {err}");
+    }
+
+    #[test]
+    fn parent_cycle_three_node_rejected() {
+        // Chain: leaf → mid → root. Setting root's parent to leaf would close a 3-cycle.
+        let g = build_parent_chain_graph();
+        let err = g.would_create_parent_cycle("root", "leaf").unwrap_err();
+        assert!(err.contains("circular"), "got: {err}");
+    }
+
+    #[test]
+    fn parent_cycle_legal_deep_chain_allowed() {
+        // New node `deeper` with parent `leaf` extends the chain — no cycle.
+        let g = build_parent_chain_graph();
+        assert!(g.would_create_parent_cycle("deeper", "leaf").is_ok());
+    }
+
+    #[test]
+    fn parent_cycle_sibling_not_a_cycle() {
+        // `sib` and `mid` are both children of `root`. Reparenting `sib` under `mid`
+        // is NOT a cycle (mid's parent is root, not sib).
+        let g = build_parent_chain_graph();
+        assert!(g.would_create_parent_cycle("sib", "mid").is_ok());
+    }
+
+    #[test]
+    fn parent_cycle_unrelated_node_allowed() {
+        // Brand-new id with no graph presence — parent chain doesn't reach it.
+        let g = build_parent_chain_graph();
+        assert!(g.would_create_parent_cycle("brand-new-id", "mid").is_ok());
+    }
+
+    #[test]
+    fn find_parent_cycles_empty_when_dag() {
+        let g = build_parent_chain_graph();
+        assert!(g.find_parent_cycles().is_empty());
     }
 }

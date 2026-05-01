@@ -4,7 +4,7 @@
     import { STATUS_FILLS, STATUS_LABELS, STATUS_ORDER } from '../../data/constants';
 
     // Chips follow the canonical lifecycle in aops-core/TAXONOMY.md and consume the
-    // canonical palette from constants.ts — so chip color == card fill color for the
+    // canonical palette from constants.ts — chip color == card fill color for the
     // same status ("green in the filter" = "green on the card").
     const STATUS_GROUPS = [
         { label: 'ALL', statuses: [] as string[], color: '#94a3b8' },

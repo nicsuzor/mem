@@ -227,6 +227,19 @@ impl VectorStore {
 
         let (id, confidence) = Self::extract_frontmatter_fields(doc);
 
+        // Defensive: an entry with empty chunk_embeddings is invisible to search
+        // because the search loop's max-similarity scan never enters and the
+        // entry's best_score stays at NEG_INFINITY. Warn loudly so that future
+        // zero-result regressions are visible at write time, not just at startup.
+        if chunk_embeddings.is_empty() {
+            tracing::warn!(
+                "Indexed document with no chunk embeddings: {} (title: {:?}). \
+                 This entry will not appear in search results.",
+                path_str,
+                doc.title,
+            );
+        }
+
         let entry = DocumentEntry {
             path: doc.path.clone(),
             title: doc.title.clone(),
@@ -440,6 +453,19 @@ impl VectorStore {
     /// Get a document entry by its relative path key.
     pub fn get_entry(&self, path: &str) -> Option<&DocumentEntry> {
         self.documents.get(path)
+    }
+
+    /// Count documents whose `chunk_embeddings` is empty.
+    ///
+    /// Such entries can never match a query (the search loop never enters
+    /// for an entry with no chunk embeddings, leaving its score at
+    /// `f32::NEG_INFINITY`). When this count is non-zero the index is in
+    /// a degraded state — `pkb reindex --force` should be run.
+    pub fn count_docs_missing_embeddings(&self) -> usize {
+        self.documents
+            .values()
+            .filter(|e| e.chunk_embeddings.is_empty())
+            .count()
     }
 
     /// List all tags across all documents with their occurrence counts.

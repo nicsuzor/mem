@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onDestroy } from "svelte";
     import cytoscape from "cytoscape";
+    import dagre from "dagre";
     import {
         forceSimulation,
         forceLink,
@@ -9,11 +10,16 @@
         forceX,
         forceY,
     } from "d3-force";
+
+    // Debug toggle: when false (default) the deterministic dagre layout
+    // owns x-coords and the d3-force simulation does not run. Flip to
+    // true to re-enable the live force simulation for debugging.
+    const enableForceSim = false;
     import { graphData, preparedGraphData, graphStructureKey, preparedStructureKey } from "../../stores/graph";
     import { filters, type VisibilityState } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
-    import { INCOMPLETE_STATUSES, PRIORITY_BORDERS } from "../../data/constants";
+    import { INCOMPLETE_STATUSES, PRIORITY_BORDERS, STRUCTURAL_TYPES } from "../../data/constants";
     import { projectColor } from "../../data/projectUtils";
 
     let containerEl: HTMLDivElement;
@@ -34,9 +40,6 @@
     // outright — when they appear on a target's ancestor chain we want the
     // connector to be visible — but we render them as muted backbone stops.
     const HIDDEN_TYPES = new Set<string>();
-    const BACKBONE_TYPES = new Set(['project', 'epic', 'goal']);
-    const CONTAINER_TYPES = new Set(['goal', 'epic', 'project']);
-    const EPIC_TYPES = new Set(['epic', 'goal', 'project']);
     const DEFAULT_PROJECT_COLOR = 'hsl(220, 12%, 46%)';
 
     // Layout constants
@@ -78,7 +81,7 @@
     }
 
     function getNodeRole(node: GraphNode): 'epic' | 'task' {
-        return EPIC_TYPES.has((node.type || '').toLowerCase()) ? 'epic' : 'task';
+        return STRUCTURAL_TYPES.has((node.type || '').toLowerCase()) ? 'epic' : 'task';
     }
 
     function getEdgeRole(edgeType: string): 'parent' | 'dependency' | 'reference' {
@@ -290,7 +293,7 @@
         _lineMembership: Map<string, string> = new Map()
     ): void {
         if (sim) { sim.stop(); sim = null; }
-        const isBackbone = (n: GraphNode) => BACKBONE_TYPES.has((n.type || '').toLowerCase());
+        const isBackbone = (n: GraphNode) => STRUCTURAL_TYPES.has((n.type || '').toLowerCase());
         simNodes = metroNodes.map(n => {
             const p = positions.get(n.id);
             if (!p) return null as any;
@@ -418,20 +421,49 @@
         // Epic lines: place stops evenly along the ray from centre to terminal.
         // The terminal is already positioned at the perimeter; stops fall on
         // the line between centre and terminal so the visual run is straight.
+        // Spurs are seeded near their anchor on the spine, perpendicular to
+        // the spine direction so they fan out without overlapping.
         for (const line of epicLines) {
             const tx = destinationX.get(line.terminalId);
             const ty = destinationY.get(line.terminalId);
             if (tx === undefined || ty === undefined) continue;
             const stopCount = line.stops.length - 1; // exclude terminal
-            if (stopCount < 1) continue;
             const tStart = 0.18;
             const tEnd = 0.92;
-            for (let i = 0; i < stopCount; i++) {
-                const u = stopCount === 1 ? (tStart + tEnd) / 2 : tStart + (tEnd - tStart) * (i / (stopCount - 1));
-                const x = centerX + (tx - centerX) * u;
-                const y = centerY + (ty - centerY) * u;
-                positions.set(line.stops[i], { x, y });
+            const spineU = new Map<string, number>(); // stop -> u along spine
+            if (stopCount >= 1) {
+                for (let i = 0; i < stopCount; i++) {
+                    const u = stopCount === 1 ? (tStart + tEnd) / 2 : tStart + (tEnd - tStart) * (i / (stopCount - 1));
+                    const x = centerX + (tx - centerX) * u;
+                    const y = centerY + (ty - centerY) * u;
+                    positions.set(line.stops[i], { x, y });
+                    spineU.set(line.stops[i], u);
+                }
             }
+            spineU.set(line.terminalId, 1);
+
+            // Spurs: place each branch's nodes perpendicular to the spine
+            // direction at the anchor's u, fanning further with branch index.
+            const dx = tx - centerX;
+            const dy = ty - centerY;
+            const len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+            const nx = -dy / len;  // unit normal
+            const ny = dx / len;
+            const spurs = line.spurs ?? [];
+            spurs.forEach((spur, sIdx) => {
+                const u = spineU.get(spur.parentId);
+                if (u === undefined) return;
+                const ax = centerX + dx * u;
+                const ay = centerY + dy * u;
+                const sign = sIdx % 2 === 0 ? 1 : -1;
+                const offsetMag = 60 + Math.floor(sIdx / 2) * 50;
+                for (let i = 0; i < spur.branch.length; i++) {
+                    const t = (i + 1) / (spur.branch.length + 1);
+                    const x = ax + nx * sign * offsetMag * t;
+                    const y = ay + ny * sign * offsetMag * t;
+                    positions.set(spur.branch[i], { x, y });
+                }
+            });
         }
 
         // Route nodes: seed at the centroid of their serving terminals so the
@@ -559,25 +591,59 @@
     // the geometry. Cross-terminal blockers stay as ordinary depends_on edges
     // and remain visible on top of the lines.
 
-    interface EpicLine {
-        terminalId: string;
-        stops: string[]; // descendants in post-order, terminal last
+    interface EpicSpur {
+        parentId: string;     // spine (or other spur) node this spur branches off
+        branch: string[];     // ordered branch — its own heavy path, leaf-first, root-of-spur last
     }
 
-    function postOrderEpicLine(
+    interface EpicLine {
+        terminalId: string;
+        stops: string[];               // heavy-path spine: leaves-first, terminal last
+        spurs?: EpicSpur[];            // optional secondary branches off the spine
+    }
+
+    // Heavy-path decomposition. At each node, the child with the largest
+    // incomplete-descendant count inherits the "heavy" edge (continues the
+    // parent's spine); the remaining children spawn new branches that are
+    // themselves decomposed recursively, becoming spurs. Tie-break by
+    // `_raw.order`, then priority asc, then label.
+    //
+    // Returns a flat spine (rootId-rooted) plus a list of spurs. Each spur
+    // attaches to a `parentId` already on the spine (or on another spur)
+    // and is itself an ordered branch ending at the spur's own root child.
+    //
+    // Spine layout matches the previous post-order shape: leaves first,
+    // each parent after all its descendants in the heavy chain, root last.
+    function heavyPathDecomposition(
         rootId: string,
         parentDown: Map<string, Set<string>>,
         nodeById: Map<string, GraphNode>,
-        forbidden: Set<string>, // read-only: nodes to never enter
-        depthCap: number = 8,
-    ): string[] {
-        const stops: string[] = [];
+        forbidden: Set<string>,
+    ): { spine: string[]; spurs: EpicSpur[] } {
         const visited = new Set<string>();
-        function visit(id: string, depth: number): void {
-            if (depth > depthCap) return;
-            if (visited.has(id)) return;
-            visited.add(id);
-            const kids = Array.from(parentDown.get(id) ?? new Set<string>())
+        const spurs: EpicSpur[] = [];
+
+        // size = count of incomplete descendants (including self) reachable
+        // through parentDown, ignoring forbidden nodes. Memoised.
+        const sizeCache = new Map<string, number>();
+        function size(id: string, seen: Set<string>): number {
+            if (sizeCache.has(id)) return sizeCache.get(id)!;
+            if (seen.has(id)) return 0;
+            seen.add(id);
+            const node = nodeById.get(id);
+            if (!node || !isIncomplete(node)) { sizeCache.set(id, 0); return 0; }
+            let total = 1;
+            for (const c of parentDown.get(id) ?? []) {
+                if (forbidden.has(c)) continue;
+                if (seen.has(c)) continue;
+                total += size(c, seen);
+            }
+            sizeCache.set(id, total);
+            return total;
+        }
+
+        function eligibleSortedChildren(id: string): string[] {
+            return Array.from(parentDown.get(id) ?? new Set<string>())
                 .filter(c => {
                     if (forbidden.has(c)) return false;
                     if (visited.has(c)) return false;
@@ -593,14 +659,46 @@
                     if (na.priority !== nb.priority) return na.priority - nb.priority;
                     return (na.label || '').localeCompare(nb.label || '');
                 });
-            for (const k of kids) {
-                visit(k, depth + 1);
-                stops.push(k);
-            }
         }
-        visit(rootId, 0);
-        stops.push(rootId);
-        return stops;
+
+        // Build the heavy-path spine starting at rootId. The "heavy" child
+        // (largest descendant count, with deterministic tie-break) inherits
+        // the spine; siblings become spur seeds.
+        function buildSpine(rootOfSpine: string): string[] {
+            const stops: string[] = [];
+            // Walk down the heavy chain first, recording each node's own
+            // heavy descendant chain leaves-first to match post-order semantics.
+            function visit(id: string): void {
+                if (visited.has(id)) return;
+                visited.add(id);
+                const kids = eligibleSortedChildren(id);
+                if (kids.length === 0) return;
+                // Pick heavy child: max size, with the existing sort order
+                // already supplying tie-break.
+                let heavy = kids[0];
+                let heavySize = size(heavy, new Set());
+                for (let i = 1; i < kids.length; i++) {
+                    const s = size(kids[i], new Set());
+                    if (s > heavySize) { heavy = kids[i]; heavySize = s; }
+                }
+                // Light children become spurs anchored at `id`.
+                for (const k of kids) {
+                    if (k === heavy) continue;
+                    if (visited.has(k)) continue;
+                    const branch = buildSpine(k);
+                    branch.push(k);
+                    spurs.push({ parentId: id, branch });
+                }
+                visit(heavy);
+                stops.push(heavy);
+            }
+            visit(rootOfSpine);
+            return stops;
+        }
+
+        const spine = buildSpine(rootId);
+        spine.push(rootId);
+        return { spine, spurs };
     }
 
     function computeEpicLines(
@@ -627,12 +725,18 @@
             (ownKids.length > 0 ? withKids : leaves).push(t);
         }
 
-        const recordLine = (terminalId: string, stops: string[]): void => {
+        const recordLine = (terminalId: string, stops: string[], spurs: EpicSpur[] = []): void => {
             if (stops.length <= 1) return;
-            lines.push({ terminalId, stops });
+            lines.push({ terminalId, stops, spurs });
             for (const s of stops) {
                 if (s !== terminalId) {
                     membership.set(s, terminalId);
+                    claimed.add(s);
+                }
+            }
+            for (const spur of spurs) {
+                for (const s of spur.branch) {
+                    if (!membership.has(s)) membership.set(s, terminalId);
                     claimed.add(s);
                 }
             }
@@ -640,33 +744,45 @@
 
         // Pass 1: targets that have children own their subtree first. Other
         // terminals are excluded so a sibling-target leaf doesn't poach.
+        // Heavy-path decomposition produces one bold spine plus optional spurs.
         for (const t of withKids) {
             const forbidden = new Set(claimed);
             for (const otherId of allTargetIds) if (otherId !== t.id) forbidden.add(otherId);
-            const stops = postOrderEpicLine(t.id, parentDown, nodeById, forbidden);
-            recordLine(t.id, stops);
+            const { spine, spurs } = heavyPathDecomposition(t.id, parentDown, nodeById, forbidden);
+            recordLine(t.id, spine, spurs);
         }
 
         // Pass 2: leaf targets borrow their containing epic's remaining
         // descendants. All target ids are forbidden — the line ends at the
         // terminal, not through another target. Nodes already claimed by a
         // with-kids line ARE forbidden (that subtree has a dedicated line).
-        // But nodes that two leaf targets both see as siblings are NOT
-        // forbidden: both lines include them; the node's position is pinned
-        // to whichever line records it first.
         for (const t of leaves) {
             const parent = parentUp.get(t.id);
             if (!parent || !nodeById.has(parent)) continue;
             const forbidden = new Set(claimed);
             for (const otherId of allTargetIds) forbidden.add(otherId);
-            const subtree = postOrderEpicLine(parent, parentDown, nodeById, forbidden);
-            const sibs = subtree.slice(0, -1); // drop the parent root
+            const { spine, spurs } = heavyPathDecomposition(parent, parentDown, nodeById, forbidden);
+            const sibs = spine.slice(0, -1); // drop the parent root from the spine
             if (sibs.length === 0) continue;
             const stops = [...sibs, t.id];
             if (stops.length <= 1) continue;
-            lines.push({ terminalId: t.id, stops });
+            // Re-anchor spurs that were anchored at the dropped parent: their
+            // parentId stays valid only if it's still in the line. Spurs
+            // hanging off the dropped parent get re-pointed to t (the terminal).
+            const inLine = new Set(stops);
+            const remappedSpurs: EpicSpur[] = spurs.map(spur => ({
+                parentId: inLine.has(spur.parentId) ? spur.parentId : t.id,
+                branch: spur.branch,
+            }));
+            lines.push({ terminalId: t.id, stops, spurs: remappedSpurs });
             for (const s of sibs) {
                 if (!membership.has(s)) membership.set(s, t.id);
+            }
+            for (const spur of remappedSpurs) {
+                for (const s of spur.branch) {
+                    if (!membership.has(s)) membership.set(s, t.id);
+                    claimed.add(s);
+                }
             }
         }
 
@@ -766,7 +882,7 @@
             if (!n) continue;
             if (!isIncomplete(n)) continue;
             if (routeData.destIndex.has(id)) continue;
-            if (BACKBONE_TYPES.has((n.type || '').toLowerCase())) continue;
+            if (STRUCTURAL_TYPES.has((n.type || '').toLowerCase())) continue;
             if (!hasBlocker.has(id)) starts.add(id);
         }
         return starts;
@@ -785,7 +901,7 @@
         const visibilityState = priorityVisibility(node.priority);
         const completed = !isIncomplete(node);
         const typeLower = (node.type || '').toLowerCase();
-        const isBackbone = BACKBONE_TYPES.has(typeLower);
+        const isBackbone = STRUCTURAL_TYPES.has(typeLower);
 
         let nodeSize: number;
         let fillColor: string;
@@ -904,6 +1020,88 @@
         return `hsl(${h}, ${s.toFixed(1)}%, ${l}%)`;
     }
 
+    // ─── Deterministic x-placement via dagre ────────────────────────────────
+
+    // Build a layered dagre graph from epic spines + spurs + cross-target
+    // depends_on edges, run rankdir-TB layout, and copy the resulting
+    // x-coords back into our preset positions. Terminals stay at their
+    // perimeter anchors (pinned); everything else takes (x, y) from dagre.
+    //
+    // Layout is deterministic for a given graph hash — calling buildGraph
+    // twice produces pixel-identical output (terminals are fixed; dagre is
+    // pure given the same input edges in the same order).
+    function applyDagreLayout(
+        metroNodes: GraphNode[],
+        metroEdges: GraphEdge[],
+        epicLines: EpicLine[],
+        routeData: RouteData,
+        positions: Map<string, { x: number; y: number }>,
+    ): void {
+        if (metroNodes.length === 0 || epicLines.length === 0) return;
+        const g: any = new (dagre as any).graphlib.Graph({ multigraph: false, compound: false });
+        g.setGraph({ rankdir: 'TB', nodesep: 40, ranksep: 60, marginx: 20, marginy: 20 });
+        g.setDefaultEdgeLabel(() => ({}));
+
+        const inLayout = new Set<string>();
+        for (const n of metroNodes) {
+            g.setNode(n.id, { width: 30, height: 30, label: n.id });
+            inLayout.add(n.id);
+        }
+
+        // Spine edges and spur edges contribute the dominant structure.
+        for (const line of epicLines) {
+            for (let i = 0; i < line.stops.length - 1; i++) {
+                const a = line.stops[i];
+                const b = line.stops[i + 1];
+                if (inLayout.has(a) && inLayout.has(b)) g.setEdge(a, b);
+            }
+            const spurs = line.spurs ?? [];
+            for (const spur of spurs) {
+                if (!inLayout.has(spur.parentId)) continue;
+                const chain = [spur.parentId, ...spur.branch.slice().reverse()];
+                for (let i = 0; i < chain.length - 1; i++) {
+                    if (inLayout.has(chain[i]) && inLayout.has(chain[i + 1])) {
+                        g.setEdge(chain[i], chain[i + 1]);
+                    }
+                }
+            }
+        }
+
+        // Cross-target depends_on / soft_depends_on edges between distinct
+        // serving destinations — these glue the otherwise independent spine
+        // forests so dagre can choose a coherent x-ordering.
+        for (const e of metroEdges) {
+            if (e.type !== 'depends_on' && e.type !== 'soft_depends_on') continue;
+            const src = typeof e.source === 'object' ? e.source.id : e.source;
+            const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+            if (!inLayout.has(src) || !inLayout.has(tgt)) continue;
+            // skip if already in the spine/spur graph
+            if (g.hasEdge(src, tgt) || g.hasEdge(tgt, src)) continue;
+            g.setEdge(src, tgt);
+        }
+
+        try {
+            (dagre as any).layout(g);
+        } catch (_err) {
+            return; // leave preset positions untouched on failure
+        }
+
+        // Copy dagre's x-coords into preset positions, preserving the radial
+        // y already assigned by computePositions. Terminals keep their
+        // perimeter anchor.
+        for (const id of g.nodes()) {
+            if (routeData.destIndex.has(id)) continue;
+            const dn: any = g.node(id);
+            if (!dn || typeof dn.x !== 'number' || typeof dn.y !== 'number') continue;
+            const cur = positions.get(id);
+            if (!cur) {
+                positions.set(id, { x: dn.x, y: dn.y });
+            } else {
+                positions.set(id, { x: dn.x, y: cur.y });
+            }
+        }
+    }
+
     // ─── Cytoscape lifecycle ────────────────────────────────────────────────
 
     function buildGraph() {
@@ -945,6 +1143,9 @@
         // flagged as priority but not serving any declared target. Keep them
         // visible so the user can see them, just not anchored.
         const metroNodes = allMetroNodes.filter(n => {
+            const matchesStatus = $filters.selectedStatuses.length === 0 || $filters.selectedStatuses.includes(n.status);
+            if (!matchesStatus && !STRUCTURAL_TYPES.has(n.type)) return false;
+
             const onRoute = (routeData.routes.get(n.id)?.size ?? 0) > 0;
             if (onRoute) return true;
             if (isIncomplete(n) && n.priority <= 1 && (n.type || '').toLowerCase() !== 'target') return true;
@@ -1034,6 +1235,10 @@
         // Epic-line connectors: one thick stroke per consecutive (stop_i,
         // stop_i+1) pair, project-coloured. These overlay the underlying
         // parent/dependency edges so the line reads as a single sweep.
+        // Spurs render in the same colour at a slightly lower stroke width
+        // so the spine visually dominates while the branch is still readable.
+        const SPINE_WIDTH = 8;
+        const SPUR_WIDTH = 5;
         for (const line of epicLines) {
             const dest = destById.get(line.terminalId);
             const lineColor = getProjectLineColor(dest?.project);
@@ -1051,12 +1256,41 @@
                         isOnRoute: 1,
                         lineColor,
                         edgeOpacity: 0.95,
-                        edgeWidth: 8,
+                        edgeWidth: SPINE_WIDTH,
                         pathDestId: line.terminalId,
                         isLine: 1,
                     },
                 });
             }
+            const spurs = line.spurs ?? [];
+            spurs.forEach((spur, sIdx) => {
+                if (!nodeById.has(spur.parentId)) return;
+                // Spur edges: parent -> branch[last] -> ... -> branch[0] is
+                // the post-order chain (leaves-first). Draw connectors along
+                // parent → branch[last], then between branch entries.
+                const chain = [spur.parentId, ...spur.branch.slice().reverse()];
+                for (let i = 0; i < chain.length - 1; i++) {
+                    const a = chain[i];
+                    const b = chain[i + 1];
+                    if (!nodeById.has(a) || !nodeById.has(b)) continue;
+                    cyEdges.push({
+                        data: {
+                            id: `spur_${line.terminalId}_${sIdx}_${i}`,
+                            source: a,
+                            target: b,
+                            edgeRole: 'line',
+                            visibilityState: 'bright',
+                            isOnRoute: 1,
+                            lineColor,
+                            edgeOpacity: 0.85,
+                            edgeWidth: SPUR_WIDTH,
+                            pathDestId: line.terminalId,
+                            isLine: 1,
+                            isSpur: 1,
+                        },
+                    });
+                }
+            });
         }
 
         cy = cytoscape({
@@ -1241,19 +1475,38 @@
         setTimeout(() => { if (cy) cy.fit(undefined, 60); }, 0);
         (window as any).__cy = cy;
 
-        // Kick off the persistent force simulation so edges pull nodes together
-        // live, and dragging a terminal tows its whole network.
-        startSimulation(metroNodes, metroEdges, positions, routeData, lineMembership);
-        warmSimulation(160);
-        // Push warmed positions into cytoscape before the first paint settles
+        // Deterministic dagre x-placement within each depth band. Build a
+        // graph of (target spines + spurs + cross-target depends_on edges
+        // from metroEdges), run dagre layout TB, and copy the resulting
+        // x-coords into our preset positions. Terminals stay pinned at
+        // their perimeter anchors; everything else gets dagre's (x, y).
+        applyDagreLayout(metroNodes, metroEdges, epicLines, routeData, positions);
         if (cy) {
             cy.batch(() => {
-                for (const f of simNodes) {
-                    const n = cy!.getElementById(f.id);
-                    if (n.length) n.position({ x: f.x, y: f.y });
+                for (const n of metroNodes) {
+                    const p = positions.get(n.id);
+                    if (!p) continue;
+                    const cn = cy!.getElementById(n.id);
+                    if (cn.length) cn.position({ x: p.x, y: p.y });
                 }
             });
             setTimeout(() => cy?.fit(undefined, 60), 0);
+        }
+
+        // Optional live force simulation — disabled by default. Flip
+        // `enableForceSim` at the top of the script to bring it back.
+        if (enableForceSim) {
+            startSimulation(metroNodes, metroEdges, positions, routeData, lineMembership);
+            warmSimulation(160);
+            if (cy) {
+                cy.batch(() => {
+                    for (const f of simNodes) {
+                        const n = cy!.getElementById(f.id);
+                        if (n.length) n.position({ x: f.x, y: f.y });
+                    }
+                });
+                setTimeout(() => cy?.fit(undefined, 60), 0);
+            }
         }
 
         // ── Interactions ──
@@ -1476,6 +1729,7 @@
         const routeData = computeRouteData(metroNodes, metroEdges);
         const { lines: epicLines } = computeEpicLines(routeData.destinations, metroNodes, metroEdges);
         const positions = computePositions(metroNodes, metroEdges, routeData, width, height, epicLines);
+        applyDagreLayout(metroNodes, metroEdges, epicLines, routeData, positions);
 
         running = true;
         let pending = 0;
