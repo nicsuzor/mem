@@ -1658,7 +1658,7 @@ async fn main() -> Result<()> {
             title,
             parent,
             priority,
-            project: _,
+            project,
             tags,
             depends_on,
             assignee,
@@ -1671,10 +1671,19 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
+            let project = match project.filter(|s| !s.is_empty()) {
+                Some(p) => p,
+                None => {
+                    eprintln!("Error: --project is required (e.g. --project aops)");
+                    std::process::exit(1);
+                }
+            };
+
             let fields = document_crud::TaskFields {
                 title: title_str,
                 parent,
                 priority,
+                project: Some(project),
                 tags: tags.unwrap_or_default(),
                 depends_on: depends_on.unwrap_or_default(),
                 assignee,
