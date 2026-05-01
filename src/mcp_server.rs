@@ -431,6 +431,14 @@ impl PkbSearchServer {
             .get("include_subtasks")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // By default `task_search` hides done/cancelled tasks — when the user
+        // is searching for work to do, completed work is noise. Set
+        // `include_done=true` (or `include_closed=true`) to opt back in.
+        let include_done = args
+            .get("include_done")
+            .and_then(|v| v.as_bool())
+            .or_else(|| args.get("include_closed").and_then(|v| v.as_bool()))
+            .unwrap_or(false);
 
         // Optional `type` filter: either a single type ("epic") or a comma-
         // separated list ("epic,feature"). When set, only matching types are
@@ -452,9 +460,9 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        // When a type filter is present, fetch more candidates so we still fill
-        // the limit after filtering.
-        let fetch_limit = if type_filter.is_some() {
+        // When a type filter is present (or done tasks are excluded) fetch
+        // more candidates so we still fill the limit after filtering.
+        let fetch_limit = if type_filter.is_some() || !include_done {
             limit * 10
         } else {
             limit * 3
@@ -495,6 +503,19 @@ impl PkbSearchServer {
                     .unwrap_or(false);
                 if !matches {
                     continue;
+                }
+            }
+
+            // Closed-status filter (default on): hide done/cancelled unless the
+            // caller explicitly asked for them via include_done.
+            if !include_done {
+                if let Some(node) = self.lookup_node(&path_map, &r.path) {
+                    if let Some(status) = node.status.as_deref() {
+                        let s = status.to_ascii_lowercase();
+                        if s == "done" || s == "cancelled" || s == "canceled" {
+                            continue;
+                        }
+                    }
                 }
             }
 
@@ -596,6 +617,20 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        // `project` is required for task creation.
+        let project_value = args
+            .get("project")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Missing required parameter: project. Every task must declare its project (e.g. project=\"mem\", project=\"aops\").",
+                ),
+                data: None,
+            })?;
+
         let fields = crate::document_crud::TaskFields {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
@@ -659,10 +694,7 @@ impl PkbSearchServer {
                 .get("due")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            project: args
-                .get("project")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            project: Some(project_value.to_string()),
             task_type: args
                 .get("type")
                 .and_then(|v| v.as_str())
@@ -711,19 +743,36 @@ impl PkbSearchServer {
             });
         }
 
-        // Validate parent exists in the PKB graph
+        // Validate parent exists in the PKB graph + reject parent-chain cycles.
         {
             let graph = self.graph.read();
             if let Some(ref parent_id) = fields.parent {
-                if graph.resolve(parent_id).is_none() {
-                    return Err(McpError {
-                        code: ErrorCode::INVALID_PARAMS,
-                        message: Cow::from(format!(
-                            "Parent '{}' not found in PKB. Create the parent node first or verify the ID.",
-                            parent_id
-                        )),
-                        data: None,
-                    });
+                let parent_node = graph.resolve(parent_id).ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Parent '{}' not found in PKB. Create the parent node first or verify the ID.",
+                        parent_id
+                    )),
+                    data: None,
+                })?;
+
+                // If the caller supplied an id, ensure the parent chain doesn't
+                // already contain that id (which would form a cycle).
+                if let Some(ref new_id) = fields.id {
+                    let canonical_parent = parent_node.id.clone();
+                    if let Some(cycle_path) =
+                        graph.parent_chain_to(&canonical_parent, new_id.as_str())
+                    {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(format!(
+                                "Refusing to create task '{}': parent chain would form a cycle ({}). Parent/child relationships must be acyclic.",
+                                new_id,
+                                cycle_path.join(" → ")
+                            )),
+                            data: None,
+                        });
+                    }
                 }
             }
         }
@@ -3285,6 +3334,45 @@ impl PkbSearchServer {
             });
         }
 
+        // If the update changes `parent`, ensure the new chain doesn't form a cycle.
+        if let Some(new_parent_value) = updates.get("parent") {
+            if let Some(new_parent) = new_parent_value.as_str() {
+                let trimmed = new_parent.trim();
+                if !trimmed.is_empty() {
+                    let graph = self.graph.read();
+                    let self_node = graph.resolve(id).ok_or_else(|| McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!("Document not found: {id}")),
+                        data: None,
+                    })?;
+                    let self_id = self_node.id.clone();
+                    let parent_node = graph.resolve(trimmed).ok_or_else(|| McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Parent '{}' not found in PKB. Create it first or verify the ID.",
+                            trimmed
+                        )),
+                        data: None,
+                    })?;
+                    let parent_canonical = parent_node.id.clone();
+                    if let Some(cycle_path) =
+                        graph.parent_chain_to(&parent_canonical, &self_id)
+                    {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(format!(
+                                "Refusing to set parent of '{}' to '{}': would form a cycle ({}). Parent/child relationships must be acyclic.",
+                                self_id,
+                                parent_canonical,
+                                cycle_path.join(" → ")
+                            )),
+                            data: None,
+                        });
+                    }
+                }
+            }
+        }
+
         // When setting status to "done", require completion_evidence
         let setting_done = updates
             .get("status")
@@ -4218,13 +4306,14 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "task_search",
-                "Semantic search filtered to actionable tasks. Returns results with rich graph context including status and dependencies. Use `type: \"epic\"` to find container tasks (with context and subtasks) rather than leaf tasks.",
+                "Semantic search filtered to actionable tasks. Returns results with rich graph context including status and dependencies. Done/cancelled tasks are hidden by default — when you're looking for work to do, completed tasks are noise; pass `include_done=true` to override. Use `type: \"epic\"` to find container tasks (with context and subtasks) rather than leaf tasks.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Query to search tasks" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." },
+                        "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (hides closed tasks so search returns actionable work)." },
                         "type": { "type": "string", "description": "Filter by task type. Single value (e.g. 'epic') or comma-separated list (e.g. 'epic,feature'). Recognised actionable types: project, epic, task, learn. Default: all actionable types." }
                     },
                     "required": ["query"]
@@ -4249,7 +4338,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Supports the Birnbaum importance model via `contributes_to` and severity-based prioritization. Always provide a parent to maintain graph integrity.",
+                "Create a new task markdown file with YAML frontmatter. Supports the Birnbaum importance model via `contributes_to` and severity-based prioritization. `project` and `parent` are both required: every task must declare which project it belongs to and where it sits in the hierarchy. Parent/child cycles are rejected at write time.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4270,11 +4359,11 @@ impl PkbSearchServer {
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
-                        "project": { "type": "string", "description": "Project identifier (e.g. 'aops')" },
+                        "project": { "type": "string", "description": "Project identifier (e.g. 'aops', 'mem'). Required — every task must declare its project." },
                         "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, project." },
                         "status": { "type": "string", "description": "Task status (default: 'draft' — new tasks start as draft and are excluded from ready queue until promoted to 'active'). Also accepts: active, blocked, done, merge_ready, in_progress, etc." }
                     },
-                    "required": ["title"]
+                    "required": ["title", "project"]
                 }))
                 .unwrap(),
             )
@@ -4419,7 +4508,7 @@ impl PkbSearchServer {
             .with_title("Release Task"),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering. Supports sorting by focus score (incorporating lexicographic severity and exponential decay). Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
+                "List tasks with smart filtering. JSON output includes `focus_score`: a composite task-importance signal combining priority (with downstream propagation via effective_priority), lexicographic severity (SEV4 dominates), deadline urgency, stakeholder waiting time, downstream weight, and creation staleness. It is an integer (0 for backlog, scaling up to ~100k+ for SEV4 with imminent deadlines) and is the primary sort key for ready tasks. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4440,7 +4529,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks).",
+                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON includes `focus_score` — a composite task-importance signal blending priority (with downstream propagation), lexicographic severity, deadline urgency, stakeholder waiting time, downstream weight, and staleness. It is an integer (0 for low-importance backlog, scaling up to ~100k+ for SEV4 with imminent deadlines) and is the primary sort key for ready tasks.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5294,6 +5383,142 @@ mod tests {
         // Either empty JSON tasks array or "No tasks found" message
         let is_empty = text.contains("No tasks found") || text.contains("\"tasks\":[]") || text.contains("\"tasks\": []");
         assert!(is_empty, "non-existent project should return empty: {}", text);
+    }
+
+    // ── create_task: project required ──
+
+    #[test]
+    fn test_create_task_rejects_missing_project() {
+        let server = build_test_server();
+        let err = server
+            .handle_create_task(&json!({
+                "title": "no project",
+                "parent": "proj-alpha"
+            }))
+            .expect_err("missing project should be rejected");
+        let msg = format!("{}", err.message);
+        assert!(
+            msg.to_lowercase().contains("project"),
+            "error should mention project, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_create_task_rejects_blank_project() {
+        let server = build_test_server();
+        let err = server
+            .handle_create_task(&json!({
+                "title": "blank project",
+                "parent": "proj-alpha",
+                "project": "   "
+            }))
+            .expect_err("blank project should be rejected");
+        let msg = format!("{}", err.message);
+        assert!(
+            msg.to_lowercase().contains("project"),
+            "error should mention project, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_create_task_schema_requires_project() {
+        let tools = PkbSearchServer::get_all_tools();
+        let create = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "create_task")
+            .expect("create_task tool should exist");
+        let schema = serde_json::to_string(&create.input_schema).unwrap();
+        assert!(
+            schema.contains("\"project\""),
+            "create_task schema should include project field"
+        );
+        assert!(
+            schema.contains("\"required\":[\"title\",\"project\"]")
+                || schema.contains("\"required\": [\"title\", \"project\"]"),
+            "create_task should mark project required, got: {schema}"
+        );
+    }
+
+    // ── update_task: parent cycle rejection ──
+
+    #[test]
+    fn test_update_task_rejects_self_parent() {
+        let server = build_test_server();
+        let err = server
+            .handle_update_task(&json!({
+                "id": "task-a1",
+                "parent": "task-a1"
+            }))
+            .expect_err("self-parent should be rejected");
+        let msg = format!("{}", err.message);
+        assert!(
+            msg.to_lowercase().contains("cycle"),
+            "error should mention cycle, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_update_task_rejects_descendant_parent() {
+        // proj-alpha is parent of task-a1. Setting proj-alpha's parent to
+        // task-a1 would create a cycle proj-alpha → task-a1 → proj-alpha.
+        let server = build_test_server();
+        let err = server
+            .handle_update_task(&json!({
+                "id": "proj-alpha",
+                "parent": "task-a1"
+            }))
+            .expect_err("descendant parent should be rejected");
+        let msg = format!("{}", err.message);
+        assert!(
+            msg.to_lowercase().contains("cycle"),
+            "error should mention cycle, got: {msg}"
+        );
+    }
+
+    // ── task_search: schema advertises include_done ──
+
+    #[test]
+    fn test_task_search_schema_includes_include_done() {
+        let tools = PkbSearchServer::get_all_tools();
+        let task_search = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "task_search")
+            .expect("task_search tool should exist");
+        let schema = serde_json::to_string(&task_search.input_schema).unwrap();
+        assert!(
+            schema.contains("\"include_done\""),
+            "task_search schema should advertise include_done parameter"
+        );
+    }
+
+    // ── focus_score description ──
+
+    #[test]
+    fn test_list_tasks_description_mentions_focus_score() {
+        let tools = PkbSearchServer::get_all_tools();
+        let list_tasks = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "list_tasks")
+            .expect("list_tasks tool should exist");
+        let desc = list_tasks.description.as_deref().unwrap_or("");
+        assert!(
+            desc.contains("focus_score"),
+            "list_tasks description should mention focus_score, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn test_get_task_description_mentions_focus_score() {
+        let tools = PkbSearchServer::get_all_tools();
+        let get_task = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "get_task")
+            .expect("get_task tool should exist");
+        let desc = get_task.description.as_deref().unwrap_or("");
+        assert!(
+            desc.contains("focus_score"),
+            "get_task description should mention focus_score, got: {desc}"
+        );
     }
 
     // ── AC6: tool schema includes project parameter ──

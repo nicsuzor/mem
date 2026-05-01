@@ -1295,6 +1295,87 @@ pub fn lint_directory(
         diag_map
     };
 
+    // ── Parent/child cycle detection ────────────────────────────────────────
+    // Parent/child relationships must be a DAG. A node whose parent chain
+    // (transitively or via a self-loop) revisits itself is reported as a
+    // hard error. Other relationship types (depends_on, blocks, soft_*) are
+    // explicitly permitted to be circular and are NOT included here — they
+    // are flagged by `dep-hard-cycle` above only if the broader graph cycle
+    // also touches them.
+    let parent_cycle_diags: HashMap<PathBuf, Diagnostic> = {
+        let raw: Vec<(String, Option<String>, PathBuf)> = files
+            .par_iter()
+            .filter_map(|p| {
+                let content = std::fs::read_to_string(p).ok()?;
+                let matter = Matter::<YAML>::new();
+                let parsed = matter.parse(&content);
+                let fm = parsed
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
+                let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
+                let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
+                Some((id, parent, p.clone()))
+            })
+            .collect();
+
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        let mut id_to_path: HashMap<String, PathBuf> = HashMap::new();
+        let mut self_loops: HashSet<String> = HashSet::new();
+        for (id, parent, path) in raw {
+            id_to_path.insert(id.clone(), path);
+            if let Some(p) = parent {
+                if p == id {
+                    self_loops.insert(id.clone());
+                } else {
+                    adj.insert(id, vec![p]);
+                }
+            }
+        }
+
+        let mut diag_map: HashMap<PathBuf, Diagnostic> = HashMap::new();
+
+        // Self-parents (id == parent) — degenerate cycle of length 1.
+        for node_id in &self_loops {
+            if let Some(path) = id_to_path.get(node_id) {
+                diag_map.entry(path.clone()).or_insert_with(|| Diagnostic {
+                    severity: Severity::Error,
+                    rule: "parent-cycle",
+                    message: format!(
+                        "Node '{}' lists itself as its own parent. Parent/child must be acyclic.",
+                        node_id
+                    ),
+                    line: None,
+                    fixable: false,
+                });
+            }
+        }
+
+        // Multi-node parent cycles via Tarjan SCC on parent-only edges.
+        let cycles: Vec<Vec<String>> = crate::graph_store::tarjan_scc(&adj)
+            .into_iter()
+            .filter(|scc| scc.len() > 1)
+            .collect();
+        for cycle in &cycles {
+            let cycle_ids = cycle.join(", ");
+            for node_id in cycle {
+                if let Some(path) = id_to_path.get(node_id.as_str()) {
+                    diag_map.entry(path.clone()).or_insert_with(|| Diagnostic {
+                        severity: Severity::Error,
+                        rule: "parent-cycle",
+                        message: format!(
+                            "Node '{}' is part of a parent/child cycle: [{}]. Parent/child relationships must be acyclic; only depends_on/blocks may be circular.",
+                            node_id, cycle_ids
+                        ),
+                        line: None,
+                        fixable: false,
+                    });
+                }
+            }
+        }
+        diag_map
+    };
+
     // Pre-fix pass: collect ID renames needed (old_id → new_id) before per-file fixes
     // Only IDs that genuinely don't match the prefix-hexhash pattern are renamed.
     // Prefix may contain uppercase letters (e.g. "academicOps-b5d43955").
@@ -1332,6 +1413,9 @@ pub fn lint_directory(
     // Merge cycle diagnostics into per-file results
     for r in &mut results {
         if let Some(diag) = cycle_diags.get(&r.path) {
+            r.diagnostics.push(diag.clone());
+        }
+        if let Some(diag) = parent_cycle_diags.get(&r.path) {
             r.diagnostics.push(diag.clone());
         }
     }
