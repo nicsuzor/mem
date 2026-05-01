@@ -19,7 +19,7 @@
     import { filters, type VisibilityState } from "../../stores/filters";
     import { selection, toggleSelection } from "../../stores/selection";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
-    import { INCOMPLETE_STATUSES, PRIORITY_BORDERS } from "../../data/constants";
+    import { INCOMPLETE_STATUSES, PRIORITY_BORDERS, STRUCTURAL_TYPES } from "../../data/constants";
     import { projectColor } from "../../data/projectUtils";
 
     let containerEl: HTMLDivElement;
@@ -40,9 +40,6 @@
     // outright — when they appear on a target's ancestor chain we want the
     // connector to be visible — but we render them as muted backbone stops.
     const HIDDEN_TYPES = new Set<string>();
-    const BACKBONE_TYPES = new Set(['project', 'epic', 'goal']);
-    const CONTAINER_TYPES = new Set(['goal', 'epic', 'project']);
-    const EPIC_TYPES = new Set(['epic', 'goal', 'project']);
     const DEFAULT_PROJECT_COLOR = 'hsl(220, 12%, 46%)';
 
     // Layout constants
@@ -84,7 +81,7 @@
     }
 
     function getNodeRole(node: GraphNode): 'epic' | 'task' {
-        return EPIC_TYPES.has((node.type || '').toLowerCase()) ? 'epic' : 'task';
+        return STRUCTURAL_TYPES.has((node.type || '').toLowerCase()) ? 'epic' : 'task';
     }
 
     function getEdgeRole(edgeType: string): 'parent' | 'dependency' | 'reference' {
@@ -296,7 +293,7 @@
         _lineMembership: Map<string, string> = new Map()
     ): void {
         if (sim) { sim.stop(); sim = null; }
-        const isBackbone = (n: GraphNode) => BACKBONE_TYPES.has((n.type || '').toLowerCase());
+        const isBackbone = (n: GraphNode) => STRUCTURAL_TYPES.has((n.type || '').toLowerCase());
         simNodes = metroNodes.map(n => {
             const p = positions.get(n.id);
             if (!p) return null as any;
@@ -885,7 +882,7 @@
             if (!n) continue;
             if (!isIncomplete(n)) continue;
             if (routeData.destIndex.has(id)) continue;
-            if (BACKBONE_TYPES.has((n.type || '').toLowerCase())) continue;
+            if (STRUCTURAL_TYPES.has((n.type || '').toLowerCase())) continue;
             if (!hasBlocker.has(id)) starts.add(id);
         }
         return starts;
@@ -904,7 +901,7 @@
         const visibilityState = priorityVisibility(node.priority);
         const completed = !isIncomplete(node);
         const typeLower = (node.type || '').toLowerCase();
-        const isBackbone = BACKBONE_TYPES.has(typeLower);
+        const isBackbone = STRUCTURAL_TYPES.has(typeLower);
 
         let nodeSize: number;
         let fillColor: string;
@@ -1146,6 +1143,9 @@
         // flagged as priority but not serving any declared target. Keep them
         // visible so the user can see them, just not anchored.
         const metroNodes = allMetroNodes.filter(n => {
+            const matchesStatus = $filters.selectedStatuses.length === 0 || $filters.selectedStatuses.includes(n.status);
+            if (!matchesStatus && !STRUCTURAL_TYPES.has(n.type)) return false;
+
             const onRoute = (routeData.routes.get(n.id)?.size ?? 0) > 0;
             if (onRoute) return true;
             if (isIncomplete(n) && n.priority <= 1 && (n.type || '').toLowerCase() !== 'target') return true;

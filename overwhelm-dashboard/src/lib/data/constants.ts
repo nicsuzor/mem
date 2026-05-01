@@ -156,6 +156,22 @@ export const INCOMPLETE_STATUSES = new Set<string>([
 // Terminal set — `done` and `cancelled` only.
 export const COMPLETED_STATUSES = new Set<string>(["done", "cancelled"]);
 
+// Structural container types — included in graph regardless of task_id/status,
+// and exempt from status/criticality filters since they aggregate children.
+export const STRUCTURAL_TYPES = new Set<string>(["epic", "project", "goal"]);
+
+// Sort rank for "next-action-ness" — lower number = sooner to surface.
+// Used by metro-style views to order stops along a line.
+export const STATUS_RANK: Record<string, number> = {
+    inbox: 0,
+    in_progress: 1, queued: 1, review: 1, merge_ready: 1,
+    ready: 2,
+    blocked: 3,
+    paused: 4, someday: 4,
+    done: 5,
+    cancelled: 6,
+};
+
 // Self-consistency guard: legend palette and order must agree.
 // Throws at module load if the keys ever diverge.
 if (STATUS_ORDER.length !== Object.keys(STATUS_FILLS).length
