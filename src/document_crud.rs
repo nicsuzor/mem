@@ -1412,6 +1412,81 @@ mod tests {
             "error should mention project requirement: {err}"
         );
     }
+
+    #[test]
+    fn create_task_writes_body_verbatim() {
+        // Regression: create_task was reportedly silently dropping the body, leaving
+        // only `# <title>` on disk. Confirm a multi-line body — including headings,
+        // lists, and blank lines — is preserved verbatim.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        let body = "## Problem\n\nWhen X happens, Y goes wrong.\n\n## AC\n\n- [ ] item 1\n- [ ] item 2\n";
+        let fields = TaskFields {
+            title: "Body roundtrip task".to_string(),
+            parent: Some("parent-001".to_string()),
+            body: Some(body.to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        // The body must appear verbatim *after* the closing frontmatter delimiter.
+        let after_fm = content.split("---\n\n").nth(1).unwrap_or("");
+        assert!(
+            after_fm.contains(body),
+            "body should be written verbatim after frontmatter; got after_fm:\n{after_fm}"
+        );
+        // Belt-and-braces: the synthesised fallback `# <title>` must NOT appear when a
+        // body was supplied (otherwise we'd be appending a stray heading).
+        assert!(
+            !after_fm.starts_with("# Body roundtrip task\n"),
+            "fallback `# <title>` heading should NOT appear when body is supplied: {after_fm}"
+        );
+    }
+
+    #[test]
+    fn create_task_always_writes_id_title_type() {
+        // Regression: re-confirmation 2026-04-30 — the on-disk frontmatter was
+        // observed to be missing `id:`, `title:`, and `type:` fields. The canonical
+        // create_task path MUST always write all three (the server generates the
+        // ID, knows the title, and defaults type=task).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        // Minimal fields — no explicit id, no explicit type
+        let fields = TaskFields {
+            title: "Bare-minimum task".to_string(),
+            parent: Some("parent-001".to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        // Frontmatter section is between the first two `---` delimiters
+        let frontmatter = content
+            .strip_prefix("---\n")
+            .and_then(|s| s.split_once("\n---\n"))
+            .map(|(fm, _)| fm)
+            .expect("file must have YAML frontmatter delimiters");
+
+        // All three fields must be present, with non-empty values.
+        let has_field = |key: &str| -> bool {
+            frontmatter
+                .lines()
+                .any(|line| line.starts_with(&format!("{key}: ")) && line.len() > key.len() + 2)
+        };
+        assert!(has_field("id"), "id: must always be written; frontmatter:\n{frontmatter}");
+        assert!(has_field("title"), "title: must always be written; frontmatter:\n{frontmatter}");
+        assert!(has_field("type"), "type: must always be written; frontmatter:\n{frontmatter}");
+        assert!(has_field("status"), "status: must always be written; frontmatter:\n{frontmatter}");
+    }
 }
 
 // ── Merge node ────────────────────────────────────────────────────────────

@@ -29,17 +29,19 @@
 <header class="flex-none h-14 border-b border-primary/30 bg-surface px-4 flex items-center justify-between z-10 relative">
 	<div class="flex items-center gap-8">
 		<div class="flex items-center gap-4">
-			<div class="size-6 text-primary animate-pulse">
+			<div class="size-6 text-primary animate-pulse" aria-hidden="true">
 				<span class="material-symbols-outlined" style="font-size: 24px;">terminal</span>
 			</div>
 			<h1 class="text-lg font-bold tracking-widest text-primary text-glow uppercase">aOps Dashboard</h1>
 		</div>
 
 		<!-- Navigation Links -->
-		<nav class="hidden lg:flex items-center gap-8">
+		<nav class="hidden lg:flex items-center gap-8" aria-label="Primary navigation">
 			<button
 				class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Dashboard' ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
 				onclick={() => openTab('Dashboard')}
+				aria-label="Go to Dashboard"
+				aria-current={$viewSettings.mainTab === 'Dashboard' ? 'page' : undefined}
 			>
 				DASHBOARD
 			</button>
@@ -47,6 +49,8 @@
 			<button
 				class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Task Graph' ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
 				onclick={() => openTab('Task Graph')}
+				aria-label="Go to Task Graph"
+				aria-current={$viewSettings.mainTab === 'Task Graph' ? 'page' : undefined}
 			>
 				GRAPH
 			</button>
@@ -54,6 +58,8 @@
 			<button
 				class="text-xs font-bold uppercase transition-colors border-b-2 {$viewSettings.mainTab === 'Threaded Tasks' ? 'border-primary text-primary' : 'border-transparent text-primary/60 hover:text-primary hover:border-primary/50'}"
 				onclick={() => openTab('Threaded Tasks')}
+				aria-label="Go to Threaded Tasks"
+				aria-current={$viewSettings.mainTab === 'Threaded Tasks' ? 'page' : undefined}
 			>
 				TASKS
 			</button>
@@ -75,10 +81,12 @@
 
 	{#if mobileMenuOpen}
 		<div id="mobile-nav" class="absolute top-full left-0 right-0 lg:hidden border-b border-primary/30 bg-surface/96 backdrop-blur-md shadow-[0_16px_40px_rgba(0,0,0,0.45)]">
-			<nav class="flex max-h-[calc(100vh-3.5rem)] flex-col gap-2 overflow-y-auto px-4 py-4">
+			<nav class="flex max-h-[calc(100vh-3.5rem)] flex-col gap-2 overflow-y-auto px-4 py-4" aria-label="Mobile primary navigation">
 				<button
 					class="mobile-nav-link {$viewSettings.mainTab === 'Dashboard' ? 'mobile-nav-link-active' : ''}"
 					onclick={() => openTab('Dashboard')}
+					aria-label="Go to Dashboard"
+					aria-current={$viewSettings.mainTab === 'Dashboard' ? 'page' : undefined}
 				>
 					Dashboard
 				</button>
@@ -86,6 +94,8 @@
 				<button
 					class="mobile-nav-link {$viewSettings.mainTab === 'Task Graph' ? 'mobile-nav-link-active' : ''}"
 					onclick={() => openTab('Task Graph')}
+					aria-label="Go to Task Graph"
+					aria-current={$viewSettings.mainTab === 'Task Graph' ? 'page' : undefined}
 				>
 					Graph
 				</button>
@@ -106,6 +116,8 @@
 				<button
 					class="mobile-nav-link {$viewSettings.mainTab === 'Threaded Tasks' ? 'mobile-nav-link-active' : ''}"
 					onclick={() => openTab('Threaded Tasks')}
+					aria-label="Go to Threaded Tasks"
+					aria-current={$viewSettings.mainTab === 'Threaded Tasks' ? 'page' : undefined}
 				>
 					Tasks
 				</button>
