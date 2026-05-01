@@ -580,209 +580,115 @@
     // excluded — they're structural, not actionable entry points.
     // ─── Epic-as-line linearisation ─────────────────────────────────────────
     //
-    // Easy case for "turn a web into a line": a node with children. The line
-    // is the post-order traversal of its incomplete subtree — leaves first,
-    // each parent after all its descendants, the root (terminal) last.
-    // Real-world ordering: children sorted by `_raw.order` (frontmatter
-    // `order:` field), then priority asc, then label.
-    //
     // A node is claimed by the first terminal whose subtree contains it; this
     // keeps multi-parent nodes from appearing on multiple lines and bending
     // the geometry. Cross-terminal blockers stay as ordinary depends_on edges
     // and remain visible on top of the lines.
 
     interface EpicSpur {
-        parentId: string;     // spine (or other spur) node this spur branches off
-        branch: string[];     // ordered branch — its own heavy path, leaf-first, root-of-spur last
+        parentId: string;
+        branch: string[];
     }
 
     interface EpicLine {
         terminalId: string;
-        stops: string[];               // heavy-path spine: leaves-first, terminal last
-        spurs?: EpicSpur[];            // optional secondary branches off the spine
+        stops: string[];               // topological order: prereqs first, terminal last
+        spurs?: EpicSpur[];            // legacy property, kept empty for compatibility
     }
 
-    // Heavy-path decomposition. At each node, the child with the largest
-    // incomplete-descendant count inherits the "heavy" edge (continues the
-    // parent's spine); the remaining children spawn new branches that are
-    // themselves decomposed recursively, becoming spurs. Tie-break by
-    // `_raw.order`, then priority asc, then label.
-    //
-    // Returns a flat spine (rootId-rooted) plus a list of spurs. Each spur
-    // attaches to a `parentId` already on the spine (or on another spur)
-    // and is itself an ordered branch ending at the spur's own root child.
-    //
-    // Spine layout matches the previous post-order shape: leaves first,
-    // each parent after all its descendants in the heavy chain, root last.
-    function heavyPathDecomposition(
-        rootId: string,
-        parentDown: Map<string, Set<string>>,
-        nodeById: Map<string, GraphNode>,
-        forbidden: Set<string>,
-    ): { spine: string[]; spurs: EpicSpur[] } {
-        const visited = new Set<string>();
-        const spurs: EpicSpur[] = [];
+    // Topological sort ensuring prerequisites come earlier in the route.
+    function topologicalSortStations(
+        stationIds: Set<string>,
+        edges: GraphEdge[]
+    ): string[] {
+        const adj = new Map<string, string[]>();
+        const inDegree = new Map<string, number>();
+        for (const id of stationIds) {
+            adj.set(id, []);
+            inDegree.set(id, 0);
+        }
 
-        // size = count of incomplete descendants (including self) reachable
-        // through parentDown, ignoring forbidden nodes. Memoised.
-        const sizeCache = new Map<string, number>();
-        function size(id: string, seen: Set<string>): number {
-            if (sizeCache.has(id)) return sizeCache.get(id)!;
-            if (seen.has(id)) return 0;
-            seen.add(id);
-            const node = nodeById.get(id);
-            if (!node || !isIncomplete(node)) { sizeCache.set(id, 0); return 0; }
-            let total = 1;
-            for (const c of parentDown.get(id) ?? []) {
-                if (forbidden.has(c)) continue;
-                if (seen.has(c)) continue;
-                total += size(c, seen);
+        for (const e of edges) {
+            const sid = typeof e.source === 'object' ? e.source.id : e.source;
+            const tid = typeof e.target === 'object' ? e.target.id : e.target;
+            if (!stationIds.has(sid) || !stationIds.has(tid)) continue;
+
+            let from = null, to = null;
+            if (e.type === 'parent') {
+                from = tid; // child must complete before parent
+                to = sid;
+            } else if (e.type === 'depends_on' || e.type === 'soft_depends_on' || e.type === 'contributes_to') {
+                from = tid; // target must complete before source
+                to = sid;
             }
-            sizeCache.set(id, total);
-            return total;
-        }
-
-        function eligibleSortedChildren(id: string): string[] {
-            return Array.from(parentDown.get(id) ?? new Set<string>())
-                .filter(c => {
-                    if (forbidden.has(c)) return false;
-                    if (visited.has(c)) return false;
-                    const cn = nodeById.get(c);
-                    return !!cn && isIncomplete(cn);
-                })
-                .sort((a, b) => {
-                    const na = nodeById.get(a)!;
-                    const nb = nodeById.get(b)!;
-                    const oa = (na as any)._raw?.order ?? Number.MAX_SAFE_INTEGER;
-                    const ob = (nb as any)._raw?.order ?? Number.MAX_SAFE_INTEGER;
-                    if (oa !== ob) return oa - ob;
-                    if (na.priority !== nb.priority) return na.priority - nb.priority;
-                    return (na.label || '').localeCompare(nb.label || '');
-                });
-        }
-
-        // Build the heavy-path spine starting at rootId. The "heavy" child
-        // (largest descendant count, with deterministic tie-break) inherits
-        // the spine; siblings become spur seeds.
-        function buildSpine(rootOfSpine: string): string[] {
-            const stops: string[] = [];
-            // Walk down the heavy chain first, recording each node's own
-            // heavy descendant chain leaves-first to match post-order semantics.
-            function visit(id: string): void {
-                if (visited.has(id)) return;
-                visited.add(id);
-                const kids = eligibleSortedChildren(id);
-                if (kids.length === 0) return;
-                // Pick heavy child: max size, with the existing sort order
-                // already supplying tie-break.
-                let heavy = kids[0];
-                let heavySize = size(heavy, new Set());
-                for (let i = 1; i < kids.length; i++) {
-                    const s = size(kids[i], new Set());
-                    if (s > heavySize) { heavy = kids[i]; heavySize = s; }
-                }
-                // Light children become spurs anchored at `id`.
-                for (const k of kids) {
-                    if (k === heavy) continue;
-                    if (visited.has(k)) continue;
-                    const branch = buildSpine(k);
-                    branch.push(k);
-                    spurs.push({ parentId: id, branch });
-                }
-                visit(heavy);
-                stops.push(heavy);
+            if (from && to && from !== to) {
+                adj.get(from)!.push(to);
+                inDegree.set(to, inDegree.get(to)! + 1);
             }
-            visit(rootOfSpine);
-            return stops;
         }
 
-        const spine = buildSpine(rootId);
-        spine.push(rootId);
-        return { spine, spurs };
+        const queue: string[] = [];
+        for (const [id, deg] of inDegree) {
+            if (deg === 0) queue.push(id);
+        }
+        queue.sort(); // Stable initial
+        
+        const sorted: string[] = [];
+        while (queue.length > 0) {
+            const cur = queue.shift()!;
+            sorted.push(cur);
+            for (const nbr of adj.get(cur)!) {
+                const deg = inDegree.get(nbr)! - 1;
+                inDegree.set(nbr, deg);
+                if (deg === 0) {
+                    queue.push(nbr);
+                    queue.sort();
+                }
+            }
+        }
+
+        for (const id of stationIds) {
+            if (!sorted.includes(id)) {
+                sorted.push(id);
+            }
+        }
+        
+        return sorted;
     }
 
     function computeEpicLines(
         destinations: GraphNode[],
         nodes: GraphNode[],
         edges: GraphEdge[],
+        routeData: RouteData
     ): { lines: EpicLine[]; membership: Map<string, string> } {
-        const { parentDown, parentUp } = buildDirectedAdjacency(nodes, edges);
-        const nodeById = new Map(nodes.map(n => [n.id, n]));
-        const allTargetIds = new Set(destinations.map(d => d.id));
-        const claimed = new Set<string>();
         const lines: EpicLine[] = [];
         const membership = new Map<string, string>();
+        const claimed = new Set<string>();
 
-        // Bucket: targets-with-children (own epic) vs leaf targets (borrow).
-        const withKids: GraphNode[] = [];
-        const leaves: GraphNode[] = [];
-        for (const t of destinations) {
-            const ownKids = Array.from(parentDown.get(t.id) ?? new Set<string>())
-                .filter(c => {
-                    const cn = nodeById.get(c);
-                    return !!cn && isIncomplete(cn);
-                });
-            (ownKids.length > 0 ? withKids : leaves).push(t);
-        }
+        const sortedDests = [...destinations].sort((a, b) => 
+            (a.priority ?? 4) - (b.priority ?? 4) || a.label.localeCompare(b.label)
+        );
 
-        const recordLine = (terminalId: string, stops: string[], spurs: EpicSpur[] = []): void => {
-            if (stops.length <= 1) return;
-            lines.push({ terminalId, stops, spurs });
-            for (const s of stops) {
-                if (s !== terminalId) {
-                    membership.set(s, terminalId);
-                    claimed.add(s);
+        for (const dest of sortedDests) {
+            const stationIds = new Set<string>();
+            for (const n of nodes) {
+                if (n.id === dest.id) continue;
+                if (routeData.routes.get(n.id)?.has(dest.id) && !claimed.has(n.id)) {
+                    stationIds.add(n.id);
                 }
             }
-            for (const spur of spurs) {
-                for (const s of spur.branch) {
-                    if (!membership.has(s)) membership.set(s, terminalId);
-                    claimed.add(s);
-                }
-            }
-        };
+            
+            if (stationIds.size === 0) continue;
 
-        // Pass 1: targets that have children own their subtree first. Other
-        // terminals are excluded so a sibling-target leaf doesn't poach.
-        // Heavy-path decomposition produces one bold spine plus optional spurs.
-        for (const t of withKids) {
-            const forbidden = new Set(claimed);
-            for (const otherId of allTargetIds) if (otherId !== t.id) forbidden.add(otherId);
-            const { spine, spurs } = heavyPathDecomposition(t.id, parentDown, nodeById, forbidden);
-            recordLine(t.id, spine, spurs);
-        }
-
-        // Pass 2: leaf targets borrow their containing epic's remaining
-        // descendants. All target ids are forbidden — the line ends at the
-        // terminal, not through another target. Nodes already claimed by a
-        // with-kids line ARE forbidden (that subtree has a dedicated line).
-        for (const t of leaves) {
-            const parent = parentUp.get(t.id);
-            if (!parent || !nodeById.has(parent)) continue;
-            const forbidden = new Set(claimed);
-            for (const otherId of allTargetIds) forbidden.add(otherId);
-            const { spine, spurs } = heavyPathDecomposition(parent, parentDown, nodeById, forbidden);
-            const sibs = spine.slice(0, -1); // drop the parent root from the spine
-            if (sibs.length === 0) continue;
-            const stops = [...sibs, t.id];
-            if (stops.length <= 1) continue;
-            // Re-anchor spurs that were anchored at the dropped parent: their
-            // parentId stays valid only if it's still in the line. Spurs
-            // hanging off the dropped parent get re-pointed to t (the terminal).
-            const inLine = new Set(stops);
-            const remappedSpurs: EpicSpur[] = spurs.map(spur => ({
-                parentId: inLine.has(spur.parentId) ? spur.parentId : t.id,
-                branch: spur.branch,
-            }));
-            lines.push({ terminalId: t.id, stops, spurs: remappedSpurs });
-            for (const s of sibs) {
-                if (!membership.has(s)) membership.set(s, t.id);
-            }
-            for (const spur of remappedSpurs) {
-                for (const s of spur.branch) {
-                    if (!membership.has(s)) membership.set(s, t.id);
-                    claimed.add(s);
-                }
+            const sorted = topologicalSortStations(stationIds, edges);
+            const stops = [...sorted, dest.id];
+            
+            lines.push({ terminalId: dest.id, stops, spurs: [] });
+            
+            for (const id of sorted) {
+                membership.set(id, dest.id);
+                claimed.add(id);
             }
         }
 
@@ -1159,7 +1065,7 @@
         });
 
         const { lines: epicLines, membership: lineMembership } =
-            computeEpicLines(routeData.destinations, metroNodes, metroEdges);
+            computeEpicLines(routeData.destinations, metroNodes, metroEdges, routeData);
         const positions = computePositions(metroNodes, metroEdges, routeData, width, height, epicLines);
         const startingStations = computeStartingStations(metroNodes, metroEdges, routeData);
         const routeAdj = buildRouteAdjacency(metroNodes, metroEdges);
@@ -1727,7 +1633,7 @@
             return nodeById.has(src) && nodeById.has(tgt);
         });
         const routeData = computeRouteData(metroNodes, metroEdges);
-        const { lines: epicLines } = computeEpicLines(routeData.destinations, metroNodes, metroEdges);
+        const { lines: epicLines } = computeEpicLines(routeData.destinations, metroNodes, metroEdges, routeData);
         const positions = computePositions(metroNodes, metroEdges, routeData, width, height, epicLines);
         applyDagreLayout(metroNodes, metroEdges, epicLines, routeData, positions);
 
