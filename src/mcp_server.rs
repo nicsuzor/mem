@@ -821,20 +821,10 @@ impl PkbSearchServer {
                     data: None,
                 })?;
 
-                // If the caller supplied an id, ensure the parent chain doesn't
-                // already contain that id (which would form a cycle).
-                if let Some(ref new_id) = fields.id {
-                    let canonical_parent = parent_node.id.clone();
-                    if let Some(cycle_path) =
-                        graph.parent_chain_to(&canonical_parent, new_id.as_str())
-                    {
-                        return Err(McpError {
-                            code: ErrorCode::INVALID_PARAMS,
-                            message: Cow::from(format!(
-                                "Refusing to create task '{}': parent chain would form a cycle ({}). Parent/child relationships must be acyclic.",
-                                new_id,
-                                cycle_path.join(" → ")
-                              
+                // Suppress unused-variable warning until cycle-path reporting
+                // is restored; parent_node is currently only used for resolution.
+                let _ = parent_node;
+
                 // Reject parent/child cycles. Only relevant when an explicit `id`
                 // is supplied (an auto-generated id cannot already be a parent).
                 if let Some(ref child_id) = fields.id {
