@@ -17,10 +17,17 @@
     $: activeSessionsData = data?.dashboardData?.active_agents || [];
     $: pipelineErrors = data?.dashboardData?.pipeline_errors || [];
     $: pathData = data?.dashboardData?.path || { activity: [], abandoned_work: [] };
+    $: staleCount = data?.dashboardData?.stale_count || 0;
 
-    // Interactive vs Background
-    $: interactiveSessions = activeSessionsData.filter((s: any) => s.session_type === 'interactive');
-    $: backgroundSessions = activeSessionsData.filter((s: any) => s.session_type !== 'interactive');
+    // Interactive vs Background. Completed sessions (explicit /dump-success or PR-inferred)
+    // drop out of the main "current activity" list — their accomplishments live in the
+    // project card's Recently Completed lane instead. See task-f1c3804c.
+    $: interactiveSessions = activeSessionsData.filter((s: any) =>
+        s.session_type === 'interactive' && s.status_badge !== 'completed'
+    );
+    $: backgroundSessions = activeSessionsData.filter((s: any) =>
+        s.session_type !== 'interactive' && s.status_badge !== 'completed'
+    );
 
     // Build enriched project data from graph store (primary) + server data (enrichment)
     $: graphProjectData = (() => {
@@ -122,6 +129,14 @@
                 needsYou={data?.dashboardData?.needs_you || []}
                 title="RECENT SESSIONS"
             />
+            {#if staleCount > 0}
+                <!-- task-4acd3722: stale (>24h) sessions are hidden from the main list and
+                     surfaced as a count + archive prompt. -->
+                <div class="text-[10px] text-primary/50 italic flex items-center gap-2 pt-3 mt-3 border-t border-primary/10">
+                    <span class="material-symbols-outlined text-[14px] text-primary/40">archive</span>
+                    {staleCount} stale session{staleCount === 1 ? '' : 's'} (&gt;24h) hidden — archive when ready.
+                </div>
+            {/if}
         </div>
         {#if backgroundSessions.length > 0}
             <div class="border border-primary/20 bg-surface/50 p-4">

@@ -1,7 +1,7 @@
 <script lang="ts">
     import { graphData } from "../../stores/graph";
     import { toggleSelection } from "../../stores/selection";
-    import { projectColor, projectBgTint, projectBorderColor, buildProjectRollupMap, summarizeProjectName, resolveMajorProject } from "../../data/projectUtils";
+    import { projectColor, projectBgTint, projectBorderColor, buildProjectRollupMap, buildTopLevelProjectSet, summarizeProjectName, resolveMajorProject } from "../../data/projectUtils";
     import { copyToClipboard } from "../../data/utils";
     import TaskActionButtons from "../shared/TaskActionButtons.svelte";
     import AssigneeBadge from "../shared/AssigneeBadge.svelte";
@@ -23,11 +23,33 @@
     // Build rollup map from graph data
     $: rollupMap = $graphData ? buildProjectRollupMap($graphData.nodes) : new Map<string, string>();
 
-    // Merge sub-projects into major projects
+    // Top-level project set (overwhelm-dashboard-0402943e). Sub-projects roll into their
+    // parent's card; we don't render them standalone.
+    $: topLevelProjects = $graphData ? buildTopLevelProjectSet($graphData.nodes) : new Set<string>();
+
+    // Project names that have a project-type node but aren't top-level — these are the
+    // ones we explicitly drop. Projects without any project-type node default to visible
+    // (we lack hierarchy data to classify them).
+    $: knownSubProjects = (() => {
+        if (!$graphData) return new Set<string>();
+        const sub = new Set<string>();
+        for (const n of $graphData.nodes) {
+            if (n.type === 'project' && n.project && !topLevelProjects.has(n.project)) {
+                sub.add(n.project);
+            }
+        }
+        return sub;
+    })();
+
+    // Merge sub-projects into majors via rollup, then drop any that we know are
+    // non-top-level (they should appear as content within their parent card, not as
+    // their own card).
     $: mergedProjects = (() => {
         const majorSet = new Set<string>();
         for (const p of projectProjects) {
-            majorSet.add(summarizeProjectName(resolveMajorProject(p, rollupMap), rollupMap));
+            const major = summarizeProjectName(resolveMajorProject(p, rollupMap), rollupMap);
+            if (knownSubProjects.has(major)) continue;
+            majorSet.add(major);
         }
         return Array.from(majorSet);
     })();
@@ -175,6 +197,13 @@
                                     <div class="flex items-start gap-2 p-2 border border-primary/10 bg-black/30 hover:border-primary/30 transition-colors">
                                         <span class="material-symbols-outlined text-[14px] text-green-500">check</span>
                                         <span class="text-xs text-primary/70 line-clamp-2 flex-1">{acc.description}</span>
+                                        {#if acc.surface && acc.surface !== 'interactive'}
+                                            <!-- task-6f7f9f85: badge polecat / scheduled / gha so autonomous output is visually distinct from interactive accomplishments. -->
+                                            <span class="text-[9px] font-bold px-1 py-0.5 bg-blue-900/30 text-blue-400/80 border border-blue-500/30 shrink-0 uppercase tracking-wider"
+                                                  title="{acc.surface} session{acc.session_id ? ' · ' + acc.session_id.slice(-8) : ''}">
+                                                {acc.surface === 'polecat' ? 'P' : acc.surface === 'scheduled' ? 'S' : acc.surface === 'gha' ? 'GH' : acc.surface === 'crew' ? 'C' : '?'}
+                                            </span>
+                                        {/if}
                                         {#if acc.time_ago}
                                             <span class="text-[10px] text-primary/40 shrink-0">{acc.time_ago}</span>
                                         {/if}
