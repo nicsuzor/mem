@@ -15,12 +15,7 @@
     // owns x-coords and the d3-force simulation does not run. Flip to
     // true to re-enable the live force simulation for debugging.
     const enableForceSim = true;
-    // @ts-ignore
-    import elk from "cytoscape-elk";
-    // @ts-ignore
-    import cola from "cytoscape-cola";
-    cytoscape.use(elk);
-    cytoscape.use(cola);
+
     import {
         graphData,
         preparedGraphData,
@@ -33,13 +28,16 @@
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
     import {
         INCOMPLETE_STATUSES,
-        PRIORITY_BORDERS,
         STRUCTURAL_TYPES,
     } from "../../data/constants";
-    import { projectColor } from "../../data/projectUtils";
+    import CytoscapeBase from "../graph/CytoscapeBase.svelte";
+    import { getCytoscapeStyles } from "../graph/CytoscapeStyles";
+    import { computeBaseNodeData, getProjectLineColor, getEdgeRole, getEdgeVisibilityState, getEdgeOpacity, getEdgeWidth } from "../graph/CytoscapeHelpers";
 
-    let containerEl: HTMLDivElement;
     let cy: cytoscape.Core | null = null;
+    let elements: any[] = [];
+    let stylesheet: any[] = [];
+    let hooksSet = false;
     // Persistent force simulation — kept running after buildGraph so that
     // dragging a node (pinning it via fx/fy) lets the surrounding network
     // react organically. Stopped on destroy / structural rebuild.
@@ -118,19 +116,6 @@
         return STRUCTURAL_TYPES.has((node.type || "").toLowerCase())
             ? "epic"
             : "task";
-    }
-
-    function getEdgeRole(
-        edgeType: string,
-    ): "parent" | "dependency" | "reference" {
-        if (edgeType === "parent") return "parent";
-        if (edgeType === "depends_on" || edgeType === "soft_depends_on")
-            return "dependency";
-        return "reference";
-    }
-
-    function getProjectLineColor(project: string | null | undefined): string {
-        return project ? projectColor(project) : DEFAULT_PROJECT_COLOR;
     }
 
     function idHash(id: string): number {
@@ -669,12 +654,6 @@
     //     entry points of each line.
     //   - station (everything else): grey round dot, small
     // Completed nodes fade. No shape-by-type, no project fills, no interchange.
-    const TERMINAL_FILL_P0 = PRIORITY_BORDERS[0] || "#dc3545";
-    const TERMINAL_FILL_P1 = PRIORITY_BORDERS[1] || "#f59e0b";
-    const STATION_FILL = "#94a3b8";
-    const START_FILL = "#22c55e";
-    const BAD_CHOICE_FILL = "#6b7280"; // dull grey body
-    const BAD_CHOICE_BORDER = "#dc2626"; // red outline — "you picked this as priority but it isn't on any line"
 
     // A starting station is an on-route node with no incomplete blocker via
     // depends_on / soft_depends_on. Parent edges don't count — a parent epic
@@ -927,118 +906,16 @@
     }
 
     function getNodeData(
-        node: GraphNode,
+        n: GraphNode,
         routeData: RouteData,
         startingStations: Set<string>,
-    ): NodeData {
-        const rs = routeData.routes.get(node.id) ?? new Set();
-        const isDestination = routeData.destIndex.has(node.id);
-        const isOnRoute = rs.size >= 1;
-        const isStart = startingStations.has(node.id);
-        const visibilityState = priorityVisibility(node.priority);
-        const completed = !isIncomplete(node);
-        const typeLower = (node.type || "").toLowerCase();
-        const isBackbone = STRUCTURAL_TYPES.has(typeLower);
-
-        let nodeSize: number;
-        let fillColor: string;
-        let borderColor: string;
-        let displayLabel: string;
-
-        const isPriorityStation =
-            !isDestination &&
-            node.priority <= 1 &&
-            isIncomplete(node) &&
-            typeLower !== "target";
-        const isBadChoice = isPriorityStation && !isOnRoute;
-
-        if (isDestination) {
-            nodeSize = 34;
-            fillColor =
-                node.priority === 0 ? TERMINAL_FILL_P0 : TERMINAL_FILL_P1;
-            borderColor = getProjectLineColor(node.id);
-            displayLabel = node.label;
-        } else if (isBadChoice) {
-            nodeSize = 14;
-            fillColor = BAD_CHOICE_FILL;
-            borderColor = BAD_CHOICE_BORDER;
-            displayLabel = truncate(node.label, 40);
-        } else if (isOnRoute && isBackbone) {
-            // Epic / project / goal backbones — larger, squared, dim. These
-            // anchor the line structurally but aren't the work itself.
-            nodeSize = 18;
-            fillColor = "#475569";
-            borderColor = "#cbd5e1";
-            displayLabel = truncate(node.label, 36);
-        } else if (isStart) {
-            nodeSize = isPriorityStation ? 16 : 12;
-            fillColor = START_FILL;
-            borderColor = "#ffffff";
-            displayLabel = truncate(node.label, 40);
-        } else if (isPriorityStation) {
-            nodeSize = 16;
-            fillColor = STATION_FILL;
-            borderColor = "rgba(255,255,255,0.45)";
-            displayLabel = truncate(node.label, 40);
-        } else if (isOnRoute) {
-            // A station on a terminal's line — sub-task or blocker. Give it a
-            // visible body + a label so the line is readable, not just dots.
-            nodeSize = 12;
-            fillColor = STATION_FILL;
-            borderColor = "rgba(255,255,255,0.35)";
-            displayLabel = truncate(node.label, 40);
-        } else {
-            nodeSize = 3;
-            fillColor = STATION_FILL;
-            borderColor = "rgba(255,255,255,0.08)";
-            displayLabel = "";
-        }
-
-        const baseOpacity = visibilityState === "half" ? 0.45 : 0.95;
-        const nodeOpacity = completed ? baseOpacity * 0.35 : baseOpacity;
-
-        return {
-            id: node.id,
-            label: node.label,
-            displayLabel,
-            nodeType: node.type,
-            priority: node.priority,
-            visibilityState,
-            isDestination: isDestination ? 1 : 0,
-            isOnRoute: isOnRoute ? 1 : 0,
-            isBackbone: isOnRoute && isBackbone ? 1 : 0,
-            routeIds: Array.from(rs).join(","),
-            nodeSize,
-            fillColor,
-            borderColor,
-            isCompleted: completed,
-            nodeOpacity,
-        };
+    ) {
+        const isDestination = routeData.destinations.some((d) => d.id === n.id);
+        const isOnRoute = (routeData.routes.get(n.id)?.size ?? 0) > 0;
+        const isStart = startingStations.has(n.id);
+        const visibilityState = priorityVisibility(n.priority);
+        return computeBaseNodeData(n, isDestination, isOnRoute, isStart, visibilityState);
     }
-
-    function getEdgeVisibilityState(
-        sourceVisibility: VisibilityState,
-        targetVisibility: VisibilityState,
-    ): VisibilityState {
-        if (sourceVisibility === "hidden" || targetVisibility === "hidden")
-            return "hidden";
-        if (sourceVisibility === "half" || targetVisibility === "half")
-            return "half";
-        return "bright";
-    }
-
-    function getEdgeOpacity(
-        visibilityState: VisibilityState,
-        isOnRoute: boolean,
-    ): number {
-        const base = isOnRoute ? 0.5 : 0.18;
-        return visibilityState === "half" ? base * 0.45 : base;
-    }
-
-    function getEdgeWidth(_edgeRole: string, isOnRoute: boolean): number {
-        return isOnRoute ? 5 : 1;
-    }
-
     // Shared destinations that both endpoints are on the route to.
     function sharedRouteIds(
         sourceRoutes: Set<string>,
@@ -1176,19 +1053,15 @@
         // that the UI filter chain would otherwise hide. Per-node visibility
         // (priority/status filters) is still applied via `visibilityState`.
         const sourceGraph = $preparedGraphData ?? $graphData;
-        if (!containerEl || !sourceGraph) return;
+        if (!sourceGraph) return;
         if (sim) {
             sim.stop();
             sim = null;
             simNodes = [];
         }
-        if (cy) {
-            cy.destroy();
-            cy = null;
-        }
 
-        const width = containerEl.clientWidth || 1200;
-        const height = containerEl.clientHeight || 800;
+        const width = 1200;
+        const height = 800;
 
         const allMetroNodes = sourceGraph.nodes.filter(
             (n) => !HIDDEN_TYPES.has((n.type || "").toLowerCase()),
@@ -1337,7 +1210,7 @@
                 linkDash = "dashed";
             }
             
-            const edgeWidth = getEdgeWidth(edgeRole, isOnRoute);
+            const edgeWidth = getEdgeWidth(isOnRoute);
 
             if (isOnRoute && shared.length >= 2) {
                 // Emit one stroke per shared destination (blended by compositing).
@@ -1444,10 +1317,10 @@
             });
         }
 
-        cy = cytoscape({
-            container: containerEl,
-            elements: [...cyNodes, ...cyEdges],
-            style: [
+        elements = [...cyNodes, ...cyEdges];
+
+        stylesheet = [
+            ...getCytoscapeStyles(),
                 // Stations — muted uniform dots
                 {
                     selector: 'node[visibilityState != "hidden"]',
@@ -1627,14 +1500,14 @@
                     selector: ".highlighted",
                     style: { opacity: 1 } as any,
                 },
-            ],
-            layout: { name: "preset" } as any,
-            wheelSensitivity: 0.3,
-            minZoom: 0.05,
-            maxZoom: 5,
-        });
+            ];
 
-        cy.one("layoutstop", () => {
+        // Trigger hooks setup if cy is ready
+        if (cy && !hooksSet) {
+            setupHooks();
+        }
+
+        cy?.one("layoutstop", () => {
             cy?.fit(undefined, 60);
             running = false;
         });
@@ -1689,6 +1562,12 @@
                 setTimeout(() => cy?.fit(undefined, 60), 0);
             }
         }
+    }
+
+    function setupHooks() {
+        if (!cy) return;
+        hooksSet = true;
+        (window as any).__cy = cy;
 
         // ── Interactions ──
 
@@ -1754,7 +1633,7 @@
         // the whole route, not a single thread.
         function highlightForNode(nodeId: string) {
             if (!cy) return;
-            const rs = routeData.routes.get(nodeId);
+            const rs = currentRouteData?.routes.get(nodeId);
             if (!rs || rs.size === 0) {
                 clearHighlight();
                 return;
@@ -1767,7 +1646,7 @@
                     .removeClass("on-path");
                 cy!.nodes().forEach((n) => {
                     const nodeRoutes =
-                        routeData.routes.get(n.id()) ?? new Set();
+                        currentRouteData?.routes.get(n.id()) ?? new Set();
                     for (const r of rs) {
                         if (nodeRoutes.has(r)) {
                             n.removeClass("not-path").addClass("route-active");
@@ -1791,7 +1670,8 @@
         // overrides the muted route style; everything else dims via .not-path.
         function highlightPathFromStation(nodeId: string) {
             if (!cy) return;
-            const paths = computePathsToTerminals(nodeId, routeData, routeAdj);
+            const routeAdj = buildRouteAdjacency(currentMetroNodes, currentMetroEdges);
+            const paths = computePathsToTerminals(nodeId, currentRouteData!, routeAdj);
             if (paths.size === 0) {
                 clearHighlight();
                 return;
@@ -1872,10 +1752,11 @@
             node.neighborhood().removeClass("dimmed").addClass("highlighted");
 
             // Tooltip: title, status, destinations the station serves.
-            const raw = nodeById.get(id);
-            const rs = routeData.routes.get(id);
+            const raw = currentMetroNodes.find(n => n.id === id);
+            const rs = currentRouteData?.routes.get(id);
             const destinations: string[] = [];
-            if (rs) {
+            if (rs && currentRouteData) {
+                const destById = new Map<string, GraphNode>(currentRouteData.destinations.map((d: GraphNode) => [d.id, d]));
                 for (const destId of rs) {
                     const d = destById.get(destId);
                     if (d) destinations.push(d.label);
@@ -1921,9 +1802,9 @@
     // user as "Recompute" in Metro mode (see parent view chrome).
     export function toggleRunning() {
         const sourceGraph = $preparedGraphData ?? $graphData;
-        if (!cy || !containerEl || !sourceGraph) return;
-        const width = containerEl.clientWidth || 1200;
-        const height = containerEl.clientHeight || 800;
+        if (!cy || !sourceGraph) return;
+        const width = cy.container()?.clientWidth || 1200;
+        const height = cy.container()?.clientHeight || 800;
         const metroNodes = sourceGraph.nodes.filter(
             (n) => !HIDDEN_TYPES.has((n.type || "").toLowerCase()),
         );
@@ -1986,7 +1867,6 @@
     let lastStructureKey = "";
     let lastShowContext = showContext;
     $: if (
-        containerEl &&
         ($preparedGraphData || $graphData) &&
         ($preparedStructureKey !== lastStructureKey ||
             showContext !== lastShowContext)
@@ -2217,10 +2097,15 @@
 </script>
 
 <div class="metro-root">
-    <div
-        bind:this={containerEl}
-        class="w-full h-full bg-background/50 metro-canvas"
-    ></div>
+    <CytoscapeBase
+        bind:cy={cy}
+        {elements}
+        {stylesheet}
+        layoutOptions={{ name: "preset" }}
+        runLayoutOnMount={false}
+        containerClass="w-full h-full bg-background/50"
+        on:init={() => { if (!hooksSet) setupHooks(); }}
+    />
     {#if tooltip}
         <div
             class="metro-tooltip"
@@ -2272,10 +2157,7 @@
         width: 100%;
         height: 100%;
     }
-    .metro-canvas {
-        width: 100%;
-        height: 100%;
-    }
+
     .metro-tooltip {
         position: absolute;
         top: 0;

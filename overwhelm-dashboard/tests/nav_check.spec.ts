@@ -14,7 +14,7 @@ test('capture screenshot and check nav', async ({ page }) => {
     const nav = document.querySelector('nav') || document.querySelector('header');
     if (!nav) return [];
     return Array.from(nav.querySelectorAll('button, a'))
-      .map(el => el.innerText.trim())
+      .map(el => (el as HTMLElement).innerText.trim())
       .filter(t => t.length > 0);
   });
   

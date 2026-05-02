@@ -160,7 +160,7 @@
         fNodes = fNodes.filter(n => {
             if (!TASK_TYPES.has(n.type)) return false;
             if (STRUCTURAL_TYPES.has(n.type)) return true;
-            return n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "" && n.status !== "inbox";
+            return n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "";
         });
 
         // Tri-state Visibility Filters
@@ -217,7 +217,7 @@
                 opacity: edgeOpacityFor(edgeVisibilityFor(edge)),
             }));
 
-        if ($viewSettings.viewMode === "Force" && $filters.statusOrphans === 'hidden') {
+        if (isForce && $filters.statusOrphans === 'hidden') {
             const nodesWithEdges = new Set<string>();
             fLinks.forEach((l) => {
                 const sid = typeof l.source === "object" ? l.source.id : l.source;
@@ -357,7 +357,7 @@
         }
 
         // Save safe parent reference only after invalid and cyclic parents are removed.
-        fNodes.forEach(n => { n._safe_parent = n.parent; });
+        fNodes.forEach(n => { (n as any)._safe_parent = n.parent; });
 
         fLinks = fLinks.filter((l) => {
             const sid = typeof l.source === "object" ? l.source.id : l.source;
@@ -477,6 +477,10 @@
                     <HTATreeView />
                 {:else if activeLayout === "wave_kanban"}
                     <WaveKanbanView />
+                {:else if activeLayout === "force" || activeLayout === "sfdp"}
+                    <ForceView bind:this={forceViewRef} restartNonce={forceRestartNonce} randomizeNonce={forceRandomizeNonce} />
+                {:else if activeLayout === "groups"}
+                    <GroupsView bind:this={groupsRef} restartNonce={groupsRestartNonce} randomizeNonce={groupsRandomizeNonce} />
                 {:else}
                     <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
                         {#if containerGroup}
@@ -484,10 +488,6 @@
                                 <TreemapView {containerGroup} width={innerWidth} height={innerHeight} />
                             {:else if activeLayout === "circle_pack" || activeLayout === "circle"}
                                 <CirclePackView {containerGroup} />
-                            {:else if activeLayout === "force" || activeLayout === "sfdp"}
-                                <ForceView {containerGroup} bind:this={forceViewRef} bind:running={forceRunning} restartNonce={forceRestartNonce} randomizeNonce={forceRandomizeNonce} />
-                            {:else if activeLayout === "groups"}
-                                <GroupsView {containerGroup} bind:this={groupsRef} bind:running={groupsRunning} restartNonce={groupsRestartNonce} randomizeNonce={groupsRandomizeNonce} />
                             {:else if activeLayout === "arc"}
                                 <ArcView {containerGroup} />
                             {/if}
