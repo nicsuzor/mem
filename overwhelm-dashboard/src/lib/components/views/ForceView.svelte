@@ -79,6 +79,7 @@
     $: layoutOptions = {
         name: "cola",
         animate: true,
+        refresh: 3,
         infinite: true,
         fit: false,
         randomize: false,

@@ -130,7 +130,9 @@
     $: layoutOptions = {
         name: "cola",
         animate: true,
+        refresh: 3,
         infinite: true,
+        fit: false,
         randomize: false,
         nodeSpacing: (node: any) => $viewSettings.colaGroupPadding,
         edgeLength: (edge: any) => {
