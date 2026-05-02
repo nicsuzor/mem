@@ -94,7 +94,16 @@
                 length = $viewSettings.colaLinkDistRef;
                 weight = $viewSettings.colaLinkWeightRef;
             }
-            return { ...l, length, weight };
+
+            let opacity = 0.6;
+            if (l.type === 'parent' && $filters.edgeParent === 'half') opacity = 0;
+            if (l.type === 'depends_on' && $filters.edgeDependencies === 'half') opacity = 0;
+            if (l.type === 'soft_depends_on' && $filters.edgeSoftDependencies === 'half') opacity = 0;
+            if (l.type === 'contributes_to' && $filters.edgeContributes === 'half') opacity = 0;
+            if (l.type === 'similar_to' && $filters.edgeSimilar === 'half') opacity = 0;
+            if (l.type === 'ref' && $filters.edgeReferences === 'half') opacity = 0;
+
+            return { ...l, length, weight, opacity };
         });
     }
 
@@ -121,7 +130,7 @@
             .attr("stroke", (d: any) => d.color || "#cbd5e1")
             .attr("stroke-width", (d: any) => d.width || 1.5)
             .attr("stroke-dasharray", (d: any) => d.dash || null)
-            .attr("opacity", 0.6);
+            .attr("opacity", (d: any) => d.opacity !== undefined ? d.opacity : 0.6);
     }
 
     // ─── Group building ────────────────────────────────────────────────────────
