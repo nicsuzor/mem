@@ -23,6 +23,12 @@ export const viewSettings = writable({
     colaLinkWeightInterParent: 0.8,
     colaLinkDistDependsOn: 400,
     colaLinkWeightDependsOn: 1.0,
+    colaLinkDistSoftDependsOn: 450,
+    colaLinkWeightSoftDependsOn: 0.9,
+    colaLinkDistContributesTo: 500,
+    colaLinkWeightContributesTo: 0.8,
+    colaLinkDistSimilarTo: 550,
+    colaLinkWeightSimilarTo: 0.7,
     colaLinkDistRef: 600,
     colaLinkWeightRef: 0.6,
 

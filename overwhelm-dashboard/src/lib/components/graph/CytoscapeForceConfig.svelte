@@ -64,6 +64,51 @@
 
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                    <span>Dist_Soft_Depends</span>
+                    <span>{$viewSettings.colaLinkDistSoftDependsOn}</span>
+                </div>
+                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistSoftDependsOn} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+            </div>
+            <div class="space-y-1">
+                <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                    <span>Weight_Soft_Depends</span>
+                    <span>{$viewSettings.colaLinkWeightSoftDependsOn.toFixed(1)}</span>
+                </div>
+                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightSoftDependsOn} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+            </div>
+
+            <div class="space-y-1">
+                <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                    <span>Dist_Contributes_To</span>
+                    <span>{$viewSettings.colaLinkDistContributesTo}</span>
+                </div>
+                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistContributesTo} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+            </div>
+            <div class="space-y-1">
+                <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                    <span>Weight_Contributes_To</span>
+                    <span>{$viewSettings.colaLinkWeightContributesTo.toFixed(1)}</span>
+                </div>
+                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightContributesTo} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+            </div>
+
+            <div class="space-y-1">
+                <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                    <span>Dist_Similar_To</span>
+                    <span>{$viewSettings.colaLinkDistSimilarTo}</span>
+                </div>
+                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistSimilarTo} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+            </div>
+            <div class="space-y-1">
+                <div class="flex justify-between text-[9px] text-primary/50 uppercase">
+                    <span>Weight_Similar_To</span>
+                    <span>{$viewSettings.colaLinkWeightSimilarTo.toFixed(1)}</span>
+                </div>
+                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightSimilarTo} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+            </div>
+
+            <div class="space-y-1">
+                <div class="flex justify-between text-[9px] text-primary/50 uppercase">
                     <span>Dist_References</span>
                     <span>{$viewSettings.colaLinkDistRef}</span>
                 </div>

@@ -110,17 +110,21 @@
         randomize: false,
         nodeSpacing: (node: any) => $viewSettings.colaGroupPadding,
         edgeLength: (edge: any) => {
-            if (edge.data("edgeType") === "parent")
-                return $viewSettings.colaLinkDistIntraParent;
-            if (edge.data("edgeType") === "depends_on")
-                return $viewSettings.colaLinkDistDependsOn;
+            const edgeType = edge.data("edgeType");
+            if (edgeType === "parent") return $viewSettings.colaLinkDistIntraParent;
+            if (edgeType === "depends_on") return $viewSettings.colaLinkDistDependsOn;
+            if (edgeType === "soft_depends_on") return $viewSettings.colaLinkDistSoftDependsOn;
+            if (edgeType === "contributes_to") return $viewSettings.colaLinkDistContributesTo;
+            if (edgeType === "similar_to") return $viewSettings.colaLinkDistSimilarTo;
             return $viewSettings.colaLinkDistRef;
         },
         edgeSymDiffLength: (edge: any) => {
-            if (edge.data("edgeType") === "parent")
-                return $viewSettings.colaLinkWeightIntraParent;
-            if (edge.data("edgeType") === "depends_on")
-                return $viewSettings.colaLinkWeightDependsOn;
+            const edgeType = edge.data("edgeType");
+            if (edgeType === "parent") return $viewSettings.colaLinkWeightIntraParent;
+            if (edgeType === "depends_on") return $viewSettings.colaLinkWeightDependsOn;
+            if (edgeType === "soft_depends_on") return $viewSettings.colaLinkWeightSoftDependsOn;
+            if (edgeType === "contributes_to") return $viewSettings.colaLinkWeightContributesTo;
+            if (edgeType === "similar_to") return $viewSettings.colaLinkWeightSimilarTo;
             return $viewSettings.colaLinkWeightRef;
         },
     };
