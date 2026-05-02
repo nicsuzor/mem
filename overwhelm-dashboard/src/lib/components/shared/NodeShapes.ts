@@ -159,8 +159,8 @@ export function buildTaskCardNode(g: d3.Selection<SVGGElement, GraphNode, null, 
             .attr("fill", d.fill).attr("stroke", d.borderColor).attr("stroke-width", d.borderWidth);
     } else if (d.shape === "hexagon") {
         // Epics: distinctive double-border hexagon with larger size and type badge
-        // Color by project hue
-        const hue = projectHue(d.project || d.id);
+        // Color by unique node ID so every epic has a distinct hue
+        const hue = projectHue(d.id);
         const epicFill = `hsl(${hue}, 35%, 85%)`;
         const epicStroke = `hsl(${hue}, 45%, 45%)`;
 
@@ -356,8 +356,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         g.classed("selected-node", false);
     }
 
-    // Base color logic: Project-based Hue
-    const hue = projectHue(d.project || d.id);
+    // Base color logic: Node-specific Hue
+    const hue = projectHue(d.id);
 
     // Determine visual tier
     const isEpicTier = !d._isProjectContainer && !d._isOverflow && isParent
@@ -618,7 +618,8 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
     // P0/P1 use shared PRIORITIES colors; P2+ are muted to blend with cards
     let cellColor: string;
     if (isParent) {
-        // Parents get a stable project hue (unchanged)
+        // Parents get a unique hue based on their ID
+        const hue = projectHue(d.id);
         cellColor = `hsl(${hue}, 48%, 24%)`;
     } else {
         const status = (d.status || 'inbox').toLowerCase();

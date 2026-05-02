@@ -956,7 +956,7 @@
             nodeSize = 34;
             fillColor =
                 node.priority === 0 ? TERMINAL_FILL_P0 : TERMINAL_FILL_P1;
-            borderColor = "#ffffff";
+            borderColor = getProjectLineColor(node.id);
             displayLabel = node.label;
         } else if (isBadChoice) {
             nodeSize = 14;
@@ -1392,7 +1392,7 @@
         const SPUR_WIDTH = 5;
         for (const line of epicLines) {
             const dest = destById.get(line.terminalId);
-            const lineColor = getProjectLineColor(dest?.project);
+            const lineColor = getProjectLineColor(dest?.id);
             for (let i = 0; i < line.stops.length - 1; i++) {
                 const a = line.stops[i];
                 const b = line.stops[i + 1];
