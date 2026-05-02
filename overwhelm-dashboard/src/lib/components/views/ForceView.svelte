@@ -3,6 +3,7 @@
     import { graphData, graphStructureKey } from "../../stores/graph";
     import { filters } from "../../stores/filters";
     import { viewSettings } from "../../stores/viewSettings";
+    import { get } from "svelte/store";
     import CytoscapeBase from "../graph/CytoscapeBase.svelte";
     import {
         computeBaseNodeData,
@@ -60,16 +61,12 @@
 
             const { linkColor, linkDash } = getEdgeLineStyle(e.type, false);
 
+            const def = getEdgeTypeDef(e.type, false);
+
             let vis: any = "bright";
-            if (e.type === "parent") vis = currentFilters.edgeParent;
-            else if (e.type === "depends_on")
-                vis = currentFilters.edgeDependencies;
-            else if (e.type === "soft_depends_on")
-                vis = currentFilters.edgeSoftDependencies;
-            else if (e.type === "contributes_to")
-                vis = currentFilters.edgeContributes;
-            else if (e.type === "similar_to") vis = currentFilters.edgeSimilar;
-            else if (e.type === "ref") vis = currentFilters.edgeReferences;
+            if (def.filterKey) {
+                vis = currentFilters[def.filterKey] || "bright";
+            }
 
             newElements.push({
                 data: {
@@ -106,16 +103,16 @@
         infinite: true,
         fit: false,
         randomize: false,
-        nodeSpacing: (node: any) => $viewSettings.colaGroupPadding,
+        nodeSpacing: (node: any) => get(viewSettings).colaGroupPadding,
         edgeLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
             const def = getEdgeTypeDef(edgeType, false);
-            return $viewSettings[def.distKey as keyof typeof $viewSettings];
+            return get(viewSettings)[def.distKey];
         },
         edgeSymDiffLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
             const def = getEdgeTypeDef(edgeType, false);
-            return $viewSettings[def.weightKey as keyof typeof $viewSettings];
+            return get(viewSettings)[def.weightKey];
         },
     };
 

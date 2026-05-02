@@ -22,7 +22,10 @@
     let elements: any[] = [];
     let layoutOptions: any = { name: "cola" };
 
-    function buildElements(nodes: GraphNode[], edges: GraphEdge[], currentFilters: any) {
+    let handleDisconnected = false;
+    $: handleDisconnected = $viewSettings.colaHandleDisconnected;
+
+    function buildElements(nodes: GraphNode[], edges: GraphEdge[], currentFilters: any, disconnectedHandled: boolean) {
         let newElements: any[] = [];
         const nodeById = new Map(nodes.map(n => [n.id, n]));
         const keepIds = new Set<string>();
@@ -30,7 +33,7 @@
         // 1. Determine active nodes
         let activeNodes = nodes.filter(n => n.type !== 'project');
 
-        if (!$viewSettings.colaHandleDisconnected) {
+        if (!disconnectedHandled) {
             const childrenOf = new Map<string, Set<string>>();
             for (const n of activeNodes) {
                 const pid = (n as any)._safe_parent;
@@ -120,11 +123,13 @@
         return newElements;
     }
 
-    $: if ($graphData && $filters) {
-        // Rebuild elements when graph structure or filters change, not physics
-        elements = buildElements($graphData.nodes, $graphData.links, $filters);
+    $: if ($graphData && $filters && handleDisconnected !== undefined) {
+        // Rebuild elements when graph structure, filters, or Handle Disconnected toggle changes
+        elements = buildElements($graphData.nodes, $graphData.links, $filters, handleDisconnected);
         setTimeout(() => cyBase?.fit(), 100);
     }
+
+    import { get } from "svelte/store";
 
     $: layoutOptions = {
         name: "cola",
@@ -133,16 +138,16 @@
         infinite: true,
         fit: false,
         randomize: false,
-        nodeSpacing: (node: any) => $viewSettings.colaGroupPadding,
+        nodeSpacing: (node: any) => get(viewSettings).colaGroupPadding,
         edgeLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
             const def = getEdgeTypeDef(edgeType, false);
-            return $viewSettings[def.distKey];
+            return get(viewSettings)[def.distKey];
         },
         edgeSymDiffLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
             const def = getEdgeTypeDef(edgeType, false);
-            return $viewSettings[def.weightKey];
+            return get(viewSettings)[def.weightKey];
         },
     };
 
