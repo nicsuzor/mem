@@ -547,18 +547,24 @@
                         <span class="material-symbols-outlined text-sm">{activeLayout === "metro" ? 'refresh' : ((activeLayout === "groups" ? groupsRunning : forceRunning) ? 'pause' : 'play_arrow')}</span>
                         <span>{activeLayout === "metro" ? 'Recompute' : ((activeLayout === "groups" ? groupsRunning : forceRunning) ? 'Stop Layout' : 'Start Layout')}</span>
                     </button>
-                    {#if activeLayout === "force"}
-                        <button class="graph-control-button" onclick={() => forceRandomizeNonce += 1}>
+                    {#if activeLayout === "force" || activeLayout === "groups"}
+                        <button class="graph-control-button" onclick={() => {
+                            if (activeLayout === "groups") groupsRef?.randomize();
+                            else forceViewRef?.randomize();
+                        }}>
                             <span class="material-symbols-outlined text-sm">shuffle</span>
                             <span>Randomise</span>
                         </button>
                     {/if}
-                    {#if activeLayout === "groups"}
-                        <button class="graph-control-button" onclick={() => groupsRandomizeNonce += 1}>
-                            <span class="material-symbols-outlined text-sm">shuffle</span>
-                            <span>Randomise</span>
-                        </button>
-                    {/if}
+                    <button class="graph-control-button" onclick={() => {
+                        if (activeLayout === "metro") metroViewRef?.fit();
+                        else if (activeLayout === "groups") groupsRef?.fit();
+                        else if (activeLayout === "force" || activeLayout === "sfdp") forceViewRef?.fit();
+                    }}>
+                        <span class="material-symbols-outlined text-sm">fit_screen</span>
+                        <span>Fit</span>
+                    </button>
+
                     {#if activeLayout === "metro"}
                         <button class="graph-control-button" class:graph-control-button-active={metroShowContext} onclick={() => metroShowContext = !metroShowContext}>
                             <span class="material-symbols-outlined text-sm">{metroShowContext ? 'visibility' : 'visibility_off'}</span>

@@ -173,6 +173,10 @@
         setTimeout(() => { layoutOptions = { ...layoutOptions, randomize: false }; }, 100);
     }
 
+    export function fit() {
+        if (cyBase) cyBase.fit();
+    }
+
     function onNodeClick(evt: CustomEvent) {
         toggleSelection(evt.detail.id);
     }
