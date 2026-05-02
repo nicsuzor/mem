@@ -7,7 +7,7 @@ export const VIEW_MODES = [
 ] as const;
 export type ViewMode = typeof VIEW_MODES[number];
 
-export const viewSettings = writable({
+export const viewSettings = writable<Record<string, any>>({
     mainTab: 'Dashboard', // 'Dashboard' or 'Task Graph' or 'Insights'
     viewMode: 'Treemap',  // "Treemap", "Circle Pack", "Force", "Arc Diagram"
     showLegend: true,

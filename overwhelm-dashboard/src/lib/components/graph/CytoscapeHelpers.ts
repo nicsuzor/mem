@@ -12,16 +12,7 @@ export const START_FILL = "#22c55e";
 export const BAD_CHOICE_FILL = "#6b7280";
 export const BAD_CHOICE_BORDER = "#dc2626";
 
-export const EDGE_COLORS = {
-    parent_intra: "#3b82f6",
-    parent_inter: "#facc15",
-    depends_on: "#ef4444",
-    soft_depends_on: "#9ca3af",
-    contributes_to: "#10b981",
-    similar_to: "#c4b5fd",
-    ref: "#a3a3a3",
-    default: "#6b7280"
-};
+import { getEdgeTypeDef } from "../../data/taxonomy";
 
 export function truncate(s: string, n: number): string {
     if (!s) return "";
@@ -61,27 +52,8 @@ export function getEdgeWidth(isOnRoute: boolean): number {
 }
 
 export function getEdgeLineStyle(edgeType: string, isIntraGroup: boolean = false): { linkColor: string; linkDash: string } {
-    let linkColor = EDGE_COLORS.default;
-    let linkDash = "solid";
-
-    if (edgeType === "parent") {
-        linkColor = isIntraGroup ? EDGE_COLORS.parent_intra : EDGE_COLORS.parent_inter;
-    } else if (edgeType === "depends_on") {
-        linkColor = EDGE_COLORS.depends_on;
-    } else if (edgeType === "soft_depends_on") {
-        linkColor = EDGE_COLORS.soft_depends_on;
-        linkDash = "dashed";
-    } else if (edgeType === "contributes_to") {
-        linkColor = EDGE_COLORS.contributes_to;
-    } else if (edgeType === "similar_to") {
-        linkColor = EDGE_COLORS.similar_to;
-        linkDash = "dashed";
-    } else if (edgeType === "ref") {
-        linkColor = EDGE_COLORS.ref;
-        linkDash = "dashed";
-    }
-
-    return { linkColor, linkDash };
+    const def = getEdgeTypeDef(edgeType, isIntraGroup);
+    return { linkColor: def.color, linkDash: def.dashStyle };
 }
 
 export function computeBaseNodeData(node: GraphNode, isDestination: boolean = false, isOnRoute: boolean = true, isStart: boolean = false, visibilityState: VisibilityState = 'bright') {

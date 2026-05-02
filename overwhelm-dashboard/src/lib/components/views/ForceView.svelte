@@ -11,7 +11,7 @@
         getEdgeOpacity,
         getEdgeWidth,
     } from "../graph/CytoscapeHelpers";
-
+    import { getEdgeTypeDef } from "../../data/taxonomy";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
     import { toggleSelection } from "../../stores/selection";
 
@@ -27,8 +27,7 @@
     function buildElements(
         nodes: GraphNode[],
         edges: GraphEdge[],
-        currentFilters: any,
-        currentSettings: any,
+        currentFilters: any
     ) {
         let newElements: any[] = [];
 
@@ -90,13 +89,12 @@
         return newElements;
     }
 
-    $: if ($graphData) {
-        // Rebuild elements when graph structure or filters change
+    $: if ($graphData && $filters) {
+        // Rebuild elements when graph structure or filters change, NOT physics settings
         elements = buildElements(
             $graphData.nodes,
             $graphData.links,
-            $filters,
-            $viewSettings,
+            $filters
         );
         setTimeout(() => cyBase?.fit(), 100);
     }
@@ -111,21 +109,13 @@
         nodeSpacing: (node: any) => $viewSettings.colaGroupPadding,
         edgeLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
-            if (edgeType === "parent") return $viewSettings.colaLinkDistIntraParent;
-            if (edgeType === "depends_on") return $viewSettings.colaLinkDistDependsOn;
-            if (edgeType === "soft_depends_on") return $viewSettings.colaLinkDistSoftDependsOn;
-            if (edgeType === "contributes_to") return $viewSettings.colaLinkDistContributesTo;
-            if (edgeType === "similar_to") return $viewSettings.colaLinkDistSimilarTo;
-            return $viewSettings.colaLinkDistRef;
+            const def = getEdgeTypeDef(edgeType, false);
+            return $viewSettings[def.distKey as keyof typeof $viewSettings];
         },
         edgeSymDiffLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
-            if (edgeType === "parent") return $viewSettings.colaLinkWeightIntraParent;
-            if (edgeType === "depends_on") return $viewSettings.colaLinkWeightDependsOn;
-            if (edgeType === "soft_depends_on") return $viewSettings.colaLinkWeightSoftDependsOn;
-            if (edgeType === "contributes_to") return $viewSettings.colaLinkWeightContributesTo;
-            if (edgeType === "similar_to") return $viewSettings.colaLinkWeightSimilarTo;
-            return $viewSettings.colaLinkWeightRef;
+            const def = getEdgeTypeDef(edgeType, false);
+            return $viewSettings[def.weightKey as keyof typeof $viewSettings];
         },
     };
 

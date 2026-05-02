@@ -3,7 +3,13 @@
     import { filters } from "../../stores/filters";
     import { viewSettings } from "../../stores/viewSettings";
     import CytoscapeBase from "../graph/CytoscapeBase.svelte";
-    import { computeBaseNodeData, getEdgeLineStyle, getEdgeOpacity, getEdgeWidth } from "../graph/CytoscapeHelpers";
+    import { 
+        computeBaseNodeData, 
+        getEdgeLineStyle,
+        getEdgeOpacity,
+        getEdgeWidth,
+    } from "../graph/CytoscapeHelpers";
+    import { getEdgeTypeDef } from "../../data/taxonomy";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
     import { toggleSelection } from "../../stores/selection";
     import { projectColor } from "../../data/projectUtils";
@@ -16,7 +22,7 @@
     let elements: any[] = [];
     let layoutOptions: any = { name: "cola" };
 
-    function buildElements(nodes: GraphNode[], edges: GraphEdge[], currentFilters: any, currentSettings: any) {
+    function buildElements(nodes: GraphNode[], edges: GraphEdge[], currentFilters: any) {
         let newElements: any[] = [];
         const nodeById = new Map(nodes.map(n => [n.id, n]));
         const keepIds = new Set<string>();
@@ -24,7 +30,7 @@
         // 1. Determine active nodes
         let activeNodes = nodes.filter(n => n.type !== 'project');
 
-        if (!currentSettings.colaHandleDisconnected) {
+        if (!$viewSettings.colaHandleDisconnected) {
             const childrenOf = new Map<string, Set<string>>();
             for (const n of activeNodes) {
                 const pid = (n as any)._safe_parent;
@@ -87,22 +93,13 @@
             // Apply edge filters based on type
             if (e.type !== 'parent' && isIntraGroup) return; // Drop non-parent intra-group edges
             
-            let vis: any = 'bright';
-            if (e.type === 'parent') {
-                if (isIntraGroup) {
-                    vis = currentFilters.edgeIntraGroup || 'bright';
-                    if (vis === 'hidden') return;
-                } else {
-                    vis = currentFilters.edgeParent;
-                    if (vis === 'hidden') return;
-                }
-            } else if (e.type === 'depends_on') { vis = currentFilters.edgeDependencies; if (vis === 'hidden') return; }
-            else if (e.type === 'soft_depends_on') { vis = currentFilters.edgeSoftDependencies; if (vis === 'hidden') return; }
-            else if (e.type === 'contributes_to') { vis = currentFilters.edgeContributes; if (vis === 'hidden') return; }
-            else if (e.type === 'similar_to') { vis = currentFilters.edgeSimilar; if (vis === 'hidden') return; }
-            else if (e.type === 'ref') { vis = currentFilters.edgeReferences; if (vis === 'hidden') return; }
+            const def = getEdgeTypeDef(e.type, isIntraGroup);
 
-            const { linkColor, linkDash } = getEdgeLineStyle(e.type, isIntraGroup);
+            let vis: any = "bright";
+            if (def.filterKey) {
+                vis = currentFilters[def.filterKey] || "bright";
+            }
+            if (vis === 'hidden') return;
             
             newElements.push({
                 data: {
@@ -111,8 +108,8 @@
                     target: tgt,
                     edgeType: e.type,
                     visibilityState: vis,
-                    linkColor,
-                    linkDash,
+                    linkColor: def.color,
+                    linkDash: def.dashStyle,
                     edgeOpacity: getEdgeOpacity(vis, true),
                     edgeWidth: getEdgeWidth(true),
                     isIntraGroup: isIntraGroup ? 1 : 0
@@ -123,8 +120,10 @@
         return newElements;
     }
 
-    $: if ($graphData) {
-        elements = buildElements($graphData.nodes, $graphData.links, $filters, $viewSettings);
+    $: if ($graphData && $filters) {
+        // Rebuild elements when graph structure or filters change, not physics
+        elements = buildElements($graphData.nodes, $graphData.links, $filters);
+        setTimeout(() => cyBase?.fit(), 100);
     }
 
     $: layoutOptions = {
@@ -136,26 +135,14 @@
         randomize: false,
         nodeSpacing: (node: any) => $viewSettings.colaGroupPadding,
         edgeLength: (edge: any) => {
-            const edgeType = edge.data('edgeType');
-            if (edgeType === 'parent') {
-                return edge.data('isIntraGroup') ? $viewSettings.colaLinkDistIntraParent : $viewSettings.colaLinkDistInterParent;
-            }
-            if (edgeType === 'depends_on') return $viewSettings.colaLinkDistDependsOn;
-            if (edgeType === 'soft_depends_on') return $viewSettings.colaLinkDistSoftDependsOn;
-            if (edgeType === 'contributes_to') return $viewSettings.colaLinkDistContributesTo;
-            if (edgeType === 'similar_to') return $viewSettings.colaLinkDistSimilarTo;
-            return $viewSettings.colaLinkDistRef;
+            const edgeType = edge.data("edgeType");
+            const def = getEdgeTypeDef(edgeType, false);
+            return $viewSettings[def.distKey];
         },
         edgeSymDiffLength: (edge: any) => {
-            const edgeType = edge.data('edgeType');
-            if (edgeType === 'parent') {
-                return edge.data('isIntraGroup') ? $viewSettings.colaLinkWeightIntraParent : $viewSettings.colaLinkWeightInterParent;
-            }
-            if (edgeType === 'depends_on') return $viewSettings.colaLinkWeightDependsOn;
-            if (edgeType === 'soft_depends_on') return $viewSettings.colaLinkWeightSoftDependsOn;
-            if (edgeType === 'contributes_to') return $viewSettings.colaLinkWeightContributesTo;
-            if (edgeType === 'similar_to') return $viewSettings.colaLinkWeightSimilarTo;
-            return $viewSettings.colaLinkWeightRef;
+            const edgeType = edge.data("edgeType");
+            const def = getEdgeTypeDef(edgeType, false);
+            return $viewSettings[def.weightKey];
         },
     };
 

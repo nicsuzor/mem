@@ -16,15 +16,15 @@
         color: p.color,
     }));
 
-    const edgeTypes = [
-        { key: 'edgeParent', label: 'PARENT (INTER-GROUP)', color: '#facc15', dash: false },
-        { key: 'edgeIntraGroup', label: 'INTRA-GROUP', color: '#3b82f6', dash: false },
-        { key: 'edgeDependencies', label: 'DEPENDS ON', color: '#ef4444', dash: false },
-        { key: 'edgeSoftDependencies', label: 'SOFT DEPENDS', color: '#9ca3af', dash: true },
-        { key: 'edgeContributes', label: 'CONTRIBUTES TO', color: '#10b981', dash: false },
-        { key: 'edgeSimilar', label: 'SIMILAR TO', color: '#c4b5fd', dash: true },
-        { key: 'edgeReferences', label: 'REFERENCES', color: '#a3a3a3', dash: true },
-    ] as const;
+    import { EDGE_TYPES } from '../../data/taxonomy';
+
+    const edgeTypes = Object.values(EDGE_TYPES).map(e => ({
+        key: e.filterKey,
+        label: e.displayName.toUpperCase(),
+        color: e.color,
+        dash: e.dashStyle !== 'solid',
+        rawKey: e.id // to match edgeCounts mapping if needed
+    }));
 
     const metroNodeTypes = [
         { label: 'TERMINAL', description: 'P0/P1 destination. Always labelled, priority-coloured border, bottom-row anchor.', sampleClass: 'sample-terminal' },
@@ -101,13 +101,13 @@
     $: edgeCounts = $graphData ? (() => {
         const links = $graphData.links;
         return {
-            edgeParent: links.filter((l: any) => l.type === 'parent').length,
-            edgeIntraGroup: 0, // dynamic count not tracked in base graphData
-            edgeDependencies: links.filter((l: any) => l.type === 'depends_on').length,
-            edgeSoftDependencies: links.filter((l: any) => l.type === 'soft_depends_on').length,
-            edgeContributes: links.filter((l: any) => l.type === 'contributes_to').length,
-            edgeSimilar: links.filter((l: any) => l.type === 'similar_to').length,
-            edgeReferences: links.filter((l: any) => l.type === 'ref').length,
+            parent_inter: links.filter((l: any) => l.type === 'parent').length,
+            parent_intra: links.filter((l: any) => l.type === 'edgeIntraGroup').length,
+            depends_on: links.filter((l: any) => l.type === 'depends_on').length,
+            soft_depends_on: links.filter((l: any) => l.type === 'soft_depends_on').length,
+            contributes_to: links.filter((l: any) => l.type === 'contributes_to').length,
+            similar_to: links.filter((l: any) => l.type === 'similar_to').length,
+            ref: links.filter((l: any) => l.type === 'ref').length,
         };
     })() : null;
 
@@ -164,7 +164,7 @@
                     >
                         <div class="legend-line" style="background:{edge.color}; opacity:{edgeOpacityForLegend(vis)};"
                             class:dashed={edge.dash}></div>
-                        <span class="legend-label">{edge.label}{!isMetroLegend && edgeCounts ? ` [${edgeCounts[edge.key as keyof typeof edgeCounts]}]` : ''}</span>
+                        <span class="legend-label">{edge.label}{!isMetroLegend && edgeCounts ? ` [${edgeCounts[edge.rawKey as keyof typeof edgeCounts]}]` : ''}</span>
                         <span class="edge-state">{stateLabel(vis)}</span>
                     </button>
 
