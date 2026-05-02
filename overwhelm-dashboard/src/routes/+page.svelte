@@ -227,12 +227,53 @@
             });
             fNodes = fNodes.filter((n) => nodesWithEdges.has(n.id) || !n.isLeaf);
         }
-        // Edge visibility is handled via CSS opacity, not by filtering
-        if (isForce && $viewSettings.topNLeaves < fNodes.length) {
-            const parents = fNodes.filter((n) => !n.isLeaf);
-            let leaves = fNodes.filter((n) => n.isLeaf).sort((a, b) => b.dw - a.dw);
-            leaves = leaves.slice(0, $viewSettings.topNLeaves);
-            fNodes = [...parents, ...leaves];
+        if (isForce) {
+            let leafCount = fNodes.filter(n => n.isLeaf).length;
+            let leavesToPrune = leafCount - $viewSettings.topNLeaves;
+            
+            if (leavesToPrune > 0) {
+                let adj = new Map<string, Set<string>>();
+                fNodes.forEach(n => adj.set(n.id, new Set()));
+                fLinks.forEach(l => {
+                    const sid = typeof l.source === "object" ? l.source.id : l.source;
+                    const tid = typeof l.target === "object" ? l.target.id : l.target;
+                    if (adj.has(sid) && adj.has(tid)) {
+                        adj.get(sid)!.add(tid);
+                        adj.get(tid)!.add(sid);
+                    }
+                });
+
+                let leafNodes = new Set(fNodes.filter(n => n.isLeaf).map(n => n.id));
+                const nodeMap = new Map(fNodes.map(n => [n.id, n]));
+
+                while (leavesToPrune > 0 && leafNodes.size > 0) {
+                    let candidate: string | null = null;
+                    let bestScore = Infinity;
+
+                    for (const nid of leafNodes) {
+                        const n = nodeMap.get(nid)!;
+                        const deg = adj.get(nid)!.size;
+                        // Score prioritizes degree first, then focus score (dw)
+                        const score = deg * 1000000 + (n.dw || 0);
+                        if (score < bestScore) {
+                            bestScore = score;
+                            candidate = nid;
+                        }
+                    }
+
+                    if (!candidate) break;
+
+                    leafNodes.delete(candidate);
+                    for (const neighbor of adj.get(candidate)!) {
+                        adj.get(neighbor)!.delete(candidate);
+                    }
+                    adj.delete(candidate);
+                    leavesToPrune--;
+                }
+
+                const keepIds = new Set([...fNodes.filter(n => !n.isLeaf).map(n => n.id), ...leafNodes]);
+                fNodes = fNodes.filter(n => keepIds.has(n.id));
+            }
         }
 
         // Restore parent containers needed by surviving children
