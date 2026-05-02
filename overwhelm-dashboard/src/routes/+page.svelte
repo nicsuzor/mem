@@ -519,9 +519,9 @@
                 {:else if activeLayout === "wave_kanban"}
                     <WaveKanbanView />
                 {:else if activeLayout === "force" || activeLayout === "sfdp"}
-                    <ForceView bind:this={forceViewRef} restartNonce={forceRestartNonce} randomizeNonce={forceRandomizeNonce} />
+                    <ForceView bind:this={forceViewRef} bind:running={forceRunning} restartNonce={forceRestartNonce} randomizeNonce={forceRandomizeNonce} />
                 {:else if activeLayout === "groups"}
-                    <GroupsView bind:this={groupsRef} restartNonce={groupsRestartNonce} randomizeNonce={groupsRandomizeNonce} />
+                    <GroupsView bind:this={groupsRef} bind:running={groupsRunning} restartNonce={groupsRestartNonce} randomizeNonce={groupsRandomizeNonce} />
                 {:else}
                     <ZoomContainer let:containerGroup let:innerWidth let:innerHeight>
                         {#if containerGroup}

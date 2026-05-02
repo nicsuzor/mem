@@ -73,13 +73,15 @@
     $: if ($graphData) {
         // Rebuild elements when graph structure or filters change
         elements = buildElements($graphData.nodes, $graphData.links, $filters, $viewSettings);
+        setTimeout(() => cyBase?.fit(), 100);
     }
 
     $: layoutOptions = {
         name: "cola",
         animate: true,
+        infinite: true,
+        fit: false,
         randomize: false,
-        maxSimulationTime: 4000,
         nodeSpacing: (node: any) => $viewSettings.colaGroupPadding,
         edgeLength: (edge: any) => {
             if (edge.data('edgeType') === 'parent') return $viewSettings.colaLinkDistIntraParent;
@@ -93,12 +95,20 @@
         },
     };
 
+    $: if (running === false && cyBase) {
+        cyBase.stopLayout();
+    }
+
     $: if (restartNonce > 0 && cyBase) {
         cyBase.runLayout();
     }
 
     export function toggleRunning() {
-        if (cyBase) cyBase.runLayout();
+        if (running) {
+            cyBase?.stopLayout();
+        } else {
+            cyBase?.runLayout();
+        }
     }
 
     export function randomize() {
@@ -118,5 +128,7 @@
         {elements}
         {layoutOptions}
         on:nodeClick={onNodeClick}
+        on:layoutstart={() => running = true}
+        on:layoutstop={() => running = false}
     />
 </div>

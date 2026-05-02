@@ -130,8 +130,8 @@
     $: layoutOptions = {
         name: "cola",
         animate: true,
+        infinite: true,
         randomize: false,
-        maxSimulationTime: 4000,
         nodeSpacing: (node: any) => $viewSettings.colaGroupPadding,
         edgeLength: (edge: any) => {
             if (edge.data('edgeType') === 'parent') {
@@ -149,10 +149,20 @@
         },
     };
 
-    $: if (restartNonce > 0 && cyBase) cyBase.runLayout();
+    $: if (running === false && cyBase) {
+        cyBase.stopLayout();
+    }
+
+    $: if (restartNonce > 0 && cyBase) {
+        cyBase.runLayout();
+    }
 
     export function toggleRunning() {
-        if (cyBase) cyBase.runLayout();
+        if (running) {
+            cyBase?.stopLayout();
+        } else {
+            cyBase?.runLayout();
+        }
     }
 
     export function randomize() {
@@ -192,5 +202,7 @@
         {layoutOptions}
         {stylesheet}
         on:nodeClick={onNodeClick}
+        on:layoutstart={() => running = true}
+        on:layoutstop={() => running = false}
     />
 </div>
