@@ -19,14 +19,14 @@
         <div class="space-y-3 pt-1 border-t border-primary/5">
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                    <span>Dist_Intra_Parent</span>
+                    <span>Dist_Intra-Group</span>
                     <span>{$viewSettings.colaLinkDistIntraParent}</span>
                 </div>
                 <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistIntraParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                    <span>Weight_Intra_Parent</span>
+                    <span>Weight_Intra-Group</span>
                     <span>{$viewSettings.colaLinkWeightIntraParent.toFixed(1)}</span>
                 </div>
                 <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightIntraParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
@@ -34,14 +34,14 @@
 
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                    <span>Dist_Inter_Parent</span>
+                    <span>Dist_Parent_(Inter-Group)</span>
                     <span>{$viewSettings.colaLinkDistInterParent}</span>
                 </div>
                 <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistInterParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                    <span>Weight_Inter_Parent</span>
+                    <span>Weight_Parent_(Inter-Group)</span>
                     <span>{$viewSettings.colaLinkWeightInterParent.toFixed(1)}</span>
                 </div>
                 <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightInterParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
@@ -49,14 +49,14 @@
 
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                    <span>Dist_DependsOn</span>
+                    <span>Dist_Depends_On</span>
                     <span>{$viewSettings.colaLinkDistDependsOn}</span>
                 </div>
                 <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistDependsOn} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                    <span>Weight_DependsOn</span>
+                    <span>Weight_Depends_On</span>
                     <span>{$viewSettings.colaLinkWeightDependsOn.toFixed(1)}</span>
                 </div>
                 <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightDependsOn} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
@@ -64,14 +64,14 @@
 
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                    <span>Dist_Refs</span>
+                    <span>Dist_References</span>
                     <span>{$viewSettings.colaLinkDistRef}</span>
                 </div>
                 <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistRef} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
-                    <span>Weight_Refs</span>
+                    <span>Weight_References</span>
                     <span>{$viewSettings.colaLinkWeightRef.toFixed(1)}</span>
                 </div>
                 <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightRef} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />

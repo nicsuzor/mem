@@ -22,18 +22,20 @@
 
     let containerEl: HTMLDivElement;
 
+    let currentLayout: any = null;
+
     // React to element changes
     $: if (cy && elements) {
         cy.elements().remove();
         cy.add(elements);
         if (runLayoutOnMount) {
-            cy.layout(layoutOptions).run();
+            runLayout();
         }
     }
 
     // React to layout changes
     $: if (cy && layoutOptions && runLayoutOnMount) {
-        cy.layout(layoutOptions).run();
+        runLayout();
     }
 
     onMount(() => {
@@ -84,13 +86,16 @@
 
     export function runLayout() {
         if (cy) {
-            cy.layout(layoutOptions).run();
+            if (currentLayout) currentLayout.stop();
+            currentLayout = cy.layout(layoutOptions);
+            currentLayout.run();
         }
     }
 
     export function stopLayout() {
-        if (cy) {
-            cy.stop();
+        if (currentLayout) {
+            currentLayout.stop();
+            currentLayout = null;
         }
     }
 
