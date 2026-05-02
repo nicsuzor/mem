@@ -12,6 +12,17 @@ export const START_FILL = "#22c55e";
 export const BAD_CHOICE_FILL = "#6b7280";
 export const BAD_CHOICE_BORDER = "#dc2626";
 
+export const EDGE_COLORS = {
+    parent_intra: "#3b82f6",
+    parent_inter: "#facc15",
+    depends_on: "#ef4444",
+    soft_depends_on: "#9ca3af",
+    contributes_to: "#10b981",
+    similar_to: "#c4b5fd",
+    ref: "#a3a3a3",
+    default: "#6b7280"
+};
+
 export function truncate(s: string, n: number): string {
     if (!s) return "";
     return s.length <= n ? s : s.slice(0, n - 1) + "…";
@@ -50,23 +61,23 @@ export function getEdgeWidth(isOnRoute: boolean): number {
 }
 
 export function getEdgeLineStyle(edgeType: string, isIntraGroup: boolean = false): { linkColor: string; linkDash: string } {
-    let linkColor = "#6b7280";
+    let linkColor = EDGE_COLORS.default;
     let linkDash = "solid";
 
     if (edgeType === "parent") {
-        linkColor = isIntraGroup ? "#3b82f6" : "#facc15"; // Blue for intra, Yellow for inter
+        linkColor = isIntraGroup ? EDGE_COLORS.parent_intra : EDGE_COLORS.parent_inter;
     } else if (edgeType === "depends_on") {
-        linkColor = "#ef4444";
+        linkColor = EDGE_COLORS.depends_on;
     } else if (edgeType === "soft_depends_on") {
-        linkColor = "#9ca3af";
+        linkColor = EDGE_COLORS.soft_depends_on;
         linkDash = "dashed";
     } else if (edgeType === "contributes_to") {
-        linkColor = "#10b981";
+        linkColor = EDGE_COLORS.contributes_to;
     } else if (edgeType === "similar_to") {
-        linkColor = "#c4b5fd";
+        linkColor = EDGE_COLORS.similar_to;
         linkDash = "dashed";
     } else if (edgeType === "ref") {
-        linkColor = "#a3a3a3";
+        linkColor = EDGE_COLORS.ref;
         linkDash = "dashed";
     }
 

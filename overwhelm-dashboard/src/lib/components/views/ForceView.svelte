@@ -11,7 +11,7 @@
         getEdgeOpacity,
         getEdgeWidth,
     } from "../graph/CytoscapeHelpers";
-    import CytoscapeForceConfig from "../graph/CytoscapeForceConfig.svelte";
+
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
     import { toggleSelection } from "../../stores/selection";
 

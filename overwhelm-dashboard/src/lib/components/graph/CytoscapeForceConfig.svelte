@@ -1,5 +1,6 @@
 <script lang="ts">
     import { viewSettings } from "../../stores/viewSettings";
+    import { EDGE_COLORS } from "./CytoscapeHelpers";
 
     export let showConfig: boolean = true;
     export let onClose: () => void = () => {};
@@ -22,14 +23,14 @@
                     <span>Dist_Intra-Group</span>
                     <span>{$viewSettings.colaLinkDistIntraParent}</span>
                 </div>
-                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistIntraParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistIntraParent} class="slider-intra w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
                     <span>Weight_Intra-Group</span>
                     <span>{$viewSettings.colaLinkWeightIntraParent.toFixed(1)}</span>
                 </div>
-                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightIntraParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightIntraParent} class="slider-intra w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
 
             <div class="space-y-1">
@@ -37,14 +38,14 @@
                     <span>Dist_Parent_(Inter-Group)</span>
                     <span>{$viewSettings.colaLinkDistInterParent}</span>
                 </div>
-                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistInterParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistInterParent} class="slider-inter w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
                     <span>Weight_Parent_(Inter-Group)</span>
                     <span>{$viewSettings.colaLinkWeightInterParent.toFixed(1)}</span>
                 </div>
-                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightInterParent} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightInterParent} class="slider-inter w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
 
             <div class="space-y-1">
@@ -52,14 +53,14 @@
                     <span>Dist_Depends_On</span>
                     <span>{$viewSettings.colaLinkDistDependsOn}</span>
                 </div>
-                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistDependsOn} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistDependsOn} class="slider-depends w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
                     <span>Weight_Depends_On</span>
                     <span>{$viewSettings.colaLinkWeightDependsOn.toFixed(1)}</span>
                 </div>
-                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightDependsOn} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightDependsOn} class="slider-depends w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
 
             <div class="space-y-1">
@@ -67,14 +68,14 @@
                     <span>Dist_Soft_Depends</span>
                     <span>{$viewSettings.colaLinkDistSoftDependsOn}</span>
                 </div>
-                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistSoftDependsOn} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistSoftDependsOn} class="slider-soft w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
                     <span>Weight_Soft_Depends</span>
                     <span>{$viewSettings.colaLinkWeightSoftDependsOn.toFixed(1)}</span>
                 </div>
-                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightSoftDependsOn} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightSoftDependsOn} class="slider-soft w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
 
             <div class="space-y-1">
@@ -82,14 +83,14 @@
                     <span>Dist_Contributes_To</span>
                     <span>{$viewSettings.colaLinkDistContributesTo}</span>
                 </div>
-                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistContributesTo} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistContributesTo} class="slider-contrib w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
                     <span>Weight_Contributes_To</span>
                     <span>{$viewSettings.colaLinkWeightContributesTo.toFixed(1)}</span>
                 </div>
-                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightContributesTo} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightContributesTo} class="slider-contrib w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
 
             <div class="space-y-1">
@@ -97,14 +98,14 @@
                     <span>Dist_Similar_To</span>
                     <span>{$viewSettings.colaLinkDistSimilarTo}</span>
                 </div>
-                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistSimilarTo} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistSimilarTo} class="slider-similar w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
                     <span>Weight_Similar_To</span>
                     <span>{$viewSettings.colaLinkWeightSimilarTo.toFixed(1)}</span>
                 </div>
-                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightSimilarTo} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightSimilarTo} class="slider-similar w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
 
             <div class="space-y-1">
@@ -112,14 +113,14 @@
                     <span>Dist_References</span>
                     <span>{$viewSettings.colaLinkDistRef}</span>
                 </div>
-                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistRef} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="10" max="1000" step="10" bind:value={$viewSettings.colaLinkDistRef} class="slider-ref w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
             <div class="space-y-1">
                 <div class="flex justify-between text-[9px] text-primary/50 uppercase">
                     <span>Weight_References</span>
                     <span>{$viewSettings.colaLinkWeightRef.toFixed(1)}</span>
                 </div>
-                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightRef} class="w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer accent-primary" />
+                <input type="range" min="0.1" max="1.0" step="0.05" bind:value={$viewSettings.colaLinkWeightRef} class="slider-ref w-full h-1 bg-primary/10 rounded-lg appearance-none cursor-pointer" />
             </div>
 
             <div class="space-y-1 pt-2 border-t border-primary/5">
@@ -188,6 +189,13 @@
         background: var(--color-primary);
         cursor: pointer;
         border-radius: 50%;
-        box-shadow: 0 0 10px rgba(var(--color-primary-rgb), 0.5);
+        box-shadow: 0 0 8px var(--color-primary);
     }
+    .slider-intra::-webkit-slider-thumb { background: #3b82f6 !important; box-shadow: 0 0 8px #3b82f6 !important; }
+    .slider-inter::-webkit-slider-thumb { background: #facc15 !important; box-shadow: 0 0 8px #facc15 !important; }
+    .slider-depends::-webkit-slider-thumb { background: #ef4444 !important; box-shadow: 0 0 8px #ef4444 !important; }
+    .slider-soft::-webkit-slider-thumb { background: #9ca3af !important; box-shadow: 0 0 8px #9ca3af !important; }
+    .slider-contrib::-webkit-slider-thumb { background: #10b981 !important; box-shadow: 0 0 8px #10b981 !important; }
+    .slider-similar::-webkit-slider-thumb { background: #c4b5fd !important; box-shadow: 0 0 8px #c4b5fd !important; }
+    .slider-ref::-webkit-slider-thumb { background: #a3a3a3 !important; box-shadow: 0 0 8px #a3a3a3 !important; }
 </style>
