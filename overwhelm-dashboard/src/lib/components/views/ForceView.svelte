@@ -11,6 +11,7 @@
         getEdgeLineStyle,
         getEdgeOpacity,
         getEdgeWidth,
+        applyEpicGrouping,
     } from "../graph/CytoscapeHelpers";
     import { getEdgeTypeDef } from "../../data/taxonomy";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
@@ -84,11 +85,11 @@
             });
         });
 
-        return newElements;
+        return applyEpicGrouping(newElements, nodes, $viewSettings.enableEpicGrouping);
     }
 
-    $: if ($graphData && $filters) {
-        // Rebuild elements when graph structure or filters change, NOT physics settings
+    $: if ($graphData && $filters && $viewSettings.enableEpicGrouping !== undefined) {
+        // Rebuild elements when graph structure, filters, or epic grouping changes
         elements = buildElements($graphData.nodes, $graphData.links, $filters);
         setTimeout(() => cyBase?.fit(), 100);
     }

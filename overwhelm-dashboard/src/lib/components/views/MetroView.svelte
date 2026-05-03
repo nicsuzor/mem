@@ -32,7 +32,15 @@
     } from "../../data/constants";
     import CytoscapeBase from "../graph/CytoscapeBase.svelte";
     import { getCytoscapeStyles } from "../graph/CytoscapeStyles";
-    import { computeBaseNodeData, getProjectLineColor, getEdgeRole, getEdgeVisibilityState, getEdgeOpacity, getEdgeWidth } from "../graph/CytoscapeHelpers";
+    import {
+        computeBaseNodeData,
+        getProjectLineColor,
+        getEdgeRole,
+        getEdgeVisibilityState,
+        getEdgeOpacity,
+        getEdgeWidth,
+        applyEpicGrouping,
+    } from "../graph/CytoscapeHelpers";
     import { getEdgeTypeDef } from "../../data/taxonomy";
     import { get } from "svelte/store";
 
@@ -1151,7 +1159,7 @@
         // Per-route strokes for interchange edges (Tokyo "duplicate-per-line" trick).
         // An edge with shared.length >= 2 emits one stroke per shared destination;
         // each stroke is coloured by that destination's project at low opacity so
-        // browser alpha compositing produces the blend naturally.
+        // browser alpha compositing handles the blend.
         const cyEdges: any[] = [];
         metroEdges.forEach((edge, index) => {
             const src =
@@ -1319,7 +1327,7 @@
             });
         }
 
-        elements = [...cyNodes, ...cyEdges];
+        elements = applyEpicGrouping([...cyNodes, ...cyEdges], metroNodes, $viewSettings.enableEpicGrouping);
 
         stylesheet = [
             ...getCytoscapeStyles(),
@@ -1871,7 +1879,8 @@
     $: if (
         ($preparedGraphData || $graphData) &&
         ($preparedStructureKey !== lastStructureKey ||
-            showContext !== lastShowContext)
+            showContext !== lastShowContext ||
+            $viewSettings.enableEpicGrouping !== undefined)
     ) {
         lastStructureKey = $preparedStructureKey;
         lastShowContext = showContext;
@@ -1883,8 +1892,11 @@
     // we iterate cy's actual edges and refresh each by source/target.
     $: if (
         cy &&
-        ($preparedGraphData || $graphData) &&
-        $preparedStructureKey === lastStructureKey
+        $graphData &&
+        $filters &&
+        $preparedStructureKey &&
+        $graphStructureKey &&
+        $viewSettings.enableEpicGrouping !== undefined
     ) {
         const cyInstance = cy;
         const sourceGraph = $preparedGraphData ?? $graphData!;

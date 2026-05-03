@@ -15,6 +15,7 @@ export const viewSettings = writable<Record<string, any>>({
     topNLeaves: 80,
     metroAlgorithm: 'force' as 'force' | 'elk' | 'cola',
     colaLinkLength: 600,   // ideal link length (general, used by Metro)
+    enableEpicGrouping: false, // shared toggle for epic compound nodes in physics graphs
 
     // Link-specific forces
     colaLinkDistIntraParent: 100,

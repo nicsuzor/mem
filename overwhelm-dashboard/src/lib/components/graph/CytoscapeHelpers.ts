@@ -10,11 +10,48 @@ import type { VisibilityState } from "../../stores/filters";
 
 export const BAD_CHOICE_BORDER = "#dc2626";
 
-import { getEdgeTypeDef } from "../../data/taxonomy";
+import { EDGE_TYPES, getEdgeTypeDef } from "../../data/taxonomy";
 
 export function truncate(s: string, n: number): string {
     if (!s) return "";
     return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+
+export function applyEpicGrouping(
+    elements: any[],
+    rawNodes: GraphNode[],
+    enableGrouping: boolean
+): any[] {
+    if (!enableGrouping) return elements;
+
+    const rawNodeById = new Map(rawNodes.map(n => [n.id, n]));
+    const nodes = elements.filter(e => !e.data.source);
+    const edges = elements.filter(e => e.data.source && e.data.target);
+    const activeCyNodeIds = new Set(nodes.map(n => n.data.id));
+
+    nodes.forEach(n => {
+        const rawNode = rawNodeById.get(n.data.id);
+        if (!rawNode) return;
+        
+        const pid = (rawNode as any)._safe_parent;
+        if (pid && activeCyNodeIds.has(pid)) {
+            n.data.parent = pid;
+        }
+    });
+
+    const parentIds = new Set(nodes.map(n => n.data.parent).filter(Boolean));
+    nodes.forEach(n => {
+        n.data.isGroup = parentIds.has(n.data.id) ? 1 : 0;
+        if (n.data.isGroup) {
+            const rawNode = rawNodeById.get(n.data.id);
+            n.data.projectColor = rawNode?.project ? projectColor(rawNode.project) : '#475569';
+        }
+    });
+
+    // Drop physical parent edges since they are visually represented by the bounding boxes
+    const filteredEdges = edges.filter(e => e.data.edgeType !== 'parent');
+
+    return [...nodes, ...filteredEdges];
 }
 
 export function isIncomplete(node: GraphNode): boolean {
