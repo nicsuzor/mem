@@ -285,6 +285,11 @@ impl PkbSearchServer {
     /// reindex. When a reindex is in progress the markdown file is already
     /// written and the graph already updated — the reindex will pick up the
     /// new/changed file, so we can safely skip the expensive embedding step.
+    ///
+    /// Concurrency: chunking and embedding (the slow part — hundreds of ms
+    /// to seconds on CPU) run **outside** the store write lock. The lock is
+    /// only acquired briefly to install the prepared entry. This lets
+    /// concurrent writers proceed without serialising behind embedding.
     fn try_upsert_document(&self, doc: &crate::pkb::PkbDocument) {
         if !self.index_lock_available() {
             tracing::info!(
@@ -293,9 +298,30 @@ impl PkbSearchServer {
             );
             return;
         }
+        let path_key = doc.path.to_string_lossy().to_string();
+
         let _t_upsert = std::time::Instant::now();
-        let _ = self.store.write().upsert(doc, &self.embedder);
+        // Read-snapshot the existing entry (cheap), then drop the read lock
+        // before doing any chunking or embedding.
+        let existing = self.store.read().get_entry(&path_key).cloned();
+        let prepared = match crate::vectordb::VectorStore::prepare_upsert(
+            doc,
+            &self.embedder,
+            existing.as_ref(),
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    "prepare_upsert failed for {}: {e}",
+                    doc.path.display()
+                );
+                return;
+            }
+        };
+        // Brief write lock to apply.
+        self.store.write().apply_prepared(prepared);
         tracing::debug!(target: "perf::vector", phase = "store_upsert_inmem", elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0);
+
         let _t_save = std::time::Instant::now();
         self.save_store();
         tracing::debug!(target: "perf::vector", phase = "save_store_dispatch", elapsed_ms = _t_save.elapsed().as_secs_f64() * 1000.0);

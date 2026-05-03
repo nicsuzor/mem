@@ -96,7 +96,7 @@ src/
 `mcp_server.rs` uses a manual `match` in `call_tool()` mapping tool name strings to `handle_*` methods. Tool registrations are in `list_tools()` as a `Vec<Tool>`. Both must stay in sync.
 
 ### Graph rebuild
-After any CRUD operation, `rebuild_graph()` rebuilds the full `GraphStore` from disk. The graph persists to `{db_path}.graph.json` but rebuilds fast (~300ms).
+After any CRUD operation, `rebuild_graph()` rebuilds the full `GraphStore` from disk. The graph is **in-memory only** — it does not persist; it is reconstructed at startup via `GraphStore::build_from_directory` (~300 ms for a typical PKB). Only the vector store persists to `{db_path}` (bincode) plus `{db_path}.lock` for the cross-process advisory lock.
 
 ### Flexible ID resolution
 `GraphStore::resolve(query)` tries: exact ID match -> case-insensitive resolution map (id, task_id, filename stem, title, permalink). Used by most task/document tools.
