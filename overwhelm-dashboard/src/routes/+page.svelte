@@ -81,10 +81,23 @@
 
     // Debounce graph recomputes — filters/settings can fire multiple reactive updates
     let recomputeTimer: ReturnType<typeof setTimeout> | null = null;
-    $: if (rawGraph) {
-        const _deps = [$filters, $viewSettings.topNLeaves, $viewSettings.viewMode];
-        if (recomputeTimer) clearTimeout(recomputeTimer);
-        recomputeTimer = setTimeout(() => recomputeGraph(), 16);
+    let lastFiltersHash = "";
+    let lastTopNLeaves = -1;
+    let lastViewMode = "";
+
+    $: if (rawGraph && $filters && $viewSettings) {
+        const currentFiltersHash = JSON.stringify($filters);
+        const currentTopNLeaves = $viewSettings.topNLeaves;
+        const currentViewMode = $viewSettings.viewMode;
+
+        if (currentFiltersHash !== lastFiltersHash || currentTopNLeaves !== lastTopNLeaves || currentViewMode !== lastViewMode) {
+            lastFiltersHash = currentFiltersHash;
+            lastTopNLeaves = currentTopNLeaves;
+            lastViewMode = currentViewMode;
+
+            if (recomputeTimer) clearTimeout(recomputeTimer);
+            recomputeTimer = setTimeout(() => recomputeGraph(), 16);
+        }
     }
 
     $: if ($selection && $graphData) {

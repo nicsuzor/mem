@@ -149,12 +149,16 @@
                 }
                 case "equal":
                     return 1;
+                // default:
+                // return Math.max(
+                //     MIN_NODE_WEIGHT,
+                //     Math.sqrt(d.focusScore ?? 0) || MIN_NODE_WEIGHT,
+                // );
                 default:
                     return Math.max(
                         MIN_NODE_WEIGHT,
-                        Math.sqrt(d.focusScore ?? 0) || MIN_NODE_WEIGHT,
+                        Math.pow(d.focusScore ?? 0) || MIN_NODE_WEIGHT,
                     );
-                // default: return Math.max(MIN_NODE_WEIGHT, Math.pow(d.focusScore ?? 0) || MIN_NODE_WEIGHT);
             }
         });
 

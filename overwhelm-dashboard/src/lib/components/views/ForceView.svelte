@@ -99,19 +99,19 @@
         refresh: 1,
         infinite: true,
         fit: false,
-        randomize: true,
-        nodeSpacing: (node: any) => get(viewSettings).colaGroupPadding,
+        randomize: false, // Do not scramble on config updates
+        nodeSpacing: (node: any) => $viewSettings.colaGroupPadding,
         edgeLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
             const def = getEdgeTypeDef(edgeType, false);
-            return get(viewSettings)[def.distKey];
+            return $viewSettings[def.distKey];
         },
         edgeSymDiffLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
             const def = getEdgeTypeDef(edgeType, false);
-            return get(viewSettings)[def.weightKey];
+            return $viewSettings[def.weightKey];
         },
-        convergenceThreshold: get(viewSettings).colaConvergence,
+        convergenceThreshold: $viewSettings.colaConvergence,
         maxSimulationTime: 60000,
         // Increase iteration phases so it explores the space (higher entropy)
         // before getting locked down by overlap constraints
@@ -128,6 +128,9 @@
         cyBase.runLayout();
     }
 
+    $: if (randomizeNonce > 0) {
+        randomize();
+    }
     export function toggleRunning() {
         if (running) {
             cyBase?.stopLayout();
