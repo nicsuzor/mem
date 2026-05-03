@@ -468,6 +468,26 @@ impl VectorStore {
             .count()
     }
 
+    /// Snapshot of every document's averaged chunk embedding, keyed by the
+    /// store's relative path.
+    ///
+    /// Used to feed the graph similarity-edge computation **without** holding
+    /// the `VectorStore` read lock for the duration of `rebuild_graph`.
+    /// Callers compute the snapshot under a brief read lock, drop the lock,
+    /// and then run the (slow) graph rebuild against the cloned data.
+    ///
+    /// Memory: O(N × D) f32s — ~4 KB per doc at 1024 dims, ~40 MB for 10k
+    /// docs. Cheap relative to the parse + rebuild that follows.
+    pub fn averaged_embeddings(&self) -> HashMap<String, Vec<f32>> {
+        self.documents
+            .iter()
+            .filter_map(|(path, entry)| {
+                crate::batch_ops::similarity::average_embedding(&entry.chunk_embeddings)
+                    .map(|avg| (path.clone(), avg))
+            })
+            .collect()
+    }
+
     /// List all tags across all documents with their occurrence counts.
     pub fn list_all_tags(&self) -> HashMap<String, usize> {
         let mut tags: HashMap<String, usize> = HashMap::new();

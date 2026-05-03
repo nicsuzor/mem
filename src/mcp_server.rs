@@ -154,21 +154,38 @@ impl PkbSearchServer {
     }
 
     /// Full rebuild of the graph store from disk (for batch operations).
+    ///
+    /// Concurrency: takes the store read lock just long enough to snapshot
+    /// the per-document averaged embeddings, then drops it. The (slow)
+    /// scan + parse + similarity-edge build runs against the snapshot with
+    /// no store lock held — concurrent writers can proceed during the
+    /// rebuild instead of blocking behind it.
     fn rebuild_graph(&self) {
-        let store = self.store.read();
+        let _t_snap = std::time::Instant::now();
+        let snapshot = self.store.read().averaged_embeddings();
+        tracing::debug!(
+            target: "perf::graph_rebuild",
+            phase = "embedding_snapshot",
+            n = snapshot.len(),
+            elapsed_ms = _t_snap.elapsed().as_secs_f64() * 1000.0
+        );
+
         let files = crate::pkb::scan_directory_all(&self.pkb_root);
         let docs: Vec<crate::pkb::PkbDocument> = files
             .par_iter()
             .filter_map(|p| crate::pkb::parse_file_relative(p, &self.pkb_root))
             .collect();
 
-        let new_graph = GraphStore::build_with_store(&docs, &self.pkb_root, &store);
+        let new_graph = GraphStore::build_with_embeddings(&docs, &self.pkb_root, &snapshot);
         *self.graph.write() = new_graph;
     }
 
     /// Incremental graph update after a single file changed, given an already-parsed document.
     /// This avoids re-reading/re-parsing the file when the caller already has a `PkbDocument`.
     /// Uses the fast path (skips centrality recomputation).
+    ///
+    /// Concurrency: identical to `rebuild_graph` — embedding snapshot is
+    /// taken under a brief read lock that's dropped before the build runs.
     fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
         let abs_path = self.abs_path(&doc.path);
         let mut node = crate::graph::GraphNode::from_pkb_document(doc);
@@ -193,8 +210,12 @@ impl PkbSearchServer {
 
         nodes.insert(node.id.clone(), node);
 
-        let store = self.store.read();
-        let new_graph = GraphStore::rebuild_from_nodes_fast_with_store(nodes, &self.pkb_root, &store);
+        let snapshot = self.store.read().averaged_embeddings();
+        let new_graph = GraphStore::rebuild_from_nodes_fast_with_embeddings(
+            nodes,
+            &self.pkb_root,
+            &snapshot,
+        );
         *self.graph.write() = new_graph;
     }
 
