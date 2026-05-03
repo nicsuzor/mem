@@ -1921,6 +1921,10 @@ pub struct MergeNodeSummary {
     /// Number of source nodes archived (status=done, superseded_by=canonical).
     pub nodes_archived: usize,
     pub dry_run: bool,
+    /// Absolute paths of all files written during this merge — both files
+    /// where references were redirected AND the archived source files.
+    /// Used by callers to re-embed only the affected docs.
+    pub modified_paths: Vec<PathBuf>,
 }
 
 /// Merge one or more source nodes into a canonical node.
@@ -1962,6 +1966,7 @@ pub fn merge_node(
     let files = crate::pkb::scan_directory(pkb_root);
     let mut files_updated = 0usize;
     let mut refs_redirected = 0usize;
+    let mut modified_paths: Vec<PathBuf> = Vec::new();
     // Track each source ID → its file path for archiving
     let mut source_paths: HashMap<String, PathBuf> = HashMap::new();
 
@@ -2050,6 +2055,7 @@ pub fn merge_node(
         if modified {
             if !dry_run {
                 let _ = std::fs::write(file_path, &new_content);
+                modified_paths.push(file_path.clone());
             }
             files_updated += 1;
         }
@@ -2072,6 +2078,7 @@ pub fn merge_node(
                 eprintln!("Warning: failed to archive {}: {}", src_id, e);
             } else {
                 nodes_archived += 1;
+                modified_paths.push(src_path.clone());
             }
         } else {
             nodes_archived += 1;
@@ -2083,5 +2090,6 @@ pub fn merge_node(
         refs_redirected,
         nodes_archived,
         dry_run,
+        modified_paths,
     })
 }

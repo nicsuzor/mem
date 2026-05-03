@@ -105,6 +105,8 @@ pub fn batch_create_epics(
                 continue;
             }
         };
+        // The epic file is brand new — caller must embed it (no existing entry).
+        summary.modified_paths.push(epic_path.clone());
 
         // Read back the epic's ID from the file
         let epic_id = read_id_from_file(&epic_path).unwrap_or_else(|| {
@@ -144,6 +146,7 @@ pub fn batch_create_epics(
                 Some(path) if path.exists() => {
                     match document_crud::update_document(&path, updates) {
                         Ok(()) => {
+                            summary.modified_paths.push(path.clone());
                             summary.tasks.push(TaskAction {
                                 id: task_id.clone(),
                                 title: node.map(|n| n.label.clone()).unwrap_or_default(),

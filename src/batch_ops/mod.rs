@@ -51,6 +51,16 @@ pub struct BatchSummary {
     pub tasks: Vec<TaskAction>,
     pub errors: Vec<TaskError>,
     pub dry_run: bool,
+    /// Absolute paths of files modified by this batch. Used by callers to
+    /// re-embed only the affected docs into the vector store, so search
+    /// results don't go stale after a batch op. Not serialised — internal.
+    #[serde(skip)]
+    pub modified_paths: Vec<PathBuf>,
+    /// Absolute paths of files removed by this batch (currently used by
+    /// merge_node-style ops; archived sources still exist on disk so they
+    /// stay out of this list — only true deletions belong here).
+    #[serde(skip)]
+    pub removed_paths: Vec<PathBuf>,
 }
 
 impl BatchSummary {
@@ -63,6 +73,8 @@ impl BatchSummary {
             tasks: Vec::new(),
             errors: Vec::new(),
             dry_run,
+            modified_paths: Vec::new(),
+            removed_paths: Vec::new(),
         }
     }
 

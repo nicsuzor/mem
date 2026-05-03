@@ -166,6 +166,7 @@ pub fn batch_update(
         }
     }
 
+    summary.modified_paths = ctx.modified_paths().to_vec();
     summary
 }
 
@@ -283,6 +284,7 @@ pub fn batch_archive(
         }
     }
 
+    summary.modified_paths = ctx.modified_paths().to_vec();
     summary
 }
 

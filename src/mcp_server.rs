@@ -327,6 +327,94 @@ impl PkbSearchServer {
         tracing::debug!(target: "perf::vector", phase = "save_store_dispatch", elapsed_ms = _t_save.elapsed().as_secs_f64() * 1000.0);
     }
 
+    /// Re-embed a batch of files into the vector store and rebuild the graph
+    /// once at the end. Used by batch ops so search doesn't return stale
+    /// frontmatter (title/status/tags/…) after a multi-doc mutation.
+    ///
+    /// Concurrency: `prepare_upsert` runs in parallel via rayon **outside**
+    /// the store write lock. A single brief write lock is then taken to
+    /// install all prepared entries, followed by one coalesced `save_store`.
+    /// `removed_paths` are dropped from the store under the same write lock.
+    /// The graph is rebuilt once.
+    ///
+    /// If the cross-process index lock is held by a reindex, this skips the
+    /// in-memory work entirely; the on-disk markdown files are already
+    /// written and the reindex will pick them up. (PR4 will add a deferred
+    /// queue so the live server self-heals after the reindex completes.)
+    fn finalize_batch(&self, modified_paths: &[std::path::PathBuf], removed_paths: &[std::path::PathBuf]) {
+        if modified_paths.is_empty() && removed_paths.is_empty() {
+            // Still rebuild graph in case callers rely on it post-mutation.
+            self.rebuild_graph();
+            return;
+        }
+
+        if !self.index_lock_available() {
+            tracing::info!(
+                "Index locked by another process — skipping in-memory finalize for batch ({} modified, {} removed)",
+                modified_paths.len(),
+                removed_paths.len()
+            );
+            // Graph still needs rebuilding from disk so in-memory state
+            // reflects the structural changes.
+            self.rebuild_graph();
+            return;
+        }
+
+        let _t_finalize = std::time::Instant::now();
+
+        // Parse + prepare in parallel (no lock).
+        let prepared: Vec<crate::vectordb::PreparedUpsert> = modified_paths
+            .par_iter()
+            .filter_map(|abs_path| {
+                let doc = crate::pkb::parse_file_relative(abs_path, &self.pkb_root)?;
+                let path_key = doc.path.to_string_lossy().to_string();
+                let existing = self.store.read().get_entry(&path_key).cloned();
+                match crate::vectordb::VectorStore::prepare_upsert(
+                    &doc,
+                    &self.embedder,
+                    existing.as_ref(),
+                ) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        tracing::warn!(
+                            "finalize_batch: prepare_upsert failed for {}: {e}",
+                            abs_path.display()
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        // Single brief write lock for the whole batch.
+        {
+            let mut store = self.store.write();
+            for p in prepared {
+                store.apply_prepared(p);
+            }
+            for abs_path in removed_paths {
+                let path_key = abs_path
+                    .strip_prefix(&self.pkb_root)
+                    .unwrap_or(abs_path)
+                    .to_string_lossy()
+                    .to_string();
+                store.remove(&path_key);
+            }
+        }
+
+        tracing::debug!(
+            target: "perf::batch_finalize",
+            n_modified = modified_paths.len(),
+            n_removed = removed_paths.len(),
+            elapsed_ms = _t_finalize.elapsed().as_secs_f64() * 1000.0,
+            "finalize_batch complete"
+        );
+
+        // One coalesced save and one graph rebuild for the whole batch.
+        self.save_store();
+        self.rebuild_graph();
+    }
+
     /// Remove a document from the vector store if the index is not locked.
     fn try_remove_document(&self, rel_path: &str) {
         if !self.index_lock_available() {
@@ -2895,20 +2983,13 @@ impl PkbSearchServer {
             created.push((id_str, path.display().to_string()));
         }
 
-        self.rebuild_graph();
-
-        // Index all created subtasks (skipped entirely if reindex holds the lock)
-        if self.index_lock_available() {
-            for (_, path_str) in &created {
-                let path = std::path::Path::new(path_str);
-                if let Some(doc) = crate::pkb::parse_file_relative(path, &self.pkb_root) {
-                    let _ = self.store.write().upsert(&doc, &self.embedder);
-                }
-            }
-            self.save_store();
-        } else {
-            tracing::info!("Index locked by another process — skipping upsert for {} decomposed subtasks", created.len());
-        }
+        // Re-embed all newly created subtasks in parallel (off the write
+        // lock) and rebuild the graph in one pass via finalize_batch.
+        let modified_paths: Vec<std::path::PathBuf> = created
+            .iter()
+            .map(|(_, p)| std::path::PathBuf::from(p))
+            .collect();
+        self.finalize_batch(&modified_paths, &[]);
 
         let mut output = format!(
             "**Created {} subtasks under `{parent_id}`:**\n\n",
@@ -3415,12 +3496,14 @@ impl PkbSearchServer {
         let mut skipped_self = 0usize;
         let mut skipped_already = 0usize;
         let mut details = Vec::new();
+        let mut modified_paths: Vec<std::path::PathBuf> = Vec::new();
 
         for r in &results {
             match r {
                 crate::document_crud::ReparentResult::Updated(p) => {
                     updated += 1;
                     details.push(format!("  updated: {}", p.display()));
+                    modified_paths.push(p.clone());
                 }
                 crate::document_crud::ReparentResult::SkippedSelf(p) => {
                     skipped_self += 1;
@@ -3433,9 +3516,11 @@ impl PkbSearchServer {
             }
         }
 
-        // Rebuild graph after bulk update (unless dry run)
+        // Re-embed touched files (metadata-only fast path applies to all of
+        // them since reparent only touches frontmatter) and rebuild the
+        // graph in one pass.
         if !dry_run && updated > 0 {
-            self.rebuild_graph();
+            self.finalize_batch(&modified_paths, &[]);
         }
 
         let mode = if dry_run { "DRY RUN" } else { "APPLIED" };
@@ -3669,7 +3754,7 @@ impl PkbSearchServer {
         drop(graph);
 
         if !dry_run && summary.changed > 0 {
-            self.rebuild_graph();
+            self.finalize_batch(&summary.modified_paths, &summary.removed_paths);
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
@@ -3697,7 +3782,7 @@ impl PkbSearchServer {
         drop(graph);
 
         if !dry_run && summary.changed > 0 {
-            self.rebuild_graph();
+            self.finalize_batch(&summary.modified_paths, &summary.removed_paths);
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
@@ -3724,7 +3809,7 @@ impl PkbSearchServer {
         drop(graph);
 
         if !dry_run && summary.changed > 0 {
-            self.rebuild_graph();
+            self.finalize_batch(&summary.modified_paths, &summary.removed_paths);
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
@@ -3766,8 +3851,8 @@ impl PkbSearchServer {
                     data: None,
                 })?;
 
-        if !dry_run && summary.nodes_archived > 0 {
-            self.rebuild_graph();
+        if !dry_run && (summary.nodes_archived > 0 || summary.files_updated > 0) {
+            self.finalize_batch(&summary.modified_paths, &[]);
         }
 
         let msg = format!(
@@ -3912,7 +3997,7 @@ impl PkbSearchServer {
         drop(graph);
 
         if !dry_run && summary.changed > 0 {
-            self.rebuild_graph();
+            self.finalize_batch(&summary.modified_paths, &summary.removed_paths);
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
@@ -3943,7 +4028,7 @@ impl PkbSearchServer {
         drop(graph);
 
         if !dry_run && summary.changed > 0 {
-            self.rebuild_graph();
+            self.finalize_batch(&summary.modified_paths, &summary.removed_paths);
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
@@ -3983,7 +4068,7 @@ impl PkbSearchServer {
         drop(graph);
 
         if !dry_run && summary.changed > 0 {
-            self.rebuild_graph();
+            self.finalize_batch(&summary.modified_paths, &summary.removed_paths);
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
@@ -5478,7 +5563,7 @@ mod tests {
         let result = server
             .handle_list_tasks(&json!({
                 "project": "ProjectAlpha",
-                "status": "active",
+                "status": "ready",
                 "priority": 1,
                 "assignee": "alice",
                 "format": "json"
@@ -6107,6 +6192,112 @@ mod annotation_tests {
                     keyword,
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod batch_finalize_tests {
+    use super::*;
+    use crate::embeddings::Embedder;
+    use crate::graph_store::GraphStore;
+    use crate::vectordb::VectorStore;
+    use serde_json::json;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    /// Build a server backed by a real on-disk PKB with a project root and
+    /// a dummy embedder, ready to take CRUD calls.
+    fn build_disk_server(pkb_root: &Path) -> PkbSearchServer {
+        // Seed a project so create_task has a parent.
+        std::fs::create_dir_all(pkb_root.join("projects")).unwrap();
+        std::fs::write(
+            pkb_root.join("projects/test-project.md"),
+            "---\nid: test-project\ntitle: Test Project\ntype: project\nstatus: active\n---\n\n\
+             # Test Project\n",
+        )
+        .unwrap();
+
+        let store = VectorStore::new(crate::embeddings::EMBEDDING_DIM);
+        let embedder = Embedder::new_dummy();
+        let graph = GraphStore::build_from_directory(pkb_root);
+        PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            pkb_root.to_path_buf(),
+            pkb_root.join("test-index.bin"),
+            Arc::new(RwLock::new(graph)),
+        )
+    }
+
+    /// After a `batch_update` mutates frontmatter, the in-memory vector
+    /// store entries must reflect the new values — search/list_documents
+    /// otherwise return stale fields. This was the correctness bug fixed
+    /// by the batch finalize pipeline.
+    #[test]
+    fn test_batch_update_refreshes_vector_store_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+        let server = build_disk_server(pkb_root);
+
+        // Create three tasks under the project. Each call goes through the
+        // create + try_upsert_document path, which seeds the vector store.
+        for i in 1..=3 {
+            let args = json!({
+                "title": format!("Task {i}"),
+                "parent": "test-project",
+                "project": "test-project",
+                "status": "ready",
+            });
+            server
+                .handle_create_task(&args)
+                .unwrap_or_else(|e| panic!("create_task {i} failed: {e:?}"));
+        }
+
+        // Snapshot the store: pick the freshly created tasks (status=active).
+        let pre: std::collections::HashMap<String, Option<String>> = {
+            let s = server.store.read();
+            s.documents()
+                .filter_map(|(_path, e)| e.id.clone().map(|id| (id, e.status.clone())))
+                .collect()
+        };
+        let task_ids: Vec<String> = pre
+            .iter()
+            .filter(|(_, status)| status.as_deref() == Some("ready"))
+            .filter(|(id, _)| id.starts_with("test-project-"))
+            .map(|(id, _)| id.clone())
+            .collect();
+        assert_eq!(task_ids.len(), 3, "expected 3 ready task entries; got {pre:?}");
+
+        // Run a batch update that flips status to "blocked".
+        let args = json!({
+            "ids": task_ids,
+            "updates": { "status": "blocked" }
+        });
+        let result = server.handle_batch_update(&args).expect("batch_update");
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .collect::<String>();
+        assert!(text.contains("\"changed\": 3"), "expected 3 changes; got: {text}");
+
+        // The fix: store entries should reflect the new status.
+        let post: std::collections::HashMap<String, Option<String>> = {
+            let s = server.store.read();
+            s.documents()
+                .filter_map(|(_path, e)| e.id.clone().map(|id| (id, e.status.clone())))
+                .collect()
+        };
+        for id in &task_ids {
+            let status = post
+                .get(id)
+                .unwrap_or_else(|| panic!("entry {id} missing after batch_update"));
+            assert_eq!(
+                status.as_deref(),
+                Some("blocked"),
+                "entry {id} should carry status=blocked in vector store; got {status:?}"
+            );
         }
     }
 }
