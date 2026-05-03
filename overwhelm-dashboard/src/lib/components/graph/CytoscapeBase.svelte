@@ -44,7 +44,7 @@
             elements: elements,
             style: stylesheet,
             layout: runLayoutOnMount ? layoutOptions : undefined,
-            wheelSensitivity: 9,
+            wheelSensitivity: 0.1,
         });
 
         cy.on("tap", "node", (evt) => {

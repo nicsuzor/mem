@@ -2,14 +2,12 @@ import {
     INCOMPLETE_STATUSES,
     STRUCTURAL_TYPES,
     PRIORITY_BORDERS,
+    STATUS_FILLS
 } from "../../data/constants";
 import { projectColor } from "../../data/projectUtils";
 import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 import type { VisibilityState } from "../../stores/filters";
 
-export const STATION_FILL = "#94a3b8";
-export const START_FILL = "#22c55e";
-export const BAD_CHOICE_FILL = "#6b7280";
 export const BAD_CHOICE_BORDER = "#dc2626";
 
 import { getEdgeTypeDef } from "../../data/taxonomy";
@@ -70,40 +68,43 @@ export function computeBaseNodeData(node: GraphNode, isDestination: boolean = fa
     const isPriorityStation = !isDestination && node.priority <= 1 && isIncomplete(node) && typeLower !== "target";
     const isBadChoice = isPriorityStation && !isOnRoute;
 
+    const statusFill = STATUS_FILLS[(node.status || "inbox").toLowerCase()] || "#94a3b8";
+
     if (isDestination) {
         nodeSize = 34;
-        fillColor = node.priority === 0 ? (PRIORITY_BORDERS[0] || "#dc3545") : (PRIORITY_BORDERS[1] || "#f59e0b");
+        fillColor = statusFill;
         borderColor = getProjectLineColor(node.id);
         displayLabel = node.label;
         borderWidth = 3;
     } else if (isBadChoice) {
         nodeSize = 14;
-        fillColor = BAD_CHOICE_FILL;
+        fillColor = statusFill;
         borderColor = BAD_CHOICE_BORDER;
         displayLabel = truncate(node.label, 40);
     } else if (isOnRoute && isBackbone) {
         nodeSize = 18;
-        fillColor = "#475569";
+        fillColor = statusFill;
         borderColor = "#cbd5e1";
         displayLabel = truncate(node.label, 36);
     } else if (isStart) {
         nodeSize = isPriorityStation ? 16 : 12;
-        fillColor = START_FILL;
+        fillColor = statusFill;
         borderColor = "#ffffff";
         displayLabel = truncate(node.label, 40);
+        borderWidth = 2;
     } else if (isPriorityStation) {
         nodeSize = 16;
-        fillColor = STATION_FILL;
+        fillColor = statusFill;
         borderColor = "rgba(255,255,255,0.45)";
         displayLabel = truncate(node.label, 40);
     } else if (isOnRoute) {
         nodeSize = 12;
-        fillColor = STATION_FILL;
+        fillColor = statusFill;
         borderColor = "rgba(255,255,255,0.35)";
         displayLabel = truncate(node.label, 40);
     } else {
         nodeSize = 8; // generic node size if not on a specific route view
-        fillColor = STATION_FILL;
+        fillColor = statusFill;
         borderColor = "rgba(255,255,255,0.08)";
         displayLabel = truncate(node.label, 40);
     }
