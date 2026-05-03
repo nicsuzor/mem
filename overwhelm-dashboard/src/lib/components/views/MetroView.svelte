@@ -33,6 +33,8 @@
     import CytoscapeBase from "../graph/CytoscapeBase.svelte";
     import { getCytoscapeStyles } from "../graph/CytoscapeStyles";
     import { computeBaseNodeData, getProjectLineColor, getEdgeRole, getEdgeVisibilityState, getEdgeOpacity, getEdgeWidth } from "../graph/CytoscapeHelpers";
+    import { getEdgeTypeDef } from "../../data/taxonomy";
+    import { get } from "svelte/store";
 
     let cy: cytoscape.Core | null = null;
     let elements: any[] = [];
@@ -2068,14 +2070,18 @@
                 edgeLength: (edge: any) => {
                     const edgeType = edge.data("edgeType");
                     const isIntraGroup = edge.data("isIntraGroup");
-                    if (edgeType === "parent") return isIntraGroup ? $viewSettings.colaLinkDistIntraParent : $viewSettings.colaLinkDistInterParent;
-                    if (edgeType === "depends_on") return $viewSettings.colaLinkDistDependsOn;
-                    if (edgeType === "soft_depends_on") return ($viewSettings.colaLinkDistDependsOn + $viewSettings.colaLinkDistRef) / 2;
-                    return $viewSettings.colaLinkDistRef;
+                    const def = getEdgeTypeDef(edgeType, isIntraGroup);
+                    return get(viewSettings)[def.distKey];
+                },
+                edgeSymDiffLength: (edge: any) => {
+                    const edgeType = edge.data("edgeType");
+                    const isIntraGroup = edge.data("isIntraGroup");
+                    const def = getEdgeTypeDef(edgeType, isIntraGroup);
+                    return get(viewSettings)[def.weightKey];
                 },
                 animate: true,
                 randomize: true,
-                convergenceThreshold: $viewSettings.colaConvergence,
+                convergenceThreshold: get(viewSettings).colaConvergence,
                 maxSimulationTime: 60000,
                 // Increase iteration phases so it explores the space (higher entropy)
                 // before getting locked down by overlap constraints

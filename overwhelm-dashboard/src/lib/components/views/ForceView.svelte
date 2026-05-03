@@ -79,6 +79,7 @@
                     linkDash,
                     edgeOpacity: getEdgeOpacity(vis, true),
                     edgeWidth: getEdgeWidth(true),
+                    curveStyle: "straight", // "bezier",
                 },
             });
         });
@@ -110,7 +111,7 @@
             const def = getEdgeTypeDef(edgeType, false);
             return get(viewSettings)[def.weightKey];
         },
-        convergenceThreshold: $viewSettings.colaConvergence,
+        convergenceThreshold: get(viewSettings).colaConvergence,
         maxSimulationTime: 60000,
         // Increase iteration phases so it explores the space (higher entropy)
         // before getting locked down by overlap constraints

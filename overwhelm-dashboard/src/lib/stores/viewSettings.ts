@@ -17,20 +17,20 @@ export const viewSettings = writable<Record<string, any>>({
     colaLinkLength: 600,   // ideal link length (general, used by Metro)
 
     // Link-specific forces
-    colaLinkDistIntraParent: 300,
-    colaLinkWeightIntraParent: 1.0,
-    colaLinkDistInterParent: 500,
-    colaLinkWeightInterParent: 0.8,
-    colaLinkDistDependsOn: 400,
-    colaLinkWeightDependsOn: 1.0,
-    colaLinkDistSoftDependsOn: 450,
-    colaLinkWeightSoftDependsOn: 0.9,
-    colaLinkDistContributesTo: 500,
-    colaLinkWeightContributesTo: 0.8,
-    colaLinkDistSimilarTo: 550,
-    colaLinkWeightSimilarTo: 0.7,
+    colaLinkDistIntraParent: 100,
+    colaLinkWeightIntraParent: 0.4,
+    colaLinkDistInterParent: 250,
+    colaLinkWeightInterParent: 0.4,
+    colaLinkDistDependsOn: 200,
+    colaLinkWeightDependsOn: 0.1,
+    colaLinkDistSoftDependsOn: 400,
+    colaLinkWeightSoftDependsOn: 0.1,
+    colaLinkDistContributesTo: 400,
+    colaLinkWeightContributesTo: 0.1,
+    colaLinkDistSimilarTo: 600,
+    colaLinkWeightSimilarTo: 0.1,
     colaLinkDistRef: 600,
-    colaLinkWeightRef: 0.6,
+    colaLinkWeightRef: 0.1,
 
     colaConvergence: 0.05, // convergence threshold - must be < 0.1 (Cola's initial alpha)
     colaFlowSep: 40,       // min vertical separation between linked nodes
