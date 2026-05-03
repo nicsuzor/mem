@@ -7,7 +7,7 @@ use crate::embeddings::Embedder;
 use crate::graph::is_completed;
 use crate::graph_store::GraphStore;
 use crate::vectordb::VectorStore;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
 use rmcp::{Error as McpError, ServerHandler};
 use serde_json::Value as JsonValue;
@@ -36,6 +36,22 @@ pub struct PkbSearchServer {
     /// is in flight is skipped (the in-flight save will capture the latest
     /// state when it runs).
     save_pending: Arc<std::sync::atomic::AtomicBool>,
+    /// Set of absolute paths whose in-memory upsert was skipped because the
+    /// cross-process index lock was held (typically by `pkb reindex` running
+    /// in another process). Drained the next time we observe the lock as
+    /// released. Membership covers both upsert-deferred and remove-deferred
+    /// paths — the drain step inspects whether the file exists on disk to
+    /// pick the right action, so a single set is sufficient and idempotent.
+    deferred_paths: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
+    /// Becomes `true` the first time we observe `index_lock_available()`
+    /// returning false. The drain step swaps it back to `false` when it
+    /// reloads from disk to adopt the reindex's authoritative state.
+    lock_was_held: Arc<std::sync::atomic::AtomicBool>,
+    /// Single-drainer lock: ensures only one thread executes the reload +
+    /// replay sequence at a time. `try_lock` makes the path effectively a
+    /// no-op for concurrent callers — they'll see the drained state on
+    /// their next handler invocation if the drain hasn't completed yet.
+    drain_in_progress: Arc<Mutex<()>>,
 }
 
 impl PkbSearchServer {
@@ -54,6 +70,9 @@ impl PkbSearchServer {
             graph,
             stale_count: 0,
             save_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            deferred_paths: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            lock_was_held: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            drain_in_progress: Arc::new(Mutex::new(())),
         }
     }
 
@@ -281,14 +300,151 @@ impl PkbSearchServer {
         }
     }
 
+    /// Resolve an absolute PKB path back to the relative key used in the
+    /// vector store. Falls back to the input path if it isn't under
+    /// `pkb_root` (defensive).
+    fn rel_key_for(&self, abs: &Path) -> String {
+        abs.strip_prefix(&self.pkb_root)
+            .unwrap_or(abs)
+            .to_string_lossy()
+            .to_string()
+    }
+
+    /// Self-heal the in-memory store after the cross-process index lock is
+    /// released by another process (typically `pkb reindex`).
+    ///
+    /// Behaviour:
+    /// - If the lock is currently held: mark `lock_was_held=true` and return.
+    /// - If the lock is now available AND we previously observed it held:
+    ///   reload the store from disk (the reindex is the authoritative
+    ///   producer) and replay any deferred upserts/removes that arrived
+    ///   while we were locked out. Re-checks each deferred path's existence
+    ///   to decide upsert vs. remove.
+    /// - If the lock is currently available and there are deferred entries
+    ///   (e.g. transient lock contention without reload), still drain them.
+    ///
+    /// Concurrency: a single-thread `drain_in_progress` mutex prevents
+    /// concurrent drains from racing on `store.write()`. If another thread
+    /// is already draining, we return immediately — the in-flight drain
+    /// will pick up newly-deferred entries when it iterates.
+    fn maybe_drain_deferred(&self) {
+        use std::sync::atomic::Ordering;
+
+        // Fast path: lock is available, nothing was deferred, nothing to do.
+        let lock_now_available = self.index_lock_available();
+        if !lock_now_available {
+            self.lock_was_held.store(true, Ordering::Relaxed);
+            return;
+        }
+        let was_held = self.lock_was_held.load(Ordering::Relaxed);
+        let queue_empty = self.deferred_paths.lock().is_empty();
+        if !was_held && queue_empty {
+            return;
+        }
+
+        // Only one drainer at a time. If another thread is already inside
+        // the slow path, drop the work — they'll handle our deferred items.
+        let _drain = match self.drain_in_progress.try_lock() {
+            Some(g) => g,
+            None => return,
+        };
+
+        // Re-check now that we hold the drain lock.
+        if !self.index_lock_available() {
+            self.lock_was_held.store(true, Ordering::Relaxed);
+            return;
+        }
+
+        let was_held = self.lock_was_held.swap(false, Ordering::Relaxed);
+
+        if was_held {
+            // Adopt the reindex's authoritative on-disk state.
+            let dim = self.store.read().dimension_or_default();
+            match VectorStore::load_or_create(&self.db_path, dim) {
+                Ok(fresh) => {
+                    tracing::info!(
+                        "Cross-process index lock released — reloaded vector store from disk ({} docs)",
+                        fresh.len()
+                    );
+                    *self.store.write() = fresh;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Cross-process lock released but reload failed: {e} — keeping in-memory state"
+                    );
+                }
+            }
+        }
+
+        // Replay deferred paths against the (possibly refreshed) store.
+        let to_replay: std::collections::HashSet<PathBuf> = {
+            let mut q = self.deferred_paths.lock();
+            std::mem::take(&mut *q)
+        };
+        if to_replay.is_empty() {
+            // Reload alone is reason enough to refresh the graph view —
+            // the reindex may have touched files we didn't observe.
+            if was_held {
+                self.rebuild_graph();
+                self.save_store();
+            }
+            return;
+        }
+
+        tracing::info!(
+            "Replaying {} deferred path(s) after cross-process lock release",
+            to_replay.len()
+        );
+
+        let mut applied_upserts = 0usize;
+        let mut applied_removes = 0usize;
+        for abs_path in &to_replay {
+            if abs_path.exists() {
+                if let Some(doc) = crate::pkb::parse_file_relative(abs_path, &self.pkb_root) {
+                    if self.store.write().upsert(&doc, &self.embedder).is_ok() {
+                        applied_upserts += 1;
+                    }
+                }
+            } else {
+                let key = self.rel_key_for(abs_path);
+                if self.store.write().remove(&key) {
+                    applied_removes += 1;
+                }
+            }
+        }
+
+        tracing::info!(
+            "Deferred drain complete: {applied_upserts} upserts, {applied_removes} removes"
+        );
+
+        // Refresh graph + persist exactly once for the whole drain.
+        self.rebuild_graph();
+        self.save_store();
+    }
+
     /// Index a document into the vector store if the index is not locked by a
     /// reindex. When a reindex is in progress the markdown file is already
     /// written and the graph already updated — the reindex will pick up the
-    /// new/changed file, so we can safely skip the expensive embedding step.
+    /// new/changed file, so we defer the in-memory upsert to be replayed
+    /// when the lock is released (see `maybe_drain_deferred`).
     fn try_upsert_document(&self, doc: &crate::pkb::PkbDocument) {
+        // Self-heal first: if the lock just became available, adopt the
+        // reindex's state and drain anything queued.
+        self.maybe_drain_deferred();
+
         if !self.index_lock_available() {
+            // Defer until the lock is released. Convert to absolute path so
+            // the drain step can re-parse without another resolution step.
+            let abs = if doc.path.is_absolute() {
+                doc.path.clone()
+            } else {
+                self.pkb_root.join(&doc.path)
+            };
+            self.deferred_paths.lock().insert(abs);
+            self.lock_was_held
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             tracing::info!(
-                "Index locked by another process — skipping in-memory upsert for {}",
+                "Index locked by another process — deferring in-memory upsert for {}",
                 doc.path.display()
             );
             return;
@@ -303,9 +459,18 @@ impl PkbSearchServer {
 
     /// Remove a document from the vector store if the index is not locked.
     fn try_remove_document(&self, rel_path: &str) {
+        self.maybe_drain_deferred();
+
         if !self.index_lock_available() {
+            // Defer the remove. Resolve to absolute so the drain step's
+            // existence check works correctly (the file will be absent on
+            // disk, so the drain will pick the remove path).
+            let abs = self.pkb_root.join(rel_path);
+            self.deferred_paths.lock().insert(abs);
+            self.lock_was_held
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             tracing::info!(
-                "Index locked by another process — skipping in-memory remove for {rel_path}"
+                "Index locked by another process — deferring in-memory remove for {rel_path}"
             );
             return;
         }
@@ -6082,6 +6247,120 @@ mod annotation_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cross_process_recovery_tests {
+    use super::*;
+    use crate::embeddings::{Embedder, EMBEDDING_DIM};
+    use crate::graph_store::GraphStore;
+    use crate::vectordb::VectorStore;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn build_disk_server(pkb_root: &Path) -> PkbSearchServer {
+        std::fs::create_dir_all(pkb_root.join("projects")).unwrap();
+        std::fs::write(
+            pkb_root.join("projects/p.md"),
+            "---\nid: p\ntitle: P\ntype: project\nstatus: active\n---\n\n# P\n",
+        )
+        .unwrap();
+
+        let store = VectorStore::new(EMBEDDING_DIM);
+        let embedder = Embedder::new_dummy();
+        let graph = GraphStore::build_from_directory(pkb_root);
+        PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            pkb_root.to_path_buf(),
+            pkb_root.join("test-index.bin"),
+            Arc::new(RwLock::new(graph)),
+        )
+    }
+
+    /// When the cross-process index lock is held by another process during
+    /// a write attempt, the path must be queued. After the lock is released,
+    /// the next write must drain the queue and apply the deferred upsert.
+    #[test]
+    fn test_deferred_upserts_drain_after_lock_release() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+        let server = build_disk_server(pkb_root);
+
+        // Create a task — this should succeed normally and seed the store.
+        let result = server
+            .handle_create_task(&serde_json::json!({
+                "title": "First Task",
+                "parent": "p",
+                "project": "p",
+            }))
+            .expect("create_task");
+        let _ = result;
+
+        let initial_count = server.store.read().len();
+        assert!(initial_count >= 1, "store should have entries after first create");
+
+        // Simulate `pkb reindex` running in another process: hold the
+        // advisory file lock exclusively from a background thread so the
+        // server's `index_lock_available()` returns false during the next
+        // create_task call. We use a channel to coordinate: the server gets
+        // its create call in while the lock is held, then we release.
+        let (start_tx, start_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let db_path = server.db_path.clone();
+
+        let lock_holder = std::thread::spawn(move || {
+            let mut lock = VectorStore::acquire_lock(&db_path).expect("acquire lock");
+            let _guard = lock.write().expect("hold write lock");
+            start_tx.send(()).unwrap();
+            // Hold until told to release.
+            release_rx.recv().unwrap();
+            // _guard drops here — lock released.
+        });
+
+        start_rx.recv().unwrap();
+
+        // The lock is now held by the background thread. A new create_task
+        // writes the file successfully but the in-memory upsert must defer.
+        server
+            .handle_create_task(&serde_json::json!({
+                "title": "Deferred Task",
+                "parent": "p",
+                "project": "p",
+            }))
+            .expect("create_task during lock");
+
+        // The deferred queue should contain at least one entry — the new
+        // task's path. The store length should NOT have grown (the in-mem
+        // upsert was skipped).
+        assert!(
+            !server.deferred_paths.lock().is_empty(),
+            "deferred queue should be non-empty while cross-process lock is held"
+        );
+        let count_during_lock = server.store.read().len();
+        assert_eq!(
+            count_during_lock, initial_count,
+            "store should not grow while cross-process lock is held"
+        );
+
+        // Release the cross-process lock.
+        release_tx.send(()).unwrap();
+        lock_holder.join().unwrap();
+
+        // Drive the drain by calling the helper directly. (In production,
+        // this is called from the next try_upsert/try_remove invocation.)
+        server.maybe_drain_deferred();
+
+        // Queue is drained, store reflects the deferred upsert.
+        assert!(
+            server.deferred_paths.lock().is_empty(),
+            "deferred queue should be empty after drain"
+        );
+        assert!(
+            server.store.read().len() > count_during_lock,
+            "store should grow after drain processed the deferred upsert"
+        );
     }
 }
 
