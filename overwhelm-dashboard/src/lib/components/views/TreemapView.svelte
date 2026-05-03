@@ -212,8 +212,8 @@
             layoutMap.set(d.data.id, {
                 x: d.x0 + (d.x1 - d.x0) / 2,
                 y: d.y0 + (d.y1 - d.y0) / 2,
-                w: d.x1 - d.x0,
-                h: d.y1 - d.y0,
+                w: Math.max(0, d.x1 - d.x0),
+                h: Math.max(0, d.y1 - d.y0),
                 depth: d.depth,
                 isLeaf: !d.children || d.children.length === 0,
                 leafCount,
@@ -223,7 +223,7 @@
         visibleNodes = nodes
             .filter((n: any) => {
                 const l = layoutMap.get(n.id);
-                if (l && (l.w >= 8 || l.h >= 8)) {
+                if (l && l.w >= 8 && l.h >= 8) {
                     n.x = l.x;
                     n.y = l.y;
                     n._lw = l.w;
