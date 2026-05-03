@@ -157,7 +157,8 @@
                 default:
                     return Math.max(
                         MIN_NODE_WEIGHT,
-                        Math.pow(d.focusScore ?? 0) || MIN_NODE_WEIGHT,
+                        // Exponent > 1 exaggerates differences, < 1 (like 0.5/sqrt) compresses them
+                        Math.pow(d.focusScore ?? 0, 0.8) || MIN_NODE_WEIGHT,
                     );
             }
         });
