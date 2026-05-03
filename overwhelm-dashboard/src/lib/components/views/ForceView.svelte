@@ -28,7 +28,7 @@
     function buildElements(
         nodes: GraphNode[],
         edges: GraphEdge[],
-        currentFilters: any
+        currentFilters: any,
     ) {
         let newElements: any[] = [];
 
@@ -88,11 +88,7 @@
 
     $: if ($graphData && $filters) {
         // Rebuild elements when graph structure or filters change, NOT physics settings
-        elements = buildElements(
-            $graphData.nodes,
-            $graphData.links,
-            $filters
-        );
+        elements = buildElements($graphData.nodes, $graphData.links, $filters);
         setTimeout(() => cyBase?.fit(), 100);
     }
 
@@ -102,7 +98,7 @@
         refresh: 1,
         infinite: true,
         fit: false,
-        randomize: false,
+        randomize: true,
         nodeSpacing: (node: any) => get(viewSettings).colaGroupPadding,
         edgeLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
@@ -114,6 +110,13 @@
             const def = getEdgeTypeDef(edgeType, false);
             return get(viewSettings)[def.weightKey];
         },
+        convergenceThreshold: $viewSettings.colaConvergence,
+        maxSimulationTime: 60000,
+        // Increase iteration phases so it explores the space (higher entropy)
+        // before getting locked down by overlap constraints
+        unconstrIter: 40,
+        userConstIter: 40,
+        allConstIter: 40,
     };
 
     $: if (running === false && cyBase) {
