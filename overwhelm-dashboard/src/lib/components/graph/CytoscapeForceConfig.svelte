@@ -1,6 +1,5 @@
 <script lang="ts">
     import { viewSettings } from "../../stores/viewSettings";
-    import { EDGE_COLORS } from "./CytoscapeHelpers";
 
     export let showConfig: boolean = true;
     export let onClose: () => void = () => {};
