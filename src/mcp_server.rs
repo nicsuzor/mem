@@ -4861,7 +4861,7 @@ impl PkbSearchServer {
             .with_title("Release Task"),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering. JSON output includes `focus_score`: a composite task-importance signal combining priority (with downstream propagation via effective_priority), lexicographic severity (SEV4 dominates), deadline urgency, stakeholder waiting time, downstream weight, and creation staleness. It is an integer (0 for backlog, scaling up to ~100k+ for SEV4 with imminent deadlines) and is the primary sort key for ready tasks. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
+                "List tasks with smart filtering. JSON output includes `focus_score`: composite ranking signal (integer) combining task priority base, severity bonus (SEV0–4 lexicographic at SEV4), deadline urgency × consequence multiplier, age/staleness bonus for low-priority tasks, downstream weight, stakeholder waiting bonus, and propagated urgency from `contributes_to` edges (Birnbaum-weighted target severity × LST slack). Primary sort key for ready tasks. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4884,7 +4884,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON includes `focus_score` — a composite task-importance signal blending priority (with downstream propagation), lexicographic severity, deadline urgency, stakeholder waiting time, downstream weight, and staleness. It is an integer (0 for low-importance backlog, scaling up to ~100k+ for SEV4 with imminent deadlines) and is the primary sort key for ready tasks.",
+                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON includes `focus_score` — composite ranking signal (integer) combining task priority base, severity bonus (SEV0–4 lexicographic at SEV4), deadline urgency × consequence multiplier, age/staleness bonus for low-priority tasks, downstream weight, stakeholder waiting bonus, and propagated urgency from `contributes_to` edges (Birnbaum-weighted target severity × LST slack). Primary sort key for ready tasks. See projects/aops/specs/pkb/multi-parent.md §7.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
