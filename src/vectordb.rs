@@ -189,6 +189,14 @@ impl VectorStore {
         self.documents.len()
     }
 
+    /// Embedding dimension this store was constructed with. Used by
+    /// cross-process recovery to call `load_or_create` with a matching
+    /// dimension (a mismatch triggers a fresh empty store, which would
+    /// silently lose data in the recovery path).
+    pub fn dimension_or_default(&self) -> usize {
+        self.dimension
+    }
+
     /// Check if the store is empty
     pub fn is_empty(&self) -> bool {
         self.documents.is_empty()
@@ -221,22 +229,6 @@ impl VectorStore {
         let id = fm.and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
         let confidence = fm.and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
         (id, confidence)
-    }
-
-    /// Snapshot whether `doc.body_hash()` matches the existing entry's body
-    /// hash. Returns `Some(matches)` if an entry exists, `None` otherwise.
-    /// Caller holds a read lock just long enough to grab this signal.
-    pub fn body_hash_matches(&self, path_key: &str, body_hash: &str) -> Option<bool> {
-        let entry = self.documents.get(path_key)?;
-        let same = entry
-            .content_hash
-            .as_deref()
-            .map_or(false, |h| h == body_hash)
-            || entry
-                .body_hash
-                .as_deref()
-                .map_or(false, |h| h == body_hash);
-        Some(same)
     }
 
     /// Build the upsert payload **without holding any lock** on `self`.
@@ -360,8 +352,7 @@ impl VectorStore {
     /// writers don't serialise behind embedding.
     pub fn upsert(&mut self, doc: &PkbDocument, embedder: &embeddings::Embedder) -> Result<()> {
         let path_str = doc.path.to_string_lossy().to_string();
-        let existing = self.documents.get(&path_str).cloned();
-        let prepared = Self::prepare_upsert(doc, embedder, existing.as_ref())?;
+        let prepared = Self::prepare_upsert(doc, embedder, self.documents.get(&path_str))?;
         self.apply_prepared(prepared);
         Ok(())
     }
@@ -572,6 +563,26 @@ impl VectorStore {
             .values()
             .filter(|e| e.chunk_embeddings.is_empty())
             .count()
+    }
+
+    /// Snapshot of every document's averaged chunk embedding, keyed by the
+    /// store's relative path.
+    ///
+    /// Used to feed the graph similarity-edge computation **without** holding
+    /// the `VectorStore` read lock for the duration of `rebuild_graph`.
+    /// Callers compute the snapshot under a brief read lock, drop the lock,
+    /// and then run the (slow) graph rebuild against the cloned data.
+    ///
+    /// Memory: O(N × D) f32s — ~4 KB per doc at 1024 dims, ~40 MB for 10k
+    /// docs. Cheap relative to the parse + rebuild that follows.
+    pub fn averaged_embeddings(&self) -> HashMap<String, Vec<f32>> {
+        self.documents
+            .iter()
+            .filter_map(|(path, entry)| {
+                crate::batch_ops::similarity::average_embedding(&entry.chunk_embeddings)
+                    .map(|avg| (path.clone(), avg))
+            })
+            .collect()
     }
 
     /// List all tags across all documents with their occurrence counts.

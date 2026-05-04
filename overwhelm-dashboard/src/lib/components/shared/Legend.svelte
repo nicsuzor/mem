@@ -162,8 +162,11 @@
                         on:click={() => cycleFilter(edge.key)}
                         title="Click to cycle: bright → half → hidden"
                     >
-                        <div class="legend-line" style="background:{edge.color}; opacity:{edgeOpacityForLegend(vis)};"
-                            class:dashed={edge.dash}></div>
+                        <div class="legend-line" 
+                             style:background={edge.dash ? 'transparent' : edge.color}
+                             style:border-top={edge.dash ? `3px dashed ${edge.color}` : 'none'}
+                             style:height={edge.dash ? '0' : '3px'}
+                             style:opacity={edgeOpacityForLegend(vis)}></div>
                         <span class="legend-label">{edge.label}{!isMetroLegend && edgeCounts ? ` [${edgeCounts[edge.rawKey as keyof typeof edgeCounts]}]` : ''}</span>
                         <span class="edge-state">{stateLabel(vis)}</span>
                     </button>
@@ -420,12 +423,6 @@
         border-radius: 1.5px;
         flex-shrink: 0;
         transition: opacity 0.15s;
-    }
-    .legend-line.dashed {
-        background: transparent;
-        border-top: 3px dashed;
-        border-color: inherit;
-        height: 0;
     }
 
     .legend-static-item {

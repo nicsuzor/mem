@@ -97,6 +97,12 @@
                             <span class="text-[10px] text-primary/60 uppercase">Handle_Disconnected</span>
                             <input type="checkbox" bind:checked={$viewSettings.colaHandleDisconnected} class="text-primary bg-black border-primary/30 focus:ring-primary rounded-sm cursor-pointer" />
                         </label>
+                        {#if !isGroups}
+                        <label class="flex items-center justify-between cursor-pointer mt-2 pt-2 border-t border-primary/5">
+                            <span class="text-[10px] text-primary/80 uppercase font-bold text-accent">Enable Epic Grouping</span>
+                            <input type="checkbox" bind:checked={$viewSettings.enableEpicGrouping} class="text-accent bg-black border-accent/50 focus:ring-accent rounded-sm cursor-pointer" />
+                        </label>
+                        {/if}
                     </div>
 
                 {/if}

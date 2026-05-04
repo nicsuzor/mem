@@ -10,6 +10,7 @@ import {
     TYPE_BADGE,
 } from './constants';
 import { projectBorderColor } from './projectUtils';
+import { getEdgeTypeDef } from './taxonomy';
 
 export interface GraphNode {
     id: string;
@@ -172,46 +173,38 @@ export function styleEdge(rawType: string, ctx?: {
     targetFocusScore?: number;
     maxFocusScore?: number;
 }): { type: string; color: string; width: number; dash: string } {
-    const t = (rawType || '').toLowerCase();
-    if (t === 'parent') {
-        return { type: 'parent', color: '#facc15', width: 3.5, dash: '' };
+    let t = (rawType || '').toLowerCase();
+    if (t === 'link' || t === 'wikilink' || t === 'supersedes') {
+        t = 'ref';
     }
-    if (t === 'depends_on') {
-        let width = 3.5;
+
+    const def = getEdgeTypeDef(t, false);
+
+    let width = 2.0;
+    if (t === 'parent') width = 3.5;
+    else if (t === 'depends_on') {
+        width = 3.5;
         const tw = ctx?.targetFocusScore ?? 0;
         const mw = ctx?.maxFocusScore ?? 0;
         if (tw > 0 && mw > 0) {
             const critRatio = Math.min(Math.log1p(tw) / Math.log1p(mw), 1.0);
             if (critRatio > 0.5) width = 3.0 + critRatio * 2.0;
         }
-        return { type: 'depends_on', color: '#ef4444', width, dash: '' };
-    }
-    if (t === 'soft_depends_on') {
-        return { type: 'soft_depends_on', color: '#9ca3af', width: 2.0, dash: '6,3' };
-    }
-    if (t === 'contributes_to') {
-        return { type: 'contributes_to', color: '#10b981', width: 2.5, dash: '' };
-    }
-    if (t === 'similar_to') {
-        return { type: 'similar_to', color: '#c4b5fd', width: 1.0, dash: '1,4' };
-    }
-    // link / wikilink / supersedes / unknown -> ref
-    return { type: 'ref', color: '#a3a3a3', width: 1.5, dash: '4,3' };
+    } else if (t === 'contributes_to') width = 2.5;
+    else if (t === 'similar_to') width = 1.0;
+    else if (t === 'ref') width = 1.5;
+
+    return { type: t, color: def.color, width, dash: def.dashStyle === 'solid' ? '' : def.dashStyle };
 }
 
 /** Filter store key for an edge type. Returns null if no filter applies. */
 export function edgeFilterKey(type: string): string | null {
-    switch (type) {
-        case 'parent': return 'edgeParent';
-        case 'depends_on': return 'edgeDependencies';
-        case 'soft_depends_on': return 'edgeSoftDependencies';
-        case 'contributes_to': return 'edgeContributes';
-        case 'similar_to': return 'edgeSimilar';
-        case 'ref':
-        case 'link':
-        case 'wikilink': return 'edgeReferences';
-        default: return null;
+    let t = (type || '').toLowerCase();
+    if (t === 'link' || t === 'wikilink' || t === 'supersedes') {
+        t = 'ref';
     }
+    const def = getEdgeTypeDef(t, false);
+    return def.filterKey || null;
 }
 
 export function prepareGraphData(

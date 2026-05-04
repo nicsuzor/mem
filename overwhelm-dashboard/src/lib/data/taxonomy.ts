@@ -9,7 +9,7 @@ export class EdgeType {
         public distKey: string,
         public weightKey: string,
         public filterKey: string
-    ) {}
+    ) { }
 }
 
 export const EDGE_TYPES: Record<string, EdgeType> = {
@@ -43,7 +43,7 @@ export const EDGE_TYPES: Record<string, EdgeType> = {
     soft_depends_on: new EdgeType(
         "soft_depends_on",
         "Soft Depends",
-        "#9ca3af", // gray
+        "#59b108", // green
         "dashed",
         "colaLinkDistSoftDependsOn",
         "colaLinkWeightSoftDependsOn",
@@ -52,7 +52,7 @@ export const EDGE_TYPES: Record<string, EdgeType> = {
     contributes_to: new EdgeType(
         "contributes_to",
         "Contributes To",
-        "#10b981", // emerald
+        "#ff7300", // orange
         "solid",
         "colaLinkDistContributesTo",
         "colaLinkWeightContributesTo",
@@ -61,7 +61,7 @@ export const EDGE_TYPES: Record<string, EdgeType> = {
     similar_to: new EdgeType(
         "similar_to",
         "Similar To",
-        "#c4b5fd", // violet
+        "#00ffc8", // cyan
         "dashed",
         "colaLinkDistSimilarTo",
         "colaLinkWeightSimilarTo",
@@ -70,7 +70,7 @@ export const EDGE_TYPES: Record<string, EdgeType> = {
     ref: new EdgeType(
         "ref",
         "References",
-        "#a3a3a3", // neutral
+        "#c11cf3", // pink
         "dashed",
         "colaLinkDistRef",
         "colaLinkWeightRef",
@@ -91,7 +91,7 @@ export class NodeType {
         public displayName: string,
         public baseSize: number,
         public isStructural: boolean
-    ) {}
+    ) { }
 }
 
 export const NODE_TYPES: Record<string, NodeType> = {
