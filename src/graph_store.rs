@@ -75,9 +75,26 @@ impl GraphStore {
     }
 
     /// Build a complete graph from parsed PKB documents, including similarity edges.
+    ///
+    /// Convenience wrapper that locks the store, builds an embedding snapshot,
+    /// drops the lock, and proceeds. Prefer
+    /// [`Self::build_with_embeddings`] from MCP-server hot paths so the
+    /// caller can hold the read lock as briefly as possible.
     pub fn build_with_store(docs: &[PkbDocument], pkb_root: &Path, store: &crate::vectordb::VectorStore) -> Self {
+        let snapshot = store.averaged_embeddings();
+        Self::build_with_embeddings(docs, pkb_root, &snapshot)
+    }
+
+    /// Build a complete graph from parsed PKB documents, using a pre-built
+    /// embedding snapshot for similarity edges. Caller is responsible for
+    /// taking + dropping any store read lock before calling.
+    pub fn build_with_embeddings(
+        docs: &[PkbDocument],
+        pkb_root: &Path,
+        embeddings_by_path: &HashMap<String, Vec<f32>>,
+    ) -> Self {
         let nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
-        Self::build_internal(nodes, pkb_root, true, Some(store))
+        Self::build_internal(nodes, pkb_root, true, Some(embeddings_by_path))
     }
 
     /// Build from a directory: scan, parse (with relative paths), build graph.
@@ -111,14 +128,28 @@ impl GraphStore {
         Self::build_internal(nodes_vec, pkb_root, false, None)
     }
 
-    /// Fast incremental rebuild with similarity edges.
+    /// Fast incremental rebuild with similarity edges. Convenience wrapper
+    /// around [`Self::rebuild_from_nodes_fast_with_embeddings`] — see notes
+    /// on [`Self::build_with_store`].
     pub fn rebuild_from_nodes_fast_with_store(
         nodes: HashMap<String, GraphNode>,
         pkb_root: &Path,
         store: &crate::vectordb::VectorStore,
     ) -> Self {
+        let snapshot = store.averaged_embeddings();
+        Self::rebuild_from_nodes_fast_with_embeddings(nodes, pkb_root, &snapshot)
+    }
+
+    /// Fast incremental rebuild with similarity edges, given a pre-built
+    /// embedding snapshot. Use from hot paths so the store read lock is
+    /// dropped before the (slow) graph build runs.
+    pub fn rebuild_from_nodes_fast_with_embeddings(
+        nodes: HashMap<String, GraphNode>,
+        pkb_root: &Path,
+        embeddings_by_path: &HashMap<String, Vec<f32>>,
+    ) -> Self {
         let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
-        Self::build_internal(nodes_vec, pkb_root, false, Some(store))
+        Self::build_internal(nodes_vec, pkb_root, false, Some(embeddings_by_path))
     }
 
     /// Internal helper to build GraphStore from a vector of nodes.
@@ -129,7 +160,7 @@ impl GraphStore {
         mut nodes: Vec<GraphNode>,
         pkb_root: &Path,
         include_centrality: bool,
-        opt_store: Option<&crate::vectordb::VectorStore>,
+        opt_embeddings: Option<&HashMap<String, Vec<f32>>>,
     ) -> Self {
         // 2. Build lookup maps
         // Node paths may be relative — reconstruct absolute for canonicalize & link resolution
@@ -208,11 +239,11 @@ impl GraphStore {
         // 9. Compute project field (nearest ancestor with node_type == "project")
         compute_project_field(&mut nodes);
 
-        // 9b. Compute similarity edges if vector store is provided
+        // 9b. Compute similarity edges if an embedding snapshot is provided.
         // threshold 0.85 as default for materialised edges
         let _t_sim = std::time::Instant::now();
-        let similarity_edges = if let Some(store) = opt_store {
-            compute_similarity_edges(&nodes, &edges, store, 0.85)
+        let similarity_edges = if let Some(snapshot) = opt_embeddings {
+            compute_similarity_edges(&nodes, &edges, snapshot, 0.85)
         } else {
             vec![]
         };
@@ -1476,7 +1507,7 @@ fn compute_inverses(
 fn compute_similarity_edges(
     nodes: &[GraphNode],
     existing_edges: &[Edge],
-    store: &crate::vectordb::VectorStore,
+    embeddings_by_path: &HashMap<String, Vec<f32>>,
     threshold: f64,
 ) -> Vec<Edge> {
     let mut similarity_edges = Vec::new();
@@ -1492,16 +1523,15 @@ fn compute_similarity_edges(
         explicit_adj.insert((e.target.clone(), e.source.clone()));
     }
 
-    // Pre-fetch all embeddings
-    let embeddings: Vec<Option<Vec<f32>>> = nodes
+    // Pre-fetch all embeddings via the snapshot (no store lock held).
+    let embeddings: Vec<Option<&Vec<f32>>> = nodes
         .iter()
         .map(|node| {
             let path = node.path.to_string_lossy();
-            let entry = store.get_entry(&path).or_else(|| {
+            embeddings_by_path.get(path.as_ref()).or_else(|| {
                 let stripped = path.strip_prefix("tasks/").unwrap_or(&path);
-                store.get_entry(stripped)
-            });
-            entry.and_then(|e| crate::batch_ops::similarity::average_embedding(&e.chunk_embeddings))
+                embeddings_by_path.get(stripped)
+            })
         })
         .collect();
 
