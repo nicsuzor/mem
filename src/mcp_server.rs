@@ -14,6 +14,7 @@ use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use rayon::prelude::*;
 
@@ -249,7 +250,6 @@ impl PkbSearchServer {
     /// process releases. If no tokio runtime is present (e.g. a direct CLI
     /// caller), falls back to an inline save.
     fn save_store(&self) {
-        use std::sync::atomic::Ordering;
         // Coalesce: if a background save is already scheduled, skip — it will
         // read the latest in-memory state when it runs.
         if self.save_pending.swap(true, Ordering::SeqCst) {
@@ -328,8 +328,6 @@ impl PkbSearchServer {
     /// is already draining, we return immediately — the in-flight drain
     /// will pick up newly-deferred entries when it iterates.
     fn maybe_drain_deferred(&self) {
-        use std::sync::atomic::Ordering;
-
         // Fast path: lock is available, nothing was deferred, nothing to do.
         let lock_now_available = self.index_lock_available();
         if !lock_now_available {
