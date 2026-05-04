@@ -1026,6 +1026,7 @@ impl GraphStore {
                     score += 2000; // stakeholder set but no date at all
                 }
             }
+            score += node.urgency.round() as i64;
             node.focus_score = Some(score);
         }
     }
@@ -3691,5 +3692,95 @@ mod tests {
     fn find_parent_cycles_empty_when_dag() {
         let g = build_parent_chain_graph();
         assert!(g.find_parent_cycles().is_empty());
+    }
+
+    // ── focus_score with urgency term ───────────────────────────────────────
+
+    #[test]
+    fn test_focus_score_includes_urgency_term() {
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        // Due 5 days from now with default 3-day effort -> slack = 2 days
+        let due_5d = (today + chrono::Duration::try_days(5).unwrap()).format("%Y-%m-%d").to_string();
+
+        // Helper to create a task node with urgency test setup
+        let make_node = |id: &str, severity: Option<i32>, goal_type: Option<&str>, due: Option<&str>, blocks: &[&str]| -> PkbDocument {
+            let mut fm = serde_json::Map::new();
+            fm.insert("title".to_string(), serde_json::json!(id));
+            fm.insert("type".to_string(), serde_json::json!("task"));
+            fm.insert("status".to_string(), serde_json::json!("ready"));
+            fm.insert("id".to_string(), serde_json::json!(id));
+            if let Some(sev) = severity {
+                fm.insert("severity".to_string(), serde_json::json!(sev));
+            }
+            if let Some(gt) = goal_type {
+                fm.insert("goal_type".to_string(), serde_json::json!(gt));
+            }
+            if let Some(d) = due {
+                fm.insert("due".to_string(), serde_json::json!(d));
+            }
+            if !blocks.is_empty() {
+                fm.insert("blocks".to_string(), serde_json::json!(blocks));
+            }
+            PkbDocument {
+                path: std::path::PathBuf::from(format!("tasks/{}.md", id)),
+                title: id.to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("ready".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm)),
+                content_hash: "test".to_string(),
+                file_hash: "test".to_string(),
+            }
+        };
+
+        let docs = vec![
+            // SEV4-committed target with due date in 5 days -> high urgency
+            make_node("target-sev4", Some(4), Some("committed"), Some(&due_5d), &[]),
+            // Contributor (P3, severity 0) blocking the target -> should inherit urgency
+            // This is like a blocker that needs to be resolved for the target
+            make_node("contrib-p3-sev0", Some(0), None, None, &["target-sev4"]),
+        ];
+
+        let graph = GraphStore::build(&docs, std::path::Path::new("/tmp/test-urgency-focus-pkb"));
+
+        let target = graph.get_node("target-sev4").expect("target not found");
+        let contrib = graph.get_node("contrib-p3-sev0").expect("contrib not found");
+
+        // Target should have high urgency (SEV4 committed, due in 5d -> f(slack=2) boost)
+        assert!(
+            target.urgency > 10000.0,
+            "SEV4 committed target should have urgency > 10000, got {}",
+            target.urgency
+        );
+
+        // Contributor blocks target, so should inherit urgency
+        assert!(
+            contrib.urgency > 10000.0,
+            "Contributor blocking SEV4 target should inherit high urgency, got {}",
+            contrib.urgency
+        );
+
+        // The key test: focus_score should include the urgency term.
+        // Contributor has: P3 (0 bonus) + severity 0 (0 bonus) + urgency (> 10000)
+        // So focus_score should be > 10000
+        let contrib_score = contrib.focus_score.expect("contrib focus_score is None");
+        assert!(
+            contrib_score >= 10000,
+            "Contributor's focus_score (P3, sev0) should be >= 10000 due to urgency term (urgency={}, score={})",
+            contrib.urgency,
+            contrib_score
+        );
+
+        // Target itself should have even higher focus_score (severity bonus + urgency)
+        let target_score = target.focus_score.expect("target focus_score is None");
+        assert!(
+            target_score >= 100000,
+            "SEV4 target should have focus_score >= 100000 (severity bonus + urgency), got {}",
+            target_score
+        );
     }
 }
