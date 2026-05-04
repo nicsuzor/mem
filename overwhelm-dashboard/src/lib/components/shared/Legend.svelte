@@ -99,36 +99,35 @@
     })() : null;
 
     // Count edges by canonicalised type — same set ForceView/GroupsView render
-    // from. parent_intra is a presentation-only category (parent edges that
-    // cross into the same epic group) used by Metro; for non-Metro views we
-    // collapse it into parent_inter so the displayed total reconciles with
-    // what's actually drawn.
+    // from. Unknown types are rejected upstream by styleEdge / getEdgeTypeDef
+    // (those throw), so every link.type here MUST be in the canonical set.
+    // parent_intra is a presentation-only category Metro uses for parent edges
+    // crossing into the same epic group; for non-Metro views we collapse it
+    // into parent_inter.
     $: edgeCounts = $graphData ? (() => {
         const links = $graphData.links as any[];
+        const CANONICAL = new Set([
+            'parent', 'depends_on', 'soft_depends_on',
+            'contributes_to', 'similar_to', 'ref',
+        ]);
         const byType = new Map<string, number>();
         for (const l of links) {
+            if (!CANONICAL.has(l.type)) {
+                throw new Error(
+                    `Legend.edgeCounts: link with non-canonical type "${l.type}" ` +
+                    `reached the dashboard. styleEdge should have rejected it.`
+                );
+            }
             byType.set(l.type, (byType.get(l.type) || 0) + 1);
         }
-        const parentTotal = byType.get('parent') || 0;
         return {
-            parent_inter: parentTotal,
+            parent_inter: byType.get('parent') || 0,
             parent_intra: 0,
             depends_on: byType.get('depends_on') || 0,
             soft_depends_on: byType.get('soft_depends_on') || 0,
             contributes_to: byType.get('contributes_to') || 0,
             similar_to: byType.get('similar_to') || 0,
             ref: byType.get('ref') || 0,
-            // Surface anything unaccounted for so the legend total reconciles
-            // with the rendered edge count. Without this, an unknown edge
-            // type would render as a dashed-pink ref (taxonomy fallback) but
-            // not be counted, which looks like spurious phantom edges.
-            unknown: links.length
-                - parentTotal
-                - (byType.get('depends_on') || 0)
-                - (byType.get('soft_depends_on') || 0)
-                - (byType.get('contributes_to') || 0)
-                - (byType.get('similar_to') || 0)
-                - (byType.get('ref') || 0),
         };
     })() : null;
 

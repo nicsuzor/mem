@@ -302,8 +302,14 @@
     }
 
     function statusBadgeStyle(status: string) {
-        const fill = STATUS_FILLS[status] ?? '#1f2937';
-        const text = STATUS_TEXT[status] ?? '#e5e7eb';
+        const fill = STATUS_FILLS[status];
+        const text = STATUS_TEXT[status];
+        if (!fill || !text) {
+            throw new Error(
+                `TaskEditorView.statusBadgeStyle: unknown status "${status}". ` +
+                `Known statuses: ${Object.keys(STATUS_FILLS).join(", ")}.`
+            );
+        }
         return `background:${fill};border-color:${hexToRgba(fill, 0.72)};color:${text};`;
     }
 

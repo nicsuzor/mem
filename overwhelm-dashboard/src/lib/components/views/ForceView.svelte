@@ -13,16 +13,7 @@
         getEdgeWidth,
         applyEpicGrouping,
     } from "../graph/CytoscapeHelpers";
-    import { EDGE_TYPES, getEdgeTypeDef } from "../../data/taxonomy";
-
-    // Canonical edge types the renderer (and the legend) know about. Anything
-    // outside this set used to silently fall through to the ref taxonomy entry
-    // (dashed pink) — producing edges that the legend never counted, which
-    // looked like phantom dashed edges. Skip them at build time instead.
-    const KNOWN_EDGE_TYPES = new Set([
-        "parent",
-        ...Object.keys(EDGE_TYPES),
-    ]);
+    import { getEdgeTypeDef } from "../../data/taxonomy";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
     import { toggleSelection } from "../../stores/selection";
 
@@ -68,7 +59,6 @@
             const tgt = typeof e.target === "object" ? e.target.id : e.target;
 
             if (!nodeById.has(src) || !nodeById.has(tgt)) return;
-            if (!KNOWN_EDGE_TYPES.has(e.type)) return;
 
             const { linkColor, linkDash } = getEdgeLineStyle(e.type, false);
 

@@ -105,7 +105,14 @@ export function computeBaseNodeData(node: GraphNode, isDestination: boolean = fa
     const isPriorityStation = !isDestination && node.priority <= 1 && isIncomplete(node) && typeLower !== "target";
     const isBadChoice = isPriorityStation && !isOnRoute;
 
-    const statusFill = STATUS_FILLS[(node.status || "inbox").toLowerCase()] || "#94a3b8";
+    const status = (node.status || "inbox").toLowerCase();
+    const statusFill = STATUS_FILLS[status];
+    if (!statusFill) {
+        throw new Error(
+            `computeBaseNodeData: unknown status "${status}" on node ${node.id}. ` +
+            `Known statuses: ${Object.keys(STATUS_FILLS).join(", ")}.`
+        );
+    }
 
     if (isDestination) {
         nodeSize = 34;

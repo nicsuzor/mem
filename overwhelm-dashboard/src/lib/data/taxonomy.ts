@@ -82,7 +82,16 @@ export function getEdgeTypeDef(edgeTypeStr: string, isIntraGroup: boolean = fals
     if (edgeTypeStr === "parent") {
         return isIntraGroup ? EDGE_TYPES.parent_intra : EDGE_TYPES.parent_inter;
     }
-    return EDGE_TYPES[edgeTypeStr] || EDGE_TYPES.ref;
+    const def = EDGE_TYPES[edgeTypeStr];
+    if (!def) {
+        throw new Error(
+            `getEdgeTypeDef: unknown edge type "${edgeTypeStr}". ` +
+            `Known types: ${Object.keys(EDGE_TYPES).join(", ")}, parent. ` +
+            `Canonicalise upstream (see styleEdge) or extend EDGE_TYPES — ` +
+            `do not add a silent fallback.`
+        );
+    }
+    return def;
 }
 
 export class NodeType {
@@ -103,5 +112,14 @@ export const NODE_TYPES: Record<string, NodeType> = {
 };
 
 export function getNodeTypeDef(typeStr: string): NodeType {
-    return NODE_TYPES[typeStr.toLowerCase()] || NODE_TYPES.task;
+    const key = typeStr.toLowerCase();
+    const def = NODE_TYPES[key];
+    if (!def) {
+        throw new Error(
+            `getNodeTypeDef: unknown node type "${typeStr}". ` +
+            `Known types: ${Object.keys(NODE_TYPES).join(", ")}. ` +
+            `Extend NODE_TYPES or normalise upstream — do not add a silent fallback.`
+        );
+    }
+    return def;
 }

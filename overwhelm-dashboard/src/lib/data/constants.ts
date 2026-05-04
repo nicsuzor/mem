@@ -105,6 +105,9 @@ export const STATUS_GROUP_SWATCHES = {
     completed: STATUS_FILLS.done,
 } as const;
 
+// Per-node-type badge label. Keep keys in sync with TYPE_SHAPE so that any
+// node type the dashboard receives renders without a runtime "unknown type"
+// throw from prepareGraphData. Empty string = no badge displayed.
 export const TYPE_BADGE: Record<string, string> = {
     goal: "GOAL",
     project: "PROJECT",
@@ -114,6 +117,9 @@ export const TYPE_BADGE: Record<string, string> = {
     bug: "BUG",
     feature: "FEATURE",
     learn: "LEARN",
+    daily: "DAILY",
+    knowledge: "KNOWLEDGE",
+    person: "PERSON",
 };
 
 export const ASSIGNEE_COLORS: Record<string, string> = {

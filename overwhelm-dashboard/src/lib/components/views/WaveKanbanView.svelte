@@ -77,16 +77,21 @@
 
     $: waves = multi ? buildWaves(multi.nodes, depth, targetSet) : [];
 
+    const STATUS_EMOJI: Record<string, string> = {
+        inbox: '○', ready: '○', queued: '○', paused: '○', someday: '○',
+        in_progress: '●', review: '◷', merge_ready: '⊞',
+        blocked: '⛔', cancelled: '×', done: '✓',
+    };
+
     function statusEmoji(s: string): string {
-        switch (s) {
-            case 'done': return '✓';
-            case 'cancelled': return '×';
-            case 'blocked': return '⛔';
-            case 'in_progress': return '●';
-            case 'review': return '◷';
-            case 'merge_ready': return '⊞';
-            default: return '○';
+        const emoji = STATUS_EMOJI[s];
+        if (emoji === undefined) {
+            throw new Error(
+                `WaveKanbanView.statusEmoji: unknown status "${s}". ` +
+                `Known: ${Object.keys(STATUS_EMOJI).join(", ")}.`
+            );
         }
+        return emoji;
     }
 
     function waveLabel(d: number, isFirst: boolean, isLast: boolean): string {
