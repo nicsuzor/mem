@@ -4991,7 +4991,7 @@ impl PkbSearchServer {
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags. A task matches iff every requested tag is present in its frontmatter `tags` array (AND, case-insensitive)." },
-                        "focus_score_gte": { "type": "integer", "description": "Filter to tasks whose composite focus_score is ≥ N. focus_score is the canonical ranking signal — it embeds own priority, lexicographic severity (SEV4 dominates), deadline urgency, stakeholder waiting, downstream weight, and staleness. Useful for surfacing high-impact ready work; component fields like downstream_weight or urgency are visible in metadata for filter/debug but should not be sorted on directly." },
+                        "focus_score_gte": { "type": "integer", "description": "Filter to tasks whose composite focus_score is ≥ N." },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
                         "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
