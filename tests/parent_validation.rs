@@ -55,7 +55,7 @@ fn seed_pkb() -> tempfile::TempDir {
 fn pkb_new_rejects_nonexistent_parent() {
     let pkb = seed_pkb();
     let out = Command::new(pkb_binary())
-        .args(["new", "Sample title", "--parent", "task-does-not-exist"])
+        .args(["new", "Sample title", "--project", "aops", "--parent", "task-does-not-exist"])
         .env("ACA_DATA", pkb.path())
         .output()
         .expect("failed to spawn pkb");
@@ -80,7 +80,7 @@ fn pkb_new_rejects_nonexistent_parent() {
                 .map(|e| {
                     e.file_name()
                         .to_string_lossy()
-                        .starts_with("task-")
+                        .starts_with("aops-")
                 })
                 .unwrap_or(false)
         });
@@ -94,6 +94,8 @@ fn pkb_new_with_allow_missing_parent_proceeds_with_warning() {
         .args([
             "new",
             "Sample title",
+            "--project",
+            "aops",
             "--parent",
             "task-does-not-exist",
             "--allow-missing-parent",
@@ -122,7 +124,7 @@ fn pkb_new_with_allow_missing_parent_proceeds_with_warning() {
         .find_map(|e| {
             let e = e.ok()?;
             let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("task-") {
+            if name.starts_with("aops-") {
                 Some(e.path())
             } else {
                 None
@@ -140,7 +142,7 @@ fn pkb_new_with_allow_missing_parent_proceeds_with_warning() {
 fn pkb_new_with_existing_parent_succeeds() {
     let pkb = seed_pkb();
     let out = Command::new(pkb_binary())
-        .args(["new", "Sample title", "--parent", "proj-realdead"])
+        .args(["new", "Sample title", "--project", "aops", "--parent", "proj-realdead"])
         .env("ACA_DATA", pkb.path())
         .output()
         .expect("failed to spawn pkb");

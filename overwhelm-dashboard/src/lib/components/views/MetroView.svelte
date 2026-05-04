@@ -32,7 +32,17 @@
     } from "../../data/constants";
     import CytoscapeBase from "../graph/CytoscapeBase.svelte";
     import { getCytoscapeStyles } from "../graph/CytoscapeStyles";
-    import { computeBaseNodeData, getProjectLineColor, getEdgeRole, getEdgeVisibilityState, getEdgeOpacity, getEdgeWidth } from "../graph/CytoscapeHelpers";
+    import {
+        computeBaseNodeData,
+        getProjectLineColor,
+        getEdgeRole,
+        getEdgeVisibilityState,
+        getEdgeOpacity,
+        getEdgeWidth,
+        applyEpicGrouping,
+    } from "../graph/CytoscapeHelpers";
+    import { getEdgeTypeDef } from "../../data/taxonomy";
+    import { get } from "svelte/store";
 
     let cy: cytoscape.Core | null = null;
     let elements: any[] = [];
@@ -1149,7 +1159,7 @@
         // Per-route strokes for interchange edges (Tokyo "duplicate-per-line" trick).
         // An edge with shared.length >= 2 emits one stroke per shared destination;
         // each stroke is coloured by that destination's project at low opacity so
-        // browser alpha compositing produces the blend naturally.
+        // browser alpha compositing handles the blend.
         const cyEdges: any[] = [];
         metroEdges.forEach((edge, index) => {
             const src =
@@ -1317,7 +1327,7 @@
             });
         }
 
-        elements = [...cyNodes, ...cyEdges];
+        elements = applyEpicGrouping([...cyNodes, ...cyEdges], metroNodes, $viewSettings.enableEpicGrouping);
 
         stylesheet = [
             ...getCytoscapeStyles(),
@@ -1869,7 +1879,8 @@
     $: if (
         ($preparedGraphData || $graphData) &&
         ($preparedStructureKey !== lastStructureKey ||
-            showContext !== lastShowContext)
+            showContext !== lastShowContext ||
+            $viewSettings.enableEpicGrouping !== undefined)
     ) {
         lastStructureKey = $preparedStructureKey;
         lastShowContext = showContext;
@@ -1881,8 +1892,11 @@
     // we iterate cy's actual edges and refresh each by source/target.
     $: if (
         cy &&
-        ($preparedGraphData || $graphData) &&
-        $preparedStructureKey === lastStructureKey
+        $graphData &&
+        $filters &&
+        $preparedStructureKey &&
+        $graphStructureKey &&
+        $viewSettings.enableEpicGrouping !== undefined
     ) {
         const cyInstance = cy;
         const sourceGraph = $preparedGraphData ?? $graphData!;
@@ -2068,14 +2082,18 @@
                 edgeLength: (edge: any) => {
                     const edgeType = edge.data("edgeType");
                     const isIntraGroup = edge.data("isIntraGroup");
-                    if (edgeType === "parent") return isIntraGroup ? $viewSettings.colaLinkDistIntraParent : $viewSettings.colaLinkDistInterParent;
-                    if (edgeType === "depends_on") return $viewSettings.colaLinkDistDependsOn;
-                    if (edgeType === "soft_depends_on") return ($viewSettings.colaLinkDistDependsOn + $viewSettings.colaLinkDistRef) / 2;
-                    return $viewSettings.colaLinkDistRef;
+                    const def = getEdgeTypeDef(edgeType, isIntraGroup);
+                    return get(viewSettings)[def.distKey];
+                },
+                edgeSymDiffLength: (edge: any) => {
+                    const edgeType = edge.data("edgeType");
+                    const isIntraGroup = edge.data("isIntraGroup");
+                    const def = getEdgeTypeDef(edgeType, isIntraGroup);
+                    return get(viewSettings)[def.weightKey];
                 },
                 animate: true,
                 randomize: true,
-                convergenceThreshold: $viewSettings.colaConvergence,
+                convergenceThreshold: get(viewSettings).colaConvergence,
                 maxSimulationTime: 60000,
                 // Increase iteration phases so it explores the space (higher entropy)
                 // before getting locked down by overlap constraints

@@ -159,6 +159,14 @@ impl VectorStore {
         self.documents.len()
     }
 
+    /// Embedding dimension this store was constructed with. Used by
+    /// cross-process recovery to call `load_or_create` with a matching
+    /// dimension (a mismatch triggers a fresh empty store, which would
+    /// silently lose data in the recovery path).
+    pub fn dimension_or_default(&self) -> usize {
+        self.dimension
+    }
+
     /// Check if the store is empty
     pub fn is_empty(&self) -> bool {
         self.documents.is_empty()

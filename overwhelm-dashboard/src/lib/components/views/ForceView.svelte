@@ -11,6 +11,7 @@
         getEdgeLineStyle,
         getEdgeOpacity,
         getEdgeWidth,
+        applyEpicGrouping,
     } from "../graph/CytoscapeHelpers";
     import { getEdgeTypeDef } from "../../data/taxonomy";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
@@ -28,7 +29,7 @@
     function buildElements(
         nodes: GraphNode[],
         edges: GraphEdge[],
-        currentFilters: any
+        currentFilters: any,
     ) {
         let newElements: any[] = [];
 
@@ -79,20 +80,17 @@
                     linkDash,
                     edgeOpacity: getEdgeOpacity(vis, true),
                     edgeWidth: getEdgeWidth(true),
+                    curveStyle: "straight", // "bezier",
                 },
             });
         });
 
-        return newElements;
+        return applyEpicGrouping(newElements, nodes, $viewSettings.enableEpicGrouping);
     }
 
-    $: if ($graphData && $filters) {
-        // Rebuild elements when graph structure or filters change, NOT physics settings
-        elements = buildElements(
-            $graphData.nodes,
-            $graphData.links,
-            $filters
-        );
+    $: if ($graphData && $filters && $viewSettings.enableEpicGrouping !== undefined) {
+        // Rebuild elements when graph structure, filters, or epic grouping changes
+        elements = buildElements($graphData.nodes, $graphData.links, $filters);
         setTimeout(() => cyBase?.fit(), 100);
     }
 
@@ -102,18 +100,25 @@
         refresh: 1,
         infinite: true,
         fit: false,
-        randomize: false,
-        nodeSpacing: (node: any) => get(viewSettings).colaGroupPadding,
+        randomize: false, // Do not scramble on config updates
+        nodeSpacing: (node: any) => $viewSettings.colaGroupPadding,
         edgeLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
             const def = getEdgeTypeDef(edgeType, false);
-            return get(viewSettings)[def.distKey];
+            return $viewSettings[def.distKey];
         },
         edgeSymDiffLength: (edge: any) => {
             const edgeType = edge.data("edgeType");
             const def = getEdgeTypeDef(edgeType, false);
-            return get(viewSettings)[def.weightKey];
+            return $viewSettings[def.weightKey];
         },
+        convergenceThreshold: $viewSettings.colaConvergence,
+        maxSimulationTime: 60000,
+        // Increase iteration phases so it explores the space (higher entropy)
+        // before getting locked down by overlap constraints
+        unconstrIter: 40,
+        userConstIter: 40,
+        allConstIter: 40,
     };
 
     $: if (running === false && cyBase) {
@@ -124,6 +129,9 @@
         cyBase.runLayout();
     }
 
+    $: if (randomizeNonce > 0) {
+        randomize();
+    }
     export function toggleRunning() {
         if (running) {
             cyBase?.stopLayout();

@@ -10,6 +10,7 @@
         isCompleted,
     } from '../../data/subgraphExtraction';
     import type { GraphNode, GraphEdge } from '../../data/prepareGraphData';
+    import { EDGE_TYPES } from '../../data/taxonomy';
 
     const NODE_W = 160;
     const NODE_H = 38;
@@ -208,21 +209,11 @@
         <div class="canvas-wrap">
             <svg width={layout.width} height={layout.height} class="canvas">
                 <defs>
-                    <marker id="sw-arrow-depends" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
-                        <path d="M0,0 L9,4.5 L0,9 z" fill="#ef4444" />
-                    </marker>
-                    <marker id="sw-arrow-soft" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
-                        <path d="M0,0 L9,4.5 L0,9 z" fill="#9ca3af" />
-                    </marker>
-                    <marker id="sw-arrow-contributes" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
-                        <path d="M0,0 L9,4.5 L0,9 z" fill="#10b981" />
-                    </marker>
-                    <marker id="sw-arrow-similar" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
-                        <path d="M0,0 L9,4.5 L0,9 z" fill="#c4b5fd" />
-                    </marker>
-                    <marker id="sw-arrow-parent" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
-                        <path d="M0,0 L9,4.5 L0,9 z" fill="#facc15" />
-                    </marker>
+                    {#each Object.values(EDGE_TYPES) as edgeType}
+                        <marker id={`sw-arrow-${edgeType.id}`} markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+                            <path d="M0,0 L9,4.5 L0,9 z" fill={edgeType.color} />
+                        </marker>
+                    {/each}
                 </defs>
 
                 {#each layout.lanes as lane, i}
@@ -240,19 +231,15 @@
 
                 {#each layout.edges as edge}
                     {@const dx = (edge.x2 - edge.x1) / 2}
-                    {@const marker = edge.type === 'parent' ? 'sw-arrow-parent'
-                        : edge.type === 'soft_depends_on' ? 'sw-arrow-soft'
-                        : edge.type === 'contributes_to' ? 'sw-arrow-contributes'
-                        : edge.type === 'similar_to' ? 'sw-arrow-similar'
-                        : 'sw-arrow-depends'}
+                    {@const def = EDGE_TYPES[edge.type as keyof typeof EDGE_TYPES] || EDGE_TYPES.ref}
                     <path
                         class="edge"
-                        class:parent={edge.type === 'parent'}
-                        class:soft={edge.type === 'soft_depends_on'}
-                        class:contributes={edge.type === 'contributes_to'}
-                        class:similar={edge.type === 'similar_to'}
+                        stroke={def.color}
+                        stroke-width={def.id === 'parent' ? 1.6 : (def.id === 'depends_on' ? 1.6 : 1.2)}
+                        stroke-dasharray={def.dashStyle === 'solid' ? 'none' : def.dashStyle}
+                        opacity={def.id === 'parent' ? 0.45 : (def.id === 'soft_depends_on' ? 0.55 : 0.6)}
                         d={`M ${edge.x1} ${edge.y1} C ${edge.x1 + dx} ${edge.y1}, ${edge.x2 - dx} ${edge.y2}, ${edge.x2} ${edge.y2}`}
-                        marker-end={`url(#${marker})`}
+                        marker-end={`url(#sw-arrow-${def.id})`}
                     >
                         <title>{edge.sourceLabel} {edge.type.replace(/_/g, ' ')} {edge.targetLabel}</title>
                     </path>
@@ -345,31 +332,6 @@
     }
     .edge {
         fill: none;
-        stroke: #ef4444;
-        stroke-width: 1.6;
-        opacity: 0.7;
-    }
-    .edge.parent {
-        stroke: #facc15;
-        opacity: 0.45;
-        stroke-dasharray: 1,4;
-    }
-    .edge.soft {
-        stroke: #9ca3af;
-        stroke-dasharray: 6,3;
-        stroke-width: 1.2;
-        opacity: 0.55;
-    }
-    .edge.contributes {
-        stroke: #10b981;
-        stroke-width: 1.6;
-        opacity: 0.6;
-    }
-    .edge.similar {
-        stroke: #c4b5fd;
-        stroke-dasharray: 1,4;
-        stroke-width: 0.9;
-        opacity: 0.4;
     }
     .node { cursor: pointer; }
     .node:hover rect { filter: brightness(1.2); }
