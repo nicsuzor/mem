@@ -384,7 +384,11 @@ export function prepareGraphData(
     const d3Nodes: GraphNode[] = [];
     for (const node of rawNodes) {
         const nid = node.id;
-        const nodeType = node.node_type || "";
+        // Canonicalise: nodes with no explicit node_type frontmatter
+        // (typical for archived markdown drops) become "note", which the
+        // taxonomy already defines. Same pattern styleEdge uses to fold
+        // link/wikilink/supersedes into "ref".
+        const nodeType = (node.node_type || "note").toLowerCase();
         const status = (node.status || "inbox").toLowerCase();
 
         const priority = typeof node.priority === 'number' ? node.priority : 2;

@@ -26,18 +26,38 @@ export const TYPE_BASE_SCALE: Record<string, number> = {
     note: 0.8,
 };
 
+// Node type → canvas shape. Keep this exhaustive over every node_type
+// emitted by the rust graph_json — unknowns throw at prepareGraphData.
 export const TYPE_SHAPE: Record<string, string> = {
+    // Hierarchical / strategic
     goal: "pill",
+    target: "pill",
     project: "rounded",
     epic: "hexagon",
+    // Workable
     task: "rect",
+    subtask: "rect",
     action: "rect",
     bug: "rect",
     feature: "rounded",
+    // Reflection / learning
     learn: "rect",
-    daily: "rect",
+    review: "rect",
+    "audit-report": "rect",
+    "session-log": "rect",
+    // Knowledge artefacts
+    note: "rect",
     knowledge: "rect",
+    document: "rect",
+    reference: "rect",
+    spec: "rect",
+    memory: "rect",
+    index: "rounded",
+    case: "rect",
+    daily: "rect",
+    // People
     person: "pill",
+    contact: "pill",
 };
 
 // Canonical status palette — single source of truth.
@@ -105,21 +125,33 @@ export const STATUS_GROUP_SWATCHES = {
     completed: STATUS_FILLS.done,
 } as const;
 
-// Per-node-type badge label. Keep keys in sync with TYPE_SHAPE so that any
-// node type the dashboard receives renders without a runtime "unknown type"
-// throw from prepareGraphData. Empty string = no badge displayed.
+// Per-node-type badge label. Must cover every key in TYPE_SHAPE — unknowns
+// throw at prepareGraphData. Empty string = no badge displayed.
 export const TYPE_BADGE: Record<string, string> = {
     goal: "GOAL",
+    target: "TARGET",
     project: "PROJECT",
     epic: "EPIC",
     task: "",
+    subtask: "SUBTASK",
     action: "ACTION",
     bug: "BUG",
     feature: "FEATURE",
     learn: "LEARN",
-    daily: "DAILY",
+    review: "REVIEW",
+    "audit-report": "AUDIT",
+    "session-log": "SESSION",
+    note: "",
     knowledge: "KNOWLEDGE",
+    document: "DOC",
+    reference: "REF",
+    spec: "SPEC",
+    memory: "MEMORY",
+    index: "INDEX",
+    case: "CASE",
+    daily: "DAILY",
     person: "PERSON",
+    contact: "CONTACT",
 };
 
 export const ASSIGNEE_COLORS: Record<string, string> = {
