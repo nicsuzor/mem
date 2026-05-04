@@ -410,6 +410,7 @@ pub fn batch_merge(
         }
     }
 
+    summary.modified_paths = ctx.modified_paths().to_vec();
     summary
 }
 
