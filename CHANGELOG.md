@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.22](https://github.com/nicsuzor/mem/compare/v0.3.21...v0.3.22) - 2026-05-04
+
+### Added
+
+- *(graph)* wire node.urgency into compute_focus_scores accumulator ([#303](https://github.com/nicsuzor/mem/pull/303))
+- *(mcp)* add weight_gte filter to list_tasks ([#286](https://github.com/nicsuzor/mem/pull/286))
+- *(mem)* schema + validation tightening for tasks (single PR bundle) ([#297](https://github.com/nicsuzor/mem/pull/297))
+- *(overwhelm-dashboard)* triage filters, surface routing, drifted-state, top-level project cards ([#296](https://github.com/nicsuzor/mem/pull/296))
+- *(cli)* warn on CLI ↔ MCP visibility gap when ID lookup fails ([#295](https://github.com/nicsuzor/mem/pull/295))
+- *(parser)* support type: target and type: prototype nodes (task-65f5bda3) ([#287](https://github.com/nicsuzor/mem/pull/287))
+- *(edges)* inherits_from one-time-copy resolution (task-74d9c9db) ([#292](https://github.com/nicsuzor/mem/pull/292))
+- prohibit circular parent/child hierarchies ([#289](https://github.com/nicsuzor/mem/pull/289))
+- *(mcp)* require project field for create_task ([#288](https://github.com/nicsuzor/mem/pull/288))
+- *(dashboard)* heavy-path Metro layout + dagre x-placement + nav a11y ([#285](https://github.com/nicsuzor/mem/pull/285))
+- *(cli)* refactor pkb deps into ASCII-tree neighbourhood view ([#282](https://github.com/nicsuzor/mem/pull/282))
+- *(dashboard)* flatten nav menu and fix task graph filters ([#279](https://github.com/nicsuzor/mem/pull/279))
+
+### Fixed
+
+- *(ci)* use secrets: inherit in merge-prep-cron shim ([#306](https://github.com/nicsuzor/mem/pull/306))
+- *(mcp)* self-heal in-memory store after cross-process index lock release ([#301](https://github.com/nicsuzor/mem/pull/301))
+- *(tests)* pass --project to parent_validation pkb_new invocations ([#302](https://github.com/nicsuzor/mem/pull/302))
+- *(crud)* reject create_task/pkb new with nonexistent parent (task-89b2af87) ([#293](https://github.com/nicsuzor/mem/pull/293))
+- *(crud)* use project (not task_type) as ID prefix in create_task (task-381788fb) ([#291](https://github.com/nicsuzor/mem/pull/291))
+- *(lint)* pin VALID_STATUSES to canonical TAXONOMY.md via CI assertion ([#290](https://github.com/nicsuzor/mem/pull/290))
+- *(search)* defensive observability + seeded-search regression test ([#284](https://github.com/nicsuzor/mem/pull/284))
+- *(mcp)* wire `tags` filter through list_tasks ([#283](https://github.com/nicsuzor/mem/pull/283))
+- *(mcp)* add observability + tests + fail-loud for create_task regressions ([#281](https://github.com/nicsuzor/mem/pull/281))
+
+### Other
+
+- *(mcp)* fix focus_score_gte description ([#305](https://github.com/nicsuzor/mem/pull/305))
+- *(mcp)* update focus_score descriptions to mention contributes_to propagation ([#304](https://github.com/nicsuzor/mem/pull/304))
+- *(vectordb)* split upsert into prepare+apply to keep embedding off the lock ([#298](https://github.com/nicsuzor/mem/pull/298))
+- *(graph)* snapshot embeddings before rebuild_graph drops the read lock ([#300](https://github.com/nicsuzor/mem/pull/300))
+- dynamic groups
+- min sizes
+- exponent
+- refresh
+- link fixed
+- edge colors
+- add status fills
+- no update
+- modular graph
+- update sliders
+- sliders
+- sliders
+- format
+- add fit
+- background refresh
+- startstop
+- topographic limiter
+- force map works in cytoscape
+- half weight
+- colors
+- WHITESPACE
+- dist
+- alpha
+- elk
+- thre grids
+- topographical layout
+- topographical layout
+- update extraction
+- initial inishgts
+- Overwhelm dashboard: adopt growth taxonomy for status filtering ([#280](https://github.com/nicsuzor/mem/pull/280))
+- *(perf)* instrument update_task per-phase + add bench harness (task-a4dcc039) ([#294](https://github.com/nicsuzor/mem/pull/294))
+
 ## [0.3.21](https://github.com/nicsuzor/mem/compare/v0.3.20...v0.3.21) - 2026-04-30
 
 ### Other
