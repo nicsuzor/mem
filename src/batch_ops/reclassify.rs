@@ -143,6 +143,12 @@ pub fn batch_reclassify(
 
             match std::fs::rename(&abs_path, &new_path) {
                 Ok(()) => {
+                    // The file has moved on disk: BatchContext recorded the
+                    // OLD path via update_task, but the canonical doc now
+                    // lives at new_path. Mark the old path for removal from
+                    // the vector store and re-embed under the new path.
+                    summary.removed_paths.push(abs_path.clone());
+                    summary.modified_paths.push(new_path.clone());
                     summary.changed += 1;
                     summary.tasks.push(TaskAction {
                         id: id.clone(),
@@ -185,5 +191,12 @@ pub fn batch_reclassify(
         }
     }
 
+    // Merge BatchContext-tracked paths (the in-place type updates) with the
+    // renamed paths already pushed inside the loop. Dedup defensively.
+    for p in ctx.modified_paths() {
+        if !summary.modified_paths.iter().any(|q| q == p) {
+            summary.modified_paths.push(p.clone());
+        }
+    }
     summary
 }

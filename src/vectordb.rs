@@ -69,6 +69,36 @@ pub struct SearchResult {
     pub confidence: Option<f64>,
 }
 
+/// Metadata-only patch produced by [`VectorStore::prepare_upsert`] when the
+/// body hash matches the existing entry. Applied via [`VectorStore::apply_prepared`]
+/// without touching `chunk_embeddings`, `chunk_texts`, or `body_chunks`.
+#[derive(Debug, Clone)]
+pub struct MetadataPatch {
+    pub path_key: String,
+    pub title: String,
+    pub doc_type: Option<String>,
+    pub status: Option<String>,
+    pub tags: Vec<String>,
+    pub id: Option<String>,
+    pub confidence: Option<f64>,
+    pub file_hash: String,
+}
+
+/// Outcome of [`VectorStore::prepare_upsert`]. The caller applies this under
+/// a brief write lock via [`VectorStore::apply_prepared`].
+///
+/// The point of splitting prepare/apply is to keep the slow work
+/// (chunking + embedding) outside the `VectorStore` write lock, so that
+/// concurrent writers don't serialise behind a multi-second embed.
+pub enum PreparedUpsert {
+    /// Body is unchanged vs. the existing entry — apply only the cheap
+    /// metadata mutation (`title`, `status`, `tags`, …) and keep the
+    /// existing embeddings, chunk texts, and body chunks untouched.
+    MetadataOnly(MetadataPatch),
+    /// Body changed (or no prior entry) — replace the whole entry.
+    Full(Box<DocumentEntry>),
+}
+
 /// Persistent vector store
 #[derive(Serialize, Deserialize)]
 pub struct VectorStore {
@@ -201,49 +231,65 @@ impl VectorStore {
         (id, confidence)
     }
 
-    /// Insert or update a document
-    pub fn upsert(&mut self, doc: &PkbDocument, embedder: &embeddings::Embedder) -> Result<()> {
-        let path_str = doc.path.to_string_lossy().to_string();
+    /// Build the upsert payload **without holding any lock** on `self`.
+    ///
+    /// `existing` is an optional snapshot of the prior entry (clone the
+    /// matching entry from a read-locked store). When the body hash matches,
+    /// no embedding is run and a [`PreparedUpsert::MetadataOnly`] is returned;
+    /// otherwise this calls [`Embedder::encode_batch`] (slow on CPU) and
+    /// returns a [`PreparedUpsert::Full`] for replacement.
+    pub fn prepare_upsert(
+        doc: &PkbDocument,
+        embedder: &embeddings::Embedder,
+        existing: Option<&DocumentEntry>,
+    ) -> Result<PreparedUpsert> {
+        let incoming_body_hash = doc.body_hash();
 
+        // Fast path: body unchanged → no chunking, no embedding, no rewrite of
+        // chunk_texts/body_chunks. Just patch the metadata fields on the
+        // existing entry.
+        if let Some(existing) = existing {
+            let body_match = existing
+                .content_hash
+                .as_deref()
+                .map_or(false, |h| h == incoming_body_hash)
+                || existing
+                    .body_hash
+                    .as_deref()
+                    .map_or(false, |h| h == incoming_body_hash);
+            if body_match {
+                let (id, confidence) = Self::extract_frontmatter_fields(doc);
+                return Ok(PreparedUpsert::MetadataOnly(MetadataPatch {
+                    path_key: doc.path.to_string_lossy().to_string(),
+                    title: doc.title.clone(),
+                    doc_type: doc.doc_type.clone(),
+                    status: doc.status.clone(),
+                    tags: doc.tags.clone(),
+                    id,
+                    confidence,
+                    file_hash: doc.file_hash.clone(),
+                }));
+            }
+        }
+
+        // Slow path: re-chunk and re-embed.
         let embedding_text = doc.embedding_text();
         let chunks = embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
         let body_chunks =
             embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
-        let incoming_body_hash = doc.body_hash();
-
-        // Reuse existing embeddings when the markdown body (and thus semantic content)
-        // hasn't changed. Frontmatter-only updates (status, priority, …) skip the ~1 s
-        // embedding step via this body-hash comparison.
-        let chunk_embeddings = match self.documents.get(&path_str) {
-            Some(existing)
-                if existing
-                    .content_hash
-                    .as_deref()
-                    .map_or(false, |h| h == incoming_body_hash)
-                    || existing
-                        .body_hash
-                        .as_deref()
-                        .map_or(false, |h| h == incoming_body_hash) =>
-            {
-                existing.chunk_embeddings.clone()
-            }
-            _ => {
-                let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
-                embedder.encode_batch(&chunk_refs)?
-            }
-        };
+        let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
+        let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
 
         let (id, confidence) = Self::extract_frontmatter_fields(doc);
 
-        // Defensive: an entry with empty chunk_embeddings is invisible to search
-        // because the search loop's max-similarity scan never enters and the
-        // entry's best_score stays at NEG_INFINITY. Warn loudly so that future
-        // zero-result regressions are visible at write time, not just at startup.
+        // Defensive: an entry with empty chunk_embeddings is invisible to
+        // search (the max-similarity loop never enters and best_score stays
+        // at NEG_INFINITY). Warn at write time rather than only at startup.
         if chunk_embeddings.is_empty() {
             tracing::warn!(
                 "Indexed document with no chunk embeddings: {} (title: {:?}). \
                  This entry will not appear in search results.",
-                path_str,
+                doc.path.display(),
                 doc.title,
             );
         }
@@ -264,7 +310,50 @@ impl VectorStore {
             body_chunks,
         };
 
-        self.documents.insert(path_str, entry);
+        Ok(PreparedUpsert::Full(Box::new(entry)))
+    }
+
+    /// Apply a [`PreparedUpsert`] under a brief write lock.
+    ///
+    /// `MetadataOnly` is a cheap HashMap mutation; `Full` is a single
+    /// `insert` that replaces the entire entry. Either way the critical
+    /// section is sub-millisecond — the expensive work happened earlier
+    /// in [`prepare_upsert`].
+    pub fn apply_prepared(&mut self, prepared: PreparedUpsert) {
+        match prepared {
+            PreparedUpsert::MetadataOnly(patch) => {
+                if let Some(entry) = self.documents.get_mut(&patch.path_key) {
+                    entry.title = patch.title;
+                    entry.doc_type = patch.doc_type;
+                    entry.status = patch.status;
+                    entry.tags = patch.tags;
+                    entry.id = patch.id;
+                    entry.confidence = patch.confidence;
+                    entry.file_hash = Some(patch.file_hash);
+                } else {
+                    // Race: the entry was removed between prepare and apply.
+                    // Drop the patch — there's nothing to update.
+                    tracing::debug!(
+                        "MetadataOnly upsert dropped: entry vanished for {}",
+                        patch.path_key
+                    );
+                }
+            }
+            PreparedUpsert::Full(entry) => {
+                let path_key = entry.path.to_string_lossy().to_string();
+                self.documents.insert(path_key, *entry);
+            }
+        }
+    }
+
+    /// Insert or update a document — convenience wrapper around
+    /// [`prepare_upsert`] + [`apply_prepared`]. **Holds the write lock for
+    /// the full embed**; prefer the split form on the hot path so other
+    /// writers don't serialise behind embedding.
+    pub fn upsert(&mut self, doc: &PkbDocument, embedder: &embeddings::Embedder) -> Result<()> {
+        let path_str = doc.path.to_string_lossy().to_string();
+        let prepared = Self::prepare_upsert(doc, embedder, self.documents.get(&path_str))?;
+        self.apply_prepared(prepared);
         Ok(())
     }
 
@@ -912,5 +1001,137 @@ mod tests {
 
         assert!(has_a, "Doc A should be present");
         assert!(has_b, "Doc B should be present");
+    }
+
+    /// A frontmatter-only change (e.g. title) on a document with the same body
+    /// must NOT re-run the embedder and must NOT mutate the cached
+    /// `chunk_embeddings` / `chunk_texts` / `body_chunks`. This is the contract
+    /// that keeps metadata edits cheap.
+    #[test]
+    fn test_metadata_only_update_preserves_embeddings_without_embedder() {
+        let mut store = VectorStore::new(3);
+
+        // Seed an entry with known embeddings.
+        let path = PathBuf::from("tasks/cheap-meta.md");
+        let body = "the unchanging body of the document".to_string();
+        let body_hash = blake3::hash(body.as_bytes()).to_hex().to_string();
+        let original_embedding = vec![vec![0.1, 0.2, 0.3]];
+        let original_chunks = vec!["seeded chunk text".to_string()];
+        let original_body_chunks = vec!["seeded body chunk".to_string()];
+        store.documents.insert(
+            path.to_string_lossy().to_string(),
+            DocumentEntry {
+                path: path.clone(),
+                title: "Original Title".to_string(),
+                doc_type: Some("task".to_string()),
+                status: Some("active".to_string()),
+                tags: vec!["old".to_string()],
+                id: Some("task-cheap".to_string()),
+                confidence: None,
+                content_hash: Some(body_hash.clone()),
+                file_hash: Some("file_v1".to_string()),
+                body_hash: Some(body_hash.clone()),
+                chunk_embeddings: original_embedding.clone(),
+                chunk_texts: original_chunks.clone(),
+                body_chunks: original_body_chunks.clone(),
+            },
+        );
+
+        // Build a PkbDocument with the SAME body but changed title/tags/status.
+        let updated_doc = crate::pkb::PkbDocument {
+            path: path.clone(),
+            title: "Brand New Title".to_string(),
+            tags: vec!["fresh".to_string()],
+            doc_type: Some("task".to_string()),
+            status: Some("done".to_string()),
+            modified: None,
+            body: body.clone(),
+            content_hash: body_hash.clone(),
+            file_hash: "file_v2".to_string(),
+            frontmatter: None,
+        };
+
+        let path_key = path.to_string_lossy().to_string();
+        let existing = store.get_entry(&path_key).cloned();
+
+        // A dummy embedder would panic if invoked when not is_dummy. We rely
+        // on prepare_upsert taking the metadata-only path so the embedder is
+        // never called. Use a real (is_dummy=true) embedder that returns
+        // zeros — if the slow path is taken accidentally, the assertions on
+        // chunk_embeddings/chunk_texts below would fail loudly.
+        let embedder = embeddings::Embedder::new_dummy();
+        let prepared =
+            VectorStore::prepare_upsert(&updated_doc, &embedder, existing.as_ref()).unwrap();
+        assert!(
+            matches!(prepared, PreparedUpsert::MetadataOnly(_)),
+            "expected metadata-only path when body hash matches"
+        );
+        store.apply_prepared(prepared);
+
+        let after = store.get_entry(&path_key).expect("entry present");
+        assert_eq!(after.title, "Brand New Title");
+        assert_eq!(after.status.as_deref(), Some("done"));
+        assert_eq!(after.tags, vec!["fresh".to_string()]);
+        assert_eq!(after.file_hash.as_deref(), Some("file_v2"));
+        assert_eq!(
+            after.chunk_embeddings, original_embedding,
+            "cached embeddings must be preserved on metadata-only update"
+        );
+        assert_eq!(
+            after.chunk_texts, original_chunks,
+            "chunk_texts must be preserved on metadata-only update"
+        );
+        assert_eq!(
+            after.body_chunks, original_body_chunks,
+            "body_chunks must be preserved on metadata-only update"
+        );
+    }
+
+    /// Body change must take the Full path and produce a fresh entry.
+    #[test]
+    fn test_body_change_takes_full_path() {
+        let mut store = VectorStore::new(3);
+        let path = PathBuf::from("tasks/body-change.md");
+        let old_body_hash = blake3::hash(b"old body").to_hex().to_string();
+        store.documents.insert(
+            path.to_string_lossy().to_string(),
+            DocumentEntry {
+                path: path.clone(),
+                title: "T".to_string(),
+                doc_type: None,
+                status: None,
+                tags: vec![],
+                id: None,
+                confidence: None,
+                content_hash: Some(old_body_hash.clone()),
+                file_hash: Some("file_v1".to_string()),
+                body_hash: Some(old_body_hash),
+                chunk_embeddings: vec![vec![1.0, 0.0, 0.0]],
+                chunk_texts: vec!["old".to_string()],
+                body_chunks: vec!["old".to_string()],
+            },
+        );
+        let new_body = "totally different body content here";
+        let new_body_hash = blake3::hash(new_body.as_bytes()).to_hex().to_string();
+        let doc = crate::pkb::PkbDocument {
+            path: path.clone(),
+            title: "T".to_string(),
+            tags: vec![],
+            doc_type: None,
+            status: None,
+            modified: None,
+            body: new_body.to_string(),
+            content_hash: new_body_hash,
+            file_hash: "file_v2".to_string(),
+            frontmatter: None,
+        };
+        let existing = store.get_entry(&path.to_string_lossy()).cloned();
+        let embedder = embeddings::Embedder::new_dummy();
+        let prepared =
+            VectorStore::prepare_upsert(&doc, &embedder, existing.as_ref()).unwrap();
+        assert!(
+            matches!(prepared, PreparedUpsert::Full(_)),
+            "expected Full path when body hash changes"
+        );
     }
 }
