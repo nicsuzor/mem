@@ -400,8 +400,9 @@ pub fn resolve_status_alias(status: &str) -> &str {
         "complete" | "completed" | "closed" | "archived" | "resolved"
         | "published-spir" | "historical" | "accepted" => "done",
 
-        // Cancelled-family
-        "dead" => "cancelled",
+        // Cancelled-family — "superseded" means replaced by a newer artefact,
+        // which is functionally equivalent to cancelled (no longer in play).
+        "dead" | "superseded" | "canceled" => "cancelled",
 
         // Paused-family
         "deferred" | "dormant" => "paused",
