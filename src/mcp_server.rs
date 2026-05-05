@@ -4222,7 +4222,7 @@ impl PkbSearchServer {
 
     fn handle_status(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
         let info = serde_json::json!({
-            "name": env!("CARGO_PKG_VERSION"),
+            "name": env!("CARGO_PKG_NAME"),
             "version": env!("CARGO_PKG_VERSION"),
             "git_hash": env!("BUILD_GIT_HASH"),
             "build_profile": if cfg!(debug_assertions) { "debug" } else { "release" },
