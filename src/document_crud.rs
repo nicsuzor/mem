@@ -202,7 +202,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     fm.push_str(&format!("id: {}\n", id));
     fm.push_str(&format!(
         "title: \"{}\"\n",
-        fields.title.replace('"', "\\\"")
+        yaml_escape_double_quoted(&fields.title)
     ));
     fm.push_str(&format!("type: {}\n", fields.doc_type));
     fm.push_str(&format!("created: {}\n", now));
@@ -250,7 +250,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     if let Some(ref source) = fields.source {
-        fm.push_str(&format!("source: \"{}\"\n", source.replace('"', "\\\"")));
+        fm.push_str(&format!("source: \"{}\"\n", yaml_escape_double_quoted(source)));
     }
 
     if let Some(c) = fields.confidence {
@@ -258,7 +258,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     if let Some(ref s) = fields.supersedes {
-        fm.push_str(&format!("supersedes: \"{}\"\n", s.replace('"', "\\\"")));
+        fm.push_str(&format!("supersedes: \"{}\"\n", yaml_escape_double_quoted(s)));
     }
 
     if let Some(sev) = fields.severity {
@@ -274,7 +274,10 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     if let Some(ref stakeholder) = fields.stakeholder {
-        fm.push_str(&format!("stakeholder: \"{}\"\n", stakeholder.replace('"', "\\\"")));
+        fm.push_str(&format!(
+            "stakeholder: \"{}\"\n",
+            yaml_escape_double_quoted(stakeholder)
+        ));
     }
 
     if let Some(ref waiting_since) = fields.waiting_since {
@@ -362,7 +365,7 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
     fm.push_str(&format!("id: {}\n", id));
     fm.push_str(&format!(
         "title: \"{}\"\n",
-        fields.title.replace('"', "\\\"")
+        yaml_escape_double_quoted(&fields.title)
     ));
     fm.push_str("type: subtask\n");
     fm.push_str("status: active\n");
@@ -492,7 +495,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     fm.push_str(&format!("id: {}\n", id));
     fm.push_str(&format!(
         "title: \"{}\"\n",
-        fields.title.replace('"', "\\\"")
+        yaml_escape_double_quoted(&fields.title)
     ));
     fm.push_str(&format!(
         "type: {}\n",
@@ -544,7 +547,10 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     }
 
     if let Some(ref consequence) = fields.consequence {
-        fm.push_str(&format!("consequence: \"{}\"\n", consequence.replace('"', "\\\"")));
+        fm.push_str(&format!(
+            "consequence: \"{}\"\n",
+            yaml_escape_double_quoted(consequence)
+        ));
     }
 
     if let Some(sev) = fields.severity {
@@ -556,7 +562,10 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     }
 
     if let Some(ref stakeholder) = fields.stakeholder {
-        fm.push_str(&format!("stakeholder: \"{}\"\n", stakeholder.replace('"', "\\\"")));
+        fm.push_str(&format!(
+            "stakeholder: \"{}\"\n",
+            yaml_escape_double_quoted(stakeholder)
+        ));
     }
 
     if let Some(ref waiting_since) = fields.waiting_since {
@@ -578,7 +587,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     if let Some(ref release_summary) = fields.release_summary {
         fm.push_str(&format!(
             "release_summary: \"{}\"\n",
-            release_summary.replace('"', "\\\"")
+            yaml_escape_double_quoted(release_summary)
         ));
     }
 
@@ -663,7 +672,7 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     fm.push_str(&format!("id: {}\n", id));
     fm.push_str(&format!(
         "title: \"{}\"\n",
-        fields.title.replace('"', "\\\"")
+        yaml_escape_double_quoted(&fields.title)
     ));
 
     let mem_type = fields.memory_type.as_deref().unwrap_or("memory");
@@ -677,7 +686,7 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     }
 
     if let Some(ref source) = fields.source {
-        fm.push_str(&format!("source: \"{}\"\n", source.replace('"', "\\\"")));
+        fm.push_str(&format!("source: \"{}\"\n", yaml_escape_double_quoted(source)));
     }
 
     if let Some(c) = fields.confidence {
@@ -685,7 +694,7 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     }
 
     if let Some(ref s) = fields.supersedes {
-        fm.push_str(&format!("supersedes: \"{}\"\n", s.replace('"', "\\\"")));
+        fm.push_str(&format!("supersedes: \"{}\"\n", yaml_escape_double_quoted(s)));
     }
 
     fm.push_str(&format!("created: {}\n", chrono::Utc::now().to_rfc3339()));
@@ -1069,6 +1078,35 @@ pub fn delete_document(path: &Path) -> Result<PathBuf> {
 
 fn append_severity_field(fm: &mut String, sev: i32) {
     fm.push_str(&format!("severity: {}\n", sev));
+}
+
+/// Escape a string for YAML double-quoted scalar form.
+///
+/// Replaces the four characters that break a single-line `"..."` scalar:
+/// `\` (must escape first), `"`, `\n`, and `\r`. Tabs are passed through —
+/// YAML allows them in double-quoted scalars.
+///
+/// Background: the previous one-liner `s.replace('"', "\\\"")` only escaped
+/// embedded quotes. Strings containing newlines were emitted verbatim, e.g.
+/// `consequence: "line1\nline2"` (with a literal newline). serde_yaml folds
+/// such cases to a space silently, while gray_matter (used by the MCP
+/// `get_task` reader) rejects the whole frontmatter and returns `Null` —
+/// which surfaced as `frontmatter: null`, `parent: null`, default priority,
+/// and a stub body for any task whose `consequence` / `release_summary` /
+/// title / stakeholder field happened to contain a newline. Re-confirmation
+/// of task-16fe56e6 on 2026-05-05.
+pub(crate) fn yaml_escape_double_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn append_goal_type_field(fm: &mut String, gt: &str) {
@@ -1645,6 +1683,68 @@ mod tests {
         assert!(
             !after_fm.starts_with("# Body roundtrip task\n"),
             "fallback `# <title>` heading should NOT appear when body is supplied: {after_fm}"
+        );
+    }
+
+    #[test]
+    fn create_task_handles_multiline_consequence() {
+        // Regression: re-confirmation 2026-05-05 — create_task observed to drop
+        // `parent`, `priority`, `frontmatter` and produce `null` round-trip when
+        // the user supplied a multi-line `consequence` string. Newlines inside
+        // double-quoted YAML scalars are illegal — `format!("consequence: \"{}\"")`
+        // wrote an unparseable frontmatter block, so gray_matter returned no data
+        // and downstream tools rendered the task as having no metadata.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+        let multiline = "Single biggest token sink in the framework.\nEach cron \
+                         firing reuses the prior context window.\nBlows up over time.";
+        let fields = TaskFields {
+            title: "fixed-interval mode accretes context".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            priority: Some(1),
+            consequence: Some(multiline.to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        // Primary check: gray_matter is what `mcp_server::handle_get_task`
+        // uses to parse the round-tripped frontmatter. Before the fix, raw
+        // newlines in `consequence: "..."` made gray_matter return
+        // `data: Some(Null)` for the *whole* frontmatter — surfaced to
+        // callers as `frontmatter: null` / `parent: null` / default
+        // priority / stub body.
+        let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+        let parsed = matter.parse(&content);
+        let fm_json = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+        assert!(
+            fm_json.is_object(),
+            "frontmatter must parse as an object, not null/scalar — got {fm_json:?}"
+        );
+        let obj = fm_json.as_object().unwrap();
+        assert_eq!(
+            obj.get("priority").and_then(|v| v.as_i64()),
+            Some(1),
+            "priority must round-trip via gray_matter: {fm_json:?}"
+        );
+        assert_eq!(
+            obj.get("parent").and_then(|v| v.as_str()),
+            Some("parent-001"),
+            "parent must round-trip via gray_matter: {fm_json:?}"
+        );
+        let consequence_back = obj
+            .get("consequence")
+            .and_then(|v| v.as_str())
+            .expect("consequence must round-trip via gray_matter");
+        assert_eq!(
+            consequence_back, multiline,
+            "multi-line consequence must round-trip verbatim"
         );
     }
 
