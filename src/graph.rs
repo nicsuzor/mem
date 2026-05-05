@@ -402,7 +402,7 @@ pub fn resolve_status_alias(status: &str) -> &str {
 
         // Cancelled-family — "superseded" means replaced by a newer artefact,
         // which is functionally equivalent to cancelled (no longer in play).
-        "dead" | "superseded" => "cancelled",
+        "dead" | "superseded" | "canceled" => "cancelled",
 
         // Paused-family
         "deferred" | "dormant" => "paused",
