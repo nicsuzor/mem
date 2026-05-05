@@ -11,6 +11,13 @@ on:
         description: 'Skip self-loop detection'
         type: boolean
         default: false
+      # Must mirror workflow_call.inputs — the cron dispatcher uses
+      # `gh workflow run` (workflow_dispatch) and passes bot_identity.
+      # Without this declaration the API returns HTTP 422 "Unexpected inputs".
+      bot_identity:
+        description: 'Identity of the bot'
+        type: string
+        default: 'github-actions[bot]'
   workflow_call:
     inputs:
       pr_number:
