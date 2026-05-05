@@ -4220,6 +4220,17 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    fn handle_status(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let info = serde_json::json!({
+            "name": env!("CARGO_PKG_NAME"),
+            "version": env!("CARGO_PKG_VERSION"),
+            "git_hash": env!("BUILD_GIT_HASH"),
+            "build_profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+        });
+        let json = serde_json::to_string_pretty(&info).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
     fn handle_batch_reclassify(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let new_type = args
@@ -4458,6 +4469,7 @@ impl PkbSearchServer {
             "graph_stats" => self.handle_graph_stats(args),
             "graph_json" => self.handle_graph_json(args),
             "tool_stats" => self.handle_get_stats(args),
+            "status" => self.handle_status(args),
             _ => Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Unknown action: {action}")),
@@ -4635,6 +4647,7 @@ impl ServerHandler for PkbSearchServer {
             "batch_create_epics" => self.handle_batch_create_epics(&args),
             "batch_reclassify" => self.handle_batch_reclassify(&args),
             "get_stats" => self.handle_get_stats(&args),
+            "status" => self.handle_status(&args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {}", request.name)),
@@ -5508,16 +5521,27 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "pkb_stats",
-                "System and graph status: summary, graph_stats, graph_json, tool_stats.",
+                "System and graph status: summary, graph_stats, graph_json, tool_stats, status.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json", "tool_stats"] }
+                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json", "tool_stats", "status"] }
                     }
                 }))
                 .unwrap(),
             )
             .with_title("PKB Statistics")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "status",
+                "Report mem build identity: package version, embedded git describe, and build profile. Use to confirm which binary is running.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }))
+                .unwrap(),
+            )
+            .with_title("Build Status")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "pkb_tool_help",
