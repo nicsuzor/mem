@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.23](https://github.com/nicsuzor/mem/compare/v0.3.22...v0.3.23) - 2026-05-05
+
+### Added
+
+- *(mcp)* add status tool reporting build identity ([#312](https://github.com/nicsuzor/mem/pull/312))
+
+### Fixed
+
+- *(graph)* canonicalise superseded status to cancelled ([#310](https://github.com/nicsuzor/mem/pull/310))
+- *(crud)* escape newlines in YAML double-quoted scalars (task-16fe56e6 re-confirmation) ([#311](https://github.com/nicsuzor/mem/pull/311))
+
+### Other
+
+- Force-graph node sizing by focus_score + tighten rmcp keep_alive ([#308](https://github.com/nicsuzor/mem/pull/308))
+- Preserve force-graph layout on legend toggles + remove silent taxonomy fallbacks ([#309](https://github.com/nicsuzor/mem/pull/309))
+- add bot_identity to merge-prep shim workflow_dispatch inputs ([#313](https://github.com/nicsuzor/mem/pull/313))
+
 ## [0.3.22](https://github.com/nicsuzor/mem/compare/v0.3.21...v0.3.22) - 2026-05-04
 
 ### Added
