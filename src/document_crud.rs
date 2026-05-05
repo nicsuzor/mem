@@ -135,8 +135,9 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         anyhow::bail!("Invalid node type: {}", fields.doc_type);
     }
     if let Some(ref status) = fields.status {
-        if !crate::graph::is_valid_status(status) {
-            anyhow::bail!("Invalid status: {}", status);
+        let is_task = crate::graph::TASK_TYPES.contains(&fields.doc_type.as_str());
+        if is_task && !crate::graph::is_valid_status(status) {
+            anyhow::bail!("Invalid status for task type: {}", status);
         }
     }
     if let Some(priority) = fields.priority {

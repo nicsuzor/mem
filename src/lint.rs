@@ -508,6 +508,9 @@ fn check_frontmatter(
         });
     }
 
+    let node_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let is_task_type = graph::TASK_TYPES.contains(&node_type);
+
     // Required: type
     if let Some(t) = fm.get("type").and_then(|v| v.as_str()) {
         if !graph::is_valid_node_type(t) {
@@ -534,37 +537,39 @@ fn check_frontmatter(
     }
 
     // Status validation + alias detection
-    if let Some(raw_status) = fm.get("status").and_then(|v| v.as_str()) {
-        let canonical = graph::resolve_status_alias(raw_status);
-        if canonical != raw_status {
+    if is_task_type {
+        if let Some(raw_status) = fm.get("status").and_then(|v| v.as_str()) {
+            let canonical = graph::resolve_status_alias(raw_status);
+            if canonical != raw_status {
+                diags.push(Diagnostic {
+                    severity: Severity::Style,
+                    rule: "fm-status-alias",
+                    message: format!("Status '{}' should be canonical '{}'", raw_status, canonical),
+                    line: None,
+                    fixable: true,
+                });
+            }
+            if !graph::is_valid_status(canonical) {
+                diags.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule: "fm-unknown-status",
+                    message: format!(
+                        "Unknown status '{}' → will fix to 'inbox'",
+                        raw_status,
+                    ),
+                    line: None,
+                    fixable: true,
+                });
+            }
+        } else if fm.get("status").is_some() {
             diags.push(Diagnostic {
-                severity: Severity::Style,
-                rule: "fm-status-alias",
-                message: format!("Status '{}' should be canonical '{}'", raw_status, canonical),
+                severity: Severity::Error,
+                rule: "fm-status-not-string",
+                message: "'status' must be a string".into(),
                 line: None,
-                fixable: true,
+                fixable: false,
             });
         }
-        if !graph::is_valid_status(canonical) {
-            diags.push(Diagnostic {
-                severity: Severity::Warning,
-                rule: "fm-unknown-status",
-                message: format!(
-                    "Unknown status '{}' → will fix to 'inbox'",
-                    raw_status,
-                ),
-                line: None,
-                fixable: true,
-            });
-        }
-    } else if fm.get("status").is_some() {
-        diags.push(Diagnostic {
-            severity: Severity::Error,
-            rule: "fm-status-not-string",
-            message: "'status' must be a string".into(),
-            line: None,
-            fixable: false,
-        });
     }
 
     // Priority validation
@@ -780,8 +785,6 @@ fn check_frontmatter(
     }
 
     // Task-type-specific checks
-    let node_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    let is_task_type = graph::TASK_TYPES.contains(&node_type);
     if is_task_type {
         if !fm.contains_key("status") {
             diags.push(Diagnostic {

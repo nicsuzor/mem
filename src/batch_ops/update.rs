@@ -43,15 +43,8 @@ pub fn batch_update(
             for (key, value) in m {
                 match key.as_str() {
                     "status" => {
-                        if let Some(s) = value.as_str() {
-                            if !crate::graph::is_valid_status(s) {
-                                summary.errors.push(TaskError {
-                                    id: "".to_string(),
-                                    error: format!("Invalid status: {}", s),
-                                });
-                                return summary;
-                            }
-                        }
+                        // Status validation is deferred to per-node loop
+                        // since non-task nodes can have arbitrary statuses.
                     }
                     "type" => {
                         if let Some(t) = value.as_str() {
@@ -113,6 +106,17 @@ pub fn batch_update(
                 continue;
             }
         };
+
+        if let Some(s) = updates_map.get("status").and_then(|v| v.as_str()) {
+            let is_task = node.node_type.as_deref().map(|t| crate::graph::TASK_TYPES.contains(&t)).unwrap_or(false);
+            if is_task && !crate::graph::is_valid_status(s) {
+                summary.errors.push(TaskError {
+                    id: id.clone(),
+                    error: format!("Invalid status for task: {}", s),
+                });
+                continue;
+            }
+        }
 
         // Build the effective updates for this node
         let effective = build_effective_updates(updates_map, node);

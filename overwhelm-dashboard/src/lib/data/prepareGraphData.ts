@@ -442,12 +442,14 @@ export function prepareGraphData(
             const weightNorm = Math.min(Math.log1p(focusScore) / Math.log1p(maxFocusScore), 1.0);
             const baseFill = STATUS_FILLS[status];
             if (!baseFill) {
-                throw new Error(
-                    `prepareGraphData: unknown status "${status}" on node ${node.id}. ` +
-                    `Known statuses: ${Object.keys(STATUS_FILLS).join(", ")}. ` +
-                    `The MCP server normalises status aliases — if this fired, ` +
-                    `either the canonical set drifted or the server is shipping a stale alias.`
-                );
+                if (CONTAINER_TYPES.has(nodeType)) {
+                    throw new Error(
+                        `prepareGraphData: unknown status "${status}" on node ${node.id} (type: ${nodeType}). ` +
+                        `Known statuses: ${Object.keys(STATUS_FILLS).join(", ")}. ` +
+                        `The MCP server normalises status aliases for tasks — if this fired, ` +
+                        `either the canonical set drifted or the server is shipping a stale alias.`
+                    );
+                }
             }
             // Weight-based desaturation: low-focus nodes slightly muted
             let desaturation = Math.max(0, 0.4 - weightNorm * 0.4);
@@ -462,15 +464,15 @@ export function prepareGraphData(
                     desaturation = Math.min(1.0, desaturation + 0.1);
                 }
             }
-            fill = interpolateColor(baseFill, MUTED_FILL, desaturation);
+            fill = interpolateColor(baseFill || MUTED_FILL, MUTED_FILL, desaturation);
             const baseText = STATUS_TEXT[status];
-            if (!baseText) {
+            if (!baseText && CONTAINER_TYPES.has(nodeType)) {
                 throw new Error(
                     `prepareGraphData: STATUS_TEXT missing entry for status "${status}". ` +
                     `STATUS_FILLS and STATUS_TEXT must be kept in sync.`
                 );
             }
-            textCol = interpolateColor(baseText, MUTED_TEXT, desaturation);
+            textCol = interpolateColor(baseText || MUTED_TEXT, MUTED_TEXT, desaturation);
         }
 
         // Criticality: blend fill toward amber to signal high-impact nodes
