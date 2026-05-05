@@ -3091,7 +3091,13 @@ async fn main() -> Result<()> {
                 }
                 eprintln!("   Allowed Host headers: {:?}", config.allowed_hosts);
 
-                let session_manager = std::sync::Arc::new(LocalSessionManager::default());
+                // Default session keep_alive is 5 minutes, which produces a noisy
+                // ERROR log when idle clients get reaped. Shorten it so stale
+                // sessions are cleaned up sooner.
+                let mut session_manager_inner = LocalSessionManager::default();
+                session_manager_inner.session_config.keep_alive =
+                    Some(std::time::Duration::from_secs(60));
+                let session_manager = std::sync::Arc::new(session_manager_inner);
 
                 let mcp_service = StreamableHttpService::new(
                     move || Ok(server.clone()),
