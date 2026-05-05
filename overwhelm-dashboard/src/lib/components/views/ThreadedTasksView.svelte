@@ -13,13 +13,26 @@
 
     function statusChipStyle(status: string | undefined) {
         const s = status || 'inbox';
-        const fill = STATUS_FILLS[s] ?? '#1f2937';
-        const text = STATUS_TEXT[s] ?? '#e5e7eb';
+        const fill = STATUS_FILLS[s];
+        const text = STATUS_TEXT[s];
+        if (!fill || !text) {
+            throw new Error(
+                `ThreadedTasksView.statusChipStyle: unknown status "${s}". ` +
+                `Known: ${Object.keys(STATUS_FILLS).join(", ")}.`
+            );
+        }
         return `background:${fill};color:${text};border-color:${fill};`;
     }
     function statusChipLabel(status: string | undefined) {
         const s = status || 'inbox';
-        return STATUS_LABELS[s] ?? s.toUpperCase().replace('_', ' ');
+        const label = STATUS_LABELS[s];
+        if (!label) {
+            throw new Error(
+                `ThreadedTasksView.statusChipLabel: unknown status "${s}". ` +
+                `Known: ${Object.keys(STATUS_LABELS).join(", ")}.`
+            );
+        }
+        return label;
     }
     import { projectHue } from "../../data/projectUtils";
     import TaskEditorView from "./TaskEditorView.svelte";

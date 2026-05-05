@@ -1,9 +1,9 @@
-import type { Stylesheet } from 'cytoscape';
+import type { StylesheetStyle } from 'cytoscape';
 
 // Base styling for cytoscape that can be used across all graph views.
 // These are functions so they can be dynamically updated if needed, or simply static constants.
 
-export const getBaseNodeStyles = (): Stylesheet[] => [
+export const getBaseNodeStyles = (): StylesheetStyle[] => [
     {
         selector: 'node[visibilityState != "hidden"]',
         style: {
@@ -96,7 +96,7 @@ export const getBaseNodeStyles = (): Stylesheet[] => [
     }
 ];
 
-export const getBaseEdgeStyles = (): Stylesheet[] => [
+export const getBaseEdgeStyles = (): StylesheetStyle[] => [
     {
         selector: 'edge[visibilityState != "hidden"]',
         style: {
@@ -125,7 +125,7 @@ export const getBaseEdgeStyles = (): Stylesheet[] => [
     }
 ];
 
-export const getCytoscapeStyles = (): Stylesheet[] => [
+export const getCytoscapeStyles = (): StylesheetStyle[] => [
     ...getBaseNodeStyles(),
     ...getBaseEdgeStyles(),
 ];

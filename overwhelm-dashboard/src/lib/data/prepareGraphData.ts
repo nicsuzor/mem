@@ -156,7 +156,12 @@ function classifyEdge(sourceId: string, targetId: string, nodeById: Map<string, 
     if (source.soft_depends_on?.includes(targetId)) return 'soft_depends_on';
     if (Array.isArray(source.contributes_to) && source.contributes_to.some((c: any) =>
         (typeof c === 'string' ? c : c?.to) === targetId)) return 'contributes_to';
-    return 'link';
+    throw new Error(
+        `classifyEdge: cannot classify edge ${sourceId} → ${targetId}; ` +
+        `no parent / depends_on / soft_depends_on / contributes_to relation found ` +
+        `on the source node. The MCP server should always supply edge.type — ` +
+        `if this fired, the upstream graph_json payload is missing a type field.`
+    );
 }
 
 /**
@@ -379,7 +384,11 @@ export function prepareGraphData(
     const d3Nodes: GraphNode[] = [];
     for (const node of rawNodes) {
         const nid = node.id;
-        const nodeType = node.node_type || "";
+        // Canonicalise: nodes with no explicit node_type frontmatter
+        // (typical for archived markdown drops) become "note", which the
+        // taxonomy already defines. Same pattern styleEdge uses to fold
+        // link/wikilink/supersedes into "ref".
+        const nodeType = (node.node_type || "note").toLowerCase();
         const status = (node.status || "inbox").toLowerCase();
 
         const priority = typeof node.priority === 'number' ? node.priority : 2;
@@ -431,7 +440,15 @@ export function prepareGraphData(
             textCol = "#94a3b8";
         } else {
             const weightNorm = Math.min(Math.log1p(focusScore) / Math.log1p(maxFocusScore), 1.0);
-            const baseFill = STATUS_FILLS[status] || "#f1f5f9";
+            const baseFill = STATUS_FILLS[status];
+            if (!baseFill) {
+                throw new Error(
+                    `prepareGraphData: unknown status "${status}" on node ${node.id}. ` +
+                    `Known statuses: ${Object.keys(STATUS_FILLS).join(", ")}. ` +
+                    `The MCP server normalises status aliases — if this fired, ` +
+                    `either the canonical set drifted or the server is shipping a stale alias.`
+                );
+            }
             // Weight-based desaturation: low-focus nodes slightly muted
             let desaturation = Math.max(0, 0.4 - weightNorm * 0.4);
             // Recency emphasis: stale nodes desaturate further
@@ -446,7 +463,13 @@ export function prepareGraphData(
                 }
             }
             fill = interpolateColor(baseFill, MUTED_FILL, desaturation);
-            const baseText = STATUS_TEXT[status] || "#475569";
+            const baseText = STATUS_TEXT[status];
+            if (!baseText) {
+                throw new Error(
+                    `prepareGraphData: STATUS_TEXT missing entry for status "${status}". ` +
+                    `STATUS_FILLS and STATUS_TEXT must be kept in sync.`
+                );
+            }
             textCol = interpolateColor(baseText, MUTED_TEXT, desaturation);
         }
 
@@ -479,8 +502,20 @@ export function prepareGraphData(
             borderWidth = Math.min(borderWidth + criticality * 2.5, 6);
         }
 
-        const shape = TYPE_SHAPE[nodeType] || "rect";
-        const badge = TYPE_BADGE[nodeType] || "";
+        const shape = TYPE_SHAPE[nodeType];
+        if (shape === undefined) {
+            throw new Error(
+                `prepareGraphData: unknown node type "${nodeType}" on node ${nid} ` +
+                `(no TYPE_SHAPE entry). Known: ${Object.keys(TYPE_SHAPE).join(", ")}.`
+            );
+        }
+        const badge = TYPE_BADGE[nodeType];
+        if (badge === undefined) {
+            throw new Error(
+                `prepareGraphData: unknown node type "${nodeType}" on node ${nid} ` +
+                `(no TYPE_BADGE entry). Known: ${Object.keys(TYPE_BADGE).join(", ")}.`
+            );
+        }
 
         d3Nodes.push({
             id: nid,

@@ -89,37 +89,61 @@
         selection.update(s => ({ ...s, activeNodeId: id }));
     }
 
+    // Status → icon. Every canonical status must have an entry; statuses
+    // without a special glyph use '○' explicitly so unknown statuses are
+    // distinguishable from "known but unmarked".
+    const STATUS_ICONS: Record<string, string> = {
+        inbox: '○', ready: '○', queued: '○', paused: '○', someday: '○',
+        in_progress: '●', review: '◷', merge_ready: '⊞',
+        blocked: '✗', cancelled: '✗', done: '✓',
+    };
+    const STATUS_COLORS: Record<string, string> = {
+        inbox: 'text-primary/40', ready: 'text-primary/40',
+        queued: 'text-primary/40', paused: 'text-primary/40',
+        someday: 'text-primary/40',
+        in_progress: 'text-blue-400', review: 'text-yellow-400',
+        merge_ready: 'text-amber-400',
+        blocked: 'text-red-400', cancelled: 'text-primary/30',
+        done: 'text-green-500/60',
+    };
+    const NODE_TYPE_ICONS: Record<string, string> = {
+        goal: '◉', project: '◈', subproject: '◈', epic: '▣',
+        task: '', action: '', bug: '', feature: '', learn: '',
+        daily: '', knowledge: '', person: '', note: '',
+    };
+
     function statusIcon(status: string): string {
-        switch (status) {
-            case 'done': return '✓';
-            case 'cancelled': return '✗';
-            case 'blocked': return '✗';
-            case 'in_progress': return '●';
-            case 'review': return '◷';
-            case 'merge_ready': return '⊞';
-            default: return '○';
+        const icon = STATUS_ICONS[status];
+        if (icon === undefined) {
+            throw new Error(
+                `HierarchyTree.statusIcon: unknown status "${status}". ` +
+                `Known: ${Object.keys(STATUS_ICONS).join(", ")}.`
+            );
         }
+        return icon;
     }
 
     function statusColor(status: string): string {
-        switch (status) {
-            case 'done': return 'text-green-500/60';
-            case 'cancelled': return 'text-primary/30';
-            case 'blocked': return 'text-red-400';
-            case 'in_progress': return 'text-blue-400';
-            case 'review': return 'text-yellow-400';
-            case 'merge_ready': return 'text-amber-400';
-            default: return 'text-primary/40';
+        const color = STATUS_COLORS[status];
+        if (color === undefined) {
+            throw new Error(
+                `HierarchyTree.statusColor: unknown status "${status}". ` +
+                `Known: ${Object.keys(STATUS_COLORS).join(", ")}.`
+            );
         }
+        return color;
     }
 
     function nodeTypeIcon(type: string | undefined): string {
-        switch (type) {
-            case 'goal': return '◉';
-            case 'project': case 'subproject': return '◈';
-            case 'epic': return '▣';
-            default: return '';
+        if (type === undefined) return '';
+        const icon = NODE_TYPE_ICONS[type];
+        if (icon === undefined) {
+            throw new Error(
+                `HierarchyTree.nodeTypeIcon: unknown node type "${type}". ` +
+                `Known: ${Object.keys(NODE_TYPE_ICONS).join(", ")}.`
+            );
         }
+        return icon;
     }
 
     function nodeSummary(node: any) {

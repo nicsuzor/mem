@@ -82,7 +82,16 @@ export function getEdgeTypeDef(edgeTypeStr: string, isIntraGroup: boolean = fals
     if (edgeTypeStr === "parent") {
         return isIntraGroup ? EDGE_TYPES.parent_intra : EDGE_TYPES.parent_inter;
     }
-    return EDGE_TYPES[edgeTypeStr] || EDGE_TYPES.ref;
+    const def = EDGE_TYPES[edgeTypeStr];
+    if (!def) {
+        throw new Error(
+            `getEdgeTypeDef: unknown edge type "${edgeTypeStr}". ` +
+            `Known types: ${Object.keys(EDGE_TYPES).join(", ")}, parent. ` +
+            `Canonicalise upstream (see styleEdge) or extend EDGE_TYPES — ` +
+            `do not add a silent fallback.`
+        );
+    }
+    return def;
 }
 
 export class NodeType {
@@ -94,14 +103,50 @@ export class NodeType {
     ) { }
 }
 
+// Keep keys in sync with TYPE_SHAPE in constants.ts — getNodeTypeDef throws
+// on unknowns.
 export const NODE_TYPES: Record<string, NodeType> = {
+    // Hierarchical / strategic
+    goal: new NodeType("goal", "Goal", 18, true),
+    target: new NodeType("target", "Target", 34, true),
+    project: new NodeType("project", "Project", 18, true),
     epic: new NodeType("epic", "Epic", 18, true),
     group: new NodeType("group", "Group", 18, true),
-    target: new NodeType("target", "Target", 34, true),
+    // Workable
     task: new NodeType("task", "Task", 12, false),
-    note: new NodeType("note", "Note", 8, false)
+    subtask: new NodeType("subtask", "Subtask", 10, false),
+    action: new NodeType("action", "Action", 12, false),
+    bug: new NodeType("bug", "Bug", 12, false),
+    feature: new NodeType("feature", "Feature", 12, false),
+    // Reflection / learning
+    learn: new NodeType("learn", "Learn", 10, false),
+    review: new NodeType("review", "Review", 10, false),
+    "audit-report": new NodeType("audit-report", "Audit", 10, false),
+    "session-log": new NodeType("session-log", "Session", 10, false),
+    // Knowledge artefacts
+    note: new NodeType("note", "Note", 8, false),
+    knowledge: new NodeType("knowledge", "Knowledge", 10, false),
+    document: new NodeType("document", "Document", 10, false),
+    reference: new NodeType("reference", "Reference", 8, false),
+    spec: new NodeType("spec", "Spec", 10, false),
+    memory: new NodeType("memory", "Memory", 8, false),
+    index: new NodeType("index", "Index", 10, true),
+    case: new NodeType("case", "Case", 10, false),
+    daily: new NodeType("daily", "Daily", 10, false),
+    // People
+    person: new NodeType("person", "Person", 10, false),
+    contact: new NodeType("contact", "Contact", 10, false),
 };
 
 export function getNodeTypeDef(typeStr: string): NodeType {
-    return NODE_TYPES[typeStr.toLowerCase()] || NODE_TYPES.task;
+    const key = typeStr.toLowerCase();
+    const def = NODE_TYPES[key];
+    if (!def) {
+        throw new Error(
+            `getNodeTypeDef: unknown node type "${typeStr}". ` +
+            `Known types: ${Object.keys(NODE_TYPES).join(", ")}. ` +
+            `Extend NODE_TYPES or normalise upstream — do not add a silent fallback.`
+        );
+    }
+    return def;
 }

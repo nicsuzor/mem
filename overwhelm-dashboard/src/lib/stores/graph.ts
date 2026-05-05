@@ -55,8 +55,16 @@ export function applyTaskNodeUpdates(node: GraphNode, updates: TaskNodeUpdates) 
     }
 
     if (nodeUpdates.status) {
-        node.fill = STATUS_FILLS[nodeUpdates.status] ?? node.fill;
-        node.textColor = STATUS_TEXT[nodeUpdates.status] ?? node.textColor;
+        const fill = STATUS_FILLS[nodeUpdates.status];
+        const text = STATUS_TEXT[nodeUpdates.status];
+        if (!fill || !text) {
+            throw new Error(
+                `applyTaskNodeUpdates: unknown status "${nodeUpdates.status}". ` +
+                `Known statuses: ${Object.keys(STATUS_FILLS).join(", ")}.`
+            );
+        }
+        node.fill = fill;
+        node.textColor = text;
         node.opacity = FADED_STATUSES.has(nodeUpdates.status) ? 0.4 : 0.8;
     }
 

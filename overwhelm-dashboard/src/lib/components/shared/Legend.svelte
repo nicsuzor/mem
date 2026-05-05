@@ -98,16 +98,36 @@
         };
     })() : null;
 
+    // Count edges by canonicalised type — same set ForceView/GroupsView render
+    // from. Unknown types are rejected upstream by styleEdge / getEdgeTypeDef
+    // (those throw), so every link.type here MUST be in the canonical set.
+    // parent_intra is a presentation-only category Metro uses for parent edges
+    // crossing into the same epic group; for non-Metro views we collapse it
+    // into parent_inter.
     $: edgeCounts = $graphData ? (() => {
-        const links = $graphData.links;
+        const links = $graphData.links as any[];
+        const CANONICAL = new Set([
+            'parent', 'depends_on', 'soft_depends_on',
+            'contributes_to', 'similar_to', 'ref',
+        ]);
+        const byType = new Map<string, number>();
+        for (const l of links) {
+            if (!CANONICAL.has(l.type)) {
+                throw new Error(
+                    `Legend.edgeCounts: link with non-canonical type "${l.type}" ` +
+                    `reached the dashboard. styleEdge should have rejected it.`
+                );
+            }
+            byType.set(l.type, (byType.get(l.type) || 0) + 1);
+        }
         return {
-            parent_inter: links.filter((l: any) => l.type === 'parent').length,
-            parent_intra: links.filter((l: any) => l.type === 'edgeIntraGroup').length,
-            depends_on: links.filter((l: any) => l.type === 'depends_on').length,
-            soft_depends_on: links.filter((l: any) => l.type === 'soft_depends_on').length,
-            contributes_to: links.filter((l: any) => l.type === 'contributes_to').length,
-            similar_to: links.filter((l: any) => l.type === 'similar_to').length,
-            ref: links.filter((l: any) => l.type === 'ref').length,
+            parent_inter: byType.get('parent') || 0,
+            parent_intra: 0,
+            depends_on: byType.get('depends_on') || 0,
+            soft_depends_on: byType.get('soft_depends_on') || 0,
+            contributes_to: byType.get('contributes_to') || 0,
+            similar_to: byType.get('similar_to') || 0,
+            ref: byType.get('ref') || 0,
         };
     })() : null;
 

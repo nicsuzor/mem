@@ -10,7 +10,7 @@
         isCompleted,
     } from '../../data/subgraphExtraction';
     import type { GraphNode, GraphEdge } from '../../data/prepareGraphData';
-    import { EDGE_TYPES } from '../../data/taxonomy';
+    import { EDGE_TYPES, getEdgeTypeDef } from '../../data/taxonomy';
 
     const NODE_W = 160;
     const NODE_H = 38;
@@ -231,7 +231,7 @@
 
                 {#each layout.edges as edge}
                     {@const dx = (edge.x2 - edge.x1) / 2}
-                    {@const def = EDGE_TYPES[edge.type as keyof typeof EDGE_TYPES] || EDGE_TYPES.ref}
+                    {@const def = getEdgeTypeDef(edge.type, false)}
                     <path
                         class="edge"
                         stroke={def.color}
