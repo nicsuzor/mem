@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.25](https://github.com/nicsuzor/mem/compare/v0.3.24...v0.3.25) - 2026-05-05
+
+### Other
+
+- rules for tasks
+- *(mcp)* fix focus_score_gte description (task-d997a904)
+
 ## [0.3.24](https://github.com/nicsuzor/mem/compare/v0.3.23...v0.3.24) - 2026-05-05
 
 ### Added
