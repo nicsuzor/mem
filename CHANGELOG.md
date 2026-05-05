@@ -7,6 +7,495 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.32](https://github.com/nicsuzor/mem/compare/v0.3.31...v0.3.32) - 2026-05-05
+
+### Added
+
+- *(mcp)* add status tool reporting build identity ([#312](https://github.com/nicsuzor/mem/pull/312))
+- *(graph)* wire node.urgency into compute_focus_scores accumulator ([#303](https://github.com/nicsuzor/mem/pull/303))
+- *(mcp)* add weight_gte filter to list_tasks ([#286](https://github.com/nicsuzor/mem/pull/286))
+- *(mem)* schema + validation tightening for tasks (single PR bundle) ([#297](https://github.com/nicsuzor/mem/pull/297))
+- *(overwhelm-dashboard)* triage filters, surface routing, drifted-state, top-level project cards ([#296](https://github.com/nicsuzor/mem/pull/296))
+- *(cli)* warn on CLI ↔ MCP visibility gap when ID lookup fails ([#295](https://github.com/nicsuzor/mem/pull/295))
+- *(parser)* support type: target and type: prototype nodes (task-65f5bda3) ([#287](https://github.com/nicsuzor/mem/pull/287))
+- *(edges)* inherits_from one-time-copy resolution (task-74d9c9db) ([#292](https://github.com/nicsuzor/mem/pull/292))
+- prohibit circular parent/child hierarchies ([#289](https://github.com/nicsuzor/mem/pull/289))
+- *(mcp)* require project field for create_task ([#288](https://github.com/nicsuzor/mem/pull/288))
+- *(dashboard)* heavy-path Metro layout + dagre x-placement + nav a11y ([#285](https://github.com/nicsuzor/mem/pull/285))
+- *(cli)* refactor pkb deps into ASCII-tree neighbourhood view ([#282](https://github.com/nicsuzor/mem/pull/282))
+- *(dashboard)* flatten nav menu and fix task graph filters ([#279](https://github.com/nicsuzor/mem/pull/279))
+- *(overwhelm-dashboard)* full edge type support across all graph views ([#274](https://github.com/nicsuzor/mem/pull/274))
+- implement semantic similarity edges via vector proximity ([#269](https://github.com/nicsuzor/mem/pull/269))
+- *(cli)* add --allowed-hosts to `pkb mcp --http` ([#254](https://github.com/nicsuzor/mem/pull/254))
+- *(mem)* integrate new weight model infrastructure ([#248](https://github.com/nicsuzor/mem/pull/248))
+- *(overwhelm-dashboard)* show computed properties above description in task detail ([#249](https://github.com/nicsuzor/mem/pull/249))
+- *(mem)* align linter and API on field validation ([#245](https://github.com/nicsuzor/mem/pull/245))
+- *(overwhelm-dashboard)* display scope, uncertainty, and criticality (#task-7cd8b34b)
+- *(graph)* add target as goal alias; rewrite focus scoring spec to match implementation
+- *(overwhelm-dashboard)* unify status palette across filter + task cards ([#241](https://github.com/nicsuzor/mem/pull/241))
+- *(metro)* radial targets + live drag + sub-task drawing ([#240](https://github.com/nicsuzor/mem/pull/240))
+- *(dashboard)* reconcile spec and impl — repos as projects, interactive split, ID display ([#239](https://github.com/nicsuzor/mem/pull/239))
+- *(task_search)* add type filter to return epics or specific types ([#235](https://github.com/nicsuzor/mem/pull/235))
+- *(mcp)* add hierarchical listing to list_tasks and new get_tree tool ([#236](https://github.com/nicsuzor/mem/pull/236))
+- *(dashboard)* non-blocking async notifications with retry ([#232](https://github.com/nicsuzor/mem/pull/232))
+- *(dashboard)* queue-view quick actions + human/auto badge + bulk triage ([#233](https://github.com/nicsuzor/mem/pull/233))
+- *(metro)* target-anchored layout inspired by Tokyo railways demo ([#225](https://github.com/nicsuzor/mem/pull/225))
+- *(pkb-server)* default new tasks to draft status ([#224](https://github.com/nicsuzor/mem/pull/224))
+- *(pkb-server)* add blocking_urgency field and compute function ([#219](https://github.com/nicsuzor/mem/pull/219))
+- *(lint)* replace task-no-parent type check with scope-aware severity ([#211](https://github.com/nicsuzor/mem/pull/211))
+- status filter bar + node colouring by status/project ([#209](https://github.com/nicsuzor/mem/pull/209))
+- *(mcp)* release_task writes session_id, issue_url, and follow-ups ([#207](https://github.com/nicsuzor/mem/pull/207))
+- rename ForceViewV2 → GroupsView, drop MetroViewV2, add legend counts
+- *(mcp)* enrich tool exposures with annotations and titles ([#198](https://github.com/nicsuzor/mem/pull/198))
+- *(mcp)* add prompts for essential search patterns ([#199](https://github.com/nicsuzor/mem/pull/199))
+- *(lint)* replace task-no-parent type check with scope-aware severity ([#195](https://github.com/nicsuzor/mem/pull/195))
+- propagate effective_priority through graph; fix list_tasks filter ([#204](https://github.com/nicsuzor/mem/pull/204))
+- add project filter parameter to list_tasks MCP tool ([#193](https://github.com/nicsuzor/mem/pull/193))
+- add ForceViewV2 and MetroViewV2, slim TreemapView, update routing
+- *(mcp)* add release_task tool for structured task handoff
+- add goals field to frontmatter schema ([#177](https://github.com/nicsuzor/mem/pull/177))
+- *(dashboard)* split Force/Metro views, add recency emphasis and progressive labels
+- *(dashboard)* organic force layout and tri-state filters
+- *(mcp)* switch get_document to ID-based lookup ([#175](https://github.com/nicsuzor/mem/pull/175))
+- *(dashboard)* overhaul force map epic grouping and layout ([#168](https://github.com/nicsuzor/mem/pull/168))
+- *(graph)* add computed properties scope, uncertainty, criticality ([#172](https://github.com/nicsuzor/mem/pull/172))
+- *(ci)* add gemini workflows and commands
+- *(graph)* edge-typed cycle detection via Tarjan's SCC ([#173](https://github.com/nicsuzor/mem/pull/173))
+- unify type system — collapse to 4 actionable types ([#169](https://github.com/nicsuzor/mem/pull/169))
+- add stakeholder waiting urgency to focus scoring ([#167](https://github.com/nicsuzor/mem/pull/167))
+- *(mcp)* add graph_json tool and update overwhelm-dashboard ([#164](https://github.com/nicsuzor/mem/pull/164))
+- *(dashboard)* manhattan routing, red dep edges, project-colored epics, overlap fixes
+- switch dashboard to HTTP MCP transport ([#161](https://github.com/nicsuzor/mem/pull/161))
+- *(dashboard)* project colors, grouped sessions, clickable tasks, curved edges ([#160](https://github.com/nicsuzor/mem/pull/160))
+- *(dashboard)* legend filters, project colors, refile button, lineage tree, metro priority
+- *(dashboard)* project colors, grouped sessions, clickable tasks, curved edges ([#158](https://github.com/nicsuzor/mem/pull/158))
+- *(dashboard)* unified label sizing, tighter packing, and type error fixes
+- *(dashboard)* task editor action buttons ([#157](https://github.com/nicsuzor/mem/pull/157))
+- *(dashboard)* adjust treemap font sizes and add task editor status buttons
+- *(dashboard)* collapse 1:1 containers into single child; add custom attractive force for epics
+- *(mcp)* add HTTP/SSE transport for Cowork VM ([#151](https://github.com/nicsuzor/mem/pull/151))
+- *(dashboard)* overhaul force graph visuals and simplify controls
+- *(dashboard)* centralize focus scoring in backend and address PR feedback
+- *(dashboard)* promote narrative above fold, fail visibly when missing
+- *(dashboard)* server-computed focus set replaces client-side intention path highlighting
+- *(dashboard)* visual refinements — epics, hulls, intent highlighting
+- *(dashboard)* fix tree/circle views, add intention path + focused arc
+- add depth-dependent treemap padding and collapse single-child parents
+- add treemap weight mode toggle (sqrt/priority/dw-bucket/equal)
+- address overwhelm dashboard QA findings and improve graph performance
+- *(pkb)* add task_summary MCP tool + fix ready filter to claimable types only
+- *(pkb)* enforce parent/project on task creation, add merge-node command
+- *(lint)* prohibit body as frontmatter key, auto-migrate to markdown body
+- *(dashboard)* populate dashboard sections with live graph data instead of stale synthesis logs
+- *(dashboard)* show completed tasks by default in circle pack
+- *(dashboard)* remove FA2 graph layout, keep SFDP only
+- enforce PKB node quality — require id, parent, status_group
+- implement cross-process file locking for vector store index
+- *(dashboard)* wire Complete/Ready buttons to persist via aops CLI
+- add bench-reindex command and tune embedding parallelism defaults
+- expand linter schema and add autofixes for type, status, and ID format
+- drop filtered-out nodes from per-layout graph output
+- per-layout graph file output with version bump to 0.2.17
+- per-layout graph file output
+- add forceatlas2_focus layout and DOT export with positions
+- FA2 clustering on reachable-only subgraph with warm-start init
+- add reachable field to graph nodes
+- improve treemap, circle_pack, arc layouts + interactive preview
+- add treemap, circle packing, arc diagram layouts + rectangle-aware FA2
+- include task classifications in graph JSON output
+- load graph layout parameters from runtime layout.toml
+- *(graph)* add precomputed ForceAtlas2 layout coordinates
+- *(pkb)* add hierarchy validation warnings to create_task and create_document
+- *(tui)* add focus reasoning, cross-project synergy detection (Phase 5)
+- *(tui)* add quick capture modal and assumption engine in lib (Phase 4)
+- *(tui)* add assumption engine with parsing, display, and health (Phase 3)
+- *(tui)* add PKB integration with search and backlinks (Phase 2)
+- *(tui)* add graph-native views with context rendering (Phase 1)
+- *(tui)* add Planning Web TUI skeleton (Phase 0)
+- publish releases to public academicOps repo
+- add install script and cargo-binstall support
+- add progress indicator for batch embedding during reindex
+- complete mem CLI + MCP task command gaps (14 tasks)
+- *(cli)* task tree display overhaul — focus view, dashboard, visual hierarchy
+- *(cli)* UX improvements — show IDs, body, hints; rebuild graph after create
+- *(mcp)* consolidate 22 tools down to 18
+- *(cli)* tree view for `tasks`, remove `list` command
+- add create_document, append_to_document, improve update_task
+- *(pkb)* add get_task(id) tool to MCP server
+- add --version flag and make install target
+- *(pkb)* add pagination, project filter, and fix trace duplicates
+- *(pkb)* add type filter to pkb_orphans tool
+- use relative paths in vector and graph stores for portability
+- add graph-aware tools (pkb_context, pkb_search, pkb_trace, pkb_orphans)
+- *(cli)* add `mem done` and `mem update` commands
+- add Makefile for Apple Silicon cross-build, fix macOS ONNX download
+- extract graph modules, add task CLI/MCP tools, rename to aops
+
+### Fixed
+
+- *(graph)* canonicalise superseded status to cancelled ([#310](https://github.com/nicsuzor/mem/pull/310))
+- *(crud)* escape newlines in YAML double-quoted scalars (task-16fe56e6 re-confirmation) ([#311](https://github.com/nicsuzor/mem/pull/311))
+- *(ci)* use secrets: inherit in merge-prep-cron shim ([#306](https://github.com/nicsuzor/mem/pull/306))
+- *(mcp)* self-heal in-memory store after cross-process index lock release ([#301](https://github.com/nicsuzor/mem/pull/301))
+- *(tests)* pass --project to parent_validation pkb_new invocations ([#302](https://github.com/nicsuzor/mem/pull/302))
+- *(crud)* reject create_task/pkb new with nonexistent parent (task-89b2af87) ([#293](https://github.com/nicsuzor/mem/pull/293))
+- *(crud)* use project (not task_type) as ID prefix in create_task (task-381788fb) ([#291](https://github.com/nicsuzor/mem/pull/291))
+- *(lint)* pin VALID_STATUSES to canonical TAXONOMY.md via CI assertion ([#290](https://github.com/nicsuzor/mem/pull/290))
+- *(search)* defensive observability + seeded-search regression test ([#284](https://github.com/nicsuzor/mem/pull/284))
+- *(mcp)* wire `tags` filter through list_tasks ([#283](https://github.com/nicsuzor/mem/pull/283))
+- *(mcp)* add observability + tests + fail-loud for create_task regressions ([#281](https://github.com/nicsuzor/mem/pull/281))
+- *(overwhelm-dashboard)* demote hash-projected sessions to background activity ([#272](https://github.com/nicsuzor/mem/pull/272))
+- move telemetry.jsonl out of pkb_root to per-host state dir ([#262](https://github.com/nicsuzor/mem/pull/262))
+- repair 7 tests broken by status taxonomy + weight model drift ([#258](https://github.com/nicsuzor/mem/pull/258))
+- *(ci)* cover release build and repair test references ([#251](https://github.com/nicsuzor/mem/pull/251))
+- *(mem)* add missing TaskFields and FilterSet fields
+- *(overwhelm-dashboard)* legacy alias normalisation + downstream weight in detail pane ([#244](https://github.com/nicsuzor/mem/pull/244))
+- *(overwhelm-dashboard)* sync status filtering with canonical taxonomy ([#242](https://github.com/nicsuzor/mem/pull/242))
+- *(metro)* address QA defects on routes, layout, interchanges, tooltips ([#231](https://github.com/nicsuzor/mem/pull/231))
+- *(pkb-server)* inherit parent project in decompose_task subtasks ([#227](https://github.com/nicsuzor/mem/pull/227))
+- *(mcp)* repair duplicated rebuild_graph_for_pkb_document merge (#230 followup) ([#234](https://github.com/nicsuzor/mem/pull/234))
+- *(mcp)* reduce PKB tool signature friction ([#229](https://github.com/nicsuzor/mem/pull/229))
+- *(graph)* add missing blocking_urgency field to GraphNode initializer ([#222](https://github.com/nicsuzor/mem/pull/222))
+- remove top-level anyOf from get_document schema ([#217](https://github.com/nicsuzor/mem/pull/217))
+- fix compile
+- *(mcp)* support contributes_to and other complex frontmatter fields ([#210](https://github.com/nicsuzor/mem/pull/210))
+- fix dash
+- *(mcp)* restore compilation on main — CI has been red for 3+ days ([#208](https://github.com/nicsuzor/mem/pull/208))
+- *(mcp)* accept project/type/status in create_task and return structured JSON ([#194](https://github.com/nicsuzor/mem/pull/194))
+- *(mcp)* incremental graph update optimizations and ID change handling ([#200](https://github.com/nicsuzor/mem/pull/200))
+- fix leak svg
+- fixtiny treemap
+- fix tiny treemap
+- *(dashboard)* resolve build errors and optimize structural collapse logic
+- *(dashboard)* resolve ForceView constraints and add randomize functionality ([#187](https://github.com/nicsuzor/mem/pull/187))
+- *(mcp)* skip vector index update when reindex holds the lock ([#186](https://github.com/nicsuzor/mem/pull/186))
+- *(mem)* filter body from YAML frontmatter writes in update_document() ([#183](https://github.com/nicsuzor/mem/pull/183))
+- *(dashboard)* restore named constants and intermediates in ForceView ([#181](https://github.com/nicsuzor/mem/pull/181))
+- *(mcp)* improve update_task tool description with type warning
+- *(dashboard)* remove unused FORCE_CONFIG import
+- *(dashboard)* restore webcola grouping constraints
+- *(dashboard)* remove data fallbacks, enforce fail-fast pipeline ([#176](https://github.com/nicsuzor/mem/pull/176))
+- *(dashboard)* QA audit fixes and spec compliance ([#163](https://github.com/nicsuzor/mem/pull/163))
+- *(dashboard)* restore projectHue definition removed by circular import
+- deny println! in library code to protect MCP transport ([#150](https://github.com/nicsuzor/mem/pull/150))
+- *(dashboard)* visual hierarchy and blocked/dependency styling ([#149](https://github.com/nicsuzor/mem/pull/149))
+- *(dashboard)* QA improvements to overwhelm dash main page ([#147](https://github.com/nicsuzor/mem/pull/147))
+- graph accuracy, blocked propagation, ID resolution, completion evidence ([#146](https://github.com/nicsuzor/mem/pull/146))
+- *(dashboard)* improve webcola layout spread and add force config sliders
+- *(dashboard)* simplify to 3 forces, fix edge visibility and clumping
+- *(dashboard)* narrow intention path to P0/P1 seeds, exclude remaining siblings from highlight
+- *(dashboard)* move intention highlighting into drawStaticForce
+- *(dashboard)* break parent cycles before stratify in tree/circle views
+- *(dashboard)* add cycle detection to intention path parent walk
+- *(treemap)* resolve parent IDs and prevent layout shuffle on click
+- *(dash)* resolve treemap hierarchy bugs and remove virtual containers
+- remove extra closing brace in Status command that broke compilation
+- fix lint bug
+- flatten treemap weight curve with sqrt to distribute space more evenly
+- reduce leaf node font size (5-13px → 4-11px) to fit text on smaller nodes
+- reduce treemap parent font size (10-14px → 8-11px) to prevent node cutoff
+- add border clearance to treemap top padding (34→38px)
+- align treemap padding top with header height so children sit below parent title
+- improve treemap parent node text sizing, wrapping, and node spacing
+- harden dashboard task editor — remove delete, guard project completion, warn on active children
+- repair MCP connection and populate path reconstruction from session summaries
+- add missing subtasks field to test helper GraphNode initializer
+- remove duplicate line causing build failure in cli.rs
+- dashboard reads synthesis.json from wrong path
+- *(dashboard)* fix task completion by resolving aops binary path and adding missing toggle function
+- orphan detection now finds nodes with no valid parent
+- address PR review — single lock for stale check, GPU-aware batch size display
+- filter nodes without positions from per-layout DOT exports
+- address PR #35 review comments
+- remove stale graph cache that silently served incomplete JSON output
+- read node body from file in TUI detail view
+- use atomic writes for model downloads to prevent corrupt cache
+- use explicit task ID directly in filename without random suffix
+- *(release)* use portable sed for macOS compatibility
+- *(release)* use AOPS_RELEASE_TOKEN secret name
+- *(release)* regenerate lockfile during version bump
+- use model's sentence_embedding output instead of manual mean pooling
+- use LazyLock for static regex, hold write lock across remove+save
+- address 10 PR review comments
+
+### Other
+
+- release v0.3.31 ([#321](https://github.com/nicsuzor/mem/pull/321))
+- release v0.3.30 ([#320](https://github.com/nicsuzor/mem/pull/320))
+- release v0.3.29 ([#319](https://github.com/nicsuzor/mem/pull/319))
+- release v0.3.28 ([#318](https://github.com/nicsuzor/mem/pull/318))
+- release v0.3.27 ([#317](https://github.com/nicsuzor/mem/pull/317))
+- filter targets
+- release v0.3.26 ([#316](https://github.com/nicsuzor/mem/pull/316))
+- release v0.3.25 ([#315](https://github.com/nicsuzor/mem/pull/315))
+- rules for tasks
+- *(mcp)* fix focus_score_gte description (task-d997a904)
+- release v0.3.24 ([#314](https://github.com/nicsuzor/mem/pull/314))
+- release v0.3.23 ([#307](https://github.com/nicsuzor/mem/pull/307))
+- Force-graph node sizing by focus_score + tighten rmcp keep_alive ([#308](https://github.com/nicsuzor/mem/pull/308))
+- Preserve force-graph layout on legend toggles + remove silent taxonomy fallbacks ([#309](https://github.com/nicsuzor/mem/pull/309))
+- add bot_identity to merge-prep shim workflow_dispatch inputs ([#313](https://github.com/nicsuzor/mem/pull/313))
+- release v0.3.22 ([#278](https://github.com/nicsuzor/mem/pull/278))
+- *(mcp)* fix focus_score_gte description ([#305](https://github.com/nicsuzor/mem/pull/305))
+- *(mcp)* update focus_score descriptions to mention contributes_to propagation ([#304](https://github.com/nicsuzor/mem/pull/304))
+- *(vectordb)* split upsert into prepare+apply to keep embedding off the lock ([#298](https://github.com/nicsuzor/mem/pull/298))
+- *(graph)* snapshot embeddings before rebuild_graph drops the read lock ([#300](https://github.com/nicsuzor/mem/pull/300))
+- dynamic groups
+- min sizes
+- exponent
+- refresh
+- link fixed
+- edge colors
+- add status fills
+- no update
+- modular graph
+- update sliders
+- sliders
+- sliders
+- format
+- add fit
+- background refresh
+- startstop
+- topographic limiter
+- force map works in cytoscape
+- half weight
+- colors
+- WHITESPACE
+- dist
+- alpha
+- elk
+- thre grids
+- topographical layout
+- topographical layout
+- update extraction
+- initial inishgts
+- Overwhelm dashboard: adopt growth taxonomy for status filtering ([#280](https://github.com/nicsuzor/mem/pull/280))
+- *(perf)* instrument update_task per-phase + add bench harness (task-a4dcc039) ([#294](https://github.com/nicsuzor/mem/pull/294))
+- release v0.3.21 ([#276](https://github.com/nicsuzor/mem/pull/276))
+- make release pipeline self-healing + manually recoverable ([#277](https://github.com/nicsuzor/mem/pull/277))
+- release v0.3.20 ([#273](https://github.com/nicsuzor/mem/pull/273))
+- document all 7 edge types in README ([#275](https://github.com/nicsuzor/mem/pull/275))
+- projects
+- release v0.3.19 ([#256](https://github.com/nicsuzor/mem/pull/256))
+- [mem] PKB API: eliminate path parameter — only short-form id over the wire (rebased) ([#270](https://github.com/nicsuzor/mem/pull/270))
+- [mem] Implement lexicographic urgency propagation (rebased + spec-conformance fixes) ([#271](https://github.com/nicsuzor/mem/pull/271))
+- skip re-embedding when only frontmatter changed ([#267](https://github.com/nicsuzor/mem/pull/267))
+- Implement contributes_to storage and verbal mapping ([#265](https://github.com/nicsuzor/mem/pull/265))
+- Five experimental path-to-goal visualisations for overwhelm dashboard ([#264](https://github.com/nicsuzor/mem/pull/264))
+- exclude local worktreess
+- dash updates
+- Implement contributes_to parser + BFS integration ([#259](https://github.com/nicsuzor/mem/pull/259))
+- Install reusable pipeline on nicsuzor/mem ([#261](https://github.com/nicsuzor/mem/pull/261))
+- optimize update_task write-path latency ([#257](https://github.com/nicsuzor/mem/pull/257))
+- remove status from legend
+- enable clipping remote
+- update project filtering
+- power law sizing
+- increase size
+- square sizing
+- update sizes
+- tooltip
+- release v0.3.17 ([#255](https://github.com/nicsuzor/mem/pull/255))
+- release v0.3.16 ([#253](https://github.com/nicsuzor/mem/pull/253))
+- release v0.3.16 ([#252](https://github.com/nicsuzor/mem/pull/252))
+- type
+- release v0.3.15 ([#250](https://github.com/nicsuzor/mem/pull/250))
+- update weight
+- sessions
+- update display
+- front page logic
+- colpy id
+- *(dashboard)* decouple dashboard from synthesis.json
+- release v0.3.14 ([#223](https://github.com/nicsuzor/mem/pull/223))
+- Add positive project filter to dashboard (solo mode) ([#247](https://github.com/nicsuzor/mem/pull/247))
+- *(overwhelm-dashboard)* round-trip persistence test for PKB MCP writes ([#246](https://github.com/nicsuzor/mem/pull/246))
+- formatting
+- update ready - active status
+- align task status taxonomy with canonical (inbox→ready→queued→in_progress→merge_ready→done) ([#238](https://github.com/nicsuzor/mem/pull/238))
+- Revert "feat(mcp): add hierarchical listing to list_tasks and new get_tree to…" ([#237](https://github.com/nicsuzor/mem/pull/237))
+- audit CORE.md — remove absolute paths, add fail-fast halt rule ([#226](https://github.com/nicsuzor/mem/pull/226))
+- *(mcp)* cut write-path latency for update_task / complete_task / create_task ([#230](https://github.com/nicsuzor/mem/pull/230))
+- remove TUI from pkb tool ([#228](https://github.com/nicsuzor/mem/pull/228))
+- release v0.3.13 ([#221](https://github.com/nicsuzor/mem/pull/221))
+- release v0.3.12 ([#218](https://github.com/nicsuzor/mem/pull/218))
+- Add recency_signal pure function for focus_score ([#220](https://github.com/nicsuzor/mem/pull/220))
+- enable on wsl
+- adjust heat
+- add slider for link length again
+- put var in
+- add intra-group links
+- release v0.3.11 ([#216](https://github.com/nicsuzor/mem/pull/216))
+- change estimate for font scaling
+- release v0.3.10 ([#214](https://github.com/nicsuzor/mem/pull/214))
+- T9 CLEANUP (mem): Update release_task tool description and CORE.md ([#213](https://github.com/nicsuzor/mem/pull/213))
+- release v0.3.9 ([#166](https://github.com/nicsuzor/mem/pull/166))
+- T4 IMPL (mem): release_task auto-creates ad-hoc task when no id bound ([#212](https://github.com/nicsuzor/mem/pull/212))
+- typo
+- *(mem)* YAML frontmatter extension for session handover ([#206](https://github.com/nicsuzor/mem/pull/206))
+- Radically simplify MCP tool surface + docs ([#197](https://github.com/nicsuzor/mem/pull/197))
+- Add usage telemetry to MCP server and pkb stats CLI command ([#202](https://github.com/nicsuzor/mem/pull/202))
+- Compute project field from nearest project ancestor and ignore frontmatter ([#201](https://github.com/nicsuzor/mem/pull/201))
+- integrate extra branch
+- partially clarify metro
+- overflow
+- ui changes
+- update ui
+- resume don't reset
+- ui
+- rename
+- metro
+- adjustmnets
+- groups work!
+- layout works
+- force graph showing again
+- recover crash
+- *(dashboard)* radically simplify ForceView — remove edges, hover, seeding (731→370 lines)
+- Add effort and consequence fields to PKB data model ([#189](https://github.com/nicsuzor/mem/pull/189))
+- Wire 'due' through create_task and handle_decompose_task in PKB server ([#188](https://github.com/nicsuzor/mem/pull/188))
+- add user expectations to planning-web umbrella spec ([#185](https://github.com/nicsuzor/mem/pull/185))
+- *(dashboard)* radically simplify ForceView (731→370 lines) ([#184](https://github.com/nicsuzor/mem/pull/184))
+- *(dashboard)* simplify ForceView — extract helpers, remove dead code ([#178](https://github.com/nicsuzor/mem/pull/178))
+- install PR reviewer agent with fix authority + runtime axiom loading (PR #465) ([#174](https://github.com/nicsuzor/mem/pull/174))
+- read agent prompts from origin/main, not the PR branch ([#171](https://github.com/nicsuzor/mem/pull/171))
+- replace pr-reviewer with three-agent review suite ([#170](https://github.com/nicsuzor/mem/pull/170))
+- release v0.3.8 ([#155](https://github.com/nicsuzor/mem/pull/155))
+- "Claude PR Assistant workflow" ([#165](https://github.com/nicsuzor/mem/pull/165))
+- *(dashboard)* address PR 158 review comments ([#159](https://github.com/nicsuzor/mem/pull/159))
+- graph improvements
+- release v0.3.7 ([#148](https://github.com/nicsuzor/mem/pull/148))
+- add axiom-driven PR reviewer ([#153](https://github.com/nicsuzor/mem/pull/153))
+- MCP integration tests for stdio and HTTP/SSE transports ([#154](https://github.com/nicsuzor/mem/pull/154))
+- update dash and delete test files
+- qa checkin
+- release v0.3.6 ([#134](https://github.com/nicsuzor/mem/pull/134))
+- *(dashboard)* webcola integration with epic-based grouping
+- *(dashboard)* consolidate force simulation config into constants.ts
+- add CLAUDE.md and GEMINI.md pointing to .agent/CORE.md
+- update CORE.md — 36 tools, new source files
+- update PR reviewer agent prompt to latest
+- Remove layout generation from Rust PKB tool; dashboard uses single graph.json
+- Dim completed task outlines so priority borders only pop on active tasks
+- radius-aware bounds for better circle pack viewport fit
+- Circle pack: expand graph to full width when no task selected
+- Circle pack: shrink completed tasks so active work dominates layout
+- Circle pack: consistent status-based color encoding matching legend
+- Circle pack: dim completed task text + larger parent labels
+- Circle pack: depth-tiered parent containers with prominent labels
+- Circle pack: zoom-responsive text labels hide when too small to read
+- Mute active task colors so only attention states pop
+- Make project boundaries visually explicit
+- Increase task card spacing for calmer visual texture
+- Add 3-tier visual hierarchy: projects → epics → tasks
+- project-grouped hierarchy with priority-driven area
+- Improve treemap readability: spacing, opacity, contrast, no grid
+- Switch treemap to status-based fill colors with priority borders
+- Fix treemap parent headers to grow dynamically with wrapped text
+- Fix graph layout key mapping to match actual filenames
+- release v0.3.4
+- Update .github/agents/pr-reviewer.agent.md
+- Update .github/agents/pr-reviewer.agent.md
+- add PR reviewer bot (axiom-driven review agent)
+- release v0.3.3
+- release v0.3.1
+- release v0.3.1
+- Update src/lint.rs
+- spec
+- Merge pull request #113 from nicsuzor/feat/dashboard-density-legend
+- address PR #113 review comments — extract magic numbers and helpers
+- release v0.2.37
+- replace project field
+- remove project from header
+- synth
+- change install script
+- Merge pull request #111 from nicsuzor/crew/crew_37
+- Update src/lint.rs
+- *(dashboard)* use css hidden instead of svelte unmounting to prevent expensive graph re-renders on tab switch
+- Merge pull request #84 from nicsuzor/release-plz-2026-03-11T08-24-29Z
+- update treemap
+- release v0.2.31
+- release v0.2.30
+- Merge pull request #80 from nicsuzor/crew/alexis_21
+- Merge pull request #76 from nicsuzor/feat/search-detail-level
+- release v0.2.29 ([#75](https://github.com/nicsuzor/mem/pull/75))
+- address review feedback on batch graph operations
+- batch graph operations for task graph restructuring
+- automate releases with release-plz
+- v0.2.19
+- Update src/graph_store.rs
+- v0.2.16
+- defer layout computation to on-demand only
+- v0.2.15
+- split release into two-step bump/tag workflow
+- v0.2.14
+- Merge pull request #42 from nicsuzor/layouts
+- Update src/graph_store.rs
+- Update src/layout.rs
+- add cargo install instructions to CORE.md
+- document canonical status values and node types in README
+- canonical status constants and archived alias
+- v0.2.13
+- v0.2.12
+- ignore outputs
+- v0.2.11 ([#39](https://github.com/nicsuzor/mem/pull/39))
+- Merge branch 'main' into feat/layout-improvements-37
+- v0.2.9
+- Merge pull request #35 from nicsuzor/crew/audre_78
+- v0.2.7
+- v0.2.6
+- add graph layout configuration section to README
+- v0.2.5
+- Merge PR #24: Add confidence, source, supersedes fields to memories
+- v0.2.4
+- v0.2.3
+- v0.2.2
+- v0.2.1
+- Merge branch 'main' into polecat/mem-6d45faf2
+- Merge branch 'main' into aops-tui-ascii-context-3751429817177404899
+- Merge pull request #21 from nicsuzor/polecat/mem-a29aae98
+- Add background worker dispatch method for TUI tasks
+- rewrite README for public release
+- v0.2.0
+- clean up for public release
+- v0.1.18
+- combine
+- combine
+- v0.1.17
+- v0.1.16
+- cuda version
+- v0.1.15
+- v0.1.14
+- v0.1.13
+- extract shared lib.rs to eliminate per-binary dead code warnings
+- Merge branch 'crew/barbara': switch to BGE-M3 embedding model
+- v0.1.12
+- warnings
+- Merge pull request #5 from nicsuzor/crew/crew_12
+- add 38 unit tests and update documentation for new tools
+- add intentionally empty file
+- *(cli)* rename _v2 display functions to drop suffix
+- v0.1.10
+- v0.1.9
+- ready to release
+- release scripts
+- v0.1.6
+- license GPLv3, rename binary pkb-search -> pkb, acknowledge shodh-memory
+- task tree improvements
+- v0.1.4
+- v0.1.3
+- v0.1.2
+- add release workflow with version bumping and multi-arch builds
+- document all 15 CLI commands and 15 MCP tools in README
+- fold fast-indexer into aops CLI, delete separate binary
+- generalize task_crud.rs to document_crud.rs for memory support
+- lazy ONNX session pool — 3x faster search startup
+- simplify default paths, require ACA_DATA
+- increase chunk size
+- 3x faster reindex with dynamic padding, rayon parallelism, progressive saves
+- parallel
+- add cli
+- first version
+- PKB Semantic Search MCP Server
+
 ## [0.3.31](https://github.com/nicsuzor/mem/compare/v0.3.30...v0.3.31) - 2026-05-05
 
 ### Added
