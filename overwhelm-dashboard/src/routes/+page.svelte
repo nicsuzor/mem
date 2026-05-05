@@ -172,6 +172,7 @@
         const TASK_TYPES = new Set(["task", "goal", "project", "epic", "bug", "feature", "learn", "action", "subproject", "target"]);
         fNodes = fNodes.filter(n => {
             if (!TASK_TYPES.has(n.type)) return false;
+            if (n.type === "target" && !$filters.showTargets) return false;
             if (STRUCTURAL_TYPES.has(n.type)) return true;
             return n._raw?.task_id != null && n._raw?.status && n._raw.status.trim() !== "";
         });

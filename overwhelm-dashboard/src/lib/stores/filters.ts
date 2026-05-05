@@ -30,4 +30,6 @@ export const filters = writable({
     edgeSimilar: 'hidden' as VisibilityState,             // similar_to (noisy by default)
     edgeReferences: 'hidden' as VisibilityState,          // link / wikilink
     edgeIntraGroup: 'bright' as VisibilityState,
+
+    showTargets: false,
 });

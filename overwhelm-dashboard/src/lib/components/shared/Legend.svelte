@@ -1,6 +1,6 @@
 <script lang="ts">
     import { filters, cycleVisibility, type VisibilityState } from '../../stores/filters';
-    import { graphData } from '../../stores/graph';
+    import { graphData, preparedGraphData } from '../../stores/graph';
     import { viewSettings } from '../../stores/viewSettings';
     import { PRIORITIES } from '../../data/constants';
     import { projectColor } from '../../data/projectUtils';
@@ -131,6 +131,7 @@
         };
     })() : null;
 
+    $: targetCount = $preparedGraphData ? $preparedGraphData.nodes.filter(n => n.type === 'target').length : 0;
     $: availableProjects = $graphData?.allProjects || [];
 
     $: visibleProjects = showAllProjects
@@ -169,6 +170,21 @@
                         <span class="edge-state">{stateLabel(vis)}</span>
                     </button>
                 {/each}
+            </div>
+
+            <!-- Target node types -->
+            <div class="legend-section">
+                <span class="legend-section-title">NODE TYPES</span>
+                <button
+                    class="legend-item"
+                    class:dimmed={!$filters.showTargets}
+                    on:click={() => filters.update(f => ({ ...f, showTargets: !f.showTargets }))}
+                    title="Click to toggle target nodes"
+                >
+                    <div class="legend-box" style="background: rgba(10, 14, 20, 0.92); border: 2px solid #f59e0b; border-radius: 999px;"></div>
+                    <span class="legend-label">TARGETS{targetCount > 0 ? ` [${targetCount}]` : ''}</span>
+                    <span class="filter-badge">{$filters.showTargets ? 'ON' : 'OFF'}</span>
+                </button>
             </div>
 
             <!-- Edge visibility (click to cycle: bright → half → hidden) -->
