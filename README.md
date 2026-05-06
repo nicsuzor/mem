@@ -115,12 +115,25 @@ All frontmatter fields are optional. Files without frontmatter are indexed by fi
 
 ### Node types
 
-| Category | Types |
-|----------|-------|
-| **Actionable** | `goal`, `project`, `subproject`, `epic`, `task`, `action`, `bug`, `feature`, `milestone`, `learn` |
-| **Reference** | `note`, `knowledge`, `memory`, `contact` |
+| Category | Types | Role |
+|----------|-------|------|
+| **Actionable** | `goal`, `project`, `subproject`, `epic`, `task`, `action`, `bug`, `feature`, `milestone`, `learn` | Executed; appear in ready/blocked queues |
+| **Obligation** | `target`, `prototype` | Declared deadline-bound obligations or class templates; not executed but propagate urgency to contributing tasks (see Focus Scoring) |
+| **Reference** | `note`, `knowledge`, `memory`, `contact` | Knowledge content; searchable but excluded from task workflows |
 
-Actionable types are used for task management (ready/blocked analysis, dependency graphs, focus picks). Reference types appear in search and the knowledge graph but are excluded from task workflows.
+`target` represents a one-shot terminal obligation (a deadline you must not miss). `prototype` is a class template for recurring obligations (e.g. peer review load) whose instances inherit `severity`, `goal_type`, and edge defaults at creation.
+
+### Priority levels
+
+| Level | Label | Use |
+|-------|-------|-----|
+| `0` | P0 — Critical | Drop everything; this is what you're doing now |
+| `1` | P1 — High | Active commitment; this week |
+| `2` | P2 — Standard | Default; ordinary work |
+| `3` | P3 — Low | Background; pick up when capacity exists |
+| `4` | P4 — Backlog | May never happen; keep visible |
+
+Priority propagates upward via `effective_priority`: a P3 task blocking a P0 inherits P0 weighting in scoring even though its own field stays P3. See Focus Scoring for how priority composes with severity and urgency.
 
 ### Edge types
 
@@ -137,6 +150,79 @@ The knowledge graph has seven edge types. Some are derived from frontmatter, oth
 | `similar_to` | Computed from BGE-M3 embeddings (cosine ≥ 0.85) | ❌ | ❌ | Auto-discovered semantic similarity; appears in `pkb_context` and `pkb_trace` |
 
 `similar_to` edges are materialised when the graph is built with the vector store available (e.g. via the MCP server). They participate in pathfinding (`pkb_trace`) and context display (`pkb_context`) but are deliberately excluded from blocking analysis and ready/blocked classification — semantic similarity is informational, not causal.
+
+## Focus Scoring
+
+Tasks are ranked by one composite integer, **`focus_score`** — the sum of priority, severity, deadline pressure, age, structural blast radius, stakeholder waiting time, and urgency (target propagation). Sort by it; ignore the components unless you're debugging a ranking.
+
+For deadline-bound obligations that aren't tasks themselves (ARC submissions, contract signings, anything you must not fail), declare a **target node** and link contributing tasks to it:
+
+```yaml
+# The obligation
+type: target
+severity: 3                      # see severity ladder below
+goal_type: committed             # committed | aspirational | learning
+due: 2026-05-07
+consequence: "Late review damages standing with the panel."
+
+# A task contributing to it
+contributes_to:
+  - to: <target-id>
+    weight: Certain              # see weight scale below
+    why: "contractual obligation as assigned assessor"
+```
+
+`mem` propagates `severity × edge_weight × deadline-slack` back from each target to its contributors, writing `node.urgency` and folding it into `focus_score`. A P2 task blocking a SEV3-committed deadline rises automatically as the deadline approaches — no priority bumping.
+
+### Severity ladder
+
+| Level | Label | Example |
+|-------|-------|---------|
+| 0 | Negligible | Minor annoyance; no consequence beyond self |
+| 1 | Low | Small reputational or time cost |
+| 2 | Moderate | Meaningful commitment; recoverable if missed |
+| 3 | High | Serious consequence; hard to recover |
+| **4** | **Terminal** | **Job loss, bankruptcy, severe health, legal** |
+
+SEV0–3 are compensatory (standard scalar math). **SEV4 + `goal_type: committed` is lexicographic** — it gets a 10 000× multiplier so any SEV4-adjacent task outranks any non-SEV4 task regardless of priority, deadline, or anything else. Use sparingly; the cognitive speedbump of writing `consequence:` prose is part of the design.
+
+### `goal_type`
+
+| Value | Effect |
+|-------|--------|
+| `committed` | Receives the lexicographic override at SEV4. Standard contractual / non-negotiable obligations. |
+| `aspirational` | Linear propagation only. `consequence:` is reused as opportunity-cost prose. Prevents moonshots from hijacking the queue. |
+| `learning` | Linear propagation only. Marks targets where the value is the attempt, not the outcome. |
+
+### Weight scale (Renooij-Witteman)
+
+`contributes_to.weight` accepts only verbal terms — raw decimals are rejected at parse time. Weights mean **Birnbaum importance** (probability that missing this task guarantees target failure), not "percent contribution":
+
+| Term | Anchor | Reading |
+|------|--------|---------|
+| Certain | 1.00 | Single point of failure — miss this and the target fails |
+| Probable | 0.85 | Strong contributor |
+| Expected | 0.75 | Likely needed |
+| Fifty-Fifty | 0.50 | Redundancy exists |
+| Uncertain | 0.25 | Possibly needed |
+| Improbable | 0.15 | Marginal |
+| Impossible | 0.00 | No contribution |
+
+Non-linearity defeats the spacing and centring biases that corrupt linear scales.
+
+### `focus_score` components
+
+| Term | Range | Trigger |
+|------|-------|---------|
+| `priority_base` | 0 / 5 000 / 10 000 | P0 = 10 000, P1 = 5 000, P2+ = 0 |
+| `severity_bonus` | 0 – 100 000 | SEV0–4 on the task itself; SEV4 lexicographic |
+| `deadline_score` | 0 – 12 000 | Overdue / tight / near-tight; ×1.5 if `consequence` set |
+| `age_staleness_bonus` | 0 – 200 | P2+ only; min(days_since_created, 200) |
+| `downstream_weight × 10` | 0 – ∞ | Structural blast radius from `parent` / `depends_on` BFS |
+| `stakeholder_waiting_bonus` | 0 / 2 000 – 8 000 | When `stakeholder` set; +200/day |
+| `urgency_term` | 0 – 10 000+ | `round(node.urgency)` — target propagation |
+
+The formula lives in `compute_urgency` and `compute_focus_scores` in `src/graph_store.rs`. Prototype nodes (for recurring obligations like peer review) and the deferred calibration ritual extend the model — see the source for current behaviour.
 
 ## CLI Commands
 
