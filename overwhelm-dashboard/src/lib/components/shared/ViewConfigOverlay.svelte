@@ -11,14 +11,7 @@
     $: isTreemap = layout === "treemap";
 
     // Show live controls when the layout has tunable parameters
-    $: hasLiveControls = isForce || isGroups || isCircle || isArc || isTreemap;
-
-    const WEIGHT_MODES = [
-        { value: 'sqrt', label: '√ FOCUS' },
-        { value: 'priority', label: 'PRIORITY' },
-        { value: 'focus-bucket', label: 'FOCUS BUCKET' },
-        { value: 'equal', label: 'EQUAL' },
-    ] as const;
+    $: hasLiveControls = isForce || isGroups || isCircle || isArc;
 
     const METRO_ALGORITHMS = [
         { value: 'force', label: 'Force (Organic)' },
@@ -150,24 +143,6 @@
                     </div>
                 {/if}
 
-                {#if isTreemap}
-                    <div class="space-y-2">
-                        <span class="text-[9px] text-primary/50 uppercase">Weight_Mode</span>
-                        <div class="grid grid-cols-2 gap-1">
-                            {#each WEIGHT_MODES as mode}
-                                <button
-                                    class="px-2 py-1.5 text-[9px] font-bold uppercase tracking-wider border rounded-sm transition-all cursor-pointer
-                                        {$viewSettings.treemapWeightMode === mode.value
-                                            ? 'bg-primary text-background border-primary'
-                                            : 'bg-primary/5 text-primary/60 border-primary/20 hover:border-primary/40'}"
-                                    onclick={() => viewSettings.update(s => ({ ...s, treemapWeightMode: mode.value }))}
-                                >
-                                    {mode.label}
-                                </button>
-                            {/each}
-                        </div>
-                    </div>
-                {/if}
             </div>
         {/if}
 

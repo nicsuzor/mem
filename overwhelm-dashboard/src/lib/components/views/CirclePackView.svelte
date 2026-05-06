@@ -5,6 +5,7 @@
     import { viewSettings } from "../../stores/viewSettings";
     import { buildCirclePackNode } from "../shared/NodeShapes";
     import { routeContainmentEdges } from "../shared/EdgeRenderer";
+    import { focusSize, maxFocusOf } from "../../data/nodeSize";
 
     import { onMount } from "svelte";
 
@@ -117,36 +118,22 @@
         // as minimum enclosing circles — no .size() inflation.
         root.each((node: any) => { node.data._isHierarchyParent = !!node.children; });
 
-        // Size leaves the same way as the treemap: by weight mode
-        const weightMode = $viewSettings.treemapWeightMode || 'priority';
-        const BASE_RADIUS = 10;
+        // Leaves sized by central focus → radius mapping.
+        const MIN_R = 6;
+        const MAX_R = 40;
+        const maxFocus = maxFocusOf(nodes);
+        const leafRadius = (d: any) => focusSize(d.focusScore, maxFocus, MIN_R, MAX_R);
 
-        function leafWeight(d: any): number {
-            switch (weightMode) {
-                case 'priority': {
-                    if (d.status === 'done' || d.status === 'cancelled') return 1;
-                    if ((d.priority ?? 5) <= 1) return 3;
-                    return 2;
-                }
-                case 'focus-bucket': {
-                    const s = d.focusScore ?? 0;
-                    if (s > 5000) return 4;
-                    if (s > 1000) return 3;
-                    if (s > 100) return 2;
-                    return 1;
-                }
-                case 'equal': return 1;
-                default: return Math.max(1, Math.sqrt(d.focusScore ?? 0) || 1);
-            }
-        }
-
-        root.sum((d: any) => d._isHierarchyParent ? 0 : leafWeight(d));
-
-        // Sort by decreasing size for tighter geometric packing
+        // value (used only for sort ordering) is area ∝ r²
+        root.sum((d: any) => {
+            if (d._isHierarchyParent) return 0;
+            const r = leafRadius(d);
+            return r * r;
+        });
         root.sort((a, b) => (b.value || 0) - (a.value || 0));
 
         const pack = d3.pack<any>()
-            .radius((d: any) => BASE_RADIUS * Math.sqrt(leafWeight(d.data)))
+            .radius((d: any) => leafRadius(d.data))
             .padding((d: any) => {
                 if (!d.children) return 0.5;
                 return d.depth <= 2 ? 6 : 2;

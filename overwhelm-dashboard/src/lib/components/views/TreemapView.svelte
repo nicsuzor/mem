@@ -11,6 +11,7 @@
     import { routeTreemapEdges } from "../shared/EdgeRenderer";
     import { viewSettings } from "../../stores/viewSettings";
     import type { GraphEdge } from "../../data/prepareGraphData";
+    import { focusSize, maxFocusOf } from "../../data/nodeSize";
 
     let {
         containerGroup,
@@ -35,12 +36,11 @@
     let links = $state<any[]>([]);
 
     $effect(() => {
-        // Run layout ONLY when graph data or weight settings change.
+        // Run layout ONLY when graph data changes.
         // untrack() prevents Svelte from auto-tracking reactive reads inside
         // computeLayout (e.g. canvasH, $filters) — those would cause a
         // re-layout when the container resizes (sidebar open/close on click).
         const _data = $graphData;
-        const _weightMode = $viewSettings.treemapWeightMode;
         if (containerGroup && _data && nodesLayer) {
             untrack(() => computeLayout(_data));
         }
@@ -121,8 +121,12 @@
             return;
         }
 
-        const MIN_NODE_WEIGHT = 1;
-        const weightMode = $viewSettings.treemapWeightMode || "sqrt";
+        // Weight unit range — d3.treemap allocates area proportional to value.
+        // Min=20 keeps low-focus tiles visible; max=100 caps the dynamic range
+        // so a single huge-focus task doesn't swallow the canvas.
+        const MIN_WEIGHT = 20;
+        const MAX_WEIGHT = 100;
+        const maxFocus = maxFocusOf(nodes);
 
         // Mark hierarchy parents — d.children on raw data is always undefined
         // since parent-child is defined by parent ID, not nested arrays.
@@ -134,33 +138,7 @@
 
         root.sum((d) => {
             if (d._isHierarchyParent) return 0;
-            switch (weightMode) {
-                case "priority": {
-                    if (d.status === "done") return 1;
-                    if (d.priority <= 1) return 3;
-                    return 2;
-                }
-                case "focus-bucket": {
-                    const s = d.focusScore ?? 0;
-                    if (s > 5000) return 4;
-                    if (s > 1000) return 3;
-                    if (s > 100) return 2;
-                    return 1;
-                }
-                case "equal":
-                    return 1;
-                // default:
-                // return Math.max(
-                //     MIN_NODE_WEIGHT,
-                //     Math.sqrt(d.focusScore ?? 0) || MIN_NODE_WEIGHT,
-                // );
-                default:
-                    return Math.max(
-                        MIN_NODE_WEIGHT,
-                        // Exponent > 1 exaggerates differences, < 1 (like 0.5/sqrt) compresses them
-                        Math.pow(d.focusScore ?? 0, 0.8) || MIN_NODE_WEIGHT,
-                    );
-            }
+            return focusSize(d.focusScore, maxFocus, MIN_WEIGHT, MAX_WEIGHT);
         });
 
         // STABLE SORT: Tie-break with ID to prevent jumping on re-renders
@@ -212,8 +190,8 @@
             layoutMap.set(d.data.id, {
                 x: d.x0 + (d.x1 - d.x0) / 2,
                 y: d.y0 + (d.y1 - d.y0) / 2,
-                w: Math.max(0, d.x1 - d.x0),
-                h: Math.max(0, d.y1 - d.y0),
+                w: Math.max(14, d.x1 - d.x0),
+                h: Math.max(14, d.y1 - d.y0),
                 depth: d.depth,
                 isLeaf: !d.children || d.children.length === 0,
                 leafCount,
@@ -223,7 +201,7 @@
         visibleNodes = nodes
             .filter((n: any) => {
                 const l = layoutMap.get(n.id);
-                if (l && l.w >= 8 && l.h >= 8) {
+                if (l) {
                     n.x = l.x;
                     n.y = l.y;
                     n._lw = l.w;

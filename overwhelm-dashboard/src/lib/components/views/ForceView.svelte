@@ -16,6 +16,7 @@
     import { getEdgeTypeDef } from "../../data/taxonomy";
     import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
     import { toggleSelection } from "../../stores/selection";
+    import { focusSize, maxFocusOf } from "../../data/nodeSize";
 
     export let running = false;
     export let restartNonce = 0;
@@ -25,7 +26,7 @@
     let elements: any[] = [];
     let layoutOptions: any = { name: "cola" };
 
-    // Size nodes by focus_score (sqrt scaling between MIN and MAX).
+    // Size nodes by focus_score via the central focus → size mapping.
     const FOCUS_MIN_SIZE = 8;
     const FOCUS_MAX_SIZE = 40;
 
@@ -40,10 +41,7 @@
         const visibleNodes = nodes.filter(
             (n) => !currentFilters.hiddenProjects?.includes(n.project),
         );
-        const maxFocus = Math.max(
-            1,
-            ...visibleNodes.map((n) => n.focusScore || 0),
-        );
+        const maxFocus = maxFocusOf(visibleNodes);
 
         // Use a simple inclusion for Force View: everything that's not hidden.
         visibleNodes.forEach((n) => {
@@ -55,10 +53,12 @@
                 "bright",
             );
 
-            const focus = n.focusScore || 0;
-            const t = Math.sqrt(focus / maxFocus);
-            nodeData.nodeSize =
-                FOCUS_MIN_SIZE + (FOCUS_MAX_SIZE - FOCUS_MIN_SIZE) * t;
+            nodeData.nodeSize = focusSize(
+                n.focusScore,
+                maxFocus,
+                FOCUS_MIN_SIZE,
+                FOCUS_MAX_SIZE,
+            );
 
             newElements.push({
                 data: nodeData,

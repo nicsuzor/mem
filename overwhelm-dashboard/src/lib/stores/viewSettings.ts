@@ -18,23 +18,23 @@ export const viewSettings = writable<Record<string, any>>({
     enableEpicGrouping: false, // shared toggle for epic compound nodes in physics graphs
 
     // Link-specific forces
-    colaLinkDistIntraParent: 100,
-    colaLinkWeightIntraParent: 0.4,
-    colaLinkDistInterParent: 250,
+    colaLinkDistIntraParent: 40,
+    colaLinkWeightIntraParent: 0.6,
+    colaLinkDistInterParent: 80,
     colaLinkWeightInterParent: 0.4,
-    colaLinkDistDependsOn: 200,
+    colaLinkDistDependsOn: 100,
     colaLinkWeightDependsOn: 0.1,
-    colaLinkDistSoftDependsOn: 400,
+    colaLinkDistSoftDependsOn: 200,
     colaLinkWeightSoftDependsOn: 0.1,
     colaLinkDistContributesTo: 400,
     colaLinkWeightContributesTo: 0.1,
     colaLinkDistSimilarTo: 600,
     colaLinkWeightSimilarTo: 0.1,
-    colaLinkDistRef: 600,
+    colaLinkDistRef: 300,
     colaLinkWeightRef: 0.1,
 
     colaConvergence: 0.05, // convergence threshold - must be < 0.1 (Cola's initial alpha)
-    colaFlowSep: 40,       // min vertical separation between linked nodes
+    colaFlowSep: 10,       // min vertical separation between linked nodes
     colaGroupPadding: 15,  // padding inside epic group hulls - keeps non-descendants out
     // Cola debug toggles - turn on one at a time to isolate layout issues
     colaAvoidOverlaps: true,
@@ -43,7 +43,6 @@ export const viewSettings = writable<Record<string, any>>({
     colaHandleDisconnected: true,
     circleRollupThreshold: 15,
     arcVerticalSpacing: 1.0,
-    treemapWeightMode: 'sqrt' as 'sqrt' | 'priority' | 'focus-bucket' | 'equal',
     arcFocusedOnly: true,
     showFocusHighlight: true,
     activeOverlay: null as string | null, // legacy overlay field; keep until older callers are removed
