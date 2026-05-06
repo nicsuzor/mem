@@ -33,6 +33,19 @@ pub struct OutputGraph {
     pub focus: Vec<String>,
 }
 
+/// Result of a stated-vs-revealed weight divergence check.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WeightDivergence {
+    pub source_id: String,
+    pub source_label: String,
+    pub target_id: String,
+    pub target_label: String,
+    pub stated_weight: String,
+    pub numeric_weight: f64,
+    pub justification: String,
+    pub days_since_interaction: i64,
+}
+
 // ===========================================================================
 // GraphStore
 // ===========================================================================
@@ -260,9 +273,12 @@ impl GraphStore {
         }
 
         // 10. Build node map and classify tasks
-        let node_map: HashMap<String, GraphNode> =
+        let mut node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
         let (ready, blocked, roots) = classify_tasks(&node_map);
+
+        // 11. Compute divergence anomalies and set flags on nodes (default 14 days)
+        compute_divergence_anomalies(&mut node_map, &blocked, 14);
 
         // 12. Build resolution map for flexible node lookup
         let resolution_map = build_resolution_map(&node_map);
@@ -277,7 +293,6 @@ impl GraphStore {
         }
     }
 
-
     // -----------------------------------------------------------------------
     // Query API
     // -----------------------------------------------------------------------
@@ -285,6 +300,7 @@ impl GraphStore {
     pub fn get_node(&self, id: &str) -> Option<&GraphNode> {
         self.nodes.get(id)
     }
+
 
     /// Clone the full node map (for incremental rebuilds).
     pub fn nodes_cloned(&self) -> HashMap<String, GraphNode> {
@@ -762,6 +778,64 @@ impl GraphStore {
 
         components.sort_by(|a, b| b.len().cmp(&a.len()));
         components
+    }
+
+    /// Detect 'contributes_to' edges with high stated weight but zero interaction
+    /// on the source task in N days.
+    pub fn detect_weight_divergences(&self, threshold_days: i64) -> Vec<WeightDivergence> {
+        let now = Utc::now();
+        let mut divergences = Vec::new();
+        let blocked_ids: HashSet<&str> = self.blocked.iter().map(|s| s.as_str()).collect();
+
+        for node in self.nodes.values() {
+            // False-positive guard: don't flag edges where the task is rationally blocked
+            if blocked_ids.contains(node.id.as_str()) {
+                continue;
+            }
+
+            // Also skip completed tasks
+            if graph::is_completed(node.status.as_deref()) {
+                continue;
+            }
+
+            let modified_dt = if let Some(ref modified) = node.modified {
+                DateTime::parse_from_rfc3339(modified)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .ok()
+            } else {
+                None
+            };
+
+            let days_since_interaction = modified_dt
+                .map(|dt| (now - dt).num_days())
+                .unwrap_or(0);
+
+            if days_since_interaction >= threshold_days {
+                for ct in &node.contributes_to {
+                    // High weight >= 0.75 (Expected)
+                    if ct.numeric_weight() >= 0.75 {
+                        let target_id = ct.resolved_to.clone().unwrap_or_else(|| ct.to.clone());
+                        let target_label = self
+                            .nodes
+                            .get(&target_id)
+                            .map(|n| n.label.clone())
+                            .unwrap_or_else(|| ct.to.clone());
+
+                        divergences.push(WeightDivergence {
+                            source_id: node.id.clone(),
+                            source_label: node.label.clone(),
+                            target_id,
+                            target_label,
+                            stated_weight: ct.stated_weight.clone(),
+                            numeric_weight: ct.numeric_weight(),
+                            justification: ct.justification.clone(),
+                            days_since_interaction,
+                        });
+                    }
+                }
+            }
+        }
+        divergences
     }
 
     // -----------------------------------------------------------------------
@@ -2299,6 +2373,51 @@ fn classify_tasks(
     (ready, blocked, roots)
 }
 
+/// Compute stated-revealed weight divergence anomalies on nodes.
+///
+/// Flags `contributes_to` edges with high stated weight (>= 0.75) where
+/// the source task has been inactive for `threshold_days`.
+fn compute_divergence_anomalies(
+    nodes: &mut HashMap<String, GraphNode>,
+    effectively_blocked: &[String],
+    threshold_days: i64,
+) {
+    let now = Utc::now();
+    let blocked_set: HashSet<&str> = effectively_blocked.iter().map(|s| s.as_str()).collect();
+
+    for node in nodes.values_mut() {
+        // Skip blocked tasks (false-positive guard)
+        if blocked_set.contains(node.id.as_str()) {
+            continue;
+        }
+        // Skip completed tasks
+        if graph::is_completed(node.status.as_deref()) {
+            continue;
+        }
+
+        let modified_dt = if let Some(ref modified) = node.modified {
+            DateTime::parse_from_rfc3339(modified)
+                .map(|dt| dt.with_timezone(&Utc))
+                .ok()
+        } else {
+            None
+        };
+
+        let days_since_interaction = modified_dt
+            .map(|dt| (now - dt).num_days())
+            .unwrap_or(0);
+
+        if days_since_interaction >= threshold_days {
+            for ct in &mut node.contributes_to {
+                // High weight >= 0.75 (Expected)
+                if ct.numeric_weight() >= 0.75 {
+                    ct.anomaly_flag = true;
+                }
+            }
+        }
+    }
+}
+
 /// Mark nodes reachable from active leaf tasks via upstream BFS.
 ///
 /// Algorithm (matches Python `filter_reachable` in `scripts/task_graph.py`):
@@ -3628,6 +3747,91 @@ mod tests {
         let focus = graph.focus_picks(50);
         assert!(focus.contains(&"inprogress-urgent".to_string()),
             "in_progress task with SEV4 committed urgency must appear in focus_picks via status-independent scan");
+    }
+
+    // ── Weight Divergence Detection ──────────────────────────────────────────
+
+    #[test]
+    fn test_weight_divergence_detection() {
+        use chrono::Utc;
+
+        let now = Utc::now();
+        // chrono 0.4.31+ requires Duration::try_days, or just use 24*3600*N
+        let stale_dt = (now - chrono::Duration::try_days(20).unwrap()).to_rfc3339();
+        let fresh_dt = (now - chrono::Duration::try_days(2).unwrap()).to_rfc3339();
+
+        let make_doc_with_modified =
+            |id: &str, modified: Option<String>, contributes_to: Vec<serde_json::Value>| -> PkbDocument {
+                let mut fm = serde_json::Map::new();
+                fm.insert("id".to_string(), serde_json::json!(id));
+                fm.insert("type".to_string(), serde_json::json!("task"));
+                fm.insert("status".to_string(), serde_json::json!("ready"));
+                fm.insert("contributes_to".to_string(), serde_json::json!(contributes_to));
+                PkbDocument {
+                    path: std::path::PathBuf::from(format!("tasks/{}.md", id)),
+                    title: id.to_string(),
+                    body: String::new(),
+                    doc_type: Some("task".to_string()),
+                    status: Some("ready".to_string()),
+                    modified,
+                    tags: vec![],
+                    frontmatter: Some(serde_json::Value::Object(fm)),
+                    content_hash: "test".to_string(),
+                    file_hash: "test".to_string(),
+                }
+            };
+
+        let ct_high = serde_json::json!({
+            "to": "target",
+            "weight": "Certain",
+            "why": "Crucial contribution"
+        });
+
+        let docs = vec![
+            // 1. Stale task with high weight -> should be flagged
+            make_doc_with_modified("stale-high", Some(stale_dt), vec![ct_high.clone()]),
+            // 2. Fresh task with high weight -> should NOT be flagged
+            make_doc_with_modified("fresh-high", Some(fresh_dt), vec![ct_high.clone()]),
+            // 3. Stale task with low weight -> should NOT be flagged
+            make_doc_with_modified(
+                "stale-low",
+                Some((now - chrono::Duration::try_days(20).unwrap()).to_rfc3339()),
+                vec![serde_json::json!({
+                    "to": "target",
+                    "weight": "Uncertain",
+                    "why": "Minor contribution"
+                })],
+            ),
+            // 4. Stale blocked task -> should NOT be flagged
+            {
+                let mut doc = make_doc_with_modified(
+                    "stale-blocked",
+                    Some((now - chrono::Duration::try_days(20).unwrap()).to_rfc3339()),
+                    vec![ct_high],
+                );
+                if let Some(ref mut fm) = doc.frontmatter {
+                    fm.as_object_mut()
+                        .unwrap()
+                        .insert("status".to_string(), serde_json::json!("blocked"));
+                }
+                doc.status = Some("blocked".to_string());
+                doc
+            },
+        ];
+
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-divergence"));
+        let divergences = graph.detect_weight_divergences(14);
+
+        assert_eq!(divergences.len(), 1, "Expected exactly 1 divergence, found {:?}", divergences);
+        assert_eq!(divergences[0].source_id, "stale-high");
+        assert_eq!(divergences[0].stated_weight.to_lowercase(), "certain");
+
+        // Verify that the anomaly_flag was also set during build
+        let node = graph.get_node("stale-high").unwrap();
+        assert!(node.contributes_to[0].anomaly_flag, "anomaly_flag should be set during build");
+
+        let fresh_node = graph.get_node("fresh-high").unwrap();
+        assert!(!fresh_node.contributes_to[0].anomaly_flag, "anomaly_flag should NOT be set for fresh task");
     }
 
     // ── parent/child cycle detection ─────────────────────────────────────────
