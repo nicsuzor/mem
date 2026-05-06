@@ -1,6 +1,6 @@
 [package]
 name = "mem"
-version = "0.3.41"
+version = "0.3.42"
 edition = "2021"
 rust-version = "1.88"
 license = "GPL-3.0-or-later"
