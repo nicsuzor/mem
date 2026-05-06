@@ -22,11 +22,14 @@
 
     onMount(() => {
         // Watch the zoom transform on the parent SVG to toggle text visibility
-        const svg = containerGroup?.closest('svg');
+        const svg = containerGroup?.closest("svg");
         if (!svg) return;
 
         const observer = new MutationObserver(() => updateTextVisibility());
-        observer.observe(containerGroup, { attributes: true, attributeFilter: ['transform'] });
+        observer.observe(containerGroup, {
+            attributes: true,
+            attributeFilter: ["transform"],
+        });
 
         // Initial visibility pass after layout settles
         setTimeout(updateTextVisibility, 200);
@@ -36,7 +39,7 @@
 
     function getZoomScale(): number {
         if (!containerGroup) return 1;
-        const transform = containerGroup.getAttribute('transform') || '';
+        const transform = containerGroup.getAttribute("transform") || "";
         const m = transform.match(/scale\(([^)]+)\)/);
         if (m) return parseFloat(m[1]);
         // d3 uses matrix form: translate(x,y) scale(k)
@@ -52,29 +55,42 @@
     function updateTextVisibility() {
         if (!nodesLayer) return;
         const k = getZoomScale();
-        const nodes = nodesLayer.querySelectorAll<SVGGElement>('g.node');
-        nodes.forEach(g => {
-            const d = (d3.select(g).datum() as any);
+        const nodes = nodesLayer.querySelectorAll<SVGGElement>("g.node");
+        nodes.forEach((g) => {
+            const d = d3.select(g).datum() as any;
             if (!d) return;
             const r = d._lr || 0;
             const pixelR = r * k;
 
             if (d._isLeaf) {
                 // Leaf nodes: hide text when circle too small on screen
-                g.querySelectorAll('text, foreignObject').forEach(el => {
-                    (el as SVGElement).style.display = pixelR < MIN_TEXT_PIXEL_RADIUS ? 'none' : '';
+                g.querySelectorAll("text, foreignObject").forEach((el) => {
+                    (el as SVGElement).style.display =
+                        pixelR < MIN_TEXT_PIXEL_RADIUS ? "none" : "";
                 });
             } else {
                 // Parent nodes: hide label + pill when container too small
-                g.querySelectorAll('.parent-label, .parent-label-bg').forEach(el => {
-                    (el as SVGElement).style.display = pixelR < MIN_PARENT_LABEL_PIXEL_RADIUS ? 'none' : '';
-                });
+                g.querySelectorAll(".parent-label, .parent-label-bg").forEach(
+                    (el) => {
+                        (el as SVGElement).style.display =
+                            pixelR < MIN_PARENT_LABEL_PIXEL_RADIUS
+                                ? "none"
+                                : "";
+                    },
+                );
             }
         });
     }
 
     $: {
-        if (containerGroup && $graphData && nodesLayer && edgesLayer && $selection && $viewSettings.circleRollupThreshold) {
+        if (
+            containerGroup &&
+            $graphData &&
+            nodesLayer &&
+            edgesLayer &&
+            $selection &&
+            $viewSettings.circleRollupThreshold
+        ) {
             const dataChanged = $graphData !== lastGraphData;
             if (dataChanged) {
                 computeCirclePackLayout();
@@ -94,12 +110,12 @@
         const nodes = data.nodes;
 
         const rootId = "__root__";
-        const nodeIdSet = new Set(nodes.map(n => n.id));
+        const nodeIdSet = new Set(nodes.map((n) => n.id));
         const packNodes = [
             { id: rootId, parent: "", type: "root" },
             ...nodes.map((n) => ({
                 ...n,
-                parent: (n.parent && nodeIdSet.has(n.parent)) ? n.parent : rootId,
+                parent: n.parent && nodeIdSet.has(n.parent) ? n.parent : rootId,
             })),
         ];
 
@@ -116,13 +132,16 @@
 
         // Use .radius() so leaves get explicit radii and parents auto-size
         // as minimum enclosing circles — no .size() inflation.
-        root.each((node: any) => { node.data._isHierarchyParent = !!node.children; });
+        root.each((node: any) => {
+            node.data._isHierarchyParent = !!node.children;
+        });
 
         // Leaves sized by central focus → radius mapping.
         const MIN_R = 6;
         const MAX_R = 40;
         const maxFocus = maxFocusOf(nodes);
-        const leafRadius = (d: any) => focusSize(d.focusScore, maxFocus, MIN_R, MAX_R);
+        const leafRadius = (d: any) =>
+            focusSize(d.focusScore, maxFocus, MIN_R, MAX_R);
 
         // value (used only for sort ordering) is area ∝ r²
         root.sum((d: any) => {
@@ -132,11 +151,12 @@
         });
         root.sort((a, b) => (b.value || 0) - (a.value || 0));
 
-        const pack = d3.pack<any>()
+        const pack = d3
+            .pack<any>()
             .radius((d: any) => leafRadius(d.data))
             .padding((d: any) => {
                 if (!d.children) return 0.5;
-                return d.depth <= 2 ? 6 : 2;
+                return 1;
             });
 
         pack(root);
@@ -161,7 +181,8 @@
         nodes.forEach((n) => {
             const l = layoutMap.get(n.id);
             if (l) {
-                n.x = l.x; n.y = l.y;
+                n.x = l.x;
+                n.y = l.y;
                 n.depth = l.depth;
                 n._lr = l.r;
                 n._isLeaf = l.isLeaf;
@@ -178,7 +199,7 @@
 
         // Sort by depth for correct z-order (parents behind children)
         const visibleNodes = data.nodes
-            .filter(n => (n.x || 0) > -9000)
+            .filter((n) => (n.x || 0) > -9000)
             .sort((a, b) => (a.depth || 0) - (b.depth || 0));
 
         const nEls = d3
@@ -194,15 +215,16 @@
                 toggleSelection(d.id);
             })
             .on("mouseenter", (e, d) => {
-                selection.update(s => ({ ...s, hoveredNodeId: d.id }));
+                selection.update((s) => ({ ...s, hoveredNodeId: d.id }));
             })
             .on("mouseleave", () => {
-                selection.update(s => ({ ...s, hoveredNodeId: null }));
+                selection.update((s) => ({ ...s, hoveredNodeId: null }));
             });
 
         const activeNodeId = $selection.activeNodeId;
         const hoveredNodeId = $selection.hoveredNodeId;
-        const focusIds: Set<string> = ($graphData as any)?.focusIds || new Set();
+        const focusIds: Set<string> =
+            ($graphData as any)?.focusIds || new Set();
         const showFocus = $viewSettings.showFocusHighlight && focusIds.size > 0;
 
         nEls.each(function (d) {
@@ -223,13 +245,17 @@
 
             // Focus highlight: gold ring on priority focus leaf nodes
             if (showFocus && d._isLeaf) {
-                g.select('.focus-ring').remove();
+                g.select(".focus-ring").remove();
                 if (focusIds.has(d.id)) {
-                    g.insert('circle', ':first-child')
-                        .attr('class', 'focus-ring')
-                        .attr('cx', 0).attr('cy', 0).attr('r', (d._lr || 5) + 3)
-                        .attr('fill', 'none').attr('stroke', '#f59e0b')
-                        .attr('stroke-width', 2).attr('opacity', 0.8);
+                    g.insert("circle", ":first-child")
+                        .attr("class", "focus-ring")
+                        .attr("cx", 0)
+                        .attr("cy", 0)
+                        .attr("r", (d._lr || 5) - 1)
+                        .attr("fill", "none")
+                        .attr("stroke", "#f59e0b")
+                        .attr("stroke-width", 3)
+                        .attr("opacity", 0.8);
                 }
             }
         });
@@ -243,7 +269,7 @@
                 return 0.6;
             });
         } else {
-            nEls.style("opacity", (d: any) => d.filter_dimmed ? 0.2 : null);
+            nEls.style("opacity", (d: any) => (d.filter_dimmed ? 0.2 : null));
         }
 
         const eEls = d3

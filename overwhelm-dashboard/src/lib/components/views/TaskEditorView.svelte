@@ -60,6 +60,25 @@
     let assigneeDraft = $state("");
     let loadingBody = $state(false);
 
+    let showOperationsPanel = $state(false);
+    let visibleOperations = $derived.by(() => {
+        const entries = $taskOperations;
+        const pending = entries.filter((entry) => entry.status === 'pending').reverse();
+        const errors = entries.filter((entry) => entry.status === 'error').reverse();
+        const successes = entries.filter((entry) => entry.status === 'success')
+            .slice(-Math.max(0, 10 - pending.length - errors.length))
+            .reverse();
+        return [...errors, ...pending, ...successes].slice(0, 10);
+    });
+    let errorCount = $derived($taskOperations.filter(op => op.status === 'error').length);
+    let pendingCount = $derived($taskOperations.filter(op => op.status === 'pending').length);
+
+    function handleRetry(operation: typeof visibleOperations[number]) {
+        const retry = operation.retry;
+        taskOperations.remove(operation.id);
+        retry?.();
+    }
+
     $effect(() => {
         assigneeDraft = task?.assignee || "";
     });
@@ -657,6 +676,85 @@
                 {/if}
             </div>
         </div>
+
+        <!-- Task Operations Expandable Panel -->
+        {#if visibleOperations.length > 0}
+            <div class="border-t border-primary/20 bg-background shrink-0">
+                <button 
+                    class="w-full flex items-center justify-between px-3 py-2 text-[9px] font-bold uppercase tracking-[0.14em] transition-colors hover:bg-primary/5"
+                    class:text-destructive={errorCount > 0}
+                    class:text-primary={errorCount === 0}
+                    onclick={() => showOperationsPanel = !showOperationsPanel}
+                >
+                    <div class="flex items-center gap-2">
+                        <span class="material-symbols-outlined text-[14px]" class:animate-pulse={pendingCount > 0}>
+                            {errorCount > 0 ? 'error' : pendingCount > 0 ? 'sync' : 'check_circle'}
+                        </span>
+                        <span>
+                            {errorCount > 0 ? `${errorCount} Failed` : pendingCount > 0 ? `${pendingCount} Pending` : 'System Ready'}
+                        </span>
+                    </div>
+                    <span class="material-symbols-outlined text-[14px] transition-transform" class:rotate-180={showOperationsPanel}>
+                        expand_less
+                    </span>
+                </button>
+
+                {#if showOperationsPanel}
+                    <div class="max-h-48 overflow-y-auto custom-scrollbar border-t border-primary/10 bg-black/20 p-2 space-y-1.5">
+                        {#each visibleOperations as operation (operation.id)}
+                            <div class={`rounded-sm border px-2 py-1.5 ${
+                                operation.status === 'pending'
+                                    ? 'border-primary/20 bg-primary/5 text-primary'
+                                    : operation.status === 'success'
+                                        ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-400'
+                                        : 'border-destructive/40 bg-destructive/10 text-destructive/90'
+                            }`}>
+                                <div class="flex items-start gap-2">
+                                    <span class="material-symbols-outlined mt-0.5 text-[12px]" class:animate-pulse={operation.status === 'pending'}>
+                                        {#if operation.status === 'pending'}
+                                            sync
+                                        {:else if operation.status === 'success'}
+                                            check_circle
+                                        {:else}
+                                            error
+                                        {/if}
+                                    </span>
+                                    <div class="min-w-0 flex-1">
+                                        <div class="truncate text-[9px] font-black uppercase tracking-[0.16em]">{operation.label}</div>
+                                        <div class="mt-0.5 flex items-center gap-1.5 text-[8px] font-mono opacity-80">
+                                            <span class="truncate max-w-[80px]" title={operation.taskId}>{operation.taskId}</span>
+                                            <span class="opacity-40">/</span>
+                                            <span class="truncate" title={operation.detail}>{operation.detail}</span>
+                                        </div>
+                                        {#if operation.status === 'error'}
+                                            <div class="mt-1.5 flex items-center gap-1.5">
+                                                {#if operation.retry}
+                                                    <button
+                                                        type="button"
+                                                        class="inline-flex items-center gap-1 rounded-sm border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.14em] hover:bg-destructive/20 transition-colors"
+                                                        onclick={() => handleRetry(operation)}
+                                                    >
+                                                        <span class="material-symbols-outlined text-[10px]">refresh</span>
+                                                        Retry
+                                                    </button>
+                                                {/if}
+                                                <button
+                                                    type="button"
+                                                    class="inline-flex items-center gap-1 rounded-sm border border-destructive/20 bg-transparent px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.14em] opacity-80 hover:bg-destructive/10 hover:opacity-100 transition-colors"
+                                                    onclick={() => taskOperations.remove(operation.id)}
+                                                >
+                                                    Dismiss
+                                                </button>
+                                            </div>
+                                        {/if}
+                                    </div>
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+            </div>
+        {/if}
     </div>
 {:else}
     <div class="flex flex-col items-center justify-center h-full text-primary/30 p-8 text-center bg-background border-l border-primary-border">
