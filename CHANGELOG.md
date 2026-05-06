@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.34](https://github.com/nicsuzor/mem/compare/v0.3.33...v0.3.34) - 2026-05-06
+
+### Other
+
+- update sizing
+- update sizing
+
 ## [0.3.33](https://github.com/nicsuzor/mem/compare/v0.3.32...v0.3.33) - 2026-05-05
 
 ### Added
