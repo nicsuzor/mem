@@ -80,7 +80,7 @@
     });
 
     // Layout: depth maps to Y bands, x to sorted index within depth
-    const maxDepth = Math.max(...nodes.map(n => n.depth || 0), 1);
+    const maxDepth = nodes.reduce((max, n) => Math.max(max, n.depth || 0), 1);
     const hBand = (1200 / (maxDepth + 1)) * ($viewSettings.arcVerticalSpacing || 1.0);
 
     const nodesByDepth = new Map<number, GraphNode[]>();

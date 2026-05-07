@@ -3,6 +3,7 @@
     import HierarchyTree from "./HierarchyTree.svelte";
     import { describeTaskMutation, taskOperations } from "../../stores/taskOperations";
     import { PRIORITIES, STATUS_FILLS, STATUS_TEXT, COMPLETED_STATUSES } from "../../data/constants";
+    import { maxFocusOf } from "../../data/nodeSize";
 
     const HIDDEN_METADATA_KEYS = new Set([
         'body', 'id', 'title', 'label', 'node_type', 'status', 'priority', 'project', 'assignee',
@@ -123,7 +124,7 @@
     // Focus score, normalised against the max in the graph using the
     // same log1p scaling that drives node size + saturation in the visuals.
     let maxFocus = $derived(
-        $graphData ? Math.max(1, ...$graphData.nodes.map(n => (n as any).focusScore || 0)) : 1
+        $graphData ? Math.max(1, maxFocusOf($graphData.nodes as any)) : 1
     );
     let focusRaw = $derived((task as any)?.focusScore ?? 0);
     let focusNorm = $derived(
