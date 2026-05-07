@@ -580,22 +580,9 @@
                             </div>
                         </section>
 
-                        {#if t.criticality > 0 || t.uncertainty > 0 || t.scope > 0 || focusRaw > 0}
+                        {#if t.criticality > 0 || t.uncertainty > 0 || t.scope > 0}
                         <section class="rounded-sm border border-primary/15 bg-black/15 p-3 space-y-2">
                             <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45 border-b border-primary/10 pb-1">Computed Properties</div>
-
-                            <!-- Focus Score (log-normalised against graph max) -->
-                            {#if focusRaw > 0}
-                            <div class="space-y-0.5" title="Focus Score: log1p(focusScore)/log1p(max). Drives node size + fill saturation in graph views.">
-                                <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
-                                    <span class="text-primary/45">Focus Score</span>
-                                    <span class="font-bold" style="color: {focusNorm > 0.6 ? '#a78bfa' : focusNorm > 0.3 ? '#8b5cf6' : '#a3a3a3'}">{focusRaw.toFixed(0)} <span class="text-primary/40">({Math.round(focusNorm * 100)}%)</span></span>
-                                </div>
-                                <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
-                                    <div class="h-full rounded-full transition-all" style="width:{Math.round(focusNorm * 100)}%; background: color-mix(in srgb, #a78bfa {40 + Math.round(focusNorm * 60)}%, #374151)"></div>
-                                </div>
-                            </div>
-                            {/if}
 
                             <!-- Criticality -->
                             <div class="space-y-0.5">
@@ -628,6 +615,49 @@
                             {/if}
 
 
+                        </section>
+                        {/if}
+
+                        <!-- Focus Score Banner -->
+                        {#if focusRaw > 0}
+                        <section class="rounded-sm border border-primary/20 bg-gradient-to-br from-black/40 to-black/20 p-4 shadow-sm relative overflow-hidden" style="box-shadow: {focusNorm > 0.7 ? '0 0 15px rgba(167, 139, 250, 0.1)' : 'none'}">
+                            <div class="absolute inset-0 bg-primary/5 opacity-0 transition-opacity hover:opacity-100 pointer-events-none"></div>
+                            
+                            <div class="flex items-center justify-between relative z-10 mb-3">
+                                <div class="flex items-center gap-2">
+                                    <span class="material-symbols-outlined text-[14px]" style="color: {focusNorm > 0.7 ? '#a78bfa' : focusNorm > 0.4 ? '#8b5cf6' : '#9ca3af'}">track_changes</span>
+                                    <span class="text-[10px] font-bold uppercase tracking-[0.2em] text-primary/70">Focus Signal</span>
+                                </div>
+                                <span class="text-[18px] font-black tracking-tight" style="color: {focusNorm > 0.7 ? '#a78bfa' : focusNorm > 0.4 ? '#8b5cf6' : '#9ca3af'}; text-shadow: {focusNorm > 0.7 ? '0 0 10px rgba(167, 139, 250, 0.3)' : 'none'}">
+                                    {focusRaw.toFixed(0)}
+                                </span>
+                            </div>
+                            
+                            <div class="h-5 w-full rounded bg-black/60 overflow-hidden relative border border-primary/15 z-10" title="Drives node size + fill saturation in graph views.">
+                                <div class="absolute inset-y-0 left-0 flex items-center w-full opacity-20 pointer-events-none">
+                                    {#each Array(10) as _}
+                                        <div class="h-full border-r border-primary/30 flex-1"></div>
+                                    {/each}
+                                </div>
+                                
+                                <div class="h-full transition-all relative overflow-hidden flex items-center justify-end pr-2" 
+                                     style="width:{Math.max(2, Math.round(focusNorm * 100))}%; 
+                                            background: linear-gradient(90deg, #374151 0%, {focusNorm > 0.7 ? '#a78bfa' : focusNorm > 0.4 ? '#8b5cf6' : '#6b7280'} 100%);
+                                            box-shadow: {focusNorm > 0.7 ? '0 0 12px rgba(167, 139, 250, 0.5)' : 'none'}">
+                                    {#if focusNorm > 0.15}
+                                        <span class="text-[9px] font-black text-white/90 drop-shadow-md">{Math.round(focusNorm * 100)}% RELATIVE</span>
+                                    {/if}
+                                </div>
+                            </div>
+                            <div class="text-[8px] font-bold uppercase tracking-[0.14em] text-primary/40 mt-1.5 flex justify-between z-10 relative">
+                                <span>Low Attention</span>
+                                <span>High Priority</span>
+                            </div>
+                        </section>
+                        {:else}
+                        <section class="rounded-sm border border-primary/10 bg-black/10 p-3 flex flex-col items-center justify-center opacity-60">
+                            <span class="text-[9px] font-bold uppercase tracking-[0.2em] text-primary/40">Focus Signal</span>
+                            <span class="text-[10px] text-primary/30 mt-1 uppercase tracking-widest italic">No Focus Value Computed</span>
                         </section>
                         {/if}
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { copyToClipboard } from "../../data/utils";
+    import { copyToClipboard, formatText } from "../../data/utils";
 
     let { sessionId, sessionData, onclose }: { sessionId: string; sessionData: any; onclose: () => void } = $props();
 
@@ -43,7 +43,7 @@
             <div class="flex flex-col gap-2 mt-1">
                 <div class="group relative">
                     <h1 class="text-base font-black tracking-tight uppercase text-primary leading-tight pr-6 line-clamp-3">
-                        {title}
+                        {@html formatText(title)}
                     </h1>
                     <button class="absolute top-0 right-0 text-primary/30 hover:text-primary opacity-0 group-hover:opacity-100 transition-all" onclick={() => copyToClipboard(title)} title="Copy Title">
                         <span class="material-symbols-outlined text-sm">content_copy</span>
@@ -143,7 +143,7 @@
                                 <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-green-500/70 border-b border-primary/10 pb-1 mb-2">Accomplishments</div>
                                 <ul class="space-y-1">
                                     {#each session.accomplishments as acc}
-                                        <li class="text-[10px] text-primary/80 flex gap-2"><span class="text-green-500">›</span> {acc}</li>
+                                        <li class="text-[10px] text-primary/80 flex gap-2"><span class="text-green-500 shrink-0">›</span> <span>{@html formatText(acc)}</span></li>
                                     {/each}
                                 </ul>
                             </div>
@@ -153,7 +153,7 @@
                                 <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-yellow-500/70 border-b border-primary/10 pb-1 mb-2">Friction Points</div>
                                 <ul class="space-y-1">
                                     {#each session.friction_points as fp}
-                                        <li class="text-[10px] text-primary/80 flex gap-2"><span class="text-yellow-500">!</span> {fp}</li>
+                                        <li class="text-[10px] text-primary/80 flex gap-2"><span class="text-yellow-500 shrink-0">!</span> <span>{@html formatText(fp)}</span></li>
                                     {/each}
                                 </ul>
                             </div>

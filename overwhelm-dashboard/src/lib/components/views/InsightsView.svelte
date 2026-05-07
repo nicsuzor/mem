@@ -1,10 +1,17 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import { copyToClipboard, formatText } from "../../data/utils";
+    import { toggleSessionSelection } from "../../stores/selection";
+    import { projectColor, projectBgTint, projectBorderColor } from "../../data/projectUtils";
 
     type InsightRow = {
         session_id: string;
         date: string;
+        started_at: string;
+        description: string;
         project: string;
+        client?: string;
+        surface?: string;
         task_id: string;
         pr: string;
         provider: string;
@@ -20,11 +27,12 @@
     let loading = true;
     let error = "";
 
-    let groupBy: keyof InsightRow = 'project';
-    let sortField = 'total_output';
+    let groupBy: keyof InsightRow = 'session_id';
+    let sortField = 'started_at';
     let sortDesc = true;
 
     const GROUP_OPTIONS = [
+        { value: 'session_id', label: 'Session' },
         { value: 'date', label: 'Date' },
         { value: 'project', label: 'Project' },
         { value: 'task_id', label: 'Task ID' },
@@ -57,6 +65,12 @@
             if (!map.has(key)) {
                 map.set(key, {
                     groupKey: key,
+                    date: row.date || '',
+                    started_at: row.started_at || '',
+                    description: row.description || '',
+                    project: row.project,
+                    client: row.client,
+                    surface: row.surface,
                     sessions: new Set(),
                     total_duration: 0,
                     total_input: 0,
@@ -66,6 +80,12 @@
                 });
             }
             const agg = map.get(key);
+            if (row.started_at && row.started_at > agg.started_at) {
+                agg.started_at = row.started_at;
+            }
+            if (row.date && row.date > agg.date) {
+                agg.date = row.date;
+            }
             agg.sessions.add(row.session_id);
             agg.total_duration += row.duration_minutes || 0;
             agg.total_input += row.input_tokens || 0;
@@ -143,6 +163,14 @@
                                 {#if sortField === 'groupKey'}<span class="text-[8px]">{sortDesc ? '▼' : '▲'}</span>{/if}
                             </div>
                         </th>
+                        {#if groupBy !== 'date'}
+                        <th class="p-3 border-b border-primary/20 cursor-pointer hover:text-primary transition-colors text-right" onclick={() => toggleSort('started_at')}>
+                            <div class="flex items-center justify-end gap-1">
+                                Date
+                                {#if sortField === 'started_at'}<span class="text-[8px]">{sortDesc ? '▼' : '▲'}</span>{/if}
+                            </div>
+                        </th>
+                        {/if}
                         <th class="p-3 border-b border-primary/20 cursor-pointer hover:text-primary transition-colors text-right" onclick={() => toggleSort('session_count')}>
                             <div class="flex items-center justify-end gap-1">
                                 Sessions
@@ -184,7 +212,48 @@
                 <tbody class="text-xs">
                     {#each aggregatedData as row}
                         <tr class="hover:bg-primary/5 transition-colors border-b border-primary/5 last:border-0 group">
-                            <td class="p-3 font-mono text-primary/90">{row.groupKey}</td>
+                            <td class="p-3">
+                                {#if groupBy === 'session_id'}
+                                    <div class="flex items-center gap-2 shrink-0">
+                                        <div class="flex items-center gap-1">
+                                            <button class="text-[9px] font-bold bg-primary/20 text-primary/60 px-1 py-0.5 hover:bg-primary/40 transition-colors rounded-sm" 
+                                                    onclick={(e) => { e.stopPropagation(); copyToClipboard(row.groupKey); }}
+                                                    title="Click to copy session ID: {row.groupKey}">
+                                                {(row.groupKey || "").slice(-8)}
+                                            </button>
+                                            <button class="text-[9px] font-bold bg-primary/20 text-primary/60 px-1 py-0.5 hover:bg-primary/40 transition-colors rounded-sm" 
+                                                    onclick={(e) => { e.stopPropagation(); toggleSessionSelection(row.groupKey); }}
+                                                    title="View detailed session metadata">
+                                                <span class="material-symbols-outlined text-[12px] leading-none">info</span>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center gap-1">
+                                            {#if row.client && row.client !== 'unknown'}
+                                                <span class="text-[9px] font-bold bg-blue-900/30 text-blue-400 border border-blue-500/30 px-1.5 py-0.5 rounded-sm uppercase tracking-wider">{row.client}</span>
+                                            {/if}
+                                            {#if row.surface && row.surface !== 'unknown'}
+                                                <span class="text-[9px] font-bold bg-purple-900/30 text-purple-400 border border-purple-500/30 px-1.5 py-0.5 rounded-sm uppercase tracking-wider">{row.surface}</span>
+                                            {/if}
+                                            {#if row.project && row.project !== 'unknown'}
+                                                <span class="text-[9px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider"
+                                                      style="background: {projectBgTint(row.project)}; color: {projectColor(row.project)}; border: 1px solid {projectBorderColor(row.project)};">{row.project}</span>
+                                            {/if}
+                                        </div>
+                                    </div>
+                                    {#if row.description}
+                                        <div class="mt-1.5 text-xs text-primary/70 line-clamp-2 pr-4 leading-relaxed font-sans whitespace-normal break-words">
+                                            {@html formatText(row.description)}
+                                        </div>
+                                    {/if}
+                                {:else}
+                                    <span class="font-mono text-primary/90">{row.groupKey}</span>
+                                {/if}
+                            </td>
+                            {#if groupBy !== 'date'}
+                            <td class="p-3 text-right opacity-70 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                                {row.started_at ? row.started_at.replace('T', ' ').slice(0, 16) : row.date}
+                            </td>
+                            {/if}
                             <td class="p-3 text-right opacity-70 group-hover:opacity-100 transition-opacity">{row.session_count}</td>
                             <td class="p-3 text-right opacity-70 group-hover:opacity-100 transition-opacity">{formatNumber(row.total_duration)}</td>
                             <td class="p-3 text-right text-blue-400/70 group-hover:text-blue-400/100 transition-colors">{formatNumber(row.total_input)}</td>

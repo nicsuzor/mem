@@ -1,6 +1,6 @@
 <script lang="ts">
     import { projectColor, projectBgTint, projectBorderColor } from "../../data/projectUtils";
-    import { copyToClipboard } from "../../data/utils";
+    import { copyToClipboard, formatText } from "../../data/utils";
     import { toggleSelection, toggleSessionSelection } from "../../stores/selection";
 
     let { 
@@ -177,8 +177,8 @@
                             <span class="text-[10px] font-bold px-2 py-0.5"
                                   style="background: {projectBgTint(session.project)}; color: {projectColor(session.project)}; border: 1px solid {projectBorderColor(session.project)};">{session.project}</span>
                         {/if}
-                        <span class="text-xs text-primary/90 flex-1 {expanded ? 'whitespace-pre-wrap break-words' : 'truncate'}">
-                            {session.description}
+                        <span class="text-xs text-primary/90 flex-1 {expanded ? 'break-words' : 'truncate'}">
+                            {@html formatText(session.description)}
                         </span>
                         {#if session.prompt_count != null}
                             <span class="text-[10px] text-primary/40 shrink-0" title="User prompts">{session.prompt_count}p</span>
@@ -194,7 +194,7 @@
                                 <div class="flex flex-col gap-1">
                                     <span class="text-[10px] font-bold text-green-500 tracking-widest uppercase">Accomplishments</span>
                                     {#each session.accomplishments as acc}
-                                        <div class="text-[11px] text-primary/80 flex gap-2"><span class="text-green-500">›</span> {acc}</div>
+                                        <div class="text-[11px] text-primary/80 flex gap-2"><span class="text-green-500 shrink-0">›</span> <span>{@html formatText(acc)}</span></div>
                                     {/each}
                                 </div>
                             {/if}
@@ -202,21 +202,21 @@
                                 <div class="flex flex-col gap-1">
                                     <span class="text-[10px] font-bold text-yellow-500 tracking-widest uppercase">Friction Points</span>
                                     {#each session.friction_points as fp}
-                                        <div class="text-[11px] text-primary/80 flex gap-2"><span class="text-yellow-500">!</span> {fp}</div>
+                                        <div class="text-[11px] text-primary/80 flex gap-2"><span class="text-yellow-500 shrink-0">!</span> <span>{@html formatText(fp)}</span></div>
                                     {/each}
                                 </div>
                             {/if}
                             {#if session.outcome}
                                 <div class="flex flex-col gap-1">
                                     <span class="text-[10px] font-bold text-primary/50 tracking-widest uppercase">Outcome</span>
-                                    <div class="text-[11px] text-primary/60">{session.outcome}</div>
+                                    <div class="text-[11px] text-primary/60">{@html formatText(session.outcome)}</div>
                                 </div>
                             {/if}
                             {#if timeline.length > 0}
                                 <div class="flex flex-col gap-1 mt-1">
                                     <span class="text-[10px] font-bold text-primary/50 tracking-widest uppercase">Timeline</span>
                                     {#each timeline as prompt}
-                                        <p class="text-[11px] text-primary/60 py-1 border-b border-primary/5 last:border-0 whitespace-pre-wrap break-words">›_ {prompt}</p>
+                                        <p class="text-[11px] text-primary/60 py-1 border-b border-primary/5 last:border-0 break-words">›_ {@html formatText(prompt)}</p>
                                     {/each}
                                 </div>
                             {/if}

@@ -65,7 +65,20 @@ export async function GET() {
                 }
                 taskId = taskId || 'unknown';
 
+                let startedAt = data.started_at || data.started || data.date;
+                if (!startedAt || !startedAt.includes('T')) {
+                    const m = file.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
+                    if (m) {
+                        startedAt = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00`;
+                    } else {
+                        startedAt = date;
+                    }
+                }
+                const description = data.description || data.outcome || '';
+
                 const provider = data.provider || 'unknown';
+                const client = data.client || 'unknown';
+                const surface = data.surface || 'unknown';
                 const duration = data.token_metrics?.efficiency?.session_duration_minutes || 0;
 
                 const byAgent = data.token_metrics?.by_agent || {};
@@ -74,10 +87,14 @@ export async function GET() {
                     insights.push({
                         session_id: data.session_id,
                         date: date.slice(0, 10),
+                        started_at: startedAt,
+                        description: description,
                         project,
                         task_id: taskId,
                         pr,
                         provider,
+                        client,
+                        surface,
                         subagent: agentName,
                         duration_minutes: agentName === 'main' ? duration : 0,
                         input_tokens: (metrics as any).input || 0,
