@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.46](https://github.com/nicsuzor/mem/compare/v0.3.45...v0.3.46) - 2026-05-07
+
+### Other
+
+- nominal focus
+
 ## [0.3.45](https://github.com/nicsuzor/mem/compare/v0.3.44...v0.3.45) - 2026-05-07
 
 ### Other
