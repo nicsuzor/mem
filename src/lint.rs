@@ -1714,7 +1714,7 @@ mod tests {
 
     #[test]
     fn detects_status_alias() {
-        let diags = lint_str("---\ntitle: Test\nstatus: active\ntype: note\n---\n\nBody.\n");
+        let diags = lint_str("---\ntitle: Test\nstatus: active\ntype: task\n---\n\nBody.\n");
         assert!(diags.iter().any(|d| d.rule == "fm-status-alias"));
     }
 

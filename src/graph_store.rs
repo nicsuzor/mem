@@ -33,6 +33,9 @@ pub struct OutputGraph {
     pub focus: Vec<String>,
 }
 
+pub const DEFAULT_DIVERGENCE_THRESHOLD_DAYS: i64 = 14;
+pub const DIVERGENCE_WEIGHT_THRESHOLD: f64 = 0.75;
+
 /// Result of a stated-vs-revealed weight divergence check.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WeightDivergence {
@@ -278,7 +281,7 @@ impl GraphStore {
         let (ready, blocked, roots) = classify_tasks(&node_map);
 
         // 11. Compute divergence anomalies and set flags on nodes (default 14 days)
-        compute_divergence_anomalies(&mut node_map, &blocked, 14);
+        compute_divergence_anomalies(&mut node_map, &blocked, DEFAULT_DIVERGENCE_THRESHOLD_DAYS);
 
         // 12. Build resolution map for flexible node lookup
         let resolution_map = build_resolution_map(&node_map);
@@ -798,22 +801,11 @@ impl GraphStore {
                 continue;
             }
 
-            let modified_dt = if let Some(ref modified) = node.modified {
-                DateTime::parse_from_rfc3339(modified)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .ok()
-            } else {
-                None
-            };
-
-            let days_since_interaction = modified_dt
-                .map(|dt| (now - dt).num_days())
-                .unwrap_or(0);
+            let days_since_interaction = days_since_modified(node.modified.as_deref(), now);
 
             if days_since_interaction >= threshold_days {
                 for ct in &node.contributes_to {
-                    // High weight >= 0.75 (Expected)
-                    if ct.numeric_weight() >= 0.75 {
+                    if ct.numeric_weight() >= DIVERGENCE_WEIGHT_THRESHOLD {
                         let target_id = ct.resolved_to.clone().unwrap_or_else(|| ct.to.clone());
                         let target_label = self
                             .nodes
@@ -2373,6 +2365,13 @@ fn classify_tasks(
     (ready, blocked, roots)
 }
 
+fn days_since_modified(modified: Option<&str>, now: DateTime<Utc>) -> i64 {
+    modified
+        .and_then(|m| DateTime::parse_from_rfc3339(m).ok())
+        .map(|dt| (now - dt.with_timezone(&Utc)).num_days())
+        .unwrap_or(0)
+}
+
 /// Compute stated-revealed weight divergence anomalies on nodes.
 ///
 /// Flags `contributes_to` edges with high stated weight (>= 0.75) where
@@ -2395,22 +2394,11 @@ fn compute_divergence_anomalies(
             continue;
         }
 
-        let modified_dt = if let Some(ref modified) = node.modified {
-            DateTime::parse_from_rfc3339(modified)
-                .map(|dt| dt.with_timezone(&Utc))
-                .ok()
-        } else {
-            None
-        };
-
-        let days_since_interaction = modified_dt
-            .map(|dt| (now - dt).num_days())
-            .unwrap_or(0);
+        let days_since_interaction = days_since_modified(node.modified.as_deref(), now);
 
         if days_since_interaction >= threshold_days {
             for ct in &mut node.contributes_to {
-                // High weight >= 0.75 (Expected)
-                if ct.numeric_weight() >= 0.75 {
+                if ct.numeric_weight() >= DIVERGENCE_WEIGHT_THRESHOLD {
                     ct.anomaly_flag = true;
                 }
             }

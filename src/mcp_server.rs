@@ -5,7 +5,7 @@
 
 use crate::embeddings::Embedder;
 use crate::graph::is_completed;
-use crate::graph_store::GraphStore;
+use crate::graph_store::{GraphStore, DEFAULT_DIVERGENCE_THRESHOLD_DAYS};
 use crate::vectordb::VectorStore;
 use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
@@ -4069,7 +4069,7 @@ impl PkbSearchServer {
         let threshold_days = args
             .get("threshold_days")
             .and_then(|v| v.as_i64())
-            .unwrap_or(14);
+            .unwrap_or(DEFAULT_DIVERGENCE_THRESHOLD_DAYS);
 
         let graph = self.graph.read();
         let divergences = graph.detect_weight_divergences(threshold_days);
@@ -4093,9 +4093,11 @@ impl PkbSearchServer {
 
         for div in &divergences {
             out.push_str(&format!(
-                "| `{}` | **{}** | `{}` | {}d | {} |\n",
+                "| {} (`{}`) | **{}** | {} (`{}`) | {}d | {} |\n",
+                div.source_label,
                 div.source_id,
                 div.stated_weight,
+                div.target_label,
                 div.target_id,
                 div.days_since_interaction,
                 div.justification
