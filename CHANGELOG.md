@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.44](https://github.com/nicsuzor/mem/compare/v0.3.43...v0.3.44) - 2026-05-07
+
+### Other
+
+- Stated-vs-revealed weight divergence detector ([#333](https://github.com/nicsuzor/mem/pull/333))
+
 ## [0.3.43](https://github.com/nicsuzor/mem/compare/v0.3.42...v0.3.43) - 2026-05-06
 
 ### Added
