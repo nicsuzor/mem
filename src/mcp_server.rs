@@ -5,7 +5,7 @@
 
 use crate::embeddings::Embedder;
 use crate::graph::is_completed;
-use crate::graph_store::GraphStore;
+use crate::graph_store::{GraphStore, DEFAULT_DIVERGENCE_THRESHOLD_DAYS};
 use crate::vectordb::VectorStore;
 use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
@@ -4065,6 +4065,50 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    fn handle_detect_weight_divergence(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let threshold_days = args
+            .get("threshold_days")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(DEFAULT_DIVERGENCE_THRESHOLD_DAYS);
+
+        let graph = self.graph.read();
+        let divergences = graph.detect_weight_divergences(threshold_days);
+        drop(graph);
+
+        let total = divergences.len();
+
+        if total == 0 {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No weight divergences detected (high stated weight with revealed inactivity)."
+            )]));
+        }
+
+        let mut out = format!(
+            "Detected **{}** weight divergences (high stated weight but source task inactive for >= {} days).\n\n",
+            total, threshold_days
+        );
+
+        out.push_str("| Source Task | Weight | Target | Inactive | Justification |\n");
+        out.push_str("| :--- | :--- | :--- | :--- | :--- |\n");
+
+        for div in &divergences {
+            out.push_str(&format!(
+                "| {} (`{}`) | **{}** | {} (`{}`) | {}d | {} |\n",
+                div.source_label,
+                div.source_id,
+                div.stated_weight,
+                div.target_label,
+                div.target_id,
+                div.days_since_interaction,
+                div.justification
+            ));
+        }
+
+        out.push_str("\n\n**Resolution surface:** For each divergence, consider if the contribution weight is still accurate given the lack of recent activity on the source task.");
+
+        Ok(CallToolResult::success(vec![Content::text(out)]))
+    }
+
     fn handle_task_summary(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
         let graph = self.graph.read();
         let ready = graph.ready_tasks();
@@ -4470,6 +4514,7 @@ impl PkbSearchServer {
             "graph_json" => self.handle_graph_json(args),
             "tool_stats" => self.handle_get_stats(args),
             "status" => self.handle_status(args),
+            "divergence" => self.handle_detect_weight_divergence(args),
             _ => Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Unknown action: {action}")),
@@ -4625,6 +4670,7 @@ impl ServerHandler for PkbSearchServer {
             "update_task" => self.handle_update_task(&args),
             "bulk_reparent" => self.handle_bulk_reparent(&args),
             "retrieve_memory" => self.handle_retrieve_memory(&args),
+            "detect_weight_divergence" => self.handle_detect_weight_divergence(&args),
             "search_by_tag" => self.handle_search_by_tag(&args),
             "list_memories" => self.handle_list_memories(&args),
             "delete_memory" => self.handle_delete_memory(&args),
@@ -5312,6 +5358,19 @@ impl PkbSearchServer {
             .with_title("Find Semantic Neighbors")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
+                "detect_weight_divergence",
+                "Detect 'contributes_to' edges with high stated weight but zero interaction on the source task. Captures drift where importance is high but activity is zero.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "threshold_days": { "type": "integer", "description": "Staleness threshold in days (default: 14)" }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("Detect Weight Divergence")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
                 "graph_stats",
                 "Get a summary of PKB health, including task distribution by status/priority, orphan counts, and disconnected clusters. Read-only.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -5521,11 +5580,11 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "pkb_stats",
-                "System and graph status: summary, graph_stats, graph_json, tool_stats, status.",
+                "System and graph status: summary, graph_stats, graph_json, tool_stats, status, divergence.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json", "tool_stats", "status"] }
+                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json", "tool_stats", "status", "divergence"] }
                     }
                 }))
                 .unwrap(),
