@@ -245,7 +245,7 @@
 
             // Focus highlight: glowing ring on priority focus leaf nodes
             if (showFocus && d._isLeaf) {
-                g.select(".focus-ring").remove();
+                g.selectAll(".focus-ring").remove();
                 if (focusIds.has(d.id)) {
                     // Outer glow
                     g.insert("circle", ":first-child")

@@ -50,6 +50,9 @@
         // Update Highlights ONLY when selection changes
         const activeNodeId = $selection.activeNodeId;
         const hoveredNodeId = $selection.hoveredNodeId;
+        const focusIds: Set<string> =
+            ($graphData as any)?.focusIds || new Set();
+        const showFocus = $viewSettings.showFocusHighlight && focusIds.size > 0;
 
         if (nodesLayer) {
             d3.select(nodesLayer)
@@ -58,17 +61,47 @@
                     const g = d3.select(this);
                     const isSelected = d.id === activeNodeId;
                     const isHovered = d.id === hoveredNodeId;
-                    const needsHighlight = isSelected || isHovered;
 
-                    const lastState = (d as any)._lastHighlight;
-                    if (
-                        g.selectAll("*").empty() ||
-                        lastState !== needsHighlight
-                    ) {
+                    const lastState = (d as any)._lastSelected;
+                    if (g.selectAll("*").empty() || lastState !== isSelected) {
                         g.selectAll("*").remove();
-                        buildTreemapNode(g, d, needsHighlight);
-                        (d as any)._lastHighlight = needsHighlight;
+                        buildTreemapNode(g, d, isSelected);
+                        (d as any)._lastSelected = isSelected;
+
+                        // Focus accent: prominent glowing border on priority focus tasks
+                        if (showFocus && d._isLeaf && focusIds.has(d.id)) {
+                            const focusW = d._lw || d.w;
+                            const focusH = d._lh || d.h;
+                            g.append("rect")
+                                .attr("class", "focus-ring")
+                                .attr("x", -focusW / 2)
+                                .attr("y", -focusH / 2)
+                                .attr("width", focusW)
+                                .attr("height", focusH)
+                                .attr("fill", "none")
+                                .attr("stroke", "#f59e0b")
+                                .attr("stroke-width", 6)
+                                .attr("stroke-opacity", 0.6)
+                                .style("pointer-events", "none")
+                                .append("animate")
+                                .attr("attributeName", "stroke-opacity")
+                                .attr("values", "0.2;0.8;0.2")
+                                .attr("dur", "2s")
+                                .attr("repeatCount", "indefinite");
+                            g.append("rect")
+                                .attr("class", "focus-ring")
+                                .attr("x", -focusW / 2 + 1.5)
+                                .attr("y", -focusH / 2 + 1.5)
+                                .attr("width", Math.max(0, focusW - 3))
+                                .attr("height", Math.max(0, focusH - 3))
+                                .attr("fill", "none")
+                                .attr("stroke", "#fbbf24")
+                                .attr("stroke-width", 3)
+                                .attr("rx", 3)
+                                .style("pointer-events", "none");
+                        }
                     }
+                    g.classed("hovered-node", isHovered);
                 });
         }
     });
@@ -253,57 +286,58 @@
 
         nEls.each(function (d) {
             const g = d3.select(this);
-            const needsHighlight =
-                d.id === activeNodeId || d.id === hoveredNodeId;
+            const isSelected = d.id === activeNodeId;
+            const isHovered = d.id === hoveredNodeId;
+
             g.selectAll("*").remove();
-            buildTreemapNode(g, d, needsHighlight);
-            (d as any)._lastHighlight = needsHighlight;
+            buildTreemapNode(g, d, isSelected);
+            (d as any)._lastSelected = isSelected;
 
             // Focus accent: prominent glowing border on priority focus tasks
             if (showFocus && d._isLeaf && focusIds.has(d.id)) {
                 const focusW = d._lw || d.w;
                 const focusH = d._lh || d.h;
-                
-                // Outer glow
+                // g.append("rect")
+                //     .attr("class", "focus-ring")
+                //     .attr("x", -focusW / 2).attr("y", -focusH / 2)
+                //     .attr("width", focusW).attr("height", focusH)
+                //     .attr("fill", "none").attr("stroke", "#f59e0b")
+                //     .attr("stroke-width", 6).attr("stroke-opacity", 0.6)
+                //     .style("pointer-events", "none")
+                //     .append("animate").attr("attributeName", "stroke-opacity")
+                //     .attr("values", "0.2;0.8;0.2").attr("dur", "2s").attr("repeatCount", "indefinite");
                 g.append("rect")
-                    .attr("x", -focusW / 2).attr("y", -focusH / 2)
-                    .attr("width", focusW).attr("height", focusH)
-                    .attr("fill", "none")
-                    .attr("stroke", "#f59e0b")
-                    .attr("stroke-width", 6)
-                    .attr("stroke-opacity", 0.6)
-                    .style("pointer-events", "none")
-                    .append("animate")
-                    .attr("attributeName", "stroke-opacity")
-                    .attr("values", "0.2;0.8;0.2")
-                    .attr("dur", "2s")
-                    .attr("repeatCount", "indefinite");
-
-                // Sharp inner highlight
-                g.append("rect")
-                    .attr("x", -focusW / 2 + 1.5).attr("y", -focusH / 2 + 1.5)
-                    .attr("width", Math.max(0, focusW - 3)).attr("height", Math.max(0, focusH - 3))
+                    .attr("class", "focus-ring")
+                    .attr("x", -focusW / 2 + 1.5)
+                    .attr("y", -focusH / 2 + 1.5)
+                    .attr("width", Math.max(0, focusW - 3))
+                    .attr("height", Math.max(0, focusH - 3))
                     .attr("fill", "none")
                     .attr("stroke", "#fbbf24")
                     .attr("stroke-width", 3)
                     .attr("rx", 3)
                     .style("pointer-events", "none");
             }
+            g.classed("hovered-node", isHovered);
         });
 
         // Gentle dimming: non-focus leaf nodes slightly faded, and filter-dimmed nodes heavily faded
         if (showFocus) {
             nEls.style("opacity", (d: any) => {
                 const baseOp = d.opacity ?? 1;
-                if (d.filter_dimmed) return 0.65 * baseOp;
+                if (d.filter_dimmed) return 0.95 * baseOp;
                 if (!d._isLeaf) return baseOp < 1 ? baseOp : null; // Don't dim containers unless baseOp wants to
                 if (focusIds.has(d.id)) return baseOp;
-                return 0.65 * baseOp;
+                return 0.95 * baseOp;
             });
         } else {
             nEls.style("opacity", (d: any) => {
                 const baseOp = d.opacity ?? 1;
-                return d.filter_dimmed ? 0.65 * baseOp : (baseOp < 1 ? baseOp : null);
+                return d.filter_dimmed
+                    ? 0.95 * baseOp
+                    : baseOp < 1
+                      ? baseOp
+                      : null;
             });
         }
 

@@ -434,7 +434,7 @@ export function prepareGraphData(
         const nodeH = Math.max(lines.length * (fontSize + 4) + padY * 2, 30 * typeScale);
 
         const severity = typeof node.severity === 'number' ? node.severity : 0;
-        
+
         // Normal scale for task importance peaks around 30,000.
         // A non-severe P0 task can hit ~30k: P0 base (10k) + deadline (12k max) + stakeholder/staleness (8k).
         // Catastrophic tasks (SEV3/SEV4) have base scores of 20k or 100k, shifting completely out.
@@ -442,11 +442,11 @@ export function prepareGraphData(
         const NOMINAL_MAX_FOCUS = 30000;
         const effectiveMaxFocus = Math.min(Math.max(maxFocusScore, 1), NOMINAL_MAX_FOCUS);
         const weightNorm = Math.min(Math.log1p(focusScore) / Math.log1p(effectiveMaxFocus), 1.0);
-        
+
         // Use the spec predicate for catastrophic status (severity >= 3)
         // rather than guessing from a score threshold.
         const isCatastrophic = severity >= 3;
-        
+
         let fill: string;
         let textCol: string;
 
@@ -481,11 +481,11 @@ export function prepareGraphData(
             if (modified) {
                 const daysSinceModified = (Date.now() - modified) / 86400000;
                 if (daysSinceModified > 30) {
-                    desaturation = Math.min(1.0, desaturation + 0.5);
+                    desaturation = Math.min(1.0, desaturation + 0.05);
                 } else if (daysSinceModified > 14) {
-                    desaturation = Math.min(1.0, desaturation + 0.3);
+                    desaturation = Math.min(1.0, desaturation + 0.03);
                 } else if (daysSinceModified > 7) {
-                    desaturation = Math.min(1.0, desaturation + 0.1);
+                    desaturation = Math.min(1.0, desaturation + 0.01);
                 }
             }
             fill = interpolateColor(baseFill || MUTED_FILL, MUTED_FILL, desaturation);
@@ -515,14 +515,14 @@ export function prepareGraphData(
         if (!isStructural) {
             // Using weightNorm instead of linear focus to prevent outliers from hiding high-priority tasks
             if (weightNorm < 0.6) {
-                // Dim down to 60% opacity for zero focus (instead of 40%)
-                opacity = Math.min(opacity, 0.6 + (weightNorm / 0.6) * 0.4);
+                // Dim down to 95% opacity for zero focus (instead of 40%)
+                opacity = Math.min(opacity, 0.95 + (weightNorm / 0.6) * 0.05);
             }
         }
 
         // Uncertainty: dim nodes proportionally to how uncertain they are
         if (!isStructural && uncertainty > 0) {
-            opacity = Math.max(0.3, opacity - uncertainty * 0.35);
+            opacity = Math.max(0.85, opacity - uncertainty * 0.15);
         }
 
         const isIncomplete = INCOMPLETE_STATUSES.has(status);
