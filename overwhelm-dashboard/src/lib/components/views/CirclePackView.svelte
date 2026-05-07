@@ -138,7 +138,7 @@
 
         // Leaves sized by central focus → radius mapping.
         const MIN_R = 6;
-        const MAX_R = 90;
+        const MAX_R = 70;
         const maxFocus = maxFocusOf(nodes);
         const leafRadius = (d: any) =>
             focusSize(d.focusScore, maxFocus, MIN_R, MAX_R);

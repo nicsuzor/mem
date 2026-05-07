@@ -50,6 +50,7 @@ export interface GraphNode {
     layouts: Record<string, any>;
     fullTitle: string;
     focusScore: number;
+    isCatastrophic?: boolean;
     _raw: any;
 
     // D3 physics mutation state
@@ -432,6 +433,20 @@ export function prepareGraphData(
         const nodeW = Math.max(textW + padX * 2, 55 * typeScale);
         const nodeH = Math.max(lines.length * (fontSize + 4) + padY * 2, 30 * typeScale);
 
+        const severity = typeof node.severity === 'number' ? node.severity : 0;
+        
+        // Normal scale for task importance peaks around 30,000.
+        // A non-severe P0 task can hit ~30k: P0 base (10k) + deadline (12k max) + stakeholder/staleness (8k).
+        // Catastrophic tasks (SEV3/SEV4) have base scores of 20k or 100k, shifting completely out.
+        // We clamp the normalizer so these extreme SEV outliers don't crush normal tasks.
+        const NOMINAL_MAX_FOCUS = 30000;
+        const effectiveMaxFocus = Math.min(Math.max(maxFocusScore, 1), NOMINAL_MAX_FOCUS);
+        const weightNorm = Math.min(Math.log1p(focusScore) / Math.log1p(effectiveMaxFocus), 1.0);
+        
+        // Use the spec predicate for catastrophic status (severity >= 3)
+        // rather than guessing from a score threshold.
+        const isCatastrophic = severity >= 3;
+        
         let fill: string;
         let textCol: string;
 
@@ -439,7 +454,6 @@ export function prepareGraphData(
             fill = "#e2e8f0";
             textCol = "#94a3b8";
         } else {
-            const weightNorm = Math.min(Math.log1p(focusScore) / Math.log1p(maxFocusScore), 1.0);
             const baseFill = STATUS_FILLS[status];
             if (!baseFill) {
                 if (CONTAINER_TYPES.has(nodeType)) {
@@ -451,17 +465,16 @@ export function prepareGraphData(
                     );
                 }
             }
-            // Weight-based desaturation: aggressively dim the bottom 80% of tasks by focus
-            // We use the linear focus ratio for a sharper cutoff than the log-compressed weightNorm
-            const linearFocusRatio = maxFocusScore > 1 ? focusScore / maxFocusScore : 1.0;
+            // Weight-based desaturation: dim lower-focus nodes, but use log-scale (weightNorm)
+            // to avoid extreme outliers pushing all normal high-priority tasks into the "heavily dimmed" bucket.
             let desaturation = 0;
-            
-            if (linearFocusRatio < 0.20) {
-                // Bottom ~80% of tasks get heavily desaturated (up to 85% grey for zero focus)
-                desaturation = 0.85 - (linearFocusRatio / 0.20) * 0.45; 
+
+            if (weightNorm < 0.6) {
+                // Nodes with low focus get somewhat desaturated (up to 20% grey for zero focus).
+                desaturation = 0.20 - (weightNorm / 0.6) * 0.40;
             } else {
-                // Top ~20% of tasks get full color or mild desaturation
-                desaturation = Math.max(0, 0.4 - weightNorm * 0.4);
+                // High focus nodes keep their bright colors
+                desaturation = Math.max(0, 0.2 - (weightNorm - 0.6) * 0.5);
             }
 
             // Recency emphasis: stale nodes desaturate further
@@ -497,13 +510,13 @@ export function prepareGraphData(
             const hasEdges = validEdges.some(e => e.source === nid || e.target === nid);
             if (!hasEdges) opacity = 0.5;
         }
-        
+
         // Dim low-focus nodes globally
         if (!isStructural) {
-            const linearFocusRatio = maxFocusScore > 1 ? focusScore / maxFocusScore : 1.0;
-            if (linearFocusRatio < 0.20) {
-                // Dim up to 40% opacity for zero focus, smoothly scaling up to full opacity
-                opacity = Math.min(opacity, 0.4 + (linearFocusRatio / 0.20) * 0.6);
+            // Using weightNorm instead of linear focus to prevent outliers from hiding high-priority tasks
+            if (weightNorm < 0.6) {
+                // Dim down to 60% opacity for zero focus (instead of 40%)
+                opacity = Math.min(opacity, 0.6 + (weightNorm / 0.6) * 0.4);
             }
         }
 
@@ -578,6 +591,7 @@ export function prepareGraphData(
             y: node.y,
             layouts: node.layouts || {},
             focusScore: node.focus_score || 0,
+            isCatastrophic,
             _raw: node
         });
     }

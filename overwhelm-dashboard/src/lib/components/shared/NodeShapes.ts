@@ -751,6 +751,28 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             .attr("stroke-dasharray", "2,2").attr("pointer-events", "none");
     }
 
+    // Catastrophic failure condition handling (e.g. SEV3/SEV4)
+    if (d.isCatastrophic && !isParent) {
+        g.append("rect")
+            .attr("x", -w / 2 + 2).attr("y", -h / 2 + 2).attr("width", Math.max(0, w - 4)).attr("height", Math.max(0, h - 4))
+            .attr("fill", "none")
+            .attr("stroke", "#ef4444")
+            .attr("stroke-width", 4)
+            .attr("stroke-dasharray", "12,6")
+            .style("pointer-events", "none");
+            
+        g.append("rect")
+            .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
+            .attr("fill", "#ef4444")
+            .attr("opacity", 0)
+            .style("pointer-events", "none")
+            .append("animate")
+            .attr("attributeName", "opacity")
+            .attr("values", "0;0.25;0")
+            .attr("dur", "1.2s")
+            .attr("repeatCount", "indefinite");
+    }
+
     // Only attempt to render text if we have enough space. Small nodes collapse to solid colored boxes.
     // Address tall-node symptom: Do not attempt to render text in narrow vertical slices
     const MIN_TEXT_WIDTH = 25;
@@ -1019,6 +1041,26 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
             .attr("stroke", strokeColor)
             .attr("stroke-width", isSelected ? Math.max(2, r * 0.02) : baseStrokeW)
             .attr("stroke-opacity", isCompleted ? 0.3 : 1);
+
+        // Catastrophic failure condition handling
+        if (d.isCatastrophic) {
+            g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r - 1)
+                .attr("fill", "none")
+                .attr("stroke", "#ef4444")
+                .attr("stroke-width", Math.max(2.5, r * 0.06))
+                .attr("stroke-dasharray", "8,4")
+                .style("pointer-events", "none");
+
+            g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
+                .attr("fill", "#ef4444")
+                .attr("opacity", 0)
+                .style("pointer-events", "none")
+                .append("animate")
+                .attr("attributeName", "opacity")
+                .attr("values", "0;0.35;0")
+                .attr("dur", "1.2s")
+                .attr("repeatCount", "indefinite");
+        }
 
         // Blocked: stronger outer ring and symbol for fast scanability
         if (d.status === "blocked") {

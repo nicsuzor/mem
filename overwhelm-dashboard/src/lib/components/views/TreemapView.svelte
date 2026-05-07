@@ -122,10 +122,10 @@
         }
 
         // Weight unit range — d3.treemap allocates area proportional to value.
-        // Min=5 keeps low-focus tiles barely visible; max=500 expands the dynamic range
-        // so critical tasks physically dominate the screen.
-        const MIN_WEIGHT = 5;
-        const MAX_WEIGHT = 500;
+        // Min=10, max=200 softens the dynamic range slightly from the extreme 5-500,
+        // so critical tasks still pop but don't completely swallow normal tasks.
+        const MIN_WEIGHT = 10;
+        const MAX_WEIGHT = 200;
         const maxFocus = maxFocusOf(nodes);
 
         // Mark hierarchy parents — d.children on raw data is always undefined
