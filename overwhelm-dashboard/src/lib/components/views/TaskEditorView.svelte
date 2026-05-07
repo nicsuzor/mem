@@ -580,44 +580,6 @@
                             </div>
                         </section>
 
-                        {#if t.criticality > 0 || t.uncertainty > 0 || t.scope > 0}
-                        <section class="rounded-sm border border-primary/15 bg-black/15 p-3 space-y-2">
-                            <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45 border-b border-primary/10 pb-1">Computed Properties</div>
-
-                            <!-- Criticality -->
-                            <div class="space-y-0.5">
-                                <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
-                                    <span class="text-primary/45">Criticality</span>
-                                    <span class="font-bold" style="color: {t.criticality > 0.6 ? '#f59e0b' : t.criticality > 0.3 ? '#d97706' : '#a3a3a3'}">{Math.round(t.criticality * 100)}%</span>
-                                </div>
-                                <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
-                                    <div class="h-full rounded-full transition-all" style="width:{Math.round(t.criticality * 100)}%; background: color-mix(in srgb, #f59e0b {40 + Math.round(t.criticality * 60)}%, #374151)"></div>
-                                </div>
-                            </div>
-
-                            <!-- Uncertainty -->
-                            <div class="space-y-0.5">
-                                <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
-                                    <span class="text-primary/45">Uncertainty</span>
-                                    <span class="font-bold" style="color: {t.uncertainty > 0.6 ? '#94a3b8' : t.uncertainty > 0.3 ? '#64748b' : '#a3a3a3'}">{Math.round(t.uncertainty * 100)}%</span>
-                                </div>
-                                <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
-                                    <div class="h-full rounded-full transition-all" style="width:{Math.round(t.uncertainty * 100)}%; background: color-mix(in srgb, #94a3b8 {40 + Math.round(t.uncertainty * 60)}%, #374151)"></div>
-                                </div>
-                            </div>
-
-                            <!-- Scope -->
-                            {#if t.scope > 0}
-                            <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
-                                <span class="text-primary/45">Scope</span>
-                                <span class="font-bold text-primary/70">{t.scope} descendant{t.scope === 1 ? '' : 's'}</span>
-                            </div>
-                            {/if}
-
-
-                        </section>
-                        {/if}
-
                         <!-- Focus Score Banner -->
                         {#if focusRaw > 0}
                         <section class="rounded-sm border border-primary/20 bg-gradient-to-br from-black/40 to-black/20 p-4 shadow-sm relative overflow-hidden" style="box-shadow: {focusNorm > 0.7 ? '0 0 15px rgba(167, 139, 250, 0.1)' : 'none'}">
@@ -658,6 +620,99 @@
                         <section class="rounded-sm border border-primary/10 bg-black/10 p-3 flex flex-col items-center justify-center opacity-60">
                             <span class="text-[9px] font-bold uppercase tracking-[0.2em] text-primary/40">Focus Signal</span>
                             <span class="text-[10px] text-primary/30 mt-1 uppercase tracking-widest italic">No Focus Value Computed</span>
+                        </section>
+                        {/if}
+
+                        {#if t.criticality > 0 || t.uncertainty > 0 || t.scope > 0 || focusRaw > 0}
+                        <section class="rounded-sm border border-primary/15 bg-black/15 p-3 space-y-2">
+                            <div class="text-[9px] font-bold uppercase tracking-[0.18em] text-primary/45 border-b border-primary/10 pb-1">Computed Properties</div>
+
+                            <!-- Criticality -->
+                            <div class="space-y-0.5">
+                                <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
+                                    <span class="text-primary/45">Criticality</span>
+                                    <span class="font-bold" style="color: {t.criticality > 0.6 ? '#f59e0b' : t.criticality > 0.3 ? '#d97706' : '#a3a3a3'}">{Math.round(t.criticality * 100)}%</span>
+                                </div>
+                                <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
+                                    <div class="h-full rounded-full transition-all" style="width:{Math.round(t.criticality * 100)}%; background: color-mix(in srgb, #f59e0b {40 + Math.round(t.criticality * 60)}%, #374151)"></div>
+                                </div>
+                            </div>
+
+                            <!-- Uncertainty -->
+                            <div class="space-y-0.5">
+                                <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
+                                    <span class="text-primary/45">Uncertainty</span>
+                                    <span class="font-bold" style="color: {t.uncertainty > 0.6 ? '#94a3b8' : t.uncertainty > 0.3 ? '#64748b' : '#a3a3a3'}">{Math.round(t.uncertainty * 100)}%</span>
+                                </div>
+                                <div class="h-1.5 w-full rounded-full bg-primary/10 overflow-hidden">
+                                    <div class="h-full rounded-full transition-all" style="width:{Math.round(t.uncertainty * 100)}%; background: color-mix(in srgb, #94a3b8 {40 + Math.round(t.uncertainty * 60)}%, #374151)"></div>
+                                </div>
+                            </div>
+
+                            <!-- Scope -->
+                            {#if t.scope > 0}
+                            <div class="flex items-center justify-between text-[8px] font-mono uppercase tracking-[0.12em]">
+                                <span class="text-primary/45">Scope</span>
+                                <span class="font-bold text-primary/70">{t.scope} descendant{t.scope === 1 ? '' : 's'}</span>
+                            </div>
+                            {/if}
+
+                            {#if focusRaw > 0}
+                            <div class="mt-3 space-y-1">
+                                <div class="text-[8px] font-bold uppercase tracking-[0.12em] text-primary/45 mb-1.5 pt-2 border-t border-primary/10">Focus Breakdown</div>
+                                {#if t.priority === 0 || t.priority === 1}
+                                    <div class="flex items-center justify-between text-[8px] font-mono tracking-[0.1em] text-primary/60 border-b border-primary/5 pb-0.5">
+                                        <span class="opacity-70">PRIORITY P{t.priority}</span>
+                                        <span class="text-primary/80 font-bold">+{t.priority === 0 ? '10000' : '5000'}</span>
+                                    </div>
+                                {/if}
+                                {#if t._raw?.severity > 0}
+                                    <div class="flex items-center justify-between text-[8px] font-mono tracking-[0.1em] text-primary/60 border-b border-primary/5 pb-0.5">
+                                        <span class="opacity-70">SEVERITY SEV{t._raw.severity}</span>
+                                        <span class="text-primary/80 font-bold">+{t._raw.severity === 4 ? '100000' : t._raw.severity === 3 ? '20000' : t._raw.severity === 2 ? '10000' : '5000'}</span>
+                                    </div>
+                                {/if}
+                                {#if t._raw?.due}
+                                    <div class="flex items-center justify-between text-[8px] font-mono tracking-[0.1em] text-primary/60 border-b border-primary/5 pb-0.5">
+                                        <span class="opacity-70 flex flex-col">
+                                            <span>DEADLINE</span>
+                                            <span class="text-[7px] opacity-60 normal-case tracking-normal">due: {t._raw.due}{t._raw?.effort ? ` / effort: ${t._raw.effort}` : ''}</span>
+                                        </span>
+                                        <span class="text-primary/80 font-bold">+Urgency</span>
+                                    </div>
+                                {/if}
+                                {#if (t.priority ?? 2) >= 2 && t._raw?.created}
+                                    <div class="flex items-center justify-between text-[8px] font-mono tracking-[0.1em] text-primary/60 border-b border-primary/5 pb-0.5">
+                                        <span class="opacity-70 flex flex-col">
+                                            <span>AGE/STALENESS</span>
+                                            <span class="text-[7px] opacity-60 normal-case tracking-normal">created: {t._raw.created}</span>
+                                        </span>
+                                        <span class="text-primary/80 font-bold">+Up to 200</span>
+                                    </div>
+                                {/if}
+                                {#if t.dw > 0}
+                                    <div class="flex items-center justify-between text-[8px] font-mono tracking-[0.1em] text-primary/60 border-b border-primary/5 pb-0.5">
+                                        <span class="opacity-70">DOWNSTREAM WEIGHT</span>
+                                        <span class="text-primary/80 font-bold">+{Math.round(t.dw * 10)}</span>
+                                    </div>
+                                {/if}
+                                {#if t.stakeholder}
+                                    <div class="flex items-center justify-between text-[8px] font-mono tracking-[0.1em] text-primary/60 border-b border-primary/5 pb-0.5">
+                                        <span class="opacity-70 flex flex-col">
+                                            <span>STAKEHOLDER WAIT</span>
+                                            <span class="text-[7px] opacity-60 normal-case tracking-normal">waiting_since: {t._raw?.waiting_since || t._raw?.created || 'unknown'}</span>
+                                        </span>
+                                        <span class="text-primary/80 font-bold">+Up to 8000</span>
+                                    </div>
+                                {/if}
+                                {#if t._raw?.urgency > 0}
+                                    <div class="flex items-center justify-between text-[8px] font-mono tracking-[0.1em] text-primary/60">
+                                        <span class="opacity-70">PROPAGATED URGENCY</span>
+                                        <span class="text-primary/80 font-bold">+{Math.round(t._raw.urgency)}</span>
+                                    </div>
+                                {/if}
+                            </div>
+                            {/if}
                         </section>
                         {/if}
 

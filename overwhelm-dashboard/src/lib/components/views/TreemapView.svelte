@@ -122,10 +122,10 @@
         }
 
         // Weight unit range — d3.treemap allocates area proportional to value.
-        // Min=20 keeps low-focus tiles visible; max=100 caps the dynamic range
-        // so a single huge-focus task doesn't swallow the canvas.
-        const MIN_WEIGHT = 20;
-        const MAX_WEIGHT = 100;
+        // Min=5 keeps low-focus tiles barely visible; max=500 expands the dynamic range
+        // so critical tasks physically dominate the screen.
+        const MIN_WEIGHT = 5;
+        const MAX_WEIGHT = 500;
         const maxFocus = maxFocusOf(nodes);
 
         // Mark hierarchy parents — d.children on raw data is always undefined
@@ -259,30 +259,52 @@
             buildTreemapNode(g, d, needsHighlight);
             (d as any)._lastHighlight = needsHighlight;
 
-            // Focus accent: gold left-border on priority focus tasks
+            // Focus accent: prominent glowing border on priority focus tasks
             if (showFocus && d._isLeaf && focusIds.has(d.id)) {
                 const focusW = d._lw || d.w;
                 const focusH = d._lh || d.h;
+                
+                // Outer glow
                 g.append("rect")
-                    .attr("x", -focusW / 2)
-                    .attr("y", -focusH / 2)
-                    .attr("width", Math.min(3, focusW))
-                    .attr("height", focusH)
-                    .attr("fill", "#f59e0b")
-                    .attr("opacity", 0.9);
+                    .attr("x", -focusW / 2).attr("y", -focusH / 2)
+                    .attr("width", focusW).attr("height", focusH)
+                    .attr("fill", "none")
+                    .attr("stroke", "#f59e0b")
+                    .attr("stroke-width", 6)
+                    .attr("stroke-opacity", 0.6)
+                    .style("pointer-events", "none")
+                    .append("animate")
+                    .attr("attributeName", "stroke-opacity")
+                    .attr("values", "0.2;0.8;0.2")
+                    .attr("dur", "2s")
+                    .attr("repeatCount", "indefinite");
+
+                // Sharp inner highlight
+                g.append("rect")
+                    .attr("x", -focusW / 2 + 1.5).attr("y", -focusH / 2 + 1.5)
+                    .attr("width", Math.max(0, focusW - 3)).attr("height", Math.max(0, focusH - 3))
+                    .attr("fill", "none")
+                    .attr("stroke", "#fbbf24")
+                    .attr("stroke-width", 3)
+                    .attr("rx", 3)
+                    .style("pointer-events", "none");
             }
         });
 
         // Gentle dimming: non-focus leaf nodes slightly faded, and filter-dimmed nodes heavily faded
         if (showFocus) {
             nEls.style("opacity", (d: any) => {
-                if (d.filter_dimmed) return 0.65;
-                if (!d._isLeaf) return null; // Don't dim containers
-                if (focusIds.has(d.id)) return 1;
-                return 0.65;
+                const baseOp = d.opacity ?? 1;
+                if (d.filter_dimmed) return 0.65 * baseOp;
+                if (!d._isLeaf) return baseOp < 1 ? baseOp : null; // Don't dim containers unless baseOp wants to
+                if (focusIds.has(d.id)) return baseOp;
+                return 0.65 * baseOp;
             });
         } else {
-            nEls.style("opacity", (d: any) => (d.filter_dimmed ? 0.65 : null));
+            nEls.style("opacity", (d: any) => {
+                const baseOp = d.opacity ?? 1;
+                return d.filter_dimmed ? 0.65 * baseOp : (baseOp < 1 ? baseOp : null);
+            });
         }
 
         const eEls = d3

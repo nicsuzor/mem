@@ -451,8 +451,19 @@ export function prepareGraphData(
                     );
                 }
             }
-            // Weight-based desaturation: low-focus nodes slightly muted
-            let desaturation = Math.max(0, 0.4 - weightNorm * 0.4);
+            // Weight-based desaturation: aggressively dim the bottom 80% of tasks by focus
+            // We use the linear focus ratio for a sharper cutoff than the log-compressed weightNorm
+            const linearFocusRatio = maxFocusScore > 1 ? focusScore / maxFocusScore : 1.0;
+            let desaturation = 0;
+            
+            if (linearFocusRatio < 0.20) {
+                // Bottom ~80% of tasks get heavily desaturated (up to 85% grey for zero focus)
+                desaturation = 0.85 - (linearFocusRatio / 0.20) * 0.45; 
+            } else {
+                // Top ~20% of tasks get full color or mild desaturation
+                desaturation = Math.max(0, 0.4 - weightNorm * 0.4);
+            }
+
             // Recency emphasis: stale nodes desaturate further
             if (modified) {
                 const daysSinceModified = (Date.now() - modified) / 86400000;
@@ -486,6 +497,16 @@ export function prepareGraphData(
             const hasEdges = validEdges.some(e => e.source === nid || e.target === nid);
             if (!hasEdges) opacity = 0.5;
         }
+        
+        // Dim low-focus nodes globally
+        if (!isStructural) {
+            const linearFocusRatio = maxFocusScore > 1 ? focusScore / maxFocusScore : 1.0;
+            if (linearFocusRatio < 0.20) {
+                // Dim up to 40% opacity for zero focus, smoothly scaling up to full opacity
+                opacity = Math.min(opacity, 0.4 + (linearFocusRatio / 0.20) * 0.6);
+            }
+        }
+
         // Uncertainty: dim nodes proportionally to how uncertain they are
         if (!isStructural && uncertainty > 0) {
             opacity = Math.max(0.3, opacity - uncertainty * 0.35);

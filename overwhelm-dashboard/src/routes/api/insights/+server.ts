@@ -74,7 +74,18 @@ export async function GET() {
                         startedAt = date;
                     }
                 }
-                const description = data.description || data.outcome || '';
+                let slug = '';
+                const fileParts = file.replace('.json', '').split('-');
+                const sidIndex = fileParts.indexOf(data.session_id);
+                if (sidIndex !== -1 && sidIndex < fileParts.length - 1) {
+                    slug = fileParts.slice(sidIndex + 1).join(' ');
+                    slug = slug.charAt(0).toUpperCase() + slug.slice(1);
+                }
+                
+                let description = data.description || data.summary || data.outcome || slug || '';
+                if (description.startsWith('Session in') && description.endsWith('completed.')) {
+                    description = slug || description;
+                }
 
                 const provider = data.provider || 'unknown';
                 const client = data.client || 'unknown';

@@ -623,7 +623,7 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
         cellColor = `hsl(${hue}, 48%, 24%)`;
     } else {
         const status = (d.status || 'inbox').toLowerCase();
-        cellColor = STATUS_FILLS[status];
+        cellColor = d.fill || STATUS_FILLS[status];
         if (!cellColor) {
             throw new Error(
                 `NodeShapes: unknown status "${status}" on node ${d.id}. ` +
@@ -909,7 +909,7 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
         cellColor = `hsl(${hue}, 46%, 24%)`;
     } else {
         const status = (d.status || 'inbox').toLowerCase();
-        cellColor = STATUS_FILLS[status];
+        cellColor = d.fill || STATUS_FILLS[status];
         if (!cellColor) {
             throw new Error(
                 `NodeShapes: unknown status "${status}" on node ${d.id}. ` +

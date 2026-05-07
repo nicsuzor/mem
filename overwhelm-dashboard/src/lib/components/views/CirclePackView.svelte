@@ -138,7 +138,7 @@
 
         // Leaves sized by central focus → radius mapping.
         const MIN_R = 6;
-        const MAX_R = 40;
+        const MAX_R = 90;
         const maxFocus = maxFocusOf(nodes);
         const leafRadius = (d: any) =>
             focusSize(d.focusScore, maxFocus, MIN_R, MAX_R);
@@ -243,19 +243,37 @@
 
             g.classed("hovered-node", isHovered);
 
-            // Focus highlight: gold ring on priority focus leaf nodes
+            // Focus highlight: glowing ring on priority focus leaf nodes
             if (showFocus && d._isLeaf) {
                 g.select(".focus-ring").remove();
                 if (focusIds.has(d.id)) {
+                    // Outer glow
                     g.insert("circle", ":first-child")
                         .attr("class", "focus-ring")
                         .attr("cx", 0)
                         .attr("cy", 0)
-                        .attr("r", (d._lr || 5) - 1)
+                        .attr("r", (d._lr || 5))
                         .attr("fill", "none")
                         .attr("stroke", "#f59e0b")
+                        .attr("stroke-width", 8)
+                        .attr("stroke-opacity", 0.6)
+                        .style("pointer-events", "none")
+                        .append("animate")
+                        .attr("attributeName", "stroke-opacity")
+                        .attr("values", "0.2;0.8;0.2")
+                        .attr("dur", "2s")
+                        .attr("repeatCount", "indefinite");
+
+                    // Sharp inner highlight
+                    g.insert("circle", ":first-child")
+                        .attr("class", "focus-ring")
+                        .attr("cx", 0)
+                        .attr("cy", 0)
+                        .attr("r", (d._lr || 5) - 1.5)
+                        .attr("fill", "none")
+                        .attr("stroke", "#fbbf24")
                         .attr("stroke-width", 3)
-                        .attr("opacity", 0.8);
+                        .style("pointer-events", "none");
                 }
             }
         });
@@ -263,13 +281,17 @@
         // Gentle dimming: non-focus leaves slightly faded, and filter-dimmed nodes heavily faded
         if (showFocus) {
             nEls.style("opacity", (d: any) => {
-                if (d.filter_dimmed) return 0.2;
-                if (!d._isLeaf) return null;
-                if (focusIds.has(d.id)) return 1;
-                return 0.6;
+                const baseOp = d.opacity ?? 1;
+                if (d.filter_dimmed) return 0.2 * baseOp;
+                if (!d._isLeaf) return baseOp < 1 ? baseOp : null;
+                if (focusIds.has(d.id)) return baseOp;
+                return 0.6 * baseOp;
             });
         } else {
-            nEls.style("opacity", (d: any) => (d.filter_dimmed ? 0.2 : null));
+            nEls.style("opacity", (d: any) => {
+                const baseOp = d.opacity ?? 1;
+                return d.filter_dimmed ? 0.2 * baseOp : (baseOp < 1 ? baseOp : null);
+            });
         }
 
         const eEls = d3

@@ -3,7 +3,7 @@
 // layouts. t = (focus / maxFocus)^exponent; size = min + (max - min) * t.
 // Exponent < 1 compresses differences (sqrt = gentle), > 1 exaggerates them.
 
-export const FOCUS_SIZE_EXPONENT = 0.5;
+export const FOCUS_SIZE_EXPONENT = 1.5;
 
 export function maxFocusOf(nodes: Array<{ focusScore?: number }>): number {
     let m = 0;
