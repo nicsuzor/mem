@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.47](https://github.com/nicsuzor/mem/compare/v0.3.46...v0.3.47) - 2026-05-07
+
+### Other
+
+- too many different opacity calculations
+- responsiveness
+
 ## [0.3.46](https://github.com/nicsuzor/mem/compare/v0.3.45...v0.3.46) - 2026-05-07
 
 ### Other
