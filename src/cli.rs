@@ -903,7 +903,15 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(if is_mcp { "info" } else { "warn" })),
+                .unwrap_or_else(|_| {
+                    let mut filter = tracing_subscriber::EnvFilter::new(if is_mcp { "info" } else { "warn" });
+                    if is_mcp {
+                        // Suppress noisy rmcp session close errors (benign during shutdown/cleanup).
+                        // Refs task-2ae61ce6.
+                        filter = filter.add_directive("rmcp::transport::streamable_http_server::tower=warn".parse().unwrap());
+                    }
+                    filter
+                }),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -3091,12 +3099,13 @@ async fn main() -> Result<()> {
                 }
                 eprintln!("   Allowed Host headers: {:?}", config.allowed_hosts);
 
-                // Default session keep_alive is 5 minutes, which produces a noisy
-                // ERROR log when idle clients get reaped. Shorten it so stale
-                // sessions are cleaned up sooner.
+                // Use a generous keep-alive for MCP sessions (24 hours).
+                // The dashboard legitimately keeps a single MCP session open for days while idle.
+                // Idle != dead; don't kill sessions on inactivity unless we have a specific reason.
+                // Refs task-2ae61ce6.
                 let mut session_manager_inner = LocalSessionManager::default();
                 session_manager_inner.session_config.keep_alive =
-                    Some(std::time::Duration::from_secs(60));
+                    Some(std::time::Duration::from_secs(24 * 3600));
                 let session_manager = std::sync::Arc::new(session_manager_inner);
 
                 let mcp_service = StreamableHttpService::new(
