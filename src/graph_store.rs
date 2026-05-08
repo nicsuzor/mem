@@ -200,6 +200,50 @@ impl GraphStore {
             }
         }
 
+        // 2b. Discover ghost nodes (referenced but not in files)
+        // Scans all reference fields for IDs that weren't resolved to files,
+        // then creates minimal virtual nodes for them.
+        let mut referenced_ids = HashSet::new();
+        for n in &nodes {
+            if let Some(ref p) = n.parent { referenced_ids.insert(p.clone()); }
+            for c in &n.closes { referenced_ids.insert(c.clone()); }
+            for ct in &n.contributes_to { referenced_ids.insert(ct.to.clone()); }
+            for d in &n.depends_on { referenced_ids.insert(d.clone()); }
+            for sd in &n.soft_depends_on { referenced_ids.insert(sd.clone()); }
+            for b in &n.blocks { referenced_ids.insert(b.clone()); }
+            for sb in &n.soft_blocks { referenced_ids.insert(sb.clone()); }
+            for child in &n.children { referenced_ids.insert(child.clone()); }
+            for follow in &n.follow_up_tasks { referenced_ids.insert(follow.clone()); }
+        }
+
+        let mut ghost_nodes = Vec::new();
+        for ref_id in referenced_ids {
+            let lower = ref_id.to_lowercase();
+            if !id_map.contains_key(&lower) {
+                let mut ghost = GraphNode::default();
+                ghost.id = ref_id.clone();
+                ghost.label = ref_id.clone();
+                // Guess node type from ID prefix
+                if ref_id.starts_with("epic-") {
+                    ghost.node_type = Some("epic".to_string());
+                } else if ref_id.starts_with("task-") {
+                    ghost.node_type = Some("task".to_string());
+                } else if ref_id.starts_with("goal-") || ref_id.starts_with("target-") {
+                    ghost.node_type = Some("goal".to_string());
+                } else if ref_id.starts_with("pr-") {
+                    ghost.node_type = Some("pr".to_string());
+                } else if ref_id.starts_with("project-") {
+                    ghost.node_type = Some("project".to_string());
+                }
+                
+                let virtual_path = format!("/virtual/{}", ref_id);
+                path_to_id.insert(virtual_path.clone(), ref_id.clone());
+                id_map.insert(lower, virtual_path);
+                ghost_nodes.push(ghost);
+            }
+        }
+        nodes.extend(ghost_nodes);
+
         // 3. Build edges from links and frontmatter refs
         let _t_edges = std::time::Instant::now();
         let edges: Vec<Edge> = nodes
@@ -254,6 +298,9 @@ impl GraphStore {
 
         // 9. Compute project field (nearest ancestor with node_type == "project")
         compute_project_field(&mut nodes);
+
+        // 9a. Compute target ancestors (materialised field)
+        compute_target_ancestors(&mut nodes, &edges);
 
         // 9b. Compute similarity edges if an embedding snapshot is provided.
         // threshold 0.85 as default for materialised edges
@@ -1425,6 +1472,19 @@ fn build_node_edges(
         }
     }
 
+    // closes -> Closes edge
+    for close_ref in &n.closes {
+        if let Some(target_id) = graph::resolve_ref(close_ref, id_map, path_to_id) {
+            if n.id != target_id {
+                edges.push(Edge {
+                    source: n.id.clone(),
+                    target: target_id,
+                    edge_type: EdgeType::Closes,
+                });
+            }
+        }
+    }
+
     // supersedes -> Supersedes edge (this -> old memory)
     if let Some(ref old_id_ref) = n.supersedes {
         if let Some(target_id) = graph::resolve_ref(old_id_ref, id_map, path_to_id) {
@@ -1519,7 +1579,7 @@ fn compute_inverses(
                     contributed_by_updates.push((idx, edge.source.clone()));
                 }
             }
-            EdgeType::Link | EdgeType::Supersedes | EdgeType::SimilarTo => {}
+            EdgeType::Link | EdgeType::Supersedes | EdgeType::SimilarTo | EdgeType::Closes => {}
         }
     }
 
@@ -1729,6 +1789,59 @@ fn compute_project_field(nodes: &mut [GraphNode]) {
             }
             depth += 1;
         }
+    }
+}
+
+/// Compute eager-materialised ancestors for each node.
+///
+/// Follows upward edges: `parent`, `contributes_to`, and `closes`.
+/// Results are stored in `node.target_ancestors`.
+fn compute_target_ancestors(nodes: &mut [GraphNode], edges: &[Edge]) {
+    let id_to_idx: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    // Upward adjacency list: source -> targets for upward edge types
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for edge in edges {
+        if matches!(
+            edge.edge_type,
+            EdgeType::Parent | EdgeType::ContributesTo | EdgeType::Closes
+        ) {
+            if let (Some(&s_idx), Some(&t_idx)) =
+                (id_to_idx.get(&edge.source), id_to_idx.get(&edge.target))
+            {
+                adj[s_idx].push(t_idx);
+            }
+        }
+    }
+
+    // Compute ancestors for each node using BFS
+    for i in 0..nodes.len() {
+        let mut ancestors = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut visited = HashSet::new();
+
+        visited.insert(i);
+        for &neighbor_idx in &adj[i] {
+            queue.push_back(neighbor_idx);
+        }
+
+        while let Some(curr_idx) = queue.pop_front() {
+            if !visited.insert(curr_idx) {
+                continue;
+            }
+            ancestors.insert(nodes[curr_idx].id.clone());
+            for &neighbor_idx in &adj[curr_idx] {
+                queue.push_back(neighbor_idx);
+            }
+        }
+
+        let mut sorted: Vec<String> = ancestors.into_iter().collect();
+        sorted.sort();
+        nodes[i].target_ancestors = sorted;
     }
 }
 
@@ -3974,5 +4087,71 @@ mod tests {
             "SEV4 target should have focus_score >= 100000 (severity bonus + urgency), got {}",
             target_score
         );
+    }
+
+    #[test]
+    fn test_target_ancestors_materialization() {
+        let root = PathBuf::from("/tmp/pkb");
+        let docs = vec![
+            make_doc("tasks/epic-1.md", "Epic 1", "epic", "active", "epic-1", None, &[]),
+            make_doc("tasks/task-a.md", "Task A", "task", "active", "task-a", Some("epic-1"), &[]),
+            // Multi-parent via contributes_to
+            {
+                let mut d = make_doc("tasks/task-b.md", "Task B", "task", "active", "task-b", Some("epic-1"), &[]);
+                let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+                fm.insert("contributes_to".to_string(), serde_json::json!([
+                    {"to": "epic-2", "weight": "Probable", "why": "reason"}
+                ]));
+                d.frontmatter = Some(serde_json::Value::Object(fm));
+                d
+            },
+            // task-c closes task-b
+            {
+                let mut d = make_doc("tasks/task-c.md", "Task C", "task", "active", "task-c", None, &[]);
+                let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+                fm.insert("closes".to_string(), serde_json::json!(["task-b"]));
+                d.frontmatter = Some(serde_json::Value::Object(fm));
+                d
+            }
+        ];
+
+        let store = GraphStore::build(&docs, &root);
+
+        // epic-1 ancestors: []
+        let n_epic1 = store.get_node("epic-1").expect("epic-1 should exist");
+        assert!(n_epic1.target_ancestors.is_empty(), "epic-1 ancestors should be empty, got {:?}", n_epic1.target_ancestors);
+
+        // task-a ancestors: ["epic-1"]
+        let n_taska = store.get_node("task-a").expect("task-a should exist");
+        assert_eq!(n_taska.target_ancestors, vec!["epic-1"]);
+
+        // task-b ancestors: ["epic-1", "epic-2"] (epic-2 is a ghost)
+        let n_taskb = store.get_node("task-b").expect("task-b should exist");
+        assert_eq!(n_taskb.target_ancestors, vec!["epic-1", "epic-2"]);
+
+        // ghost epic-2 should exist and have correct type
+        let n_epic2 = store.get_node("epic-2").expect("epic-2 ghost should exist");
+        assert_eq!(n_epic2.node_type.as_deref(), Some("epic"));
+
+        // task-c ancestors: ["epic-1", "epic-2", "task-b"]
+        let n_taskc = store.get_node("task-c").expect("task-c should exist");
+        assert_eq!(n_taskc.target_ancestors, vec!["epic-1", "epic-2", "task-b"]);
+    }
+
+    #[test]
+    fn test_target_ancestors_cycles() {
+        let root = PathBuf::from("/tmp/pkb");
+        // A -> B -> A
+        let docs = vec![
+            make_doc("tasks/task-a.md", "Task A", "task", "active", "task-a", Some("task-b"), &[]),
+            make_doc("tasks/task-b.md", "Task B", "task", "active", "task-b", Some("task-a"), &[])
+        ];
+
+        let store = GraphStore::build(&docs, &root);
+        let n_a = store.get_node("task-a").unwrap();
+        let n_b = store.get_node("task-b").unwrap();
+
+        assert_eq!(n_a.target_ancestors, vec!["task-b"]);
+        assert_eq!(n_b.target_ancestors, vec!["task-a"]);
     }
 }

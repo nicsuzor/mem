@@ -1776,6 +1776,8 @@ impl PkbSearchServer {
         let blocks: Vec<serde_json::Value> = node.blocks.iter().map(|b| resolve_ref(b)).collect();
         let children: Vec<serde_json::Value> =
             node.children.iter().map(|c| resolve_ref(c)).collect();
+        let closes: Vec<serde_json::Value> =
+            node.closes.iter().map(|c| resolve_ref(c)).collect();
         let parent = node.parent.as_ref().map(|p| resolve_ref(p));
 
         // Build subtask list and inject a checklist section into the body
@@ -1871,6 +1873,8 @@ impl PkbSearchServer {
             "children": children,
             "subtasks": subtask_nodes_sorted,
             "parent": parent,
+            "closes": closes,
+            "target_ancestors": node.target_ancestors,
             "goals": node.goals,
             "contributes_to": contributes_to,
             "contributed_by": node.contributed_by,
