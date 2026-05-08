@@ -4,6 +4,7 @@ version = "0.3.57"
 edition = "2021"
 rust-version = "1.88"
 license = "GPL-3.0-or-later"
+publish = false
 description = "Fast-indexer and PKB semantic search MCP server"
 repository = "https://github.com/nicsuzor/mem"
 
