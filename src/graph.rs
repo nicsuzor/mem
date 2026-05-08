@@ -35,6 +35,9 @@ pub enum EdgeType {
     /// Supersedes relationship (this node replaces the target)
     #[serde(rename = "supersedes")]
     Supersedes,
+    /// Closes relationship (this node completes the target task/PR/epic)
+    #[serde(rename = "closes")]
+    Closes,
     /// Strategic contribution (importance propagation) — blue line
     #[serde(rename = "contributes_to")]
     ContributesTo,
@@ -51,6 +54,7 @@ impl EdgeType {
             EdgeType::Parent => "parent",
             EdgeType::Link => "link",
             EdgeType::Supersedes => "supersedes",
+            EdgeType::Closes => "closes",
             EdgeType::ContributesTo => "contributes_to",
             EdgeType::SimilarTo => "similar_to",
         }
@@ -147,6 +151,12 @@ pub struct GraphNode {
     pub order: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub closes: Vec<String>,
+    /// Eager-materialised ancestors computed against the PKB graph
+    /// (parent + contributes_to + closes edges).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub target_ancestors: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -623,7 +633,7 @@ pub fn status_group(status: Option<&str>) -> &'static str {
 }
 
 /// Node types that represent actionable work items (shown in dashboards).
-pub const TASK_TYPES: &[&str] = &["task", "project", "epic", "learn"];
+pub const TASK_TYPES: &[&str] = &["task", "project", "epic", "learn", "pr"];
 
 /// All recognized canonical node type values.
 ///
@@ -632,7 +642,7 @@ pub const TASK_TYPES: &[&str] = &["task", "project", "epic", "learn"];
 /// `target` → `goal` in auto-fix mode.
 pub const VALID_NODE_TYPES: &[&str] = &[
     // Actionable
-    "project", "epic", "task", "learn",
+    "project", "epic", "task", "learn", "pr",
     // Reference
     "goal", "target", "note", "knowledge", "memory", "contact",
     "document", "reference", "review", "case", "spec", "prototype",
@@ -641,15 +651,25 @@ pub const VALID_NODE_TYPES: &[&str] = &[
 ];
 
 /// Parse a string array from a JSON frontmatter value.
+///
+/// Supports both array of strings and a single string value (comma-separated).
 pub fn parse_string_array(fm: &serde_json::Value, key: &str) -> Vec<String> {
-    fm.get(key)
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
+    match fm.get(key) {
+        Some(v) if v.is_array() => v
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.as_str().map(String::from))
+            .collect(),
+        Some(v) if v.is_string() => v
+            .as_str()
+            .unwrap()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Extract `[[wikilinks]]` and `[md links](target)` from markdown content.
@@ -979,15 +999,16 @@ impl GraphNode {
         let word_count = doc.body.split_whitespace().count() as i32;
         let has_acceptance_criteria = detect_acceptance_criteria(&doc.body);
 
-        let (depends_on, soft_depends_on, children, blocks, soft_blocks) = match fm {
+        let (depends_on, soft_depends_on, children, blocks, soft_blocks, closes) = match fm {
             Some(f) => (
                 parse_string_array(f, "depends_on"),
                 parse_string_array(f, "soft_depends_on"),
                 parse_string_array(f, "children"),
                 parse_string_array(f, "blocks"),
                 parse_string_array(f, "soft_blocks"),
+                parse_string_array(f, "closes"),
             ),
-            None => (vec![], vec![], vec![], vec![], vec![]),
+            None => (vec![], vec![], vec![], vec![], vec![], vec![]),
         };
 
         // Build permalinks for link resolution
@@ -1073,6 +1094,8 @@ impl GraphNode {
             priority,
             order,
             parent,
+            closes,
+            target_ancestors: Vec::new(),
             contributes_to,
             contributed_by: Vec::new(),
             follow_up_tasks,
