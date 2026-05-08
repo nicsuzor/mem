@@ -1756,7 +1756,6 @@
         cy.on("mouseover", "node", (evt) => {
             const node = evt.target;
             const id = node.id();
-            selection.update((s) => ({ ...s, hoveredNodeId: id }));
             cy!.elements().addClass("dimmed");
             node.removeClass("dimmed").addClass("highlighted");
             node.neighborhood().removeClass("dimmed").addClass("highlighted");
@@ -1800,7 +1799,6 @@
         });
 
         cy.on("mouseout", "node", () => {
-            selection.update((s) => ({ ...s, hoveredNodeId: null }));
             cy!.elements().removeClass("dimmed").removeClass("highlighted");
             tooltip = null;
         });

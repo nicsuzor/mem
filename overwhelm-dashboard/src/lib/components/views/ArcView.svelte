@@ -132,13 +132,7 @@
       .attr("class", "node")
       .attr("transform", d => `translate(${d.x},${d.y})`)
       .style("cursor", "pointer")
-      .on("click", (e, d) => { e.stopPropagation(); toggleSelection(d.id); })
-      .on("mouseenter", (e, d) => {
-        selection.update(s => ({ ...s, hoveredNodeId: d.id }));
-      })
-      .on("mouseleave", () => {
-        selection.update(s => ({ ...s, hoveredNodeId: null }));
-      });
+      .on("click", (e, d) => { e.stopPropagation(); toggleSelection(d.id); });
 
     const activeNodeId = $selection.activeNodeId;
 

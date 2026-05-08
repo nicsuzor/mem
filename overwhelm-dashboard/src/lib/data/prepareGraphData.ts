@@ -2,8 +2,6 @@ import {
     STATUS_FILLS,
     TYPE_BASE_SCALE,
     STATUS_TEXT,
-    MUTED_FILL,
-    MUTED_TEXT,
     INCOMPLETE_STATUSES,
     COMPLETED_STATUSES,
     TYPE_SHAPE,
@@ -11,6 +9,13 @@ import {
 } from './constants';
 import { projectBorderColor } from './projectUtils';
 import { getEdgeTypeDef } from './taxonomy';
+import {
+    focusProminence,
+    focusScaleMultiplier,
+    emphasisOpacity,
+    emphasisFill,
+    emphasisTextColor,
+} from './focusEmphasis';
 
 export interface GraphNode {
     id: string;
@@ -43,6 +48,7 @@ export interface GraphNode {
     assignee: string | null;
     path: string | null;
     opacity: number;
+    prominence: number;
     isLeaf: boolean;
     spotlight: boolean;
     x?: number;
@@ -113,41 +119,6 @@ function wrapText(label: string, fontSize: number, maxWidth: number): string[] {
         lines.push(current);
     }
     return lines.slice(0, 3);
-}
-
-function hexToRgb(hex: string): [number, number, number] {
-    const h = hex.replace(/^#/, '');
-    if (h.length === 3) {
-        return [
-            parseInt(h[0] + h[0], 16),
-            parseInt(h[1] + h[1], 16),
-            parseInt(h[2] + h[2], 16)
-        ];
-    }
-    return [
-        parseInt(h.substring(0, 2), 16),
-        parseInt(h.substring(2, 4), 16),
-        parseInt(h.substring(4, 6), 16)
-    ];
-}
-
-function rgbToHex(r: number, g: number, b: number): string {
-    return '#' + [r, g, b].map(x => {
-        const hex = x.toString(16);
-        return hex.length === 1 ? '0' + hex : hex;
-    }).join('');
-}
-
-function interpolateColor(colorA: string, colorB: string, t: number): string {
-    t = Math.max(0, Math.min(1, t));
-    const [ra, ga, ba] = hexToRgb(colorA);
-    const [rb, gb, bb] = hexToRgb(colorB);
-
-    const r = Math.round(ra + (rb - ra) * t);
-    const g = Math.round(ga + (gb - ga) * t);
-    const b = Math.round(ba + (bb - ba) * t);
-
-    return rgbToHex(r, g, b);
 }
 
 function classifyEdge(sourceId: string, targetId: string, nodeById: Map<string, any>): string {
@@ -370,7 +341,6 @@ export function prepareGraphData(
     }
     rawNodes.forEach(n => countLeaves(n.id));
 
-    // Intent/focus nodes get promoted to priority above P0
     const validEdges = rawEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
     const maxDepth = Math.max(0, ...rawNodes.map(n => n.depth || 0));
 
@@ -411,14 +381,24 @@ export function prepareGraphData(
         // Must rely on node.modified if passed in.
         const modified = node.modified || null;
 
-        let typeScale = TYPE_BASE_SCALE[nodeType] ?? 1.0;
-        if (COMPLETED_STATUSES.has(status)) {
-            typeScale *= 0.6;
-        }
-        // Focus score ranges from 0 up to 10000+. We use log1p to compress the scale so it doesn't blow up nodes.
-        // A focus score of 10000 -> log1p(10000) ~= 9.2. Scaling by 0.15 makes the max boost around 2.38x.
-        const weightFactor = focusScore > 0 ? 1 + Math.log1p(focusScore) * 0.15 : 1.0;
-        const scale = typeScale * weightFactor;
+        const severity = typeof node.severity === 'number' ? node.severity : 0;
+        // Spec predicate (multi-parent §1.2): severity ≥ 3 is catastrophic.
+        // Visualised as a distinct border + glow rather than unbounded size,
+        // since SEV4 focus_score (100k+) would otherwise dominate the layout.
+        const isCatastrophic = severity >= 3;
+        const isCompleted = COMPLETED_STATUSES.has(status);
+        const isIncomplete = INCOMPLETE_STATUSES.has(status);
+
+        // ─── single emphasis pass ────────────────────────────────────────
+        // All focus-driven visual differentiation flows from `prominence`.
+        // See focusEmphasis.ts for the policy.
+        const prominence = focusProminence(focusScore, maxFocusScore);
+        const staleDays = modified ? (Date.now() - modified) / 86400000 : undefined;
+
+        const baseTypeScale = TYPE_BASE_SCALE[nodeType] ?? 1.0;
+        // Type drives base size; focus modulates within ±60% of it.
+        const typeScale = baseTypeScale * (isCompleted ? 0.6 : 1.0);
+        const scale = typeScale * focusScaleMultiplier(prominence);
 
         const baseFont = 10;
         const fontSize = Math.max(8, Math.min(16, Math.round(baseFont * scale)));
@@ -433,110 +413,52 @@ export function prepareGraphData(
         const nodeW = Math.max(textW + padX * 2, 55 * typeScale);
         const nodeH = Math.max(lines.length * (fontSize + 4) + padY * 2, 30 * typeScale);
 
-        const severity = typeof node.severity === 'number' ? node.severity : 0;
-
-        // Normal scale for task importance peaks around 30,000.
-        // A non-severe P0 task can hit ~30k: P0 base (10k) + deadline (12k max) + stakeholder/staleness (8k).
-        // Catastrophic tasks (SEV3/SEV4) have base scores of 20k or 100k, shifting completely out.
-        // We clamp the normalizer so these extreme SEV outliers don't crush normal tasks.
-        const NOMINAL_MAX_FOCUS = 30000;
-        const effectiveMaxFocus = Math.min(Math.max(maxFocusScore, 1), NOMINAL_MAX_FOCUS);
-        const weightNorm = Math.min(Math.log1p(focusScore) / Math.log1p(effectiveMaxFocus), 1.0);
-
-        // Use the spec predicate for catastrophic status (severity >= 3)
-        // rather than guessing from a score threshold.
-        const isCatastrophic = severity >= 3;
-
+        // Fill / text colour — single desat pass, status-keyed.
         let fill: string;
         let textCol: string;
-
         if (isStructural) {
             fill = "#e2e8f0";
             textCol = "#94a3b8";
         } else {
             const baseFill = STATUS_FILLS[status];
-            if (!baseFill) {
-                if (CONTAINER_TYPES.has(nodeType)) {
-                    throw new Error(
-                        `prepareGraphData: unknown status "${status}" on node ${node.id} (type: ${nodeType}). ` +
-                        `Known statuses: ${Object.keys(STATUS_FILLS).join(", ")}. ` +
-                        `The MCP server normalises status aliases for tasks — if this fired, ` +
-                        `either the canonical set drifted or the server is shipping a stale alias.`
-                    );
-                }
-            }
-            // Weight-based desaturation: dim lower-focus nodes, but use log-scale (weightNorm)
-            // to avoid extreme outliers pushing all normal high-priority tasks into the "heavily dimmed" bucket.
-            let desaturation = 0;
-
-            if (weightNorm < 0.6) {
-                // Nodes with low focus get somewhat desaturated (up to 20% grey for zero focus).
-                desaturation = 0.20 - (weightNorm / 0.6) * 0.40;
-            } else {
-                // High focus nodes keep their bright colors
-                desaturation = Math.max(0, 0.2 - (weightNorm - 0.6) * 0.5);
-            }
-
-            // Recency emphasis: stale nodes desaturate further
-            if (modified) {
-                const daysSinceModified = (Date.now() - modified) / 86400000;
-                if (daysSinceModified > 30) {
-                    desaturation = Math.min(1.0, desaturation + 0.05);
-                } else if (daysSinceModified > 14) {
-                    desaturation = Math.min(1.0, desaturation + 0.03);
-                } else if (daysSinceModified > 7) {
-                    desaturation = Math.min(1.0, desaturation + 0.01);
-                }
-            }
-            fill = interpolateColor(baseFill || MUTED_FILL, MUTED_FILL, desaturation);
             const baseText = STATUS_TEXT[status];
+            if (!baseFill && CONTAINER_TYPES.has(nodeType)) {
+                throw new Error(
+                    `prepareGraphData: unknown status "${status}" on node ${node.id} (type: ${nodeType}). ` +
+                    `Known statuses: ${Object.keys(STATUS_FILLS).join(", ")}. ` +
+                    `The MCP server normalises status aliases for tasks — if this fired, ` +
+                    `either the canonical set drifted or the server is shipping a stale alias.`
+                );
+            }
             if (!baseText && CONTAINER_TYPES.has(nodeType)) {
                 throw new Error(
                     `prepareGraphData: STATUS_TEXT missing entry for status "${status}". ` +
                     `STATUS_FILLS and STATUS_TEXT must be kept in sync.`
                 );
             }
-            textCol = interpolateColor(baseText || MUTED_TEXT, MUTED_TEXT, desaturation);
+            fill = emphasisFill(baseFill, prominence, { staleDays });
+            textCol = emphasisTextColor(baseText, prominence, { staleDays });
         }
 
-        // Criticality: blend fill toward amber to signal high-impact nodes
-        if (!isStructural && criticality > 0) {
-            fill = interpolateColor(fill, '#f59e0b', criticality * 0.30);
-            textCol = interpolateColor(textCol, '#92400e', criticality * 0.25);
-        }
+        // Opacity — single canonical curve. Filter visibility (`half`) and
+        // selection-driven dimming are applied at the view layer; here we
+        // only encode prominence + completion.
+        const opacity = emphasisOpacity({
+            prominence,
+            isCompleted,
+        });
 
-        let opacity = 1.0;
-        if (!isStructural && dw === 0) {
-            const hasEdges = validEdges.some(e => e.source === nid || e.target === nid);
-            if (!hasEdges) opacity = 0.5;
-        }
-
-        // Dim low-focus nodes globally
-        if (!isStructural) {
-            // Using weightNorm instead of linear focus to prevent outliers from hiding high-priority tasks
-            if (weightNorm < 0.6) {
-                // Dim down to 95% opacity for zero focus (instead of 40%)
-                opacity = Math.min(opacity, 0.95 + (weightNorm / 0.6) * 0.05);
-            }
-        }
-
-        // Uncertainty: dim nodes proportionally to how uncertain they are
-        if (!isStructural && uncertainty > 0) {
-            opacity = Math.max(0.85, opacity - uncertainty * 0.15);
-        }
-
-        const isIncomplete = INCOMPLETE_STATUSES.has(status);
         const project = node.project || '';
-        const borderColor = isStructural ? '#475569' : projectBorderColor(project);
+        const borderColor = isStructural ? '#475569'
+            : isCatastrophic ? '#f59e0b'           // SEV3/4 — distinctive amber edge
+            : projectBorderColor(project);
 
-        let borderWidth = 1.5 + Math.min(Math.log1p(dw) * 0.5, 2.5);
-        if (priority <= 1 && isIncomplete) {
-            borderWidth = Math.max(borderWidth, 3);
-        }
-        // Criticality: widen border to draw visual attention
-        if (!isStructural && criticality > 0) {
-            borderWidth = Math.min(borderWidth + criticality * 2.5, 6);
-        }
+        // Border width: P0/P1 incomplete + catastrophic both deserve a thicker
+        // edge. Downstream weight contributes a small amount but isn't the
+        // primary signal — focus_score already encompasses it.
+        let borderWidth = 1.5 + Math.min(Math.log1p(dw) * 0.4, 1.5);
+        if (priority <= 1 && isIncomplete) borderWidth = Math.max(borderWidth, 3);
+        if (isCatastrophic) borderWidth = Math.max(borderWidth, 3.5);
 
         const shape = TYPE_SHAPE[nodeType];
         if (shape === undefined) {
@@ -585,6 +507,7 @@ export function prepareGraphData(
             assignee: node.assignee || null,
             path: node.path || null,
             opacity,
+            prominence,
             isLeaf: !parentIdsInGraph.has(nid),
             spotlight: Boolean(node.spotlight),
             x: node.x,

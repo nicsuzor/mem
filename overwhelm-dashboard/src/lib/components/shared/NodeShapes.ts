@@ -2,6 +2,7 @@ import * as d3 from 'd3';
 import type { GraphNode } from '../../data/prepareGraphData';
 import { projectHue } from '../../data/projectUtils';
 import { INCOMPLETE_STATUSES, PRIORITY_BORDERS as SHARED_PRIORITY_BORDERS, STATUS_FILLS, STRUCTURAL_TYPES } from '../../data/constants';
+import { CATASTROPHIC, BLOCKED } from '../../data/nodeAffordances';
 
 function escapeHtml(str: string): string {
     return str
@@ -751,26 +752,16 @@ export function buildTreemapNode(g: d3.Selection<SVGGElement, any, null, undefin
             .attr("stroke-dasharray", "2,2").attr("pointer-events", "none");
     }
 
-    // Catastrophic failure condition handling (e.g. SEV3/SEV4)
+    // Catastrophic failure condition (SEV3/SEV4 — multi-parent §1.2).
     if (d.isCatastrophic && !isParent) {
         g.append("rect")
-            .attr("x", -w / 2 + 2).attr("y", -h / 2 + 2).attr("width", Math.max(0, w - 4)).attr("height", Math.max(0, h - 4))
+            .attr("x", -w / 2 + 2).attr("y", -h / 2 + 2)
+            .attr("width", Math.max(0, w - 4)).attr("height", Math.max(0, h - 4))
             .attr("fill", "none")
-            .attr("stroke", "#ef4444")
-            .attr("stroke-width", 4)
-            .attr("stroke-dasharray", "12,6")
+            .attr("stroke", CATASTROPHIC.color)
+            .attr("stroke-width", CATASTROPHIC.widthForRect)
+            .attr("stroke-dasharray", CATASTROPHIC.dashRect)
             .style("pointer-events", "none");
-            
-        g.append("rect")
-            .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
-            .attr("fill", "#ef4444")
-            .attr("opacity", 0)
-            .style("pointer-events", "none")
-            .append("animate")
-            .attr("attributeName", "opacity")
-            .attr("values", "0;0.25;0")
-            .attr("dur", "1.2s")
-            .attr("repeatCount", "indefinite");
     }
 
     // Only attempt to render text if we have enough space. Small nodes collapse to solid colored boxes.
@@ -1042,33 +1033,23 @@ export function buildCirclePackNode(g: d3.Selection<SVGGElement, any, null, unde
             .attr("stroke-width", isSelected ? Math.max(2, r * 0.02) : baseStrokeW)
             .attr("stroke-opacity", isCompleted ? 0.3 : 1);
 
-        // Catastrophic failure condition handling
+        // Catastrophic failure condition (SEV3/SEV4 — multi-parent §1.2).
         if (d.isCatastrophic) {
             g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r - 1)
                 .attr("fill", "none")
-                .attr("stroke", "#ef4444")
-                .attr("stroke-width", Math.max(2.5, r * 0.06))
-                .attr("stroke-dasharray", "8,4")
+                .attr("stroke", CATASTROPHIC.color)
+                .attr("stroke-width", CATASTROPHIC.widthForRadius(r))
+                .attr("stroke-dasharray", CATASTROPHIC.dashCircle)
                 .style("pointer-events", "none");
-
-            g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
-                .attr("fill", "#ef4444")
-                .attr("opacity", 0)
-                .style("pointer-events", "none")
-                .append("animate")
-                .attr("attributeName", "opacity")
-                .attr("values", "0;0.35;0")
-                .attr("dur", "1.2s")
-                .attr("repeatCount", "indefinite");
         }
 
-        // Blocked: stronger outer ring and symbol for fast scanability
+        // Blocked: outer ring + symbol for fast scanability.
         if (d.status === "blocked") {
             g.append("circle").attr("cx", 0).attr("cy", 0).attr("r", r)
-                .attr("fill", "none").attr("stroke", "#ff8797")
-                .attr("stroke-width", Math.max(1.1, r * 0.022))
-                .attr("stroke-dasharray", "5,3")
-                .attr("stroke-opacity", 0.82)
+                .attr("fill", "none").attr("stroke", BLOCKED.color)
+                .attr("stroke-width", BLOCKED.widthForRadius(r))
+                .attr("stroke-dasharray", BLOCKED.dash)
+                .attr("stroke-opacity", BLOCKED.opacity)
                 .style("pointer-events", "none");
 
             if (r > 14) {

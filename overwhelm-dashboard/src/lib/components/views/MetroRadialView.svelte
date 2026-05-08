@@ -6,6 +6,12 @@
     import { INCOMPLETE_STATUSES, STATUS_RANK, STRUCTURAL_TYPES } from '../../data/constants';
     import { projectColor } from '../../data/projectUtils';
     import type { GraphNode } from '../../data/prepareGraphData';
+    import { YOU_ARE_HERE } from '../../data/nodeAffordances';
+
+    const YAH_COLOR = YOU_ARE_HERE.color;
+    const YAH_WIDTH = YOU_ARE_HERE.width;
+    const YAH_OPACITY = YOU_ARE_HERE.opacity;
+    const YAH_RING_PAD = YOU_ARE_HERE.radiusPad;
 
     // ── Principles (from prompt):
     //   1. Drop topology-as-layout. Straight-ish radial lines from a hub.
@@ -416,12 +422,8 @@
                 style="cursor: pointer; opacity: {dim ? 0.15 : 1};"
             >
                 {#if isYAH}
-                    <circle cx={p.x} cy={p.y} r={stopRadius(sid, isTerm) + 6}
-                        fill="none" stroke="#fde68a" stroke-width="2" opacity="0.8">
-                        <animate attributeName="r" values="{stopRadius(sid,isTerm)+4};{stopRadius(sid,isTerm)+10};{stopRadius(sid,isTerm)+4}"
-                                 dur="2s" repeatCount="indefinite" />
-                        <animate attributeName="opacity" values="0.8;0.2;0.8" dur="2s" repeatCount="indefinite"/>
-                    </circle>
+                    <circle cx={p.x} cy={p.y} r={stopRadius(sid, isTerm) + YAH_RING_PAD}
+                        fill="none" stroke={YAH_COLOR} stroke-width={YAH_WIDTH} opacity={YAH_OPACITY} />
                 {/if}
                 {#if routes.length >= 2 && !isTerm}
                     <!-- Interchange: white ring over inner circle, metro-map style -->

@@ -1,19 +1,17 @@
-import { writable, get } from 'svelte/store';
+import { writable } from 'svelte/store';
 
 export interface SelectionState {
     activeNodeId: string | null;
     activeSessionId: string | null;
     focusNodeId: string | null;  // non-null = ego network focus mode
     focusNeighborSet: Set<string> | null;
-    hoveredNodeId: string | null;
 }
 
 export const selection = writable<SelectionState>({
     activeNodeId: null,
     activeSessionId: null,
     focusNodeId: null,
-    focusNeighborSet: null,
-    hoveredNodeId: null
+    focusNeighborSet: null
 });
 
 export function clearSelection() {
@@ -36,6 +34,3 @@ export function toggleSessionSelection(sessionId: string) {
     }));
 }
 
-export function setHoveredNode(nodeId: string | null) {
-    selection.update(s => ({ ...s, hoveredNodeId: nodeId }));
-}

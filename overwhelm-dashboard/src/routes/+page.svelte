@@ -38,7 +38,7 @@
     import { filters } from "$lib/stores/filters";
     import { selection } from "$lib/stores/selection";
     import { browser } from "$app/environment";
-    import { COMPLETED_STATUSES, STRUCTURAL_TYPES } from "$lib/data/constants";
+    import { STRUCTURAL_TYPES } from "$lib/data/constants";
 
     export let data: any;
 
@@ -100,9 +100,6 @@
         }
     }
 
-    $: if ($selection && $graphData) {
-        applyHighlightOpacity($graphData.nodes, $graphData.links);
-    }
     $: focusNode = $selection.focusNodeId ? $graphData?.nodes.find(n => n.id === $selection.focusNodeId) : null;
 
     function edgeEndpointId(endpoint: GraphNode | string) {
@@ -428,57 +425,6 @@
             nodes: fNodes,
             links: fLinks,
         } as any;
-    }
-
-    function applyHighlightOpacity(nodes: GraphNode[], links: GraphEdge[]) {
-        const active = $selection.activeNodeId;
-        const isFocus = $selection.focusNodeId !== null;
-        const focusSet = $selection.focusNeighborSet;
-        const layout = getLayoutFromViewSettings($viewSettings);
-
-        const parentMap = new Map<string, string>();
-        nodes.forEach(n => { if (n.parent) parentMap.set(n.id, n.parent); });
-
-        const activeNeighbors = new Set<string>();
-        if (active) {
-            activeNeighbors.add(active);
-            links.forEach(l => {
-                const sid = typeof l.source === "object" ? l.source.id : l.source;
-                const tid = typeof l.target === "object" ? l.target.id : l.target;
-                if (sid === active) activeNeighbors.add(tid);
-                if (tid === active) activeNeighbors.add(sid);
-            });
-            let curr = parentMap.get(active);
-            while (curr) { activeNeighbors.add(curr); curr = parentMap.get(curr); }
-            nodes.forEach(n => {
-                let c = parentMap.get(n.id);
-                while (c) { if (c === active) { activeNeighbors.add(n.id); break; } c = parentMap.get(c); }
-            });
-            const activeParent = parentMap.get(active);
-            if (activeParent && ["force", "arc"].includes(layout)) {
-                nodes.forEach(n => { if (n.parent === activeParent) activeNeighbors.add(n.id); });
-            }
-        }
-
-        nodes.forEach((n) => {
-            if (COMPLETED_STATUSES.has(n.status)) n.opacity = 0.4;
-            else if (n.status === "in_progress") n.opacity = 0.8;
-            else n.opacity = 0.6;
-
-            if (isFocus && focusSet) {
-                if (!focusSet.has(n.id)) n.opacity = 0.05;
-                return;
-            }
-            if (active && !activeNeighbors.has(n.id)) n.opacity = 0.05;
-        });
-
-        if (isFocus && focusSet) {
-            links.forEach((l) => {
-                const sid = typeof l.source === "object" ? l.source.id : l.source;
-                const tid = typeof l.target === "object" ? l.target.id : l.target;
-                l.color = focusSet.has(sid) && focusSet.has(tid) ? l.color : "transparent";
-            });
-        }
     }
 
     $: activeLayout = getLayoutFromViewSettings($viewSettings);

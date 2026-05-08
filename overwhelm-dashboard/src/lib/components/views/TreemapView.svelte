@@ -10,8 +10,14 @@
     } from "../shared/NodeShapes";
     import { routeTreemapEdges } from "../shared/EdgeRenderer";
     import { viewSettings } from "../../stores/viewSettings";
-    import type { GraphEdge } from "../../data/prepareGraphData";
-    import { focusSize, maxFocusOf } from "../../data/nodeSize";
+    import {
+        focusSize,
+        maxFocusOf,
+        emphasisOpacity,
+        computeSelectionMask,
+    } from "../../data/focusEmphasis";
+    import { FOCUS_PICK } from "../../data/nodeAffordances";
+    import { COMPLETED_STATUSES } from "../../data/constants";
 
     let {
         containerGroup,
@@ -31,78 +37,31 @@
         canvasW * (height && width ? height / width : 0.5),
     );
 
-    // Reactive state for the computed layout
     let visibleNodes = $state<any[]>([]);
     let links = $state<any[]>([]);
 
+    // Layout — re-tiles when graph data, container size, or project filter
+    // changes. Mutations to node x/y/_lw/_lh inside computeLayout would re-fire
+    // this effect without untrack, since visibleNodes is reactive $state.
     $effect(() => {
-        // Run layout ONLY when graph data changes.
-        // untrack() prevents Svelte from auto-tracking reactive reads inside
-        // computeLayout (e.g. canvasH, $filters) — those would cause a
-        // re-layout when the container resizes (sidebar open/close on click).
-        const _data = $graphData;
-        if (containerGroup && _data && nodesLayer) {
-            untrack(() => computeLayout(_data));
+        const data = $graphData;
+        const _h = canvasH;
+        const _projectFilter = ($filters as any).projectFilter;
+        if (containerGroup && data && nodesLayer) {
+            untrack(() => computeLayout(data));
         }
     });
 
+    // Selection / focus highlight — repaints rings and opacities without
+    // re-tiling. Read selection at top so the effect tracks it; do the DOM
+    // work inside untrack so node-data writes don't loop.
     $effect(() => {
-        // Update Highlights ONLY when selection changes
-        const activeNodeId = $selection.activeNodeId;
-        const hoveredNodeId = $selection.hoveredNodeId;
-        const focusIds: Set<string> =
-            ($graphData as any)?.focusIds || new Set();
-        const showFocus = $viewSettings.showFocusHighlight && focusIds.size > 0;
-
-        if (nodesLayer) {
-            d3.select(nodesLayer)
-                .selectAll<SVGGElement, any>("g.node")
-                .each(function (d) {
-                    const g = d3.select(this);
-                    const isSelected = d.id === activeNodeId;
-                    const isHovered = d.id === hoveredNodeId;
-
-                    const lastState = (d as any)._lastSelected;
-                    if (g.selectAll("*").empty() || lastState !== isSelected) {
-                        g.selectAll("*").remove();
-                        buildTreemapNode(g, d, isSelected);
-                        (d as any)._lastSelected = isSelected;
-
-                        // Focus accent: prominent glowing border on priority focus tasks
-                        if (showFocus && d._isLeaf && focusIds.has(d.id)) {
-                            const focusW = d._lw || d.w;
-                            const focusH = d._lh || d.h;
-                            g.append("rect")
-                                .attr("class", "focus-ring")
-                                .attr("x", -focusW / 2)
-                                .attr("y", -focusH / 2)
-                                .attr("width", focusW)
-                                .attr("height", focusH)
-                                .attr("fill", "none")
-                                .attr("stroke", "#f59e0b")
-                                .attr("stroke-width", 6)
-                                .attr("stroke-opacity", 0.6)
-                                .style("pointer-events", "none")
-                                .append("animate")
-                                .attr("attributeName", "stroke-opacity")
-                                .attr("values", "0.2;0.8;0.2")
-                                .attr("dur", "2s")
-                                .attr("repeatCount", "indefinite");
-                            g.append("rect")
-                                .attr("class", "focus-ring")
-                                .attr("x", -focusW / 2 + 1.5)
-                                .attr("y", -focusH / 2 + 1.5)
-                                .attr("width", Math.max(0, focusW - 3))
-                                .attr("height", Math.max(0, focusH - 3))
-                                .attr("fill", "none")
-                                .attr("stroke", "#fbbf24")
-                                .attr("stroke-width", 3)
-                                .attr("rx", 3)
-                                .style("pointer-events", "none");
-                        }
-                    }
-                    g.classed("hovered-node", isHovered);
-                });
+        const _active = $selection.activeNodeId;
+        const _focusEgo = $selection.focusNodeId;
+        const _focusEgoSet = $selection.focusNeighborSet;
+        const _showPicks = $viewSettings.showFocusHighlight;
+        if (nodesLayer && visibleNodes.length) {
+            untrack(() => applyHighlights());
         }
     });
 
@@ -135,7 +94,6 @@
             stratifyNodes = [
                 { id: rootId, parent: "", type: "root", label: "ROOT" },
             ];
-
             for (const n of nodes) {
                 const effectiveParent =
                     n.parent && nodeIdSet.has(n.parent) ? n.parent : rootId;
@@ -155,16 +113,12 @@
         }
 
         // Weight unit range — d3.treemap allocates area proportional to value.
-        // Min=10, max=200 softens the dynamic range slightly from the extreme 5-500,
-        // so critical tasks still pop but don't completely swallow normal tasks.
         const MIN_WEIGHT = 10;
         const MAX_WEIGHT = 200;
         const maxFocus = maxFocusOf(nodes);
 
-        // Mark hierarchy parents — d.children on raw data is always undefined
-        // since parent-child is defined by parent ID, not nested arrays.
-        // Without this, every node (including parents) gets its own weight,
-        // inflating containers beyond what their children fill.
+        // d.children is undefined on raw data — parent/child is by ID. Mark
+        // hierarchy parents so .sum() knows to ignore their own focus weight.
         root.each((node: any) => {
             node.data._isHierarchyParent = !!node.children;
         });
@@ -174,16 +128,15 @@
             return focusSize(d.focusScore, maxFocus, MIN_WEIGHT, MAX_WEIGHT);
         });
 
-        // STABLE SORT: Tie-break with ID to prevent jumping on re-renders
+        // Stable sort: tie-break with id to prevent jumping on re-renders.
         root.sort(
             (a, b) =>
                 (b.value || 0) - (a.value || 0) || a.id!.localeCompare(b.id!),
         );
 
-        // Use the same header height computation as the renderer
         function estimateHeaderHeight(node: any): number {
-            if (node.depth === 0) return 4; // virtual root
-            if (!node.children) return 0; // leaves don't need header padding
+            if (node.depth === 0) return 4;
+            if (!node.children) return 0;
             const w = (node.x1 ?? canvasW) - (node.x0 ?? 0);
             const h = (node.y1 ?? canvasH) - (node.y0 ?? 0);
             const label = node.data?.label || "";
@@ -215,11 +168,8 @@
         const layoutMap = new Map();
         root.descendants().forEach((d: any) => {
             if (d.data.id === rootId) return;
-            // Count leaf descendants (actual tasks inside this container)
             let leafCount = 0;
-            if (d.children) {
-                d.leaves().forEach(() => leafCount++);
-            }
+            if (d.children) d.leaves().forEach(() => leafCount++);
             layoutMap.set(d.data.id, {
                 x: d.x0 + (d.x1 - d.x0) / 2,
                 y: d.y0 + (d.y1 - d.y0) / 2,
@@ -250,7 +200,6 @@
             .sort((a: any, b: any) => (a.depth || 0) - (b.depth || 0));
 
         links = data.links;
-
         renderNodes();
     }
 
@@ -268,78 +217,14 @@
             .on("click", (e, d) => {
                 e.stopPropagation();
                 toggleSelection(d.id);
-            })
-            .on("mouseenter", (e, d) => {
-                selection.update((s) => ({ ...s, hoveredNodeId: d.id }));
-            })
-            .on("mouseleave", () => {
-                selection.update((s) => ({ ...s, hoveredNodeId: null }));
             });
-
-        // Current selection state for initial build
-        const activeNodeId = $selection.activeNodeId;
-        const hoveredNodeId = $selection.hoveredNodeId;
-
-        const focusIds: Set<string> =
-            ($graphData as any)?.focusIds || new Set();
-        const showFocus = $viewSettings.showFocusHighlight && focusIds.size > 0;
 
         nEls.each(function (d) {
-            const g = d3.select(this);
-            const isSelected = d.id === activeNodeId;
-            const isHovered = d.id === hoveredNodeId;
-
-            g.selectAll("*").remove();
-            buildTreemapNode(g, d, isSelected);
-            (d as any)._lastSelected = isSelected;
-
-            // Focus accent: prominent glowing border on priority focus tasks
-            if (showFocus && d._isLeaf && focusIds.has(d.id)) {
-                const focusW = d._lw || d.w;
-                const focusH = d._lh || d.h;
-                // g.append("rect")
-                //     .attr("class", "focus-ring")
-                //     .attr("x", -focusW / 2).attr("y", -focusH / 2)
-                //     .attr("width", focusW).attr("height", focusH)
-                //     .attr("fill", "none").attr("stroke", "#f59e0b")
-                //     .attr("stroke-width", 6).attr("stroke-opacity", 0.6)
-                //     .style("pointer-events", "none")
-                //     .append("animate").attr("attributeName", "stroke-opacity")
-                //     .attr("values", "0.2;0.8;0.2").attr("dur", "2s").attr("repeatCount", "indefinite");
-                g.append("rect")
-                    .attr("class", "focus-ring")
-                    .attr("x", -focusW / 2 + 1.5)
-                    .attr("y", -focusH / 2 + 1.5)
-                    .attr("width", Math.max(0, focusW - 3))
-                    .attr("height", Math.max(0, focusH - 3))
-                    .attr("fill", "none")
-                    .attr("stroke", "#fbbf24")
-                    .attr("stroke-width", 3)
-                    .attr("rx", 3)
-                    .style("pointer-events", "none");
-            }
-            g.classed("hovered-node", isHovered);
+            (d as any)._lastSelected = undefined;
+            d3.select(this).selectAll("*").remove();
         });
 
-        // Gentle dimming: non-focus leaf nodes slightly faded, and filter-dimmed nodes heavily faded
-        if (showFocus) {
-            nEls.style("opacity", (d: any) => {
-                const baseOp = d.opacity ?? 1;
-                if (d.filter_dimmed) return 0.95 * baseOp;
-                if (!d._isLeaf) return baseOp < 1 ? baseOp : null; // Don't dim containers unless baseOp wants to
-                if (focusIds.has(d.id)) return baseOp;
-                return 0.95 * baseOp;
-            });
-        } else {
-            nEls.style("opacity", (d: any) => {
-                const baseOp = d.opacity ?? 1;
-                return d.filter_dimmed
-                    ? 0.95 * baseOp
-                    : baseOp < 1
-                      ? baseOp
-                      : null;
-            });
-        }
+        applyHighlights();
 
         const eEls = d3
             .select(edgesLayer)
@@ -347,6 +232,108 @@
             .data(links)
             .join("path");
         routeTreemapEdges(eEls);
+    }
+
+    function applyHighlights() {
+        if (!nodesLayer) return;
+
+        const activeNodeId = $selection.activeNodeId;
+        const focusEgoId = $selection.focusNodeId;
+        const focusEgoSet = $selection.focusNeighborSet;
+        const focusIds: Set<string> =
+            ($graphData as any)?.focusIds || new Set();
+        const showPicks =
+            $viewSettings.showFocusHighlight && focusIds.size > 0;
+
+        // Selection mask trumps focus-pick dimming. Treemap doesn't include
+        // siblings in the mask — the layout already groups them by parent.
+        const mask = computeSelectionMask(
+            visibleNodes,
+            links,
+            activeNodeId,
+            { includeSiblings: false },
+        );
+
+        const nEls = d3
+            .select(nodesLayer)
+            .selectAll<SVGGElement, any>("g.node");
+
+        nEls.each(function (d) {
+            const g = d3.select(this);
+            const isSelected = d.id === activeNodeId;
+            const lastSelected = (d as any)._lastSelected;
+
+            // Rebuild only when selection state for THIS node has changed.
+            if (g.selectAll("*").empty() || lastSelected !== isSelected) {
+                g.selectAll("*").remove();
+                buildTreemapNode(g, d, isSelected);
+                (d as any)._lastSelected = isSelected;
+
+                if (showPicks && d._isLeaf && focusIds.has(d.id)) {
+                    appendFocusPickRings(g, d);
+                }
+            }
+        });
+
+        nEls.style("opacity", (d: any) =>
+            computeNodeOpacity(d, mask, focusEgoId, focusEgoSet),
+        );
+    }
+
+    function appendFocusPickRings(
+        g: d3.Selection<SVGGElement, any, any, any>,
+        d: any,
+    ) {
+        const focusW = d._lw || d.w;
+        const focusH = d._lh || d.h;
+        g.append("rect")
+            .attr("class", "focus-ring")
+            .attr("x", -focusW / 2)
+            .attr("y", -focusH / 2)
+            .attr("width", focusW)
+            .attr("height", focusH)
+            .attr("fill", "none")
+            .attr("stroke", FOCUS_PICK.outerColor)
+            .attr("stroke-width", FOCUS_PICK.outerWidth)
+            .attr("stroke-opacity", FOCUS_PICK.outerOpacity)
+            .style("pointer-events", "none");
+        g.append("rect")
+            .attr("class", "focus-ring")
+            .attr("x", -focusW / 2 + 1.5)
+            .attr("y", -focusH / 2 + 1.5)
+            .attr("width", Math.max(0, focusW - 3))
+            .attr("height", Math.max(0, focusH - 3))
+            .attr("fill", "none")
+            .attr("stroke", FOCUS_PICK.innerColor)
+            .attr("stroke-width", FOCUS_PICK.innerWidth)
+            .attr("rx", 3)
+            .style("pointer-events", "none");
+    }
+
+    function computeNodeOpacity(
+        d: any,
+        mask: Set<string> | null,
+        focusEgoId: string | null,
+        focusEgoSet: Set<string> | null,
+    ): number | null {
+        const inMask = !!mask && mask.has(d.id);
+
+        // Ego mode hides outside-set nodes. Filter-half is suppressed for
+        // nodes inside the selection mask: the user has explicitly focused
+        // on them, overriding any priority-bucket dim.
+        let visibilityState: "bright" | "half" | "hidden" =
+            !inMask && d.filter_dimmed ? "half" : "bright";
+        if (focusEgoId && focusEgoSet && !focusEgoSet.has(d.id)) {
+            visibilityState = "hidden";
+        }
+
+        const op = emphasisOpacity({
+            prominence: d.prominence ?? 0,
+            isCompleted: COMPLETED_STATUSES.has(d.status),
+            visibilityState,
+            selectionMasked: !!mask && !inMask,
+        });
+        return op < 1 ? op : null;
     }
 </script>
 

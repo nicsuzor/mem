@@ -7,6 +7,7 @@ import {
 import { projectColor } from "../../data/projectUtils";
 import type { GraphNode, GraphEdge } from "../../data/prepareGraphData";
 import type { VisibilityState } from "../../stores/filters";
+import { emphasisOpacity } from "../../data/focusEmphasis";
 
 export const BAD_CHOICE_BORDER = "#dc2626";
 
@@ -153,8 +154,13 @@ export function computeBaseNodeData(node: GraphNode, isDestination: boolean = fa
         displayLabel = truncate(node.label, 40);
     }
 
-    const baseOpacity = visibilityState === "half" ? 0.45 : 0.95;
-    const nodeOpacity = completed ? baseOpacity * 0.35 : baseOpacity;
+    // Single emphasis curve — keeps opacity consistent with prepareGraphData
+    // and the SVG views. Prominence comes off the prepared node.
+    const nodeOpacity = emphasisOpacity({
+        prominence: node.prominence ?? 0,
+        isCompleted: completed,
+        visibilityState,
+    });
 
     return {
         id: node.id,

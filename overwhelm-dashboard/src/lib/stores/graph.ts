@@ -1,7 +1,8 @@
 import { writable, derived } from 'svelte/store';
 import type { PreparedGraph } from '../data/prepareGraphData';
 import type { GraphNode } from '../data/prepareGraphData';
-import { STATUS_FILLS, STATUS_TEXT } from '../data/constants';
+import { STATUS_FILLS, STATUS_TEXT, COMPLETED_STATUSES } from '../data/constants';
+import { emphasisOpacity } from '../data/focusEmphasis';
 
 export const graphData = writable<PreparedGraph | null>(null);
 // Pre-filter, post-prepareGraphData view of the graph. Views that build
@@ -17,8 +18,6 @@ export interface TaskNodeUpdates {
     refile?: boolean;
     type?: string;
 }
-
-const FADED_STATUSES = new Set(['done', 'cancelled']);
 
 function cloneNodeSnapshot(node: GraphNode) {
     const mutableNode = node as any;
@@ -65,7 +64,10 @@ export function applyTaskNodeUpdates(node: GraphNode, updates: TaskNodeUpdates) 
         }
         node.fill = fill;
         node.textColor = text;
-        node.opacity = FADED_STATUSES.has(nodeUpdates.status) ? 0.4 : 0.8;
+        node.opacity = emphasisOpacity({
+            prominence: node.prominence ?? 0,
+            isCompleted: COMPLETED_STATUSES.has(nodeUpdates.status),
+        });
     }
 
     (node as any)._lastSelected = undefined;

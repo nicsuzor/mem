@@ -5,7 +5,14 @@
     import { viewSettings } from "../../stores/viewSettings";
     import { buildCirclePackNode } from "../shared/NodeShapes";
     import { routeContainmentEdges } from "../shared/EdgeRenderer";
-    import { focusSize, maxFocusOf } from "../../data/nodeSize";
+    import {
+        focusSize,
+        maxFocusOf,
+        emphasisOpacity,
+        computeSelectionMask,
+    } from "../../data/focusEmphasis";
+    import { FOCUS_PICK } from "../../data/nodeAffordances";
+    import { COMPLETED_STATUSES } from "../../data/constants";
 
     import { onMount } from "svelte";
 
@@ -213,86 +220,71 @@
             .on("click", (e, d) => {
                 e.stopPropagation();
                 toggleSelection(d.id);
-            })
-            .on("mouseenter", (e, d) => {
-                selection.update((s) => ({ ...s, hoveredNodeId: d.id }));
-            })
-            .on("mouseleave", () => {
-                selection.update((s) => ({ ...s, hoveredNodeId: null }));
             });
 
         const activeNodeId = $selection.activeNodeId;
-        const hoveredNodeId = $selection.hoveredNodeId;
+        const focusEgoId = $selection.focusNodeId;
+        const focusEgoSet = $selection.focusNeighborSet;
         const focusIds: Set<string> =
             ($graphData as any)?.focusIds || new Set();
-        const showFocus = $viewSettings.showFocusHighlight && focusIds.size > 0;
+        const showPicks =
+            $viewSettings.showFocusHighlight && focusIds.size > 0;
+
+        const mask = computeSelectionMask(
+            visibleNodes,
+            data.links,
+            activeNodeId,
+            { includeSiblings: false },
+        );
 
         nEls.each(function (d) {
             const g = d3.select(this);
             const isSelected = d.id === activeNodeId;
-            const isHovered = d.id === hoveredNodeId;
 
             const lastSelected = d._lastSelected;
             if (g.selectAll("*").empty() || lastSelected !== isSelected) {
                 g.selectAll("*").remove();
-                // Pass _isLeaf from mutated state
                 const tempD = { ...d, _lr: d._lr, isLeaf: d._isLeaf };
                 buildCirclePackNode(g as any, tempD, isSelected);
                 d._lastSelected = isSelected;
-            }
 
-            g.classed("hovered-node", isHovered);
-
-            // Focus highlight: glowing ring on priority focus leaf nodes
-            if (showFocus && d._isLeaf) {
-                g.selectAll(".focus-ring").remove();
-                if (focusIds.has(d.id)) {
-                    // Outer glow
+                if (showPicks && d._isLeaf && focusIds.has(d.id)) {
                     g.insert("circle", ":first-child")
                         .attr("class", "focus-ring")
-                        .attr("cx", 0)
-                        .attr("cy", 0)
+                        .attr("cx", 0).attr("cy", 0)
                         .attr("r", (d._lr || 5))
                         .attr("fill", "none")
-                        .attr("stroke", "#f59e0b")
-                        .attr("stroke-width", 8)
-                        .attr("stroke-opacity", 0.6)
-                        .style("pointer-events", "none")
-                        .append("animate")
-                        .attr("attributeName", "stroke-opacity")
-                        .attr("values", "0.2;0.8;0.2")
-                        .attr("dur", "2s")
-                        .attr("repeatCount", "indefinite");
-
-                    // Sharp inner highlight
+                        .attr("stroke", FOCUS_PICK.outerColor)
+                        .attr("stroke-width", FOCUS_PICK.outerWidth)
+                        .attr("stroke-opacity", FOCUS_PICK.outerOpacity)
+                        .style("pointer-events", "none");
                     g.insert("circle", ":first-child")
                         .attr("class", "focus-ring")
-                        .attr("cx", 0)
-                        .attr("cy", 0)
+                        .attr("cx", 0).attr("cy", 0)
                         .attr("r", (d._lr || 5) - 1.5)
                         .attr("fill", "none")
-                        .attr("stroke", "#fbbf24")
-                        .attr("stroke-width", 3)
+                        .attr("stroke", FOCUS_PICK.innerColor)
+                        .attr("stroke-width", FOCUS_PICK.innerWidth)
                         .style("pointer-events", "none");
                 }
             }
         });
 
-        // Gentle dimming: non-focus leaves slightly faded, and filter-dimmed nodes heavily faded
-        if (showFocus) {
-            nEls.style("opacity", (d: any) => {
-                const baseOp = d.opacity ?? 1;
-                if (d.filter_dimmed) return 0.2 * baseOp;
-                if (!d._isLeaf) return baseOp < 1 ? baseOp : null;
-                if (focusIds.has(d.id)) return baseOp;
-                return 0.6 * baseOp;
+        nEls.style("opacity", (d: any) => {
+            const inMask = !!mask && mask.has(d.id);
+            let visibilityState: "bright" | "half" | "hidden" =
+                !inMask && d.filter_dimmed ? "half" : "bright";
+            if (focusEgoId && focusEgoSet && !focusEgoSet.has(d.id)) {
+                visibilityState = "hidden";
+            }
+            const op = emphasisOpacity({
+                prominence: d.prominence ?? 0,
+                isCompleted: COMPLETED_STATUSES.has(d.status),
+                visibilityState,
+                selectionMasked: !!mask && !inMask,
             });
-        } else {
-            nEls.style("opacity", (d: any) => {
-                const baseOp = d.opacity ?? 1;
-                return d.filter_dimmed ? 0.2 * baseOp : (baseOp < 1 ? baseOp : null);
-            });
-        }
+            return op < 1 ? op : null;
+        });
 
         const eEls = d3
             .select(edgesLayer)
@@ -302,7 +294,6 @@
 
         routeContainmentEdges(eEls);
 
-        // Apply zoom-responsive text visibility after render
         setTimeout(updateTextVisibility, 50);
     }
 </script>
