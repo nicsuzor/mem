@@ -69,7 +69,7 @@ pub struct GraphStore {
 }
 
 /// Document types considered actionable work items in task trees and dashboards.
-pub const ACTIONABLE_TYPES: &[&str] = &["project", "epic", "task", "learn"];
+pub const ACTIONABLE_TYPES: &[&str] = &["project", "epic", "task", "learn", "pr"];
 
 /// Document types that represent claimable work items — leaf tasks a worker can actually do.
 /// Excludes containers (epic, project) and observational types (learn).
