@@ -4559,7 +4559,7 @@ impl PkbSearchServer {
 
     fn handle_get_prompt(
         &self,
-        request: GetPromptRequestParam,
+        request: GetPromptRequestParams,
     ) -> Result<GetPromptResult, McpError> {
         let name = request.name;
         let arguments = request.arguments.unwrap_or_default();
@@ -4616,17 +4616,77 @@ impl PkbSearchServer {
             }),
         }
     }
+
+    fn dispatch_tool_sync(&self, name: &str, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        match name {
+            // --- Consolidated Tools ---
+            "create_document" => self.handle_create_document_consolidated(args),
+            "manage_task" => self.handle_manage_task_consolidated(args),
+            "pkb_explore" => self.handle_pkb_explore_consolidated(args),
+            "pkb_batch" => self.handle_pkb_batch_consolidated(args),
+            "pkb_stats" => self.handle_pkb_stats_consolidated(args),
+            "pkb_tool_help" => self.handle_pkb_tool_help(args),
+
+            // --- Legacy / Granular Tools ---
+            "search" => self.handle_pkb_search(args),
+            "get_document" => self.handle_get_document(args),
+            "list_documents" => self.handle_list_documents(args),
+            "task_search" => self.handle_task_search(args),
+            "get_network_metrics" => self.handle_get_network_metrics(args),
+            "create_task" => self.handle_create_task(args),
+            "create_subtask" => self.handle_create_subtask(args),
+            "create_memory" => self.handle_create_memory(args),
+            "create" => self.handle_create_document(args),
+            "append" => self.handle_append_to_document(args),
+            "delete" => self.handle_delete_document(args),
+            "complete_task" => self.handle_complete_task(args),
+            "release_task" => self.handle_release_task(args),
+            "list_tasks" => self.handle_list_tasks(args),
+            "get_task" => self.handle_get_task(args),
+            "update_task" => self.handle_update_task(args),
+            "bulk_reparent" => self.handle_bulk_reparent(args),
+            "retrieve_memory" => self.handle_retrieve_memory(args),
+            "detect_weight_divergence" => self.handle_detect_weight_divergence(args),
+            "search_by_tag" => self.handle_search_by_tag(args),
+            "list_memories" => self.handle_list_memories(args),
+            "delete_memory" => self.handle_delete_memory(args),
+            "decompose_task" => self.handle_decompose_task(args),
+            "get_dependency_tree" => self.handle_get_dependency_tree(args),
+            "get_task_children" => self.handle_get_task_children(args),
+            "pkb_context" => self.handle_pkb_context(args),
+            "pkb_trace" => self.handle_pkb_trace(args),
+            "pkb_orphans" => self.handle_pkb_orphans(args),
+            "get_semantic_neighbors" => self.handle_get_semantic_neighbors(args),
+            "batch_update" => self.handle_batch_update(args),
+            "batch_reparent" => self.handle_batch_reparent(args),
+            "batch_archive" => self.handle_batch_archive(args),
+            "graph_stats" => self.handle_graph_stats(args),
+            "graph_json" => self.handle_graph_json(args),
+            "task_summary" => self.handle_task_summary(args),
+            "find_duplicates" => self.handle_find_duplicates(args),
+            "batch_merge" => self.handle_batch_merge(args),
+            "merge_node" => self.handle_merge_node(args),
+            "batch_create_epics" => self.handle_batch_create_epics(args),
+            "batch_reclassify" => self.handle_batch_reclassify(args),
+            "get_stats" => self.handle_get_stats(args),
+            "status" => self.handle_status(args),
+            _ => Err(McpError {
+                code: ErrorCode::METHOD_NOT_FOUND,
+                message: Cow::from(format!("Unknown tool: {name}")),
+                data: None,
+            }),
+        }
+    }
 }
 
 impl ServerHandler for PkbSearchServer {
     fn call_tool(
         &self,
-        request: CallToolRequestParam,
-        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        request: CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
         let start = std::time::Instant::now();
         let tool_name = request.name.clone();
-
         let args = Self::args_to_value(request.arguments);
 
         // For consolidated tools, build a granular name for telemetry
@@ -4642,85 +4702,59 @@ impl ServerHandler for PkbSearchServer {
             other => other.to_string(),
         };
 
-        let result = match &*request.name {
-            // --- Consolidated Tools ---
-            "create_document" => self.handle_create_document_consolidated(&args),
-            "manage_task" => self.handle_manage_task_consolidated(&args),
-            "pkb_explore" => self.handle_pkb_explore_consolidated(&args),
-            "pkb_batch" => self.handle_pkb_batch_consolidated(&args),
-            "pkb_stats" => self.handle_pkb_stats_consolidated(&args),
-            "pkb_tool_help" => self.handle_pkb_tool_help(&args),
+        let this = self.clone();
+        async move {
+            let (tx, rx) = tokio::sync::oneshot::channel();
 
-            // --- Legacy / Granular Tools ---
-            "search" => self.handle_pkb_search(&args),
-            "get_document" => self.handle_get_document(&args),
-            "list_documents" => self.handle_list_documents(&args),
-            "task_search" => self.handle_task_search(&args),
-            "get_network_metrics" => self.handle_get_network_metrics(&args),
-            "create_task" => self.handle_create_task(&args),
-            "create_subtask" => self.handle_create_subtask(&args),
-            "create_memory" => self.handle_create_memory(&args),
-            "create" => self.handle_create_document(&args),
-            "append" => self.handle_append_to_document(&args),
-            "delete" => self.handle_delete_document(&args),
-            "complete_task" => self.handle_complete_task(&args),
-            "release_task" => self.handle_release_task(&args),
-            "list_tasks" => self.handle_list_tasks(&args),
-            "get_task" => self.handle_get_task(&args),
-            "update_task" => self.handle_update_task(&args),
-            "bulk_reparent" => self.handle_bulk_reparent(&args),
-            "retrieve_memory" => self.handle_retrieve_memory(&args),
-            "detect_weight_divergence" => self.handle_detect_weight_divergence(&args),
-            "search_by_tag" => self.handle_search_by_tag(&args),
-            "list_memories" => self.handle_list_memories(&args),
-            "delete_memory" => self.handle_delete_memory(&args),
-            "decompose_task" => self.handle_decompose_task(&args),
-            "get_dependency_tree" => self.handle_get_dependency_tree(&args),
-            "get_task_children" => self.handle_get_task_children(&args),
-            "pkb_context" => self.handle_pkb_context(&args),
-            "pkb_trace" => self.handle_pkb_trace(&args),
-            "pkb_orphans" => self.handle_pkb_orphans(&args),
-            "get_semantic_neighbors" => self.handle_get_semantic_neighbors(&args),
-            "batch_update" => self.handle_batch_update(&args),
-            "batch_reparent" => self.handle_batch_reparent(&args),
-            "batch_archive" => self.handle_batch_archive(&args),
-            "graph_stats" => self.handle_graph_stats(&args),
-            "graph_json" => self.handle_graph_json(&args),
-            "task_summary" => self.handle_task_summary(&args),
-            "find_duplicates" => self.handle_find_duplicates(&args),
-            "batch_merge" => self.handle_batch_merge(&args),
-            "merge_node" => self.handle_merge_node(&args),
-            "batch_create_epics" => self.handle_batch_create_epics(&args),
-            "batch_reclassify" => self.handle_batch_reclassify(&args),
-            "get_stats" => self.handle_get_stats(&args),
-            "status" => self.handle_status(&args),
-            _ => Err(McpError {
-                code: ErrorCode::METHOD_NOT_FOUND,
-                message: Cow::from(format!("Unknown tool: {}", request.name)),
-                data: None,
-            }),
-        };
+            // Offload to a blocking thread so the async task can respond to
+            // session cancellation (e.g. keep-alive timeout or disconnect).
+            // Refs task-2ae61ce6.
+            let tool_name_task = tool_name.clone();
+            let args_task = args.clone();
+            let this_task = this.clone();
 
-        let latency = start.elapsed().as_millis();
-        let is_error = result.is_err();
-        let response_bytes = match &result {
-            Ok(res) => serde_json::to_vec(res).map(|v| v.len()).unwrap_or(0),
-            Err(e) => serde_json::to_vec(e).map(|v| v.len()).unwrap_or(0),
-        };
+            tokio::task::spawn_blocking(move || {
+                let res = this_task.dispatch_tool_sync(&tool_name_task, &args_task);
+                let _ = tx.send(res);
+            });
 
-        crate::telemetry::record_call(
-            &effective_name,
-            response_bytes,
-            latency,
-            is_error,
-        );
+            let result = tokio::select! {
+                res = rx => res.unwrap_or_else(|_| Err(McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from("Internal error in tool execution task"),
+                    data: None,
+                })),
+                _ = context.ct.cancelled() => {
+                    tracing::warn!("Session terminated while tool '{}' was in flight", tool_name);
+                    Err(McpError {
+                        code: ErrorCode::INTERNAL_ERROR,
+                        message: Cow::from("Session terminated"),
+                        data: None,
+                    })
+                }
+            };
 
-        std::future::ready(result)
+            let latency = start.elapsed().as_millis();
+            let is_error = result.is_err();
+            let response_bytes = match &result {
+                Ok(res) => serde_json::to_vec(res).map(|v| v.len()).unwrap_or(0),
+                Err(e) => serde_json::to_vec(e).map(|v| v.len()).unwrap_or(0),
+            };
+
+            crate::telemetry::record_call(
+                &effective_name,
+                response_bytes,
+                latency,
+                is_error,
+            );
+
+            result
+        }
     }
 
     fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = Self::get_all_tools();
@@ -4730,7 +4764,7 @@ impl ServerHandler for PkbSearchServer {
 
     fn list_prompts(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
         std::future::ready(self.handle_list_prompts())
@@ -4738,7 +4772,7 @@ impl ServerHandler for PkbSearchServer {
 
     fn get_prompt(
         &self,
-        request: GetPromptRequestParam,
+        request: GetPromptRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
         std::future::ready(self.handle_get_prompt(request))
