@@ -4,6 +4,7 @@
 //! Provides 18 tools for search, documents, tasks, and knowledge graph.
 
 use crate::embeddings::Embedder;
+use crate::facts::{FactSource, PkbFacts};
 use crate::graph::is_completed;
 use crate::graph_store::{GraphStore, DEFAULT_DIVERGENCE_THRESHOLD_DAYS};
 use crate::vectordb::VectorStore;
@@ -14,6 +15,7 @@ use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use rayon::prelude::*;
@@ -31,6 +33,7 @@ pub struct PkbSearchServer {
     pkb_root: PathBuf,
     db_path: PathBuf,
     graph: Arc<RwLock<GraphStore>>,
+    facts: Arc<PkbFacts>,
     stale_count: usize,
     /// True when a background vector-store save is already scheduled. Used
     /// to coalesce burst writes: a subsequent `save_store` call while a save
@@ -62,6 +65,7 @@ impl PkbSearchServer {
         pkb_root: PathBuf,
         db_path: PathBuf,
         graph: Arc<RwLock<GraphStore>>,
+        facts: Arc<PkbFacts>,
     ) -> Self {
         Self {
             store,
@@ -69,6 +73,7 @@ impl PkbSearchServer {
             pkb_root,
             db_path,
             graph,
+            facts,
             stale_count: 0,
             save_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             deferred_paths: Arc::new(Mutex::new(std::collections::HashSet::new())),
@@ -1398,6 +1403,42 @@ impl PkbSearchServer {
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    fn handle_read_facts(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let node_id = args.get("node_id").and_then(|v| v.as_str());
+        let key = args.get("key").and_then(|v| v.as_str());
+        let source_str = args.get("source").and_then(|v| v.as_str());
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+
+        let facts = if let (Some(nid), Some(k)) = (node_id, key) {
+            // Read by node_id + key
+            self.facts.get_by_node_key(nid, k, limit)
+        } else if let Some(s_str) = source_str {
+            // Read by source
+            let source = FactSource::from_str(s_str).map_err(|_| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Invalid source: {}", s_str)),
+                data: None,
+            })?;
+            self.facts.get_by_source(source, limit)
+        } else {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Must provide either (node_id AND key) OR source"),
+                data: None,
+            });
+        };
+
+        let facts = facts.map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Database error: {}", e)),
+            data: None,
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&facts).unwrap_or_default(),
+        )]))
     }
 
     fn handle_pkb_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -4650,6 +4691,7 @@ impl ServerHandler for PkbSearchServer {
             "pkb_batch" => self.handle_pkb_batch_consolidated(&args),
             "pkb_stats" => self.handle_pkb_stats_consolidated(&args),
             "pkb_tool_help" => self.handle_pkb_tool_help(&args),
+            "read_facts" => self.handle_read_facts(&args),
 
             // --- Legacy / Granular Tools ---
             "search" => self.handle_pkb_search(&args),
@@ -4821,6 +4863,22 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("List Documents")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "read_facts",
+                "Read node-specific facts from the pkb_facts table. Facts provide external context like GitHub PR state or materialization drift.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "node_id": { "type": "string", "description": "Filter by node ID" },
+                        "key": { "type": "string", "description": "Filter by fact key" },
+                        "source": { "type": "string", "description": "Filter by fact source", "enum": ["github", "overwhelm", "pkb_lint", "materializer", "manual", "test"] },
+                        "limit": { "type": "integer", "description": "Max results (default: 10)" }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("Read Facts")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "task_search",
@@ -5746,12 +5804,14 @@ mod tests {
         let graph = build_project_test_graph();
         let store = VectorStore::new(3);
         let embedder = Embedder::new_dummy();
+        let facts = PkbFacts::open_in_memory().unwrap();
         PkbSearchServer::new(
             Arc::new(RwLock::new(store)),
             Arc::new(embedder),
             PathBuf::from("/tmp/test-pkb-project"),
             PathBuf::from("/tmp/test-pkb-project/db"),
             Arc::new(RwLock::new(graph)),
+            Arc::new(facts),
         )
     }
 
@@ -6108,12 +6168,14 @@ mod tests {
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-tags"));
         let store = VectorStore::new(3);
         let embedder = Embedder::new_dummy();
+        let facts = PkbFacts::open_in_memory().unwrap();
         PkbSearchServer::new(
             Arc::new(RwLock::new(store)),
             Arc::new(embedder),
             PathBuf::from("/tmp/test-pkb-tags"),
             PathBuf::from("/tmp/test-pkb-tags/db"),
             Arc::new(RwLock::new(graph)),
+            Arc::new(facts),
         )
     }
 
@@ -6141,6 +6203,34 @@ mod tests {
         assert_eq!(ids, vec!["t-overwhelm".to_string()]);
     }
 
+    #[test]
+    fn test_handle_read_facts() {
+        let server = build_test_server();
+        let now = chrono::Utc::now();
+
+        // Seed some facts
+        server.facts.put("node-1", FactSource::Github, "pr_state", json!({"status": "open"}), now).unwrap();
+        server.facts.put("node-1", FactSource::Github, "pr_state", json!({"status": "merged"}), now + chrono::Duration::minutes(1)).unwrap();
+
+        // Read by node_id + key
+        let result = server.handle_read_facts(&json!({
+            "node_id": "node-1",
+            "key": "pr_state"
+        })).unwrap();
+
+        let text = result.content[0].raw.as_text().unwrap().text.as_str();
+        let facts: Vec<crate::facts::Fact> = serde_json::from_str(text).unwrap();
+        assert_eq!(facts.len(), 2);
+        assert_eq!(facts[0].value, json!({"status": "merged"})); // newest first
+
+        // Read by source
+        let result = server.handle_read_facts(&json!({
+            "source": "github"
+        })).unwrap();
+        let text = result.content[0].raw.as_text().unwrap().text.as_str();
+        let facts: Vec<crate::facts::Fact> = serde_json::from_str(text).unwrap();
+        assert_eq!(facts.len(), 2);
+    }
     #[test]
     fn test_list_tasks_tag_no_match_returns_empty() {
         let server = build_tag_test_server();
@@ -6480,12 +6570,14 @@ mod batch_finalize_tests {
         let store = VectorStore::new(crate::embeddings::EMBEDDING_DIM);
         let embedder = Embedder::new_dummy();
         let graph = GraphStore::build_from_directory(pkb_root);
+        let facts = PkbFacts::open_in_memory().unwrap();
         PkbSearchServer::new(
             Arc::new(RwLock::new(store)),
             Arc::new(embedder),
             pkb_root.to_path_buf(),
             pkb_root.join("test-index.bin"),
             Arc::new(RwLock::new(graph)),
+            Arc::new(facts),
         )
     }
 
@@ -6581,12 +6673,14 @@ mod cross_process_recovery_tests {
         let store = VectorStore::new(EMBEDDING_DIM);
         let embedder = Embedder::new_dummy();
         let graph = GraphStore::build_from_directory(pkb_root);
+        let facts = PkbFacts::open_in_memory().unwrap();
         PkbSearchServer::new(
             Arc::new(RwLock::new(store)),
             Arc::new(embedder),
             pkb_root.to_path_buf(),
             pkb_root.join("test-index.bin"),
             Arc::new(RwLock::new(graph)),
+            Arc::new(facts),
         )
     }
 

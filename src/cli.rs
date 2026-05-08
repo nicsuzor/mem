@@ -2,7 +2,7 @@
 //!
 //! Provides subcommands: search, reindex, tasks, focus, mcp, ...
 
-use mem::{document_crud, embeddings, eval, graph, graph_display, graph_store, lint, mcp_server, metrics, pkb, task_index, vectordb};
+use mem::{document_crud, embeddings, eval, facts, graph, graph_display, graph_store, lint, mcp_server, metrics, pkb, task_index, vectordb};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -3064,6 +3064,11 @@ async fn main() -> Result<()> {
                 graph.read().edge_count()
             );
 
+            // Open facts database
+            let facts_path = db_path.with_file_name("facts.db");
+            let pkb_facts = facts::PkbFacts::open(&facts_path).expect("open facts db");
+            let facts = Arc::new(pkb_facts);
+
             // Create MCP server
             let server = mcp_server::PkbSearchServer::new(
                 store,
@@ -3071,6 +3076,7 @@ async fn main() -> Result<()> {
                 pkb_root.clone(),
                 db_path.clone(),
                 graph,
+                facts,
             )
             .with_stale_count(stale_count);
 

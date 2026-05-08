@@ -10,6 +10,7 @@ pub mod distance;
 pub mod document_crud;
 pub mod embeddings;
 pub mod eval;
+pub mod facts;
 pub mod graph;
 pub mod graph_display;
 pub mod graph_store;

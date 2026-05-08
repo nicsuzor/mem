@@ -57,6 +57,9 @@ ndarray = "0.16"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.33", features = ["bundled"] }
+strum = "0.26"
+strum_macros = "0.26"
 regex = "1"
 md5 = "0.7"
 blake3 = "1"

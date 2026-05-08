@@ -117,12 +117,14 @@ async fn main() -> anyhow::Result<()> {
     let target_id = std::env::var("PKB_BENCH_TARGET_TASK")
         .unwrap_or_else(|_| "task-a4dcc039".to_string());
 
+    let facts = mem::facts::PkbFacts::open_in_memory().unwrap();
     let server = mem::mcp_server::PkbSearchServer::new(
         store.clone(),
         embedder.clone(),
         pkb_root.clone(),
         db_path.clone(),
         graph.clone(),
+        std::sync::Arc::new(facts),
     );
 
     // Warm-up: ensure the target task exists by attempting a get_task style resolve.
