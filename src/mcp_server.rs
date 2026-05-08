@@ -4,6 +4,7 @@
 //! Provides 18 tools for search, documents, tasks, and knowledge graph.
 
 use crate::embeddings::Embedder;
+use crate::facts::FactsProvider;
 use crate::graph::is_completed;
 use crate::graph_store::{GraphStore, DEFAULT_DIVERGENCE_THRESHOLD_DAYS};
 use crate::vectordb::VectorStore;
@@ -4770,6 +4771,8 @@ impl ServerHandler for PkbSearchServer {
         .with_instructions(instructions)
     }
 }
+
+impl FactsProvider for PkbSearchServer {}
 
 impl PkbSearchServer {
     fn get_all_tools() -> Vec<Tool> {
