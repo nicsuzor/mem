@@ -29,9 +29,7 @@ def get_emitters():
                         })
     return emitters
 
-def get_consumer_count(variant):
-    # Consumers are where FactSource::Variant is matched against (e.g. in match arm or if let)
-    # This is a bit fuzzy with grep, but we can look for it in match arms.
+def get_consumer_count(variant, emitter_count=0):
     count = 0
     pattern = re.compile(rf'FactSource::{variant}')
     for root, _, files in os.walk('src'):
@@ -41,13 +39,8 @@ def get_consumer_count(variant):
             path = os.path.join(root, file)
             with open(path, 'r') as f:
                 content = f.read()
-                # Very simple heuristic: if it's in a match arm or similar
-                # For now, just count all occurrences and subtract emitters? 
-                # No, let's just count occurrences that look like patterns.
-                # Actually, let's just count all occurrences for now as a placeholder.
                 count += len(pattern.findall(content))
-    # Subtract 1 for the emitter itself (this is very rough)
-    return max(0, count)
+    return max(0, count - emitter_count)
 
 def main():
     emitters = get_emitters()
@@ -65,10 +58,7 @@ def main():
             
         missing = []
         for e in emitters:
-            # Check if the file path is in the inventory. 
-            # We don't check exact line number as it's too brittle for CI if other lines change.
-            # But the task says "file path + line".
-            if e['path'] not in content:
+            if e['site'] not in content:
                 missing.append(e['site'])
         
         if missing:
@@ -91,7 +81,8 @@ def main():
     today = datetime.now().strftime('%Y-%m-%d')
     
     for e in emitters:
-        count = get_consumer_count(e['variant'])
+        emitter_count = sum(1 for em in emitters if em['variant'] == e['variant'])
+        count = get_consumer_count(e['variant'], emitter_count)
         print(f"| `{e['variant']}` | `{e['path']}:{e['line']}` | {count} | {today} |")
 
 if __name__ == '__main__':

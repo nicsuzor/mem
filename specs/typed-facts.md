@@ -29,6 +29,8 @@ Every typed-fact MCP tool returns `TypedFact<T>` (single value) or `Vec<TypedFac
 The `FactSource` enum and `TypedFact<T>` struct are defined in `src/facts.rs`.
 
 ```rust
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum FactSource {
     PrStateJson { generated_at: DateTime<Utc> },
     GraphStoreNode,
@@ -37,6 +39,7 @@ pub enum FactSource {
     Derived { from: Vec<FactSource> },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TypedFact<T> {
     pub value: T,
     pub source: FactSource,
