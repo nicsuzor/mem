@@ -66,7 +66,10 @@ async fn main() -> anyhow::Result<()> {
     }
     println!("PKB root: {}", pkb_root.display());
 
-    let db_path = pkb_root.join(".pkb").join("vectors.bin");
+    // Match cli.rs default: pkb_root/pkb_vectors.bin
+    let db_path = std::env::var("PKB_BENCH_DB_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| pkb_root.join("pkb_vectors.bin"));
 
     // Load embedder (dummy by default for isolating non-embed costs)
     let use_dummy = std::env::var("PKB_BENCH_DUMMY_EMBEDDER").is_ok();

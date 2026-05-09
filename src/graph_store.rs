@@ -267,40 +267,58 @@ impl GraphStore {
             .collect();
 
         // 4. Compute inverse relationships on nodes
+        let _t = std::time::Instant::now();
         compute_inverses(&mut nodes, &edges, &id_map, &path_to_id);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "inverses", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 5. Compute degree metrics (indegree/outdegree)
+        let _t = std::time::Instant::now();
         compute_degree_metrics(&mut nodes, &edges);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "degree_metrics", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 6. Compute centrality metrics (PageRank, betweenness).
         //    Skipped on incremental rebuilds — O(V*E) dominates write latency at
         //    multi-thousand-node PKB sizes, and single-file updates barely shift
         //    these scores. Prior values on the input nodes are retained instead.
         if include_centrality {
+            let _t = std::time::Instant::now();
             compute_centrality_metrics(&mut nodes, &edges);
+            tracing::debug!(target: "perf::graph_rebuild", phase = "centrality", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
         }
 
         // 7. Compute downstream metrics (BFS through blocks/soft_blocks/children)
+        let _t = std::time::Instant::now();
         compute_downstream_metrics(&mut nodes);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "downstream_metrics", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 7b. Compute effective_priority (min priority in downstream cone)
+        let _t = std::time::Instant::now();
         compute_effective_priority(&mut nodes);
         compute_blocking_urgency(&mut nodes);
         compute_urgency(&mut nodes);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "priority_urgency", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 8. Compute derived properties: scope, uncertainty, criticality
+        let _t = std::time::Instant::now();
         compute_scope(&mut nodes);
         compute_uncertainty(&mut nodes);
         compute_criticality(&mut nodes);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "scope_uncertainty_criticality", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 9. Compute focus scores
+        let _t = std::time::Instant::now();
         Self::compute_focus_scores(&mut nodes);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "focus_scores", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 9. Compute project field (nearest ancestor with node_type == "project")
+        let _t = std::time::Instant::now();
         compute_project_field(&mut nodes);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "project_field", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 9a. Compute target ancestors (materialised field)
+        let _t = std::time::Instant::now();
         compute_target_ancestors(&mut nodes, &edges);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "target_ancestors", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 9b. Compute similarity edges if an embedding snapshot is provided.
         // threshold 0.85 as default for materialised edges
@@ -317,21 +335,29 @@ impl GraphStore {
 
         // 9c. Compute reachable set (upstream BFS from active leaves)
         //    Mark nodes reachable from active leaves via BFS.
+        let _t = std::time::Instant::now();
         let reachable_set = find_reachable_set(&nodes, &edges);
         for node in &mut nodes {
             node.reachable = reachable_set.contains(&node.id);
         }
+        tracing::debug!(target: "perf::graph_rebuild", phase = "reachable_set", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 10. Build node map and classify tasks
+        let _t = std::time::Instant::now();
         let mut node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
         let (ready, blocked, roots) = classify_tasks(&node_map);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "classify_tasks", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 11. Compute divergence anomalies and set flags on nodes (default 14 days)
+        let _t = std::time::Instant::now();
         compute_divergence_anomalies(&mut node_map, &blocked, DEFAULT_DIVERGENCE_THRESHOLD_DAYS);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "divergence_anomalies", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 12. Build resolution map for flexible node lookup
+        let _t = std::time::Instant::now();
         let resolution_map = build_resolution_map(&node_map);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "resolution_map", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         GraphStore {
             nodes: node_map,
