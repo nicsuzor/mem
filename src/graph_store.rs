@@ -179,26 +179,51 @@ impl GraphStore {
         opt_embeddings: Option<&HashMap<String, Vec<f32>>>,
     ) -> Self {
         // 2. Build lookup maps
-        // Node paths may be relative — reconstruct absolute for canonicalize & link resolution
+        // Node paths may be relative — reconstruct absolute for canonicalize & link resolution.
+        // Canonical paths are cached on each GraphNode so incremental rebuilds avoid the
+        // O(N) fs-stat cost. Refs mem-fd02c2f9.
+        let _t_lookup = std::time::Instant::now();
         let mut id_map: HashMap<String, String> = HashMap::new(); // permalink -> abs_path
         let mut path_to_id: HashMap<String, String> = HashMap::new(); // abs_path -> id
 
-        for n in &nodes {
-            let full_path = if n.path.is_absolute() {
-                n.path.clone()
+        let mut canonicalize_misses: usize = 0;
+        for n in nodes.iter_mut() {
+            // Ghost nodes carry an empty `path` and are re-registered via
+            // virtual paths during ghost discovery below. Skip the canonicalize
+            // loop for them — pkb_root.join("").canonicalize() collides on a
+            // single key for every ghost and burns one fs-stat per ghost.
+            if n.path.as_os_str().is_empty() {
+                continue;
+            }
+            let abs_path = if let Some(ref cached) = n.canonical_abs_path {
+                cached.clone()
             } else {
-                pkb_root.join(&n.path)
+                let full_path = if n.path.is_absolute() {
+                    n.path.clone()
+                } else {
+                    pkb_root.join(&n.path)
+                };
+                let resolved = full_path
+                    .canonicalize()
+                    .unwrap_or(full_path)
+                    .to_string_lossy()
+                    .to_string();
+                n.canonical_abs_path = Some(resolved.clone());
+                canonicalize_misses += 1;
+                resolved
             };
-            let abs_path = full_path
-                .canonicalize()
-                .unwrap_or(full_path)
-                .to_string_lossy()
-                .to_string();
             path_to_id.insert(abs_path.clone(), n.id.clone());
             for key in &n.permalinks {
                 id_map.insert(key.clone(), abs_path.clone());
             }
         }
+        tracing::debug!(
+            target: "perf::graph_rebuild",
+            phase = "lookup_maps",
+            n_nodes = nodes.len(),
+            canonicalize_misses = canonicalize_misses,
+            elapsed_ms = _t_lookup.elapsed().as_secs_f64() * 1000.0
+        );
 
         // 2b. Discover ghost nodes (referenced but not in files)
         // Scans all reference fields for IDs that weren't resolved to files,

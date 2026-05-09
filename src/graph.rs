@@ -138,6 +138,12 @@ impl ContributesTo {
 pub struct GraphNode {
     pub id: String,
     pub path: PathBuf,
+    /// Cached canonical absolute path (string form). Populated lazily on first
+    /// graph build that encounters this node and reused on incremental rebuilds.
+    /// Skipped from serialization — derived from `path` + pkb_root.
+    /// Refs mem-fd02c2f9 (eliminate per-rebuild fs-stat cost).
+    #[serde(skip)]
+    pub canonical_abs_path: Option<String>,
     pub label: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -1087,6 +1093,7 @@ impl GraphNode {
         GraphNode {
             id,
             path: doc.path.clone(),
+            canonical_abs_path: None,
             label: doc.title.clone(),
             tags: doc.tags.clone(),
             node_type,
