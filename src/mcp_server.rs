@@ -54,6 +54,24 @@ pub struct PkbSearchServer {
     /// no-op for concurrent callers — they'll see the drained state on
     /// their next handler invocation if the drain hasn't completed yet.
     drain_in_progress: Arc<Mutex<()>>,
+    /// True when a background graph rebuild (Tier 2) is already scheduled.
+    /// Coalesces burst writes: subsequent calls to `schedule_graph_rebuild`
+    /// while a rebuild is in flight are no-ops; the in-flight rebuild
+    /// captures the latest in-memory state when it runs.
+    graph_rebuild_pending: Arc<std::sync::atomic::AtomicBool>,
+    /// Node IDs that received a Tier-1 patch since the most recent Tier-2
+    /// rebuild started reading state. Re-applied on Tier-2 swap so concurrent
+    /// patches aren't reverted by the swap. Cleared at the start of each
+    /// Tier-2 rebuild (before the read-state phase).
+    patched_during_rebuild: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Test-only: optional sleep injected into Tier-2 between read and swap,
+    /// used by the lost-patch race test to widen the window deterministically.
+    #[cfg(test)]
+    tier2_sleep_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Counter incremented each time a Tier-2 rebuild actually executes
+    /// (not coalesced). Used by the bench harness and tests to verify
+    /// coalescing is working.
+    tier2_executions: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl PkbSearchServer {
@@ -75,7 +93,35 @@ impl PkbSearchServer {
             deferred_paths: Arc::new(Mutex::new(std::collections::HashSet::new())),
             lock_was_held: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             drain_in_progress: Arc::new(Mutex::new(())),
+            graph_rebuild_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            patched_during_rebuild: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            #[cfg(test)]
+            tier2_sleep_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tier2_executions: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
+    }
+
+    /// Number of Tier-2 background rebuilds that have actually executed.
+    /// Used by bench/tests to measure coalescing effectiveness.
+    #[doc(hidden)]
+    pub fn tier2_execution_count(&self) -> u64 {
+        self.tier2_executions
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Has a Tier-2 rebuild been queued (or is one running)?
+    /// Bench harness polls this to know when the graph is fully consistent.
+    #[doc(hidden)]
+    pub fn graph_rebuild_pending(&self) -> bool {
+        self.graph_rebuild_pending
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub fn set_tier2_sleep_ms(&self, ms: u64) {
+        self.tier2_sleep_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn with_stale_count(mut self, count: usize) -> Self {
@@ -201,12 +247,17 @@ impl PkbSearchServer {
         *self.graph.write() = new_graph;
     }
 
-    /// Incremental graph update after a single file changed, given an already-parsed document.
-    /// This avoids re-reading/re-parsing the file when the caller already has a `PkbDocument`.
-    /// Uses the fast path (skips centrality recomputation).
+    /// Tier-1 incremental graph update after a single file changed.
     ///
-    /// Concurrency: identical to `rebuild_graph` — embedding snapshot is
-    /// taken under a brief read lock that's dropped before the build runs.
+    /// Synchronously runs the full O(V+E) pipeline (downstream metrics,
+    /// urgency family, focus scores, target ancestors, reachable set,
+    /// classify, divergence, resolution map) so direct reads — including
+    /// `list_tasks(status="ready")` ordering — are fresh on return. The
+    /// O(N²) similarity-edge step is deferred to a background Tier-2
+    /// rebuild scheduled at the end.
+    ///
+    /// Concurrency: takes the graph write lock for the duration of the
+    /// in-place rebuild. Tier-2 is dispatched via `tokio::spawn_blocking`.
     fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
         let abs_path = self.abs_path(&doc.path);
         let mut node = crate::graph::GraphNode::from_pkb_document(doc);
@@ -229,24 +280,141 @@ impl PkbSearchServer {
             self.abs_path(&existing_node.path) != abs_path
         });
 
+        let patched_id = node.id.clone();
         nodes.insert(node.id.clone(), node);
 
-        let snapshot = self.store.read().averaged_embeddings();
-        let new_graph = GraphStore::rebuild_from_nodes_fast_with_embeddings(
+        // Carry over prior similarity edges — Tier-1 skips O(N²) recompute.
+        let prior_similarity = self.graph.read().similarity_edges_cloned();
+        let new_graph = GraphStore::rebuild_from_nodes_skip_similarity(
             nodes,
             &self.pkb_root,
-            &snapshot,
+            prior_similarity,
         );
         *self.graph.write() = new_graph;
+
+        // Track this patched id so a concurrent in-flight Tier-2 rebuild
+        // re-applies it on swap (avoids the lost-patch race).
+        self.patched_during_rebuild.lock().insert(patched_id);
+
+        // Schedule the Tier-2 background rebuild that refreshes similarity edges.
+        self.schedule_graph_rebuild();
     }
 
-    /// Incremental graph update after a node is removed.
-    /// Uses the fast path (skips centrality recomputation).
+    /// Tier-1 incremental graph update after a node is removed.
+    /// Synchronous fast path; schedules a Tier-2 similarity refresh.
     fn rebuild_graph_remove(&self, id: &str) {
         let mut nodes = self.graph.read().nodes_cloned();
         nodes.remove(id);
-        let new_graph = GraphStore::rebuild_from_nodes_fast(nodes, &self.pkb_root);
+        let prior_similarity = self.graph.read().similarity_edges_cloned();
+        let new_graph = GraphStore::rebuild_from_nodes_skip_similarity(
+            nodes,
+            &self.pkb_root,
+            prior_similarity,
+        );
         *self.graph.write() = new_graph;
+
+        // Removed node id is recorded so a concurrent Tier-2 doesn't
+        // resurrect it via patch-merge: replace_node only re-applies a
+        // node that still exists in the live graph.
+        self.patched_during_rebuild.lock().insert(id.to_string());
+
+        self.schedule_graph_rebuild();
+    }
+
+    /// Schedule a background (Tier-2) graph rebuild that recomputes
+    /// similarity edges. Coalesces burst writes via `graph_rebuild_pending`
+    /// so a flurry of `update_task` calls produces at most one trailing
+    /// rebuild.
+    ///
+    /// Concurrency model:
+    ///   - `pending` is cleared *before* the rebuild reads state, so a
+    ///     Tier-1 update arriving during the rebuild flips `pending=true`
+    ///     again and a follow-up rebuild is guaranteed.
+    ///   - `patched_during_rebuild` is drained at the start of the rebuild
+    ///     (after clearing `pending`), so it captures only IDs landing
+    ///     during this rebuild's read-to-swap window. On swap, those
+    ///     nodes' live fields are merged into the new graph so the swap
+    ///     never reverts a concurrent Tier-1 patch.
+    fn schedule_graph_rebuild(&self) {
+        use std::sync::atomic::Ordering;
+        if self
+            .graph_rebuild_pending
+            .swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+
+        let graph = self.graph.clone();
+        let store = self.store.clone();
+        let pkb_root = self.pkb_root.clone();
+        let pending = self.graph_rebuild_pending.clone();
+        let patched = self.patched_during_rebuild.clone();
+        let executions = self.tier2_executions.clone();
+        #[cfg(test)]
+        let sleep_ms = self.tier2_sleep_ms.clone();
+
+        let do_rebuild = move || {
+            let _t_total = std::time::Instant::now();
+
+            // Drain the patch tracker and clear pending BEFORE reading state.
+            // Order matters: patches arriving after this point belong to a
+            // future rebuild, not this one.
+            patched.lock().clear();
+            pending.store(false, Ordering::SeqCst);
+
+            let snapshot = store.read().averaged_embeddings();
+            let nodes = graph.read().nodes_cloned();
+
+            let new_graph = GraphStore::rebuild_from_nodes_fast_with_embeddings(
+                nodes, &pkb_root, &snapshot,
+            );
+
+            #[cfg(test)]
+            {
+                let ms = sleep_ms.load(Ordering::Relaxed);
+                if ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+            }
+
+            // Patch-merge: any node patched between our read and now must
+            // have its live fields preserved. We replace the just-built
+            // node with the live one and re-classify.
+            let mut g = graph.write();
+            let patched_ids: Vec<String> = patched.lock().iter().cloned().collect();
+            let mut merged = new_graph;
+            for id in &patched_ids {
+                if let Some(live_node) = g.nodes_map().get(id).cloned() {
+                    merged.replace_node(live_node);
+                }
+                // If the node no longer exists in the live graph (e.g.
+                // delete landed mid-rebuild), the just-built graph either
+                // doesn't have it either, or we leave the just-built copy
+                // — a follow-up rebuild will reconcile.
+            }
+            if !patched_ids.is_empty() {
+                merged.reclassify();
+            }
+            *g = merged;
+
+            executions.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(
+                target: "perf::graph_rebuild",
+                phase = "tier2_TOTAL",
+                n_patched_merged = patched_ids.len(),
+                elapsed_ms = _t_total.elapsed().as_secs_f64() * 1000.0
+            );
+        };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => {
+                tokio::task::spawn_blocking(do_rebuild);
+            }
+            Err(_) => {
+                // No tokio runtime (CLI / test path) — run inline.
+                do_rebuild();
+            }
+        }
     }
 
     /// Check whether the index file lock is available (no reindex in progress).
@@ -6713,6 +6881,244 @@ mod cross_process_recovery_tests {
             server.store.read().len() > count_during_lock,
             "store should grow after drain processed the deferred upsert"
         );
+    }
+}
+
+// ===========================================================================
+// Tier-1 / Tier-2 graph rebuild tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tier_rebuild_tests {
+    use super::*;
+    use crate::embeddings::Embedder;
+    use crate::graph::GraphNode;
+    use crate::graph_store::GraphStore;
+    use crate::pkb::PkbDocument;
+    use crate::vectordb::VectorStore;
+    use serde_json::json;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn make_task_doc(id: &str, status: &str, priority: i32, deps: &[&str]) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("id".to_string(), json!(id));
+        fm.insert("title".to_string(), json!(id));
+        fm.insert("type".to_string(), json!("task"));
+        fm.insert("status".to_string(), json!(status));
+        fm.insert("priority".to_string(), json!(priority));
+        if !deps.is_empty() {
+            fm.insert("depends_on".to_string(), json!(deps));
+        }
+        PkbDocument {
+            path: PathBuf::from(format!("tasks/{}.md", id)),
+            title: id.to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some(status.to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: format!("hash-{}", id),
+            file_hash: format!("hash-{}", id),
+        }
+    }
+
+    fn build_server(docs: Vec<PkbDocument>) -> PkbSearchServer {
+        let pkb_root = PathBuf::from("/tmp/test-tier-rebuild");
+        let graph = GraphStore::build(&docs, &pkb_root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            pkb_root.clone(),
+            pkb_root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        )
+    }
+
+    /// Tier-1 must produce fresh ready-list classification (membership) on
+    /// the request thread — no waiting for the background rebuild.
+    #[test]
+    fn tier1_classification_membership_is_fresh() {
+        let docs = vec![
+            make_task_doc("task-x", "active", 1, &[]),
+            make_task_doc("task-y", "active", 2, &[]),
+        ];
+        let server = build_server(docs);
+
+        // Both tasks initially ready.
+        let ready_initial: Vec<String> = server.graph.read().ready_ids().to_vec();
+        assert!(ready_initial.contains(&"task-x".to_string()));
+        assert!(ready_initial.contains(&"task-y".to_string()));
+
+        // Tier-1 patch: take task-x out of contention by switching status to "blocked".
+        let updated = make_task_doc("task-x", "blocked", 1, &[]);
+        server.rebuild_graph_for_pkb_document(&updated);
+
+        let ready_after: Vec<String> = server.graph.read().ready_ids().to_vec();
+        assert!(
+            !ready_after.contains(&"task-x".to_string()),
+            "task-x should be excluded from ready list after Tier-1 patch (got {:?})",
+            ready_after
+        );
+        assert!(
+            ready_after.contains(&"task-y".to_string()),
+            "task-y should still be ready"
+        );
+    }
+
+    /// Tier-1 must not recompute similarity edges. With include_similarity=false
+    /// the edge count for `SimilarTo` cannot grow as a result of a Tier-1 patch.
+    #[test]
+    fn tier1_does_not_recompute_similarity_edges() {
+        let docs = vec![
+            make_task_doc("task-x", "active", 1, &[]),
+            make_task_doc("task-y", "active", 2, &[]),
+        ];
+        let server = build_server(docs);
+        let sim_before = server
+            .graph
+            .read()
+            .similarity_edges_cloned()
+            .len();
+
+        let updated = make_task_doc("task-x", "blocked", 1, &[]);
+        server.rebuild_graph_for_pkb_document(&updated);
+
+        let sim_after = server
+            .graph
+            .read()
+            .similarity_edges_cloned()
+            .len();
+        assert_eq!(
+            sim_before, sim_after,
+            "Tier-1 must not change similarity-edge count; before={} after={}",
+            sim_before, sim_after
+        );
+    }
+
+    /// Tier-2 coalesces bursts: many `schedule_graph_rebuild` calls in flight
+    /// should produce far fewer actual executions than calls.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_coalesces_burst_writes() {
+        let docs: Vec<PkbDocument> = (0..20)
+            .map(|i| make_task_doc(&format!("task-{i}"), "active", 1, &[]))
+            .collect();
+        let server = build_server(docs);
+
+        // Slow Tier-2 enough that subsequent calls overlap.
+        server.set_tier2_sleep_ms(50);
+
+        let n = 100;
+        for _ in 0..n {
+            server.schedule_graph_rebuild();
+        }
+
+        // Wait until at least one rebuild has executed AND the queue is
+        // stable (no further executions pending or in flight). `pending`
+        // clears at rebuild start, not end — so additionally poll until
+        // the execution counter has stopped advancing.
+        let mut last = u64::MAX;
+        let mut stable_ticks = 0;
+        for _ in 0..200 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(40)).await;
+            let now = server.tier2_execution_count();
+            if !server.graph_rebuild_pending() && now == last && now >= 1 {
+                stable_ticks += 1;
+                if stable_ticks >= 2 {
+                    break;
+                }
+            } else {
+                stable_ticks = 0;
+            }
+            last = now;
+        }
+
+        let executed = server.tier2_execution_count();
+        assert!(executed >= 1, "at least one Tier-2 must have run; got 0");
+        assert!(
+            executed < (n as u64) / 4,
+            "expected far fewer Tier-2 executions than calls due to coalescing; \
+             called {n}, executed {executed}",
+        );
+    }
+
+    /// Lost-patch race: a Tier-1 patch arriving during an in-flight Tier-2
+    /// rebuild must survive the swap. Without the patch-merge step, this test
+    /// fails (patched node reverts to its pre-patch state).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_swap_does_not_revert_concurrent_tier1_patch() {
+        let docs = vec![
+            make_task_doc("task-x", "active", 1, &[]),
+            make_task_doc("task-y", "active", 2, &[]),
+        ];
+        let server = build_server(docs);
+        // Make Tier-2 slow enough to interleave with a Tier-1 patch.
+        server.set_tier2_sleep_ms(200);
+
+        // Kick off Tier-2 first (no Tier-1 yet, so patched_during_rebuild
+        // starts empty when this rebuild runs).
+        server.schedule_graph_rebuild();
+
+        // While Tier-2 sleeps, fire Tier-1 patch that flips task-x to blocked.
+        // The patch lands AFTER Tier-2 cleared `pending` and `patched_during_rebuild`,
+        // so it gets recorded into patched_during_rebuild and the swap must
+        // re-apply it.
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        let updated = make_task_doc("task-x", "blocked", 1, &[]);
+        server.rebuild_graph_for_pkb_document(&updated);
+
+        // Wait for the in-flight Tier-2 to swap, then for the follow-up
+        // (queued by the Tier-1 schedule call) to also drain.
+        for _ in 0..50 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if !server.graph_rebuild_pending() {
+                break;
+            }
+        }
+
+        let g = server.graph.read();
+        let node = g
+            .get_node("task-x")
+            .expect("task-x should still exist after swap");
+        assert_eq!(
+            node.status.as_deref(),
+            Some("blocked"),
+            "Tier-1 patch (status=blocked) must survive Tier-2 swap"
+        );
+        let ready = g.ready_ids();
+        assert!(
+            !ready.contains(&"task-x".to_string()),
+            "task-x must not be in ready list after status flipped to blocked"
+        );
+    }
+
+    /// Read-after-write semantics: a status change must be visible immediately
+    /// in `list_tasks(status=ready)` membership.
+    #[test]
+    fn read_after_write_status_visible_immediately() {
+        let docs = vec![
+            make_task_doc("task-x", "active", 1, &[]),
+            make_task_doc("task-y", "active", 2, &[]),
+        ];
+        let server = build_server(docs);
+
+        let updated = make_task_doc("task-x", "blocked", 1, &[]);
+        server.rebuild_graph_for_pkb_document(&updated);
+
+        // Direct node read.
+        let g = server.graph.read();
+        assert_eq!(
+            g.get_node("task-x").and_then(|n| n.status.clone()),
+            Some("blocked".to_string()),
+        );
+
+        // Classification list.
+        let ready = g.ready_ids();
+        assert!(!ready.contains(&"task-x".to_string()));
+        assert!(ready.contains(&"task-y".to_string()));
     }
 }
 

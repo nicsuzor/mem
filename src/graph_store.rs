@@ -87,7 +87,7 @@ impl GraphStore {
     /// 6. Classify ready/blocked tasks
     pub fn build(docs: &[PkbDocument], pkb_root: &Path) -> Self {
         let nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
-        Self::build_internal(nodes, pkb_root, true, None)
+        Self::build_internal(nodes, pkb_root, true, None, true)
     }
 
     /// Build a complete graph from parsed PKB documents, including similarity edges.
@@ -110,7 +110,7 @@ impl GraphStore {
         embeddings_by_path: &HashMap<String, Vec<f32>>,
     ) -> Self {
         let nodes: Vec<GraphNode> = docs.par_iter().map(GraphNode::from_pkb_document).collect();
-        Self::build_internal(nodes, pkb_root, true, Some(embeddings_by_path))
+        Self::build_internal(nodes, pkb_root, true, Some(embeddings_by_path), true)
     }
 
     /// Build from a directory: scan, parse (with relative paths), build graph.
@@ -130,7 +130,7 @@ impl GraphStore {
     /// directory walk.
     pub fn rebuild_from_nodes(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
         let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
-        Self::build_internal(nodes_vec, pkb_root, true, None)
+        Self::build_internal(nodes_vec, pkb_root, true, None, true)
     }
 
     /// Fast incremental rebuild: skips centrality metrics (PageRank, betweenness).
@@ -141,7 +141,7 @@ impl GraphStore {
     /// are preserved (they drift slowly until the next full rebuild).
     pub fn rebuild_from_nodes_fast(nodes: HashMap<String, GraphNode>, pkb_root: &Path) -> Self {
         let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
-        Self::build_internal(nodes_vec, pkb_root, false, None)
+        Self::build_internal(nodes_vec, pkb_root, false, None, true)
     }
 
     /// Fast incremental rebuild with similarity edges. Convenience wrapper
@@ -165,18 +165,40 @@ impl GraphStore {
         embeddings_by_path: &HashMap<String, Vec<f32>>,
     ) -> Self {
         let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
-        Self::build_internal(nodes_vec, pkb_root, false, Some(embeddings_by_path))
+        Self::build_internal(nodes_vec, pkb_root, false, Some(embeddings_by_path), true)
+    }
+
+    /// Tier-1 incremental rebuild: runs the full O(V+E) pipeline but skips the
+    /// O(N²) similarity-edge step. Existing `SimilarTo` edges from the prior
+    /// graph are carried over so query surfaces that depend on them remain
+    /// usable until a follow-up Tier-2 rebuild refreshes them.
+    ///
+    /// Used on the synchronous `update_task` write path so the handler returns
+    /// in tens of ms while ready/blocked classification, urgency, downstream
+    /// metrics, and target ancestors stay fresh.
+    pub fn rebuild_from_nodes_skip_similarity(
+        nodes: HashMap<String, GraphNode>,
+        pkb_root: &Path,
+        prior_similarity_edges: Vec<Edge>,
+    ) -> Self {
+        let nodes_vec: Vec<GraphNode> = nodes.into_values().collect();
+        let mut g = Self::build_internal(nodes_vec, pkb_root, false, None, false);
+        g.edges.extend(prior_similarity_edges);
+        g
     }
 
     /// Internal helper to build GraphStore from a vector of nodes.
     ///
     /// When `include_centrality` is false, PageRank and betweenness computation
     /// are skipped — any pre-existing values on the input nodes are retained.
+    /// When `include_similarity` is false, similarity-edge computation is
+    /// skipped (Tier-1 incremental rebuild path).
     fn build_internal(
         mut nodes: Vec<GraphNode>,
         pkb_root: &Path,
         include_centrality: bool,
         opt_embeddings: Option<&HashMap<String, Vec<f32>>>,
+        include_similarity: bool,
     ) -> Self {
         // 2. Build lookup maps
         // Node paths may be relative — reconstruct absolute for canonicalize & link resolution.
@@ -346,10 +368,16 @@ impl GraphStore {
         tracing::debug!(target: "perf::graph_rebuild", phase = "target_ancestors", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 9b. Compute similarity edges if an embedding snapshot is provided.
-        // threshold 0.85 as default for materialised edges
+        // threshold 0.85 as default for materialised edges.
+        // Tier-1 callers pass include_similarity=false to skip this O(N²)
+        // step; they merge prior similarity edges in afterwards.
         let _t_sim = std::time::Instant::now();
-        let similarity_edges = if let Some(snapshot) = opt_embeddings {
-            compute_similarity_edges(&nodes, &edges, snapshot, 0.85)
+        let similarity_edges = if include_similarity {
+            if let Some(snapshot) = opt_embeddings {
+                compute_similarity_edges(&nodes, &edges, snapshot, 0.85)
+            } else {
+                vec![]
+            }
         } else {
             vec![]
         };
@@ -424,6 +452,46 @@ impl GraphStore {
         self.edges.len()
     }
 
+    /// Extract a clone of the existing `SimilarTo` edges. Used by the Tier-1
+    /// rebuild path to carry over prior similarity edges while skipping the
+    /// O(N²) recomputation.
+    pub fn similarity_edges_cloned(&self) -> Vec<Edge> {
+        self.edges
+            .iter()
+            .filter(|e| matches!(e.edge_type, EdgeType::SimilarTo))
+            .cloned()
+            .collect()
+    }
+
+    /// Replace `self.nodes[id]` with the supplied node, dropping any pre-existing
+    /// node mapped to the same path. Used by Tier-2 swap to re-apply node
+    /// patches that landed during the in-flight rebuild.
+    pub fn replace_node(&mut self, node: GraphNode) {
+        let abs = node.canonical_abs_path.clone();
+        if let Some(ref new_path) = abs {
+            self.nodes.retain(|_id, existing| {
+                existing.canonical_abs_path.as_ref() != Some(new_path)
+                    || existing.id == node.id
+            });
+        }
+        self.nodes.insert(node.id.clone(), node);
+    }
+
+    /// Re-run classification (ready / blocked / roots) from the current nodes
+    /// and update self. Cheap O(V+E). Called by Tier-2 swap after merging
+    /// patched nodes.
+    pub fn reclassify(&mut self) {
+        let (ready, blocked, roots) = classify_tasks(&self.nodes);
+        self.ready = ready;
+        self.blocked = blocked;
+        self.roots = roots;
+    }
+
+    /// Direct access to the node map (for Tier-2 patch-merge).
+    pub fn nodes_map(&self) -> &HashMap<String, GraphNode> {
+        &self.nodes
+    }
+
     pub fn get_edges_for(&self, id: &str) -> Vec<&Edge> {
         self.edges
             .iter()
@@ -459,6 +527,11 @@ impl GraphStore {
             .iter()
             .filter_map(|id| self.nodes.get(id))
             .collect()
+    }
+
+    /// Direct access to the ready-task ID list (in classification order).
+    pub fn ready_ids(&self) -> &[String] {
+        &self.ready
     }
 
     pub fn blocked_tasks(&self) -> Vec<&GraphNode> {

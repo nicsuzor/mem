@@ -95,8 +95,15 @@ src/
 ### Tool dispatch
 `mcp_server.rs` uses a manual `match` in `call_tool()` mapping tool name strings to `handle_*` methods. Tool registrations are in `list_tools()` as a `Vec<Tool>`. Both must stay in sync.
 
-### Graph rebuild
-After any CRUD operation, `rebuild_graph()` rebuilds the full `GraphStore` from disk. The graph is **in-memory only** — it does not persist; it is reconstructed at startup via `GraphStore::build_from_directory` (~300 ms for a typical PKB). Only the vector store persists to `{db_path}` (bincode) plus `{db_path}.lock` for the cross-process advisory lock.
+### Graph rebuild — two-tier
+Single-doc CRUD operations use a **two-tier rebuild** to keep the write path fast.
+
+- **Tier 1 (synchronous, on the request thread)**: `rebuild_graph_for_pkb_document` calls `GraphStore::rebuild_from_nodes_skip_similarity`, which runs the full O(V+E) pipeline (downstream metrics, urgency, focus scores, target ancestors, reachable set, classify, divergence, resolution map) but **skips** the O(N²) `compute_similarity_edges` step. Prior `SimilarTo` edges are carried over. Direct reads after a write are fresh — including `list_tasks(status=ready)` membership *and* ordering. Status, parent, deps, urgency, downstream metrics: all up-to-date.
+- **Tier 2 (background, coalesced)**: `schedule_graph_rebuild` dispatches a full `rebuild_from_nodes_fast_with_embeddings` (including similarity edges) to `tokio::task::spawn_blocking`. A `graph_rebuild_pending: AtomicBool` coalesces burst writes to a single trailing rebuild. Patched node IDs are tracked in `patched_during_rebuild` and re-applied on swap, then `classify_tasks` re-runs to keep ordering consistent (avoids the lost-patch race that would otherwise revert a Tier-1 patch landing during an in-flight Tier-2).
+
+**What lags 1–3s after Tier 1 returns**: only `SimilarTo` edges. Metadata-only writes (status flip, no body change) leave embeddings unchanged → similarity edges are invariant → no observable lag.
+
+Bulk paths (`rebuild_graph()`, batch finalize, reindex) still run the full synchronous pipeline. The graph is **in-memory only** — it does not persist; it is reconstructed at startup via `GraphStore::build_from_directory` (~300 ms for a typical PKB). Only the vector store persists to `{db_path}` (bincode) plus `{db_path}.lock` for the cross-process advisory lock.
 
 ### Flexible ID resolution
 `GraphStore::resolve(query)` tries: exact ID match -> case-insensitive resolution map (id, task_id, filename stem, title, permalink). Used by most task/document tools.

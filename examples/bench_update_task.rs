@@ -169,6 +169,43 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\n=== Results (n={}, frontmatter-only update) ===", totals.len());
     print_stats("update_task TOTAL (wall)", totals);
+
+    // Wait for any queued Tier-2 background rebuild(s) to drain so we can
+    // report coalescing effectiveness honestly.
+    let exec_at_loop_end = server.tier2_execution_count();
+    let pending_at_loop_end = server.graph_rebuild_pending();
+    let mut last = u64::MAX;
+    let mut stable_ticks = 0;
+    let drain_start = Instant::now();
+    for _ in 0..600 {
+        // ≤ 30s total
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        let now = server.tier2_execution_count();
+        if !server.graph_rebuild_pending() && now == last {
+            stable_ticks += 1;
+            if stable_ticks >= 3 {
+                break;
+            }
+        } else {
+            stable_ticks = 0;
+        }
+        last = now;
+    }
+    let drain_ms = drain_start.elapsed().as_secs_f64() * 1000.0;
+
+    println!(
+        "\n=== Tier-2 background rebuild ===\n  \
+         pending at end of loop:        {pending_at_loop_end}\n  \
+         executions at end of loop:     {exec_at_loop_end}\n  \
+         total executions after drain:  {}\n  \
+         drain wall time:               {:.1}ms\n  \
+         coalescing ratio:              {} writes / {} rebuilds",
+        server.tier2_execution_count(),
+        drain_ms,
+        n + warmup,
+        server.tier2_execution_count(),
+    );
+
     println!(
         "\nPer-phase numbers were emitted via tracing at debug level on target perf::*. \
          Re-run with RUST_LOG=perf::update_task=debug,perf::graph_rebuild=debug,perf::vector=debug \
