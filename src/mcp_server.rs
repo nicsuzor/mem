@@ -425,8 +425,7 @@ impl PkbSearchServer {
             // during Phase 1, then swap. In the common case `late` is
             // empty and the locked section is just a pointer assignment.
             let mut merged = new_graph;
-            let initial_patched: Vec<String> =
-                patched.lock().iter().cloned().collect();
+            let initial_patched: HashSet<String> = patched.lock().clone();
             let live_initial: Vec<crate::graph::GraphNode> = {
                 let g = graph.read();
                 initial_patched
@@ -444,11 +443,10 @@ impl PkbSearchServer {
             }
 
             let mut g = graph.write();
-            let current_patched: Vec<String> =
-                patched.lock().iter().cloned().collect();
-            let late: Vec<String> = current_patched
-                .into_iter()
-                .filter(|id| !initial_patched.contains(id))
+            let late: Vec<String> = patched.lock()
+                .iter()
+                .filter(|id| !initial_patched.contains(*id))
+                .cloned()
                 .collect();
             for id in &late {
                 if let Some(live_node) = g.nodes_map().get(id).cloned() {
