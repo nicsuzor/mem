@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.59](https://github.com/nicsuzor/mem/compare/v0.3.58...v0.3.59) - 2026-05-10
+
+### Performance Improvements
+
+- extend MCP keep-alive timeout ([#356](https://github.com/nicsuzor/mem/pull/356))
+- improve latency on hot paths
+- improve latency with cache
+
 ## [0.3.58](https://github.com/nicsuzor/mem/compare/v0.3.57...v0.3.58) - 2026-05-08
 
 ### Other
