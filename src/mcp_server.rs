@@ -54,11 +54,29 @@ pub struct PkbSearchServer {
     /// no-op for concurrent callers — they'll see the drained state on
     /// their next handler invocation if the drain hasn't completed yet.
     drain_in_progress: Arc<Mutex<()>>,
-    /// True when a background graph rebuild (Tier 2) is already scheduled.
-    /// Coalesces burst writes: subsequent calls to `schedule_graph_rebuild`
-    /// while a rebuild is in flight are no-ops; the in-flight rebuild
-    /// captures the latest in-memory state when it runs.
+    /// True when our own background save thread holds (or is about to
+    /// acquire) the cross-process index file lock. Used by
+    /// `try_upsert_document` and `maybe_drain_deferred` to distinguish
+    /// "lock held by an external `pkb reindex` process" (we should defer
+    /// our in-memory upsert and reload from disk when they're done) from
+    /// "lock held by our own save thread" (the in-memory state is the
+    /// source of truth — we should NOT defer or reload). Without this
+    /// distinction, every iteration that overlaps a self-save triggered a
+    /// 1–2s full store reload on the *next* iteration.
+    save_in_flight: Arc<std::sync::atomic::AtomicBool>,
+    /// True when a background graph rebuild (Tier 2) worker has been
+    /// spawned and is either running or in its post-iteration check. Used
+    /// only to gate spawning; consumers polling for "is a rebuild
+    /// outstanding?" should look at `graph_rebuild_dirty`.
     graph_rebuild_pending: Arc<std::sync::atomic::AtomicBool>,
+    /// True when at least one write has landed since the last Tier-2
+    /// rebuild started. The worker drains this flag inside its loop: if
+    /// dirty, run another iteration; if clean, exit. This guarantees at
+    /// most one Tier-2 in flight + at most one queued (the "rerun"
+    /// embodied by the dirty flag), eliminating CPU/lock contention from
+    /// multiple concurrent Tier-2s seen with the prior clear-at-start
+    /// pattern.
+    graph_rebuild_dirty: Arc<std::sync::atomic::AtomicBool>,
     /// Node IDs that received a Tier-1 patch since the most recent Tier-2
     /// rebuild started reading state. Re-applied on Tier-2 swap so concurrent
     /// patches aren't reverted by the swap. Cleared at the start of each
@@ -90,10 +108,12 @@ impl PkbSearchServer {
             graph,
             stale_count: 0,
             save_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            save_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             deferred_paths: Arc::new(Mutex::new(std::collections::HashSet::new())),
             lock_was_held: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             drain_in_progress: Arc::new(Mutex::new(())),
             graph_rebuild_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            graph_rebuild_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             patched_during_rebuild: Arc::new(Mutex::new(std::collections::HashSet::new())),
             #[cfg(test)]
             tier2_sleep_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -322,21 +342,37 @@ impl PkbSearchServer {
     }
 
     /// Schedule a background (Tier-2) graph rebuild that recomputes
-    /// similarity edges. Coalesces burst writes via `graph_rebuild_pending`
-    /// so a flurry of `update_task` calls produces at most one trailing
-    /// rebuild.
+    /// similarity edges. Coalesces burst writes so a flurry of
+    /// `update_task` calls produces at most ONE in-flight rebuild plus
+    /// at most ONE queued follow-up.
     ///
-    /// Concurrency model:
-    ///   - `pending` is cleared *before* the rebuild reads state, so a
-    ///     Tier-1 update arriving during the rebuild flips `pending=true`
-    ///     again and a follow-up rebuild is guaranteed.
-    ///   - `patched_during_rebuild` is drained at the start of the rebuild
-    ///     (after clearing `pending`), so it captures only IDs landing
-    ///     during this rebuild's read-to-swap window. On swap, those
-    ///     nodes' live fields are merged into the new graph so the swap
-    ///     never reverts a concurrent Tier-1 patch.
+    /// Concurrency model (single-worker / dirty-flag):
+    ///   - Every call sets `graph_rebuild_dirty=true`. The worker reads
+    ///     and clears this flag at the *start* of each iteration; if it
+    ///     was set, it runs another rebuild; if clear, the worker exits.
+    ///     This means writes that arrive during a rebuild are coalesced
+    ///     into a single follow-up iteration, regardless of count.
+    ///   - `graph_rebuild_pending` gates worker *spawning*: only the
+    ///     caller that flips it false→true spawns the closure. All other
+    ///     callers just mark dirty. The worker clears pending only after
+    ///     it has observed dirty=false, with a re-check to avoid the
+    ///     classic check-then-store race.
+    ///   - `patched_during_rebuild` is drained at the start of each
+    ///     iteration (after consuming `dirty`), so it captures only IDs
+    ///     landing during this iteration's read-to-swap window.
+    ///   - Patch-merge runs in two phases: most of the work (replace_node
+    ///     for IDs known at read-end + reclassify) happens *without* the
+    ///     graph write lock; only the swap (and a fold of any late
+    ///     patches that landed during phase 1) holds the write lock.
     fn schedule_graph_rebuild(&self) {
         use std::sync::atomic::Ordering;
+
+        // Mark there's work to do. If a worker is already running, it
+        // will pick this up on its next loop iteration.
+        self.graph_rebuild_dirty.store(true, Ordering::SeqCst);
+
+        // Try to claim the worker slot. Only the caller that flips
+        // pending false→true is responsible for spawning.
         if self
             .graph_rebuild_pending
             .swap(true, Ordering::SeqCst)
@@ -348,19 +384,19 @@ impl PkbSearchServer {
         let store = self.store.clone();
         let pkb_root = self.pkb_root.clone();
         let pending = self.graph_rebuild_pending.clone();
+        let dirty = self.graph_rebuild_dirty.clone();
         let patched = self.patched_during_rebuild.clone();
         let executions = self.tier2_executions.clone();
         #[cfg(test)]
         let sleep_ms = self.tier2_sleep_ms.clone();
 
-        let do_rebuild = move || {
+        let do_rebuild_once = move || {
             let _t_total = std::time::Instant::now();
 
-            // Drain the patch tracker and clear pending BEFORE reading state.
-            // Order matters: patches arriving after this point belong to a
-            // future rebuild, not this one.
+            // Drain the patch tracker. Patches arriving after this point
+            // are recorded for the *next* iteration (the dirty flag will
+            // be set by their schedule_graph_rebuild call).
             patched.lock().clear();
-            pending.store(false, Ordering::SeqCst);
 
             let snapshot = store.read().averaged_embeddings();
             let nodes = graph.read().nodes_cloned();
@@ -377,13 +413,42 @@ impl PkbSearchServer {
                 }
             }
 
-            // Patch-merge: any node patched between our read and now must
-            // have its live fields preserved. We replace the just-built
-            // node with the live one and re-classify.
-            let mut g = graph.write();
-            let patched_ids: Vec<String> = patched.lock().iter().cloned().collect();
+            // Patch-merge in two phases to minimise the write-lock window.
+            //
+            // Phase 1 (no graph write lock): snapshot the patches that
+            // landed between our read and now, clone the live state of
+            // those nodes under a brief read lock, fold them into the
+            // local `merged` graph, and reclassify. This is the expensive
+            // step (reclassify is O(V+E)) but no Tier-1 caller is blocked.
+            //
+            // Phase 2 (write lock): fold any *late* patches that landed
+            // during Phase 1, then swap. In the common case `late` is
+            // empty and the locked section is just a pointer assignment.
             let mut merged = new_graph;
-            for id in &patched_ids {
+            let initial_patched: HashSet<String> = patched.lock().clone();
+            let live_initial: Vec<crate::graph::GraphNode> = {
+                let g = graph.read();
+                initial_patched
+                    .iter()
+                    .filter_map(|id| g.nodes_map().get(id).cloned())
+                    .collect()
+            };
+            for live_node in live_initial {
+                merged.replace_node(live_node);
+            }
+            let mut reclassified = false;
+            if !initial_patched.is_empty() {
+                merged.reclassify();
+                reclassified = true;
+            }
+
+            let mut g = graph.write();
+            let late: Vec<String> = patched.lock()
+                .iter()
+                .filter(|id| !initial_patched.contains(*id))
+                .cloned()
+                .collect();
+            for id in &late {
                 if let Some(live_node) = g.nodes_map().get(id).cloned() {
                     merged.replace_node(live_node);
                 }
@@ -392,27 +457,67 @@ impl PkbSearchServer {
                 // doesn't have it either, or we leave the just-built copy
                 // — a follow-up rebuild will reconcile.
             }
-            if !patched_ids.is_empty() {
+            if !late.is_empty() {
                 merged.reclassify();
+                reclassified = true;
             }
             *g = merged;
+            drop(g);
+            let n_merged = initial_patched.len() + late.len();
+            let _ = reclassified;
 
             executions.fetch_add(1, Ordering::Relaxed);
             tracing::debug!(
                 target: "perf::graph_rebuild",
                 phase = "tier2_TOTAL",
-                n_patched_merged = patched_ids.len(),
+                n_patched_merged = n_merged,
+                n_late = late.len(),
                 elapsed_ms = _t_total.elapsed().as_secs_f64() * 1000.0
             );
         };
 
+        // Worker loop: run rebuilds while dirty stays set. The order
+        // (consume dirty → run → re-check) is the key invariant: a write
+        // arriving after we consume `dirty` and before we finish always
+        // re-sets `dirty`, so the next loop iteration picks it up. After
+        // observing dirty=clean we release `pending`; a subsequent write
+        // will then spawn a fresh worker.
+        let worker = move || {
+            loop {
+                // Consume the dirty flag for this iteration.
+                if !dirty.swap(false, Ordering::SeqCst) {
+                    // Nothing to do. Release the worker slot so the next
+                    // schedule call can spawn a worker.
+                    pending.store(false, Ordering::SeqCst);
+                    // Re-check: a write may have set dirty after we
+                    // consumed it but before we cleared pending. If so,
+                    // try to reclaim the slot and continue. If another
+                    // caller already grabbed it, we're done.
+                    if dirty.load(Ordering::SeqCst)
+                        && pending
+                            .compare_exchange(
+                                false,
+                                true,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            )
+                            .is_ok()
+                    {
+                        continue;
+                    }
+                    return;
+                }
+                do_rebuild_once();
+            }
+        };
+
         match tokio::runtime::Handle::try_current() {
             Ok(_) => {
-                tokio::task::spawn_blocking(do_rebuild);
+                tokio::task::spawn_blocking(worker);
             }
             Err(_) => {
                 // No tokio runtime (CLI / test path) — run inline.
-                do_rebuild();
+                worker();
             }
         }
     }
@@ -427,6 +532,23 @@ impl PkbSearchServer {
             },
             Err(_) => false,
         }
+    }
+
+    /// True when an *external* process (e.g. `pkb reindex`) holds the
+    /// cross-process index file lock. False when the lock is available OR
+    /// when our own background save thread is the one holding it. This is
+    /// the predicate the upsert path should consult when deciding whether
+    /// to defer in-memory writes — deferring on a self-save triggers an
+    /// expensive disk reload on the next call (the thing the
+    /// `save_in_flight` flag exists to avoid).
+    fn external_lock_held(&self) -> bool {
+        if self
+            .save_in_flight
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return false;
+        }
+        !self.index_lock_available()
     }
 
     /// Save the vector store to disk asynchronously, off the write critical path.
@@ -449,12 +571,19 @@ impl PkbSearchServer {
         let store = self.store.clone();
         let db_path = self.db_path.clone();
         let pending = self.save_pending.clone();
+        let in_flight = self.save_in_flight.clone();
 
         let do_save = move || {
-            // Clear the flag BEFORE serializing: any concurrent write that
-            // arrives during serialize will schedule a follow-up save (rather
-            // than be silently dropped).
+            // Mark self-save in flight BEFORE acquiring the file lock.
+            // Concurrent upsert calls observing a non-available file lock
+            // will see this flag and skip the defer-and-reload path that
+            // would otherwise trigger a 1–2s store reload on the next call.
+            in_flight.store(true, Ordering::SeqCst);
+            // Clear save_pending BEFORE serializing: any concurrent write
+            // that arrives during serialize will schedule a follow-up save
+            // (rather than be silently dropped).
             pending.store(false, Ordering::SeqCst);
+
             match VectorStore::acquire_lock(&db_path) {
                 Ok(mut lock) => match lock.try_write() {
                     Ok(_guard) => {
@@ -475,6 +604,8 @@ impl PkbSearchServer {
                     tracing::error!("Failed to open lock file for save: {e}");
                 }
             }
+
+            in_flight.store(false, Ordering::SeqCst);
         };
 
         // Offload serialize + file I/O to a blocking pool thread so the MCP
@@ -519,8 +650,11 @@ impl PkbSearchServer {
     /// will pick up newly-deferred entries when it iterates.
     fn maybe_drain_deferred(&self) {
         // Fast path: lock is available, nothing was deferred, nothing to do.
-        let lock_now_available = self.index_lock_available();
-        if !lock_now_available {
+        // We treat a lock held by our own save thread as "available" — only
+        // an *external* holder should drive `lock_was_held=true` (which in
+        // turn triggers a full disk reload below).
+        let externally_locked = self.external_lock_held();
+        if externally_locked {
             self.lock_was_held.store(true, Ordering::Relaxed);
             return;
         }
@@ -538,7 +672,7 @@ impl PkbSearchServer {
         };
 
         // Re-check now that we hold the drain lock.
-        if !self.index_lock_available() {
+        if self.external_lock_held() {
             self.lock_was_held.store(true, Ordering::Relaxed);
             return;
         }
@@ -620,7 +754,12 @@ impl PkbSearchServer {
         // reindex's state and drain anything queued.
         self.maybe_drain_deferred();
 
-        if !self.index_lock_available() {
+        // Only defer when an *external* process holds the file lock. When
+        // our own background save thread is the holder, the in-memory
+        // state is the source of truth — we should proceed with the
+        // upsert, not defer (and not flag `lock_was_held=true`, which
+        // would trigger a needless disk reload on the next call).
+        if self.external_lock_held() {
             // Defer until the lock is released. Convert to absolute path so
             // the drain step can re-parse without another resolution step.
             let abs = if doc.path.is_absolute() {
