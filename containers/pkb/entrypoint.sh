@@ -32,6 +32,48 @@ else
     echo "WARNING: /run/secrets/gh_pat not present — git operations will use BRAIN_REPO_URL credentials" >&2
 fi
 
+# PKB_ROLE selects between the MCP server (default) and a sync-only sidecar.
+# The sidecar (PKB_ROLE=sync) shares the brain volume with the server and
+# runs the periodic git-sync loop, decoupling sync failures from the
+# server's lifecycle. See dotfiles compose `pkb-sync` service.
+PKB_ROLE="${PKB_ROLE:-server}"
+
+if [ "$PKB_ROLE" = "sync" ]; then
+    # Sidecar: wait for the server to have cloned the brain repo, then
+    # loop git-sync forever. The server owns first-boot clone semantics
+    # (it does the startup sync below in server mode) — the sidecar only
+    # takes over the ongoing periodic sync.
+    while [ ! -d "$ACA_DATA/.git" ]; do
+        echo "[pkb-sync] waiting for pkb server to initialise $ACA_DATA ..."
+        sleep 5
+    done
+
+    # Register the task-yaml merge driver in this clone too — git-sync.sh's
+    # pull invokes it, and merge.<name>.driver is per-clone config.
+    git -C "$ACA_DATA" config merge.task-yaml.driver \
+        './.git-merge-task-yaml.sh %O %A %B %P'
+
+    SYNC_PERIOD="${SYNC_PERIOD:-60}"
+    MAX_FAILURES="${SYNC_MAX_FAILURES:-5}"
+    FAIL_COUNT=0
+    echo "[pkb-sync] starting loop (period=${SYNC_PERIOD}s, max_failures=${MAX_FAILURES})"
+    while true; do
+        sleep "$SYNC_PERIOD"
+        if /usr/local/bin/git-sync.sh "$ACA_DATA" 2>&1 | sed 's/^/[git-sync] /'; then
+            FAIL_COUNT=0
+        else
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            echo "[git-sync] ERROR: sync failed ($FAIL_COUNT/$MAX_FAILURES) — DATA AT RISK" >&2
+            if [ "$FAIL_COUNT" -ge "$MAX_FAILURES" ]; then
+                echo "[git-sync] FATAL: $MAX_FAILURES consecutive sync failures — exiting" >&2
+                exit 1
+            fi
+        fi
+    done
+fi
+
+# --- server role (default) ---
+
 # Clone brain repo if not already present
 if [ ! -d "$ACA_DATA/.git" ]; then
     echo "Cloning brain repo from $BRAIN_REPO_URL ..."
@@ -50,28 +92,10 @@ git -C "$ACA_DATA" config merge.task-yaml.driver \
 
 # Sync on startup — commits any stranded changes from prior run, pulls, pushes.
 # If this fails, container does not start. (P#8: no fallbacks)
+# Kept in server mode for clean first-boot semantics; ongoing sync is owned
+# by the pkb-sync sidecar (PKB_ROLE=sync).
 echo "Syncing brain repo on startup..."
 /usr/local/bin/git-sync.sh "$ACA_DATA"
-
-# Background sync loop (every 60s)
-# Persistent failure kills the container so problems are visible.
-(
-    FAIL_COUNT=0
-    MAX_FAILURES=5
-    while true; do
-        sleep 60
-        if /usr/local/bin/git-sync.sh "$ACA_DATA" 2>&1 | sed 's/^/[git-sync] /'; then
-            FAIL_COUNT=0
-        else
-            FAIL_COUNT=$((FAIL_COUNT + 1))
-            echo "[git-sync] ERROR: sync failed ($FAIL_COUNT/$MAX_FAILURES) — DATA AT RISK" >&2
-            if [ "$FAIL_COUNT" -ge "$MAX_FAILURES" ]; then
-                echo "[git-sync] FATAL: $MAX_FAILURES consecutive sync failures — killing container" >&2
-                kill 1
-            fi
-        fi
-    done
-) &
 
 # Reindex in background so MCP serves immediately — otherwise reindex
 # blocks the port, healthcheck fails after start_period, autoheal kills
