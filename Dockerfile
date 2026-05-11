@@ -16,7 +16,11 @@
 #   - /run/secrets/gh_pat  Docker secret containing the GitHub PAT
 #
 # Exposes :8026 (MCP HTTP). See containers/pkb/entrypoint.sh for the
-# full runtime contract (allowed hosts, reindex policy, sync loop).
+# server runtime contract (allowed hosts, reindex policy).
+#
+# Sync is owned exclusively by the pkb-sync sidecar — same image, but
+# launched with `entrypoint: /usr/local/bin/git-sync-loop.sh` against
+# the shared brain volume. See containers/pkb/git-sync-loop.sh.
 
 FROM debian:bookworm-slim
 
@@ -35,8 +39,9 @@ RUN test -n "$PKB_BINARY_URL" || { echo "ERROR: PKB_BINARY_URL build-arg require
     chmod +x /usr/local/bin/pkb
 
 COPY containers/pkb/git-sync.sh /usr/local/bin/git-sync.sh
+COPY containers/pkb/git-sync-loop.sh /usr/local/bin/git-sync-loop.sh
 COPY containers/pkb/entrypoint.sh /entrypoint.sh
-RUN chmod +x /usr/local/bin/git-sync.sh /entrypoint.sh && \
+RUN chmod +x /usr/local/bin/git-sync.sh /usr/local/bin/git-sync-loop.sh /entrypoint.sh && \
     ACA_DATA=/tmp pkb --version
 
 ENV ACA_DATA=/data/brain
