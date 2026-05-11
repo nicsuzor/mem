@@ -627,6 +627,12 @@ pub fn is_completed(status: Option<&str>) -> bool {
     matches!(status, Some("done") | Some("cancelled"))
 }
 
+/// Returns true when a status closes a node for hierarchy purposes.
+/// Done/cancelled/archived parents cannot receive new children without `force=true`.
+pub fn is_closed_for_hierarchy(status: Option<&str>) -> bool {
+    matches!(status, Some("done") | Some("cancelled") | Some("archived"))
+}
+
 /// Returns the coarse status group (`"active"`, `"blocked"`, or `"completed"`)
 /// for a given status. Note: the `"active"` group name is a coarse bucket
 /// meaning "open work" — it is NOT the retired `active` status value.
