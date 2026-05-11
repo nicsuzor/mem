@@ -2589,14 +2589,17 @@ impl PkbSearchServer {
 
         // Cascade-close open descendants when recursive=true.
         if recursive && !open_descs.is_empty() {
+            let mut desc_updates = std::collections::HashMap::new();
+            desc_updates.insert(
+                "status".to_string(),
+                serde_json::Value::String("done".to_string()),
+            );
             for (_, desc_path) in &open_descs {
-                let mut desc_updates = std::collections::HashMap::new();
-                desc_updates.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("done".to_string()),
-                );
-                if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates) {
+                if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
                     tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
+                } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
+                    self.rebuild_graph_for_pkb_document(&doc);
+                    self.try_upsert_document(&doc);
                 }
             }
         }
@@ -2835,48 +2838,57 @@ impl PkbSearchServer {
         }
 
         // Reject closing a task with open children unless recursive=true.
-        // merge_ready, review, blocked are not truly closed — only done/cancelled are.
-        if status == "done" || status == "cancelled" {
-            let recursive = args
-                .get("recursive")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let open_descs: Vec<(String, std::path::PathBuf)> = graph
-                .open_descendants(&node.id)
-                .into_iter()
-                .filter_map(|desc_id| {
-                    graph.get_node(&desc_id).map(|n| (desc_id, self.abs_path(&n.path)))
-                })
-                .collect();
-            if !open_descs.is_empty() && !recursive {
-                let ids: Vec<&str> = open_descs.iter().map(|(id, _)| id.as_str()).collect();
-                return Err(McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!(
-                        "Cannot release '{}' as '{}': {} open child task(s) still exist: {}. \
-                         Complete or cancel them first, or pass recursive=true to close all descendants.",
-                        id, status, open_descs.len(), ids.join(", ")
-                    )),
-                    data: None,
-                });
-            }
-            if recursive && !open_descs.is_empty() {
-                for (_, desc_path) in &open_descs {
-                    let mut desc_updates = std::collections::HashMap::new();
-                    desc_updates.insert(
-                        "status".to_string(),
-                        serde_json::Value::String(status.to_string()),
-                    );
-                    if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates) {
-                        tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
-                    }
+        // Applies to any status that closes for hierarchy (done, cancelled, archived).
+        let recursive_close_descs: Vec<(String, std::path::PathBuf)> =
+            if crate::graph::is_closed_for_hierarchy(Some(status)) {
+                let recursive = args
+                    .get("recursive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let open_descs: Vec<(String, std::path::PathBuf)> = graph
+                    .open_descendants(&node.id)
+                    .into_iter()
+                    .filter_map(|desc_id| {
+                        graph.get_node(&desc_id).map(|n| (desc_id, self.abs_path(&n.path)))
+                    })
+                    .collect();
+                if !open_descs.is_empty() && !recursive {
+                    let ids: Vec<&str> = open_descs.iter().map(|(id, _)| id.as_str()).collect();
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Cannot release '{}' as '{}': {} open child task(s) still exist: {}. \
+                             Complete or cancel them first, or pass recursive=true to close all descendants.",
+                            id, status, open_descs.len(), ids.join(", ")
+                        )),
+                        data: None,
+                    });
                 }
-            }
-        }
+                if recursive { open_descs } else { vec![] }
+            } else {
+                vec![]
+            };
 
         let abs_path = self.abs_path(&node.path);
         let label = node.label.clone();
         drop(graph);
+
+        // Cascade-close open descendants when recursive=true (after releasing the read lock).
+        if !recursive_close_descs.is_empty() {
+            let mut desc_updates = std::collections::HashMap::new();
+            desc_updates.insert(
+                "status".to_string(),
+                serde_json::Value::String(status.to_string()),
+            );
+            for (_, desc_path) in &recursive_close_descs {
+                if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
+                    tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
+                } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
+                    self.rebuild_graph_for_pkb_document(&doc);
+                    self.try_upsert_document(&doc);
+                }
+            }
+        }
 
         // Build frontmatter updates
         let mut updates = std::collections::HashMap::new();
@@ -4136,21 +4148,21 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        let path = {
+        let (path, canonical_id) = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            self.abs_path(&node.path)
+            (self.abs_path(&node.path), node.id.clone())
         };
 
         // Accept two forms for convenience:
         //   1. Nested: {"id": "...", "updates": {"status": "done"}}
         //   2. Flat:   {"id": "...", "status": "done"}
         // If `updates` is present, it wins. Otherwise collect top-level fields.
-        const ROUTING_KEYS: &[&str] = &["id", "updates"];
+        const ROUTING_KEYS: &[&str] = &["id", "updates", "recursive"];
         let updates: serde_json::Map<String, serde_json::Value> =
             if let Some(nested) = args.get("updates").and_then(|v| v.as_object()) {
                 nested.clone()
@@ -4226,7 +4238,7 @@ impl PkbSearchServer {
                 let open_descs: Vec<(String, std::path::PathBuf)> = {
                     let graph = self.graph.read();
                     graph
-                        .open_descendants(id)
+                        .open_descendants(&canonical_id)
                         .into_iter()
                         .filter_map(|desc_id| {
                             graph.get_node(&desc_id).map(|n| (desc_id, self.abs_path(&n.path)))
@@ -4246,14 +4258,17 @@ impl PkbSearchServer {
                     });
                 }
                 if recursive && !open_descs.is_empty() {
+                    let mut desc_updates = std::collections::HashMap::new();
+                    desc_updates.insert(
+                        "status".to_string(),
+                        serde_json::Value::String(ns.to_string()),
+                    );
                     for (_, desc_path) in &open_descs {
-                        let mut desc_updates = std::collections::HashMap::new();
-                        desc_updates.insert(
-                            "status".to_string(),
-                            serde_json::Value::String(ns.to_string()),
-                        );
-                        if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates) {
+                        if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
                             tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
+                        } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
+                            self.rebuild_graph_for_pkb_document(&doc);
+                            self.try_upsert_document(&doc);
                         }
                     }
                 }
