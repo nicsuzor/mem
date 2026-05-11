@@ -22,7 +22,6 @@ WORKDIR /build
 # Falls back to plain copy if BuildKit isn't enabled (no harm).
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
-COPY models ./models
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
