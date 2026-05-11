@@ -100,12 +100,19 @@ echo "Syncing brain repo on startup..."
 #
 # --allowed-hosts: rmcp 1.5.0 default allowlists loopback only and 403s
 # anything else. Setting --allowed-hosts REPLACES the default, so the
-# list must include every name the server is reached as:
-#   - services-new.stoat-musical.ts.net  external Tailscale clients
-#   - pkb                                 inter-container Docker DNS
-#                                         (overwhelm-dash → pkb:8026)
-#   - localhost / 127.0.0.1 / ::1         healthcheck (curl localhost)
-#   - 100.103.121.51                      Tailscale IP fallback
-# Bare hostnames match any port (rmcp's parse_allowed_authority).
+# list must include every name the server is reached as.
+#
+# Base list (always included): loopback + container DNS — covers
+# healthchecks (curl localhost) and inter-container Docker DNS
+# (overwhelm-dash -> pkb:8026).
+#
+# Deployment-specific names (e.g. external Tailscale hostnames) come
+# in via PKB_EXTRA_HOSTS — comma-separated, set by the docker-compose
+# unit. Bare hostnames match any port (rmcp's parse_allowed_authority).
+ALLOWED_HOSTS="localhost,127.0.0.1,::1,pkb"
+if [ -n "${PKB_EXTRA_HOSTS:-}" ]; then
+    ALLOWED_HOSTS="${ALLOWED_HOSTS},${PKB_EXTRA_HOSTS}"
+fi
+
 exec pkb mcp --http --port 8026 --host 0.0.0.0 \
-  --allowed-hosts services-new.stoat-musical.ts.net,pkb,localhost,127.0.0.1,::1,100.103.121.51
+  --allowed-hosts "$ALLOWED_HOSTS"
