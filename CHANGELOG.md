@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- *(mcp)* `get_task` and `list_tasks` JSON payloads now nest intermediate scoring signals (`criticality`, `urgency`, `downstream_weight`, `scope`, `uncertainty`) under a `signals: {}` object. `focus_score` is the only top-level ranking integer. **Migration**: consumers reading e.g. `task.criticality` must update to `task.signals.criticality`. The overwhelm-dashboard reads these fields and will need a companion update (`task-fad628c6` tracks that surface).
+
 ## [0.3.59](https://github.com/nicsuzor/mem/compare/v0.3.58...v0.3.59) - 2026-05-10
 
 ### Performance Improvements

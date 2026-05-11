@@ -2189,12 +2189,18 @@ impl PkbSearchServer {
             "follow_up_tasks": node.follow_up_tasks,
             "priority": node.priority.unwrap_or(2),
             "effective_priority": node.effective_priority.unwrap_or(node.priority.unwrap_or(2)),
-            "downstream_weight": node.downstream_weight,
+            "focus_score": node.focus_score,
+            "signals": {
+                "criticality": node.criticality,
+                "urgency": node.urgency,
+                "downstream_weight": node.downstream_weight,
+                "scope": node.scope,
+                "uncertainty": node.uncertainty,
+            },
             "stakeholder_exposure": node.stakeholder_exposure,
             "stakeholder": node.stakeholder,
             "waiting_since": node.waiting_since,
             "due": node.due,
-            "focus_score": node.focus_score,
             "effort": node.effort,
             "consequence": node.consequence,
             "severity": node.severity,
@@ -2203,10 +2209,6 @@ impl PkbSearchServer {
             "parse_warnings": node.parse_warnings,
             "days_until_due": days_until_due,
             "urgency_ratio": urgency_ratio,
-            "urgency": node.urgency,
-            "scope": node.scope,
-            "uncertainty": node.uncertainty,
-            "criticality": node.criticality,
         });
 
         let json = serde_json::to_string_pretty(&result).unwrap_or_default();
@@ -3791,25 +3793,27 @@ impl PkbSearchServer {
                         "status": t.status.as_deref().unwrap_or("unknown"),
                         "priority": t.priority.unwrap_or(2),
                         "effective_priority": t.effective_priority.unwrap_or(t.priority.unwrap_or(2)),
+                        "focus_score": t.focus_score,
+                        "signals": {
+                            "criticality": t.criticality,
+                            "urgency": t.urgency,
+                            "downstream_weight": t.downstream_weight,
+                            "scope": t.scope,
+                            "uncertainty": t.uncertainty,
+                        },
                         "project": t.project,
                         "assignee": t.assignee,
                         "modified": t.modified,
                         "tags": t.tags,
-                        "downstream_weight": t.downstream_weight,
                         "parent": t.parent,
                         "depends_on": t.depends_on,
                         "node_type": t.node_type,
-                        "scope": t.scope,
-                        "uncertainty": t.uncertainty,
-                        "criticality": t.criticality,
-                        "urgency": t.urgency,
                         "due": t.due,
                         "effort": t.effort,
                         "consequence": t.consequence,
                         "severity": t.severity,
                         "goal_type": t.goal_type,
                         "edge_template": t.edge_template,
-                        "focus_score": t.focus_score,
                     })
                 })
                 .collect();
@@ -5374,7 +5378,7 @@ impl PkbSearchServer {
             .with_title("Release Task"),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering. JSON output includes `focus_score`: composite ranking signal (integer) combining task priority base, severity bonus (SEV0–4 lexicographic at SEV4), deadline urgency × consequence multiplier, age/staleness bonus for low-priority tasks, downstream weight, stakeholder waiting bonus, and propagated urgency from `contributes_to` edges (Birnbaum-weighted target severity × LST slack). Primary sort key for ready tasks. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
+                "List tasks with smart filtering. JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5397,7 +5401,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON includes `focus_score` — composite ranking signal (integer) combining task priority base, severity bonus (SEV0–4 lexicographic at SEV4), deadline urgency × consequence multiplier, age/staleness bonus for low-priority tasks, downstream weight, stakeholder waiting bonus, and propagated urgency from `contributes_to` edges (Birnbaum-weighted target severity × LST slack). Primary sort key for ready tasks. See projects/aops/specs/pkb/multi-parent.md §7.",
+                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6413,6 +6417,123 @@ mod tests {
             desc.contains("focus_score"),
             "get_task description should mention focus_score, got: {desc}"
         );
+    }
+
+    // ── Payload shape: focus_score top-level, signals nested ──
+
+    #[test]
+    fn test_list_tasks_focus_score_toplevel_signals_nested() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+            .unwrap();
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        let val: serde_json::Value =
+            serde_json::from_str(&text).expect("list_tasks json output should parse");
+        let tasks = val
+            .get("tasks")
+            .and_then(|t| t.as_array())
+            .expect("should have tasks array");
+        assert!(!tasks.is_empty(), "fixture should have ready tasks");
+        for t in tasks {
+            assert!(
+                t.get("focus_score").is_some(),
+                "focus_score must be a top-level field"
+            );
+            let signals = t
+                .get("signals")
+                .and_then(|s| s.as_object())
+                .expect("signals must be a top-level object");
+            for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty"] {
+                assert!(
+                    signals.contains_key(*key),
+                    "signals.{key} must exist under signals, not at top level"
+                );
+                assert!(
+                    t.get(key).is_none(),
+                    "{key} must NOT appear at the top level (belongs in signals)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_task_focus_score_toplevel_signals_nested() {
+        // get_task reads from disk, so we build a self-contained server with
+        // actual files in a dedicated temp directory (separate from the shared
+        // /tmp/test-pkb-project used by other tests to avoid interference).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let task_dir = root.join("tasks");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::write(
+            task_dir.join("task-shape-test.md"),
+            "---\ntitle: Shape Test Task\ntype: task\nstatus: active\nid: task-shape-test\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let doc = PkbDocument {
+            path: PathBuf::from("tasks/task-shape-test.md"),
+            title: "Shape Test Task".to_string(),
+            body: "Body.".to_string(),
+            doc_type: Some("task".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::json!({
+                "title": "Shape Test Task",
+                "type": "task",
+                "status": "active",
+                "id": "task-shape-test",
+            })),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        };
+        let graph = GraphStore::build(&[doc], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let result = server
+            .handle_get_task(&json!({"id": "task-shape-test"}))
+            .unwrap();
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        let t: serde_json::Value =
+            serde_json::from_str(&text).expect("get_task json output should parse");
+
+        assert!(
+            t.get("focus_score").is_some(),
+            "focus_score must be a top-level field in get_task response"
+        );
+        let signals = t
+            .get("signals")
+            .and_then(|s| s.as_object())
+            .expect("signals must be a top-level object in get_task response");
+        for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty"] {
+            assert!(
+                signals.contains_key(*key),
+                "signals.{key} must exist under signals in get_task response"
+            );
+            assert!(
+                t.get(key).is_none(),
+                "{key} must NOT appear at the top level in get_task response (belongs in signals)"
+            );
+        }
     }
 
     // ── Tag filtering ──
