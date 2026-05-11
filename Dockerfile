@@ -23,7 +23,7 @@ FROM debian:bookworm-slim
 ARG PKB_BINARY_URL
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ca-certificates curl jq \
+    git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Git identity for auto-commits performed by git-sync.sh
