@@ -48,6 +48,39 @@ apple: $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd
 version:
 	@echo $(VERSION)
 
+# Dispatch a manual prerelease via .github/workflows/manual-release.yml.
+# Bumps Cargo.toml + Cargo.lock in CI, tags, builds, marks as pre-release.
+#
+# Usage:
+#   make beta                  # auto: bump minor, find next -beta.N from tags
+#   make beta V=0.4.0-beta.1   # explicit override
+#
+# Auto rules: if current is a prerelease (X.Y.Z-foo), reuse X.Y.Z as the base;
+# otherwise bump minor (X.Y.Z → X.(Y+1).0). N is max(existing v<base>-beta.*)+1.
+.PHONY: beta
+beta:
+	@set -e; \
+	CUR="$(VERSION)"; \
+	if [ -n "$(V)" ]; then \
+		NEXT="$(V)"; \
+	else \
+		BASE=$$(echo "$$CUR" | sed -E 's/-.*$$//'); \
+		if echo "$$CUR" | grep -q '-'; then \
+			NEXT_BASE="$$BASE"; \
+		else \
+			MAJOR=$$(echo "$$BASE" | cut -d. -f1); \
+			MINOR=$$(echo "$$BASE" | cut -d. -f2); \
+			NEXT_BASE="$$MAJOR.$$((MINOR+1)).0"; \
+		fi; \
+		git fetch --tags --quiet 2>/dev/null || true; \
+		N=$$(git tag -l "v$$NEXT_BASE-beta.*" | sed -E "s/^v$$NEXT_BASE-beta\.//" | sort -n | tail -1); \
+		N=$${N:-0}; \
+		NEXT="$$NEXT_BASE-beta.$$((N+1))"; \
+	fi; \
+	echo "Current: $$CUR  →  Next: $$NEXT"; \
+	gh workflow run manual-release.yml -f tag=v$$NEXT -f prerelease=true; \
+	echo "Dispatched. Follow with: gh run watch"
+
 # ── macOS SDK sysroot (auto-created) ─────────────────────────────────
 
 $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd:

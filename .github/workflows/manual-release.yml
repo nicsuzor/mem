@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version tag (e.g. v0.1.12 or v0.2.0-rc.1)"
+        description: "Version tag (e.g. v0.1.12 or v0.4.0-beta.1)"
         required: true
         type: string
       prerelease:
@@ -17,19 +17,44 @@ permissions:
   contents: write
 
 jobs:
-  create-tag:
+  bump-and-tag:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Create and push tag
+        with:
+          fetch-depth: 0
+      - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Bump Cargo.toml + Cargo.lock to ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          VERSION="${TAG#v}"
+          # Bump first version line (the [package] version)
+          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
+          # Bump the mem entry in Cargo.lock
+          python3 - "$VERSION" <<'PY'
+          import re, sys, pathlib
+          v = sys.argv[1]
+          p = pathlib.Path("Cargo.lock")
+          t = p.read_text()
+          t2 = re.sub(r'(name = "mem"\nversion = ")[^"]*', lambda m: m.group(1) + v, t)
+          if t == t2:
+              sys.exit("Cargo.lock: mem entry not found")
+          p.write_text(t2)
+          PY
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: release ${{ inputs.tag }}"
+          git push origin HEAD:main
+      - name: Create and push tag
+        run: |
           git tag "${{ inputs.tag }}"
           git push origin "${{ inputs.tag }}"
 
   build-release:
-    needs: create-tag
+    needs: bump-and-tag
     uses: ./.github/workflows/build-release.yml
     with:
       tag: ${{ inputs.tag }}
