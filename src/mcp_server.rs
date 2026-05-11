@@ -5378,7 +5378,7 @@ impl PkbSearchServer {
             .with_title("Release Task"),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering. JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
+                "List tasks with smart filtering. JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5401,7 +5401,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7.",
+                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
