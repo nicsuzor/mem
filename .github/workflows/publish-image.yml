@@ -1,31 +1,29 @@
 name: Publish PKB image to GHCR
 
 # Builds and publishes the PKB MCP server container image to
-# ghcr.io/nicsuzor/pkb. Consumed by services-new (docker-compose pull).
+# ghcr.io/nicsuzor/pkb from a prebuilt binary in a GitHub release.
+# No Rust toolchain — the binary is downloaded from the release asset.
 #
-# Tags:
-#   - latest         on every push to main
-#   - sha-<short>    every build (immutable reference)
-#   - v<version>     when a vX.Y.Z tag is pushed
+# Triggers:
+#   - release.published   — fires after build-release.yml uploads binaries
+#   - workflow_dispatch   — manual repackage of an existing release tag
+#
+# Tags pushed:
+#   - latest          (always)
+#   - <release-tag>   (e.g. mem-v0.3.59)
 #
 # Image must be marked PUBLIC in GHCR settings after the first push so
 # services-new can pull without auth.
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-    paths:
-      - "src/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "build.rs"
-      - "models/**"
-      - "Dockerfile"
-      - ".dockerignore"
-      - "containers/**"
-      - ".github/workflows/publish-image.yml"
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to package (e.g. mem-v0.3.59)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -40,6 +38,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Find Linux binary asset URL
+        id: binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          URL=$(gh release view "$TAG" --json assets \
+            --jq '.assets[] | select(.name | endswith("x86_64-linux.tar.gz")) | .url')
+          if [ -z "$URL" ]; then
+            echo "::error::No x86_64-linux asset found for release $TAG"
+            exit 1
+          fi
+          echo "Found: $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -57,10 +79,8 @@ jobs:
         with:
           images: ghcr.io/nicsuzor/pkb
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-,format=short
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
+            type=raw,value=latest
+            type=raw,value=${{ steps.tag.outputs.tag }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -69,5 +89,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PKB_BINARY_URL=${{ steps.binary.outputs.url }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
