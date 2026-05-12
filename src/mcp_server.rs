@@ -1250,6 +1250,7 @@ impl PkbSearchServer {
                 "assignee", "complexity", "effort", "consequence", "severity", "goal_type",
                 "body", "stakeholder", "waiting_since", "due", "project", "type", "status",
                 "session_id", "issue_url", "follow_up_tasks", "release_summary", "contributes_to",
+                "allow_missing_parent", "force",
             ];
             let received: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
             let unknown: Vec<&str> = received
@@ -1386,55 +1387,64 @@ impl PkbSearchServer {
             });
         }
 
-        // Validate parent exists in the PKB graph + reject parent-chain cycles.
-        // Rejects by default to prevent silent orphan creation. Caller can pass
-        // `allow_missing_parent: true` to downgrade to a warning.
+        // Validate parent exists and is open. Caller can override with flags:
+        //   allow_missing_parent=true  — downgrade missing parent to a warning
+        //   force=true                 — allow creating under a closed parent
         {
             let allow_missing = args
                 .get("allow_missing_parent")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let force = args
+                .get("force")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let graph = self.graph.read();
             if let Some(ref parent_id) = fields.parent {
-                if graph.resolve(parent_id).is_none() {
-                    if allow_missing {
-                        tracing::warn!(
-                            "create_task: parent '{}' not found in PKB; proceeding because allow_missing_parent=true",
-                            parent_id
-                        );
-                    } else {
-                        return Err(McpError {
-                            code: ErrorCode::INVALID_PARAMS,
-                            message: Cow::from(format!(
-                                "Parent '{}' not found in PKB. Create the parent node first, fix the ID, or pass allow_missing_parent=true to override.",
+                match graph.resolve(parent_id) {
+                    None => {
+                        if allow_missing {
+                            tracing::warn!(
+                                "create_task: parent '{}' not found in PKB; proceeding because allow_missing_parent=true",
                                 parent_id
-                            )),
-                            data: None,
-                        });
+                            );
+                        } else {
+                            return Err(McpError {
+                                code: ErrorCode::INVALID_PARAMS,
+                                message: Cow::from(format!(
+                                    "Parent '{}' not found in PKB. Create the parent node first, fix the ID, or pass allow_missing_parent=true to override.",
+                                    parent_id
+                                )),
+                                data: None,
+                            });
+                        }
                     }
-                }
-                let parent_node = graph.resolve(parent_id).ok_or_else(|| McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!(
-                        "Parent '{}' not found in PKB. Create the parent node first or verify the ID.",
-                        parent_id
-                    )),
-                    data: None,
-                })?;
+                    Some(parent_node) => {
+                        // Reject closed parents unless caller opts in with force=true.
+                        let parent_status = parent_node.status.as_deref().unwrap_or("");
+                        if crate::graph::is_closed_for_hierarchy(parent_node.status.as_deref()) && !force {
+                            return Err(McpError {
+                                code: ErrorCode::INVALID_PARAMS,
+                                message: Cow::from(format!(
+                                    "Parent '{}' is closed (status: {}). Cannot add tasks under a closed parent. \
+                                     Pass force=true to override.",
+                                    parent_id, parent_status
+                                )),
+                                data: None,
+                            });
+                        }
 
-                // Suppress unused-variable warning until cycle-path reporting
-                // is restored; parent_node is currently only used for resolution.
-                let _ = parent_node;
-
-                // Reject parent/child cycles. Only relevant when an explicit `id`
-                // is supplied (an auto-generated id cannot already be a parent).
-                if let Some(ref child_id) = fields.id {
-                    if let Err(msg) = graph.would_create_parent_cycle(child_id, parent_id) {
-                        return Err(McpError {
-                            code: ErrorCode::INVALID_PARAMS,
-                            message: Cow::from(msg),
-                            data: None,
-                        });
+                        // Reject parent/child cycles. Only relevant when an explicit `id`
+                        // is supplied (an auto-generated id cannot already be a parent).
+                        if let Some(ref child_id) = fields.id {
+                            if let Err(msg) = graph.would_create_parent_cycle(child_id, parent_id) {
+                                return Err(McpError {
+                                    code: ErrorCode::INVALID_PARAMS,
+                                    message: Cow::from(msg),
+                                    data: None,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -2546,9 +2556,55 @@ impl PkbSearchServer {
             data: None,
         })?;
 
+        let recursive = args
+            .get("recursive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Collect open descendants before any writes.
+        let open_descs: Vec<(String, std::path::PathBuf)> = graph
+            .open_descendants(&node.id)
+            .into_iter()
+            .filter_map(|desc_id| {
+                graph.get_node(&desc_id).map(|n| (desc_id, self.abs_path(&n.path)))
+            })
+            .collect();
+
+        if !open_descs.is_empty() && !recursive {
+            let ids: Vec<&str> = open_descs.iter().map(|(id, _)| id.as_str()).collect();
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "Cannot close '{}': {} open child task(s) still exist: {}. \
+                     Complete or cancel them first, or pass recursive=true to close all descendants.",
+                    id,
+                    open_descs.len(),
+                    ids.join(", ")
+                )),
+                data: None,
+            });
+        }
+
         let abs_path = self.abs_path(&node.path);
         let label = node.label.clone();
         drop(graph);
+
+        // Cascade-close open descendants when recursive=true.
+        if recursive && !open_descs.is_empty() {
+            let mut desc_updates = std::collections::HashMap::new();
+            desc_updates.insert(
+                "status".to_string(),
+                serde_json::Value::String("done".to_string()),
+            );
+            for (_, desc_path) in &open_descs {
+                if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
+                    tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
+                } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
+                    self.rebuild_graph_for_pkb_document(&doc);
+                    self.try_upsert_document(&doc);
+                }
+            }
+        }
 
         let mut updates = std::collections::HashMap::new();
         updates.insert(
@@ -2783,9 +2839,58 @@ impl PkbSearchServer {
             });
         }
 
+        // Reject closing a task with open children unless recursive=true.
+        // Applies to any status that closes for hierarchy (done, cancelled, archived).
+        let recursive_close_descs: Vec<(String, std::path::PathBuf)> =
+            if crate::graph::is_closed_for_hierarchy(Some(status)) {
+                let recursive = args
+                    .get("recursive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let open_descs: Vec<(String, std::path::PathBuf)> = graph
+                    .open_descendants(&node.id)
+                    .into_iter()
+                    .filter_map(|desc_id| {
+                        graph.get_node(&desc_id).map(|n| (desc_id, self.abs_path(&n.path)))
+                    })
+                    .collect();
+                if !open_descs.is_empty() && !recursive {
+                    let ids: Vec<&str> = open_descs.iter().map(|(id, _)| id.as_str()).collect();
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Cannot release '{}' as '{}': {} open child task(s) still exist: {}. \
+                             Complete or cancel them first, or pass recursive=true to close all descendants.",
+                            id, status, open_descs.len(), ids.join(", ")
+                        )),
+                        data: None,
+                    });
+                }
+                if recursive { open_descs } else { vec![] }
+            } else {
+                vec![]
+            };
+
         let abs_path = self.abs_path(&node.path);
         let label = node.label.clone();
         drop(graph);
+
+        // Cascade-close open descendants when recursive=true (after releasing the read lock).
+        if !recursive_close_descs.is_empty() {
+            let mut desc_updates = std::collections::HashMap::new();
+            desc_updates.insert(
+                "status".to_string(),
+                serde_json::Value::String(status.to_string()),
+            );
+            for (_, desc_path) in &recursive_close_descs {
+                if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
+                    tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
+                } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
+                    self.rebuild_graph_for_pkb_document(&doc);
+                    self.try_upsert_document(&doc);
+                }
+            }
+        }
 
         // Build frontmatter updates
         let mut updates = std::collections::HashMap::new();
@@ -4047,21 +4152,21 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        let path = {
+        let (path, canonical_id) = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            self.abs_path(&node.path)
+            (self.abs_path(&node.path), node.id.clone())
         };
 
         // Accept two forms for convenience:
         //   1. Nested: {"id": "...", "updates": {"status": "done"}}
         //   2. Flat:   {"id": "...", "status": "done"}
         // If `updates` is present, it wins. Otherwise collect top-level fields.
-        const ROUTING_KEYS: &[&str] = &["id", "updates"];
+        const ROUTING_KEYS: &[&str] = &["id", "updates", "recursive"];
         let updates: serde_json::Map<String, serde_json::Value> =
             if let Some(nested) = args.get("updates").and_then(|v| v.as_object()) {
                 nested.clone()
@@ -4121,6 +4226,55 @@ impl PkbSearchServer {
                         message: Cow::from(msg),
                         data: None,
                     });
+                }
+            }
+        }
+
+        // Reject closing a task that still has open children, unless recursive=true.
+        // Applies when status is being set to done, cancelled, or archived.
+        let new_status = updates.get("status").and_then(|v| v.as_str());
+        if let Some(ns) = new_status {
+            if crate::graph::is_closed_for_hierarchy(Some(ns)) {
+                let recursive = args
+                    .get("recursive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let open_descs: Vec<(String, std::path::PathBuf)> = {
+                    let graph = self.graph.read();
+                    graph
+                        .open_descendants(&canonical_id)
+                        .into_iter()
+                        .filter_map(|desc_id| {
+                            graph.get_node(&desc_id).map(|n| (desc_id, self.abs_path(&n.path)))
+                        })
+                        .collect()
+                };
+                if !open_descs.is_empty() && !recursive {
+                    let ids: Vec<&str> = open_descs.iter().map(|(id, _)| id.as_str()).collect();
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Cannot set '{}' to '{}': {} open child task(s) still exist: {}. \
+                             Complete or cancel them first, or pass recursive=true to close all descendants.",
+                            id, ns, open_descs.len(), ids.join(", ")
+                        )),
+                        data: None,
+                    });
+                }
+                if recursive && !open_descs.is_empty() {
+                    let mut desc_updates = std::collections::HashMap::new();
+                    desc_updates.insert(
+                        "status".to_string(),
+                        serde_json::Value::String(ns.to_string()),
+                    );
+                    for (_, desc_path) in &open_descs {
+                        if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
+                            tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
+                        } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
+                            self.rebuild_graph_for_pkb_document(&doc);
+                            self.try_upsert_document(&doc);
+                        }
+                    }
                 }
             }
         }
@@ -5231,7 +5385,9 @@ impl PkbSearchServer {
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
                         "project": { "type": "string", "description": "Project identifier (required, e.g. 'aops', 'mem', 'adhoc-sessions')" },
                         "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, project." },
-                        "status": { "type": "string", "description": "Task status (default: 'draft' — new tasks start as draft and are excluded from ready queue until promoted to 'active'). Also accepts: active, blocked, done, merge_ready, in_progress, etc." }
+                        "status": { "type": "string", "description": "Task status (default: 'draft' — new tasks start as draft and are excluded from ready queue until promoted to 'active'). Also accepts: active, blocked, done, merge_ready, in_progress, etc." },
+                        "allow_missing_parent": { "type": "boolean", "description": "Allow creating under a missing parent (logs warning). Default: false." },
+                        "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." }
                     },
                     "required": ["title", "project"]
                 }))
@@ -5342,7 +5498,8 @@ impl PkbSearchServer {
                     "properties": {
                         "id": { "type": "string", "description": "Task ID (supports flexible resolution: ID, filename stem, or title)" },
                         "completion_evidence": { "type": "string", "description": "What was done + outcome. Required — describe the work before completing." },
-                        "pr_url": { "type": "string", "description": "Link to PR/commit (optional, for code tasks)" }
+                        "pr_url": { "type": "string", "description": "Link to PR/commit (optional, for code tasks)" },
+                        "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks. Default: false (rejects if open children exist)." }
                     },
                     "required": ["id", "completion_evidence"]
                 }))
@@ -5369,7 +5526,8 @@ impl PkbSearchServer {
                         "session_id": { "type": "string", "description": "Active session ID. Falls back to $AOPS_SESSION_ID if omitted." },
                         "issue_url": { "type": "string", "description": "External issue/ticket URL" },
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
-                        "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." }
+                        "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." },
+                        "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks when releasing as done or cancelled. Default: false." }
                     },
                     "required": ["status", "summary"]
                 }))
@@ -5420,7 +5578,8 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, title)" },
-                        "updates": { "type": "object", "description": "Optional nested form. JSON object of fields to update (null to remove a field). If omitted, any top-level fields other than id/updates are treated as fields to update." }
+                        "updates": { "type": "object", "description": "Optional nested form. JSON object of fields to update (null to remove a field). If omitted, any top-level fields other than id/updates are treated as fields to update." },
+                        "recursive": { "type": "boolean", "description": "When setting status to done/cancelled/archived, cascade-close all open descendant tasks. Default: false (rejects if open children exist)." }
                     },
                     "required": ["id"]
                 }))
@@ -6844,6 +7003,148 @@ mod tests {
             "empty parent should bypass referential check; got: {}",
             err.message
         );
+    }
+
+    // ── Closed-parent validation (task-8f232401) ──────────────────────────────
+
+    #[test]
+    fn test_create_task_rejects_closed_parent() {
+        // The test graph has task-a3 with status=done.
+        // Creating a child under a done parent should be rejected.
+        let server = build_test_server();
+        let err = server
+            .handle_create_task(&json!({
+                "title": "child of done parent",
+                "project": "test",
+                "parent": "task-a3"
+            }))
+            .expect_err("should reject create under done parent");
+        let msg = err.message.to_string();
+        assert!(
+            msg.to_lowercase().contains("closed") || msg.contains("done"),
+            "error should mention closed/done status; got: {msg}"
+        );
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "should be INVALID_PARAMS, got: {:?}", err.code
+        );
+    }
+
+    #[test]
+    fn test_create_task_allows_force_override_for_closed_parent() {
+        // With force=true, creating under a done parent should not be rejected by
+        // the graph validation. It will still fail on disk I/O (test server has
+        // no real pkb_root), but must NOT fail on the closed-parent check.
+        let server = build_test_server();
+        let result = server.handle_create_task(&json!({
+            "title": "child of done parent with force",
+            "project": "test",
+            "parent": "task-a3",
+            "force": true
+        }));
+        // The test server's pkb_root (/tmp/test-pkb-project) likely does not have
+        // real dirs, so we expect an error — but it must be a disk/IO error, NOT
+        // the closed-parent error.
+        match result {
+            Ok(_) => { /* if disk happens to succeed, that's fine */ }
+            Err(e) => {
+                let msg = e.message.to_string();
+                assert!(
+                    !msg.to_lowercase().contains("closed"),
+                    "force=true should bypass the closed-parent check; got: {msg}"
+                );
+            }
+        }
+    }
+
+    // ── Open-children validation (task-8f232401) ──────────────────────────────
+
+    #[test]
+    fn test_complete_task_rejects_with_open_children() {
+        // proj-alpha has children: task-a1 (active), task-a2 (active), task-a3 (done).
+        // Completing proj-alpha without recursive=true should fail.
+        let server = build_test_server();
+        let err = server
+            .handle_complete_task(&json!({
+                "id": "proj-alpha",
+                "completion_evidence": "done"
+            }))
+            .expect_err("should reject complete when open children exist");
+        let msg = err.message.to_string();
+        assert!(
+            msg.to_lowercase().contains("open child") || msg.to_lowercase().contains("children"),
+            "error should mention open children; got: {msg}"
+        );
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "should be INVALID_PARAMS, got: {:?}", err.code
+        );
+    }
+
+    #[test]
+    fn test_update_task_rejects_closing_with_open_children() {
+        // proj-alpha has active children; setting its status to done should be rejected.
+        let server = build_test_server();
+        let err = server
+            .handle_update_task(&json!({
+                "id": "proj-alpha",
+                "status": "done",
+                "completion_evidence": "done"
+            }))
+            .expect_err("should reject status=done when open children exist");
+        let msg = err.message.to_string();
+        assert!(
+            msg.to_lowercase().contains("open child") || msg.to_lowercase().contains("children"),
+            "error should mention open children; got: {msg}"
+        );
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "should be INVALID_PARAMS, got: {:?}", err.code
+        );
+    }
+
+    #[test]
+    fn test_update_task_allows_cancelled_without_children_check() {
+        // task-g1 has no children — closing it should not be blocked.
+        // (Will fail on disk I/O since test server has no real files, but
+        // must NOT fail on the open-children guard.)
+        let server = build_test_server();
+        let result = server.handle_update_task(&json!({
+            "id": "task-g1",
+            "status": "cancelled"
+        }));
+        match result {
+            Ok(_) => { /* success is fine */ }
+            Err(e) => {
+                let msg = e.message.to_string();
+                assert!(
+                    !msg.to_lowercase().contains("open child"),
+                    "task with no children should not trigger open-children guard; got: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_update_task_allows_closed_status_with_recursive() {
+        // proj-alpha has open children but recursive=true should bypass the block.
+        // Will still fail on disk I/O, but must NOT fail on the open-children guard.
+        let server = build_test_server();
+        let result = server.handle_update_task(&json!({
+            "id": "proj-alpha",
+            "status": "cancelled",
+            "recursive": true
+        }));
+        match result {
+            Ok(_) => { /* success is fine */ }
+            Err(e) => {
+                let msg = e.message.to_string();
+                assert!(
+                    !msg.to_lowercase().contains("open child"),
+                    "recursive=true should bypass the open-children guard; got: {msg}"
+                );
+            }
+        }
     }
 }
 

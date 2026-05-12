@@ -430,6 +430,30 @@ impl GraphStore {
         self.nodes.get(id)
     }
 
+    /// Collect IDs of all descendants (recursive via children) whose status is open
+    /// (not done, cancelled, or archived). Used to enforce open-children constraint
+    /// before closing a parent.
+    pub fn open_descendants(&self, id: &str) -> Vec<String> {
+        let mut result = Vec::new();
+        let mut stack = Vec::new();
+        let mut visited = HashSet::new();
+        if let Some(node) = self.get_node(id) {
+            visited.insert(id.to_string());
+            stack.extend(node.children.iter().cloned());
+        }
+        while let Some(child_id) = stack.pop() {
+            if !visited.insert(child_id.clone()) {
+                continue;
+            }
+            if let Some(child) = self.get_node(&child_id) {
+                if !crate::graph::is_closed_for_hierarchy(child.status.as_deref()) {
+                    result.push(child_id.clone());
+                }
+                stack.extend(child.children.iter().cloned());
+            }
+        }
+        result
+    }
 
     /// Clone the full node map (for incremental rebuilds).
     pub fn nodes_cloned(&self) -> HashMap<String, GraphNode> {
