@@ -146,9 +146,9 @@ impl FilterSet {
         }
         if let Some(ref p) = self.project {
             parts.push(format!("project={p}"));
-        }
-        if self.include_untagged == Some(true) {
-            parts.push("include_untagged=true".to_string());
+            if self.include_untagged == Some(true) {
+                parts.push("include_untagged=true".to_string());
+            }
         }
         if let Some(w) = self.weight_gte {
             parts.push(format!("weight>={w}"));
@@ -242,8 +242,7 @@ impl FilterSet {
             let matches_project = node
                 .project
                 .as_deref()
-                .map(|p| p.eq_ignore_ascii_case(project))
-                .unwrap_or(false);
+                .is_some_and(|p| p.eq_ignore_ascii_case(project));
 
             let include_untagged = self.include_untagged.unwrap_or(false);
             if !matches_project && !(include_untagged && node.project.is_none()) {
