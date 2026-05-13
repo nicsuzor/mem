@@ -129,7 +129,7 @@ The `classification` field carries additional semantic subtypes (bug, feature, s
 
 A `template` node holds the canonical body and metadata for a recurring workflow (daily standup, retrospective, issue sweep, etc.). Templates are **never** directly worked or completed — they are instantiated.
 
-**To create an instance**: call `claim_task(id="<template-id>")`. The server creates a datestamped copy named `<slug>-<YYYYMMDD>-<HHMM>-<host>.md` and returns it as a normal `type: task`. The instance inherits the template body, tags, priority, project, and parent; it gets its own `id`, `status: inbox`, and a `template_id` back-reference.
+**To create an instance**: call `claim_task(id="<template-id>")`. The server creates a datestamped copy named `<slug>-<YYYYMMDD>-<HHMMSS>-<host>.md` and returns it as a normal `type: task`. The instance inherits the template body, tags, priority, project, and parent; it gets its own `id`, `status: inbox`, and a `template_id` back-reference.
 
 **Key fields on template nodes:**
 

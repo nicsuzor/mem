@@ -648,7 +648,7 @@ pub struct TemplateInstanceFields {
 
 /// Create a datestamped task instance from a template.
 ///
-/// Instance naming: `<template-slug>-<YYYYMMDD>-<HHMM>-<host>.md`
+/// Instance naming: `<template-slug>-<YYYYMMDD>-<HHMMSS>-<host>.md`
 ///
 /// The instance inherits the template body and metadata but gets its own
 /// `id`, `status: inbox`, `created`, `modified`, and a `template_id` back-reference.
@@ -656,7 +656,7 @@ pub struct TemplateInstanceFields {
 pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> Result<PathBuf> {
     let now = chrono::Utc::now();
     let date_str = now.format("%Y%m%d").to_string();
-    let time_str = now.format("%H%M").to_string();
+    let time_str = now.format("%H%M%S").to_string();
 
     // Derive hostname: try env vars then /etc/hostname, fall back to "local".
     let raw_host = std::env::var("HOSTNAME")
@@ -712,7 +712,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
         fm.push_str(&format!("project: {}\n", project));
     }
 
-    fm.push_str(&format!("template_id: {}\n", fields.template_id));
+    fm.push_str(&format!("template_id: \"{}\"\n", yaml_escape_double_quoted(&fields.template_id)));
     fm.push_str(&format!("created: {}\n", created_at));
     fm.push_str(&format!("modified: {}\n", created_at));
 
@@ -730,7 +730,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     }
 
     if let Some(ref assignee) = fields.assignee {
-        fm.push_str(&format!("assignee: {}\n", assignee));
+        fm.push_str(&format!("assignee: \"{}\"\n", yaml_escape_double_quoted(assignee)));
     }
 
     fm.push_str("---\n\n");

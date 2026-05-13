@@ -7941,7 +7941,7 @@ tags:
         assert!(content.contains("type: task"), "instance must be type: task");
         assert!(content.contains("status: inbox"), "instance must start as inbox");
         assert!(
-            content.contains("template_id: daily-template"),
+            content.contains("template_id: \"daily-template\""),
             "instance must reference the template"
         );
         assert!(
