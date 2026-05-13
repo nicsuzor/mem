@@ -205,8 +205,8 @@ impl GraphStore {
         // Canonical paths are cached on each GraphNode so incremental rebuilds avoid the
         // O(N) fs-stat cost. Refs mem-fd02c2f9.
         let _t_lookup = std::time::Instant::now();
-        let mut id_map: HashMap<String, String> = HashMap::new(); // permalink -> abs_path
-        let mut path_to_id: HashMap<String, String> = HashMap::new(); // abs_path -> id
+        let mut id_map: HashMap<String, String> = HashMap::with_capacity(nodes.len() * 2); // permalink -> abs_path
+        let mut path_to_id: HashMap<String, String> = HashMap::with_capacity(nodes.len()); // abs_path -> id
 
         let mut canonicalize_misses: usize = 0;
         for n in nodes.iter_mut() {
@@ -250,7 +250,7 @@ impl GraphStore {
         // 2b. Discover ghost nodes (referenced but not in files)
         // Scans all reference fields for IDs that weren't resolved to files,
         // then creates minimal virtual nodes for them.
-        let mut referenced_ids = HashSet::new();
+        let mut referenced_ids = HashSet::with_capacity(nodes.len() * 2);
         for n in &nodes {
             if let Some(ref p) = n.parent { referenced_ids.insert(p.clone()); }
             for c in &n.closes { referenced_ids.insert(c.clone()); }
@@ -263,7 +263,7 @@ impl GraphStore {
             for follow in &n.follow_up_tasks { referenced_ids.insert(follow.clone()); }
         }
 
-        let mut ghost_nodes = Vec::new();
+        let mut ghost_nodes = Vec::with_capacity(referenced_ids.len() / 4);
         for ref_id in referenced_ids {
             let lower = ref_id.to_lowercase();
             if !id_map.contains_key(&lower) {
@@ -300,7 +300,7 @@ impl GraphStore {
         tracing::debug!(target: "perf::graph_rebuild", phase = "build_edges", n_nodes = nodes.len(), n_edges = edges.len(), elapsed_ms = _t_edges.elapsed().as_secs_f64() * 1000.0);
 
         // Deduplicate edges by (source, target, type)
-        let mut seen: HashSet<(String, String, String)> = HashSet::new();
+        let mut seen: HashSet<(String, String, String)> = HashSet::with_capacity(edges.len());
         let edges: Vec<Edge> = edges
             .into_iter()
             .filter(|e| {
@@ -2681,16 +2681,20 @@ fn compute_divergence_anomalies(
 /// Returns the set of reachable node IDs so the caller can both mark nodes
 /// and pass the set to layout algorithms.
 fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
-    let all_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let mut all_ids: HashSet<&str> = HashSet::with_capacity(nodes.len());
+    for n in nodes {
+        all_ids.insert(n.id.as_str());
+    }
 
-    let unfinished_ids: HashSet<&str> = nodes
-        .iter()
-        .filter(|n| !graph::is_completed(n.status.as_deref()))
-        .map(|n| n.id.as_str())
-        .collect();
+    let mut unfinished_ids: HashSet<&str> = HashSet::with_capacity(nodes.len());
+    for n in nodes {
+        if !graph::is_completed(n.status.as_deref()) {
+            unfinished_ids.insert(n.id.as_str());
+        }
+    }
 
     // Build children mapping
-    let mut children_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut children_of: HashMap<&str, Vec<&str>> = HashMap::with_capacity(nodes.len());
     for node in nodes {
         // From node.parent (child → parent)
         if let Some(ref parent) = node.parent {
