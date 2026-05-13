@@ -625,6 +625,126 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Fields for instantiating a template task via `claim_task`.
+#[derive(Debug, Clone, Default)]
+pub struct TemplateInstanceFields {
+    /// Title of the template — used to derive the instance title (appends date) and slug.
+    pub template_title: String,
+    /// Markdown body from the template (without frontmatter).
+    pub template_body: String,
+    /// Tags inherited from the template.
+    pub tags: Vec<String>,
+    /// Priority inherited from the template.
+    pub priority: Option<i32>,
+    /// Project inherited from the template frontmatter.
+    pub project: Option<String>,
+    /// Parent inherited from the template frontmatter.
+    pub parent: Option<String>,
+    /// The template task ID (written as `template_id:` for back-reference).
+    pub template_id: String,
+    /// Assignee inherited from the template (optional).
+    pub assignee: Option<String>,
+}
+
+/// Create a datestamped task instance from a template.
+///
+/// Instance naming: `<template-slug>-<YYYYMMDD>-<HHMM>-<host>.md`
+///
+/// The instance inherits the template body and metadata but gets its own
+/// `id`, `status: inbox`, `created`, `modified`, and a `template_id` back-reference.
+/// The template file is not modified.
+pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> Result<PathBuf> {
+    let now = chrono::Utc::now();
+    let date_str = now.format("%Y%m%d").to_string();
+    let time_str = now.format("%H%M").to_string();
+
+    // Derive hostname: try env vars then /etc/hostname, fall back to "local".
+    let raw_host = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("HOST"))
+        .or_else(|_| {
+            std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string())
+        })
+        .unwrap_or_else(|_| "local".to_string());
+    let host = sanitize_prefix(&raw_host);
+    // Use floor_char_boundary to safely truncate multi-byte host strings.
+    let host_truncated = &host[..host.floor_char_boundary(12)];
+
+    let template_slug = slugify(&fields.template_title);
+    let instance_id = format!(
+        "{}-{}-{}-{}",
+        template_slug, date_str, time_str, host_truncated
+    );
+    let filename = format!("{}.md", instance_id);
+
+    let tasks_dir = root.join("tasks");
+    let dir = if tasks_dir.is_dir() {
+        tasks_dir
+    } else {
+        root.to_path_buf()
+    };
+    let path = dir.join(&filename);
+
+    if path.exists() {
+        anyhow::bail!("Instance file already exists: {}", path.display());
+    }
+
+    let created_at = now.to_rfc3339();
+    let instance_title = format!("{} — {}", fields.template_title, now.format("%Y-%m-%d"));
+
+    let mut fm = String::from("---\n");
+    fm.push_str(&format!("id: {}\n", instance_id));
+    fm.push_str(&format!(
+        "title: \"{}\"\n",
+        yaml_escape_double_quoted(&instance_title)
+    ));
+    fm.push_str("type: task\n");
+    fm.push_str("status: inbox\n");
+    fm.push_str(&format!(
+        "priority: {}\n",
+        fields.priority.unwrap_or(2)
+    ));
+
+    if let Some(ref parent) = fields.parent {
+        fm.push_str(&format!("parent: {}\n", parent));
+    }
+
+    if let Some(ref project) = fields.project {
+        fm.push_str(&format!("project: {}\n", project));
+    }
+
+    fm.push_str(&format!("template_id: {}\n", fields.template_id));
+    fm.push_str(&format!("created: {}\n", created_at));
+    fm.push_str(&format!("modified: {}\n", created_at));
+
+    let slug = slugify(&instance_title);
+    fm.push_str("alias:\n");
+    fm.push_str(&format!("  - \"{}-{}\"\n", instance_id, slug));
+    fm.push_str(&format!("  - \"{}\"\n", instance_id));
+    fm.push_str(&format!("permalink: {}\n", instance_id));
+
+    if !fields.tags.is_empty() {
+        fm.push_str("tags:\n");
+        for tag in &fields.tags {
+            fm.push_str(&format!("  - {}\n", tag));
+        }
+    }
+
+    if let Some(ref assignee) = fields.assignee {
+        fm.push_str(&format!("assignee: {}\n", assignee));
+    }
+
+    fm.push_str("---\n\n");
+    fm.push_str(&fields.template_body);
+    if !fields.template_body.ends_with('\n') {
+        fm.push('\n');
+    }
+
+    std::fs::write(&path, &fm)
+        .with_context(|| format!("Failed to write instance file: {}", path.display()))?;
+
+    Ok(path)
+}
+
 /// Create a new memory file with YAML frontmatter.
 ///
 /// Returns the path to the created file. Creates the `memories/` subdirectory
