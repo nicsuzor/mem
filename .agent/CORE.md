@@ -22,7 +22,7 @@ Semantic search + knowledge graph MCP server for a personal knowledge base (PKB)
 ```
 src/
   cli.rs           — main() for pkb binary (CLI + MCP server via `pkb mcp`)
-  mcp_server.rs    — MCP ServerHandler: 36 tools, dispatch, tool registrations
+  mcp_server.rs    — MCP ServerHandler: 37 tools, dispatch, tool registrations
   graph_store.rs   — GraphStore: builds/queries knowledge graph from PKB docs
   graph.rs         — GraphNode, Edge, EdgeType, link resolution helpers
   graph_display.rs — Graph rendering/display utilities
@@ -39,7 +39,7 @@ src/
   lib.rs           — Library root
 ```
 
-## MCP Tools (36)
+## MCP Tools (37)
 
 ### Search
 - `search` — hybrid semantic + graph-proximity
@@ -53,6 +53,7 @@ src/
 - `get_task` — frontmatter + body + relationship context
 - `create_task` — new task with frontmatter
 - `create_subtask` — subtask under a parent
+- `claim_task` — instantiate a `type: template` node; creates a datestamped instance and returns it via get_task
 - `update_task` — patch frontmatter fields
 - `complete_task` — set status=done
 - `release_task` — terminal status release and session handover (populates session_id, pr_url, issue_url, follow_up_tasks, release_summary); handles ad-hoc creation if ID omitted

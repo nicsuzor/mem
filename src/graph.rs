@@ -645,6 +645,8 @@ pub fn status_group(status: Option<&str>) -> &'static str {
 }
 
 /// Node types that represent actionable work items (shown in dashboards).
+/// `template` is intentionally excluded — templates are meta-artifacts that spawn
+/// task instances via `claim_task`; they are not themselves actionable work items.
 pub const TASK_TYPES: &[&str] = &["task", "project", "epic", "learn", "pr"];
 
 /// All recognized canonical node type values.
@@ -653,8 +655,10 @@ pub const TASK_TYPES: &[&str] = &["task", "project", "epic", "learn", "pr"];
 /// priorities. Existing nodes with `type: target` parse correctly; the linter maps
 /// `target` → `goal` in auto-fix mode.
 pub const VALID_NODE_TYPES: &[&str] = &[
-    // Actionable
+    // Actionable work items (subset also in TASK_TYPES)
     "project", "epic", "task", "learn", "pr",
+    // Recurring workflow templates — not actionable; claim_task() instantiates these
+    "template",
     // Reference
     "goal", "target", "note", "knowledge", "memory", "contact",
     "document", "reference", "review", "case", "spec", "prototype",

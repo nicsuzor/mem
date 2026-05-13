@@ -1593,6 +1593,133 @@ impl PkbSearchServer {
         ))]))
     }
 
+    /// Instantiate a `type: template` task.
+    ///
+    /// Creates a datestamped instance (`<slug>-<YYYYMMDD>-<HHMM>-<host>.md`) and
+    /// returns the new task via get_task. The template itself is not modified.
+    fn handle_claim_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        // Resolve the node and validate it is a template.
+        let (template_id, template_path, template_label, template_tags, template_priority,
+             template_assignee) = {
+            let graph = self.graph.read();
+            let node = graph.resolve(id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Task not found: {id}")),
+                data: None,
+            })?;
+
+            if node.node_type.as_deref() != Some("template") {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Node '{}' has type '{}', not 'template'. \
+                         claim_task only works on template nodes.",
+                        id,
+                        node.node_type.as_deref().unwrap_or("unknown")
+                    )),
+                    data: None,
+                });
+            }
+
+            (
+                node.id.clone(),
+                node.path.clone(),
+                node.label.clone(),
+                node.tags.clone(),
+                node.priority,
+                node.assignee.clone(),
+            )
+        };
+
+        // Read template file to get body + frontmatter project/parent fields.
+        let abs_path = self.abs_path(&template_path);
+        let content = std::fs::read_to_string(&abs_path).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to read template file: {e}")),
+            data: None,
+        })?;
+
+        let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+        let parsed = matter.parse(&content);
+
+        let fm: serde_json::Value = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+        let template_project = fm
+            .get("project")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let template_parent = fm
+            .get("parent")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let body = parsed.content.trim().to_string();
+
+        // Create the datestamped instance.
+        let instance_path = crate::document_crud::claim_template_instance(
+            &self.pkb_root,
+            crate::document_crud::TemplateInstanceFields {
+                template_title: template_label,
+                template_body: body,
+                tags: template_tags,
+                priority: template_priority,
+                project: template_project,
+                parent: template_parent,
+                template_id: template_id.clone(),
+                assignee: template_assignee,
+            },
+        )
+        .map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to create template instance: {e}")),
+            data: None,
+        })?;
+
+        // Register instance in the graph.
+        if let Some(doc) =
+            crate::pkb::parse_file_relative(&instance_path, &self.pkb_root)
+        {
+            self.rebuild_graph_for_pkb_document(&doc);
+            self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                instance_path
+            );
+            self.rebuild_graph();
+        }
+
+        // Return via get_task for consistent shape.
+        let instance_id = instance_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| instance_path.display().to_string());
+
+        let get_args = serde_json::json!({ "id": instance_id });
+        self.handle_get_task(&get_args).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!(
+                "claim_task created '{}' from template '{}' but the instance is not \
+                 yet visible in the graph. Underlying error: {}. Retry get_task in a moment.",
+                instance_id, template_id, e.message,
+            )),
+            data: None,
+        })
+    }
+
     // =========================================================================
     // KNOWLEDGE GRAPH TOOLS (4)
     // =========================================================================
@@ -5104,6 +5231,7 @@ impl PkbSearchServer {
             "task_search" => self.handle_task_search(args),
             "get_network_metrics" => self.handle_get_network_metrics(args),
             "create_task" => self.handle_create_task(args),
+            "claim_task" => self.handle_claim_task(args),
             "create_subtask" => self.handle_create_subtask(args),
             "create_memory" => self.handle_create_memory(args),
             "create" => self.handle_create_document(args),
@@ -5409,6 +5537,22 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Create Sub-task"),
+            Tool::new(
+                "claim_task",
+                "Instantiate a template task. When called on a `type: template` node, creates a \
+                 datestamped instance (<slug>-<YYYYMMDD>-<HHMM>-<host>.md) and returns it via \
+                 get_task. The template is left untouched. Use for recurring workflows: daily, \
+                 reflect, handover, issue-sweep, etc.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Template task ID (must have type: template)" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Claim Template"),
             Tool::new(
                 "create_memory",
                 "Create a new memory, insight, or observation. Stored in memories/ directory. Use for recording persistent knowledge or session findings.",
@@ -7177,6 +7321,7 @@ mod annotation_tests {
                 // I'll check that if it's NOT one of those known write tools, it should probably have a hint.
                 let is_known_write = [
                     "append",
+                    "claim_task",
                     "complete_task",
                     "release_task",
                     "update_task",
@@ -7683,3 +7828,166 @@ mod tier_rebuild_tests {
     }
 }
 
+#[cfg(test)]
+mod claim_task_tests {
+    use super::*;
+    use crate::embeddings::Embedder;
+    use crate::graph_store::GraphStore;
+    use crate::vectordb::VectorStore;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn setup_with_template() -> (PkbSearchServer, TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+
+        // Write a template file
+        let template_content = "\
+---
+id: daily-template
+title: \"Daily\"
+type: template
+status: active
+priority: 2
+parent: proj-test
+project: aops
+tags:
+  - daily
+  - recurring
+---
+
+## Daily checklist
+
+- [ ] Review inbox
+- [ ] Check outstanding PRs
+";
+        std::fs::write(tasks_dir.join("daily-template.md"), template_content).unwrap();
+
+        // Write the parent project file so validation passes
+        let projects_dir = root.join("projects");
+        std::fs::create_dir_all(&projects_dir).unwrap();
+        std::fs::write(
+            projects_dir.join("proj-test.md"),
+            "---\nid: proj-test\ntitle: \"Test Project\"\ntype: project\nstatus: active\n---\n",
+        )
+        .unwrap();
+
+        let docs = crate::pkb::scan_directory_all(root)
+            .iter()
+            .filter_map(|p| crate::pkb::parse_file_relative(p, root))
+            .collect::<Vec<_>>();
+
+        let graph = GraphStore::build(&docs, root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+        (server, tmp)
+    }
+
+    #[test]
+    fn claim_task_creates_datestamped_instance() {
+        let (server, tmp) = setup_with_template();
+
+        let result = server
+            .handle_claim_task(&serde_json::json!({ "id": "daily-template" }))
+            .expect("claim_task should succeed");
+
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .next()
+            .expect("result should have text content");
+
+        // Response is get_task JSON — must contain the instance id
+        assert!(
+            text.contains("daily-"),
+            "instance id should contain template slug; got: {text}"
+        );
+        assert!(
+            text.contains("template_id"),
+            "instance should back-reference the template; got: {text}"
+        );
+
+        // Verify instance file was written to tasks/
+        let tasks_dir = tmp.path().join("tasks");
+        let instance_files: Vec<_> = std::fs::read_dir(&tasks_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.starts_with("daily-") && name != "daily-template.md"
+            })
+            .collect();
+        assert_eq!(
+            instance_files.len(),
+            1,
+            "exactly one instance file should exist; found: {:?}",
+            instance_files.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+
+        // Instance must be type: task, not type: template
+        let instance_path = instance_files[0].path();
+        let content = std::fs::read_to_string(&instance_path).unwrap();
+        assert!(content.contains("type: task"), "instance must be type: task");
+        assert!(content.contains("status: inbox"), "instance must start as inbox");
+        assert!(
+            content.contains("template_id: \"daily-template\""),
+            "instance must reference the template"
+        );
+        assert!(
+            content.contains("- [ ] Review inbox"),
+            "instance must inherit template body"
+        );
+    }
+
+    #[test]
+    fn claim_task_rejects_non_template() {
+        let (server, _tmp) = setup_with_template();
+
+        // Try to claim a project (not a template)
+        let err = server
+            .handle_claim_task(&serde_json::json!({ "id": "proj-test" }))
+            .expect_err("should fail on non-template node");
+
+        assert!(
+            err.message.contains("not 'template'"),
+            "error should mention template type requirement; got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn claim_task_rejects_unknown_id() {
+        let (server, _tmp) = setup_with_template();
+
+        let err = server
+            .handle_claim_task(&serde_json::json!({ "id": "nonexistent-id" }))
+            .expect_err("should fail on unknown id");
+
+        assert!(
+            err.message.contains("not found"),
+            "error should indicate task not found; got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn template_type_not_in_ready_queue() {
+        let (server, _tmp) = setup_with_template();
+        let ready = server.graph.read().ready_ids().to_vec();
+        assert!(
+            !ready.contains(&"daily-template".to_string()),
+            "template should not appear in ready queue; ready={ready:?}"
+        );
+    }
+}

@@ -112,17 +112,45 @@ Variable-rate decomposition stops when uncertainty is low enough to act — rega
 
 ## Primary Node Types
 
-The five primary node types in the PKB:
+The primary node types in the PKB:
 
-| Type        | Description                                                                                                                          |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| **goal**    | A multi-month/year desired outcome — the root of the hierarchy. Also stored as `type: target` (alias, same schema).                  |
-| **project** | A discrete thing we work on — a noun with defined scope and boundaries                                                               |
-| **epic**    | A bundle of related work that together achieves an aim — a verb                                                                      |
-| **task**    | A discrete deliverable, completable in a single focused session                                                                      |
-| **learn**   | Observational tracking — a spike, discovery, or noted finding. Not directly actionable; resolves by decomposing into follow-up tasks |
+| Type         | Description                                                                                                                          |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **goal**     | A multi-month/year desired outcome — the root of the hierarchy. Also stored as `type: target` (alias, same schema).                  |
+| **project**  | A discrete thing we work on — a noun with defined scope and boundaries                                                               |
+| **epic**     | A bundle of related work that together achieves an aim — a verb                                                                      |
+| **task**     | A discrete deliverable, completable in a single focused session                                                                      |
+| **learn**    | Observational tracking — a spike, discovery, or noted finding. Not directly actionable; resolves by decomposing into follow-up tasks |
+| **template** | A reusable workflow template — not a work item itself. Calling `claim_task` on a template creates a datestamped task instance. Templates are never entered into the ready queue and are excluded from all actionable-work counts. |
 
 The `classification` field carries additional semantic subtypes (bug, feature, spike, chore, etc.) without multiplying top-level types.
+
+### `template` nodes and the recurring-workflow pattern
+
+A `template` node holds the canonical body and metadata for a recurring workflow (daily standup, retrospective, issue sweep, etc.). Templates are **never** directly worked or completed — they are instantiated.
+
+**To create an instance**: call `claim_task(id="<template-id>")`. The server creates a datestamped copy named `<slug>-<YYYYMMDD>-<HHMMSS>-<host>.md` and returns it as a normal `type: task`. The instance inherits the template body, tags, priority, project, and parent; it gets its own `id`, `status: inbox`, and a `template_id` back-reference.
+
+**Key fields on template nodes:**
+
+| Field         | Description                                                                             |
+| ------------- | --------------------------------------------------------------------------------------- |
+| `id`          | Short human-readable slug (e.g. `daily`, `reflect`, `handover`)                        |
+| `type`        | Must be `template`                                                                      |
+| `parent`      | The project or epic all instances will be parented under                                |
+| `project`     | Project identifier — inherited by each instance                                         |
+| `template_id` | (On instances only) Back-reference to the template that spawned this instance           |
+
+**Pattern for recurring workflows** (`/daily`, `/retro`, `/sleep`, `/supervisor` session logs, `/issue-sweep` cycles):
+
+1. Create a template node with `type: template` and a short, stable ID.
+2. On each invocation, call `claim_task(id="<template-id>")` to get a fresh instance.
+3. Work and release the instance normally; the template is untouched.
+4. The parent node becomes a registry of all instances via its `children` edges.
+
+This replaces the anti-pattern of re-using a single task body (which accumulates unbounded log content and prevents independent QA of each cycle).
+
+**Example**: `examples/templates/daily.md` in the `mem` repo.
 
 ### `target` nodes
 
