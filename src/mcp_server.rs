@@ -3892,6 +3892,10 @@ impl PkbSearchServer {
             .map(|v| v as i32);
         let goal_type = args.get("goal_type").and_then(|v| v.as_str());
         let assignee = args.get("assignee").and_then(|v| v.as_str());
+        let doc_type = args.get("type").and_then(|v| v.as_str());
+        let title_contains = args.get("title_contains").and_then(|v| v.as_str());
+        let complexity = args.get("complexity").and_then(|v| v.as_str());
+        let weight_gte = args.get("weight_gte").and_then(|v| v.as_i64());
         let project = args.get("project").and_then(|v| v.as_str());
         let focus_score_gte = args.get("focus_score_gte").and_then(|v| v.as_i64());
         let tags: Vec<String> = args
@@ -3984,6 +3988,29 @@ impl PkbSearchServer {
                     .map(|pr| pr.eq_ignore_ascii_case(p))
                     .unwrap_or(false)
             });
+        }
+        if let Some(dt) = doc_type {
+            tasks.retain(|t| {
+                t.node_type
+                    .as_deref()
+                    .map(|d| d.eq_ignore_ascii_case(dt))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(needle) = title_contains {
+            let needle_lower = needle.to_lowercase();
+            tasks.retain(|t| t.label.to_lowercase().contains(&needle_lower));
+        }
+        if let Some(c) = complexity {
+            tasks.retain(|t| {
+                t.complexity
+                    .as_deref()
+                    .map(|cx| cx.eq_ignore_ascii_case(c))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(w_gte) = weight_gte {
+            tasks.retain(|t| t.downstream_weight >= w_gte as f64);
         }
         if !tags.is_empty() {
             tasks.retain(|t| {
@@ -5690,6 +5717,10 @@ impl PkbSearchServer {
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
+                        "type": { "type": "string", "description": "Filter by document type (e.g. 'target', 'epic', 'task')" },
+                        "title_contains": { "type": "string", "description": "Filter by title substring (case-insensitive)" },
+                        "complexity": { "type": "string", "description": "Filter by complexity (e.g. 'low', 'medium', 'high')" },
+                        "weight_gte": { "type": "integer", "description": "Filter to tasks with downstream weight ≥ N" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags. A task matches iff every requested tag is present in its frontmatter `tags` array (AND, case-insensitive)." },
                         "focus_score_gte": { "type": "integer", "description": "Filter to tasks whose composite focus_score is ≥ N." },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
@@ -7642,6 +7673,117 @@ mod tier_rebuild_tests {
             pkb_root.join("db.bin"),
             Arc::new(RwLock::new(graph)),
         )
+    }
+
+    #[test]
+    fn test_list_tasks_filters() {
+        let docs = vec![
+            make_task_doc("task-1", "active", 1, &[]),
+            PkbDocument {
+                path: PathBuf::from("tasks/target-1.md"),
+                title: "LLB242 ARC Pilot".to_string(),
+                body: String::new(),
+                doc_type: Some("target".to_string()),
+                status: Some("active".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(json!({
+                    "id": "target-1",
+                    "type": "target",
+                    "title": "LLB242 ARC Pilot",
+                    "status": "active"
+                })),
+                content_hash: "hash-target-1".to_string(),
+                file_hash: "hash-target-1".to_string(),
+            },
+        ];
+        let server = build_server(docs);
+
+        fn task_ids_from(result: &CallToolResult) -> Vec<String> {
+            let text = result
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect::<String>();
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("tasks").and_then(|t| t.as_array()).cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|t| t.get("id").and_then(|id| id.as_str()).map(String::from))
+                .collect()
+        }
+
+        // Test type filter
+        let ids = task_ids_from(
+            &server
+                .handle_list_tasks(&json!({"type": "target", "format": "json"}))
+                .unwrap(),
+        );
+        assert!(ids.contains(&"target-1".to_string()));
+        assert!(!ids.contains(&"task-1".to_string()));
+
+        // Test title_contains filter
+        let ids = task_ids_from(
+            &server
+                .handle_list_tasks(&json!({"title_contains": "LLB242", "format": "json"}))
+                .unwrap(),
+        );
+        assert!(ids.contains(&"target-1".to_string()));
+        assert!(!ids.contains(&"task-1".to_string()));
+
+        // Test complexity filter
+        let docs_with_complexity = vec![PkbDocument {
+            path: PathBuf::from("tasks/complex-1.md"),
+            title: "Complex Task".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(json!({
+                "id": "complex-1",
+                "type": "task",
+                "title": "Complex Task",
+                "status": "active",
+                "complexity": "high"
+            })),
+            content_hash: "hash-complex-1".to_string(),
+            file_hash: "hash-complex-1".to_string(),
+        }];
+        let server_complex = build_server(docs_with_complexity);
+
+        let ids = task_ids_from(
+            &server_complex
+                .handle_list_tasks(&json!({"complexity": "high", "format": "json"}))
+                .unwrap(),
+        );
+        assert!(ids.contains(&"complex-1".to_string()));
+
+        let ids = task_ids_from(
+            &server_complex
+                .handle_list_tasks(&json!({"complexity": "low", "format": "json"}))
+                .unwrap(),
+        );
+        assert!(ids.is_empty());
+
+        // Test weight_gte filter — negative case: isolated tasks have 0 downstream weight
+        let ids = task_ids_from(
+            &server
+                .handle_list_tasks(&json!({"weight_gte": 1, "format": "json"}))
+                .unwrap(),
+        );
+        assert!(ids.is_empty());
+
+        // Test weight_gte filter — positive case: weight_gte=0 passes all tasks
+        let ids = task_ids_from(
+            &server
+                .handle_list_tasks(&json!({"weight_gte": 0, "format": "json"}))
+                .unwrap(),
+        );
+        assert!(!ids.is_empty());
+        assert!(ids.contains(&"target-1".to_string()));
+        assert!(ids.contains(&"task-1".to_string()));
     }
 
     /// Tier-1 must produce fresh ready-list classification (membership) on
