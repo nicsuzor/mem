@@ -722,6 +722,10 @@ struct BatchFilterArgs {
     #[arg(long)]
     project: Option<String>,
 
+    /// Include tasks without a project when filtering by project
+    #[arg(long)]
+    include_untagged: bool,
+
     /// Filter by parent (direct children)
     #[arg(long)]
     parent: Option<String>,
@@ -3158,6 +3162,8 @@ fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
         title_contains: args.title_contains.clone(),
         assignee: None,
         complexity: args.complexity.clone(),
+        project: args.project.clone(),
+        include_untagged: if args.include_untagged { Some(true) } else { None },
         weight_gte: args.weight_gte,
     }
 }

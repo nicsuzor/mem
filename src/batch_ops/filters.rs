@@ -42,6 +42,10 @@ pub struct FilterSet {
     pub assignee: Option<String>,
     /// Match complexity tag
     pub complexity: Option<String>,
+    /// Match project
+    pub project: Option<String>,
+    /// Include tasks without a project when filtering by project
+    pub include_untagged: Option<bool>,
     /// Downstream weight >= N
     pub weight_gte: Option<u32>,
 }
@@ -63,6 +67,8 @@ impl FilterSet {
             && self.title_contains.is_none()
             && self.assignee.is_none()
             && self.complexity.is_none()
+            && self.project.is_none()
+            && self.include_untagged.is_none()
             && self.weight_gte.is_none()
     }
 
@@ -137,6 +143,12 @@ impl FilterSet {
         }
         if let Some(ref c) = self.complexity {
             parts.push(format!("complexity={c}"));
+        }
+        if let Some(ref p) = self.project {
+            parts.push(format!("project={p}"));
+        }
+        if self.include_untagged == Some(true) {
+            parts.push("include_untagged=true".to_string());
         }
         if let Some(w) = self.weight_gte {
             parts.push(format!("weight>={w}"));
@@ -225,9 +237,23 @@ impl FilterSet {
             }
         }
 
+        // Project filter
+        if let Some(ref project) = self.project {
+            let matches_project = node
+                .project
+                .as_deref()
+                .map(|p| p.eq_ignore_ascii_case(project))
+                .unwrap_or(false);
+
+            let include_untagged = self.include_untagged.unwrap_or(false);
+            if !matches_project && !(include_untagged && node.project.is_none()) {
+                return false;
+            }
+        }
+
         // Orphan: no parent AND no project
         if self.orphan == Some(true) {
-            if node.parent.is_some() {
+            if node.parent.is_some() || node.project.is_some() {
                 return false;
             }
         }
@@ -294,6 +320,8 @@ pub fn parse_filter_set(args: &serde_json::Value) -> FilterSet {
         title_contains: args.get("title_contains").and_then(|v| v.as_str().map(String::from)),
         assignee: args.get("assignee").and_then(|v| v.as_str().map(String::from)),
         complexity: args.get("complexity").and_then(|v| v.as_str().map(String::from)),
+        project: args.get("project").and_then(|v| v.as_str().map(String::from)),
+        include_untagged: args.get("include_untagged").and_then(|v| v.as_bool()),
         weight_gte: args.get("weight_gte").and_then(|v| v.as_u64().map(|n| n as u32)),
     }
 }
