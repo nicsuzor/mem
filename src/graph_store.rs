@@ -2681,10 +2681,7 @@ fn compute_divergence_anomalies(
 /// Returns the set of reachable node IDs so the caller can both mark nodes
 /// and pass the set to layout algorithms.
 fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
-    let mut all_ids: HashSet<&str> = HashSet::with_capacity(nodes.len());
-    for n in nodes {
-        all_ids.insert(n.id.as_str());
-    }
+    let all_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
 
     let mut unfinished_ids: HashSet<&str> = HashSet::with_capacity(nodes.len());
     for n in nodes {
