@@ -667,25 +667,19 @@ fn check_frontmatter(
         });
     }
 
-    // Deprecated: project field
-    if let Some(project_val) = fm.get("project").and_then(|v| v.as_str()) {
-        let doc_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let has_parent = fm.contains_key("parent");
-        // Fixable if: no parent (orphan), or has ancestor matching project value
-        let fixable = if !has_parent {
-            true
-        } else if let Some(amap) = ancestor_map {
-            has_matching_ancestor(doc_id, project_val, amap)
-        } else {
-            false
-        };
-        diags.push(Diagnostic {
-            severity: Severity::Warning,
-            rule: "fm-deprecated-project",
-            message: "frontmatter contains deprecated 'project' field — project membership is derived from parent hierarchy".into(),
-            line: None,
-            fixable,
-        });
+    // Project field: required for actionable tasks (ready/queued)
+    if is_task_type {
+        let status_val = fm.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let canonical_status = graph::resolve_status_alias(status_val);
+        if matches!(canonical_status, "ready" | "queued") && !fm.contains_key("project") {
+            diags.push(Diagnostic {
+                severity: Severity::Warning,
+                rule: "fm-missing-project",
+                message: "Actionable tasks (ready/queued) must have an explicit 'project' field".into(),
+                line: None,
+                fixable: false,
+            });
+        }
     }
 
     // Unknown keys
@@ -1696,7 +1690,7 @@ mod tests {
     #[test]
     fn valid_task_no_warnings() {
         let diags = lint_str(
-            "---\nid: test-abc12345\ntitle: Test task\ntype: task\nstatus: active\npriority: 2\nparent: proj-00000000\ntags:\n- foo\n---\n\nBody content.\n",
+            "---\nid: test-abc12345\ntitle: Test task\ntype: task\nstatus: active\nproject: test\npriority: 2\nparent: proj-00000000\ntags:\n- foo\n---\n\nBody content.\n",
         );
         // Should only have key-order style issues at most
         assert!(
