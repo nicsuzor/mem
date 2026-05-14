@@ -1102,16 +1102,13 @@ impl GraphNode {
         });
 
         if let Some(nt) = node_type.as_deref() {
-            if crate::graph_store::ACTIONABLE_TYPES.contains(&nt) {
+            if TASK_TYPES.contains(&nt) && nt != "project" {
                 if let Some(ref st) = status {
-                    if matches!(st.as_str(), "ready" | "queued") {
-                        let has_project = fm.as_ref().map_or(false, |f| f.get("project").is_some());
-                        if !has_project {
-                            parse_warnings.push(ParseWarning {
-                                field: "project".to_string(),
-                                message: "Actionable tasks (ready/queued) must have an explicit 'project' field".to_string(),
-                            });
-                        }
+                    if matches!(st.as_str(), "ready" | "queued") && project.is_none() {
+                        parse_warnings.push(ParseWarning {
+                            field: "project".to_string(),
+                            message: "Actionable tasks (ready/queued) must have an explicit 'project' field".to_string(),
+                        });
                     }
                 }
             }

@@ -667,8 +667,8 @@ fn check_frontmatter(
         });
     }
 
-    // Project field: required for actionable tasks (ready/queued)
-    if is_task_type {
+    // Project field: required for actionable tasks (ready/queued); project nodes are their own project
+    if is_task_type && node_type != "project" {
         let status_val = fm.get("status").and_then(|v| v.as_str()).unwrap_or("");
         let canonical_status = graph::resolve_status_alias(status_val);
         if matches!(canonical_status, "ready" | "queued") && !fm.contains_key("project") {

@@ -1919,10 +1919,10 @@ fn compute_project_field(nodes: &mut [GraphNode], edges: &[Edge]) {
     }
 
     let mut project_labels: Vec<Option<String>> = vec![None; nodes.len()];
+    let mut queue = std::collections::VecDeque::new();
+    let mut visited = vec![false; nodes.len()];
 
     for i in 0..nodes.len() {
-        // 0. If frontmatter explicitly defines a project, or we already resolved one, use it.
-        // Wait, if node.project is explicitly set in frontmatter, it's already there!
         if nodes[i].project.is_some() {
             continue;
         }
@@ -1933,14 +1933,16 @@ fn compute_project_field(nodes: &mut [GraphNode], edges: &[Edge]) {
             continue;
         }
 
-        // 2. Walk up ancestor chain via BFS
-        let mut queue = std::collections::VecDeque::new();
-        let mut visited = std::collections::HashSet::new();
+        // 2. Walk up ancestor chain via BFS; reuse buffers to avoid per-node allocation
+        visited.fill(false);
+        queue.clear();
 
-        visited.insert(i);
+        visited[i] = true;
         for &neighbor_idx in &adj[i] {
-            queue.push_back((neighbor_idx, 1));
-            visited.insert(neighbor_idx);
+            if !visited[neighbor_idx] {
+                visited[neighbor_idx] = true;
+                queue.push_back((neighbor_idx, 1));
+            }
         }
 
         while let Some((curr_idx, depth)) = queue.pop_front() {
@@ -1952,7 +1954,8 @@ fn compute_project_field(nodes: &mut [GraphNode], edges: &[Edge]) {
                 break;
             }
             for &neighbor_idx in &adj[curr_idx] {
-                if visited.insert(neighbor_idx) {
+                if !visited[neighbor_idx] {
+                    visited[neighbor_idx] = true;
                     queue.push_back((neighbor_idx, depth + 1));
                 }
             }
