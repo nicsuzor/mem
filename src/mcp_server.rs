@@ -2054,19 +2054,25 @@ impl PkbSearchServer {
             });
         let graph = self.graph.read();
         let mut orphans = graph.orphans();
+        let mut lint_warnings: Vec<&crate::graph::GraphNode> = graph
+            .nodes()
+            .filter(|n| !n.parse_warnings.is_empty())
+            .collect();
 
         // Filter by type if requested
         if let Some(ref types) = type_filter {
-            orphans.retain(|n| {
+            let matches_type = |n: &&crate::graph::GraphNode| {
                 n.node_type
                     .as_deref()
                     .map(|t| types.iter().any(|f| f.eq_ignore_ascii_case(t)))
                     .unwrap_or(false)
-            });
+            };
+            orphans.retain(matches_type);
+            lint_warnings.retain(matches_type);
         } else if !include_all {
             // Default: only show actionable types and exclude completed nodes
             // — matches graph_stats orphan_count definition
-            orphans.retain(|n| {
+            let matches_default = |n: &&crate::graph::GraphNode| {
                 let is_actionable = n
                     .node_type
                     .as_deref()
@@ -2074,42 +2080,74 @@ impl PkbSearchServer {
                     .unwrap_or(false);
                 let is_completed = crate::graph::is_completed(n.status.as_deref());
                 is_actionable && !is_completed
-            });
+            };
+            orphans.retain(matches_default);
+            lint_warnings.retain(matches_default);
         }
 
-        if orphans.is_empty() {
+        if orphans.is_empty() && lint_warnings.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
-                "No orphan nodes found. All nodes have a valid parent.",
+                "No orphan nodes or lint warnings found.",
             )]));
         }
 
-        // Sort by label for consistent output
-        orphans.sort_by(|a, b| a.label.cmp(&b.label));
+        let mut output = String::new();
 
-        let max = limit.unwrap_or(orphans.len());
-        let total = orphans.len();
-        let showing = total.min(max);
+        if !orphans.is_empty() {
+            // Sort by label for consistent output
+            orphans.sort_by(|a, b| a.label.cmp(&b.label));
 
-        let type_desc = type_filter
-            .as_ref()
-            .map(|t| format!(" (types: {})", t.join(", ")))
-            .unwrap_or_default();
+            let max = limit.unwrap_or(orphans.len());
+            let total = orphans.len();
+            let showing = total.min(max);
 
-        let mut output = format!(
-            "**{total} orphan nodes{type_desc}** (showing {showing})\n\nThese nodes have no valid parent.\n\n"
-        );
+            let type_desc = type_filter
+                .as_ref()
+                .map(|t| format!(" (types: {})", t.join(", ")))
+                .unwrap_or_default();
 
-        for node in orphans.iter().take(max) {
-            output.push_str(&format!("- **{}**", node.label));
-            if let Some(ref t) = node.node_type {
-                output.push_str(&format!(" [{t}]"));
+            output.push_str(&format!(
+                "**{total} orphan nodes{type_desc}** (showing {showing})\n\nThese nodes have no valid parent.\n\n"
+            ));
+
+            for node in orphans.iter().take(max) {
+                output.push_str(&format!("- **{}**", node.label));
+                if let Some(ref t) = node.node_type {
+                    output.push_str(&format!(" [{t}]"));
+                }
+                let cid = node.task_id.as_deref().unwrap_or(&node.id);
+                output.push_str(&format!(" — `{cid}`\n"));
             }
-            let cid = node.task_id.as_deref().unwrap_or(&node.id);
-            output.push_str(&format!(" — `{cid}`\n"));
+
+            if total > max {
+                output.push_str(&format!("\n...and {} more\n", total - max));
+            }
+            output.push_str("\n");
         }
 
-        if total > max {
-            output.push_str(&format!("\n...and {} more\n", total - max));
+        if !lint_warnings.is_empty() {
+            lint_warnings.sort_by(|a, b| a.label.cmp(&b.label));
+            
+            let max = limit.unwrap_or(lint_warnings.len());
+            let total = lint_warnings.len();
+            let showing = total.min(max);
+            
+            output.push_str(&format!(
+                "**{total} nodes with lint warnings** (showing {showing})\n\n"
+            ));
+
+            for node in lint_warnings.iter().take(max) {
+                output.push_str(&format!("- **{}**", node.label));
+                let cid = node.task_id.as_deref().unwrap_or(&node.id);
+                output.push_str(&format!(" — `{cid}`\n"));
+                for w in &node.parse_warnings {
+                    output.push_str(&format!("  - [{}] {}\n", w.field, w.message));
+                }
+            }
+
+            if total > max {
+                output.push_str(&format!("\n...and {} more\n", total - max));
+            }
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))

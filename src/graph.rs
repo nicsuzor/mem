@@ -1003,6 +1003,9 @@ impl GraphNode {
         let waiting_since = fm
             .as_ref()
             .and_then(|f| f.get("waiting_since").and_then(|v| v.as_str()).map(String::from));
+        let project = fm
+            .as_ref()
+            .and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
         let confidence = fm
             .as_ref()
             .and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
@@ -1098,6 +1101,19 @@ impl GraphNode {
                 .map(String::from)
         });
 
+        if let Some(nt) = node_type.as_deref() {
+            if TASK_TYPES.contains(&nt) && nt != "project" {
+                if let Some(ref st) = status {
+                    if matches!(st.as_str(), "ready" | "queued") && project.is_none() {
+                        parse_warnings.push(ParseWarning {
+                            field: "project".to_string(),
+                            message: "Actionable tasks (ready/queued) must have an explicit 'project' field".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
         let sg = status.as_deref().map(|s| status_group(Some(s)).to_string());
 
         GraphNode {
@@ -1128,7 +1144,7 @@ impl GraphNode {
             assignee,
             stakeholder,
             waiting_since,
-            project: None,
+            project,
             goals,
             complexity,
             effort,

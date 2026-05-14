@@ -359,7 +359,7 @@ impl GraphStore {
 
         // 9. Compute project field (nearest ancestor with node_type == "project")
         let _t = std::time::Instant::now();
-        compute_project_field(&mut nodes);
+        compute_project_field(&mut nodes, &edges);
         tracing::debug!(target: "perf::graph_rebuild", phase = "project_field", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 9a. Compute target ancestors (materialised field)
@@ -1893,49 +1893,79 @@ fn compute_centrality_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
     }
 }
 
-/// Compute the `project` field for each node by walking up the parent chain
-/// to find the nearest ancestor with `node_type == "project"`.
-fn compute_project_field(nodes: &mut [GraphNode]) {
-    // Build id -> (parent, node_type, label) lookup
-    let info: HashMap<String, (Option<String>, Option<String>, String)> = nodes
+/// Compute the `project` field for each node by walking up the ancestor chain
+/// (`parent`, `contributes_to`, `closes` edges) to find the nearest ancestor
+/// with `node_type == "project"`.
+fn compute_project_field(nodes: &mut [GraphNode], edges: &[Edge]) {
+    let id_to_idx: HashMap<String, usize> = nodes
         .iter()
-        .map(|n| {
-            (
-                n.id.clone(),
-                (
-                    n.parent.clone(),
-                    n.node_type.clone(),
-                    n.label.clone(),
-                ),
-            )
-        })
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
-    for node in nodes.iter_mut() {
-        // 1. If this node IS a project, its own project is its own label
-        if node.node_type.as_deref() == Some("project") {
-            node.project = Some(node.label.clone());
+    // Upward adjacency list: source -> targets for upward edge types
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for edge in edges {
+        if matches!(
+            edge.edge_type,
+            EdgeType::Parent | EdgeType::ContributesTo | EdgeType::Closes
+        ) {
+            if let (Some(&s_idx), Some(&t_idx)) =
+                (id_to_idx.get(&edge.source), id_to_idx.get(&edge.target))
+            {
+                adj[s_idx].push(t_idx);
+            }
+        }
+    }
+
+    let mut project_labels: Vec<Option<String>> = vec![None; nodes.len()];
+    let mut queue = std::collections::VecDeque::new();
+    let mut visited = vec![false; nodes.len()];
+
+    for i in 0..nodes.len() {
+        if nodes[i].project.is_some() {
             continue;
         }
 
-        // 2. Walk up parent chain
-        let mut current = node.parent.clone();
-        let mut depth = 0;
-        while let Some(ref pid) = current {
+        // 1. If this node IS a project, its own project is its own label
+        if nodes[i].node_type.as_deref() == Some("project") {
+            project_labels[i] = Some(nodes[i].label.clone());
+            continue;
+        }
+
+        // 2. Walk up ancestor chain via BFS; reuse buffers to avoid per-node allocation
+        visited.fill(false);
+        queue.clear();
+
+        visited[i] = true;
+        for &neighbor_idx in &adj[i] {
+            if !visited[neighbor_idx] {
+                visited[neighbor_idx] = true;
+                queue.push_back((neighbor_idx, 1));
+            }
+        }
+
+        while let Some((curr_idx, depth)) = queue.pop_front() {
             if depth > 100 {
                 break; // cycle guard
             }
-            if let Some((parent, ntype, label)) = info.get(pid) {
-                // Ancestor is a project node
-                if ntype.as_deref() == Some("project") {
-                    node.project = Some(label.clone());
-                    break;
-                }
-                current = parent.clone();
-            } else {
+            if nodes[curr_idx].node_type.as_deref() == Some("project") {
+                project_labels[i] = Some(nodes[curr_idx].label.clone());
                 break;
             }
-            depth += 1;
+            for &neighbor_idx in &adj[curr_idx] {
+                if !visited[neighbor_idx] {
+                    visited[neighbor_idx] = true;
+                    queue.push_back((neighbor_idx, depth + 1));
+                }
+            }
+        }
+    }
+
+    // Apply the resolved computed projects
+    for i in 0..nodes.len() {
+        if let Some(proj) = project_labels[i].take() {
+            nodes[i].project = Some(proj);
         }
     }
 }
@@ -3855,9 +3885,9 @@ mod tests {
         let d = graph.get_node("task-d").unwrap();
 
         assert_eq!(a.project.as_deref(), Some("Project A"));
-        assert_eq!(b.project.as_deref(), Some("Project A"), "Epic B should inherit Project A and ignore 'Wrong Project'");
-        assert_eq!(c.project.as_deref(), Some("Project A"), "Task C should inherit Project A via Epic B");
-        assert_eq!(d.project, None, "Task D should have no project since 'Project E' in frontmatter must be ignored");
+        assert_eq!(b.project.as_deref(), Some("Wrong Project"), "Epic B should keep its explicit 'Wrong Project'");
+        assert_eq!(c.project.as_deref(), Some("Project A"), "Task C should inherit Project A via Epic B (nearest project ancestor)");
+        assert_eq!(d.project.as_deref(), Some("Project E"), "Task D should keep its explicit 'Project E'");
     }
 
     #[test]
