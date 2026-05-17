@@ -5487,6 +5487,8 @@ impl PkbSearchServer {
                     "properties": {
                         "query": { "type": "string", "description": "Natural language search query" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
+                        "since": { "type": "string", "description": "Filter: date >= YYYY-MM-DD" },
+                        "before": { "type": "string", "description": "Filter: date <= YYYY-MM-DD" },
                         "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
                         "detail": { "type": "string", "description": "Result detail level: 'snippet' (300 chars), 'chunk' (full matching chunk, default), 'full' (entire document)", "enum": ["snippet", "chunk", "full"], "default": "chunk" }
                     },

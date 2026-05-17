@@ -84,6 +84,7 @@ pub struct MetadataPatch {
     pub status: Option<String>,
     pub tags: Vec<String>,
     pub id: Option<String>,
+    pub date: Option<String>,
     pub confidence: Option<f64>,
     pub file_hash: String,
 }
@@ -271,6 +272,7 @@ impl VectorStore {
                     status: doc.status.clone(),
                     tags: doc.tags.clone(),
                     id,
+                    date,
                     confidence,
                     file_hash: doc.file_hash.clone(),
                 }));
@@ -334,6 +336,7 @@ impl VectorStore {
                     entry.status = patch.status;
                     entry.tags = patch.tags;
                     entry.id = patch.id;
+                    entry.date = patch.date;
                     entry.confidence = patch.confidence;
                     entry.file_hash = Some(patch.file_hash);
                 } else {
@@ -431,16 +434,9 @@ impl VectorStore {
         let mut results: Vec<SearchResult> = Vec::new();
 
         for entry in self.documents.values() {
-            if let Some(entry_date) = &entry.date {
-                if let Some(since_date) = since {
-                    if entry_date.as_str() < since_date {
-                        continue;
-                    }
-                }
-                if let Some(before_date) = before {
-                    if entry_date.as_str() > before_date {
-                        continue;
-                    }
+            if let Some(entry_date) = entry.date.as_deref() {
+                if since.map_or(false, |s| entry_date < s) || before.map_or(false, |b| entry_date > b) {
+                    continue;
                 }
             }
 
