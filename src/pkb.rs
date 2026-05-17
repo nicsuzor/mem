@@ -66,6 +66,25 @@ impl PkbDocument {
 
         parts.join("\n\n")
     }
+
+    /// Check if this document should be synced/indexed.
+    /// Daily notes are excluded by default unless explicitly opted in.
+    pub fn is_sync_enabled(&self) -> bool {
+        let sync_field = self.frontmatter.as_ref().and_then(|fm| fm.get("sync").and_then(|v| v.as_bool()));
+        
+        match sync_field {
+            Some(false) => false,
+            Some(true) => true,
+            None => {
+                if let Some(doc_type) = &self.doc_type {
+                    if doc_type == "daily" || doc_type == "daily-note" {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
+    }
 }
 
 /// Compute the blake3 content hash of a file

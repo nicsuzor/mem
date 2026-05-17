@@ -42,6 +42,17 @@ pub fn check_index_staleness(
     files
         .iter()
         .filter(|file_path| {
+            if let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) {
+                let rel_path = file_path.strip_prefix(pkb_root).unwrap_or(file_path);
+                let path_str = rel_path.to_string_lossy().to_string();
+                
+                if !doc.is_sync_enabled() {
+                    // Needs update (to be removed) if it is currently in the store
+                    return store.get_entry(&path_str).is_some();
+                }
+            } else {
+                return false;
+            }
             let (path_str, content_hash) = rel_path_and_hash(pkb_root, file_path);
             store.needs_update(&path_str, &content_hash)
         })
@@ -81,21 +92,7 @@ pub fn index_pkb(
         pkb_root.display()
     );
 
-    let existing_paths: HashSet<String> = files
-        .iter()
-        .map(|p| {
-            p.strip_prefix(pkb_root)
-                .unwrap_or(p)
-                .to_string_lossy()
-                .to_string()
-        })
-        .collect();
-
-    let removed = {
-        let mut store = store.write();
-        store.remove_deleted(&existing_paths)
-    };
-
+    let mut valid_paths: HashSet<String> = HashSet::new();
     let mut docs_to_index: Vec<pkb::PkbDocument> = Vec::new();
     let mut metadata_only_updates: Vec<pkb::PkbDocument> = Vec::new();
     let mut all_chunks: Vec<String> = Vec::new();
@@ -104,16 +101,22 @@ pub fn index_pkb(
     for file_path in &files {
         let (path_str, file_hash) = rel_path_and_hash(pkb_root, file_path);
 
-        let needs_update = force_all || {
-            let store = store.read();
-            store.needs_update(&path_str, &file_hash)
-        };
-
-        if !needs_update {
-            continue;
-        }
-
         if let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) {
+            if !doc.is_sync_enabled() {
+                continue;
+            }
+            
+            valid_paths.insert(path_str.clone());
+
+            let needs_update = force_all || {
+                let store = store.read();
+                store.needs_update(&path_str, &file_hash)
+            };
+
+            if !needs_update {
+                continue;
+            }
+
             // Check if only frontmatter changed by comparing body hash (doc.content_hash)
             let body_unchanged = {
                 let store = store.read();
@@ -145,6 +148,11 @@ pub fn index_pkb(
             tracing::debug!("Skipped (parse failed): {}", file_path.display());
         }
     }
+
+    let removed = {
+        let mut store = store.write();
+        store.remove_deleted(&valid_paths)
+    };
 
     let mut indexed = 0;
 

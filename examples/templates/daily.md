@@ -6,6 +6,7 @@ status: active
 priority: 2
 parent: <your-project-id>
 project: <your-project>
+sync: false
 tags:
   - daily
   - recurring
