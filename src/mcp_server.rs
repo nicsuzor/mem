@@ -1094,12 +1094,15 @@ impl PkbSearchServer {
         let store = self.store.read();
         // When a type filter is present (or done tasks are excluded) fetch
         // more candidates so we still fill the limit after filtering.
+        let since = args.get("since").and_then(|v| v.as_str());
+        let before = args.get("before").and_then(|v| v.as_str());
+
         let fetch_limit = if type_filter.is_some() || !include_done {
             limit * 10
         } else {
             limit * 3
         };
-        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
+        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root, since, before);
 
         let graph = self.graph.read();
 
@@ -1887,9 +1890,12 @@ impl PkbSearchServer {
             data: None,
         })?;
 
+        let since = args.get("since").and_then(|v| v.as_str());
+        let before = args.get("before").and_then(|v| v.as_str());
+
         let store = self.store.read();
         let fetch_limit = limit * 2;
-        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root);
+        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root, since, before);
 
         // Build proximity boost map if boost_id provided
         let boost_map: std::collections::HashMap<String, f32> = if let Some(bid) = boost_id {
@@ -3234,7 +3240,7 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let results = store.search(&query_embedding, limit * 3, &self.pkb_root);
+        let results = store.search(&query_embedding, limit * 3, &self.pkb_root, None, None);
 
         let graph = self.graph.read();
 
@@ -5499,6 +5505,8 @@ impl PkbSearchServer {
                     "properties": {
                         "query": { "type": "string", "description": "Natural language search query" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
+                        "since": { "type": "string", "description": "Filter: date >= YYYY-MM-DD" },
+                        "before": { "type": "string", "description": "Filter: date <= YYYY-MM-DD" },
                         "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
                         "detail": { "type": "string", "description": "Result detail level: 'snippet' (300 chars), 'chunk' (full matching chunk, default), 'full' (entire document)", "enum": ["snippet", "chunk", "full"], "default": "chunk" }
                     },
@@ -5547,6 +5555,8 @@ impl PkbSearchServer {
                     "properties": {
                         "query": { "type": "string", "description": "Query to search tasks" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
+                        "since": { "type": "string", "description": "Filter: date >= YYYY-MM-DD" },
+                        "before": { "type": "string", "description": "Filter: date <= YYYY-MM-DD" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." },
                         "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (hides closed tasks so search returns actionable work)." },
                         "type": { "type": "string", "description": "Filter by task type. Single value (e.g. 'epic') or comma-separated list (e.g. 'epic,feature'). Recognised actionable types: project, epic, task, learn. Default: all actionable types." }

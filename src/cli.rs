@@ -65,6 +65,14 @@ enum Commands {
         /// Show full snippets (not truncated)
         #[arg(short, long)]
         full: bool,
+
+        /// Only show documents with date >= YYYY-MM-DD
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Only show documents with date <= YYYY-MM-DD
+        #[arg(long)]
+        before: Option<String>,
     },
 
     /// Add a file to the index
@@ -997,7 +1005,7 @@ async fn main() -> Result<()> {
     };
 
     match command {
-        Commands::Search { query, limit, full } => {
+        Commands::Search { query, limit, full, since, before } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
             let query_text = query.join(" ");
@@ -1007,7 +1015,7 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode_query(&query_text)?;
-            let results = store.read().search(&query_embedding, limit, &pkb_root);
+            let results = store.read().search(&query_embedding, limit, &pkb_root, since.as_deref(), before.as_deref());
 
             if results.is_empty() {
                 println!("No results found for: {query_text}");
@@ -2364,7 +2372,7 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode(&query_text)?;
-            let results = store.read().search(&query_embedding, limit * 3, &pkb_root);
+            let results = store.read().search(&query_embedding, limit * 3, &pkb_root, None, None);
 
             let memory_types = ["memory", "note", "insight", "observation"];
             let mut count = 0;

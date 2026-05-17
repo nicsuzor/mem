@@ -76,7 +76,7 @@ pub fn evaluate(
             }
         };
 
-        let results = store.search(&query_emb, k, pkb_root);
+        let results = store.search(&query_emb, k, pkb_root, None, None);
 
         // Find ranks of expected hits
         let mut best_hit_rank: Option<usize> = None;

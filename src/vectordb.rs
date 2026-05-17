@@ -29,6 +29,9 @@ pub struct DocumentEntry {
     /// Document ID (from frontmatter)
     #[serde(default)]
     pub id: Option<String>,
+    /// Document date (from frontmatter)
+    #[serde(default)]
+    pub date: Option<String>,
     /// Confidence level (0.0 - 1.0)
     #[serde(default)]
     pub confidence: Option<f64>,
@@ -63,6 +66,7 @@ pub struct SearchResult {
     /// Full text of the best-matching chunk
     pub chunk_text: String,
     pub id: Option<String>,
+    pub date: Option<String>,
     pub doc_type: Option<String>,
     pub status: Option<String>,
     pub tags: Vec<String>,
@@ -80,6 +84,7 @@ pub struct MetadataPatch {
     pub status: Option<String>,
     pub tags: Vec<String>,
     pub id: Option<String>,
+    pub date: Option<String>,
     pub confidence: Option<f64>,
     pub file_hash: String,
 }
@@ -223,12 +228,13 @@ impl VectorStore {
         }
     }
 
-    /// Extract id and confidence from frontmatter
-    fn extract_frontmatter_fields(doc: &PkbDocument) -> (Option<String>, Option<f64>) {
+    /// Extract id, confidence, and date from frontmatter
+    fn extract_frontmatter_fields(doc: &PkbDocument) -> (Option<String>, Option<f64>, Option<String>) {
         let fm = doc.frontmatter.as_ref();
         let id = fm.and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
         let confidence = fm.and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
-        (id, confidence)
+        let date = fm.and_then(|f| f.get("date").and_then(|v| v.as_str()).map(String::from));
+        (id, confidence, date)
     }
 
     /// Build the upsert payload **without holding any lock** on `self`.
@@ -258,7 +264,7 @@ impl VectorStore {
                     .as_deref()
                     .map_or(false, |h| h == incoming_body_hash);
             if body_match {
-                let (id, confidence) = Self::extract_frontmatter_fields(doc);
+                let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
                 return Ok(PreparedUpsert::MetadataOnly(MetadataPatch {
                     path_key: doc.path.to_string_lossy().to_string(),
                     title: doc.title.clone(),
@@ -266,6 +272,7 @@ impl VectorStore {
                     status: doc.status.clone(),
                     tags: doc.tags.clone(),
                     id,
+                    date,
                     confidence,
                     file_hash: doc.file_hash.clone(),
                 }));
@@ -280,7 +287,7 @@ impl VectorStore {
         let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
         let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
 
-        let (id, confidence) = Self::extract_frontmatter_fields(doc);
+        let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
 
         // Defensive: an entry with empty chunk_embeddings is invisible to
         // search (the max-similarity loop never enters and best_score stays
@@ -301,6 +308,7 @@ impl VectorStore {
             status: doc.status.clone(),
             tags: doc.tags.clone(),
             id,
+            date,
             confidence,
             content_hash: Some(incoming_body_hash.clone()),
             file_hash: Some(doc.file_hash.clone()),
@@ -328,6 +336,7 @@ impl VectorStore {
                     entry.status = patch.status;
                     entry.tags = patch.tags;
                     entry.id = patch.id;
+                    entry.date = patch.date;
                     entry.confidence = patch.confidence;
                     entry.file_hash = Some(patch.file_hash);
                 } else {
@@ -365,7 +374,7 @@ impl VectorStore {
         chunk_embeddings: Vec<Vec<f32>>,
     ) {
         let path_str = doc.path.to_string_lossy().to_string();
-        let (id, confidence) = Self::extract_frontmatter_fields(doc);
+        let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
         let body_chunks =
             embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
         let body_hash = doc.body_hash();
@@ -376,6 +385,7 @@ impl VectorStore {
             status: doc.status.clone(),
             tags: doc.tags.clone(),
             id,
+            date,
             confidence,
             content_hash: Some(body_hash.clone()),
             file_hash: Some(doc.file_hash.clone()),
@@ -417,11 +427,19 @@ impl VectorStore {
         query_embedding: &[f32],
         limit: usize,
         pkb_root: &Path,
+        since: Option<&str>,
+        before: Option<&str>,
     ) -> Vec<SearchResult> {
         // Build candidate list: for each document, use max similarity across chunks
         let mut results: Vec<SearchResult> = Vec::new();
 
         for entry in self.documents.values() {
+            if let Some(entry_date) = entry.date.as_deref() {
+                if since.map_or(false, |s| entry_date < s) || before.map_or(false, |b| entry_date > b) {
+                    continue;
+                }
+            }
+
             let mut best_score = f32::NEG_INFINITY;
             let mut best_chunk_idx = 0usize;
 
@@ -470,6 +488,7 @@ impl VectorStore {
                     snippet,
                     chunk_text: full_chunk,
                     id: entry.id.clone(),
+                    date: entry.date.clone(),
                     doc_type: entry.doc_type.clone(),
                     status: entry.status.clone(),
                     tags: entry.tags.clone(),
@@ -531,6 +550,7 @@ impl VectorStore {
                 snippet: String::new(),
                 chunk_text: String::new(),
                 id: entry.id.clone(),
+                date: entry.date.clone(),
                 doc_type: entry.doc_type.clone(),
                 status: entry.status.clone(),
                 tags: entry.tags.clone(),
@@ -621,6 +641,7 @@ mod tests {
             status: status.map(String::from),
             tags: tags.iter().map(|s| s.to_string()).collect(),
             id: id.map(String::from),
+            date: None,
             confidence,
             content_hash: Some("test_hash_123".to_string()),
             file_hash: Some("test_hash_123".to_string()),
@@ -763,7 +784,7 @@ mod tests {
         let store = build_test_store();
         let root = Path::new("/pkb");
         // Query vector aligned with [1,0,0] should match the task entry
-        let results = store.search(&[1.0, 0.0, 0.0], 10, root);
+        let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None);
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "Fix the bug");
         assert!((results[0].score - 1.0).abs() < 0.01);
@@ -773,7 +794,7 @@ mod tests {
     fn test_search_respects_limit() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[0.5, 0.5, 0.5], 2, root);
+        let results = store.search(&[0.5, 0.5, 0.5], 2, root, None, None);
         assert_eq!(results.len(), 2);
     }
 
@@ -781,7 +802,7 @@ mod tests {
     fn test_search_sorted_by_score_descending() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[0.5, 0.5, 0.0], 10, root);
+        let results = store.search(&[0.5, 0.5, 0.0], 10, root, None, None);
         for i in 1..results.len() {
             assert!(results[i - 1].score >= results[i].score);
         }
@@ -791,7 +812,7 @@ mod tests {
     fn test_search_empty_store() {
         let store = VectorStore::new(3);
         let root = Path::new("/pkb");
-        let results = store.search(&[1.0, 0.0, 0.0], 10, root);
+        let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None);
         assert!(results.is_empty());
     }
 
@@ -932,14 +953,14 @@ mod tests {
         store.insert_precomputed(&doc, vec!["chunk1".to_string()], vec![vec![1.0, 0.0, 0.0]]);
         assert_eq!(store.len(), 1);
         let root = Path::new("/pkb");
-        let results = store.search(&[1.0, 0.0, 0.0], 1, root);
+        let results = store.search(&[1.0, 0.0, 0.0], 1, root, None, None);
         assert_eq!(results[0].title, "Test Doc");
     }
     #[test]
     fn test_search_uses_chunk_texts_for_snippets() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[1.0, 0.0, 0.0], 1, root);
+        let results = store.search(&[1.0, 0.0, 0.0], 1, root, None, None);
         assert!(results[0].snippet.contains("body of"));
     }
 
@@ -1027,6 +1048,7 @@ mod tests {
                 status: Some("active".to_string()),
                 tags: vec!["old".to_string()],
                 id: Some("task-cheap".to_string()),
+                date: None,
                 confidence: None,
                 content_hash: Some(body_hash.clone()),
                 file_hash: Some("file_v1".to_string()),
@@ -1102,6 +1124,7 @@ mod tests {
                 status: None,
                 tags: vec![],
                 id: None,
+                date: None,
                 confidence: None,
                 content_hash: Some(old_body_hash.clone()),
                 file_hash: Some("file_v1".to_string()),
