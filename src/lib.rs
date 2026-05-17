@@ -42,35 +42,17 @@ pub fn check_index_staleness(
     files
         .iter()
         .filter(|file_path| {
-            if let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) {
-                let rel_path = file_path.strip_prefix(pkb_root).unwrap_or(file_path);
-                let path_str = rel_path.to_string_lossy().to_string();
-                
-                if !doc.is_sync_enabled() {
-                    // Needs update (to be removed) if it is currently in the store
-                    return store.get_entry(&path_str).is_some();
-                }
-            } else {
+            let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) else {
                 return false;
+            };
+            let path_str = doc.path.to_string_lossy().to_string();
+            if !doc.is_sync_enabled() {
+                // Needs update (to be removed) if it is currently in the store
+                return store.get_entry(&path_str).is_some();
             }
-            let (path_str, content_hash) = rel_path_and_hash(pkb_root, file_path);
-            store.needs_update(&path_str, &content_hash)
+            store.needs_update(&path_str, &doc.file_hash)
         })
         .count()
-}
-
-/// Compute relative path string and blake3 file hash for a file.
-fn rel_path_and_hash(
-    pkb_root: &std::path::Path,
-    file_path: &std::path::Path,
-) -> (String, String) {
-    let rel_path = file_path.strip_prefix(pkb_root).unwrap_or(file_path);
-    let path_str = rel_path.to_string_lossy().to_string();
-    let file_hash = std::fs::read(file_path)
-        .ok()
-        .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
-        .unwrap_or_default();
-    (path_str, file_hash)
 }
 
 /// Index PKB files into the vector store. Returns (indexed, removed, total).
@@ -99,54 +81,54 @@ pub fn index_pkb(
     let mut chunk_map: Vec<(usize, usize, usize)> = Vec::new();
 
     for file_path in &files {
-        let (path_str, file_hash) = rel_path_and_hash(pkb_root, file_path);
-
-        if let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) {
-            if !doc.is_sync_enabled() {
-                continue;
-            }
-            
-            valid_paths.insert(path_str.clone());
-
-            let needs_update = force_all || {
-                let store = store.read();
-                store.needs_update(&path_str, &file_hash)
-            };
-
-            if !needs_update {
-                continue;
-            }
-
-            // Check if only frontmatter changed by comparing body hash (doc.content_hash)
-            let body_unchanged = {
-                let store = store.read();
-                if let Some(existing) = store.get_entry(&path_str) {
-                    // Check content_hash (body-only hash, new) or body_hash (deprecated).
-                    // Use explicit OR so a non-matching content_hash does not suppress
-                    // the body_hash fallback (old stores used content_hash for full file).
-                    existing.content_hash.as_deref().map_or(false, |h| h == doc.content_hash)
-                        || existing.body_hash.as_deref().map_or(false, |h| h == doc.content_hash)
-                } else {
-                    false
-                }
-            };
-
-            if body_unchanged {
-                metadata_only_updates.push(doc);
-                continue;
-            }
-
-            let embedding_text = doc.embedding_text();
-            let chunks =
-                embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
-            let chunk_start = all_chunks.len();
-            let chunk_count = chunks.len();
-            all_chunks.extend(chunks);
-            chunk_map.push((docs_to_index.len(), chunk_start, chunk_count));
-            docs_to_index.push(doc);
-        } else {
+        let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) else {
             tracing::debug!("Skipped (parse failed): {}", file_path.display());
+            continue;
+        };
+
+        if !doc.is_sync_enabled() {
+            continue;
         }
+
+        let path_str = doc.path.to_string_lossy().to_string();
+        valid_paths.insert(path_str.clone());
+
+        let needs_update = force_all || {
+            let store = store.read();
+            store.needs_update(&path_str, &doc.file_hash)
+        };
+
+        if !needs_update {
+            continue;
+        }
+
+        // Check if only frontmatter changed by comparing body hash (doc.content_hash)
+        let body_unchanged = {
+            let store = store.read();
+            if let Some(existing) = store.get_entry(&path_str) {
+                // Check content_hash (body-only hash, new) or body_hash (deprecated).
+                // Use explicit OR so a non-matching content_hash does not suppress
+                // the body_hash fallback (old stores used content_hash for full file).
+                existing.content_hash.as_deref().map_or(false, |h| h == doc.content_hash)
+                    || existing.body_hash.as_deref().map_or(false, |h| h == doc.content_hash)
+            } else {
+                false
+            }
+        };
+
+        if body_unchanged {
+            metadata_only_updates.push(doc);
+            continue;
+        }
+
+        let embedding_text = doc.embedding_text();
+        let chunks =
+            embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
+        let chunk_start = all_chunks.len();
+        let chunk_count = chunks.len();
+        all_chunks.extend(chunks);
+        chunk_map.push((docs_to_index.len(), chunk_start, chunk_count));
+        docs_to_index.push(doc);
     }
 
     let removed = {
