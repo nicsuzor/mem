@@ -754,6 +754,16 @@ impl PkbSearchServer {
         // reindex's state and drain anything queued.
         self.maybe_drain_deferred();
 
+        if !doc.is_sync_enabled() {
+            let path_key = doc.path.to_string_lossy().to_string();
+            let removed = self.store.write().remove(&path_key);
+            if removed {
+                tracing::info!("Removed non-synced document from index: {}", doc.path.display());
+                self.save_store();
+            }
+            return;
+        }
+
         // Only defer when an *external* process holds the file lock. When
         // our own background save thread is the holder, the in-memory
         // state is the source of truth — we should proceed with the
@@ -841,18 +851,23 @@ impl PkbSearchServer {
         let _t_finalize = std::time::Instant::now();
 
         // Parse + prepare in parallel (no lock).
-        let prepared: Vec<crate::vectordb::PreparedUpsert> = modified_paths
+        let results: Vec<Result<crate::vectordb::PreparedUpsert, String>> = modified_paths
             .par_iter()
             .filter_map(|abs_path| {
                 let doc = crate::pkb::parse_file_relative(abs_path, &self.pkb_root)?;
                 let path_key = doc.path.to_string_lossy().to_string();
+                
+                if !doc.is_sync_enabled() {
+                    return Some(Err(path_key));
+                }
+
                 let existing = self.store.read().get_entry(&path_key).cloned();
                 match crate::vectordb::VectorStore::prepare_upsert(
                     &doc,
                     &self.embedder,
                     existing.as_ref(),
                 ) {
-                    Ok(p) => Some(p),
+                    Ok(p) => Some(Ok(p)),
                     Err(e) => {
                         tracing::warn!(
                             "finalize_batch: prepare_upsert failed for {}: {e}",
@@ -867,8 +882,11 @@ impl PkbSearchServer {
         // Single brief write lock for the whole batch.
         {
             let mut store = self.store.write();
-            for p in prepared {
-                store.apply_prepared(p);
+            for res in results {
+                match res {
+                    Ok(p) => store.apply_prepared(p),
+                    Err(path_key) => { store.remove(&path_key); }
+                }
             }
             for abs_path in removed_paths {
                 let path_key = abs_path
