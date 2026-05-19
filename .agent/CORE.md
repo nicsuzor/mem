@@ -1,5 +1,9 @@
 # mem — Developer Reference
 
+## Specifications (SSoT)
+
+**Always check the specs directory first** for design intent, feature specs, methodology, or architecture decisions. The canonical home for specifications is `specs/`. Specs describe approved current state only. Agents are forbidden from writing change memos, ADRs, or decision records that narrate motion.
+
 ## Path Discovery (CRITICAL)
 
 To discover project locations, read `.agents/context-map.json` in the relevant repo. If the map is missing or stale, HALT.
