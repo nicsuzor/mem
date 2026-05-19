@@ -33,7 +33,7 @@ These are correctness bugs that should be fixed independently of any surface cha
 
 `update_task` must handle `_add_depends_on`, `_remove_depends_on`, `_add_tags`, `_remove_tags` identically to `batch_update`.
 
-**Implementation**: Extract the special-key expansion from `batch_ops/update.rs` into a shared helper in `document_crud.rs` (e.g., `expand_special_update_keys(node: &GraphNode, updates: Map) -> Map`). Call it from both `handle_update_task` and `batch_update` before invoking `update_document`.
+**Implementation**: Extract the special-key expansion from `batch_ops/update.rs` into a shared helper in `document_crud.rs` (e.g., `expand_special_update_keys(node: &GraphNode, updates: Map) -> Result<Map, McpError>`). Call it from both `handle_update_task` and `batch_update` before invoking `update_document`. The helper must return `Err(McpError::invalid_params(...))` for malformed values — e.g., `_add_depends_on` value that is not a string or array of strings, `_add_tags` value that is not a string or array of strings. Callers propagate the error immediately without writing.
 
 **Verification**: `update_task(id=X, updates={"_add_depends_on": ["Y"]})` must result in Y appearing in X's `depends_on` frontmatter field; graph must reflect the DependsOn edge after Tier-1 rebuild.
 
