@@ -90,6 +90,17 @@ pub struct PkbSearchServer {
     /// (not coalesced). Used by the bench harness and tests to verify
     /// coalescing is working.
     tier2_executions: Arc<std::sync::atomic::AtomicU64>,
+    /// Serialises Tier-1 rebuilds so the clone-mutate-swap sequence in
+    /// `rebuild_graph_for_pkb_document` / `rebuild_graph_remove` is atomic
+    /// with respect to other Tier-1 callers. Without it, two concurrent
+    /// rebuilds race on the `nodes_cloned()` snapshot: the later-finishing
+    /// thread's snapshot pre-dates the earlier thread's insert, so its swap
+    /// silently overwrites the new node. The patch-merge step in Tier-2
+    /// can't recover the lost node because the now-overwritten live graph
+    /// is what it reads from. Observed as `create_task` returning the
+    /// "not yet visible in the graph (id=...)" binding-lag error when two
+    /// create_task calls arrive within ~1ms.
+    tier1_rebuild_mutex: Arc<Mutex<()>>,
 }
 
 impl PkbSearchServer {
@@ -118,6 +129,7 @@ impl PkbSearchServer {
             #[cfg(test)]
             tier2_sleep_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tier2_executions: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tier1_rebuild_mutex: Arc::new(Mutex::new(())),
         }
     }
 
@@ -279,6 +291,15 @@ impl PkbSearchServer {
     /// Concurrency: takes the graph write lock for the duration of the
     /// in-place rebuild. Tier-2 is dispatched via `tokio::spawn_blocking`.
     fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
+        // Serialise Tier-1 rebuilds: the read-clone / mutate / swap window
+        // below must be atomic w.r.t. other Tier-1 callers, or two concurrent
+        // create/update calls each take a stale snapshot, the later swap wins,
+        // and the earlier writer's node is silently dropped from the graph
+        // (manifesting as `create_task` returning "not yet visible in the
+        // graph (id=...)"). The graph write lock alone is not enough — it's
+        // only held during the swap, not during the clone.
+        let _tier1_guard = self.tier1_rebuild_mutex.lock();
+
         let abs_path = self.abs_path(&doc.path);
         let mut node = crate::graph::GraphNode::from_pkb_document(doc);
 
@@ -323,6 +344,10 @@ impl PkbSearchServer {
     /// Tier-1 incremental graph update after a node is removed.
     /// Synchronous fast path; schedules a Tier-2 similarity refresh.
     fn rebuild_graph_remove(&self, id: &str) {
+        // Share the Tier-1 mutex with `rebuild_graph_for_pkb_document` so a
+        // concurrent insert + remove doesn't race on the snapshot.
+        let _tier1_guard = self.tier1_rebuild_mutex.lock();
+
         let mut nodes = self.graph.read().nodes_cloned();
         nodes.remove(id);
         let prior_similarity = self.graph.read().similarity_edges_cloned();
@@ -8007,6 +8032,47 @@ mod tier_rebuild_tests {
             !ready.contains(&"task-x".to_string()),
             "task-x must not be in ready list after status flipped to blocked"
         );
+    }
+
+    /// Concurrent Tier-1 rebuilds must not lose nodes. Two threads each
+    /// inserting a new node simultaneously used to race on the
+    /// `nodes_cloned()` snapshot: the later-finishing thread's snapshot
+    /// pre-dated the earlier thread's swap, so its swap overwrote the new
+    /// node. This test fires N concurrent inserts and asserts that *every*
+    /// inserted node is present in the final graph.
+    #[test]
+    fn concurrent_tier1_rebuilds_do_not_lose_nodes() {
+        use std::thread;
+
+        let initial = vec![make_task_doc("task-seed", "active", 1, &[])];
+        let server = Arc::new(build_server(initial));
+
+        let n_inserts = 32;
+        let handles: Vec<_> = (0..n_inserts)
+            .map(|i| {
+                let server = Arc::clone(&server);
+                thread::spawn(move || {
+                    let doc = make_task_doc(&format!("task-{i}"), "active", 1, &[]);
+                    server.rebuild_graph_for_pkb_document(&doc);
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let g = server.graph.read();
+        let missing: Vec<String> = (0..n_inserts)
+            .map(|i| format!("task-{i}"))
+            .filter(|id| g.get_node(id).is_none())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} of {n_inserts} concurrent Tier-1 inserts were lost: {missing:?}",
+            missing.len()
+        );
+        // Seed must still exist too.
+        assert!(g.get_node("task-seed").is_some(), "seed node was lost");
     }
 
     /// Read-after-write semantics: a status change must be visible immediately
