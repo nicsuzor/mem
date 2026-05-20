@@ -232,7 +232,6 @@ The formula lives in `compute_urgency` and `compute_focus_scores` in `src/graph_
 |---------|-------------|
 | `pkb search <query> [-n limit] [--full]` | Semantic search across the knowledge base |
 | `pkb add <files...>` | Add markdown files to the index |
-| `pkb list [--tag T] [--type T] [--status S] [--count]` | List indexed documents with optional filters |
 | `pkb reindex [--force]` | Re-scan and re-index all PKB files |
 | `pkb status` | Show index statistics (document count, DB size) |
 
@@ -265,7 +264,7 @@ The formula lives in `compute_urgency` and `compute_focus_scores` in `src/graph_
 | `pkb trace <from> <to> [-n max_paths]` | Shortest paths between two nodes |
 | `pkb orphans` | Disconnected nodes with no edges |
 | `pkb metrics [id]` | PageRank, betweenness, degree centrality |
-| `pkb graph [--format json\|graphml\|dot] [--output path]` | Export the knowledge graph |
+| `pkb graph [--format json\|graphml\|mcp-index\|all] [--output path]` | Export the knowledge graph |
 | `pkb stats [--sort count\|bytes\|latency\|errors]` | Show MCP tool usage telemetry |
 
 ## MCP Tools

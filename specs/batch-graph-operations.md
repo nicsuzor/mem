@@ -357,7 +357,7 @@ pkb duplicates
 pkb duplicates --project hdr
 
 # Strict title matching only
-pkb duplicates --mode title --title-threshold 5
+pkb duplicates --mode title --title-threshold 0.5
 ```
 
 **MCP:**
@@ -497,9 +497,6 @@ Create multiple epic containers and reparent existing tasks under them in one op
 
 **CLI:**
 ```bash
-# Interactive: guided epic creation
-pkb batch create-epics --interactive --project aops
-
 # From YAML file
 pkb batch create-epics --from epics.yaml
 ```
@@ -574,7 +571,7 @@ Report on graph health to guide reorganization. Not a mutation — pure read ope
 **CLI:**
 ```bash
 pkb graph-stats
-pkb graph-stats --project aops --verbose
+pkb graph-stats --project aops
 ```
 
 **MCP:**
