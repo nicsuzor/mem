@@ -282,7 +282,7 @@ Reclassify existing non-canonical types to `type: task` + `classification`:
 | `type: project`    | ~30   | → `type: epic` (root-level by default; per-node review per [[areas-not-projects]] migration heuristic) |
 | `type: goal`       | ~10   | → `type: target` (alias retired); ensure no children — detach if any                                |
 
-This can be done via `aops lint --fix` after updating the linter's type alias resolution.
+This can be done via `pkb lint --fix` after updating the linter's type alias resolution.
 
 ### Phase 3: Linter enforcement
 
@@ -326,7 +326,7 @@ fn resolve_type_alias(t: &str) -> (&'static str, Option<&'static str>) {
   - **Cross-Layer Sync**: Python `TaskType` and Rust `ACTIONABLE_TYPES` are out of sync; the Python side still maintains retired types as top-level enums.
   - **Visibility Gaps**: Many work items (`bug`, `feature`, `action`) are currently invisible to search or buried in noise because they aren't yet unified under the `ACTIONABLE_TYPES` constant in all search/list operations.
   - **Metadata Standardization**: The `classification` field is not yet universally parsed or displayed across the dashboard, TUI, and CLI.
-- **Aspirational**: Full automated migration of existing data using `aops lint --fix` and a unified single-source-of-truth for types across the entire Rust/Python stack.
+- **Aspirational**: Full automated migration of existing data using `pkb lint --fix` and a unified single-source-of-truth for types across the entire Rust/Python stack.
 
 ## Acceptance criteria
 

@@ -207,7 +207,7 @@ Remaining decisions, deferable to implementation:
 - **Big-bang migration risk**: 200+ project nodes touched in one pass. Mitigated by: dry-run proposal file, user review before apply, keeping the old data on a branch until verified.
 - **Skill currency**: existing tasks and instructions across `brain/` will reference "the X project" in prose. These don't break — areas can be named identically — but stale references in spec files should be swept by a follow-up garden pass.
 - **Cross-machine sync race**: migration commit must land before any agent on another machine pulls; otherwise an agent could create new project-typed nodes that need re-migration. Mitigated by: pause polecats, do migration on Mac, push, verify cron sync on dev3 before resuming.
-- **Hidden project filter consumers**: dashboards, CLI flags, and the `aops` binary may take `--project` arguments. These need an alias period (`--area` accepted, `--project` warns and routes to area).
+- **Hidden project filter consumers**: dashboards and `pkb` CLI flags may take `--project` arguments. These need an alias period (`--area` accepted, `--project` warns and routes to area).
 
 ## Giving Effect
 

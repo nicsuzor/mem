@@ -19,7 +19,7 @@ type: spec
 **Date:** 2026-03-04 (revised 2026-03-09)
 **Author:** nic (via Claude)
 **Repo:** nicsuzor/mem
-**Surfaces:** CLI (`aops`), MCP (`pkb`), TUI
+**Surfaces:** CLI + MCP (`pkb`), TUI
 
 ---
 
@@ -84,10 +84,10 @@ All batch operations accept a target set defined by filters. Filters are composa
 
 ```bash
 # Archive all P3+ tasks in 'aops' project older than 60 days
-aops batch archive --project aops --priority-gte 3 --older-than 60d
+pkb batch archive --project aops --priority-gte 3 --older-than 60d
 
 # Reparent all tasks matching title pattern under a new epic
-aops batch reparent --title-contains "Write spec for" --new-parent epic-skill-specs
+pkb batch reparent --title-contains "Write spec for" --new-parent epic-skill-specs
 ```
 
 ### MCP Composition
@@ -134,10 +134,10 @@ Move multiple tasks to a new parent. The most critical operation for graph restr
 
 **CLI:**
 ```bash
-aops batch reparent --project aops --title-contains "Write spec for" \
+pkb batch reparent --project aops --title-contains "Write spec for" \
   --new-parent epic-skill-specs --dry-run
 
-aops batch reparent --ids "task-a,task-b,task-c" --new-parent epic-xyz
+pkb batch reparent --ids "task-a,task-b,task-c" --new-parent epic-xyz
 ```
 
 **MCP:**
@@ -190,18 +190,18 @@ Update one or more frontmatter fields across multiple tasks. Generalizes archive
 **CLI:**
 ```bash
 # Archive stale tasks
-aops batch update --project aops --stale 90d --priority-gte 3 \
+pkb batch update --project aops --stale 90d --priority-gte 3 \
   --set status=archived
 
 # Bulk priority adjustment
-aops batch update --project aops --priority 1 --tags mechanical \
+pkb batch update --project aops --priority 1 --tags mechanical \
   --set priority=2
 
 # Add a tag to all tasks under an epic
-aops batch update --subtree epic-xyz --add-tag needs-review
+pkb batch update --subtree epic-xyz --add-tag needs-review
 
 # Remove a field
-aops batch update --project osb --unset assignee
+pkb batch update --project osb --unset assignee
 ```
 
 **MCP:**
@@ -257,10 +257,10 @@ Convenience wrapper around `batch_update` with `status: archived`. Included beca
 **CLI:**
 ```bash
 # Preview what would be archived
-aops batch archive --project aops --stale 90d --priority-gte 3
+pkb batch archive --project aops --stale 90d --priority-gte 3
 
 # Execute with reason
-aops batch archive --project aops --stale 90d --priority-gte 3 \
+pkb batch archive --project aops --stale 90d --priority-gte 3 \
   --execute --reason "stale framework tasks, superseded by plugin arch"
 ```
 
@@ -308,11 +308,11 @@ Change the `type` field and move the file to the correct subdirectory. Useful fo
 **CLI:**
 ```bash
 # Reclassify knowledge notes that were incorrectly filed as tasks
-aops batch reclassify --ids "mem-154acb01,mem-7ce6835c,mem-64eb759c" \
+pkb batch reclassify --ids "mem-154acb01,mem-7ce6835c,mem-64eb759c" \
   --new-type memory
 
 # Promote tasks to epics
-aops batch reclassify --ids "ns-858ae0fc,ns-b43aa260" --new-type epic
+pkb batch reclassify --ids "ns-858ae0fc,ns-b43aa260" --new-type epic
 ```
 
 **MCP:**
@@ -351,13 +351,13 @@ Detect potential duplicate tasks using title similarity and/or semantic embeddin
 **CLI:**
 ```bash
 # Find duplicates across entire graph
-aops duplicates
+pkb duplicates
 
 # Find duplicates within a project
-aops duplicates --project hdr
+pkb duplicates --project hdr
 
 # Strict title matching only
-aops duplicates --mode title --title-threshold 5
+pkb duplicates --mode title --title-threshold 5
 ```
 
 **MCP:**
@@ -420,7 +420,7 @@ Merge duplicate tasks into a canonical task and archive the others.
 
 **CLI:**
 ```bash
-aops batch merge --canonical hdr-c127ad6d \
+pkb batch merge --canonical hdr-c127ad6d \
   --merge hdr-a6043de4,20251124-fc3c8848
 ```
 
@@ -444,10 +444,10 @@ Combines `find_duplicates` → interactive review → `batch_merge` in one flow.
 **CLI:**
 ```bash
 # Find and interactively resolve duplicates
-aops deduplicate --project hdr
+pkb deduplicate --project hdr
 
 # Auto-merge high-confidence duplicates (>0.95 similarity)
-aops deduplicate --project hdr --auto --threshold 0.95
+pkb deduplicate --project hdr --auto --threshold 0.95
 ```
 
 **Behavior:**
@@ -498,10 +498,10 @@ Create multiple epic containers and reparent existing tasks under them in one op
 **CLI:**
 ```bash
 # Interactive: guided epic creation
-aops batch create-epics --interactive --project aops
+pkb batch create-epics --interactive --project aops
 
 # From YAML file
-aops batch create-epics --from epics.yaml
+pkb batch create-epics --from epics.yaml
 ```
 
 **YAML file format:**
@@ -573,8 +573,8 @@ Report on graph health to guide reorganization. Not a mutation — pure read ope
 
 **CLI:**
 ```bash
-aops graph-stats
-aops graph-stats --project aops --verbose
+pkb graph-stats
+pkb graph-stats --project aops --verbose
 ```
 
 **MCP:**
@@ -697,12 +697,12 @@ Expected speedup for 50-task batch: ~40x (graph rebuild dominates at ~2s; file w
 ### Command Group
 
 ```
-aops batch <operation> [filters] [params]
+pkb batch <operation> [filters] [params]
 ```
 
 Operations: `reparent`, `update`, `archive`, `reclassify`, `merge`, `create-epics`
 
-Standalone commands (not under `batch`): `aops duplicates`, `aops graph-stats`
+Standalone commands (not under `batch`): `pkb duplicates`, `pkb graph-stats`
 
 ### Output Format
 
