@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.60](https://github.com/nicsuzor/mem/compare/mem-v0.3.59...mem-v0.3.60) (2026-05-20)
+
+
+### Features
+
+* **mcp:** nest signal fields under signals:{} in get_task/list_tasks payloads ([#363](https://github.com/nicsuzor/mem/issues/363)) ([9aac2ee](https://github.com/nicsuzor/mem/commit/9aac2eeffc7bfa8d82db5fbfd5ff379c2d6a900e))
+* PKB auto-resolve missing project field on actionable tasks ([#371](https://github.com/nicsuzor/mem/issues/371)) ([15140aa](https://github.com/nicsuzor/mem/commit/15140aaf2285eac9e7d8798c35623784f69fd619))
+* **pkb:** make pkb-sync sidecar the sole owner of git operations ([#362](https://github.com/nicsuzor/mem/issues/362)) ([50ee52d](https://github.com/nicsuzor/mem/commit/50ee52dea9e91937e9bc8140837d27714ff4ae41))
+* **search:** add --since and --before temporal filters ([#373](https://github.com/nicsuzor/mem/issues/373)) ([92646a1](https://github.com/nicsuzor/mem/commit/92646a1174430675b3c7aef634c30b4219ad9015))
+* **validation:** prohibit tasks under closed parents; prohibit closing with open children ([#364](https://github.com/nicsuzor/mem/issues/364)) ([2688265](https://github.com/nicsuzor/mem/commit/2688265d54ebde5849d8b746e72bd1632e253413))
+
+
+### Bug Fixes
+
+* **batch:** support project filtering and --include-untagged in batch operations ([#368](https://github.com/nicsuzor/mem/issues/368)) ([6eef996](https://github.com/nicsuzor/mem/commit/6eef9962aecfb97c189d5cd0cab22d30721f511b))
+* **docker:** build PKB image from release binary ([#360](https://github.com/nicsuzor/mem/issues/360)) ([a434df6](https://github.com/nicsuzor/mem/commit/a434df6fa6912b81d1cc5fdae69c2573a65795e2))
+* **docker:** drop COPY models — gitignored, downloaded at runtime ([#359](https://github.com/nicsuzor/mem/issues/359)) ([adc8d41](https://github.com/nicsuzor/mem/commit/adc8d41f5434493f6d32bc0759e3d4b760bd202b))
+* **mcp:** serialise Tier-1 graph rebuilds to prevent node loss ([#378](https://github.com/nicsuzor/mem/issues/378)) ([b673ce1](https://github.com/nicsuzor/mem/commit/b673ce1970a5dfee233ff4cd105842f5ffdb0090))
+* **pkb:** make --allowed-hosts deployment-configurable ([#361](https://github.com/nicsuzor/mem/issues/361)) ([7807fa0](https://github.com/nicsuzor/mem/commit/7807fa06788fa185afda91dc2d2683abc2a45ab1))
+* **workflows:** grant explicit permissions on shim jobs ([#375](https://github.com/nicsuzor/mem/issues/375)) ([62c19cd](https://github.com/nicsuzor/mem/commit/62c19cd8e2485f87113f82074fe66d75764e5a15))
+
+
+### Documentation
+
+* add stakeholder and waiting_since to CORE.md architecture sketch ([#372](https://github.com/nicsuzor/mem/issues/372)) ([a9bc2bc](https://github.com/nicsuzor/mem/commit/a9bc2bcc5ff7223296bbb51d14d86f9eaf6bd36b))
+* **specs:** PKB MCP CRUD surface audit + redesign proposal ([#377](https://github.com/nicsuzor/mem/issues/377)) ([c5ea1fd](https://github.com/nicsuzor/mem/commit/c5ea1fdab5a2fbbc70273b0cc59889b9b5057afb))
+
+
+### CI/CD
+
+* publish pkb container image to GHCR ([0d77519](https://github.com/nicsuzor/mem/commit/0d775191fda3bb6ce4291dd2fdcbb4ce4447a7ac))
+
 ## [Unreleased]
 
 ### Changed
