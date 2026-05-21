@@ -806,12 +806,19 @@ impl PkbSearchServer {
         let path_key = doc.path.to_string_lossy().to_string();
         let _t_upsert = std::time::Instant::now();
 
-        // Read-snapshot the existing entry under a brief read lock, then
-        // decide synchronous vs deferred.
-        let existing = self.store.read().get_entry(&path_key).cloned();
+        // Check body-match under a brief read lock — extract only the two
+        // boolean facts we need; avoid cloning the full entry (which carries
+        // large chunk_embeddings: Vec<Vec<f32>>).
+        let (entry_exists, body_unchanged) = {
+            let store_read = self.store.read();
+            match store_read.get_entry(&path_key) {
+                Some(e) => (true, crate::vectordb::VectorStore::body_matches(doc, Some(e))),
+                None => (false, false),
+            }
+        };
 
-        match &existing {
-            Some(e) if crate::vectordb::VectorStore::body_matches(doc, Some(e)) => {
+        match (entry_exists, body_unchanged) {
+            (true, true) => {
                 // Body unchanged: just patch metadata fields (cheap).
                 let patch = crate::vectordb::VectorStore::prepare_metadata_patch(doc);
                 self.store
@@ -824,7 +831,7 @@ impl PkbSearchServer {
                     elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0
                 );
             }
-            Some(_) => {
+            (true, false) => {
                 // Body changed: patch metadata now, queue re-embed for later.
                 let patch = crate::vectordb::VectorStore::prepare_metadata_patch(doc);
                 self.store
@@ -839,7 +846,7 @@ impl PkbSearchServer {
                     elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0
                 );
             }
-            None => {
+            _ => {
                 // New document: must do inline embed so the entry exists at
                 // all (MetadataOnly drops the patch when no entry exists).
                 let prepared = match crate::vectordb::VectorStore::prepare_upsert(
@@ -898,51 +905,52 @@ impl PkbSearchServer {
 
         let worker = move || {
             loop {
-                // Drain one doc per iteration so concurrent writes that
-                // arrive between iterations are still picked up (their
-                // schedule_embed observed running=true and didn't spawn).
-                let next_doc = pending.lock().drain().next().map(|(_, d)| d);
-                let Some(doc) = next_doc else { break };
-
-                let path_key = doc.path.to_string_lossy().to_string();
-                let _t = std::time::Instant::now();
-
-                // Snapshot existing under a brief read lock.
-                let existing = store.read().get_entry(&path_key).cloned();
-                let prepared = match crate::vectordb::VectorStore::prepare_upsert(
-                    &doc,
-                    &embedder,
-                    existing.as_ref(),
-                ) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::error!(
-                            "background embed: prepare_upsert failed for {}: {e}",
-                            doc.path.display()
-                        );
-                        continue;
-                    }
+                // Pop one doc at a time — drain().next() silently drops all
+                // other queued docs when the Drain iterator is dropped.
+                let next_doc = {
+                    let mut lock = pending.lock();
+                    let key = lock.keys().next().cloned();
+                    key.and_then(|k| lock.remove(&k))
                 };
-                store.write().apply_prepared(prepared);
-                tracing::debug!(
-                    target: "perf::vector",
-                    phase = "bg_embed",
-                    elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0
-                );
-            }
 
-            // Clear the running flag, then re-check: if a write landed
-            // between draining the last doc and clearing the flag, spawn
-            // a follow-up worker to pick it up.
-            running.store(false, Ordering::SeqCst);
-            if !pending.lock().is_empty() {
-                // Re-claim and process. Use the same coalesce gate.
-                if !running.swap(true, Ordering::SeqCst) {
-                    // We re-claimed; loop ourselves rather than recurse.
-                    // Drain one more cycle by triggering save then re-running
-                    // — keep it simple, just save and let the next write
-                    // trigger another worker. The dirty entry survives until
-                    // then.
+                if let Some(doc) = next_doc {
+                    let path_key = doc.path.to_string_lossy().to_string();
+                    let _t = std::time::Instant::now();
+
+                    // Snapshot existing under a brief read lock.
+                    let existing = store.read().get_entry(&path_key).cloned();
+                    let prepared = match crate::vectordb::VectorStore::prepare_upsert(
+                        &doc,
+                        &embedder,
+                        existing.as_ref(),
+                    ) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::error!(
+                                "background embed: prepare_upsert failed for {}: {e}",
+                                doc.path.display()
+                            );
+                            continue;
+                        }
+                    };
+                    store.write().apply_prepared(prepared);
+                    tracing::debug!(
+                        target: "perf::vector",
+                        phase = "bg_embed",
+                        elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0
+                    );
+                } else {
+                    // Queue empty. Clear the running flag, then re-check in
+                    // case a write landed between the last pop and flag-clear.
+                    running.store(false, Ordering::SeqCst);
+                    if pending.lock().is_empty() {
+                        break;
+                    }
+                    // Items arrived; try to re-claim the worker slot and loop.
+                    if running.swap(true, Ordering::SeqCst) {
+                        break; // Another worker claimed it; let them handle it.
+                    }
+                    // We re-claimed; continue the loop to drain new items.
                 }
             }
 
