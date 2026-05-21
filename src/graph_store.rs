@@ -501,6 +501,123 @@ impl GraphStore {
         self.nodes.insert(node.id.clone(), node);
     }
 
+    /// Cheap in-place upsert of a single node. Used by the synchronous write
+    /// path so handlers return in microseconds; the full pipeline (edges,
+    /// downstream metrics, target ancestors, similarity edges) runs in the
+    /// background coalesced rebuild.
+    ///
+    /// Carries over computed fields from the prior node so derived state
+    /// (pagerank, downstream_weight, children/subtasks inverses, focus_score)
+    /// stays consistent until the background rebuild refreshes them.
+    /// Caller is expected to hold the graph write lock.
+    pub fn upsert_node_in_place(&mut self, mut new_node: GraphNode, pkb_root: &Path) {
+        // Resolve canonical absolute path once, mirroring the build pipeline.
+        if new_node.canonical_abs_path.is_none() && !new_node.path.as_os_str().is_empty() {
+            let full_path = if new_node.path.is_absolute() {
+                new_node.path.clone()
+            } else {
+                pkb_root.join(&new_node.path)
+            };
+            new_node.canonical_abs_path = Some(
+                full_path
+                    .canonicalize()
+                    .unwrap_or(full_path)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+
+        // Carry over derived/computed fields from the prior node (same id or
+        // same path). Without this, an in-place patch wipes children/subtasks
+        // /pagerank/downstream_weight/etc. until the background rebuild
+        // recomputes them — observable as `leaf=true` flips and ready-order
+        // churn between Tier-1 and Tier-2.
+        let prior = self.nodes.get(&new_node.id).cloned().or_else(|| {
+            // Same path, different id (id rename) — find by canonical path.
+            new_node.canonical_abs_path.as_ref().and_then(|p| {
+                self.nodes
+                    .values()
+                    .find(|n| n.canonical_abs_path.as_ref() == Some(p))
+                    .cloned()
+            })
+        });
+        if let Some(old) = prior {
+            // Derived: only carry over if the incoming node didn't supply one.
+            // The from_pkb_document path always emits empty children/subtasks/
+            // contributed_by (they come from inverses), so this preserves them.
+            if new_node.children.is_empty() {
+                new_node.children = old.children;
+            }
+            if new_node.subtasks.is_empty() {
+                new_node.subtasks = old.subtasks;
+            }
+            if new_node.contributed_by.is_empty() {
+                new_node.contributed_by = old.contributed_by;
+            }
+            if new_node.target_ancestors.is_empty() {
+                new_node.target_ancestors = old.target_ancestors;
+            }
+            new_node.leaf = new_node.children.is_empty();
+            new_node.pagerank = old.pagerank;
+            new_node.betweenness = old.betweenness;
+            new_node.indegree = old.indegree;
+            new_node.outdegree = old.outdegree;
+            new_node.backlink_count = old.backlink_count;
+            new_node.downstream_weight = old.downstream_weight;
+            new_node.stakeholder_exposure = old.stakeholder_exposure;
+            new_node.effective_priority = old.effective_priority;
+            new_node.urgency = old.urgency;
+            new_node.blocking_urgency = old.blocking_urgency;
+            new_node.focus_score = old.focus_score;
+            if new_node.project.is_none() {
+                new_node.project = old.project;
+            }
+        }
+
+        // Drop any pre-existing node mapped to the same path (handles id
+        // renames where the same file changes its frontmatter id).
+        if let Some(ref new_path) = new_node.canonical_abs_path {
+            self.nodes.retain(|_id, existing| {
+                existing.canonical_abs_path.as_ref() != Some(new_path)
+                    || existing.id == new_node.id
+            });
+        }
+
+        // Patch resolution map for the new node's keys. Old keys are not
+        // removed — they may collide on rename, but the background rebuild
+        // will rebuild the full map. Stale keys resolving to a missing id
+        // are handled by `resolve()` (it returns None on lookup miss).
+        let id_lower = new_node.id.to_lowercase();
+        self.resolution_map
+            .insert(id_lower.clone(), new_node.id.clone());
+        if let Some(ref tid) = new_node.task_id {
+            self.resolution_map
+                .insert(tid.to_lowercase(), new_node.id.clone());
+        }
+        if let Some(stem) = new_node.path.file_stem() {
+            self.resolution_map
+                .insert(stem.to_string_lossy().to_lowercase(), new_node.id.clone());
+        }
+        for pl in &new_node.permalinks {
+            self.resolution_map
+                .insert(pl.clone(), new_node.id.clone());
+        }
+        let label_lower = new_node.label.to_lowercase();
+        if !label_lower.is_empty() {
+            self.resolution_map
+                .insert(label_lower, new_node.id.clone());
+        }
+
+        self.nodes.insert(new_node.id.clone(), new_node);
+    }
+
+    /// Cheap in-place removal. Drops the node from `nodes`; stale edges and
+    /// resolution-map entries are left for the background rebuild to fix.
+    pub fn remove_node_in_place(&mut self, id: &str) {
+        self.nodes.remove(id);
+        self.resolution_map.retain(|_, target| target != id);
+    }
+
     /// Re-run classification (ready / blocked / roots) from the current nodes
     /// and update self. Cheap O(V+E). Called by Tier-2 swap after merging
     /// patched nodes.

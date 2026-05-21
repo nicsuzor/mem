@@ -237,6 +237,44 @@ impl VectorStore {
         (id, confidence, date)
     }
 
+    /// Build a metadata-only patch from a PKB document. Always returns a
+    /// patch (no embedding work). Used by the hot write path to refresh
+    /// frontmatter fields immediately while deferring the body re-embed
+    /// to a background worker.
+    ///
+    /// Apply via [`apply_prepared`] with `PreparedUpsert::MetadataOnly`.
+    /// If no entry exists for this path yet, the apply step drops the patch
+    /// — callers should ensure an entry exists (via [`prepare_upsert`]) on
+    /// first index of a new document.
+    pub fn prepare_metadata_patch(doc: &PkbDocument) -> MetadataPatch {
+        let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
+        MetadataPatch {
+            path_key: doc.path.to_string_lossy().to_string(),
+            title: doc.title.clone(),
+            doc_type: doc.doc_type.clone(),
+            status: doc.status.clone(),
+            tags: doc.tags.clone(),
+            id,
+            date,
+            confidence,
+            file_hash: doc.file_hash.clone(),
+        }
+    }
+
+    /// True if the existing entry's body hash matches the doc's body hash —
+    /// i.e. no re-embed is needed. False if either hash is missing or
+    /// differs, or if no entry exists.
+    pub fn body_matches(doc: &PkbDocument, existing: Option<&DocumentEntry>) -> bool {
+        let incoming = doc.body_hash();
+        match existing {
+            Some(e) => {
+                e.content_hash.as_deref() == Some(&incoming)
+                    || e.body_hash.as_deref() == Some(&incoming)
+            }
+            None => false,
+        }
+    }
+
     /// Build the upsert payload **without holding any lock** on `self`.
     ///
     /// `existing` is an optional snapshot of the prior entry (clone the

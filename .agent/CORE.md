@@ -100,13 +100,16 @@ src/
 ### Tool dispatch
 `mcp_server.rs` uses a manual `match` in `call_tool()` mapping tool name strings to `handle_*` methods. Tool registrations are in `list_tools()` as a `Vec<Tool>`. Both must stay in sync.
 
-### Graph rebuild — two-tier
-Single-doc CRUD operations use a **two-tier rebuild** to keep the write path fast.
+### Graph rebuild — in-place patch + coalesced background rebuild
+Single-doc CRUD operations patch the graph in place on the request thread and defer the full pipeline to a coalesced background worker.
 
-- **Tier 1 (synchronous, on the request thread)**: `rebuild_graph_for_pkb_document` calls `GraphStore::rebuild_from_nodes_skip_similarity`, which runs the full O(V+E) pipeline (downstream metrics, urgency, focus scores, target ancestors, reachable set, classify, divergence, resolution map) but **skips** the O(N²) `compute_similarity_edges` step. Prior `SimilarTo` edges are carried over. Direct reads after a write are fresh — including `list_tasks(status=ready)` membership *and* ordering. Status, parent, deps, urgency, downstream metrics: all up-to-date.
-- **Tier 2 (background, coalesced)**: `schedule_graph_rebuild` dispatches a full `rebuild_from_nodes_fast_with_embeddings` (including similarity edges) to `tokio::task::spawn_blocking`. A `graph_rebuild_pending: AtomicBool` coalesces burst writes to a single trailing rebuild. Patched node IDs are tracked in `patched_during_rebuild` and re-applied on swap, then `classify_tasks` re-runs to keep ordering consistent (avoids the lost-patch race that would otherwise revert a Tier-1 patch landing during an in-flight Tier-2).
+- **Synchronous patch (request thread)**: `rebuild_graph_for_pkb_document` takes the graph write lock, calls `GraphStore::upsert_node_in_place` (HashMap insert + resolution-map patch + carry-over of derived fields from the prior node — pagerank, downstream_weight, target_ancestors, children, etc.), then runs cheap `reclassify()` (O(V+E)). The patched node id is recorded in `patched_during_rebuild` so a concurrent in-flight background rebuild re-applies it on swap. Direct reads after a write see the patched node by id, with fresh `status`/`parent`/`priority` and fresh ready/blocked *membership*.
+- **Background rebuild (coalesced)**: `schedule_graph_rebuild` dispatches a full `rebuild_from_nodes_fast_with_embeddings` (downstream metrics, urgency, focus scores, target ancestors, similarity edges) to `tokio::task::spawn_blocking`. `graph_rebuild_pending: AtomicBool` + `graph_rebuild_dirty: AtomicBool` collapse burst writes to a single in-flight rebuild plus at most one queued follow-up. The worker carries forward late-arriving patches on swap (lost-patch protection) and runs `classify_tasks` again.
 
-**What lags 1–3s after Tier 1 returns**: only `SimilarTo` edges. Metadata-only writes (status flip, no body change) leave embeddings unchanged → similarity edges are invariant → no observable lag.
+**What lags after a write returns**: derived metric *values* (downstream_weight, effective_priority, focus_score, urgency ordering, similarity edges, target_ancestors for new nodes) — the prior values are carried over, so they're not "wrong" so much as "as of last rebuild". Body search lags too, because ONNX re-embed is deferred to `embed_pending` (see below). Background rebuild typically completes in 1–3s on a multi-thousand-node PKB.
+
+### Deferred ONNX re-embed
+`try_upsert_document` no longer blocks on ONNX. For existing entries, the metadata patch (`title`, `status`, `tags`, `id`, …) is applied synchronously and the body re-embed is queued onto `embed_pending: HashMap<path_key, PkbDocument>` for a single background worker (`embed_worker_running: AtomicBool`). Bursts of writes to the same document collapse to one embed (latest body wins). For new documents (no existing entry yet), the inline embed still runs so the entry exists at all — `MetadataOnly` apply drops the patch when no entry exists.
 
 Bulk paths (`rebuild_graph()`, batch finalize, reindex) still run the full synchronous pipeline. The graph is **in-memory only** — it does not persist; it is reconstructed at startup via `GraphStore::build_from_directory` (~300 ms for a typical PKB). Only the vector store persists to `{db_path}` (bincode) plus `{db_path}.lock` for the cross-process advisory lock.
 
