@@ -159,11 +159,27 @@ impl PkbSearchServer {
         self
     }
 
-    /// Public sync entry to `handle_update_task` for benchmarking. Not part
-    /// of the MCP API. Refs task-a4dcc039.
+    /// Public sync entries to MCP handlers for benchmarking. Not part of
+    /// the MCP API. Refs task-a4dcc039.
     #[doc(hidden)]
     pub fn bench_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.handle_update_task(args)
+    }
+    #[doc(hidden)]
+    pub fn bench_append_to_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_append_to_document(args)
+    }
+    #[doc(hidden)]
+    pub fn bench_release_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_release_task(args)
+    }
+    #[doc(hidden)]
+    pub fn bench_create_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_create_task(args)
+    }
+    #[doc(hidden)]
+    pub fn bench_complete_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_complete_task(args)
     }
 
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
