@@ -199,25 +199,25 @@ History does **not** live on the edge itself. Edges stay as lightweight YAML lis
 
 Reified edges-as-nodes rejected: breaks Obsidian's markdown grain, noisies the graph view, pays calibration cost before the ritual earns its keep.
 
-### 1.10 Pattern: paper-producing tasks wire to a publication target
+### 1.10 Pattern: deliverable-producing tasks wire to a class-level production target
 
-When a task's deliverable is a scholarly paper, wire it via `contributes_to` to a dedicated **publication target** (e.g. PKB `targ-1e7d4733` — "Publish high-quality scholarly papers in prestigious open-access outlets"), not directly to a fellowship epic, a project, or a vague academic-profile container. The publication target itself then `contributes_to` upward to broader career/profile targets.
+When a task's deliverable is one instance of a recurring class of outputs (a release, a report, a dashboard, an external piece, etc.), wire it via `contributes_to` to a dedicated **class-level production target** for that deliverable type — not directly to a higher-level goal, to a project, or to a vague aggregate. The production target itself `contributes_to` upward toward broader goals.
 
-Why: routing through a dedicated publication target (a) preserves per-paper judgment on contribution × ship-risk; (b) prevents double-counting when papers also touch fellowship narratives; (c) lets the target's severity propagate cleanly back to paper-tasks via the focus-score path; (d) models the actual production system (continuous output, not a project that ends).
+Why: routing through a dedicated production target (a) preserves per-instance judgment on contribution × ship-risk; (b) prevents double-counting when one output touches multiple higher-level narratives; (c) lets the target's severity propagate cleanly back to instance-tasks via focus_score; (d) models continuous production correctly — the target is durable; individual deliverables come and go.
 
-Weighting: combine *potential contribution* (theoretical reach × citation potential × venue prestige × novelty) with *ship risk* (draft state, co-author dependencies, stall indicators, credible path to submission) into a single `stated_weight` from the Renooij-Witteman scale (§1.7). The `why:` field names both axes explicitly in one sentence.
+Weighting: combine **potential contribution** (the axes that matter for this deliverable class — reach, impact, prestige, novelty, durability, whichever apply) with **ship risk** (current state, dependencies, stall indicators, credible path to completion) into a single `stated_weight` from the Renooij-Witteman scale (§1.7). The `why:` field names both axes explicitly in one sentence.
 
 #### Worked example
 
 ```yaml
-# In a paper-producing task's frontmatter:
+# In a deliverable-producing task's frontmatter:
 contributes_to:
-  - to: targ-1e7d4733
+  - to: <class-target-id>
     stated_weight: Probable
-    why: "High-contribution methods paper (Golden Set methodology, fellowship-shaped) with low ship risk — pipeline unblocked, co-authors engaged, validation protocol tractable."
+    why: "<one line: contribution axis + ship-risk axis>"
 ```
 
-What does NOT wire here: drafting micro-tasks (they wire to their parent paper-task), peer reviews of other people's manuscripts, blog posts/OpEds, and software-research epics that *might* yield a paper someday but have no current paper artefact.
+What does NOT wire here: micro-tasks that produce parts of a single deliverable (they wire to their parent deliverable-task), review or critique tasks for others' deliverables, ad-hoc one-offs that don't belong to a recurring class, projects that *might* yield an instance someday but have no current concrete artefact.
 
 ## 2. Formula
 
