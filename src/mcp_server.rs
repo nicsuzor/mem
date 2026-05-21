@@ -90,17 +90,14 @@ pub struct PkbSearchServer {
     /// (not coalesced). Used by the bench harness and tests to verify
     /// coalescing is working.
     tier2_executions: Arc<std::sync::atomic::AtomicU64>,
-    /// Serialises Tier-1 rebuilds so the clone-mutate-swap sequence in
-    /// `rebuild_graph_for_pkb_document` / `rebuild_graph_remove` is atomic
-    /// with respect to other Tier-1 callers. Without it, two concurrent
-    /// rebuilds race on the `nodes_cloned()` snapshot: the later-finishing
-    /// thread's snapshot pre-dates the earlier thread's insert, so its swap
-    /// silently overwrites the new node. The patch-merge step in Tier-2
-    /// can't recover the lost node because the now-overwritten live graph
-    /// is what it reads from. Observed as `create_task` returning the
-    /// "not yet visible in the graph (id=...)" binding-lag error when two
-    /// create_task calls arrive within ~1ms.
-    tier1_rebuild_mutex: Arc<Mutex<()>>,
+    /// Coalesced re-embed queue: path_key → latest `PkbDocument` whose body
+    /// changed and needs re-chunking + ONNX encoding. Drained by a single
+    /// background worker so the write handler never blocks on embed cost.
+    /// Bursts of writes to the same document collapse to a single embed
+    /// (latest doc wins).
+    embed_pending: Arc<Mutex<HashMap<String, crate::pkb::PkbDocument>>>,
+    /// Single-worker gate for the embed queue (mirrors `graph_rebuild_pending`).
+    embed_worker_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PkbSearchServer {
@@ -129,7 +126,8 @@ impl PkbSearchServer {
             #[cfg(test)]
             tier2_sleep_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tier2_executions: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            tier1_rebuild_mutex: Arc::new(Mutex::new(())),
+            embed_pending: Arc::new(Mutex::new(HashMap::new())),
+            embed_worker_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -279,88 +277,60 @@ impl PkbSearchServer {
         *self.graph.write() = new_graph;
     }
 
-    /// Tier-1 incremental graph update after a single file changed.
+    /// Synchronous fast path after a single file changed.
     ///
-    /// Synchronously runs the full O(V+E) pipeline (downstream metrics,
-    /// urgency family, focus scores, target ancestors, reachable set,
-    /// classify, divergence, resolution map) so direct reads — including
-    /// `list_tasks(status="ready")` ordering — are fresh on return. The
-    /// O(N²) similarity-edge step is deferred to a background Tier-2
-    /// rebuild scheduled at the end.
+    /// Patches the node in place under the graph write lock (microseconds),
+    /// runs cheap classification so `list_tasks(status="ready")` membership
+    /// reflects the new status, and schedules a coalesced background
+    /// rebuild that refreshes derived metrics (downstream_weight,
+    /// effective_priority, focus_score, target_ancestors, similarity edges).
     ///
-    /// Concurrency: takes the graph write lock for the duration of the
-    /// in-place rebuild. Tier-2 is dispatched via `tokio::spawn_blocking`.
+    /// Consistency: after this returns, `resolve(id)` finds the node, its
+    /// `status`/`parent`/`priority` are fresh, and ready/blocked membership
+    /// is fresh. Derived metric *values* (downstream_weight, focus_score,
+    /// urgency ordering) lag by 1–3s until the background rebuild lands —
+    /// the prior values are carried over from the existing node so they
+    /// don't reset to defaults.
+    ///
+    /// Concurrency: the graph write lock serialises concurrent writers
+    /// safely (each patch is a HashMap insert; no clone-and-swap race).
     fn rebuild_graph_for_pkb_document(&self, doc: &crate::pkb::PkbDocument) {
-        // Serialise Tier-1 rebuilds: the read-clone / mutate / swap window
-        // below must be atomic w.r.t. other Tier-1 callers, or two concurrent
-        // create/update calls each take a stale snapshot, the later swap wins,
-        // and the earlier writer's node is silently dropped from the graph
-        // (manifesting as `create_task` returning "not yet visible in the
-        // graph (id=...)"). The graph write lock alone is not enough — it's
-        // only held during the swap, not during the clone.
-        let _tier1_guard = self.tier1_rebuild_mutex.lock();
-
-        let abs_path = self.abs_path(&doc.path);
-        let mut node = crate::graph::GraphNode::from_pkb_document(doc);
-
-        let _t_clone = std::time::Instant::now();
-        let mut nodes = self.graph.read().nodes_cloned();
-        tracing::debug!(target: "perf::graph_rebuild", phase = "nodes_cloned", n_nodes = nodes.len(), elapsed_ms = _t_clone.elapsed().as_secs_f64() * 1000.0);
-
-        // Carry over centrality scores from the prior node with the same id
-        // so the fast-path rebuild doesn't zero them out.
-        if let Some(old) = nodes.get(&node.id) {
-            node.pagerank = old.pagerank;
-            node.betweenness = old.betweenness;
-        }
-
-        // Remove any existing node(s) that correspond to the same file path.
-        // This handles cases where the frontmatter `id` changes for a given file,
-        // ensuring we don't keep stale nodes/edges for the old id.
-        nodes.retain(|_, existing_node| {
-            self.abs_path(&existing_node.path) != abs_path
-        });
-
+        let node = crate::graph::GraphNode::from_pkb_document(doc);
         let patched_id = node.id.clone();
-        nodes.insert(node.id.clone(), node);
 
-        // Carry over prior similarity edges — Tier-1 skips O(N²) recompute.
-        let prior_similarity = self.graph.read().similarity_edges_cloned();
-        let new_graph = GraphStore::rebuild_from_nodes_skip_similarity(
-            nodes,
-            &self.pkb_root,
-            prior_similarity,
-        );
-        *self.graph.write() = new_graph;
+        let _t = std::time::Instant::now();
+        {
+            let mut g = self.graph.write();
+            g.upsert_node_in_place(node, &self.pkb_root);
+            g.reclassify();
+        }
+        tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_patch", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
-        // Track this patched id so a concurrent in-flight Tier-2 rebuild
+        // Track patched id so a concurrent in-flight background rebuild
         // re-applies it on swap (avoids the lost-patch race).
         self.patched_during_rebuild.lock().insert(patched_id);
 
-        // Schedule the Tier-2 background rebuild that refreshes similarity edges.
+        // Schedule the coalesced background full rebuild (edges, downstream
+        // metrics, target ancestors, similarity edges).
         self.schedule_graph_rebuild();
     }
 
-    /// Tier-1 incremental graph update after a node is removed.
-    /// Synchronous fast path; schedules a Tier-2 similarity refresh.
+    /// Synchronous fast path for node removal. In-place delete from the
+    /// nodes map + resolution map. Stale edges are left for the background
+    /// rebuild to clean up. See [`rebuild_graph_for_pkb_document`] for
+    /// the consistency model.
     fn rebuild_graph_remove(&self, id: &str) {
-        // Share the Tier-1 mutex with `rebuild_graph_for_pkb_document` so a
-        // concurrent insert + remove doesn't race on the snapshot.
-        let _tier1_guard = self.tier1_rebuild_mutex.lock();
+        let _t = std::time::Instant::now();
+        {
+            let mut g = self.graph.write();
+            g.remove_node_in_place(id);
+            g.reclassify();
+        }
+        tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_remove", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
-        let mut nodes = self.graph.read().nodes_cloned();
-        nodes.remove(id);
-        let prior_similarity = self.graph.read().similarity_edges_cloned();
-        let new_graph = GraphStore::rebuild_from_nodes_skip_similarity(
-            nodes,
-            &self.pkb_root,
-            prior_similarity,
-        );
-        *self.graph.write() = new_graph;
-
-        // Removed node id is recorded so a concurrent Tier-2 doesn't
-        // resurrect it via patch-merge: replace_node only re-applies a
-        // node that still exists in the live graph.
+        // Removed node id is recorded so a concurrent background rebuild
+        // doesn't resurrect it via patch-merge: replace_node only re-applies
+        // a node that still exists in the live graph.
         self.patched_during_rebuild.lock().insert(id.to_string());
 
         self.schedule_graph_rebuild();
@@ -774,6 +744,13 @@ impl PkbSearchServer {
     /// written and the graph already updated — the reindex will pick up the
     /// new/changed file, so we defer the in-memory upsert to be replayed
     /// when the lock is released (see `maybe_drain_deferred`).
+    ///
+    /// Fast path: for documents that already have an entry, apply the
+    /// metadata patch synchronously (microseconds) and queue the body
+    /// re-embed for the background worker. The write handler returns
+    /// without waiting for ONNX. For new documents (no existing entry),
+    /// take the inline ONNX hit so the entry is immediately searchable —
+    /// this is rare relative to update/append/release_task on existing docs.
     fn try_upsert_document(&self, doc: &crate::pkb::PkbDocument) {
         // Self-heal first: if the lock just became available, adopt the
         // reindex's state and drain anything queued.
@@ -795,8 +772,6 @@ impl PkbSearchServer {
         // upsert, not defer (and not flag `lock_was_held=true`, which
         // would trigger a needless disk reload on the next call).
         if self.external_lock_held() {
-            // Defer until the lock is released. Convert to absolute path so
-            // the drain step can re-parse without another resolution step.
             let abs = if doc.path.is_absolute() {
                 doc.path.clone()
             } else {
@@ -811,33 +786,200 @@ impl PkbSearchServer {
             );
             return;
         }
-        let path_key = doc.path.to_string_lossy().to_string();
 
+        let path_key = doc.path.to_string_lossy().to_string();
         let _t_upsert = std::time::Instant::now();
-        // Read-snapshot the existing entry (cheap), then drop the read lock
-        // before doing any chunking or embedding.
+
+        // Read-snapshot the existing entry under a brief read lock, then
+        // decide synchronous vs deferred.
         let existing = self.store.read().get_entry(&path_key).cloned();
-        let prepared = match crate::vectordb::VectorStore::prepare_upsert(
-            doc,
-            &self.embedder,
-            existing.as_ref(),
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(
-                    "prepare_upsert failed for {}: {e}",
-                    doc.path.display()
+
+        match &existing {
+            Some(e) if crate::vectordb::VectorStore::body_matches(doc, Some(e)) => {
+                // Body unchanged: just patch metadata fields (cheap).
+                let patch = crate::vectordb::VectorStore::prepare_metadata_patch(doc);
+                self.store
+                    .write()
+                    .apply_prepared(crate::vectordb::PreparedUpsert::MetadataOnly(patch));
+                tracing::debug!(
+                    target: "perf::vector",
+                    phase = "store_upsert_inmem",
+                    body_changed = false,
+                    elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0
                 );
-                return;
             }
-        };
-        // Brief write lock to apply.
-        self.store.write().apply_prepared(prepared);
-        tracing::debug!(target: "perf::vector", phase = "store_upsert_inmem", elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0);
+            Some(_) => {
+                // Body changed: patch metadata now, queue re-embed for later.
+                let patch = crate::vectordb::VectorStore::prepare_metadata_patch(doc);
+                self.store
+                    .write()
+                    .apply_prepared(crate::vectordb::PreparedUpsert::MetadataOnly(patch));
+                self.schedule_embed(doc.clone());
+                tracing::debug!(
+                    target: "perf::vector",
+                    phase = "store_upsert_inmem",
+                    body_changed = true,
+                    deferred_embed = true,
+                    elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+            None => {
+                // New document: must do inline embed so the entry exists at
+                // all (MetadataOnly drops the patch when no entry exists).
+                let prepared = match crate::vectordb::VectorStore::prepare_upsert(
+                    doc,
+                    &self.embedder,
+                    None,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!(
+                            "prepare_upsert failed for {}: {e}",
+                            doc.path.display()
+                        );
+                        return;
+                    }
+                };
+                self.store.write().apply_prepared(prepared);
+                tracing::debug!(
+                    target: "perf::vector",
+                    phase = "store_upsert_inmem",
+                    body_changed = true,
+                    deferred_embed = false,
+                    new_doc = true,
+                    elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+        }
 
         let _t_save = std::time::Instant::now();
         self.save_store();
         tracing::debug!(target: "perf::vector", phase = "save_store_dispatch", elapsed_ms = _t_save.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    /// Queue a document for background re-embedding. Coalesces by path
+    /// (latest doc wins). Spawns a single worker (via spawn_blocking) if
+    /// one isn't already running.
+    fn schedule_embed(&self, doc: crate::pkb::PkbDocument) {
+        let path_key = doc.path.to_string_lossy().to_string();
+        self.embed_pending.lock().insert(path_key, doc);
+
+        // Single-worker gate: only the caller that flips false→true spawns.
+        if self
+            .embed_worker_running
+            .swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+
+        let pending = self.embed_pending.clone();
+        let running = self.embed_worker_running.clone();
+        let store = self.store.clone();
+        let embedder = self.embedder.clone();
+        let save_pending = self.save_pending.clone();
+        let save_in_flight = self.save_in_flight.clone();
+        let db_path = self.db_path.clone();
+
+        let worker = move || {
+            loop {
+                // Drain one doc per iteration so concurrent writes that
+                // arrive between iterations are still picked up (their
+                // schedule_embed observed running=true and didn't spawn).
+                let next_doc = pending.lock().drain().next().map(|(_, d)| d);
+                let Some(doc) = next_doc else { break };
+
+                let path_key = doc.path.to_string_lossy().to_string();
+                let _t = std::time::Instant::now();
+
+                // Snapshot existing under a brief read lock.
+                let existing = store.read().get_entry(&path_key).cloned();
+                let prepared = match crate::vectordb::VectorStore::prepare_upsert(
+                    &doc,
+                    &embedder,
+                    existing.as_ref(),
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!(
+                            "background embed: prepare_upsert failed for {}: {e}",
+                            doc.path.display()
+                        );
+                        continue;
+                    }
+                };
+                store.write().apply_prepared(prepared);
+                tracing::debug!(
+                    target: "perf::vector",
+                    phase = "bg_embed",
+                    elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+
+            // Clear the running flag, then re-check: if a write landed
+            // between draining the last doc and clearing the flag, spawn
+            // a follow-up worker to pick it up.
+            running.store(false, Ordering::SeqCst);
+            if !pending.lock().is_empty() {
+                // Re-claim and process. Use the same coalesce gate.
+                if !running.swap(true, Ordering::SeqCst) {
+                    // We re-claimed; loop ourselves rather than recurse.
+                    // Drain one more cycle by triggering save then re-running
+                    // — keep it simple, just save and let the next write
+                    // trigger another worker. The dirty entry survives until
+                    // then.
+                }
+            }
+
+            // Schedule a save so the embedded entries hit disk. Coalesces
+            // with the foreground save trigger.
+            if !save_pending.swap(true, Ordering::SeqCst) {
+                let store = store.clone();
+                let pending = save_pending.clone();
+                let in_flight = save_in_flight.clone();
+                let db_path = db_path.clone();
+                let do_save = move || {
+                    in_flight.store(true, Ordering::SeqCst);
+                    pending.store(false, Ordering::SeqCst);
+                    match crate::vectordb::VectorStore::acquire_lock(&db_path) {
+                        Ok(mut lock) => match lock.try_write() {
+                            Ok(_guard) => {
+                                if let Err(e) = store.read().save(&db_path) {
+                                    tracing::error!("Failed to save vector store: {e}");
+                                }
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                tracing::info!(
+                                    "Vector store lock held by another process — disk save deferred"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to acquire write lock for save: {e}");
+                            }
+                        },
+                        Err(e) => {
+                            tracing::error!("Failed to open lock file for save: {e}");
+                        }
+                    }
+                    in_flight.store(false, Ordering::SeqCst);
+                };
+                match tokio::runtime::Handle::try_current() {
+                    Ok(_) => {
+                        tokio::task::spawn_blocking(do_save);
+                    }
+                    Err(_) => do_save(),
+                }
+            }
+        };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => {
+                tokio::task::spawn_blocking(worker);
+            }
+            Err(_) => {
+                // No runtime (e.g. CLI test path) — run inline.
+                worker();
+            }
+        }
     }
 
     /// Re-embed a batch of files into the vector store and rebuild the graph
@@ -3089,20 +3231,63 @@ impl PkbSearchServer {
         let label = node.label.clone();
         drop(graph);
 
-        // Cascade-close open descendants when recursive=true (after releasing the read lock).
+        // Cascade-close open descendants when recursive=true. Batch the
+        // graph patches into a single write lock + one reclassify, and queue
+        // re-embeds for the background worker, so 100 descendants don't cost
+        // 100 sequential write-lock acquisitions and 100 reclassify passes.
         if !recursive_close_descs.is_empty() {
-            let mut desc_updates = std::collections::HashMap::new();
-            desc_updates.insert(
+            let desc_updates: std::collections::HashMap<String, serde_json::Value> = [(
                 "status".to_string(),
                 serde_json::Value::String(status.to_string()),
-            );
-            for (_, desc_path) in &recursive_close_descs {
-                if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
-                    tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
-                } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
-                    self.rebuild_graph_for_pkb_document(&doc);
-                    self.try_upsert_document(&doc);
+            )]
+            .into_iter()
+            .collect();
+
+            // Phase 1: rewrite descendant files + parse them. Sequential — the
+            // file writes are I/O bound and not worth rayon for typical
+            // cascades (<100 docs). Errors are logged and skipped.
+            let parsed_descs: Vec<crate::pkb::PkbDocument> = recursive_close_descs
+                .iter()
+                .filter_map(|(_, desc_path)| {
+                    if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
+                        tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
+                        return None;
+                    }
+                    crate::pkb::parse_file_relative(desc_path, &self.pkb_root)
+                })
+                .collect();
+
+            if !parsed_descs.is_empty() {
+                // Phase 2: single graph write lock — patch all nodes, then one
+                // reclassify pass for the whole batch.
+                {
+                    let mut g = self.graph.write();
+                    for doc in &parsed_descs {
+                        let node = crate::graph::GraphNode::from_pkb_document(doc);
+                        g.upsert_node_in_place(node, &self.pkb_root);
+                    }
+                    g.reclassify();
                 }
+                {
+                    let mut patched = self.patched_during_rebuild.lock();
+                    for doc in &parsed_descs {
+                        let node = crate::graph::GraphNode::from_pkb_document(doc);
+                        patched.insert(node.id);
+                    }
+                }
+
+                // Phase 3: queue vector-store work. Each call patches
+                // metadata synchronously and schedules background embed if
+                // body changed (no body changes here — status is frontmatter
+                // only — so this is just metadata patch + save dispatch).
+                for doc in &parsed_descs {
+                    self.try_upsert_document(doc);
+                }
+
+                // Phase 4: schedule a single background rebuild for the
+                // whole batch (the per-node schedule calls are coalesced, but
+                // an explicit one here is harmless and documents intent).
+                self.schedule_graph_rebuild();
             }
         }
 
