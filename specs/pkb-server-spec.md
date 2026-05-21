@@ -339,7 +339,7 @@ In-memory graph built from frontmatter relationships and wikilinks on each start
 
 ### D1: CLI task-specific search — No
 
-`aops tasks` with `--project` filtering covers "what needs doing". Human scans `aops search` results visually. Agent gets `task_search`. No CLI equivalent needed.
+`pkb tasks` with `--project` filtering covers "what needs doing". Human scans `pkb search` results visually. Agent gets `task_search`. No CLI equivalent needed.
 
 ### D2: MCP tool consolidation — 22 down to 18
 

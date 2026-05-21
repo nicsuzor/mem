@@ -25,7 +25,7 @@ A fast, local semantic search engine and knowledge graph for your personal knowl
 curl -fsSL https://raw.githubusercontent.com/nicsuzor/mem/main/install.sh | sh
 ```
 
-Supports Linux x86_64 and macOS Apple Silicon. Installs `pkb` (MCP server) and `aops` (CLI) to `/usr/local/bin`.
+Supports Linux x86_64 and macOS Apple Silicon. Installs the `pkb` binary (MCP server + CLI in one) to `/usr/local/bin`.
 
 ### From source
 
@@ -52,13 +52,13 @@ export ACA_DATA=~/brain  # or wherever your markdown files live
 ### 2. Index your files
 
 ```bash
-aops reindex
+pkb reindex
 ```
 
 ### 3. Search
 
 ```bash
-aops search "how does authentication work"
+pkb search "how does authentication work"
 ```
 
 ### 4. Connect to an AI assistant
@@ -230,43 +230,42 @@ The formula lives in `compute_urgency` and `compute_focus_scores` in `src/graph_
 
 | Command | Description |
 |---------|-------------|
-| `aops search <query> [-n limit] [--full]` | Semantic search across the knowledge base |
-| `aops add <files...>` | Add markdown files to the index |
-| `aops list [--tag T] [--type T] [--status S] [--count]` | List indexed documents with optional filters |
-| `aops reindex [--force]` | Re-scan and re-index all PKB files |
-| `aops status` | Show index statistics (document count, DB size) |
+| `pkb search <query> [-n limit] [--full]` | Semantic search across the knowledge base |
+| `pkb add <files...>` | Add markdown files to the index |
+| `pkb reindex [--force]` | Re-scan and re-index all PKB files |
+| `pkb status` | Show index statistics (document count, DB size) |
 
 ### Task Management
 
 | Command | Description |
 |---------|-------------|
-| `aops tasks [ready\|blocked\|all] [--project P] [--sort S]` | List tasks sorted by priority + downstream weight |
-| `aops task <id>` | Show task details and relationships |
-| `aops new <title> [--parent ID] [--priority N] [--project P] [--tags T] [--depends-on ID]` | Create a new task |
-| `aops done <id>` | Mark a task as done |
-| `aops update <id> [--status S] [--priority N] [--project P] [--tags T]` | Update task fields |
-| `aops deps <id> [--tree]` | Show dependency tree |
-| `aops blocks <id> [--tree]` | Show what completing a task would unblock |
+| `pkb tasks [ready\|blocked\|all] [--project P] [--sort S]` | List tasks sorted by priority + downstream weight |
+| `pkb task <id>` | Show task details and relationships |
+| `pkb new <title> [--parent ID] [--priority N] [--project P] [--tags T] [--depends-on ID]` | Create a new task |
+| `pkb done <id>` | Mark a task as done |
+| `pkb update <id> [--status S] [--priority N] [--project P] [--tags T]` | Update task fields |
+| `pkb deps <id> [--tree]` | Show dependency tree |
+| `pkb blocks <id> [--tree]` | Show what completing a task would unblock |
 
 ### Memory
 
 | Command | Description |
 |---------|-------------|
-| `aops recall <query> [-n limit]` | Semantic search over memories and notes |
-| `aops memories [--tag T]` | List memory-type documents |
-| `aops tags [tag...] [--count] [--type T]` | Tag frequency summary or search by tags |
-| `aops forget <id>` | Delete a memory document |
+| `pkb recall <query> [-n limit]` | Semantic search over memories and notes |
+| `pkb memories [--tag T]` | List memory-type documents |
+| `pkb tags [tag...] [--count] [--type T]` | Tag frequency summary or search by tags |
+| `pkb forget <id>` | Delete a memory document |
 
 ### Knowledge Graph
 
 | Command | Description |
 |---------|-------------|
-| `aops context <id> [--hops N]` | Neighbourhood: metadata, backlinks, nearby nodes |
-| `aops trace <from> <to> [-n max_paths]` | Shortest paths between two nodes |
-| `aops orphans` | Disconnected nodes with no edges |
-| `aops metrics [id]` | PageRank, betweenness, degree centrality |
-| `aops graph [--format json\|graphml\|dot] [--output path]` | Export the knowledge graph |
-| `aops stats [--sort count\|bytes\|latency\|errors]` | Show MCP tool usage telemetry |
+| `pkb context <id> [--hops N]` | Neighbourhood: metadata, backlinks, nearby nodes |
+| `pkb trace <from> <to> [-n max_paths]` | Shortest paths between two nodes |
+| `pkb orphans` | Disconnected nodes with no edges |
+| `pkb metrics [id]` | PageRank, betweenness, degree centrality |
+| `pkb graph [--format json\|graphml\|mcp-index\|all] [--output path]` | Export the knowledge graph |
+| `pkb stats [--sort count\|bytes\|latency\|errors]` | Show MCP tool usage telemetry |
 
 ## MCP Tools
 
@@ -315,60 +314,6 @@ MCP Client <--stdio--> pkb (MCP server)
                      +-----+------+
                      | PKB Files  |  markdown + YAML frontmatter
                      +------------+
-```
-
-## Graph Layout Configuration
-
-The knowledge graph uses a [ForceAtlas2](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0098679) force-directed layout algorithm. All parameters can be tuned at runtime via a `layout.toml` file — no recompilation needed.
-
-**Search order:** `--layout-config` CLI flag > `./layout.toml` in cwd > `layout.toml` next to the executable.
-
-If no file is found, built-in defaults are used.
-
-```toml
-# layout.toml — edit and re-run `aops graph` to see changes
-
-[force]
-k_repulsion = 100.0       # Repulsion coefficient (higher = nodes push apart more)
-k_gravity = 1.0           # Gravity toward center (higher = tighter cluster)
-iterations = 200          # Number of simulation steps
-tolerance = 1.0           # Adaptive speed tolerance (higher = faster but less stable)
-viewport = 1000.0         # Output coordinate range
-project_clustering = 0.5  # Strength of same-project attraction (0 = off)
-max_displacement = 10.0   # Per-node per-iteration movement cap
-
-# Edge attraction by type: [strength, ideal_distance]
-# Tunable subset; other edge types (supersedes, contributes_to, similar_to)
-# render with default weights. See "Edge types" above for full list.
-[edges]
-parent = [1.0, 40.0]
-depends_on = [0.15, 200.0]
-soft_depends_on = [0.08, 250.0]
-link = [0.02, 300.0]
-
-# Node repulsion charge multiplier by type
-[charges]
-goal = 3.0
-project = 2.5
-epic = 2.0
-subproject = 1.8
-learn = 1.2
-default = 1.0
-```
-
-### Development workflow
-
-For fast iteration on layout parameters, use debug builds:
-
-```bash
-# Edit layout.toml, then:
-cargo run -- graph -f json -o graph.json    # ~4s incremental rebuild
-
-# Or skip recompilation entirely with a pre-built binary:
-aops graph -f json -o graph.json            # instant, reads layout.toml
-
-# Use a custom config path:
-aops --layout-config ~/experiments/tight.toml graph -f json
 ```
 
 ## Environment Variables
