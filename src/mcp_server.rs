@@ -319,12 +319,15 @@ impl PkbSearchServer {
             let mut g = self.graph.write();
             g.upsert_node_in_place(node, &self.pkb_root);
             g.reclassify();
+            // Record patch inside the write lock so the background rebuild's
+            // Phase-2 late-check cannot miss it: if Phase 2 holds the write
+            // lock we block here (ensuring our id is visible before the swap),
+            // and if we hold the write lock Phase 2 blocks until we release
+            // (same guarantee). Moving this outside the lock creates a window
+            // where Phase 2 reads patched after our write but before our insert.
+            self.patched_during_rebuild.lock().insert(patched_id);
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_patch", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
-
-        // Track patched id so a concurrent in-flight background rebuild
-        // re-applies it on swap (avoids the lost-patch race).
-        self.patched_during_rebuild.lock().insert(patched_id);
 
         // Schedule the coalesced background full rebuild (edges, downstream
         // metrics, target ancestors, similarity edges).
@@ -601,20 +604,24 @@ impl PkbSearchServer {
             match VectorStore::acquire_lock(&db_path) {
                 Ok(mut lock) => {
                     let elapsed_lock_acquire = t_lock.elapsed();
-                    let t_write_lock = std::time::Instant::now();
                     match lock.try_write() {
                         Ok(_guard) => {
-                            let elapsed_write_lock = t_write_lock.elapsed();
                             let t_save = std::time::Instant::now();
-                            if let Err(e) = store.read().save(&db_path) {
+                            let save_result = store.read().save(&db_path);
+                            let elapsed_save = t_save.elapsed();
+                            let (phase, ok) = if save_result.is_ok() {
+                                ("bg_save_success", true)
+                            } else {
+                                ("bg_save_failed", false)
+                            };
+                            if let Err(e) = save_result {
                                 tracing::error!("Failed to save vector store: {e}");
                             }
-                            let elapsed_save = t_save.elapsed();
                             tracing::debug!(
                                 target: "perf::vector",
-                                phase = "bg_save_success",
-                                lock_acquire_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
-                                write_lock_ms = elapsed_write_lock.as_secs_f64() * 1000.0,
+                                phase,
+                                ok,
+                                open_lock_file_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
                                 save_ms = elapsed_save.as_secs_f64() * 1000.0,
                                 elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
                             );
@@ -626,7 +633,7 @@ impl PkbSearchServer {
                             tracing::debug!(
                                 target: "perf::vector",
                                 phase = "bg_save_deferred",
-                                lock_acquire_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
+                                open_lock_file_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
                                 elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
                             );
                         }
