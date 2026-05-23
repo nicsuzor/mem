@@ -758,9 +758,8 @@ impl PkbSearchServer {
         for abs_path in &to_replay {
             if abs_path.exists() {
                 if let Some(doc) = crate::pkb::parse_file_relative(abs_path, &self.pkb_root) {
-                    if self.store.write().upsert(&doc, &self.embedder).is_ok() {
-                        applied_upserts += 1;
-                    }
+                    self.try_upsert_document(&doc);
+                    applied_upserts += 1;
                 }
             } else {
                 let key = self.rel_key_for(abs_path);
@@ -871,28 +870,36 @@ impl PkbSearchServer {
                 );
             }
             _ => {
-                // New document: must do inline embed so the entry exists at
-                // all (MetadataOnly drops the patch when no entry exists).
-                let prepared = match crate::vectordb::VectorStore::prepare_upsert(
-                    doc,
-                    &self.embedder,
-                    None,
-                ) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::error!(
-                            "prepare_upsert failed for {}: {e}",
-                            doc.path.display()
-                        );
-                        return;
-                    }
+                // New document: create a skeleton/placeholder entry instantly with empty vectors
+                let fm = doc.frontmatter.as_ref();
+                let id = fm.and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
+                let confidence = fm.and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
+                let date = fm.and_then(|f| f.get("date").and_then(|v| v.as_str()).map(String::from));
+                let entry = crate::vectordb::DocumentEntry {
+                    path: doc.path.clone(),
+                    title: doc.title.clone(),
+                    doc_type: doc.doc_type.clone(),
+                    status: doc.status.clone(),
+                    tags: doc.tags.clone(),
+                    id,
+                    date,
+                    confidence,
+                    content_hash: None, // Keep None so the background worker knows it needs to embed it!
+                    file_hash: Some(doc.file_hash.clone()),
+                    body_hash: None,    // Keep None so background worker knows it needs to embed it!
+                    chunk_embeddings: Vec::new(),
+                    chunk_texts: Vec::new(),
+                    body_chunks: Vec::new(),
                 };
-                self.store.write().apply_prepared(prepared);
+                self.store
+                    .write()
+                    .apply_prepared(crate::vectordb::PreparedUpsert::Full(Box::new(entry)));
+                self.schedule_embed(doc.clone());
                 tracing::debug!(
                     target: "perf::vector",
                     phase = "store_upsert_inmem",
                     body_changed = true,
-                    deferred_embed = false,
+                    deferred_embed = true,
                     new_doc = true,
                     elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0
                 );
