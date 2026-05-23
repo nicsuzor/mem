@@ -142,8 +142,15 @@ impl VectorStore {
     pub fn load_or_create(path: &Path, dimension: usize) -> Result<Self> {
         if path.exists() {
             tracing::info!("Loading vector store from {path:?}");
+            let t_read = std::time::Instant::now();
             let data = std::fs::read(path)?;
-            match bincode::deserialize::<VectorStore>(&data) {
+            let elapsed_read = t_read.elapsed();
+
+            let t_deserialize = std::time::Instant::now();
+            let result = bincode::deserialize::<VectorStore>(&data);
+            let elapsed_deserialize = t_deserialize.elapsed();
+
+            match result {
                 Ok(store) => {
                     if store.dimension != dimension {
                         tracing::warn!(
@@ -154,7 +161,13 @@ impl VectorStore {
                         );
                         Ok(Self::new(dimension))
                     } else {
-                        tracing::info!("Loaded {} documents from store", store.documents.len());
+                        tracing::info!(
+                            "Loaded {} documents from store in {:.1}ms (read: {:.1}ms, deserialize: {:.1}ms)",
+                            store.documents.len(),
+                            (elapsed_read + elapsed_deserialize).as_secs_f64() * 1000.0,
+                            elapsed_read.as_secs_f64() * 1000.0,
+                            elapsed_deserialize.as_secs_f64() * 1000.0
+                        );
                         Ok(store)
                     }
                 }
@@ -171,20 +184,29 @@ impl VectorStore {
 
     /// Save to disk
     pub fn save(&self, path: &Path) -> Result<()> {
+        let t_start = std::time::Instant::now();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
+        let t_serialize = std::time::Instant::now();
         let data = bincode::serialize(self)?;
+        let elapsed_serialize = t_serialize.elapsed();
+
+        let t_write = std::time::Instant::now();
         // Atomic write: write to temp file then rename
         let tmp_path = path.with_extension("tmp");
         std::fs::write(&tmp_path, &data)?;
         std::fs::rename(&tmp_path, path)?;
+        let elapsed_write = t_write.elapsed();
 
         tracing::info!(
-            "Saved vector store ({} documents, {:.1} MB)",
+            "Saved vector store ({} documents, {:.1} MB) in {:.1}ms (serialize: {:.1}ms, io: {:.1}ms)",
             self.documents.len(),
-            data.len() as f64 / 1_048_576.0
+            data.len() as f64 / 1_048_576.0,
+            t_start.elapsed().as_secs_f64() * 1000.0,
+            elapsed_serialize.as_secs_f64() * 1000.0,
+            elapsed_write.as_secs_f64() * 1000.0
         );
         Ok(())
     }
