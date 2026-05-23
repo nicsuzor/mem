@@ -75,11 +75,13 @@ Every node carries three core computed properties that drive both label assignme
 
 **How computed**: Normalized composite of:
 
-- `downstream_weight`: count of nodes that depend (transitively) on this one completing
+- `downstream_weight` (internal input): count of nodes that depend (transitively) on this one completing — fed into `criticality`, not surfaced as a user-facing scalar
 - `pagerank`: structural influence in the dependency graph
 - `stakeholder_exposure`: explicit priority/stakeholder signals
 
 **What it tells you**: Which nodes to work on first when time is scarce. High criticality = unblocks many downstream nodes. Low criticality = isolated or terminal work.
+
+> **Note**: For user-facing prioritisation and ranking, use `focus_score` — the canonical composite that embeds severity, priority, `urgency` (deadline slack + decay), `downstream_weight`, and stakeholder waiting. See `specs/multi-parent.md` §2.2 for the full model. Component fields (`urgency`, `downstream_weight`, `criticality`) remain visible in metadata for filtering and debugging, but should never be the headline ranking signal — ranking always goes through `focus_score`.
 
 ### depth and leaf
 
