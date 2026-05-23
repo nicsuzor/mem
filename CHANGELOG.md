@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.61](https://github.com/nicsuzor/mem/compare/mem-v0.3.60...mem-v0.3.61) (2026-05-23)
+
+
+### Performance Improvements
+
+* add detailed phase-by-phase profiling for PKB writes ([#383](https://github.com/nicsuzor/mem/issues/383)) ([6e38eb5](https://github.com/nicsuzor/mem/commit/6e38eb5e301ffdd3c5a0cef497b7cfe6506bcf3d))
+* **mcp:** collapse write hot path — in-place patch + deferred embed + batched recursive release ([#382](https://github.com/nicsuzor/mem/issues/382)) ([80d995d](https://github.com/nicsuzor/mem/commit/80d995d150b3d806b5d60ee5a0d687e7e18b29b9))
+
+
+### Documentation
+
+* rename aops CLI examples to pkb; drop stale layout.toml section ([#379](https://github.com/nicsuzor/mem/issues/379)) ([c08a917](https://github.com/nicsuzor/mem/commit/c08a91761b3eec841c300c089882ba2995c9ebcd))
+* **specs:** add deliverable→class-level production target pattern to multi-parent spec ([#381](https://github.com/nicsuzor/mem/issues/381)) ([cf47b19](https://github.com/nicsuzor/mem/commit/cf47b19cf0f45af1bd7f3ab2c6bb8348864b08e1))
+* **taxonomy:** backport focus_score guidance to criticality section ([#384](https://github.com/nicsuzor/mem/issues/384)) ([5d63e21](https://github.com/nicsuzor/mem/commit/5d63e21fddd30fd1a0dce6f7f3fa10c67e6169c6))
+
 ## [0.3.60](https://github.com/nicsuzor/mem/compare/mem-v0.3.59...mem-v0.3.60) (2026-05-20)
 
 
