@@ -319,12 +319,15 @@ impl PkbSearchServer {
             let mut g = self.graph.write();
             g.upsert_node_in_place(node, &self.pkb_root);
             g.reclassify();
+            // Record patch inside the write lock so the background rebuild's
+            // Phase-2 late-check cannot miss it: if Phase 2 holds the write
+            // lock we block here (ensuring our id is visible before the swap),
+            // and if we hold the write lock Phase 2 blocks until we release
+            // (same guarantee). Moving this outside the lock creates a window
+            // where Phase 2 reads patched after our write but before our insert.
+            self.patched_during_rebuild.lock().insert(patched_id);
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_patch", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
-
-        // Track patched id so a concurrent in-flight background rebuild
-        // re-applies it on swap (avoids the lost-patch race).
-        self.patched_during_rebuild.lock().insert(patched_id);
 
         // Schedule the coalesced background full rebuild (edges, downstream
         // metrics, target ancestors, similarity edges).
@@ -595,22 +598,50 @@ impl PkbSearchServer {
             // (rather than be silently dropped).
             pending.store(false, Ordering::SeqCst);
 
+            let t_bg = std::time::Instant::now();
+
+            let t_lock = std::time::Instant::now();
             match VectorStore::acquire_lock(&db_path) {
-                Ok(mut lock) => match lock.try_write() {
-                    Ok(_guard) => {
-                        if let Err(e) = store.read().save(&db_path) {
-                            tracing::error!("Failed to save vector store: {e}");
+                Ok(mut lock) => {
+                    let elapsed_lock_acquire = t_lock.elapsed();
+                    match lock.try_write() {
+                        Ok(_guard) => {
+                            let t_save = std::time::Instant::now();
+                            let save_result = store.read().save(&db_path);
+                            let elapsed_save = t_save.elapsed();
+                            let (phase, ok) = if save_result.is_ok() {
+                                ("bg_save_success", true)
+                            } else {
+                                ("bg_save_failed", false)
+                            };
+                            if let Err(e) = save_result {
+                                tracing::error!("Failed to save vector store: {e}");
+                            }
+                            tracing::debug!(
+                                target: "perf::vector",
+                                phase,
+                                ok,
+                                open_lock_file_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
+                                save_ms = elapsed_save.as_secs_f64() * 1000.0,
+                                elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
+                            );
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            tracing::info!(
+                                "Vector store lock held by another process — disk save deferred"
+                            );
+                            tracing::debug!(
+                                target: "perf::vector",
+                                phase = "bg_save_deferred",
+                                open_lock_file_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
+                                elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to acquire write lock for save: {e}");
                         }
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        tracing::info!(
-                            "Vector store lock held by another process — disk save deferred"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to acquire write lock for save: {e}");
-                    }
-                },
+                }
                 Err(e) => {
                     tracing::error!("Failed to open lock file for save: {e}");
                 }
@@ -1664,21 +1695,42 @@ impl PkbSearchServer {
 
         let warnings: Vec<String> = Vec::new();
 
+        let t_total = std::time::Instant::now();
+
+        let t = std::time::Instant::now();
         let path =
             crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!("Failed to create task: {e}")),
                 data: None,
             })?;
+        let elapsed_write = t.elapsed();
+        tracing::debug!(target: "perf::create_task", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
+
+        let t = std::time::Instant::now();
+        let parsed = crate::pkb::parse_file_relative(&path, &self.pkb_root);
+        let elapsed_parse = t.elapsed();
+        tracing::debug!(target: "perf::create_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
 
         // Incremental graph update for the new file
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+        if let Some(doc) = parsed {
+            let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
+            let elapsed_graph = t.elapsed();
+            tracing::debug!(target: "perf::create_task", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
+
+            let t = std::time::Instant::now();
             self.try_upsert_document(&doc);
+            let elapsed_upsert = t.elapsed();
+            tracing::debug!(target: "perf::create_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
             tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            let t = std::time::Instant::now();
             self.rebuild_graph();
+            tracing::debug!(target: "perf::create_task", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
         }
+
+        tracing::debug!(target: "perf::create_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4").
         // generate_id() always emits exactly 8 hex chars, so anchor the pattern to {8}
@@ -1780,20 +1832,41 @@ impl PkbSearchServer {
             body: args.get("body").and_then(|v| v.as_str()).map(String::from),
         };
 
+        let t_total = std::time::Instant::now();
+
+        let t = std::time::Instant::now();
         let path =
             crate::document_crud::create_subtask(&self.pkb_root, fields).map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!("Failed to create sub-task: {e}")),
                 data: None,
             })?;
+        let elapsed_write = t.elapsed();
+        tracing::debug!(target: "perf::create_subtask", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+        let t = std::time::Instant::now();
+        let parsed = crate::pkb::parse_file_relative(&path, &self.pkb_root);
+        let elapsed_parse = t.elapsed();
+        tracing::debug!(target: "perf::create_subtask", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
+
+        if let Some(doc) = parsed {
+            let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
+            let elapsed_graph = t.elapsed();
+            tracing::debug!(target: "perf::create_subtask", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
+
+            let t = std::time::Instant::now();
             self.try_upsert_document(&doc);
+            let elapsed_upsert = t.elapsed();
+            tracing::debug!(target: "perf::create_subtask", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
             tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            let t = std::time::Instant::now();
             self.rebuild_graph();
+            tracing::debug!(target: "perf::create_subtask", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
         }
+
+        tracing::debug!(target: "perf::create_subtask", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         let id = path
             .file_stem()
@@ -1880,6 +1953,9 @@ impl PkbSearchServer {
 
         let body = parsed.content.trim().to_string();
 
+        let t_total = std::time::Instant::now();
+
+        let t = std::time::Instant::now();
         // Create the datestamped instance.
         let instance_path = crate::document_crud::claim_template_instance(
             &self.pkb_root,
@@ -1899,20 +1975,36 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to create template instance: {e}")),
             data: None,
         })?;
+        let elapsed_write = t.elapsed();
+        tracing::debug!(target: "perf::claim_task", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
+
+        let t = std::time::Instant::now();
+        let parsed = crate::pkb::parse_file_relative(&instance_path, &self.pkb_root);
+        let elapsed_parse = t.elapsed();
+        tracing::debug!(target: "perf::claim_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
 
         // Register instance in the graph.
-        if let Some(doc) =
-            crate::pkb::parse_file_relative(&instance_path, &self.pkb_root)
-        {
+        if let Some(doc) = parsed {
+            let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
+            let elapsed_graph = t.elapsed();
+            tracing::debug!(target: "perf::claim_task", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
+
+            let t = std::time::Instant::now();
             self.try_upsert_document(&doc);
+            let elapsed_upsert = t.elapsed();
+            tracing::debug!(target: "perf::claim_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
             tracing::warn!(
                 "Incremental parse failed for {:?}, doing full rebuild",
                 instance_path
             );
+            let t = std::time::Instant::now();
             self.rebuild_graph();
+            tracing::debug!(target: "perf::claim_task", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
         }
+
+        tracing::debug!(target: "perf::claim_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         // Return via get_task for consistent shape.
         let instance_id = instance_path
@@ -2647,20 +2739,41 @@ impl PkbSearchServer {
                 .map(String::from),
         };
 
+        let t_total = std::time::Instant::now();
+
+        let t = std::time::Instant::now();
         let path =
             crate::document_crud::create_memory(&self.pkb_root, fields).map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!("Failed to create memory: {e}")),
                 data: None,
             })?;
+        let elapsed_write = t.elapsed();
+        tracing::debug!(target: "perf::create_memory", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+        let t = std::time::Instant::now();
+        let parsed = crate::pkb::parse_file_relative(&path, &self.pkb_root);
+        let elapsed_parse = t.elapsed();
+        tracing::debug!(target: "perf::create_memory", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
+
+        if let Some(doc) = parsed {
+            let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
+            let elapsed_graph = t.elapsed();
+            tracing::debug!(target: "perf::create_memory", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
+
+            let t = std::time::Instant::now();
             self.try_upsert_document(&doc);
+            let elapsed_upsert = t.elapsed();
+            tracing::debug!(target: "perf::create_memory", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
             tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            let t = std::time::Instant::now();
             self.rebuild_graph();
+            tracing::debug!(target: "perf::create_memory", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
         }
+
+        tracing::debug!(target: "perf::create_memory", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Memory created: `{}`",
@@ -2778,6 +2891,9 @@ impl PkbSearchServer {
             ));
         }
 
+        let t_total = std::time::Instant::now();
+
+        let t = std::time::Instant::now();
         let path = crate::document_crud::create_document(&self.pkb_root, fields).map_err(|e| {
             McpError {
                 code: ErrorCode::INTERNAL_ERROR,
@@ -2785,14 +2901,32 @@ impl PkbSearchServer {
                 data: None,
             }
         })?;
+        let elapsed_write = t.elapsed();
+        tracing::debug!(target: "perf::create_document", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+        let t = std::time::Instant::now();
+        let parsed = crate::pkb::parse_file_relative(&path, &self.pkb_root);
+        let elapsed_parse = t.elapsed();
+        tracing::debug!(target: "perf::create_document", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
+
+        if let Some(doc) = parsed {
+            let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
+            let elapsed_graph = t.elapsed();
+            tracing::debug!(target: "perf::create_document", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
+
+            let t = std::time::Instant::now();
             self.try_upsert_document(&doc);
+            let elapsed_upsert = t.elapsed();
+            tracing::debug!(target: "perf::create_document", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
             tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            let t = std::time::Instant::now();
             self.rebuild_graph();
+            tracing::debug!(target: "perf::create_document", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
         }
+
+        tracing::debug!(target: "perf::create_document", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         let mut msg = format!("Document created: `{}`", path.display());
         if !warnings.is_empty() {
@@ -2846,6 +2980,9 @@ impl PkbSearchServer {
         let label = node.label.clone();
         drop(graph);
 
+        let t_total = std::time::Instant::now();
+
+        let t = std::time::Instant::now();
         crate::document_crud::append_to_document(&abs_path, content, section).map_err(|e| {
             McpError {
                 code: ErrorCode::INTERNAL_ERROR,
@@ -2853,14 +2990,32 @@ impl PkbSearchServer {
                 data: None,
             }
         })?;
+        let elapsed_write = t.elapsed();
+        tracing::debug!(target: "perf::append_to_document", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
-        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+        let t = std::time::Instant::now();
+        let parsed = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root);
+        let elapsed_parse = t.elapsed();
+        tracing::debug!(target: "perf::append_to_document", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
+
+        if let Some(doc) = parsed {
+            let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
+            let elapsed_graph = t.elapsed();
+            tracing::debug!(target: "perf::append_to_document", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
+
+            let t = std::time::Instant::now();
             self.try_upsert_document(&doc);
+            let elapsed_upsert = t.elapsed();
+            tracing::debug!(target: "perf::append_to_document", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
             tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            let t = std::time::Instant::now();
             self.rebuild_graph();
+            tracing::debug!(target: "perf::append_to_document", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
         }
+
+        tracing::debug!(target: "perf::append_to_document", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         let section_msg = section
             .map(|s| format!(" under ## {s}"))
@@ -2894,17 +3049,30 @@ impl PkbSearchServer {
         let rel_path = node.path.to_string_lossy().to_string();
         drop(graph); // release read lock before write operations
 
+        let t_total = std::time::Instant::now();
+
+        let t = std::time::Instant::now();
         crate::document_crud::delete_document(&abs_path).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to delete: {e}")),
             data: None,
         })?;
+        let elapsed_delete = t.elapsed();
+        tracing::debug!(target: "perf::delete_document", phase = "delete_file", elapsed_ms = elapsed_delete.as_secs_f64() * 1000.0);
 
         // Incremental graph update — remove the deleted node
+        let t = std::time::Instant::now();
         self.rebuild_graph_remove(&node_id);
+        let elapsed_graph = t.elapsed();
+        tracing::debug!(target: "perf::delete_document", phase = "rebuild_graph_remove", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
 
         // Remove from vector store (skipped if reindex holds the lock)
+        let t = std::time::Instant::now();
         self.try_remove_document(&rel_path);
+        let elapsed_remove = t.elapsed();
+        tracing::debug!(target: "perf::delete_document", phase = "vector_remove", elapsed_ms = elapsed_remove.as_secs_f64() * 1000.0);
+
+        tracing::debug!(target: "perf::delete_document", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Deleted: {} (`{}`)",
@@ -2969,6 +3137,8 @@ impl PkbSearchServer {
         let label = node.label.clone();
         drop(graph);
 
+        let t_total = std::time::Instant::now();
+
         // Cascade-close open descendants when recursive=true.
         if recursive && !open_descs.is_empty() {
             let mut desc_updates = std::collections::HashMap::new();
@@ -2998,6 +3168,7 @@ impl PkbSearchServer {
             );
         }
 
+        let t = std::time::Instant::now();
         crate::document_crud::update_document(&abs_path, updates).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to complete task: {e}")),
@@ -3006,14 +3177,32 @@ impl PkbSearchServer {
 
         // Append completion evidence to the document body
         Self::append_evidence(&abs_path, evidence, pr_url)?;
+        let elapsed_write = t.elapsed();
+        tracing::debug!(target: "perf::complete_task", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
-        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+        let t = std::time::Instant::now();
+        let parsed = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root);
+        let elapsed_parse = t.elapsed();
+        tracing::debug!(target: "perf::complete_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
+
+        if let Some(doc) = parsed {
+            let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
+            let elapsed_graph = t.elapsed();
+            tracing::debug!(target: "perf::complete_task", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
+
+            let t = std::time::Instant::now();
             self.try_upsert_document(&doc);
+            let elapsed_upsert = t.elapsed();
+            tracing::debug!(target: "perf::complete_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
             tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            let t = std::time::Instant::now();
             self.rebuild_graph();
+            tracing::debug!(target: "perf::complete_task", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
         }
+
+        tracing::debug!(target: "perf::complete_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Completed: {} (`{}`)",
@@ -3259,6 +3448,8 @@ impl PkbSearchServer {
         // graph patches into a single write lock + one reclassify, and queue
         // re-embeds for the background worker, so 100 descendants don't cost
         // 100 sequential write-lock acquisitions and 100 reclassify passes.
+        let t_total = std::time::Instant::now();
+
         if !recursive_close_descs.is_empty() {
             let desc_updates: std::collections::HashMap<String, serde_json::Value> = [(
                 "status".to_string(),
@@ -3371,6 +3562,7 @@ impl PkbSearchServer {
             serde_json::Value::String(now.clone()),
         );
 
+        let t = std::time::Instant::now();
         crate::document_crud::update_document(&abs_path, updates).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to update task: {e}")),
@@ -3402,14 +3594,32 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to append release evidence: {e}")),
             data: None,
         })?;
+        let elapsed_write = t.elapsed();
+        tracing::debug!(target: "perf::release_task", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
-        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+        let t = std::time::Instant::now();
+        let parsed = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root);
+        let elapsed_parse = t.elapsed();
+        tracing::debug!(target: "perf::release_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
+
+        if let Some(doc) = parsed {
+            let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
+            let elapsed_graph = t.elapsed();
+            tracing::debug!(target: "perf::release_task", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
+
+            let t = std::time::Instant::now();
             self.try_upsert_document(&doc);
+            let elapsed_upsert = t.elapsed();
+            tracing::debug!(target: "perf::release_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
             tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            let t = std::time::Instant::now();
             self.rebuild_graph();
+            tracing::debug!(target: "perf::release_task", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
         }
+
+        tracing::debug!(target: "perf::release_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         // Build response with soft warnings
         let mut warnings = Vec::new();
