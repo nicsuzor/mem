@@ -319,15 +319,12 @@ impl PkbSearchServer {
             let mut g = self.graph.write();
             g.upsert_node_in_place(node, &self.pkb_root);
             g.reclassify();
-            // Record patch inside the write lock so the background rebuild's
-            // Phase-2 late-check cannot miss it: if Phase 2 holds the write
-            // lock we block here (ensuring our id is visible before the swap),
-            // and if we hold the write lock Phase 2 blocks until we release
-            // (same guarantee). Moving this outside the lock creates a window
-            // where Phase 2 reads patched after our write but before our insert.
-            self.patched_during_rebuild.lock().insert(patched_id);
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_patch", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
+
+        // Track patched id so a concurrent in-flight background rebuild
+        // re-applies it on swap (avoids the lost-patch race).
+        self.patched_during_rebuild.lock().insert(patched_id);
 
         // Schedule the coalesced background full rebuild (edges, downstream
         // metrics, target ancestors, similarity edges).
@@ -604,24 +601,20 @@ impl PkbSearchServer {
             match VectorStore::acquire_lock(&db_path) {
                 Ok(mut lock) => {
                     let elapsed_lock_acquire = t_lock.elapsed();
+                    let t_write_lock = std::time::Instant::now();
                     match lock.try_write() {
                         Ok(_guard) => {
+                            let elapsed_write_lock = t_write_lock.elapsed();
                             let t_save = std::time::Instant::now();
-                            let save_result = store.read().save(&db_path);
-                            let elapsed_save = t_save.elapsed();
-                            let (phase, ok) = if save_result.is_ok() {
-                                ("bg_save_success", true)
-                            } else {
-                                ("bg_save_failed", false)
-                            };
-                            if let Err(e) = save_result {
+                            if let Err(e) = store.read().save(&db_path) {
                                 tracing::error!("Failed to save vector store: {e}");
                             }
+                            let elapsed_save = t_save.elapsed();
                             tracing::debug!(
                                 target: "perf::vector",
-                                phase,
-                                ok,
-                                open_lock_file_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
+                                phase = "bg_save_success",
+                                lock_acquire_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
+                                write_lock_ms = elapsed_write_lock.as_secs_f64() * 1000.0,
                                 save_ms = elapsed_save.as_secs_f64() * 1000.0,
                                 elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
                             );
@@ -633,7 +626,7 @@ impl PkbSearchServer {
                             tracing::debug!(
                                 target: "perf::vector",
                                 phase = "bg_save_deferred",
-                                open_lock_file_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
+                                lock_acquire_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
                                 elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
                             );
                         }
@@ -765,9 +758,8 @@ impl PkbSearchServer {
         for abs_path in &to_replay {
             if abs_path.exists() {
                 if let Some(doc) = crate::pkb::parse_file_relative(abs_path, &self.pkb_root) {
-                    if self.store.write().upsert(&doc, &self.embedder).is_ok() {
-                        applied_upserts += 1;
-                    }
+                    self.try_upsert_document(&doc);
+                    applied_upserts += 1;
                 }
             } else {
                 let key = self.rel_key_for(abs_path);
@@ -878,28 +870,36 @@ impl PkbSearchServer {
                 );
             }
             _ => {
-                // New document: must do inline embed so the entry exists at
-                // all (MetadataOnly drops the patch when no entry exists).
-                let prepared = match crate::vectordb::VectorStore::prepare_upsert(
-                    doc,
-                    &self.embedder,
-                    None,
-                ) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::error!(
-                            "prepare_upsert failed for {}: {e}",
-                            doc.path.display()
-                        );
-                        return;
-                    }
+                // New document: create a skeleton/placeholder entry instantly with empty vectors
+                let fm = doc.frontmatter.as_ref();
+                let id = fm.and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
+                let confidence = fm.and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
+                let date = fm.and_then(|f| f.get("date").and_then(|v| v.as_str()).map(String::from));
+                let entry = crate::vectordb::DocumentEntry {
+                    path: doc.path.clone(),
+                    title: doc.title.clone(),
+                    doc_type: doc.doc_type.clone(),
+                    status: doc.status.clone(),
+                    tags: doc.tags.clone(),
+                    id,
+                    date,
+                    confidence,
+                    content_hash: None, // Keep None so the background worker knows it needs to embed it!
+                    file_hash: Some(doc.file_hash.clone()),
+                    body_hash: None,    // Keep None so background worker knows it needs to embed it!
+                    chunk_embeddings: Vec::new(),
+                    chunk_texts: Vec::new(),
+                    body_chunks: Vec::new(),
                 };
-                self.store.write().apply_prepared(prepared);
+                self.store
+                    .write()
+                    .apply_prepared(crate::vectordb::PreparedUpsert::Full(Box::new(entry)));
+                self.schedule_embed(doc.clone());
                 tracing::debug!(
                     target: "perf::vector",
                     phase = "store_upsert_inmem",
                     body_changed = true,
-                    deferred_embed = false,
+                    deferred_embed = true,
                     new_doc = true,
                     elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0
                 );
