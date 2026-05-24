@@ -3079,17 +3079,20 @@ impl PkbSearchServer {
             self.rebuild_graph();
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string(&serde_json::json!({
-                "ok": true,
-                "id": id,
-                "title": label,
-                "body_chars_before": result.body_chars_before,
-                "body_chars_after": result.body_chars_after,
-                "preserve_frontmatter": preserve_frontmatter
-            }))
-            .unwrap_or_default(),
-        )]))
+        let response_payload = serde_json::json!({
+            "ok": true,
+            "id": id,
+            "title": label,
+            "body_chars_before": result.body_chars_before,
+            "body_chars_after": result.body_chars_after,
+            "preserve_frontmatter": preserve_frontmatter
+        });
+        let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to serialize response: {e}")),
+            data: None,
+        })?;
+        Ok(CallToolResult::success(vec![Content::text(response_text)]))
     }
 
     fn handle_delete_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
