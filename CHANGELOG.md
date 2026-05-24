@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.62](https://github.com/nicsuzor/mem/compare/mem-v0.3.61...mem-v0.3.62) (2026-05-24)
+
+
+### Bug Fixes
+
+* **ci:** use secrets inherit in enforcer shim ([#388](https://github.com/nicsuzor/mem/issues/388)) ([4d8576f](https://github.com/nicsuzor/mem/commit/4d8576fffc4233c93ae93be73b9e6d1ce6eed2eb))
+
 ## [0.3.61](https://github.com/nicsuzor/mem/compare/mem-v0.3.60...mem-v0.3.61) (2026-05-23)
 
 
