@@ -3026,6 +3026,75 @@ impl PkbSearchServer {
         ))]))
     }
 
+    fn handle_update_body(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let new_body = args
+            .get("new_body")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: new_body"),
+                data: None,
+            })?;
+
+        let preserve_frontmatter = args
+            .get("preserve_frontmatter")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let (abs_path, label) = {
+            let graph = self.graph.read();
+            let node = graph.resolve(id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Document not found: {id}")),
+                data: None,
+            })?;
+            (self.abs_path(&node.path), node.label.clone())
+        };
+
+        let result =
+            crate::document_crud::rewrite_body(&abs_path, new_body, preserve_frontmatter)
+                .map_err(|e| McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from(format!("Failed to rewrite body: {e}")),
+                    data: None,
+                })?;
+
+        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
+            self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                abs_path
+            );
+            self.rebuild_graph();
+        }
+
+        let response_payload = serde_json::json!({
+            "ok": true,
+            "id": id,
+            "title": label,
+            "body_chars_before": result.body_chars_before,
+            "body_chars_after": result.body_chars_after,
+            "preserve_frontmatter": preserve_frontmatter
+        });
+        let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to serialize response: {e}")),
+            data: None,
+        })?;
+        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+    }
+
     fn handle_delete_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
@@ -5491,6 +5560,21 @@ impl PkbSearchServer {
                  - `duplicates`: Detect potential duplicates\n\
                  - `orphans`: List disconnected nodes\n"
             }
+            (Some("update_body"), _) => {
+                "## update_body\n\n\
+                 Atomically rewrite the prose body of an existing document. Preserves frontmatter by default.\n\n\
+                 **Parameters:**\n\
+                 - `id`: Document ID (flexible resolution: ID, filename stem, or title) — required\n\
+                 - `new_body`: New markdown body content (full replacement) — required\n\
+                 - `preserve_frontmatter`: Keep YAML frontmatter + bump modified timestamp (default: true)\n\n\
+                 **Returns:**\n\
+                 ```json\n\
+                 {\"ok\": true, \"id\": \"...\", \"title\": \"...\",\n\
+                  \"body_chars_before\": N, \"body_chars_after\": M,\n\
+                  \"preserve_frontmatter\": true}\n\
+                 ```\n\n\
+                 **Use vs append:** `append` adds timestamped content; `update_body` replaces the body wholesale.\n"
+            }
             _ => {
                 "## PKB Tools Help\n\n\
                  Use `pkb_tool_help(tool='TOOL_NAME')` for detailed schema.\n\n\
@@ -5502,7 +5586,10 @@ impl PkbSearchServer {
                  - `manage_task`: Task lifecycle\n\
                  - `pkb_explore`: Graph relationships\n\
                  - `pkb_batch`: Bulk operations\n\
-                 - `pkb_stats`: System status\n"
+                 - `pkb_stats`: System status\n\n\
+                 **Document Body:**\n\
+                 - `append`: Timestamped additive append\n\
+                 - `update_body`: Full body replacement (preserves frontmatter)\n"
             }
         };
 
@@ -5769,6 +5856,7 @@ impl PkbSearchServer {
             "create_memory" => self.handle_create_memory(args),
             "create" => self.handle_create_document(args),
             "append" => self.handle_append_to_document(args),
+            "update_body" => self.handle_update_body(args),
             "delete" => self.handle_delete_document(args),
             "complete_task" => self.handle_complete_task(args),
             "release_task" => self.handle_release_task(args),
@@ -6157,6 +6245,21 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Append to Document"),
+            Tool::new(
+                "update_body",
+                "Atomically rewrite the prose body of an existing document. Preserves YAML frontmatter and bumps `modified` timestamp by default. Use instead of `append` when you need full replacement rather than additive logging.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
+                        "new_body": { "type": "string", "description": "New markdown body content (full replacement — not appended)" },
+                        "preserve_frontmatter": { "type": "boolean", "description": "Keep YAML frontmatter and bump modified timestamp (default: true). Set false only when replacing scratch documents with no meaningful frontmatter." }
+                    },
+                    "required": ["id", "new_body"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Rewrite Document Body"),
             Tool::new(
                 "delete",
                 "Permanently delete a document by ID. Removes the file from disk and the vector store index. Use with caution.",
@@ -7866,6 +7969,7 @@ mod annotation_tests {
                     "complete_task",
                     "release_task",
                     "update_task",
+                    "update_body",
                     "bulk_reparent",
                     "batch_update",
                     "batch_reparent",
