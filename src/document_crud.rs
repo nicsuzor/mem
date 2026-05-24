@@ -2083,6 +2083,13 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_body_rejects_nonexistent_path() {
+        let path = std::path::Path::new("/tmp/does_not_exist_mem40a736d0_xyz.md");
+        let result = rewrite_body(path, "# body", true);
+        assert!(result.is_err(), "must error when file does not exist");
+    }
+
+    #[test]
     fn rewrite_body_preserve_false_replaces_whole_file() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("scratch.md");
