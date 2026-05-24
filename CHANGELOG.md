@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.63](https://github.com/nicsuzor/mem/compare/mem-v0.3.62...mem-v0.3.63) (2026-05-24)
+
+
+### Features
+
+* **mcp:** add update_body verb for atomic document body rewrite ([#392](https://github.com/nicsuzor/mem/issues/392)) ([1c0e616](https://github.com/nicsuzor/mem/commit/1c0e616ad8292253bfdb13db6e52887670511d6b))
+
+
+### Bug Fixes
+
+* **ci:** chain publish-image after build-release ([#390](https://github.com/nicsuzor/mem/issues/390)) ([303b1de](https://github.com/nicsuzor/mem/commit/303b1de034b6018894f25b3900f7f5479f558035))
+
 ## [0.3.62](https://github.com/nicsuzor/mem/compare/mem-v0.3.61...mem-v0.3.62) (2026-05-24)
 
 
