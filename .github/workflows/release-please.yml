@@ -19,6 +19,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  packages: write
 
 jobs:
   release-please:
@@ -40,5 +41,11 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     uses: ./.github/workflows/build-release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+
+  publish-image:
+    needs: [release-please, build-release]
+    uses: ./.github/workflows/publish-image.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}

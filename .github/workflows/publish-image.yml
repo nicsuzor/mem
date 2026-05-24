@@ -5,7 +5,8 @@ name: Publish PKB image to GHCR
 # No Rust toolchain — the binary is downloaded from the release asset.
 #
 # Triggers:
-#   - release.published   — fires after build-release.yml uploads binaries
+#   - workflow_call       — chained from release-please.yml / manual-release.yml
+#   - release.published   — fires if release is created with a PAT (not GITHUB_TOKEN)
 #   - workflow_dispatch   — manual repackage of an existing release tag
 #
 # Tags pushed:
@@ -16,6 +17,12 @@ name: Publish PKB image to GHCR
 # services-new can pull without auth.
 
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to package (e.g. mem-v0.3.59)"
+        required: true
+        type: string
   release:
     types: [published]
   workflow_dispatch:
