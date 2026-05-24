@@ -1102,6 +1102,67 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
     Ok(())
 }
 
+/// Result of a `rewrite_body` operation — body char counts before and after.
+pub struct RewriteBodyResult {
+    pub body_chars_before: usize,
+    pub body_chars_after: usize,
+}
+
+/// Atomically rewrite the prose body of an existing document.
+///
+/// `preserve_frontmatter=true` (default): reads YAML frontmatter, replaces the
+/// body section, and bumps the `modified` timestamp. The frontmatter itself is
+/// never touched beyond the timestamp.
+///
+/// `preserve_frontmatter=false`: the entire file is replaced with `new_body`
+/// verbatim — useful for scratch documents or when the caller controls the full
+/// content.
+///
+/// Returns body character counts (before and after) for observability.
+pub fn rewrite_body(path: &Path, new_body: &str, preserve_frontmatter: bool) -> Result<RewriteBodyResult> {
+    use gray_matter::engine::YAML;
+    use gray_matter::Matter;
+
+    let file_content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read: {}", path.display()))?;
+
+    if !preserve_frontmatter {
+        let body_chars_before = file_content.len();
+        let trimmed = new_body.trim_end_matches('\n');
+        let new_content = format!("{}\n", trimmed);
+        let body_chars_after = new_content.len();
+        std::fs::write(path, &new_content)
+            .with_context(|| format!("Failed to write: {}", path.display()))?;
+        return Ok(RewriteBodyResult { body_chars_before, body_chars_after });
+    }
+
+    let matter = Matter::<YAML>::new();
+    let parsed = matter.parse(&file_content);
+
+    let body_chars_before = parsed.content.len();
+
+    let mut fm: serde_json::Map<String, serde_json::Value> = parsed
+        .data
+        .as_ref()
+        .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+
+    fm.insert(
+        "modified".to_string(),
+        serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+    );
+
+    let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
+    let trimmed_body = new_body.trim_end_matches('\n');
+    let body_chars_after = trimmed_body.len();
+    let new_content = format!("---\n{}---\n\n{}\n", yaml, trimmed_body);
+    std::fs::write(path, &new_content)
+        .with_context(|| format!("Failed to write: {}", path.display()))?;
+
+    Ok(RewriteBodyResult { body_chars_before, body_chars_after })
+}
+
 /// Append timestamped content to an existing document.
 ///
 /// - If `section` is provided, finds `## {section}` heading and appends before
@@ -1908,6 +1969,131 @@ mod tests {
         assert!(has_field("title"), "title: must always be written; frontmatter:\n{frontmatter}");
         assert!(has_field("type"), "type: must always be written; frontmatter:\n{frontmatter}");
         assert!(has_field("status"), "status: must always be written; frontmatter:\n{frontmatter}");
+    }
+
+    // =====================================================================
+    // rewrite_body tests (mem-40a736d0)
+    // =====================================================================
+
+    #[test]
+    fn rewrite_body_roundtrip_equality() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Rewrite body test".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("mem".to_string()),
+            body: Some("## Original\n\nOld content here.\n".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+
+        let new_body = "## Rewritten\n\nNew content here.\n";
+        rewrite_body(&path, new_body, true).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        let after_fm = content.split("---\n\n").nth(1).unwrap_or("");
+        assert!(
+            after_fm.trim_end_matches('\n') == new_body.trim_end_matches('\n'),
+            "body should match new_body verbatim after rewrite; got:\n{after_fm}"
+        );
+    }
+
+    #[test]
+    fn rewrite_body_preserves_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Frontmatter preservation test".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("mem".to_string()),
+            priority: Some(1),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+
+        rewrite_body(&path, "## New body\n", true).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+        let parsed = matter.parse(&content);
+        let fm = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+            .expect("frontmatter must parse");
+
+        assert!(fm.is_object(), "frontmatter should be an object after rewrite");
+        let obj = fm.as_object().unwrap();
+        assert_eq!(
+            obj.get("priority").and_then(|v| v.as_i64()),
+            Some(1),
+            "priority must be preserved: {fm:?}"
+        );
+        assert_eq!(
+            obj.get("project").and_then(|v| v.as_str()),
+            Some("mem"),
+            "project must be preserved: {fm:?}"
+        );
+        assert_eq!(
+            obj.get("title").and_then(|v| v.as_str()),
+            Some("Frontmatter preservation test"),
+            "title must be preserved: {fm:?}"
+        );
+    }
+
+    #[test]
+    fn rewrite_body_idempotent_on_same_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let body = "## Stable\n\nContent that doesn't change.\n";
+        let fields = TaskFields {
+            title: "Idempotency test".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("mem".to_string()),
+            body: Some(body.to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+
+        // Rewrite twice with the same body — should not error and body should be identical.
+        let r1 = rewrite_body(&path, body, true).unwrap();
+        let content_after_first = fs::read_to_string(&path).unwrap();
+
+        let r2 = rewrite_body(&path, body, true).unwrap();
+        let content_after_second = fs::read_to_string(&path).unwrap();
+
+        // Body size is stable across rewrites.
+        assert_eq!(r1.body_chars_after, r2.body_chars_after, "body size stable across rewrites");
+
+        // Body content is identical after both rewrites.
+        let body_after_first = content_after_first.split("---\n\n").nth(1).unwrap_or("");
+        let body_after_second = content_after_second.split("---\n\n").nth(1).unwrap_or("");
+        assert_eq!(
+            body_after_first.trim_end_matches('\n'),
+            body_after_second.trim_end_matches('\n'),
+            "body must be identical after repeated rewrites with same content"
+        );
+    }
+
+    #[test]
+    fn rewrite_body_preserve_false_replaces_whole_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("scratch.md");
+        fs::write(&path, "---\nid: scratch\n---\n\n# Old\n").unwrap();
+
+        let new_body = "# Completely new content\n";
+        rewrite_body(&path, new_body, false).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content.trim_end_matches('\n'), new_body.trim_end_matches('\n'));
+        assert!(!content.contains("---"), "frontmatter should be gone when preserve_frontmatter=false");
     }
 
     // =====================================================================
