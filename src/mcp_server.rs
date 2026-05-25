@@ -5895,9 +5895,6 @@ impl PkbSearchServer {
 
     fn dispatch_tool_sync(&self, name: &str, args: &JsonValue) -> Result<CallToolResult, McpError> {
         match name {
-            // --- Consolidated Tools ---
-                                                                        
-            // --- Legacy / Granular Tools ---
             "search" => self.handle_pkb_search(args),
             "get_document" => self.handle_get_document(args),
             "list_documents" => self.handle_list_documents(args),
@@ -5905,7 +5902,7 @@ impl PkbSearchServer {
             "get_network_metrics" => self.handle_get_network_metrics(args),
             "create_task" => self.handle_create_task(args),
             "claim_task" => self.handle_claim_task(args),
-                        "create_memory" => self.handle_create_memory(args),
+            "create_memory" => self.handle_create_memory(args),
             "create" => self.handle_create_document(args),
             "append" => self.handle_append_to_document(args),
             "update_body" => self.handle_update_body(args),
@@ -5915,7 +5912,7 @@ impl PkbSearchServer {
             "list_tasks" => self.handle_list_tasks(args),
             "get_task" => self.handle_get_task(args),
             "update_task" => self.handle_update_task(args),
-                        "retrieve_memory" => self.handle_retrieve_memory(args),
+            "retrieve_memory" => self.handle_retrieve_memory(args),
             "detect_weight_divergence" => self.handle_detect_weight_divergence(args),
             "search_by_tag" => self.handle_search_by_tag(args),
             "list_memories" => self.handle_list_memories(args),
@@ -5959,18 +5956,7 @@ impl ServerHandler for PkbSearchServer {
         let tool_name = request.name.clone();
         let args = Self::args_to_value(request.arguments);
 
-        // For consolidated tools, build a granular name for telemetry
-        let effective_name: String = match &*tool_name {
-            "manage_task" | "pkb_explore" | "pkb_batch" | "pkb_stats" | "create_document" => {
-                let sub = args
-                    .get("action")
-                    .or_else(|| args.get("type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                format!("{tool_name}/{sub}")
-            }
-            other => other.to_string(),
-        };
+        let effective_name = tool_name.to_string();
 
         let this = self.clone();
         async move {
@@ -6199,21 +6185,6 @@ impl PkbSearchServer {
             )
             .with_title("Create Task"),
             Tool::new(
-                "create_subtask",
-                "Create a numbered sub-task attached to a parent task. Sub-tasks use dot-notation IDs (e.g. proj.1) and appear as a checklist when the parent is retrieved. Use for fine-grained completion tracking.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "parent_id": { "type": "string", "description": "ID of the parent task (e.g. proj-deadbeef)" },
-                        "title": { "type": "string", "description": "Sub-task title" },
-                        "body": { "type": "string", "description": "Optional markdown body" }
-                    },
-                    "required": ["parent_id", "title"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Create Sub-task"),
-            Tool::new(
                 "claim_task",
                 "Instantiate a template task. When called on a `type: template` node, creates a \
                  datestamped instance (<slug>-<YYYYMMDD>-<HHMM>-<host>.md) and returns it via \
@@ -6425,22 +6396,6 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Update Task")
-            .with_annotations(ToolAnnotations::new().idempotent(true)),
-            Tool::new(
-                "bulk_reparent",
-                "Set a new parent for all documents matching a pattern. Skips files already parented correctly. Dry run by default.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "pattern": { "type": "string", "description": "Directory path or glob pattern (e.g. 'archive/', 'tasks/*.md'). Relative to PKB root." },
-                        "parent_id": { "type": "string", "description": "Parent ID to set on matching files" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: true). Set to false to apply.", "default": true }
-                    },
-                    "required": ["pattern", "parent_id"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Bulk Reparent Tasks")
             .with_annotations(ToolAnnotations::new().idempotent(true)),
             Tool::new(
                 "retrieve_memory",
@@ -6863,84 +6818,6 @@ impl PkbSearchServer {
             )
             .with_title("Tool Usage Stats")
             .with_annotations(ToolAnnotations::new().read_only(true)),
-            // --- Consolidated (Progressive Disclosure) Tools ---
-            Tool::new(
-                "create_document",
-                "Create a new PKB node (task, subtask, memory, note, goal, project, epic). Dispatches on `type`.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "type": { "type": "string", "enum": ["task", "subtask", "memory", "note", "goal", "project", "epic"] },
-                        "title": { "type": "string" },
-                        "parent": { "type": "string", "description": "Parent ID (required for subtask)" },
-                        "fields": { "type": "object", "description": "Metadata: priority, tags, depends_on, assignee, etc." },
-                        "body": { "type": "string" }
-                    },
-                    "required": ["type", "title"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Create Document"),
-            Tool::new(
-                "manage_task",
-                "Lifecycle management for tasks: update, complete, release, or decompose.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string" },
-                        "action": { "type": "string", "enum": ["update", "complete", "release", "decompose"] },
-                        "params": { "type": "object", "description": "Action-specific parameters (e.g. updates, summary, pr_url, subtasks)" }
-                    },
-                    "required": ["id", "action"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Manage Task")
-            .with_annotations(ToolAnnotations::new().idempotent(true)),
-            Tool::new(
-                "pkb_explore",
-                "Explore graph relationships: context, trace, tree, children, metrics.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string" },
-                        "action": { "type": "string", "enum": ["context", "trace", "tree", "children", "metrics"] },
-                        "params": { "type": "object", "description": "Action-specific: e.g. {to: 'ID'} for trace, {recursive: true} for children" }
-                    },
-                    "required": ["id", "action"]
-                }))
-                .unwrap(),
-            )
-            .with_title("PKB Graph Explorer")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
-                "pkb_batch",
-                "Bulk operations: update, reparent, archive, merge, node_merge, epics, reclassify, duplicates, orphans.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "action": { "type": "string", "enum": ["update", "reparent", "archive", "merge", "node_merge", "epics", "reclassify", "duplicates", "orphans"] },
-                        "params": { "type": "object", "description": "Filters, updates, new_parent, merge_ids, etc." }
-                    },
-                    "required": ["action"]
-                }))
-                .unwrap(),
-            )
-            .with_title("PKB Batch Operations")
-            .with_annotations(ToolAnnotations::new().destructive(true)),
-            Tool::new(
-                "pkb_stats",
-                "System and graph status: summary, graph_stats, graph_json, tool_stats, status, divergence.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json", "tool_stats", "status", "divergence"] }
-                    }
-                }))
-                .unwrap(),
-            )
-            .with_title("PKB Statistics")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "status",
                 "Report mem build identity: package version, embedded git describe, and build profile. Use to confirm which binary is running.",
@@ -6951,20 +6828,6 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Build Status")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
-                "pkb_tool_help",
-                "Get detailed schema and examples for consolidated tools.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "tool": { "type": "string" },
-                        "action": { "type": "string" }
-                    }
-                }))
-                .unwrap(),
-            )
-            .with_title("PKB Tool Help")
             .with_annotations(ToolAnnotations::new().read_only(true)),
         ]
     }
