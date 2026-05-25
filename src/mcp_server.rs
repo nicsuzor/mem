@@ -233,7 +233,7 @@ impl PkbSearchServer {
             ),
             data: None,
         })?;
-        if ev.trim().is_empty() {
+        if !ev.chars().any(|c| !c.is_whitespace()) {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
@@ -1509,12 +1509,14 @@ impl PkbSearchServer {
                 "create_task invocation"
             );
             if !unknown.is_empty() {
-                tracing::warn!(
-                    target: "pkb::create_task",
-                    unknown_keys = ?unknown,
-                    "create_task received unknown keys — these fields will NOT be written. \
-                     Pass them via update_task or extend the create_task schema."
-                );
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: std::borrow::Cow::from(format!(
+                        "Unknown keys in create_task: {:?}. Pass them via update_task or extend the create_task schema.",
+                        unknown
+                    )),
+                    data: None,
+                });
             }
         }
 
@@ -4149,6 +4151,39 @@ impl PkbSearchServer {
             title_to_id.insert(title_lower, id);
         }
 
+        let mut unresolvable = Vec::new();
+        {
+            let graph = self.graph.read();
+            for subtask in subtasks.iter() {
+                if let Some(deps) = subtask.get("depends_on").and_then(|v| v.as_array()) {
+                    for dep_val in deps {
+                        if let Some(dep) = dep_val.as_str() {
+                            if dep.starts_with('$') {
+                                if let Ok(idx) = dep[1..].parse::<usize>() {
+                                    if idx == 0 || idx > subtask_ids.len() {
+                                        unresolvable.push(dep.to_string());
+                                    }
+                                } else {
+                                    unresolvable.push(dep.to_string());
+                                }
+                            } else if !title_to_id.contains_key(&dep.to_lowercase()) {
+                                if graph.resolve(dep).is_none() {
+                                    unresolvable.push(dep.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !unresolvable.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: std::borrow::Cow::from(format!("Unresolvable sibling references in decompose_task: {:?}", unresolvable)),
+                data: None,
+            });
+        }
+
         let mut created: Vec<(String, String)> = Vec::new();
         static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
             regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex")
@@ -4922,9 +4957,19 @@ impl PkbSearchServer {
         // Validate parent change: reject if the new parent does not exist
         // (task-89b2af87) AND reject if the change would create a cycle.
         if let Some(new_parent_val) = updates.get("parent") {
-            // Treat null / empty string as "clear parent" — no validation needed.
+            // Treat null / empty string as "clear parent"
             let new_parent = new_parent_val.as_str().unwrap_or("").trim();
-            if !new_parent.is_empty() {
+            if new_parent.is_empty() {
+                let unparent = args.get("unparent").and_then(|v| v.as_bool()).unwrap_or(false);
+                let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !unparent && !force {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: std::borrow::Cow::from("To remove a task's parent, pass unparent=true explicitly."),
+                        data: None,
+                    });
+                }
+            } else {
                 let allow_missing = args
                     .get("allow_missing_parent")
                     .and_then(|v| v.as_bool())
@@ -5020,7 +5065,7 @@ impl PkbSearchServer {
                 .get("completion_evidence")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if evidence.trim().is_empty() {
+            if !evidence.chars().any(|c| !c.is_whitespace()) {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
                     message: Cow::from(
@@ -5043,11 +5088,25 @@ impl PkbSearchServer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let update_map: std::collections::HashMap<String, serde_json::Value> = updates
-            .iter()
-            .filter(|(k, _)| k.as_str() != "completion_evidence")
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let update_map = {
+            let graph = self.graph.read();
+            let node = graph.resolve(&canonical_id).ok_or_else(|| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: std::borrow::Cow::from(format!("Failed to resolve canonical id: {canonical_id}")),
+                data: None,
+            })?;
+            let mut filtered_updates = serde_json::Map::new();
+            for (k, v) in &updates {
+                if k != "completion_evidence" && k != "pr_url" {
+                    filtered_updates.insert(k.clone(), v.clone());
+                }
+            }
+            crate::document_crud::expand_special_update_keys(&node, &filtered_updates).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: std::borrow::Cow::from(format!("Invalid updates: {e}")),
+                data: None,
+            })?
+        };
 
         // Per-phase timing for write-path perf investigation (task-a4dcc039).
         // Emitted at debug; set RUST_LOG=mem::mcp_server=debug to observe.
@@ -5117,7 +5176,7 @@ impl PkbSearchServer {
     fn handle_batch_update(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let updates = args.get("updates").cloned().unwrap_or(JsonValue::Object(serde_json::Map::new()));
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
 
         if filters.is_empty() && updates.as_object().map(|m| m.is_empty()).unwrap_or(true) {
             return Err(McpError {
@@ -5151,7 +5210,7 @@ impl PkbSearchServer {
             .to_string();
 
         let filters = crate::batch_ops::filters::parse_filter_set(args);
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
 
         let graph = self.graph.read();
         let summary = crate::batch_ops::reparent::batch_reparent(
@@ -5219,7 +5278,7 @@ impl PkbSearchServer {
             });
         }
 
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
 
         let summary =
             crate::document_crud::merge_node(&self.pkb_root, &source_ids, &canonical_id, dry_run)
@@ -5402,7 +5461,7 @@ impl PkbSearchServer {
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
 
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
 
         if merge_ids.is_empty() {
             return Err(McpError {
@@ -5837,13 +5896,7 @@ impl PkbSearchServer {
     fn dispatch_tool_sync(&self, name: &str, args: &JsonValue) -> Result<CallToolResult, McpError> {
         match name {
             // --- Consolidated Tools ---
-            "create_document" => self.handle_create_document_consolidated(args),
-            "manage_task" => self.handle_manage_task_consolidated(args),
-            "pkb_explore" => self.handle_pkb_explore_consolidated(args),
-            "pkb_batch" => self.handle_pkb_batch_consolidated(args),
-            "pkb_stats" => self.handle_pkb_stats_consolidated(args),
-            "pkb_tool_help" => self.handle_pkb_tool_help(args),
-
+                                                                        
             // --- Legacy / Granular Tools ---
             "search" => self.handle_pkb_search(args),
             "get_document" => self.handle_get_document(args),
@@ -5852,8 +5905,7 @@ impl PkbSearchServer {
             "get_network_metrics" => self.handle_get_network_metrics(args),
             "create_task" => self.handle_create_task(args),
             "claim_task" => self.handle_claim_task(args),
-            "create_subtask" => self.handle_create_subtask(args),
-            "create_memory" => self.handle_create_memory(args),
+                        "create_memory" => self.handle_create_memory(args),
             "create" => self.handle_create_document(args),
             "append" => self.handle_append_to_document(args),
             "update_body" => self.handle_update_body(args),
@@ -5863,8 +5915,7 @@ impl PkbSearchServer {
             "list_tasks" => self.handle_list_tasks(args),
             "get_task" => self.handle_get_task(args),
             "update_task" => self.handle_update_task(args),
-            "bulk_reparent" => self.handle_bulk_reparent(args),
-            "retrieve_memory" => self.handle_retrieve_memory(args),
+                        "retrieve_memory" => self.handle_retrieve_memory(args),
             "detect_weight_divergence" => self.handle_detect_weight_divergence(args),
             "search_by_tag" => self.handle_search_by_tag(args),
             "list_memories" => self.handle_list_memories(args),

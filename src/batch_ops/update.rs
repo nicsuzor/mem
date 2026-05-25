@@ -119,7 +119,16 @@ pub fn batch_update(
         }
 
         // Build the effective updates for this node
-        let effective = build_effective_updates(updates_map, node);
+        let effective = match crate::document_crud::expand_special_update_keys(node, updates_map) {
+            Ok(e) => e,
+            Err(e) => {
+                summary.errors.push(TaskError {
+                    id: id.clone(),
+                    error: e.to_string(),
+                });
+                continue;
+            }
+        };
         if effective.is_empty() {
             summary.skipped += 1;
             summary.tasks.push(TaskAction {
@@ -292,122 +301,6 @@ pub fn batch_archive(
     summary
 }
 
-/// Build the effective update HashMap for a node, handling special keys.
-fn build_effective_updates(
-    updates_map: &serde_json::Map<String, serde_json::Value>,
-    node: &crate::graph::GraphNode,
-) -> HashMap<String, serde_json::Value> {
-    let mut effective = HashMap::new();
-
-    for (key, value) in updates_map {
-        if SPECIAL_KEYS.contains(&key.as_str()) {
-            continue; // Handle below
-        }
-
-        // Check if this would be a no-op
-        let is_noop = match key.as_str() {
-            "status" => node.status.as_deref() == value.as_str(),
-            "priority" => node.priority == value.as_i64().map(|v| v as i32),
-            "assignee" => node.assignee.as_deref() == value.as_str(),
-            "complexity" => node.complexity.as_deref() == value.as_str(),
-            "parent" => node.parent.as_deref() == value.as_str(),
-            _ => false,
-        };
-
-        if !is_noop {
-            effective.insert(key.clone(), value.clone());
-        }
-    }
-
-    // Handle _add_tags
-    if let Some(add_tags) = updates_map.get("_add_tags").and_then(|v| v.as_array()) {
-        let new_tags: Vec<String> = add_tags
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .filter(|t| !node.tags.contains(t))
-            .collect();
-        if !new_tags.is_empty() {
-            let mut all_tags = node.tags.clone();
-            all_tags.extend(new_tags);
-            effective.insert(
-                "tags".to_string(),
-                serde_json::Value::Array(all_tags.into_iter().map(serde_json::Value::String).collect()),
-            );
-        }
-    }
-
-    // Handle _remove_tags
-    if let Some(remove_tags) = updates_map.get("_remove_tags").and_then(|v| v.as_array()) {
-        let remove_set: std::collections::HashSet<&str> = remove_tags
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        if node.tags.iter().any(|t| remove_set.contains(t.as_str())) {
-            let remaining: Vec<String> = node
-                .tags
-                .iter()
-                .filter(|t| !remove_set.contains(t.as_str()))
-                .cloned()
-                .collect();
-            effective.insert(
-                "tags".to_string(),
-                serde_json::Value::Array(remaining.into_iter().map(serde_json::Value::String).collect()),
-            );
-        }
-    }
-
-    // Handle _add_depends_on
-    if let Some(add_deps) = updates_map.get("_add_depends_on").and_then(|v| v.as_array()) {
-        let new_deps: Vec<String> = add_deps
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .filter(|d| !node.depends_on.contains(d))
-            .collect();
-        if !new_deps.is_empty() {
-            let mut all_deps = node.depends_on.clone();
-            all_deps.extend(new_deps);
-            effective.insert(
-                "depends_on".to_string(),
-                serde_json::Value::Array(all_deps.into_iter().map(serde_json::Value::String).collect()),
-            );
-        }
-    }
-
-    // Handle _remove_depends_on
-    if let Some(remove_deps) = updates_map.get("_remove_depends_on").and_then(|v| v.as_array()) {
-        let remove_set: std::collections::HashSet<&str> = remove_deps
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        if node.depends_on.iter().any(|d| remove_set.contains(d.as_str())) {
-            let remaining: Vec<String> = node
-                .depends_on
-                .iter()
-                .filter(|d| !remove_set.contains(d.as_str()))
-                .cloned()
-                .collect();
-            effective.insert(
-                "depends_on".to_string(),
-                serde_json::Value::Array(remaining.into_iter().map(serde_json::Value::String).collect()),
-            );
-        }
-    }
-
-    // Handle superseded_by (sets status to done + superseded_by field)
-    if let Some(superseded_by) = updates_map.get("superseded_by") {
-        effective.insert("superseded_by".to_string(), superseded_by.clone());
-        if !effective.contains_key("status") {
-            effective.insert(
-                "status".to_string(),
-                serde_json::Value::String("done".to_string()),
-            );
-        }
-    }
-
-    effective
-}
-
-/// Describe updates in human-readable form.
 fn describe_updates(updates: &HashMap<String, serde_json::Value>) -> String {
     updates
         .iter()

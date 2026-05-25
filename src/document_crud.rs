@@ -2517,3 +2517,129 @@ pub fn merge_node(
         modified_paths,
     })
 }
+
+
+// ── Special Keys Expansion ──────────────────────────────────────────────────────────
+
+/// Expand special update keys like `_add_depends_on` and `_remove_tags` into effective document state updates.
+pub fn expand_special_update_keys(
+    node: &crate::graph::GraphNode,
+    updates_map: &serde_json::Map<String, serde_json::Value>,
+) -> anyhow::Result<std::collections::HashMap<String, serde_json::Value>> {
+    let mut effective = std::collections::HashMap::new();
+    let special_keys = ["_add_tags", "_remove_tags", "_add_depends_on", "_remove_depends_on", "superseded_by"];
+
+    for (key, value) in updates_map {
+        if special_keys.contains(&key.as_str()) {
+            continue;
+        }
+
+        let is_noop = match key.as_str() {
+            "status" => node.status.as_deref() == value.as_str(),
+            "priority" => node.priority == value.as_i64().map(|v| v as i32),
+            "assignee" => node.assignee.as_deref() == value.as_str(),
+            "complexity" => node.complexity.as_deref() == value.as_str(),
+            "parent" => node.parent.as_deref() == value.as_str(),
+            _ => false,
+        };
+
+        if !is_noop {
+            effective.insert(key.clone(), value.clone());
+        }
+    }
+
+    // Handle _add_tags
+    if let Some(add_tags_val) = updates_map.get("_add_tags") {
+        let add_tags = add_tags_val.as_array().ok_or_else(|| anyhow::anyhow!("_add_tags must be an array of strings"))?;
+        let new_tags: Vec<String> = add_tags
+            .iter()
+            .map(|v| v.as_str().map(String::from).ok_or_else(|| anyhow::anyhow!("_add_tags elements must be strings")))
+            .collect::<anyhow::Result<Vec<String>>>()?
+            .into_iter()
+            .filter(|t| !node.tags.contains(t))
+            .collect();
+        if !new_tags.is_empty() {
+            let mut all_tags = node.tags.clone();
+            all_tags.extend(new_tags);
+            effective.insert(
+                "tags".to_string(),
+                serde_json::Value::Array(all_tags.into_iter().map(serde_json::Value::String).collect()),
+            );
+        }
+    }
+
+    // Handle _remove_tags
+    if let Some(remove_tags_val) = updates_map.get("_remove_tags") {
+        let remove_tags = remove_tags_val.as_array().ok_or_else(|| anyhow::anyhow!("_remove_tags must be an array of strings"))?;
+        let remove_set: std::collections::HashSet<&str> = remove_tags
+            .iter()
+            .map(|v| v.as_str().ok_or_else(|| anyhow::anyhow!("_remove_tags elements must be strings")))
+            .collect::<anyhow::Result<std::collections::HashSet<&str>>>()?;
+        if node.tags.iter().any(|t| remove_set.contains(t.as_str())) {
+            let remaining: Vec<String> = node
+                .tags
+                .iter()
+                .filter(|t| !remove_set.contains(t.as_str()))
+                .cloned()
+                .collect();
+            effective.insert(
+                "tags".to_string(),
+                serde_json::Value::Array(remaining.into_iter().map(serde_json::Value::String).collect()),
+            );
+        }
+    }
+
+    // Handle _add_depends_on
+    if let Some(add_deps_val) = updates_map.get("_add_depends_on") {
+        let add_deps = add_deps_val.as_array().ok_or_else(|| anyhow::anyhow!("_add_depends_on must be an array of strings"))?;
+        let new_deps: Vec<String> = add_deps
+            .iter()
+            .map(|v| v.as_str().map(String::from).ok_or_else(|| anyhow::anyhow!("_add_depends_on elements must be strings")))
+            .collect::<anyhow::Result<Vec<String>>>()?
+            .into_iter()
+            .filter(|d| !node.depends_on.contains(d))
+            .collect();
+        if !new_deps.is_empty() {
+            let mut all_deps = node.depends_on.clone();
+            all_deps.extend(new_deps);
+            effective.insert(
+                "depends_on".to_string(),
+                serde_json::Value::Array(all_deps.into_iter().map(serde_json::Value::String).collect()),
+            );
+        }
+    }
+
+    // Handle _remove_depends_on
+    if let Some(remove_deps_val) = updates_map.get("_remove_depends_on") {
+        let remove_deps = remove_deps_val.as_array().ok_or_else(|| anyhow::anyhow!("_remove_depends_on must be an array of strings"))?;
+        let remove_set: std::collections::HashSet<&str> = remove_deps
+            .iter()
+            .map(|v| v.as_str().ok_or_else(|| anyhow::anyhow!("_remove_depends_on elements must be strings")))
+            .collect::<anyhow::Result<std::collections::HashSet<&str>>>()?;
+        if node.depends_on.iter().any(|d| remove_set.contains(d.as_str())) {
+            let remaining: Vec<String> = node
+                .depends_on
+                .iter()
+                .filter(|d| !remove_set.contains(d.as_str()))
+                .cloned()
+                .collect();
+            effective.insert(
+                "depends_on".to_string(),
+                serde_json::Value::Array(remaining.into_iter().map(serde_json::Value::String).collect()),
+            );
+        }
+    }
+
+    // Handle superseded_by
+    if let Some(superseded_by) = updates_map.get("superseded_by") {
+        effective.insert("superseded_by".to_string(), superseded_by.clone());
+        if !effective.contains_key("status") {
+            effective.insert(
+                "status".to_string(),
+                serde_json::Value::String("done".to_string()),
+            );
+        }
+    }
+
+    Ok(effective)
+}
