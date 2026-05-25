@@ -4930,7 +4930,7 @@ impl PkbSearchServer {
         //   1. Nested: {"id": "...", "updates": {"status": "done"}}
         //   2. Flat:   {"id": "...", "status": "done"}
         // If `updates` is present, it wins. Otherwise collect top-level fields.
-        const ROUTING_KEYS: &[&str] = &["id", "updates", "recursive"];
+        const ROUTING_KEYS: &[&str] = &["id", "updates", "recursive", "unparent", "force", "allow_missing_parent"];
         let updates: serde_json::Map<String, serde_json::Value> =
             if let Some(nested) = args.get("updates").and_then(|v| v.as_object()) {
                 nested.clone()
@@ -5097,7 +5097,7 @@ impl PkbSearchServer {
             })?;
             let mut filtered_updates = serde_json::Map::new();
             for (k, v) in &updates {
-                if k != "completion_evidence" && k != "pr_url" {
+                if k != "completion_evidence" {
                     filtered_updates.insert(k.clone(), v.clone());
                 }
             }
@@ -6591,7 +6591,7 @@ impl PkbSearchServer {
                         "title_contains": { "type": "string", "description": "Filter: title substring (case-insensitive)" },
                         "weight_gte": { "type": "integer", "description": "Filter: downstream weight >= N" },
                         "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["updates"]
                 }))
@@ -6614,7 +6614,7 @@ impl PkbSearchServer {
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
                         "title_contains": { "type": "string", "description": "Filter: title substring" },
                         "new_parent": { "type": "string", "description": "ID of new parent (flexible resolution)" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["new_parent"]
                 }))
@@ -6734,7 +6734,7 @@ impl PkbSearchServer {
                     "properties": {
                         "canonical": { "type": "string", "description": "ID of the task to keep" },
                         "merge_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of duplicates to merge into canonical" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["canonical", "merge_ids"]
                 }))
@@ -6750,7 +6750,7 @@ impl PkbSearchServer {
                     "properties": {
                         "canonical_id": { "type": "string", "description": "ID of the node to merge into (must already exist)" },
                         "source_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of nodes to merge into canonical and archive" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["canonical_id", "source_ids"]
                 }))
@@ -8005,7 +8005,8 @@ mod batch_finalize_tests {
         // Run a batch update that flips status to "blocked".
         let args = json!({
             "ids": task_ids,
-            "updates": { "status": "blocked" }
+            "updates": { "status": "blocked" },
+            "dry_run": false
         });
         let result = server.handle_batch_update(&args).expect("batch_update");
         let text = result

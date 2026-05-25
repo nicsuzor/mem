@@ -9,14 +9,6 @@ use crate::graph_store::GraphStore;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Special update keys that get transformed (not set directly).
-const SPECIAL_KEYS: &[&str] = &[
-    "_add_tags",
-    "_remove_tags",
-    "_add_depends_on",
-    "_remove_depends_on",
-];
-
 /// Execute a batch update operation.
 ///
 /// Applies `updates` to all tasks matching `filters`. Supports special
