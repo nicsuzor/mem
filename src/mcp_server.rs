@@ -233,7 +233,7 @@ impl PkbSearchServer {
             ),
             data: None,
         })?;
-        if ev.trim().is_empty() {
+        if !ev.chars().any(|c| !c.is_whitespace()) {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
@@ -1509,12 +1509,14 @@ impl PkbSearchServer {
                 "create_task invocation"
             );
             if !unknown.is_empty() {
-                tracing::warn!(
-                    target: "pkb::create_task",
-                    unknown_keys = ?unknown,
-                    "create_task received unknown keys — these fields will NOT be written. \
-                     Pass them via update_task or extend the create_task schema."
-                );
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: std::borrow::Cow::from(format!(
+                        "Unknown keys in create_task: {:?}. Pass them via update_task or extend the create_task schema.",
+                        unknown
+                    )),
+                    data: None,
+                });
             }
         }
 
@@ -4149,6 +4151,39 @@ impl PkbSearchServer {
             title_to_id.insert(title_lower, id);
         }
 
+        let mut unresolvable = Vec::new();
+        {
+            let graph = self.graph.read();
+            for subtask in subtasks.iter() {
+                if let Some(deps) = subtask.get("depends_on").and_then(|v| v.as_array()) {
+                    for dep_val in deps {
+                        if let Some(dep) = dep_val.as_str() {
+                            if dep.starts_with('$') {
+                                if let Ok(idx) = dep[1..].parse::<usize>() {
+                                    if idx == 0 || idx > subtask_ids.len() {
+                                        unresolvable.push(dep.to_string());
+                                    }
+                                } else {
+                                    unresolvable.push(dep.to_string());
+                                }
+                            } else if !title_to_id.contains_key(&dep.to_lowercase()) {
+                                if graph.resolve(dep).is_none() {
+                                    unresolvable.push(dep.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !unresolvable.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: std::borrow::Cow::from(format!("Unresolvable sibling references in decompose_task: {:?}", unresolvable)),
+                data: None,
+            });
+        }
+
         let mut created: Vec<(String, String)> = Vec::new();
         static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
             regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex")
@@ -4895,7 +4930,7 @@ impl PkbSearchServer {
         //   1. Nested: {"id": "...", "updates": {"status": "done"}}
         //   2. Flat:   {"id": "...", "status": "done"}
         // If `updates` is present, it wins. Otherwise collect top-level fields.
-        const ROUTING_KEYS: &[&str] = &["id", "updates", "recursive"];
+        const ROUTING_KEYS: &[&str] = &["id", "updates", "recursive", "unparent", "force", "allow_missing_parent"];
         let updates: serde_json::Map<String, serde_json::Value> =
             if let Some(nested) = args.get("updates").and_then(|v| v.as_object()) {
                 nested.clone()
@@ -4922,9 +4957,19 @@ impl PkbSearchServer {
         // Validate parent change: reject if the new parent does not exist
         // (task-89b2af87) AND reject if the change would create a cycle.
         if let Some(new_parent_val) = updates.get("parent") {
-            // Treat null / empty string as "clear parent" — no validation needed.
+            // Treat null / empty string as "clear parent"
             let new_parent = new_parent_val.as_str().unwrap_or("").trim();
-            if !new_parent.is_empty() {
+            if new_parent.is_empty() {
+                let unparent = args.get("unparent").and_then(|v| v.as_bool()).unwrap_or(false);
+                let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !unparent && !force {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: std::borrow::Cow::from("To remove a task's parent, pass unparent=true explicitly."),
+                        data: None,
+                    });
+                }
+            } else {
                 let allow_missing = args
                     .get("allow_missing_parent")
                     .and_then(|v| v.as_bool())
@@ -5020,7 +5065,7 @@ impl PkbSearchServer {
                 .get("completion_evidence")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if evidence.trim().is_empty() {
+            if !evidence.chars().any(|c| !c.is_whitespace()) {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
                     message: Cow::from(
@@ -5043,11 +5088,25 @@ impl PkbSearchServer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let update_map: std::collections::HashMap<String, serde_json::Value> = updates
-            .iter()
-            .filter(|(k, _)| k.as_str() != "completion_evidence")
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let update_map = {
+            let graph = self.graph.read();
+            let node = graph.resolve(&canonical_id).ok_or_else(|| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: std::borrow::Cow::from(format!("Failed to resolve canonical id: {canonical_id}")),
+                data: None,
+            })?;
+            let mut filtered_updates = serde_json::Map::new();
+            for (k, v) in &updates {
+                if k != "completion_evidence" {
+                    filtered_updates.insert(k.clone(), v.clone());
+                }
+            }
+            crate::document_crud::expand_special_update_keys(&node, &filtered_updates).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: std::borrow::Cow::from(format!("Invalid updates: {e}")),
+                data: None,
+            })?
+        };
 
         // Per-phase timing for write-path perf investigation (task-a4dcc039).
         // Emitted at debug; set RUST_LOG=mem::mcp_server=debug to observe.
@@ -5117,7 +5176,7 @@ impl PkbSearchServer {
     fn handle_batch_update(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let updates = args.get("updates").cloned().unwrap_or(JsonValue::Object(serde_json::Map::new()));
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
 
         if filters.is_empty() && updates.as_object().map(|m| m.is_empty()).unwrap_or(true) {
             return Err(McpError {
@@ -5151,7 +5210,7 @@ impl PkbSearchServer {
             .to_string();
 
         let filters = crate::batch_ops::filters::parse_filter_set(args);
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
 
         let graph = self.graph.read();
         let summary = crate::batch_ops::reparent::batch_reparent(
@@ -5219,7 +5278,7 @@ impl PkbSearchServer {
             });
         }
 
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
 
         let summary =
             crate::document_crud::merge_node(&self.pkb_root, &source_ids, &canonical_id, dry_run)
@@ -5402,7 +5461,7 @@ impl PkbSearchServer {
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
 
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
 
         if merge_ids.is_empty() {
             return Err(McpError {
@@ -5836,15 +5895,6 @@ impl PkbSearchServer {
 
     fn dispatch_tool_sync(&self, name: &str, args: &JsonValue) -> Result<CallToolResult, McpError> {
         match name {
-            // --- Consolidated Tools ---
-            "create_document" => self.handle_create_document_consolidated(args),
-            "manage_task" => self.handle_manage_task_consolidated(args),
-            "pkb_explore" => self.handle_pkb_explore_consolidated(args),
-            "pkb_batch" => self.handle_pkb_batch_consolidated(args),
-            "pkb_stats" => self.handle_pkb_stats_consolidated(args),
-            "pkb_tool_help" => self.handle_pkb_tool_help(args),
-
-            // --- Legacy / Granular Tools ---
             "search" => self.handle_pkb_search(args),
             "get_document" => self.handle_get_document(args),
             "list_documents" => self.handle_list_documents(args),
@@ -5852,7 +5902,6 @@ impl PkbSearchServer {
             "get_network_metrics" => self.handle_get_network_metrics(args),
             "create_task" => self.handle_create_task(args),
             "claim_task" => self.handle_claim_task(args),
-            "create_subtask" => self.handle_create_subtask(args),
             "create_memory" => self.handle_create_memory(args),
             "create" => self.handle_create_document(args),
             "append" => self.handle_append_to_document(args),
@@ -5863,7 +5912,6 @@ impl PkbSearchServer {
             "list_tasks" => self.handle_list_tasks(args),
             "get_task" => self.handle_get_task(args),
             "update_task" => self.handle_update_task(args),
-            "bulk_reparent" => self.handle_bulk_reparent(args),
             "retrieve_memory" => self.handle_retrieve_memory(args),
             "detect_weight_divergence" => self.handle_detect_weight_divergence(args),
             "search_by_tag" => self.handle_search_by_tag(args),
@@ -5908,18 +5956,7 @@ impl ServerHandler for PkbSearchServer {
         let tool_name = request.name.clone();
         let args = Self::args_to_value(request.arguments);
 
-        // For consolidated tools, build a granular name for telemetry
-        let effective_name: String = match &*tool_name {
-            "manage_task" | "pkb_explore" | "pkb_batch" | "pkb_stats" | "create_document" => {
-                let sub = args
-                    .get("action")
-                    .or_else(|| args.get("type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                format!("{tool_name}/{sub}")
-            }
-            other => other.to_string(),
-        };
+        let effective_name = tool_name.to_string();
 
         let this = self.clone();
         async move {
@@ -6148,21 +6185,6 @@ impl PkbSearchServer {
             )
             .with_title("Create Task"),
             Tool::new(
-                "create_subtask",
-                "Create a numbered sub-task attached to a parent task. Sub-tasks use dot-notation IDs (e.g. proj.1) and appear as a checklist when the parent is retrieved. Use for fine-grained completion tracking.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "parent_id": { "type": "string", "description": "ID of the parent task (e.g. proj-deadbeef)" },
-                        "title": { "type": "string", "description": "Sub-task title" },
-                        "body": { "type": "string", "description": "Optional markdown body" }
-                    },
-                    "required": ["parent_id", "title"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Create Sub-task"),
-            Tool::new(
                 "claim_task",
                 "Instantiate a template task. When called on a `type: template` node, creates a \
                  datestamped instance (<slug>-<YYYYMMDD>-<HHMM>-<host>.md) and returns it via \
@@ -6376,22 +6398,6 @@ impl PkbSearchServer {
             .with_title("Update Task")
             .with_annotations(ToolAnnotations::new().idempotent(true)),
             Tool::new(
-                "bulk_reparent",
-                "Set a new parent for all documents matching a pattern. Skips files already parented correctly. Dry run by default.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "pattern": { "type": "string", "description": "Directory path or glob pattern (e.g. 'archive/', 'tasks/*.md'). Relative to PKB root." },
-                        "parent_id": { "type": "string", "description": "Parent ID to set on matching files" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: true). Set to false to apply.", "default": true }
-                    },
-                    "required": ["pattern", "parent_id"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Bulk Reparent Tasks")
-            .with_annotations(ToolAnnotations::new().idempotent(true)),
-            Tool::new(
                 "retrieve_memory",
                 "Find relevant memories, insights, or observations by semantic similarity. Returns full content for the top matches.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -6585,7 +6591,7 @@ impl PkbSearchServer {
                         "title_contains": { "type": "string", "description": "Filter: title substring (case-insensitive)" },
                         "weight_gte": { "type": "integer", "description": "Filter: downstream weight >= N" },
                         "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["updates"]
                 }))
@@ -6608,7 +6614,7 @@ impl PkbSearchServer {
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
                         "title_contains": { "type": "string", "description": "Filter: title substring" },
                         "new_parent": { "type": "string", "description": "ID of new parent (flexible resolution)" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["new_parent"]
                 }))
@@ -6728,7 +6734,7 @@ impl PkbSearchServer {
                     "properties": {
                         "canonical": { "type": "string", "description": "ID of the task to keep" },
                         "merge_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of duplicates to merge into canonical" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["canonical", "merge_ids"]
                 }))
@@ -6744,7 +6750,7 @@ impl PkbSearchServer {
                     "properties": {
                         "canonical_id": { "type": "string", "description": "ID of the node to merge into (must already exist)" },
                         "source_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of nodes to merge into canonical and archive" },
-                        "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
+                        "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["canonical_id", "source_ids"]
                 }))
@@ -6812,84 +6818,6 @@ impl PkbSearchServer {
             )
             .with_title("Tool Usage Stats")
             .with_annotations(ToolAnnotations::new().read_only(true)),
-            // --- Consolidated (Progressive Disclosure) Tools ---
-            Tool::new(
-                "create_document",
-                "Create a new PKB node (task, subtask, memory, note, goal, project, epic). Dispatches on `type`.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "type": { "type": "string", "enum": ["task", "subtask", "memory", "note", "goal", "project", "epic"] },
-                        "title": { "type": "string" },
-                        "parent": { "type": "string", "description": "Parent ID (required for subtask)" },
-                        "fields": { "type": "object", "description": "Metadata: priority, tags, depends_on, assignee, etc." },
-                        "body": { "type": "string" }
-                    },
-                    "required": ["type", "title"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Create Document"),
-            Tool::new(
-                "manage_task",
-                "Lifecycle management for tasks: update, complete, release, or decompose.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string" },
-                        "action": { "type": "string", "enum": ["update", "complete", "release", "decompose"] },
-                        "params": { "type": "object", "description": "Action-specific parameters (e.g. updates, summary, pr_url, subtasks)" }
-                    },
-                    "required": ["id", "action"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Manage Task")
-            .with_annotations(ToolAnnotations::new().idempotent(true)),
-            Tool::new(
-                "pkb_explore",
-                "Explore graph relationships: context, trace, tree, children, metrics.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string" },
-                        "action": { "type": "string", "enum": ["context", "trace", "tree", "children", "metrics"] },
-                        "params": { "type": "object", "description": "Action-specific: e.g. {to: 'ID'} for trace, {recursive: true} for children" }
-                    },
-                    "required": ["id", "action"]
-                }))
-                .unwrap(),
-            )
-            .with_title("PKB Graph Explorer")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
-                "pkb_batch",
-                "Bulk operations: update, reparent, archive, merge, node_merge, epics, reclassify, duplicates, orphans.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "action": { "type": "string", "enum": ["update", "reparent", "archive", "merge", "node_merge", "epics", "reclassify", "duplicates", "orphans"] },
-                        "params": { "type": "object", "description": "Filters, updates, new_parent, merge_ids, etc." }
-                    },
-                    "required": ["action"]
-                }))
-                .unwrap(),
-            )
-            .with_title("PKB Batch Operations")
-            .with_annotations(ToolAnnotations::new().destructive(true)),
-            Tool::new(
-                "pkb_stats",
-                "System and graph status: summary, graph_stats, graph_json, tool_stats, status, divergence.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "action": { "type": "string", "enum": ["summary", "graph_stats", "graph_json", "tool_stats", "status", "divergence"] }
-                    }
-                }))
-                .unwrap(),
-            )
-            .with_title("PKB Statistics")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "status",
                 "Report mem build identity: package version, embedded git describe, and build profile. Use to confirm which binary is running.",
@@ -6900,20 +6828,6 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Build Status")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
-                "pkb_tool_help",
-                "Get detailed schema and examples for consolidated tools.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "tool": { "type": "string" },
-                        "action": { "type": "string" }
-                    }
-                }))
-                .unwrap(),
-            )
-            .with_title("PKB Tool Help")
             .with_annotations(ToolAnnotations::new().read_only(true)),
         ]
     }
@@ -8091,7 +8005,8 @@ mod batch_finalize_tests {
         // Run a batch update that flips status to "blocked".
         let args = json!({
             "ids": task_ids,
-            "updates": { "status": "blocked" }
+            "updates": { "status": "blocked" },
+            "dry_run": false
         });
         let result = server.handle_batch_update(&args).expect("batch_update");
         let text = result
