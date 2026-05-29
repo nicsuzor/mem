@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.64](https://github.com/nicsuzor/mem/compare/mem-v0.3.63...mem-v0.3.64) (2026-05-29)
+
+
+### Bug Fixes
+
+* **graph:** materialise contributed_by inverse index + downstream_weight for contributes_to targets ([#398](https://github.com/nicsuzor/mem/issues/398)) ([fec5d1f](https://github.com/nicsuzor/mem/commit/fec5d1f5a63f8f4d9ceff6ae5d69ec50928b818c))
+* **mcp:** implement CRUD redesign phase 0-2 ([#394](https://github.com/nicsuzor/mem/issues/394)) ([6a2a842](https://github.com/nicsuzor/mem/commit/6a2a842f1f6d5d037fb4f0d9357ff14adbaa9204))
+* **mcp:** list_tasks hides done/cancelled tasks by default ([#397](https://github.com/nicsuzor/mem/issues/397)) ([221f407](https://github.com/nicsuzor/mem/commit/221f4070422fdfe6a67f9bb18556f8cf2022514c))
+
 ## [0.3.63](https://github.com/nicsuzor/mem/compare/mem-v0.3.62...mem-v0.3.63) (2026-05-24)
 
 
