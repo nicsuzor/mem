@@ -76,13 +76,17 @@ pub struct Edge {
 /// verbal terms mapped to non-linear anchors.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ContributesTo {
-    /// Target node ID this node contributes to.
+    /// Target node ID this node contributes to. Accepts `target:` as an alias
+    /// for backward-compatibility with older PKB entries.
+    #[serde(alias = "target")]
     pub to: String,
     /// Verbal weight term (e.g. "Expected", "Probable", "Certain").
-    #[serde(alias = "weight")]
+    /// Defaults to empty string (maps to 0.3 soft-contribution weight).
+    #[serde(alias = "weight", default)]
     pub stated_weight: String,
-    /// Mandatory single-sentence justification for the weight.
-    #[serde(alias = "why")]
+    /// Single-sentence justification for the weight. Optional in parsing
+    /// (present in well-formed entries; not validated at write time).
+    #[serde(alias = "why", default)]
     pub justification: String,
     /// Current decayed weight value (computed at runtime).
     #[serde(skip_serializing_if = "Option::is_none")]
