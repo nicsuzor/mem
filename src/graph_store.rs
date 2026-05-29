@@ -2202,11 +2202,12 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
     }
 
     // Pre-build adjacency lists with indices.
-    // Uses a mutable Vec so that contributes_to edges can add both a forward entry
-    // (source → target, existing behaviour) and a reverse entry (target → source) in
-    // the same pass. The reverse entry mirrors how `n.children` lets a parent node
-    // accumulate downstream_weight from its children: a contributes_to target should
-    // accumulate downstream_weight from its contributors.
+    // contributes_to uses only the reverse edge (target → source). This lets a
+    // target node's BFS accumulate downstream_weight from its contributors, mirroring
+    // how a parent accumulates weight from its children. The forward edge (source →
+    // target) is intentionally omitted: including it would let BFS from source-A reach
+    // sibling source-B via the target's reverse entries, incorrectly inflating A's
+    // downstream_weight with B's base weight ("sibling contributor leakage").
     let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); nodes.len()];
     for (source_idx, n) in nodes.iter().enumerate() {
         for bid in &n.blocks {
@@ -2228,10 +2229,8 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
             if let Some(resolved) = &ct.resolved_to {
                 if let Some(&target_idx) = id_to_idx.get(resolved) {
                     let w = ct.numeric_weight();
-                    // Forward: source's BFS reaches target (existing behaviour).
-                    adj[source_idx].push((target_idx, w));
-                    // Reverse: target's BFS reaches source, so the target's
-                    // downstream_weight reflects inbound contribution weight.
+                    // Reverse only: target's BFS reaches source so the target
+                    // accumulates downstream_weight from its contributors.
                     adj[target_idx].push((source_idx, w));
                 }
             }
@@ -4540,6 +4539,22 @@ mod tests {
             g.downstream_weight > 0.0,
             "goal-g.downstream_weight should be > 0 when contributors exist, got {}",
             g.downstream_weight
+        );
+
+        // AC4 (sibling isolation): task-a must NOT accumulate task-b's base_weight.
+        // Before the forward-edge removal, BFS from task-a would visit goal-g then
+        // task-b via goal-g's reverse entry, causing leakage.
+        let a = store.get_node("task-a").expect("task-a must exist");
+        let b = store.get_node("task-b").expect("task-b must exist");
+        assert_eq!(
+            a.downstream_weight, 0.0,
+            "task-a.downstream_weight must be 0 (no sibling leakage from task-b), got {}",
+            a.downstream_weight
+        );
+        assert_eq!(
+            b.downstream_weight, 0.0,
+            "task-b.downstream_weight must be 0 (no sibling leakage from task-a), got {}",
+            b.downstream_weight
         );
     }
 }
