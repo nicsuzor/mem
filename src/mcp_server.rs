@@ -4522,6 +4522,16 @@ impl PkbSearchServer {
             .get("include_subtasks")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // By default hide done/cancelled tasks — callers looking for work don't
+        // want completed items cluttering the list. Matches task_search default.
+        // Pass `include_done=true` to opt back in. When an explicit `status`
+        // filter is provided the caller already knows what they want, so this
+        // gate is skipped (e.g. status="done" still works).
+        let include_done = args
+            .get("include_done")
+            .and_then(|v| v.as_bool())
+            .or_else(|| args.get("include_closed").and_then(|v| v.as_bool()))
+            .unwrap_or(false);
         let format = args
             .get("format")
             .and_then(|v| v.as_str())
@@ -4568,6 +4578,19 @@ impl PkbSearchServer {
             }
             all
         };
+
+        // Hide terminal tasks by default when no explicit status was requested.
+        if !include_done && !is_ready && !is_blocked && status.is_none() {
+            tasks.retain(|t| {
+                t.status
+                    .as_deref()
+                    .map(|s| {
+                        let s = s.to_ascii_lowercase();
+                        s != "done" && s != "cancelled" && s != "canceled"
+                    })
+                    .unwrap_or(true)
+            });
+        }
 
         if let Some(pri) = priority {
             tasks.retain(|t| t.effective_priority.unwrap_or(4) <= pri);
@@ -6342,7 +6365,7 @@ impl PkbSearchServer {
             .with_title("Release Task"),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering. JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
+                "List tasks with smart filtering. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6360,6 +6383,7 @@ impl PkbSearchServer {
                         "focus_score_gte": { "type": "integer", "description": "Filter to tasks whose composite focus_score is ≥ N." },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
+                        "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (hides closed tasks so the list shows actionable work). Ignored when an explicit `status` filter is provided." },
                         "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
                     }
                 }))
@@ -6997,15 +7021,40 @@ mod tests {
             .handle_list_tasks(&json!({"project": "ProjectAlpha", "format": "json"}))
             .unwrap();
         let ids = extract_task_ids(&result);
-        // Should contain only alpha tasks
+        // Default hides done tasks — task-a3 (done) should not appear
         assert!(ids.contains(&"task-a1".to_string()), "should contain task-a1");
         assert!(ids.contains(&"task-a2".to_string()), "should contain task-a2");
-        assert!(ids.contains(&"task-a3".to_string()), "should contain task-a3");
+        assert!(!ids.contains(&"task-a3".to_string()), "done task-a3 should be hidden by default");
         // Should NOT contain tasks from other projects
         assert!(!ids.contains(&"task-b1".to_string()), "should not contain task-b1");
         assert!(!ids.contains(&"task-b2".to_string()), "should not contain task-b2");
         assert!(!ids.contains(&"task-g1".to_string()), "should not contain task-g1");
         assert!(!ids.contains(&"task-orphan".to_string()), "should not contain orphan");
+    }
+
+    #[test]
+    fn test_list_tasks_include_done_surfaces_terminal_tasks() {
+        let server = build_test_server();
+        // With include_done=true, done tasks should appear
+        let result = server
+            .handle_list_tasks(&json!({"project": "ProjectAlpha", "include_done": true, "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert!(ids.contains(&"task-a1".to_string()), "should contain task-a1");
+        assert!(ids.contains(&"task-a2".to_string()), "should contain task-a2");
+        assert!(ids.contains(&"task-a3".to_string()), "done task-a3 should appear with include_done=true");
+    }
+
+    #[test]
+    fn test_list_tasks_explicit_status_done_overrides_default_filter() {
+        let server = build_test_server();
+        // status="done" explicitly requested — should return done tasks even without include_done
+        let result = server
+            .handle_list_tasks(&json!({"status": "done", "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&result);
+        assert!(ids.contains(&"task-a3".to_string()), "explicit status=done should return done tasks");
+        assert!(!ids.contains(&"task-a1".to_string()), "active task should not appear in done filter");
     }
 
     // ── AC2: case-insensitive matching ──
@@ -7247,6 +7296,22 @@ mod tests {
         assert!(
             schema.contains("\"include_done\""),
             "task_search schema should advertise include_done parameter"
+        );
+    }
+
+    // ── list_tasks: schema advertises include_done ──
+
+    #[test]
+    fn test_list_tasks_schema_includes_include_done() {
+        let tools = PkbSearchServer::get_all_tools();
+        let list_tasks = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "list_tasks")
+            .expect("list_tasks tool should exist");
+        let schema = serde_json::to_string(&list_tasks.input_schema).unwrap();
+        assert!(
+            schema.contains("\"include_done\""),
+            "list_tasks schema should advertise include_done parameter"
         );
     }
 
