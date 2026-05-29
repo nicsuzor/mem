@@ -4580,13 +4580,14 @@ impl PkbSearchServer {
         };
 
         // Hide terminal tasks by default when no explicit status was requested.
-        if !include_done && !is_ready && !is_blocked && status.is_none() {
+        if !include_done && status.is_none() {
             tasks.retain(|t| {
                 t.status
                     .as_deref()
                     .map(|s| {
-                        let s = s.to_ascii_lowercase();
-                        s != "done" && s != "cancelled" && s != "canceled"
+                        !s.eq_ignore_ascii_case("done")
+                            && !s.eq_ignore_ascii_case("cancelled")
+                            && !s.eq_ignore_ascii_case("canceled")
                     })
                     .unwrap_or(true)
             });
