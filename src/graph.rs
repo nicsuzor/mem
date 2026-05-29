@@ -84,8 +84,8 @@ pub struct ContributesTo {
     /// Defaults to empty string (maps to 0.3 soft-contribution weight).
     #[serde(alias = "weight", default)]
     pub stated_weight: String,
-    /// Single-sentence justification for the weight. Optional in parsing;
-    /// the linter still enforces presence at write time.
+    /// Single-sentence justification for the weight. Optional in parsing
+    /// (present in well-formed entries; not validated at write time).
     #[serde(alias = "why", default)]
     pub justification: String,
     /// Current decayed weight value (computed at runtime).
