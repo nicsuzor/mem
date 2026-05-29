@@ -2201,36 +2201,42 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
         }
     }
 
-    // Pre-build adjacency lists with indices
-    let adj: Vec<Vec<(usize, f64)>> = nodes
-        .iter()
-        .map(|n| {
-            let mut neighbors = Vec::new();
-            for bid in &n.blocks {
-                if let Some(&idx) = id_to_idx.get(bid) {
-                    neighbors.push((idx, 1.0));
+    // Pre-build adjacency lists with indices.
+    // Uses a mutable Vec so that contributes_to edges can add both a forward entry
+    // (source → target, existing behaviour) and a reverse entry (target → source) in
+    // the same pass. The reverse entry mirrors how `n.children` lets a parent node
+    // accumulate downstream_weight from its children: a contributes_to target should
+    // accumulate downstream_weight from its contributors.
+    let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); nodes.len()];
+    for (source_idx, n) in nodes.iter().enumerate() {
+        for bid in &n.blocks {
+            if let Some(&idx) = id_to_idx.get(bid) {
+                adj[source_idx].push((idx, 1.0));
+            }
+        }
+        for sbid in &n.soft_blocks {
+            if let Some(&idx) = id_to_idx.get(sbid) {
+                adj[source_idx].push((idx, 0.3));
+            }
+        }
+        for cid in &n.children {
+            if let Some(&idx) = id_to_idx.get(cid) {
+                adj[source_idx].push((idx, 0.5));
+            }
+        }
+        for ct in &n.contributes_to {
+            if let Some(resolved) = &ct.resolved_to {
+                if let Some(&target_idx) = id_to_idx.get(resolved) {
+                    let w = ct.numeric_weight();
+                    // Forward: source's BFS reaches target (existing behaviour).
+                    adj[source_idx].push((target_idx, w));
+                    // Reverse: target's BFS reaches source, so the target's
+                    // downstream_weight reflects inbound contribution weight.
+                    adj[target_idx].push((source_idx, w));
                 }
             }
-            for sbid in &n.soft_blocks {
-                if let Some(&idx) = id_to_idx.get(sbid) {
-                    neighbors.push((idx, 0.3));
-                }
-            }
-            for cid in &n.children {
-                if let Some(&idx) = id_to_idx.get(cid) {
-                    neighbors.push((idx, 0.5));
-                }
-            }
-            for ct in &n.contributes_to {
-                if let Some(resolved) = &ct.resolved_to {
-                    if let Some(&idx) = id_to_idx.get(resolved) {
-                        neighbors.push((idx, ct.numeric_weight()));
-                    }
-                }
-            }
-            neighbors
-        })
-        .collect();
+        }
+    }
 
     let num_nodes = nodes.len();
     let mut visited = vec![false; num_nodes];
@@ -4449,5 +4455,91 @@ mod tests {
 
         assert_eq!(n_a.target_ancestors, vec!["task-b"]);
         assert_eq!(n_b.target_ancestors, vec!["task-a"]);
+    }
+
+    /// Parse-intolerance regression: a contributes_to entry missing `why:` must not
+    /// silently drop the entire edge list (ContributesTo.justification has #[serde(default)]).
+    /// Without that default, serde_json::from_value::<Vec<ContributesTo>> fails on the
+    /// whole list and contributed_by on the target stays empty.
+    #[test]
+    fn test_contributes_to_missing_justification_still_populates_contributed_by() {
+        let root = PathBuf::from("/tmp/pkb");
+        let goal = make_doc("goals/goal-g.md", "Goal G", "target", "active", "goal-g", None, &[]);
+        // Entry has `to:` and `weight:` but deliberately omits `why:` / `justification:`.
+        // Without #[serde(default)] on ContributesTo::justification, serde_json would return Err
+        // and the whole Vec parse would silently become vec![], leaving contributed_by empty.
+        let mut contributor = make_doc("tasks/task-a.md", "Task A", "task", "active", "task-a", None, &[]);
+        let mut fm = contributor.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+        fm.insert(
+            "contributes_to".to_string(),
+            serde_json::json!([{"to": "goal-g", "weight": "Certain"}]),
+        );
+        contributor.frontmatter = Some(serde_json::Value::Object(fm));
+
+        let store = GraphStore::build(&[goal, contributor], &root);
+
+        let a = store.get_node("task-a").expect("task-a must exist");
+        assert_eq!(a.contributes_to.len(), 1, "entry with missing why: should still be parsed");
+
+        let g = store.get_node("goal-g").expect("goal-g must exist");
+        assert!(
+            g.contributed_by.contains(&"task-a".to_string()),
+            "goal-g.contributed_by must contain task-a even when entry omits `why:`, got {:?}",
+            g.contributed_by
+        );
+    }
+
+    /// AC3 regression: task A contributes_to goal G → G.contributed_by must contain A,
+    /// and G.downstream_weight must be non-zero.
+    #[test]
+    fn test_contributed_by_inverse_index_is_materialised() {
+        let root = PathBuf::from("/tmp/pkb");
+
+        // goal-g: a target with no own outbound edges
+        let goal = make_doc("goals/goal-g.md", "Goal G", "target", "active", "goal-g", None, &[]);
+
+        // task-a and task-b both contribute_to goal-g
+        let make_contributor = |path: &str, title: &str, id: &str| -> PkbDocument {
+            let mut d = make_doc(path, title, "task", "active", id, None, &[]);
+            let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert(
+                "contributes_to".to_string(),
+                serde_json::json!([{
+                    "to": "goal-g",
+                    "stated_weight": "Certain",
+                    "justification": "test"
+                }]),
+            );
+            d.frontmatter = Some(serde_json::Value::Object(fm));
+            d
+        };
+
+        let docs = vec![
+            goal,
+            make_contributor("tasks/task-a.md", "Task A", "task-a"),
+            make_contributor("tasks/task-b.md", "Task B", "task-b"),
+        ];
+
+        let store = GraphStore::build(&docs, &root);
+        let g = store.get_node("goal-g").expect("goal-g must exist");
+
+        // AC3: contributed_by inverse index must contain both contributors
+        assert!(
+            g.contributed_by.contains(&"task-a".to_string()),
+            "goal-g.contributed_by should contain task-a, got {:?}",
+            g.contributed_by
+        );
+        assert!(
+            g.contributed_by.contains(&"task-b".to_string()),
+            "goal-g.contributed_by should contain task-b, got {:?}",
+            g.contributed_by
+        );
+
+        // AC2: downstream_weight must be non-zero when contributors exist
+        assert!(
+            g.downstream_weight > 0.0,
+            "goal-g.downstream_weight should be > 0 when contributors exist, got {}",
+            g.downstream_weight
+        );
     }
 }
