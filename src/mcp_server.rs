@@ -319,12 +319,13 @@ impl PkbSearchServer {
             let mut g = self.graph.write();
             g.upsert_node_in_place(node, &self.pkb_root);
             g.reclassify();
+            // Insert inside the write lock so the ID is visible to any
+            // concurrent Tier-2 phase-2 swap before the write lock is released.
+            // If inserted after the lock, a Tier-2 that already holds the
+            // write lock for its swap will miss this ID and drop the node.
+            self.patched_during_rebuild.lock().insert(patched_id);
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_patch", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
-
-        // Track patched id so a concurrent in-flight background rebuild
-        // re-applies it on swap (avoids the lost-patch race).
-        self.patched_during_rebuild.lock().insert(patched_id);
 
         // Schedule the coalesced background full rebuild (edges, downstream
         // metrics, target ancestors, similarity edges).
@@ -341,13 +342,11 @@ impl PkbSearchServer {
             let mut g = self.graph.write();
             g.remove_node_in_place(id);
             g.reclassify();
+            // Same as rebuild_graph_for_pkb_document: insert inside the write
+            // lock so the removal is visible to any concurrent Tier-2 swap.
+            self.patched_during_rebuild.lock().insert(id.to_string());
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_remove", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
-
-        // Removed node id is recorded so a concurrent background rebuild
-        // doesn't resurrect it via patch-merge: replace_node only re-applies
-        // a node that still exists in the live graph.
-        self.patched_during_rebuild.lock().insert(id.to_string());
 
         self.schedule_graph_rebuild();
     }
@@ -3563,21 +3562,18 @@ impl PkbSearchServer {
 
             if !parsed_descs.is_empty() {
                 // Phase 2: single graph write lock — patch all nodes, then one
-                // reclassify pass for the whole batch.
+                // reclassify pass for the whole batch. Insert into
+                // patched_during_rebuild inside the same lock to prevent a
+                // concurrent Tier-2 swap from dropping these nodes.
                 {
                     let mut g = self.graph.write();
-                    for doc in &parsed_descs {
-                        let node = crate::graph::GraphNode::from_pkb_document(doc);
-                        g.upsert_node_in_place(node, &self.pkb_root);
-                    }
-                    g.reclassify();
-                }
-                {
                     let mut patched = self.patched_during_rebuild.lock();
                     for doc in &parsed_descs {
                         let node = crate::graph::GraphNode::from_pkb_document(doc);
-                        patched.insert(node.id);
+                        patched.insert(node.id.clone());
+                        g.upsert_node_in_place(node, &self.pkb_root);
                     }
+                    g.reclassify();
                 }
 
                 // Phase 3: queue vector-store work. Each call patches

@@ -82,6 +82,11 @@ pub fn migrate_target_parents(pkb_root: &Path, dry_run: bool) -> Result<TargetPa
     let mut report = TargetParentReport { dry_run, changes: Vec::new() };
 
     for node in graph.nodes() {
+        // Skip ghost/virtual nodes that have no backing file on disk; their
+        // path is empty and any I/O attempt would resolve to pkb_root itself.
+        if node.path.as_os_str().is_empty() {
+            continue;
+        }
         let Some(parent_ref) = node.parent.as_deref() else { continue };
         let parent_ref = parent_ref.trim();
         if parent_ref.is_empty() {
