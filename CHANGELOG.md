@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.65](https://github.com/nicsuzor/mem/compare/mem-v0.3.64...mem-v0.3.65) (2026-05-30)
+
+
+### Bug Fixes
+
+* **lint,graph:** separate goal and target as distinct types ([#402](https://github.com/nicsuzor/mem/issues/402)) ([a95e5bc](https://github.com/nicsuzor/mem/commit/a95e5bc597d8a1f15412dd6ddaeb503b75503c37))
+
 ## [0.3.64](https://github.com/nicsuzor/mem/compare/mem-v0.3.63...mem-v0.3.64) (2026-05-29)
 
 
