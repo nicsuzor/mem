@@ -319,12 +319,13 @@ impl PkbSearchServer {
             let mut g = self.graph.write();
             g.upsert_node_in_place(node, &self.pkb_root);
             g.reclassify();
+            // Insert inside the write lock so the ID is visible to any
+            // concurrent Tier-2 phase-2 swap before the write lock is released.
+            // If inserted after the lock, a Tier-2 that already holds the
+            // write lock for its swap will miss this ID and drop the node.
+            self.patched_during_rebuild.lock().insert(patched_id);
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_patch", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
-
-        // Track patched id so a concurrent in-flight background rebuild
-        // re-applies it on swap (avoids the lost-patch race).
-        self.patched_during_rebuild.lock().insert(patched_id);
 
         // Schedule the coalesced background full rebuild (edges, downstream
         // metrics, target ancestors, similarity edges).
@@ -341,13 +342,11 @@ impl PkbSearchServer {
             let mut g = self.graph.write();
             g.remove_node_in_place(id);
             g.reclassify();
+            // Same as rebuild_graph_for_pkb_document: insert inside the write
+            // lock so the removal is visible to any concurrent Tier-2 swap.
+            self.patched_during_rebuild.lock().insert(id.to_string());
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_remove", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
-
-        // Removed node id is recorded so a concurrent background rebuild
-        // doesn't resurrect it via patch-merge: replace_node only re-applies
-        // a node that still exists in the live graph.
-        self.patched_during_rebuild.lock().insert(id.to_string());
 
         self.schedule_graph_rebuild();
     }
@@ -1665,6 +1664,15 @@ impl PkbSearchServer {
                         }
                     }
                     Some(parent_node) => {
+                        // Reject target/goal nodes as structural parents (targets are
+                        // black holes — link via contributes_to, never parent).
+                        if let Err(msg) = graph.reject_target_as_parent(parent_id) {
+                            return Err(McpError {
+                                code: ErrorCode::INVALID_PARAMS,
+                                message: Cow::from(msg),
+                                data: None,
+                            });
+                        }
                         // Reject closed parents unless caller opts in with force=true.
                         let parent_status = parent_node.status.as_deref().unwrap_or("");
                         if crate::graph::is_closed_for_hierarchy(parent_node.status.as_deref()) && !force {
@@ -1793,6 +1801,15 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Parent task not found: {parent_id}")),
                 data: None,
             })?;
+
+            // Reject target/goal nodes as structural parents (link via contributes_to).
+            if let Err(msg) = graph.reject_target_as_parent(parent_id) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(msg),
+                    data: None,
+                });
+            }
 
             let parent_has_project = crate::pkb::parse_file_relative(
                 &self.abs_path(&parent_node.path),
@@ -3545,21 +3562,18 @@ impl PkbSearchServer {
 
             if !parsed_descs.is_empty() {
                 // Phase 2: single graph write lock — patch all nodes, then one
-                // reclassify pass for the whole batch.
+                // reclassify pass for the whole batch. Insert into
+                // patched_during_rebuild inside the same lock to prevent a
+                // concurrent Tier-2 swap from dropping these nodes.
                 {
                     let mut g = self.graph.write();
-                    for doc in &parsed_descs {
-                        let node = crate::graph::GraphNode::from_pkb_document(doc);
-                        g.upsert_node_in_place(node, &self.pkb_root);
-                    }
-                    g.reclassify();
-                }
-                {
                     let mut patched = self.patched_during_rebuild.lock();
                     for doc in &parsed_descs {
                         let node = crate::graph::GraphNode::from_pkb_document(doc);
-                        patched.insert(node.id);
+                        patched.insert(node.id.clone());
+                        g.upsert_node_in_place(node, &self.pkb_root);
                     }
+                    g.reclassify();
                 }
 
                 // Phase 3: queue vector-store work. Each call patches
@@ -4072,6 +4086,15 @@ impl PkbSearchServer {
                             message: Cow::from(format!(
                                 "Parent ID must refer to a task node, but `{parent_id}` is not a task"
                             )),
+                            data: None,
+                        });
+                    }
+                    // Targets carry a task_id (from the `id` frontmatter) but are not
+                    // structural parents — reject decomposing work under them.
+                    if let Err(msg) = graph.reject_target_as_parent(parent_id) {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(msg),
                             data: None,
                         });
                     }
@@ -4852,7 +4875,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        // Verify the parent exists in the graph
+        // Verify the parent exists in the graph and is not a target/goal.
         {
             let graph = self.graph.read();
             if graph.resolve(parent_id).is_none() {
@@ -4862,6 +4885,13 @@ impl PkbSearchServer {
                         "Parent not found in graph: {}. Create it first or check the ID.",
                         parent_id
                     )),
+                    data: None,
+                });
+            }
+            if let Err(msg) = graph.reject_target_as_parent(parent_id) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(msg),
                     data: None,
                 });
             }
@@ -5017,7 +5047,15 @@ impl PkbSearchServer {
                         });
                     }
                 }
-                // 2. Cycle check (pre-existing)
+                // 2. Reject target/goal nodes as structural parents.
+                if let Err(msg) = graph.reject_target_as_parent(new_parent) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
+                // 3. Cycle check (pre-existing)
                 if let Err(msg) = graph.would_create_parent_cycle(id, new_parent) {
                     return Err(McpError {
                         code: ErrorCode::INVALID_PARAMS,
@@ -5211,6 +5249,19 @@ impl PkbSearchServer {
         }
 
         let graph = self.graph.read();
+        // Reject target/goal nodes as structural parents when the batch sets `parent`.
+        if let Some(new_parent) = updates.get("parent").and_then(|v| v.as_str()) {
+            if !new_parent.trim().is_empty() {
+                if let Err(msg) = graph.reject_target_as_parent(new_parent.trim()) {
+                    drop(graph);
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
+            }
+        }
         let summary = crate::batch_ops::update::batch_update(&graph, &self.pkb_root, &filters, &updates, dry_run);
         drop(graph);
 

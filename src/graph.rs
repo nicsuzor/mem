@@ -653,11 +653,24 @@ pub fn status_group(status: Option<&str>) -> &'static str {
 /// task instances via `claim_task`; they are not themselves actionable work items.
 pub const TASK_TYPES: &[&str] = &["task", "project", "epic", "learn", "pr"];
 
+/// Strategic priority node types ("targets") that must never serve as a structural
+/// parent. Work links to them via `contributes_to` metadata, not the parent
+/// hierarchy — they are excluded from the work tree (see specs TAXONOMY.md /
+/// pkb-type-taxonomy.md). `target` is canonical; `goal` is the retired alias.
+/// Both are treated identically as the non-parentable strategic class.
+pub const STRATEGIC_TARGET_TYPES: &[&str] = &["target", "goal"];
+
+/// Returns true when a `node_type` is a strategic target/goal that cannot be a
+/// structural parent (linked to via `contributes_to`, never `parent`).
+pub fn is_strategic_target(node_type: Option<&str>) -> bool {
+    matches!(node_type, Some(t) if STRATEGIC_TARGET_TYPES.contains(&t))
+}
+
 /// All recognized canonical node type values.
 ///
-/// `target` is an accepted alias for `goal` — both represent user-declared strategic
-/// priorities. Existing nodes with `type: target` parse correctly; the linter maps
-/// `target` → `goal` in auto-fix mode.
+/// `goal` is the retired alias for `target` — `target` is canonical (see
+/// `STRATEGIC_TARGET_TYPES`). The linter's auto-fix currently still maps
+/// `target` → `goal`; that inconsistency is tracked separately (mem-ba3963ec).
 pub const VALID_NODE_TYPES: &[&str] = &[
     // Actionable work items (subset also in TASK_TYPES)
     "project", "epic", "task", "learn", "pr",
