@@ -17,6 +17,7 @@ pub mod graph_store;
 pub mod lint;
 pub mod mcp_server;
 pub mod metrics;
+pub mod migrations;
 pub mod pkb;
 pub mod task_index;
 pub mod telemetry;

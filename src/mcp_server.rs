@@ -1665,6 +1665,15 @@ impl PkbSearchServer {
                         }
                     }
                     Some(parent_node) => {
+                        // Reject target/goal nodes as structural parents (targets are
+                        // black holes — link via contributes_to, never parent).
+                        if let Err(msg) = graph.reject_target_as_parent(parent_id) {
+                            return Err(McpError {
+                                code: ErrorCode::INVALID_PARAMS,
+                                message: Cow::from(msg),
+                                data: None,
+                            });
+                        }
                         // Reject closed parents unless caller opts in with force=true.
                         let parent_status = parent_node.status.as_deref().unwrap_or("");
                         if crate::graph::is_closed_for_hierarchy(parent_node.status.as_deref()) && !force {
@@ -1793,6 +1802,15 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Parent task not found: {parent_id}")),
                 data: None,
             })?;
+
+            // Reject target/goal nodes as structural parents (link via contributes_to).
+            if let Err(msg) = graph.reject_target_as_parent(parent_id) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(msg),
+                    data: None,
+                });
+            }
 
             let parent_has_project = crate::pkb::parse_file_relative(
                 &self.abs_path(&parent_node.path),
@@ -4075,6 +4093,15 @@ impl PkbSearchServer {
                             data: None,
                         });
                     }
+                    // Targets carry a task_id (from the `id` frontmatter) but are not
+                    // structural parents — reject decomposing work under them.
+                    if let Err(msg) = graph.reject_target_as_parent(parent_id) {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(msg),
+                            data: None,
+                        });
+                    }
                     let prefix = node.node_type.clone().unwrap_or_else(|| "task".to_string());
                     // Read parent's raw frontmatter `project` field so subtasks can inherit it.
                     // GraphNode.project is a computed ancestor label, not the frontmatter value.
@@ -4852,7 +4879,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        // Verify the parent exists in the graph
+        // Verify the parent exists in the graph and is not a target/goal.
         {
             let graph = self.graph.read();
             if graph.resolve(parent_id).is_none() {
@@ -4862,6 +4889,13 @@ impl PkbSearchServer {
                         "Parent not found in graph: {}. Create it first or check the ID.",
                         parent_id
                     )),
+                    data: None,
+                });
+            }
+            if let Err(msg) = graph.reject_target_as_parent(parent_id) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(msg),
                     data: None,
                 });
             }
@@ -5017,7 +5051,15 @@ impl PkbSearchServer {
                         });
                     }
                 }
-                // 2. Cycle check (pre-existing)
+                // 2. Reject target/goal nodes as structural parents.
+                if let Err(msg) = graph.reject_target_as_parent(new_parent) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
+                // 3. Cycle check (pre-existing)
                 if let Err(msg) = graph.would_create_parent_cycle(id, new_parent) {
                     return Err(McpError {
                         code: ErrorCode::INVALID_PARAMS,
@@ -5211,6 +5253,19 @@ impl PkbSearchServer {
         }
 
         let graph = self.graph.read();
+        // Reject target/goal nodes as structural parents when the batch sets `parent`.
+        if let Some(new_parent) = updates.get("parent").and_then(|v| v.as_str()) {
+            if !new_parent.trim().is_empty() {
+                if let Err(msg) = graph.reject_target_as_parent(new_parent.trim()) {
+                    drop(graph);
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
+            }
+        }
         let summary = crate::batch_ops::update::batch_update(&graph, &self.pkb_root, &filters, &updates, dry_run);
         drop(graph);
 

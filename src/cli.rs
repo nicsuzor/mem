@@ -515,6 +515,10 @@ enum Commands {
     #[command(subcommand)]
     Batch(BatchCommands),
 
+    /// One-shot data migrations over the PKB
+    #[command(subcommand)]
+    Migrate(MigrateCommands),
+
     /// Show graph health statistics
     GraphStats {
         /// Filter by project
@@ -716,6 +720,21 @@ enum BatchCommands {
 
         #[command(flatten)]
         filters: BatchFilterArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum MigrateCommands {
+    /// Convert illegal `parent: <target/goal>` edges into `contributes_to`
+    /// edges (targets are not structural parents). Idempotent and dry-runnable.
+    TargetParents {
+        /// Preview changes without writing (default: applies changes)
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Output format: text (default), json
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -1803,6 +1822,11 @@ async fn main() -> Result<()> {
                         std::process::exit(1);
                     }
                 }
+                // Targets/goals are black holes — they cannot be structural parents.
+                if let Err(msg) = gs.reject_target_as_parent(parent_id) {
+                    eprintln!("Error: {msg}");
+                    std::process::exit(1);
+                }
             }
 
             let fields = document_crud::TaskFields {
@@ -2887,6 +2911,10 @@ async fn main() -> Result<()> {
             handle_batch_command(batch_cmd, &graph, &pkb_root)?;
         }
 
+        Commands::Migrate(migrate_cmd) => {
+            handle_migrate_command(migrate_cmd, &pkb_root)?;
+        }
+
         Commands::GraphStats { project: _ } => {
             let graph = load_graph(&pkb_root, &db_path, None);
             let stats = mem::batch_ops::stats::graph_stats(&graph);
@@ -3187,6 +3215,45 @@ fn parse_duration_days(s: &String) -> Option<u64> {
 }
 
 /// Handle batch subcommands.
+fn handle_migrate_command(cmd: MigrateCommands, pkb_root: &std::path::Path) -> Result<()> {
+    match cmd {
+        MigrateCommands::TargetParents { dry_run, format } => {
+            let report = mem::migrations::migrate_target_parents(pkb_root, dry_run)?;
+
+            if format == "json" {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                return Ok(());
+            }
+
+            let mode = if report.dry_run { "DRY RUN" } else { "APPLIED" };
+            println!(
+                "migrate target-parents [{}]: {} file(s) — {} migrated, {} already-linked (parent dropped, no duplicate edge)",
+                mode,
+                report.total(),
+                report.migrated(),
+                report.already_linked(),
+            );
+            for c in &report.changes {
+                let verb = match c.kind {
+                    mem::migrations::ChangeKind::Migrated => "parent→contributes_to",
+                    mem::migrations::ChangeKind::AlreadyLinked => "parent dropped (already linked)",
+                };
+                println!(
+                    "  {}  [{}]  {} → {}",
+                    c.file.display(),
+                    verb,
+                    c.old_parent,
+                    c.target_id,
+                );
+            }
+            if report.dry_run && report.total() > 0 {
+                println!("\nRe-run without --dry-run to apply.");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn handle_batch_command(
     cmd: BatchCommands,
     graph: &graph_store::GraphStore,

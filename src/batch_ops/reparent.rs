@@ -29,6 +29,14 @@ pub fn batch_reparent(
             return summary;
         }
     };
+    // Reject target/goal nodes as structural parents (link via contributes_to).
+    if let Err(msg) = graph.reject_target_as_parent(new_parent_id) {
+        summary.errors.push(TaskError {
+            id: new_parent_id.to_string(),
+            error: msg,
+        });
+        return summary;
+    }
     let canonical_parent_id = new_parent.id.clone();
 
     let matched_ids = filters.resolve(graph);

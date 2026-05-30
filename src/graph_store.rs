@@ -814,6 +814,31 @@ impl GraphStore {
         None
     }
 
+    /// Reject an attempt to use `parent_id` as a structural parent when it
+    /// resolves to a strategic target/goal node. Targets are "black holes":
+    /// invisible attractors that work links to via `contributes_to`, never via
+    /// the parent hierarchy. Returns a caller-facing error message on rejection.
+    ///
+    /// If `parent_id` does not resolve, returns `Ok(())` — the caller's own
+    /// existence check is responsible for reporting a missing parent. The set
+    /// `{target, goal}` is keyed on `node_type`, not any ID prefix (`targ-` is a
+    /// project slug, not a type marker).
+    pub fn reject_target_as_parent(&self, parent_id: &str) -> Result<(), String> {
+        if let Some(node) = self.resolve(parent_id) {
+            if crate::graph::is_strategic_target(node.node_type.as_deref()) {
+                let ty = node.node_type.as_deref().unwrap_or("target");
+                return Err(format!(
+                    "Parent '{}' is a `{}` node. Targets/goals are strategic priorities, not \
+                     structural parents — they are excluded from the work tree. Link this work to \
+                     the target via `contributes_to: [{{to: {}, stated_weight: Expected}}]` \
+                     instead of setting it as `parent`.",
+                    parent_id, ty, node.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Parent-chain helpers
     // -----------------------------------------------------------------------
