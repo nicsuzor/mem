@@ -7,7 +7,7 @@ created: 2026-03-11
 updated: 2026-05-10
 superseded_partial:
   - "project as actionable type (decision 2026-05-10: project = polecat repo, not a node type)"
-  - "goal as actionable type (decision 2026-05-10: type renamed to target; targets do not parent)"
+  - "goal as actionable type (decision 2026-05-10: targets and goals do not parent)"
 tags:
   - pkb
   - type-system
@@ -20,10 +20,10 @@ tags:
 > **2026-05-10 update — partially superseded.** Decisions made this session:
 >
 > - **`project` is no longer a node type.** "Project" is now the narrow operational name for a polecat-registered repo, carried as the `project: <slug>` metadata field on tasks. See [[TAXONOMY]] §"Project (operational routing field)" and [[areas-not-projects]].
-> - **`goal` is replaced by `target`.** Targets do not parent anything; work links to them via `contributes_to` metadata.
+> - **`goal` and `target` are distinct.** Targets join tasks to goals with an impact factor. Neither parents anything; work links to targets via `contributes_to` metadata, and targets link to goals.
 > - **Actionable types are `epic, task, learn`.** Top-level work nodes are root-level epics (or root-level tasks for trivial standalones).
 >
-> The sections below are kept for historical context. Where they reference `project` as a tree role or `goal` as a type, treat those as superseded.
+> The sections below are kept for historical context. Where they reference `project` as a tree role, treat those as superseded.
 
 ## Problem
 
@@ -83,11 +83,10 @@ These appear in task operations (`list_tasks`, `task_search`, ready/blocked queu
 | `task`  | Discrete deliverable   | Epic or task; root-level allowed for trivial standalones   |
 | `learn` | Observational tracking | Epic or task                                               |
 
-**`target` is not a tree node.** Target nodes (type: target) are user-declared strategic priorities. They are excluded from the work-item tree: they have no children and never serve as a parent. Work links to targets via `contributes_to` metadata (formerly `goals: []`). Targets participate in priority/severity propagation but not in tree traversal, orphan detection, or task operations.
+**`target` and `goal` are not tree nodes.** Target nodes (type: target) join tasks to goals (type: goal) with an impact factor. They are excluded from the work-item tree: they have no children and never serve as a parent. Work links to targets via `contributes_to` metadata (formerly `goals: []`). Targets participate in priority/severity propagation but not in tree traversal, orphan detection, or task operations.
 
 **Removed from actionable types:**
 
-- `goal` — replaced by `target`; the `goal` alias is retired
 - `project` — no longer a node type; the word now refers to a polecat repo (operational routing field on tasks). See [[TAXONOMY]] §"Project (operational routing field)" and [[areas-not-projects]] for migration of existing `type: project` containers (most become root-level epics).
 
 **Removed from type, moved to `classification`:** `bug`, `feature`, `action`, `subproject`, `milestone`.
@@ -106,7 +105,8 @@ These never appear in task operations. They are knowledge artifacts, not work to
 
 | Type        | Content                                                                          |
 | ----------- | -------------------------------------------------------------------------------- |
-| `target`    | Strategic priorities (linked via `contributes_to` metadata on epics/tasks)       |
+| `target`    | Joins tasks to goals with an impact factor (linked via `contributes_to` on epics/tasks) |
+| `goal`      | Strategic priorities/objectives                                                  |
 | `note`      | General knowledge, observations, insights                                        |
 | `memory`    | Agent/system memories                                               |
 | `contact`   | People                                                              |
@@ -280,7 +280,6 @@ Reclassify existing non-canonical types to `type: task` + `classification`:
 | `type: subproject` | ~0    | → `type: epic` (sub-epic with epic parent)                                                         |
 | `type: milestone`  | ~0    | → `type: epic, classification: milestone`                                                          |
 | `type: project`    | ~30   | → `type: epic` (root-level by default; per-node review per [[areas-not-projects]] migration heuristic) |
-| `type: goal`       | ~10   | → `type: target` (alias retired); ensure no children — detach if any                                |
 
 This can be done via `pkb lint --fix` after updating the linter's type alias resolution.
 
@@ -300,7 +299,8 @@ fn resolve_type_alias(t: &str) -> (&'static str, Option<&'static str>) {
         "subproject" => ("epic", None),
         "milestone" => ("epic", Some("milestone")),
         "project" => ("epic", None),    // 2026-05-10: project no longer a node type
-        "goal" => ("target", None),     // 2026-05-10: goal alias retired
+        "goal" => ("goal", None),
+        "target" => ("target", None),
         // ... existing reference aliases unchanged
     }
 }
@@ -321,7 +321,7 @@ fn resolve_type_alias(t: &str) -> (&'static str, Option<&'static str>) {
 
 ### Implementation Status (Audit Assessment)
 
-- **What Works**: Basic hierarchical task graph and searching for the core `task` and `epic` types. The foundational infrastructure for `ACTIONABLE_TYPES` exists in the Rust layer. (Pre-2026-05-10 the set included `project` and `goal`; both retired.)
+- **What Works**: Basic hierarchical task graph and searching for the core `task` and `epic` types. The foundational infrastructure for `ACTIONABLE_TYPES` exists in the Rust layer. (Pre-2026-05-10 the set included `project`.)
 - **Missing**:
   - **Cross-Layer Sync**: Python `TaskType` and Rust `ACTIONABLE_TYPES` are out of sync; the Python side still maintains retired types as top-level enums.
   - **Visibility Gaps**: Many work items (`bug`, `feature`, `action`) are currently invisible to search or buried in noise because they aren't yet unified under the `ACTIONABLE_TYPES` constant in all search/list operations.

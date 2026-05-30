@@ -215,7 +215,8 @@ fn resolve_type_alias(t: &str) -> &'static str {
         "spec" | "design" => "spec",
         "audit" | "audit-report" => "audit-report",
         "reference" => "reference",
-        "goal" | "target" => "goal",
+        "goal" => "goal",
+        "target" => "target",
         "instructions" | "role" | "agent" | "bundle" => "document",
         _ => "document",
     }
@@ -637,9 +638,9 @@ fn check_frontmatter(
 
     // id format check (should match prefix-hex pattern)
     // Prefix may contain uppercase letters (e.g. "academicOps-b5d43955" is valid)
-    // Goals and projects use special canonical IDs (e.g. "my-project") — skip format check.
+    // Goals, targets, and projects use special canonical IDs (e.g. "my-project") — skip format check.
     let node_type_for_id = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    let is_root_node = matches!(node_type_for_id, "goal" | "project");
+    let is_root_node = matches!(node_type_for_id, "goal" | "target" | "project");
     if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
         let id_re = get_id_regex();
         if !is_root_node && !id_re.is_match(id) && !id.is_empty() {
@@ -1426,9 +1427,9 @@ pub fn lint_directory(
                 let fm = parsed.data.as_ref()
                     .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
                 let id = fm.get("id")?.as_str()?;
-                // Goals and projects use special canonical IDs — never auto-rename them.
+                // Goals, targets, and projects use special canonical IDs — never auto-rename them.
                 let node_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if !id.is_empty() && !id_re.is_match(id) && !matches!(node_type, "goal" | "project") {
+                if !id.is_empty() && !id_re.is_match(id) && !matches!(node_type, "goal" | "target" | "project") {
                     let prefix = extract_id_prefix(id);
                     let new_id = crate::graph::create_id(&prefix);
                     Some((id.to_string(), new_id))
@@ -1762,6 +1763,27 @@ mod tests {
         assert!(fixed.contains("type: document"), "bundle should become document, got: {}", fixed);
     }
 
+
+    #[test]
+    fn goal_and_target_are_distinct_types() {
+        // Goal and target are both distinct valid types.
+        let fixed_goal = fix_str("---
+title: Test
+type: goal
+---
+
+Body.\n");
+        assert!(fixed_goal.contains("type: goal"), "goal should not be aliased");
+
+        let fixed_target = fix_str("---
+title: Test
+type: target
+---
+
+Body.\n");
+        assert!(fixed_target.contains("type: target"), "target should not be aliased");
+    }
+
     #[test]
     fn fixes_unknown_status_to_active() {
         let fixed = fix_str("---\ntitle: Test\ntype: note\nstatus: merge_ready\n---\n\nBody.\n");
@@ -1800,9 +1822,9 @@ mod tests {
     }
 
     #[test]
-    fn goal_and_project_ids_exempt_from_format_check() {
-        // Goals and projects use canonical human-readable IDs — must NOT trigger fm-id-format.
-        for node_type in &["goal", "project"] {
+    fn goal_target_and_project_ids_exempt_from_format_check() {
+        // Goals, targets, and projects use canonical human-readable IDs — must NOT trigger fm-id-format.
+        for node_type in &["goal", "target", "project"] {
             let content = format!("---\nid: my-{}\ntitle: Test\ntype: {}\n---\n\nBody.\n", node_type, node_type);
             let diags = lint_str(&content);
             let id_diag = diags.iter().find(|d| d.rule == "fm-id-format");

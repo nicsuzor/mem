@@ -12,6 +12,7 @@ fn type_to_dir(doc_type: &str) -> &str {
         "task" | "epic" | "learn" => "tasks",
         "project" => "projects",
         "goal" => "goals",
+        "target" => "targets",
         "memory" | "note" | "insight" | "observation" => "memories",
         "knowledge" => "notes",
         _ => "tasks",
