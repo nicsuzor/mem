@@ -668,9 +668,9 @@ pub fn is_strategic_target(node_type: Option<&str>) -> bool {
 
 /// All recognized canonical node type values.
 ///
-/// `target` is an accepted alias for `goal` — both represent user-declared strategic
-/// priorities. Existing nodes with `type: target` parse correctly; the linter maps
-/// `target` → `goal` in auto-fix mode.
+/// `goal` is the retired alias for `target` — `target` is canonical (see
+/// `STRATEGIC_TARGET_TYPES`). The linter's auto-fix currently still maps
+/// `target` → `goal`; that inconsistency is tracked separately (mem-ba3963ec).
 pub const VALID_NODE_TYPES: &[&str] = &[
     // Actionable work items (subset also in TASK_TYPES)
     "project", "epic", "task", "learn", "pr",
