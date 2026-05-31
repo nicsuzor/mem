@@ -119,6 +119,35 @@ Use `update_task` to claim:
 update_task(id="<task-id>", status="in_progress", assignee="polecat")
 ```
 
+### Instantiating Templates (`claim_task`)
+
+`claim_task` creates a datestamped instance from a `type: template` node. It is distinct from claiming a regular task via `update_task`.
+
+```
+claim_task(id="<template-id>")
+```
+
+The instance is created with **`status: in_progress`** — template instances bypass the `inbox → ready` graduation gate because they are pre-planned work with known acceptance criteria encoded in the template.
+
+**Fields inherited from the template:**
+
+| Field           | Notes                                          |
+| --------------- | ---------------------------------------------- |
+| `title`         | Datestamped copy, e.g. `Daily Review 2026-05-31` |
+| `tags`          | Copied verbatim                                |
+| `priority`      | Copied; defaults to 2 if absent                |
+| `project`       | Copied if present                              |
+| `parent`        | Copied if present                              |
+| `consequence`   | Copied if present                              |
+| `contributes_to`| Copied; edge targets resolved at instantiation |
+| `depends_on`    | Copied; supports array or single-string format |
+| `goal_type`     | Copied if present                              |
+| `severity`      | Copied if present                              |
+| `stakeholder`   | Copied if present                              |
+| `assignee`      | Copied if present                              |
+
+A `template_id` back-reference is written to the instance frontmatter. The tool returns the new instance via `get_task`.
+
 ### Releasing Tasks
 
 Use `release_task` for all terminal/handoff transitions. Flat parameters — no nested objects:

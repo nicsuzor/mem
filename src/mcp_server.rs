@@ -1981,15 +1981,7 @@ impl PkbSearchServer {
             .cloned()
             .unwrap_or_default();
             
-        let depends_on = fm
-            .get("depends_on")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let depends_on = crate::graph::parse_string_array(&fm, "depends_on");
             
         let goal_type = fm
             .get("goal_type")
