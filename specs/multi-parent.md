@@ -290,7 +290,7 @@ voi_value = K_voi · leaf · dep_resolution_ratio
           / max(effort_days, 0.5)
 ```
 
-- `is_leaf` and `uncertainty(d)` are the computed properties defined in TAXONOMY.md §Core Computed Properties. `is_leaf` gates the term to actionable nodes — a node with `is_leaf = false` scores `voi_value = 0` (AC-12), so undecomposed epics never accumulate VoI.
+- `leaf` and `uncertainty(d)` are the computed properties defined in TAXONOMY.md §Core Computed Properties. `leaf` gates the term to actionable nodes — a node with `leaf = false` scores `voi_value = 0` (AC-12), so undecomposed epics never accumulate VoI.
 - `dep_resolution_ratio(x)` gates credit to ready-now work (fraction of `depends_on` edges resolved).
 - `edge_weight(x→d)` is the Birnbaum importance on the `contributes_to` edge (Renooij-Witteman scale, §1.7–1.8): the conditional likelihood that not doing `x` fails downstream node `d`.
 - `downstream_weight(d)` is the existing structural-importance field (TAXONOMY.md §criticality).
@@ -303,7 +303,7 @@ The term reduces to 0 when no `contributes_to` edges exist, keeping backwards co
 
 `compute_urgency` MUST run before `compute_focus_scores` during graph build. Verified by current pipeline.
 
-`compute_voi_term` MUST run **after** `compute_downstream_metrics` — it consumes `downstream_weight`, `is_leaf`, and `dep_resolution_ratio`, all produced by the downstream-metrics pass — and **before** `compute_focus_scores`, which sums `voi_term` into the composite. The Phase 1 dependency chain is therefore `compute_downstream_metrics` → `compute_voi_term` → `compute_focus_scores`; `compute_urgency` likewise runs before `compute_focus_scores`.
+`compute_voi_term` MUST run **after** `compute_downstream_metrics` — it consumes `downstream_weight`, `leaf`, and `dep_resolution_ratio`, all produced by the downstream-metrics pass — and **before** `compute_focus_scores`, which sums `voi_term` into the composite. The Phase 1 dependency chain is therefore `compute_downstream_metrics` → `compute_voi_term` → `compute_focus_scores`; `compute_urgency` likewise runs before `compute_focus_scores`.
 
 Scores are stored on `GraphNode.urgency`, `GraphNode.voi_value`, and `GraphNode.focus_score`, recomputed on every full rebuild (~300ms). No TTL cache needed at current scale.
 
