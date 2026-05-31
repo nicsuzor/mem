@@ -66,7 +66,7 @@ Given a task with `contributes_to: [{to: <target-id>, weight: <verbal-term>, why
 A task contributing to a `severity: 4, goal_type: committed` target with `Slack ≤ 0` MUST have `urgency ≥ 10_000`. SEV0–3 targets and `aspirational`/`learning` SEV4 targets MUST NOT trigger the override.
 
 **AC-4 — `urgency` composes additively into `focus_score`.**
-`focus_score` MUST equal `priority_base + severity_bonus + deadline_score + age_staleness_bonus + downstream_weight × 10 + stakeholder_waiting_bonus + round(urgency)` (see §2.2).
+`focus_score` MUST equal `priority_base + severity_bonus + deadline_score + age_staleness_bonus + downstream_weight × 10 + stakeholder_waiting_bonus + round(urgency) + round(voi_value)` (see §2.2). The `voi_value` term is 0 on any graph without `contributes_to` edges, so this reduces to the legacy form (AC-9).
 
 **AC-5 — Single sort signal.**
 `focus_picks`, `list_tasks` default sort, and the TUI Focus view MUST sort by `focus_score` descending. Filtering by component fields (e.g. `urgency_gte`) is permitted; sorting by them is not.
@@ -85,6 +85,12 @@ A graph with no targets, prototypes, or `contributes_to` edges MUST produce iden
 
 **AC-10 — Mandatory consequence prose.**
 Target nodes MUST have `consequence:` populated. Surface (don't block) missing prose via `/maintain`.
+
+**AC-11 — VoI is capped to preserve lexicographic dominance.**
+`voi_term` (`round(node.voi_value)`) MUST be ≤ 5 000 for every node, enforced via a hard clamp (e.g., `min(5000, round(voi_value))`). `K_voi` MUST be calibrated to target this range, but the hard cap guarantees the value-of-information premium stays below the SEV4-committed urgency floor of 10 000, preserving the AC-3 lexicographic override: a VoI-heavy leaf task can never outrank a SEV4-committed obligation.
+
+**AC-12 — VoI accrues only to leaf nodes.**
+`voi_value` MUST be 0 for any node with `leaf = false`. Undecomposed epics and projects MUST NOT accumulate value-of-information credit; the term gates on `leaf` (TAXONOMY.md §Core Computed Properties) so only actionable, decomposed work earns it.
 
 ## 1. Schema
 
@@ -260,6 +266,7 @@ focus_score =
   + downstream_weight × 10
   + stakeholder_waiting_bonus
   + urgency_term
+  + voi_term
 ```
 
 | Component | Range | Notes |
@@ -271,14 +278,34 @@ focus_score =
 | `downstream_weight × 10` | 0 – ∞ | downstream_weight float × 10 to land in same magnitude as base scores. |
 | `stakeholder_waiting_bonus` | 0 / 2 000 – 8 000 | When `stakeholder` set: 2 000 + min(days × 200, 6 000). Anchor: `waiting_since` ?? `created`. |
 | `urgency_term` | 0 – 10 000+ | `round(node.urgency)`. SEV4-committed contribution drives this to 10 000+. |
+| `voi_term` | 0 – 5 000 | `round(node.voi_value)`. Value-of-information premium for uncertainty-resolving leaf tasks. Capped at 5 000 to stay below the SEV4-committed urgency floor (AC-11); zero for non-leaf nodes (AC-12). |
 
 `urgency_term` composes additively because `S_lex × W_edge × f(Slack)` produces values in the same integer-magnitude scale as the other terms (~0.001 to 10 000+). The lexicographic-override property survives: a SEV4-committed contribution with `Slack ≤ 0` pushes `urgency_term` past every non-SEV4 task's combined score, mirroring `severity_bonus = 100 000` for the target itself.
+
+`voi_term` adds a **value-of-information** premium so that uncertainty-resolving work (spikes, probes, prototypes) is not starved by a purely exploitative signal — a leaf task whose own exploitation utility is low but which would resolve large downstream uncertainty earns ranking credit it would otherwise be denied. It is `round(node.voi_value)`, where:
+
+```
+voi_value = K_voi · leaf · dep_resolution_ratio
+          · Σ_{d ∈ immediate_downstream(x)} uncertainty(d) × edge_weight(x→d) × downstream_weight(d)
+          / max(effort_days, 0.5)
+```
+
+- `leaf` and `uncertainty(d)` are the computed properties defined in TAXONOMY.md §Core Computed Properties. `leaf` gates the term to actionable nodes — a node with `leaf = false` scores `voi_value = 0` (AC-12), so undecomposed epics never accumulate VoI.
+- `dep_resolution_ratio(x)` gates credit to ready-now work (fraction of `depends_on` edges resolved).
+- `edge_weight(x→d)` is the Birnbaum importance on the `contributes_to` edge (Renooij-Witteman scale, §1.7–1.8): the conditional likelihood that not doing `x` fails downstream node `d`.
+- `downstream_weight(d)` is the existing structural-importance field (TAXONOMY.md §criticality).
+- `/ max(effort_days, 0.5)` is the cost normalization (information-gap-ratio form, kb-9230ba76 §5): it prevents a long probe from outranking a short one with the same downstream uncertainty.
+- `K_voi` is a calibration constant (config field) chosen so `voi_value` typically remains ≤ 5 000, with a hard clamp at 5 000 (AC-11) to guarantee it stays below the SEV4-committed urgency floor of 10 000, preserving the lexicographic override (AC-3).
+
+The term reduces to 0 when no `contributes_to` edges exist, keeping backwards compatibility (AC-9). `voi_value` is surfaced on metadata for filter/debug only; ranking is always via `focus_score`. Canonical definitions of the inputs `uncertainty` and `downstream_weight` live in TAXONOMY.md §Core Computed Properties.
 
 ### 2.3 Compute order
 
 `compute_urgency` MUST run before `compute_focus_scores` during graph build. Verified by current pipeline.
 
-Scores are stored on `GraphNode.urgency` and `GraphNode.focus_score`, recomputed on every full rebuild (~300ms). No TTL cache needed at current scale.
+`compute_voi_term` MUST run **after** `compute_downstream_metrics` — it consumes `downstream_weight`, `leaf`, and `dep_resolution_ratio`, all produced by the downstream-metrics pass — and **before** `compute_focus_scores`, which sums `voi_term` into the composite. The Phase 1 dependency chain is therefore `compute_downstream_metrics` → `compute_voi_term` → `compute_focus_scores`; `compute_urgency` likewise runs before `compute_focus_scores`.
+
+Scores are stored on `GraphNode.urgency`, `GraphNode.voi_value`, and `GraphNode.focus_score`, recomputed on every full rebuild (~300ms). No TTL cache needed at current scale.
 
 ## 3. Invariants
 
@@ -326,6 +353,11 @@ The retired `task-focus-scoring` spec listed five "deferred" signals. After 2026
 - [[pkb-weight-98c1dd30]] — target nodes
 - [[pkb-weight-2e455095]] — weight elicitation
 - [[pkb-weight-9fe4d8f9]] — calibration & gaming resistance
+
+### Phase 1 synthesis
+
+- [[kb-9230ba76]] — literature survey synthesizing expected-utility ranking with value-of-information (Bayesian decision theory + Knowledge Gradient, effectuation/affordable-loss, real options, SRCPSP information-gap ratio, severity-ladder reconciliation). Source for the `voi_term` formulation in §2.2.
+- [[aops-9f5bfbe2]] — parent epic "Reconcile focus_score with planning-under-uncertainty". §Synthesis defines the Phase 1 additive VoI term and AC-11/AC-12; Phase 2 extensions (effectuation gate, real-options multiplier, severity utility curve) are tracked separately there.
 
 ### Pilot
 
