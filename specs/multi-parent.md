@@ -87,10 +87,10 @@ A graph with no targets, prototypes, or `contributes_to` edges MUST produce iden
 Target nodes MUST have `consequence:` populated. Surface (don't block) missing prose via `/maintain`.
 
 **AC-11 — VoI is capped to preserve lexicographic dominance.**
-`voi_term` (`round(node.voi_value)`) MUST be ≤ 5 000 for every node. `K_voi` MUST be calibrated to hold this bound. This keeps the value-of-information premium below the SEV4-committed urgency floor of 10 000, preserving the AC-3 lexicographic override: a VoI-heavy leaf task can never outrank a SEV4-committed obligation.
+`voi_term` (`round(node.voi_value)`) MUST be ≤ 5 000 for every node, enforced via a hard clamp (e.g., `min(5000, round(voi_value))`). `K_voi` MUST be calibrated to target this range, but the hard cap guarantees the value-of-information premium stays below the SEV4-committed urgency floor of 10 000, preserving the AC-3 lexicographic override: a VoI-heavy leaf task can never outrank a SEV4-committed obligation.
 
 **AC-12 — VoI accrues only to leaf nodes.**
-`voi_value` MUST be 0 for any node with `is_leaf = false`. Undecomposed epics and projects MUST NOT accumulate value-of-information credit; the term gates on `is_leaf` (TAXONOMY.md §Core Computed Properties) so only actionable, decomposed work earns it.
+`voi_value` MUST be 0 for any node with `leaf = false`. Undecomposed epics and projects MUST NOT accumulate value-of-information credit; the term gates on `leaf` (TAXONOMY.md §Core Computed Properties) so only actionable, decomposed work earns it.
 
 ## 1. Schema
 
@@ -285,8 +285,8 @@ focus_score =
 `voi_term` adds a **value-of-information** premium so that uncertainty-resolving work (spikes, probes, prototypes) is not starved by a purely exploitative signal — a leaf task whose own exploitation utility is low but which would resolve large downstream uncertainty earns ranking credit it would otherwise be denied. It is `round(node.voi_value)`, where:
 
 ```
-voi_value = K_voi · is_leaf · dep_resolution_ratio
-          · Σ_{d ∈ downstream(x)} uncertainty(d) × edge_weight(x→d) × downstream_weight(d)
+voi_value = K_voi · leaf · dep_resolution_ratio
+          · Σ_{d ∈ immediate_downstream(x)} uncertainty(d) × edge_weight(x→d) × downstream_weight(d)
           / max(effort_days, 0.5)
 ```
 
@@ -295,7 +295,7 @@ voi_value = K_voi · is_leaf · dep_resolution_ratio
 - `edge_weight(x→d)` is the Birnbaum importance on the `contributes_to` edge (Renooij-Witteman scale, §1.7–1.8): the conditional likelihood that not doing `x` fails downstream node `d`.
 - `downstream_weight(d)` is the existing structural-importance field (TAXONOMY.md §criticality).
 - `/ max(effort_days, 0.5)` is the cost normalization (information-gap-ratio form, kb-9230ba76 §5): it prevents a long probe from outranking a short one with the same downstream uncertainty.
-- `K_voi` is a calibration constant (config field) chosen so `voi_value ≤ 5 000` (AC-11) — below the SEV4-committed urgency floor of 10 000, so the lexicographic override (AC-3) is preserved.
+- `K_voi` is a calibration constant (config field) chosen so `voi_value` typically remains ≤ 5 000, with a hard clamp at 5 000 (AC-11) to guarantee it stays below the SEV4-committed urgency floor of 10 000, preserving the lexicographic override (AC-3).
 
 The term reduces to 0 when no `contributes_to` edges exist, keeping backwards compatibility (AC-9). `voi_value` is surfaced on metadata for filter/debug only; ranking is always via `focus_score`. Canonical definitions of the inputs `uncertainty` and `downstream_weight` live in TAXONOMY.md §Core Computed Properties.
 

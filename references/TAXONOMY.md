@@ -87,7 +87,7 @@ Every node carries three core computed properties that drive both label assignme
 
 **What it measures**: Value-of-information premium — how much resolving this node's downstream uncertainty would improve later ranking decisions. Range: `0–5,000`.
 
-**How computed**: Via the `voi_term` formula in `specs/multi-parent.md` §2.2 — `K_voi · is_leaf · dep_resolution_ratio · Σ_{d ∈ downstream} uncertainty(d) · edge_weight(→d) · downstream_weight(d) / max(effort_days, 0.5)`. Consumes the `uncertainty`, `downstream_weight`, and `leaf` properties defined above. Gated to leaf nodes (`is_leaf = false` ⇒ `voi_value = 0`) and capped at 5,000 to stay below the SEV4-committed lexicographic floor.
+**How computed**: Via the `voi_term` formula in `specs/multi-parent.md` §2.2 — `K_voi · leaf · dep_resolution_ratio · Σ_{d ∈ immediate_downstream} uncertainty(d) · edge_weight(→d) · downstream_weight(d) / max(effort_days, 0.5)`. Consumes the `uncertainty`, `downstream_weight`, and `leaf` properties defined above. Gated to leaf nodes (`leaf = false` ⇒ `voi_value = 0`) and capped at 5,000 to stay below the SEV4-committed lexicographic floor.
 
 **What it tells you**: Whether an uncertainty-resolving task (spike, probe, prototype) deserves ranking credit it would otherwise be denied by a purely exploitative signal. Surfaced for filter/debug only — ranking always goes through `focus_score`, which sums `voi_value` as one additive term.
 
@@ -148,7 +148,7 @@ The `classification` field carries additional semantic subtypes (bug, feature, s
 | `refactor` | Internal restructuring with no behaviour change                          |
 | `docs`     | Documentation-only work                                                  |
 
-The list is **open** — projects may add domain-specific values. `classification` never changes a node's computed properties or its place in the hierarchy; it exists for filtering and reporting only. Notably, the `voi_value` signal deliberately keys off the *computed* `uncertainty` and `is_leaf` properties, **not** the `spike` classification: classification labels are human-set and therefore gameable, so ranking does not consume them. Keeping subtypes in a single field avoids multiplying top-level `type` values.
+The list is **open** — projects may add domain-specific values. `classification` never changes a node's computed properties or its place in the hierarchy; it exists for filtering and reporting only. Notably, the `voi_value` signal deliberately keys off the *computed* `uncertainty` and `leaf` properties, **not** the `spike` classification: classification labels are human-set and therefore gameable, so ranking does not consume them. Keeping subtypes in a single field avoids multiplying top-level `type` values.
 
 ### `template` nodes and the recurring-workflow pattern
 
