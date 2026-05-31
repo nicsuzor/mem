@@ -640,6 +640,18 @@ pub struct TemplateInstanceFields {
     pub project: Option<String>,
     /// Parent inherited from the template frontmatter.
     pub parent: Option<String>,
+    /// Consequence inherited from the template frontmatter.
+    pub consequence: Option<String>,
+    /// Contributes_to inherited from the template frontmatter.
+    pub contributes_to: Vec<serde_json::Value>,
+    /// Depends_on inherited from the template frontmatter.
+    pub depends_on: Vec<String>,
+    /// Goal_type inherited from the template frontmatter.
+    pub goal_type: Option<String>,
+    /// Severity inherited from the template frontmatter.
+    pub severity: Option<i32>,
+    /// Stakeholder inherited from the template frontmatter.
+    pub stakeholder: Option<String>,
     /// The template task ID (written as `template_id:` for back-reference).
     pub template_id: String,
     /// Assignee inherited from the template (optional).
@@ -698,7 +710,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
         yaml_escape_double_quoted(&instance_title)
     ));
     fm.push_str("type: task\n");
-    fm.push_str("status: inbox\n");
+    fm.push_str("status: in_progress\n");
     fm.push_str(&format!(
         "priority: {}\n",
         fields.priority.unwrap_or(2)
@@ -710,6 +722,41 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
 
     if let Some(ref project) = fields.project {
         fm.push_str(&format!("project: {}\n", project));
+    }
+
+    if let Some(ref consequence) = fields.consequence {
+        fm.push_str(&format!("consequence: \"{}\"\n", yaml_escape_double_quoted(consequence)));
+    }
+
+    if !fields.contributes_to.is_empty() {
+        let resolved = materialise_edge_inheritance(root, fields.contributes_to);
+        if let Ok(yaml) = serde_yaml::to_string(&resolved) {
+            fm.push_str("contributes_to:\n");
+            for line in yaml.trim_start_matches("---\n").lines() {
+                if !line.is_empty() {
+                    fm.push_str(&format!("  {}\n", line));
+                }
+            }
+        }
+    }
+
+    if !fields.depends_on.is_empty() {
+        fm.push_str("depends_on:\n");
+        for dep in &fields.depends_on {
+            fm.push_str(&format!("  - {}\n", dep));
+        }
+    }
+
+    if let Some(ref goal_type) = fields.goal_type {
+        fm.push_str(&format!("goal_type: {}\n", goal_type));
+    }
+
+    if let Some(severity) = fields.severity {
+        fm.push_str(&format!("severity: {}\n", severity));
+    }
+
+    if let Some(ref stakeholder) = fields.stakeholder {
+        fm.push_str(&format!("stakeholder: \"{}\"\n", yaml_escape_double_quoted(stakeholder)));
     }
 
     fm.push_str(&format!("template_id: \"{}\"\n", yaml_escape_double_quoted(&fields.template_id)));

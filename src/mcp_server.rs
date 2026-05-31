@@ -1970,6 +1970,34 @@ impl PkbSearchServer {
             .and_then(|v| v.as_str())
             .map(String::from);
 
+        let consequence = fm
+            .get("consequence")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+            
+        let contributes_to = fm
+            .get("contributes_to")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+            
+        let depends_on = crate::graph::parse_string_array(&fm, "depends_on");
+            
+        let goal_type = fm
+            .get("goal_type")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+            
+        let severity = fm
+            .get("severity")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+            
+        let stakeholder = fm
+            .get("stakeholder")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
         let body = parsed.content.trim().to_string();
 
         let t_total = std::time::Instant::now();
@@ -1985,6 +2013,12 @@ impl PkbSearchServer {
                 priority: template_priority,
                 project: template_project,
                 parent: template_parent,
+                consequence,
+                contributes_to,
+                depends_on,
+                goal_type,
+                severity,
+                stakeholder,
                 template_id: template_id.clone(),
                 assignee: template_assignee,
             },
@@ -8768,7 +8802,7 @@ tags:
         let instance_path = instance_files[0].path();
         let content = std::fs::read_to_string(&instance_path).unwrap();
         assert!(content.contains("type: task"), "instance must be type: task");
-        assert!(content.contains("status: inbox"), "instance must start as inbox");
+        assert!(content.contains("status: in_progress"), "instance must start as in_progress");
         assert!(
             content.contains("template_id: \"daily-template\""),
             "instance must reference the template"
