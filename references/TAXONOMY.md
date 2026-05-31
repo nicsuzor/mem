@@ -81,7 +81,15 @@ Every node carries three core computed properties that drive both label assignme
 
 **What it tells you**: Which nodes to work on first when time is scarce. High criticality = unblocks many downstream nodes. Low criticality = isolated or terminal work.
 
-> **Note**: For user-facing prioritisation and ranking, use `focus_score` — the canonical composite that embeds severity, priority, `urgency` (deadline slack + decay), `downstream_weight`, and stakeholder waiting. See `specs/multi-parent.md` §2.2 for the full model. Component fields (`urgency`, `downstream_weight`, `criticality`) remain visible in metadata for filtering and debugging, but should never be the headline ranking signal — ranking always goes through `focus_score`.
+> **Note**: For user-facing prioritisation and ranking, use `focus_score` — the canonical composite that embeds severity, priority, `urgency` (deadline slack + decay), `downstream_weight`, stakeholder waiting, and the value-of-information premium `voi_value` (below). See `specs/multi-parent.md` §2.2 for the full model. Component fields (`urgency`, `downstream_weight`, `criticality`, `voi_value`) remain visible in metadata for filtering and debugging, but should never be the headline ranking signal — ranking always goes through `focus_score`.
+
+### voi_value
+
+**What it measures**: Value-of-information premium — how much resolving this node's downstream uncertainty would improve later ranking decisions. Range: `0–5,000`.
+
+**How computed**: Via the `voi_term` formula in `specs/multi-parent.md` §2.2 — `K_voi · is_leaf · dep_resolution_ratio · Σ_{d ∈ downstream} uncertainty(d) · edge_weight(→d) · downstream_weight(d) / max(effort_days, 0.5)`. Consumes the `uncertainty`, `downstream_weight`, and `leaf` properties defined above. Gated to leaf nodes (`is_leaf = false` ⇒ `voi_value = 0`) and capped at 5,000 to stay below the SEV4-committed lexicographic floor.
+
+**What it tells you**: Whether an uncertainty-resolving task (spike, probe, prototype) deserves ranking credit it would otherwise be denied by a purely exploitative signal. Surfaced for filter/debug only — ranking always goes through `focus_score`, which sums `voi_value` as one additive term.
 
 ### depth and leaf
 
@@ -126,6 +134,21 @@ The primary node types in the PKB:
 | **template** | A reusable workflow template — not a work item itself. Calling `claim_task` on a template creates a datestamped task instance. Templates are never entered into the ready queue and are excluded from all actionable-work counts. |
 
 The `classification` field carries additional semantic subtypes (bug, feature, spike, chore, etc.) without multiplying top-level types.
+
+### `classification` (semantic subtype)
+
+`classification` is an **optional secondary label** that records *what kind of work* a node is, orthogonally to its `type` (which records *where it sits in the compression hierarchy*). Where `type` answers "goal / project / epic / task?", `classification` answers "bug / feature / spike / chore / …?". A node may carry both — e.g. a `type: task` with `classification: bug`.
+
+| Value      | Meaning                                                                 |
+| ---------- | ----------------------------------------------------------------------- |
+| `bug`      | Corrective work — restore intended behaviour                            |
+| `feature`  | New capability or user-facing addition                                  |
+| `spike`    | Time-boxed investigation to resolve uncertainty; resolves by decomposing into follow-ups |
+| `chore`    | Maintenance, dependency bumps, housekeeping — no behaviour change        |
+| `refactor` | Internal restructuring with no behaviour change                          |
+| `docs`     | Documentation-only work                                                  |
+
+The list is **open** — projects may add domain-specific values. `classification` never changes a node's computed properties or its place in the hierarchy; it exists for filtering and reporting only. Notably, the `voi_value` signal deliberately keys off the *computed* `uncertainty` and `is_leaf` properties, **not** the `spike` classification: classification labels are human-set and therefore gameable, so ranking does not consume them. Keeping subtypes in a single field avoids multiplying top-level `type` values.
 
 ### `template` nodes and the recurring-workflow pattern
 
