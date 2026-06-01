@@ -1522,6 +1522,14 @@ impl PkbSearchServer {
             }
         }
 
+        let mut severity_warning = false;
+        let mut severity = args.get("severity").and_then(|v| v.as_i64()).map(|v| v as i32);
+        let is_target = args.get("type").and_then(|v| v.as_str()) == Some("target");
+        if !is_target && severity.unwrap_or(0) != 0 {
+            severity = Some(0);
+            severity_warning = true;
+        }
+
         let fields = crate::document_crud::TaskFields {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
@@ -1564,10 +1572,7 @@ impl PkbSearchServer {
                 .get("consequence")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            severity: args
-                .get("severity")
-                .and_then(|v| v.as_i64())
-                .map(|v| v as i32),
+            severity,
             goal_type: args
                 .get("goal_type")
                 .and_then(|v| v.as_str())
@@ -1765,7 +1770,7 @@ impl PkbSearchServer {
         // location), fail loudly with the file path — silently returning null
         // frontmatter (the original 2026-04-30 regression mode) hides the bug.
         let get_args = serde_json::json!({ "id": task_id });
-        self.handle_get_task(&get_args).map_err(|e| McpError {
+        let mut res = self.handle_get_task(&get_args).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!(
                 "create_task wrote {} but the new node is not yet visible in the graph \
@@ -1775,7 +1780,11 @@ impl PkbSearchServer {
                 e.message,
             )),
             data: None,
-        })
+        })?;
+        if severity_warning {
+            res.content.push(Content::text("severity ignored: not a target node\n"));
+        }
+        Ok(res)
     }
 
     fn handle_create_subtask(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -4257,6 +4266,8 @@ impl PkbSearchServer {
             regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex")
         });
 
+        let mut severity_warning = false;
+
         // Second pass: create tasks with resolved dependencies
         for (i, subtask) in subtasks.iter().enumerate() {
             let title = subtask.get("title").and_then(|v| v.as_str()).unwrap(); // validated in first pass
@@ -4350,10 +4361,15 @@ impl PkbSearchServer {
                     .get("status")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                severity: subtask
-                    .get("severity")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
+                severity: {
+                    let is_target = subtask.get("type").and_then(|v| v.as_str()) == Some("target");
+                    let mut sev = subtask.get("severity").and_then(|v| v.as_i64()).map(|v| v as i32);
+                    if !is_target && sev.unwrap_or(0) != 0 {
+                        sev = Some(0);
+                        severity_warning = true;
+                    }
+                    sev
+                },
                 goal_type: subtask
                     .get("goal_type")
                     .and_then(|v| v.as_str())
@@ -4386,13 +4402,25 @@ impl PkbSearchServer {
             created.push((id_str, path.display().to_string()));
         }
 
-        // Re-embed all newly created subtasks in parallel (off the write
-        // lock) and rebuild the graph in one pass via finalize_batch.
-        let modified_paths: Vec<std::path::PathBuf> = created
-            .iter()
-            .map(|(_, p)| std::path::PathBuf::from(p))
-            .collect();
-        self.finalize_batch(&modified_paths, &[]);
+        let mut docs = Vec::new();
+        let mut failed = false;
+        for (_id_str, path_str) in &created {
+            let path = std::path::PathBuf::from(path_str);
+            if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+                docs.push(doc);
+            } else {
+                tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+                failed = true;
+            }
+        }
+
+        if !docs.is_empty() {
+            self.batch_upsert_and_rebuild(docs);
+        }
+
+        if failed {
+            self.rebuild_graph();
+        }
 
         let mut output = format!(
             "**Created {} subtasks under `{parent_id}`:**\n\n",
@@ -4400,6 +4428,10 @@ impl PkbSearchServer {
         );
         for (id_str, path) in &created {
             output.push_str(&format!("- `{id_str}` — `{path}`\n"));
+        }
+        
+        if severity_warning {
+            output.push_str("\nWarning: severity ignored for one or more non-target nodes.\n");
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -7299,6 +7331,117 @@ mod tests {
     }
 
     // ── create_task: project required ──
+
+    #[test]
+    fn test_create_task_severity_coercion() {
+        let server = build_test_server();
+        std::fs::create_dir_all("/tmp/test-pkb-project/targets").unwrap();
+        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+        // 1. Create a target task with severity
+        let res_target = server
+            .handle_create_task(&json!({
+                "title": "target with sev",
+                "type": "target",
+                "severity": 3,
+                "project": "proj-alpha",
+                "parent": "proj-alpha"
+            }))
+            .unwrap();
+        let target_text = res_target.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect::<String>();
+        let target_val: serde_json::Value = serde_json::from_str(&target_text).unwrap();
+        let target_id = target_val.get("id").unwrap().as_str().unwrap().to_string();
+
+        let get_target = server.handle_get_task(&json!({"id": target_id})).unwrap();
+        let get_target_text = get_target.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect::<String>();
+        assert!(get_target_text.contains("\"severity\": 3"), "Target node should retain severity. text: {}", get_target_text);
+
+        // 2. Create a standard task with severity
+        let res_task = server
+            .handle_create_task(&json!({
+                "title": "task with sev",
+                "type": "task",
+                "severity": 3,
+                "project": "proj-alpha",
+                "parent": "proj-alpha"
+            }))
+            .unwrap();
+        
+        let mut has_warning = false;
+        let mut task_json_text = String::new();
+        for c in &res_task.content {
+            if let Some(t) = c.raw.as_text() {
+                if t.text.contains("severity ignored: not a target node") {
+                    has_warning = true;
+                } else if t.text.trim().starts_with('{') {
+                    task_json_text = t.text.clone();
+                }
+            }
+        }
+        assert!(has_warning, "Standard task should return a warning about severity coercion");
+        
+        let task_val: serde_json::Value = serde_json::from_str(&task_json_text).unwrap();
+        let task_id = task_val.get("id").unwrap().as_str().unwrap().to_string();
+        let get_task = server.handle_get_task(&json!({"id": task_id})).unwrap();
+        let get_task_text = get_task.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect::<String>();
+        assert!(!get_task_text.contains("\"severity\": 3"), "Standard task should coerce severity to 0 or null");
+    }
+
+    #[test]
+    fn test_decompose_task_severity_coercion() {
+        let server = build_test_server();
+        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+
+        // Create a real parent task so it has a project field and exists on disk
+        let parent_res = server
+            .handle_create_task(&json!({
+                "title": "Parent Task for Decompose",
+                "type": "epic",
+                "project": "proj-alpha",
+                "parent": "proj-alpha"
+            }))
+            .unwrap();
+            
+        let mut parent_id = String::new();
+        for c in &parent_res.content {
+            if let Some(t) = c.raw.as_text() {
+                if t.text.trim().starts_with('{') {
+                    let parent_val: serde_json::Value = serde_json::from_str(&t.text).unwrap();
+                    parent_id = parent_val.get("id").unwrap().as_str().unwrap().to_string();
+                }
+            }
+        }
+
+        let subtasks = json!([
+            {
+                "title": "Subtask Target Sev",
+                "type": "target",
+                "severity": 3
+            },
+            {
+                "title": "Subtask Sev",
+                "type": "task",
+                "severity": 3
+            }
+        ]);
+
+        let res = server
+            .handle_decompose_task(&json!({
+                "parent_id": parent_id,
+                "subtasks": subtasks
+            }))
+            .unwrap();
+
+        let res_text = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect::<String>();
+        assert!(res_text.contains("severity ignored for one or more non-target nodes"), "Should have warning");
+
+        let graph = server.graph.read();
+        
+        let target_node = graph.resolve("Subtask Target Sev").unwrap();
+        assert_eq!(target_node.severity, Some(3));
+
+        let subtask_node = graph.resolve("Subtask Sev").unwrap();
+        assert_eq!(subtask_node.severity, Some(0)); // Coerced to 0
+    }
 
     #[test]
     fn test_create_task_rejects_missing_project() {
