@@ -2452,7 +2452,7 @@ fn compute_voi_term(nodes: &mut [GraphNode]) {
         let effort_norm = effort_days.max(0.5);
 
         let voi = K_VOI * 1.0 * dep_resolution_ratio * sum_downstream / effort_norm;
-        voi_values[i] = voi.min(5000.0);
+        voi_values[i] = voi.min(K_VOI);
     }
 
     for (i, node) in nodes.iter_mut().enumerate() {
