@@ -2258,14 +2258,20 @@ impl PkbSearchServer {
             .iter()
             .map(|r| {
                 let node = self.lookup_node(&path_map, &r.path);
-                let node_id = node.map(|n| n.id.clone());
+                let node_id = node.as_ref().map(|n| n.id.clone());
+                let confidence = node.as_ref().and_then(|n| n.confidence).unwrap_or(0.5) as f32;
 
                 let boost = node_id
                     .as_ref()
                     .and_then(|nid| boost_map.get(nid))
                     .unwrap_or(&0.0);
 
-                (r, r.score * (1.0 + boost))
+                let type_boost = match r.doc_type.as_deref().map(|s| s.to_ascii_lowercase()).as_deref() {
+                    Some("knowledge") | Some("memory") | Some("note") | Some("insight") | Some("observation") => 0.15,
+                    _ => 0.0,
+                };
+
+                (r, r.score * (1.0 + boost + type_boost) + (confidence * 0.05))
             })
             .collect();
 
