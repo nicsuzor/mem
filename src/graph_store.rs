@@ -35,6 +35,7 @@ pub struct OutputGraph {
 
 pub const DEFAULT_DIVERGENCE_THRESHOLD_DAYS: i64 = 14;
 pub const DIVERGENCE_WEIGHT_THRESHOLD: f64 = 0.75;
+pub const K_VOI: f64 = 5000.0;
 
 /// Result of a stated-vs-revealed weight divergence check.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -351,6 +352,11 @@ impl GraphStore {
         compute_uncertainty(&mut nodes);
         compute_criticality(&mut nodes);
         tracing::debug!(target: "perf::graph_rebuild", phase = "scope_uncertainty_criticality", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
+
+        // 8b. Compute Value of Information (VoI) term
+        let _t = std::time::Instant::now();
+        compute_voi_term(&mut nodes);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "voi_term", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 9. Compute focus scores
         let _t = std::time::Instant::now();
@@ -1434,6 +1440,9 @@ impl GraphStore {
                 }
             }
             score += node.urgency.round() as i64;
+            if let Some(voi) = node.voi_value {
+                score += voi.round() as i64;
+            }
             node.focus_score = Some(score);
         }
     }
@@ -2385,6 +2394,69 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
         }
 
         nodes[start_idx].effective_priority = Some(min_priority);
+    }
+}
+
+/// Compute Value of Information (VoI) term for each node.
+///
+/// Formula: VoI(x) = K_voi * is_leaf(x) * dep_resolution_ratio(x)
+///                   * Σ_{d} uncertainty(d) * edge_weight(x->d) * downstream_weight(d)
+///                   / max(effort_days(x), 0.5)
+fn compute_voi_term(nodes: &mut [GraphNode]) {
+    let id_to_idx: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    let mut voi_values = vec![0.0; nodes.len()];
+
+    for i in 0..nodes.len() {
+        let node = &nodes[i];
+        if !node.leaf {
+            voi_values[i] = 0.0;
+            continue;
+        }
+
+        let mut dep_resolution_ratio = 1.0;
+        let total_deps = node.depends_on.len();
+        if total_deps > 0 {
+            let mut resolved_deps = 0;
+            for dep_id in &node.depends_on {
+                if let Some(&d_idx) = id_to_idx.get(dep_id) {
+                    let d_status = nodes[d_idx].status.as_deref().unwrap_or("");
+                    if crate::graph::COMPLETED_STATUSES.contains(&d_status) {
+                        resolved_deps += 1;
+                    }
+                }
+            }
+            dep_resolution_ratio = resolved_deps as f64 / total_deps as f64;
+        }
+
+        let mut sum_downstream = 0.0;
+        for ct in &node.contributes_to {
+            if let Some(target_id) = &ct.resolved_to {
+                if let Some(&t_idx) = id_to_idx.get(target_id) {
+                    let target = &nodes[t_idx];
+                    let w = ct.numeric_weight();
+                    sum_downstream += target.uncertainty * w * target.downstream_weight;
+                }
+            }
+        }
+
+        let effort_days = node
+            .effort
+            .as_deref()
+            .and_then(crate::graph::parse_effort_days)
+            .unwrap_or(3) as f64;
+        let effort_norm = effort_days.max(0.5);
+
+        let voi = K_VOI * 1.0 * dep_resolution_ratio * sum_downstream / effort_norm;
+        voi_values[i] = voi.min(5000.0);
+    }
+
+    for (i, node) in nodes.iter_mut().enumerate() {
+        node.voi_value = Some(voi_values[i]);
     }
 }
 
@@ -4585,5 +4657,61 @@ mod tests {
             "task-b.downstream_weight must be 0 (no sibling leakage from task-a), got {}",
             b.downstream_weight
         );
+    }
+
+    #[test]
+    fn test_compute_voi_term() {
+        let root = std::path::PathBuf::from("/tmp/pkb");
+        
+        let make_target = |id: &str, confidence: f64| -> crate::pkb::PkbDocument {
+            let mut d = make_doc(&format!("goals/{id}.md"), id, "target", "active", id, None, &[]);
+            let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("confidence".to_string(), serde_json::json!(confidence));
+            d.frontmatter = Some(serde_json::Value::Object(fm));
+            d
+        };
+
+        let make_contributor = |id: &str, target_id: &str, effort: &str, has_children: bool| -> crate::pkb::PkbDocument {
+            let mut d = make_doc(&format!("tasks/{id}.md"), id, "task", "active", id, None, &[]);
+            let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("effort".to_string(), serde_json::json!(effort));
+            fm.insert("contributes_to".to_string(), serde_json::json!([{"to": target_id, "weight": "Certain"}]));
+            if has_children {
+                // We create a dummy child below.
+            }
+            d.frontmatter = Some(serde_json::Value::Object(fm));
+            d
+        };
+
+        let target_unc0 = make_target("target-unc0", 1.0); // 1.0 confidence -> 0.0 uncertainty
+        let target_unc1 = make_target("target-unc1", 0.0); // 0.0 confidence -> 1.0 uncertainty
+        
+        let contrib_leaf_unc0 = make_contributor("c-leaf-unc0", "target-unc0", "1d", false);
+        let contrib_leaf_unc1 = make_contributor("c-leaf-unc1", "target-unc1", "1d", false);
+        let contrib_extreme = make_contributor("c-extreme", "target-unc1", "0.5d", false);
+        
+        let contrib_non_leaf = make_contributor("c-non-leaf", "target-unc1", "1d", true);
+        let dummy_child = make_doc("tasks/dummy.md", "dummy", "task", "active", "dummy", Some("c-non-leaf"), &[]);
+        
+        let store = GraphStore::build(&[
+            target_unc0, target_unc1,
+            contrib_leaf_unc0, contrib_leaf_unc1, contrib_extreme,
+            contrib_non_leaf, dummy_child
+        ], &root);
+
+        // a) zero VoI for non-leaf nodes
+        let n_non_leaf = store.get_node("c-non-leaf").unwrap();
+        assert_eq!(n_non_leaf.voi_value.unwrap_or(0.0), 0.0, "VoI should be 0 for non-leaf");
+
+        // b) zero VoI when all downstream uncertainty is 0
+        let n_unc0 = store.get_node("c-leaf-unc0").unwrap();
+        assert_eq!(n_unc0.voi_value.unwrap_or(0.0), 0.0, "VoI should be 0 when downstream uncertainty is 0");
+
+        // c) cap at 5,000 under extreme inputs
+        let n_extreme = store.get_node("c-extreme").unwrap();
+        assert_eq!(n_extreme.voi_value.unwrap_or(0.0), 5000.0, "VoI should be capped at 5000");
+
+        let n_unc1 = store.get_node("c-leaf-unc1").unwrap();
+        assert_eq!(n_unc1.voi_value.unwrap_or(0.0), 5000.0, "VoI should be capped at 5000");
     }
 }

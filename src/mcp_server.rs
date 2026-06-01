@@ -2741,6 +2741,7 @@ impl PkbSearchServer {
                 "downstream_weight": node.downstream_weight,
                 "scope": node.scope,
                 "uncertainty": node.uncertainty,
+                "voi_value": node.voi_value,
             },
             "stakeholder_exposure": node.stakeholder_exposure,
             "stakeholder": node.stakeholder,
@@ -4769,6 +4770,7 @@ impl PkbSearchServer {
                             "downstream_weight": t.downstream_weight,
                             "scope": t.scope,
                             "uncertainty": t.uncertainty,
+                            "voi_value": t.voi_value,
                         },
                         "project": t.project,
                         "assignee": t.assignee,
@@ -7479,7 +7481,7 @@ mod tests {
                 .get("signals")
                 .and_then(|s| s.as_object())
                 .expect("signals must be a top-level object");
-            for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty"] {
+            for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty", "voi_value"] {
                 assert!(
                     signals.contains_key(*key),
                     "signals.{key} must exist under signals, not at top level"
@@ -7555,7 +7557,7 @@ mod tests {
             .get("signals")
             .and_then(|s| s.as_object())
             .expect("signals must be a top-level object in get_task response");
-        for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty"] {
+        for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty", "voi_value"] {
             assert!(
                 signals.contains_key(*key),
                 "signals.{key} must exist under signals in get_task response"
