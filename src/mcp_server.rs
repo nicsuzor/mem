@@ -2266,7 +2266,7 @@ impl PkbSearchServer {
                     .and_then(|nid| boost_map.get(nid))
                     .unwrap_or(&0.0);
 
-                let type_boost = match r.doc_type.as_deref() {
+                let type_boost = match r.doc_type.as_deref().map(|s| s.to_ascii_lowercase()).as_deref() {
                     Some("knowledge") | Some("memory") | Some("note") | Some("insight") | Some("observation") => 0.15,
                     _ => 0.0,
                 };
