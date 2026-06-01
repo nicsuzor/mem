@@ -4722,7 +4722,7 @@ impl PkbSearchServer {
             .unwrap_or(false);
 
         if !explicitly_wants_target {
-            tasks.retain(|t| t.node_type.as_deref() != Some("target"));
+            tasks.retain(|t| !t.node_type.as_deref().map_or(false, |s| s.eq_ignore_ascii_case("target")));
         }
 
         if !include_subtasks {
