@@ -1097,12 +1097,17 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, 
                         // ignore boolean/empty flags
                         return;
                     }
-                    // Simple heuristic: if it has no spaces or it's a URL, or matches a task id pattern, assume it's a node
-                    let is_node_ref = val.trim().split_whitespace().count() == 1 || val.starts_with("http");
+                    // A node reference is a single slug token: no spaces, contains at least one
+                    // hyphen, and only alphanumeric/hyphen chars. This matches the structural
+                    // invariant of PKB node IDs (e.g. mem-74b6165e) without semantic guessing.
+                    let trimmed = val.trim();
+                    let is_node_ref = !trimmed.contains(' ')
+                        && trimmed.contains('-')
+                        && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
                     if is_node_ref {
-                        tasks.push(val.trim().to_string());
+                        tasks.push(trimmed.to_string());
                     } else {
-                        prose.push(val.trim().to_string());
+                        prose.push(trimmed.to_string());
                     }
                 };
 
@@ -1118,22 +1123,41 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, 
 
                 // Add to depends_on
                 if !tasks_to_add.is_empty() {
-                    // If depends_on already exists in frontmatter, we append to it.
-                    // But we are editing `result` string. It's safer to just inject a new `depends_on`
-                    // array if it doesn't exist, or append to existing.
                     if result.starts_with("---\n") {
                         if let Some(fm_end_rel) = result[3..].find("\n---") {
                             let fm_end = fm_end_rel + 3;
-                            let fm_section = result[4..fm_end].to_string();
-                            let mut new_fm = fm_section.clone();
-                            if !new_fm.contains("depends_on:") {
-                                new_fm.push_str("depends_on:\n");
+                            let fm_section = &result[4..fm_end];
+                            let mut lines: Vec<String> =
+                                fm_section.lines().map(|l| l.to_string()).collect();
+                            // Find the insertion point: after all existing list items under
+                            // depends_on:, or append a new depends_on: block if absent.
+                            let mut insert_idx: Option<usize> = None;
+                            let mut in_depends_on = false;
+                            for (i, line) in lines.iter().enumerate() {
+                                if line.starts_with("depends_on:") {
+                                    in_depends_on = true;
+                                    insert_idx = Some(i + 1);
+                                } else if in_depends_on {
+                                    if line.starts_with("  - ") || line.starts_with("- ") {
+                                        insert_idx = Some(i + 1);
+                                    } else {
+                                        break;
+                                    }
+                                }
                             }
+                            let formatted: Vec<String> =
+                                tasks_to_add.iter().map(|t| format!("  - {}", t)).collect();
+                            if let Some(idx) = insert_idx {
+                                for (offset, item) in formatted.into_iter().enumerate() {
+                                    lines.insert(idx + offset, item);
+                                }
+                            } else {
+                                lines.push("depends_on:".to_string());
+                                lines.extend(formatted);
+                            }
+                            let mut new_fm = lines.join("\n");
                             if !new_fm.ends_with('\n') {
                                 new_fm.push('\n');
-                            }
-                            for task in tasks_to_add {
-                                new_fm.push_str(&format!("  - {}\n", task));
                             }
                             result = format!("---\n{}---{}", new_fm, &result[fm_end + 4..]);
                         }
@@ -2104,5 +2128,21 @@ Body.\n");
         assert!(!fixed_bool.contains("blocked:"), "blocked key should be removed");
         assert!(!fixed_bool.contains("depends_on:"), "no depends_on for boolean flag");
         assert!(!fixed_bool.contains("> **Blocked on**"), "no prose for boolean flag");
+
+        // Single-word prose should go to body, not depends_on (no hyphen → not a node ref)
+        let input_single_word = "---\nid: test-wait\ntitle: Test\ntype: task\nstatus: active\nblocked: Waiting\n---\n\nBody.\n";
+        let fixed_single_word = fix_str(input_single_word);
+        assert!(!fixed_single_word.contains("blocked:"), "blocked key should be removed");
+        assert!(!fixed_single_word.contains("depends_on:"), "single-word prose must not become depends_on");
+        assert!(fixed_single_word.contains("> **Blocked on**: Waiting"), "single-word prose migrated to body, got:\n{}", fixed_single_word);
+
+        // When depends_on already exists, new items must be inserted under it, not appended at end
+        let input_existing_dep = "---\nid: test-merge\ntitle: Test\ntype: task\nstatus: active\ndepends_on:\n  - existing-task\nblocked: new-task-ref\n---\n\nBody.\n";
+        let fixed_existing_dep = fix_str(input_existing_dep);
+        assert!(!fixed_existing_dep.contains("blocked:"), "blocked key should be removed");
+        // Both tasks must appear under the same depends_on: key
+        assert!(fixed_existing_dep.contains("depends_on:\n  - existing-task\n  - new-task-ref"), "merged into existing depends_on, got:\n{}", fixed_existing_dep);
+        // Must not have a second depends_on: key
+        assert_eq!(fixed_existing_dep.matches("depends_on:").count(), 1, "only one depends_on: key allowed, got:\n{}", fixed_existing_dep);
     }
 }
