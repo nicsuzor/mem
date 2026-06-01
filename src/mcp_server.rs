@@ -332,6 +332,33 @@ impl PkbSearchServer {
         self.schedule_graph_rebuild();
     }
 
+    /// Batch in-place patch for multiple documents. Holds the graph write
+    /// lock once, upserts all nodes, runs reclassify once, then schedules
+    /// a single coalesced background rebuild. Use this after creating
+    /// multiple documents atomically (e.g. decompose_task) to avoid N
+    /// separate lock acquisitions.
+    fn batch_upsert_and_rebuild(&self, docs: Vec<crate::pkb::PkbDocument>) {
+        let _t = std::time::Instant::now();
+        {
+            let mut g = self.graph.write();
+            let mut patched = self.patched_during_rebuild.lock();
+            for doc in &docs {
+                let node = crate::graph::GraphNode::from_pkb_document(doc);
+                let patched_id = node.id.clone();
+                g.upsert_node_in_place(node, &self.pkb_root);
+                patched.insert(patched_id);
+            }
+            g.reclassify();
+        }
+        tracing::debug!(
+            target: "perf::graph_rebuild",
+            phase = "inplace_batch_patch",
+            n = docs.len(),
+            elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0
+        );
+        self.schedule_graph_rebuild();
+    }
+
     /// Synchronous fast path for node removal. In-place delete from the
     /// nodes map + resolution map. Stale edges are left for the background
     /// rebuild to clean up. See [`rebuild_graph_for_pkb_document`] for
@@ -2750,6 +2777,7 @@ impl PkbSearchServer {
                 "downstream_weight": node.downstream_weight,
                 "scope": node.scope,
                 "uncertainty": node.uncertainty,
+                "voi_value": node.voi_value,
             },
             "stakeholder_exposure": node.stakeholder_exposure,
             "stakeholder": node.stakeholder,
@@ -4801,6 +4829,7 @@ impl PkbSearchServer {
                             "downstream_weight": t.downstream_weight,
                             "scope": t.scope,
                             "uncertainty": t.uncertainty,
+                            "voi_value": t.voi_value,
                         },
                         "project": t.project,
                         "assignee": t.assignee,
@@ -7622,7 +7651,7 @@ mod tests {
                 .get("signals")
                 .and_then(|s| s.as_object())
                 .expect("signals must be a top-level object");
-            for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty"] {
+            for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty", "voi_value"] {
                 assert!(
                     signals.contains_key(*key),
                     "signals.{key} must exist under signals, not at top level"
@@ -7698,7 +7727,7 @@ mod tests {
             .get("signals")
             .and_then(|s| s.as_object())
             .expect("signals must be a top-level object in get_task response");
-        for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty"] {
+        for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty", "voi_value"] {
             assert!(
                 signals.contains_key(*key),
                 "signals.{key} must exist under signals in get_task response"

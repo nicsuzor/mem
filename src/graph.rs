@@ -239,6 +239,8 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus_score: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub voi_value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     /// Computed status group: "active", "blocked", or "completed"
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1183,6 +1185,7 @@ impl GraphNode {
             reachable: false,
             assumptions,
             focus_score: None,
+            voi_value: None,
             classification,
             has_acceptance_criteria,
             scope: 0,
