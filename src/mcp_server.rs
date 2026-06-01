@@ -4385,17 +4385,22 @@ impl PkbSearchServer {
             created.push((id_str, path.display().to_string()));
         }
 
+        let mut docs = Vec::new();
         let mut failed = false;
-        for (id_str, path_str) in &created {
+        for (_id_str, path_str) in &created {
             let path = std::path::PathBuf::from(path_str);
             if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
-                self.rebuild_graph_for_pkb_document(&doc);
-                self.try_upsert_document(&doc);
+                docs.push(doc);
             } else {
                 tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
                 failed = true;
             }
         }
+
+        if !docs.is_empty() {
+            self.batch_upsert_and_rebuild(docs);
+        }
+
         if failed {
             self.rebuild_graph();
         }
