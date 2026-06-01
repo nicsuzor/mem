@@ -1060,6 +1060,9 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
 
         // Validation for updated fields
         match key.as_str() {
+            "blocked" => {
+                anyhow::bail!("'blocked' is a reserved computed keyword and cannot be set manually. Use 'depends_on' to add hard dependencies.");
+            }
             "status" => {
                 if let Some(s) = value.as_str() {
                     if !crate::graph::is_valid_status(s) {

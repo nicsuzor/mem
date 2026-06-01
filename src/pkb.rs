@@ -142,10 +142,15 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
     let matter = Matter::<YAML>::new();
     let result = matter.parse(&content);
 
-    let fm_data = result
+    let mut fm_data = result
         .data
         .as_ref()
         .and_then(|d| d.deserialize::<serde_json::Value>().ok());
+
+    // 'blocked' is a computed keyword. Strip it from parsed frontmatter.
+    if let Some(serde_json::Value::Object(ref mut fm_map)) = fm_data {
+        fm_map.remove("blocked");
+    }
 
     // Title: frontmatter > filename
     let mut title = path.file_stem()?.to_string_lossy().to_string();

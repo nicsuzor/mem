@@ -902,33 +902,45 @@ fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
 
 // ── Auto-fix engine ──────────────────────────────────────────────────────
 
-/// Remove the `body:` key and its (potentially multi-line) block-scalar value from a
+/// Remove a key and its (potentially multi-line) block-scalar value from a
 /// frontmatter string (the text between the two `---` delimiters, without those delimiters).
-fn remove_body_key_from_frontmatter(fm_text: &str) -> String {
+fn remove_key_from_frontmatter(fm_text: &str, target_key: &str) -> String {
     let mut lines: Vec<&str> = Vec::new();
-    let mut in_body = false;
+    let mut in_target = false;
     let mut is_block = false;
 
+    let target_prefix = format!("{}:", target_key);
+
     for line in fm_text.lines() {
-        if in_body {
-            if line.starts_with(' ') || line.starts_with('\t') {
-                // Indented continuation of block scalar — drop.
+        if in_target {
+            if line.starts_with(' ') || line.starts_with('\t') || (is_block && line.starts_with('-')) {
+                // Indented continuation of block scalar or list item — drop.
                 continue;
             } else if line.is_empty() && is_block {
                 // Blank line within a block scalar — drop.
                 continue;
             } else {
-                // Non-indented, non-empty line: the body block is over.
-                in_body = false;
+                // Non-indented, non-empty line: the block is over.
+                in_target = false;
                 is_block = false;
+                // fallthrough to check if the current line starts a new target
+            }
+        }
+        
+        if !in_target {
+            if line.starts_with(&target_prefix) {
+                in_target = true;
+                let after = line[target_prefix.len()..].trim();
+                is_block = after.starts_with('|') || after.starts_with('>') || after.is_empty();
+                // If it's inline like `blocked: true`, it will just drop this line and `in_target`
+                // will remain true until the next non-indented line. Since the next line won't be
+                // indented, `in_target` will be set to false and the line will be pushed.
+                // Wait, if it's inline, `is_block` is false.
+                // If `is_block` is false, and the next line doesn't start with space/tab,
+                // `in_target` will become false and the next line will be pushed.
+            } else {
                 lines.push(line);
             }
-        } else if line.starts_with("body:") {
-            in_body = true;
-            let after = line["body:".len()..].trim();
-            is_block = after.starts_with('|') || after.starts_with('>');
-        } else {
-            lines.push(line);
         }
     }
 
@@ -1034,7 +1046,7 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, 
                     if let Some(fm_end_rel) = result[3..].find("\n---") {
                         let fm_end = fm_end_rel + 3;
                         let fm_section = result[4..fm_end].to_string();
-                        let new_fm = remove_body_key_from_frontmatter(&fm_section);
+                        let new_fm = remove_key_from_frontmatter(&fm_section, "body");
                         let new_fm_str = if new_fm.trim().is_empty() {
                             String::new()
                         } else if new_fm.ends_with('\n') {
@@ -1062,9 +1074,101 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, 
                 }
             }
         }
-    }
+        // Fix 6b: Migrate 'blocked' frontmatter key
+        if fm.contains_key("blocked") {
+            // First, remove the `blocked` key from the frontmatter block text
+            if result.starts_with("---\n") {
+                if let Some(fm_end_rel) = result[3..].find("\n---") {
+                    let fm_end = fm_end_rel + 3;
+                    let fm_section = result[4..fm_end].to_string();
+                    let new_fm = remove_key_from_frontmatter(&fm_section, "blocked");
+                    let new_fm_str = if new_fm.trim().is_empty() {
+                        String::new()
+                    } else if new_fm.ends_with('\n') {
+                        new_fm
+                    } else {
+                        format!("{}\n", new_fm)
+                    };
+                    result = format!("---\n{}---{}", new_fm_str, &result[fm_end + 4..]);
+                }
+            }
 
-    // ── Frontmatter structural fixes (need --- delimiters but not parsed data) ──
+            // Now handle the value: move to `depends_on` or the body as prose.
+            if let Some(blocked_val) = fm.get("blocked") {
+                let mut tasks_to_add = Vec::new();
+                let mut prose_to_add = Vec::new();
+
+                let check_val = |val: &str, tasks: &mut Vec<String>, prose: &mut Vec<String>| {
+                    if val == "true" || val == "false" || val.is_empty() {
+                        // ignore boolean/empty flags
+                        return;
+                    }
+                    // Simple heuristic: if it has no spaces or it's a URL, or matches a task id pattern, assume it's a node
+                    let is_node_ref = val.trim().split_whitespace().count() == 1 || val.starts_with("http");
+                    if is_node_ref {
+                        tasks.push(val.trim().to_string());
+                    } else {
+                        prose.push(val.trim().to_string());
+                    }
+                };
+
+                if let Some(s) = blocked_val.as_str() {
+                    check_val(s, &mut tasks_to_add, &mut prose_to_add);
+                } else if let Some(arr) = blocked_val.as_array() {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            check_val(s, &mut tasks_to_add, &mut prose_to_add);
+                        }
+                    }
+                } else if let Some(b) = blocked_val.as_bool() {
+                    // ignore boolean flags
+                }
+
+                // Add to depends_on
+                if !tasks_to_add.is_empty() {
+                    // If depends_on already exists in frontmatter, we append to it.
+                    // But we are editing `result` string. It's safer to just inject a new `depends_on`
+                    // array if it doesn't exist, or append to existing.
+                    if result.starts_with("---\n") {
+                        if let Some(fm_end_rel) = result[3..].find("\n---") {
+                            let fm_end = fm_end_rel + 3;
+                            let fm_section = result[4..fm_end].to_string();
+                            let mut new_fm = fm_section.clone();
+                            if !new_fm.contains("depends_on:") {
+                                new_fm.push_str("depends_on:\n");
+                            }
+                            if !new_fm.ends_with('\n') {
+                                new_fm.push('\n');
+                            }
+                            for task in tasks_to_add {
+                                new_fm.push_str(&format!("  - {}\n", task));
+                            }
+                            result = format!("---\n{}---{}", new_fm, &result[fm_end + 4..]);
+                        }
+                    }
+                }
+
+                // Add to body as prose
+                if !prose_to_add.is_empty() {
+                    let combined_prose = prose_to_add.join(" ");
+                    let body_text = format!("> **Blocked on**: {}", combined_prose);
+                    if let Some(fm_end_rel) = result[3..].find("\n---") {
+                        let md_start = fm_end_rel + 3 + 5;
+                        if !result[md_start..].contains(&body_text) {
+                            if !result.ends_with('\n') {
+                                result.push('\n');
+                            }
+                            if !result.ends_with("\n\n") {
+                                result.push('\n');
+                            }
+                            result.push_str(&body_text);
+                            result.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Fix 5: Remove blank line after opening ---
     if result.starts_with("---\n\n") {
@@ -1986,5 +2090,27 @@ Body.\n");
             "did not expect parent-cycle diagnostics for a DAG, got: {:?}",
             parent_cycle_diags
         );
+    }
+
+    #[test]
+    fn fixes_blocked_in_frontmatter() {
+        // Test edge-shaped blocked value (migrates to depends_on)
+        let input_edge = "---\nid: test-edge\ntitle: Test\ntype: task\nstatus: active\nblocked: task-xyz123\n---\n\nBody.\n";
+        let fixed_edge = fix_str(input_edge);
+        assert!(!fixed_edge.contains("blocked: task-xyz123"), "blocked key should be removed");
+        assert!(fixed_edge.contains("depends_on:\n  - task-xyz123"), "edge migrated to depends_on, got:\n{}", fixed_edge);
+
+        // Test prose-shaped blocked value (migrates to body)
+        let input_prose = "---\nid: test-prose\ntitle: Test\ntype: task\nstatus: active\nblocked: Waiting on John to finish the mockups.\n---\n\nBody.\n";
+        let fixed_prose = fix_str(input_prose);
+        assert!(!fixed_prose.contains("blocked:"), "blocked key should be removed");
+        assert!(fixed_prose.contains("> **Blocked on**: Waiting on John to finish the mockups."), "prose migrated to body, got:\n{}", fixed_prose);
+
+        // Test boolean flag (simply removed)
+        let input_bool = "---\nid: test-bool\ntitle: Test\ntype: task\nstatus: active\nblocked: true\n---\n\nBody.\n";
+        let fixed_bool = fix_str(input_bool);
+        assert!(!fixed_bool.contains("blocked:"), "blocked key should be removed");
+        assert!(!fixed_bool.contains("depends_on:"), "no depends_on for boolean flag");
+        assert!(!fixed_bool.contains("> **Blocked on**"), "no prose for boolean flag");
     }
 }

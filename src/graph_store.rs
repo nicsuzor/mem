@@ -682,6 +682,10 @@ impl GraphStore {
             .collect()
     }
 
+    pub fn is_blocked(&self, id: &str) -> bool {
+        self.blocked.iter().any(|s| s == id)
+    }
+
     pub fn all_tasks(&self) -> Vec<&GraphNode> {
         let mut tasks: Vec<&GraphNode> = self
             .nodes
