@@ -1525,7 +1525,7 @@ impl PkbSearchServer {
         let mut severity_warning = false;
         let mut severity = args.get("severity").and_then(|v| v.as_i64()).map(|v| v as i32);
         let is_target = args.get("type").and_then(|v| v.as_str()) == Some("target");
-        if !is_target && severity.is_some() && severity.unwrap() != 0 {
+        if !is_target && severity.unwrap_or(0) != 0 {
             severity = Some(0);
             severity_warning = true;
         }
@@ -4363,7 +4363,7 @@ impl PkbSearchServer {
                 severity: {
                     let is_target = subtask.get("type").and_then(|v| v.as_str()) == Some("target");
                     let mut sev = subtask.get("severity").and_then(|v| v.as_i64()).map(|v| v as i32);
-                    if !is_target && sev.is_some() && sev.unwrap() != 0 {
+                    if !is_target && sev.unwrap_or(0) != 0 {
                         sev = Some(0);
                         severity_warning = true;
                     }
