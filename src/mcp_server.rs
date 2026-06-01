@@ -4401,13 +4401,25 @@ impl PkbSearchServer {
             created.push((id_str, path.display().to_string()));
         }
 
-        // Re-embed all newly created subtasks in parallel (off the write
-        // lock) and rebuild the graph in one pass via finalize_batch.
-        let modified_paths: Vec<std::path::PathBuf> = created
-            .iter()
-            .map(|(_, p)| std::path::PathBuf::from(p))
-            .collect();
-        self.finalize_batch(&modified_paths, &[]);
+        let mut docs = Vec::new();
+        let mut failed = false;
+        for (_id_str, path_str) in &created {
+            let path = std::path::PathBuf::from(path_str);
+            if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+                docs.push(doc);
+            } else {
+                tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+                failed = true;
+            }
+        }
+
+        if !docs.is_empty() {
+            self.batch_upsert_and_rebuild(docs);
+        }
+
+        if failed {
+            self.rebuild_graph();
+        }
 
         let mut output = format!(
             "**Created {} subtasks under `{parent_id}`:**\n\n",
