@@ -1337,11 +1337,14 @@ impl PkbSearchServer {
             if count >= limit {
                 break;
             }
+            let is_target = r.doc_type.as_deref().map(|t| t.eq_ignore_ascii_case("target")).unwrap_or(false);
+            let explicit_target = is_target && type_filter.as_ref().map(|f| f.contains("target")).unwrap_or(false);
+
             let is_task = r
                 .doc_type
                 .as_deref()
                 .map(|t| crate::graph_store::ACTIONABLE_TYPES.contains(&t))
-                .unwrap_or(false);
+                .unwrap_or(false) || explicit_target;
 
             if !is_task {
                 continue;
@@ -4712,6 +4715,14 @@ impl PkbSearchServer {
 
         if let Some(min_score) = focus_score_gte {
             tasks.retain(|t| t.focus_score.unwrap_or(0) >= min_score);
+        }
+
+        let explicitly_wants_target = doc_type
+            .map(|dt| dt.eq_ignore_ascii_case("target"))
+            .unwrap_or(false);
+
+        if !explicitly_wants_target {
+            tasks.retain(|t| t.node_type.as_deref() != Some("target"));
         }
 
         if !include_subtasks {
@@ -8406,7 +8417,7 @@ mod tier_rebuild_tests {
         // Test title_contains filter
         let ids = task_ids_from(
             &server
-                .handle_list_tasks(&json!({"title_contains": "LLB242", "format": "json"}))
+                .handle_list_tasks(&json!({"title_contains": "LLB242", "type": "target", "format": "json"}))
                 .unwrap(),
         );
         assert!(ids.contains(&"target-1".to_string()));
@@ -8462,7 +8473,6 @@ mod tier_rebuild_tests {
                 .unwrap(),
         );
         assert!(!ids.is_empty());
-        assert!(ids.contains(&"target-1".to_string()));
         assert!(ids.contains(&"task-1".to_string()));
     }
 
