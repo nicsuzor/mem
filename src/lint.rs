@@ -932,12 +932,6 @@ fn remove_key_from_frontmatter(fm_text: &str, target_key: &str) -> String {
                 in_target = true;
                 let after = line[target_prefix.len()..].trim();
                 is_block = after.starts_with('|') || after.starts_with('>') || after.is_empty();
-                // If it's inline like `blocked: true`, it will just drop this line and `in_target`
-                // will remain true until the next non-indented line. Since the next line won't be
-                // indented, `in_target` will be set to false and the line will be pushed.
-                // Wait, if it's inline, `is_block` is false.
-                // If `is_block` is false, and the next line doesn't start with space/tab,
-                // `in_target` will become false and the next line will be pushed.
             } else {
                 lines.push(line);
             }
@@ -1120,8 +1114,6 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, 
                             check_val(s, &mut tasks_to_add, &mut prose_to_add);
                         }
                     }
-                } else if let Some(b) = blocked_val.as_bool() {
-                    // ignore boolean flags
                 }
 
                 // Add to depends_on
