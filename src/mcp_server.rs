@@ -2734,6 +2734,7 @@ impl PkbSearchServer {
             "priority": node.priority.unwrap_or(2),
             "effective_priority": node.effective_priority.unwrap_or(node.priority.unwrap_or(2)),
             "focus_score": node.focus_score,
+            "blocked": graph.is_blocked(&node.id),
             "signals": {
                 "criticality": node.criticality,
                 "urgency": node.urgency,
@@ -4761,6 +4762,7 @@ impl PkbSearchServer {
                         "priority": t.priority.unwrap_or(2),
                         "effective_priority": t.effective_priority.unwrap_or(t.priority.unwrap_or(2)),
                         "focus_score": t.focus_score,
+                        "blocked": graph.is_blocked(&t.id),
                         "signals": {
                             "criticality": t.criticality,
                             "urgency": t.urgency,
