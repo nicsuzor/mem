@@ -2409,12 +2409,11 @@ fn compute_voi_term(nodes: &mut [GraphNode]) {
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
-    let mut voi_values = vec![0.0; nodes.len()];
+    let mut voi_values: Vec<Option<f64>> = vec![None; nodes.len()];
 
     for i in 0..nodes.len() {
         let node = &nodes[i];
         if !node.leaf {
-            voi_values[i] = 0.0;
             continue;
         }
 
@@ -2452,11 +2451,11 @@ fn compute_voi_term(nodes: &mut [GraphNode]) {
         let effort_norm = effort_days.max(0.5);
 
         let voi = K_VOI * 1.0 * dep_resolution_ratio * sum_downstream / effort_norm;
-        voi_values[i] = voi.min(K_VOI);
+        voi_values[i] = Some(voi.min(K_VOI));
     }
 
     for (i, node) in nodes.iter_mut().enumerate() {
-        node.voi_value = Some(voi_values[i]);
+        node.voi_value = voi_values[i];
     }
 }
 

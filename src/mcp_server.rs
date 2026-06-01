@@ -332,6 +332,33 @@ impl PkbSearchServer {
         self.schedule_graph_rebuild();
     }
 
+    /// Batch in-place patch for multiple documents. Holds the graph write
+    /// lock once, upserts all nodes, runs reclassify once, then schedules
+    /// a single coalesced background rebuild. Use this after creating
+    /// multiple documents atomically (e.g. decompose_task) to avoid N
+    /// separate lock acquisitions.
+    fn batch_upsert_and_rebuild(&self, docs: Vec<crate::pkb::PkbDocument>) {
+        let _t = std::time::Instant::now();
+        {
+            let mut g = self.graph.write();
+            let mut patched = self.patched_during_rebuild.lock();
+            for doc in &docs {
+                let node = crate::graph::GraphNode::from_pkb_document(doc);
+                let patched_id = node.id.clone();
+                g.upsert_node_in_place(node, &self.pkb_root);
+                patched.insert(patched_id);
+            }
+            g.reclassify();
+        }
+        tracing::debug!(
+            target: "perf::graph_rebuild",
+            phase = "inplace_batch_patch",
+            n = docs.len(),
+            elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0
+        );
+        self.schedule_graph_rebuild();
+    }
+
     /// Synchronous fast path for node removal. In-place delete from the
     /// nodes map + resolution map. Stale edges are left for the background
     /// rebuild to clean up. See [`rebuild_graph_for_pkb_document`] for
