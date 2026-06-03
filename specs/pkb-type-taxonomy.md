@@ -4,10 +4,9 @@ title: "PKB Type Taxonomy: Unified Node Classification"
 type: spec
 status: inbox
 created: 2026-03-11
-updated: 2026-05-10
+updated: 2026-06-03
 superseded_partial:
   - "project as actionable type (decision 2026-05-10: project = polecat repo, not a node type)"
-  - "goal as actionable type (decision 2026-05-10: targets and goals do not parent)"
 tags:
   - pkb
   - type-system
@@ -17,13 +16,21 @@ tags:
 
 # PKB Type Taxonomy: Unified Node Classification
 
-> **2026-05-10 update — partially superseded.** Decisions made this session:
+> **2026-06-03 — retire-goal reversed; goal & target are distinct out-of-tree types (Nic decision).** The unimplemented 2026-05-10 proposal to retire `goal` (alias `goal → target`) is reversed. `goal` and `target` are **distinct coexisting node types**, both **out of the work tree** (reference tier — never parents, never parented). `goal` is **not** an alias of `target`. The canonical three-tier model (Model B) below is authoritative.
 >
-> - **`project` is no longer a node type.** "Project" is now the narrow operational name for a polecat-registered repo, carried as the `project: <slug>` metadata field on tasks. See [[TAXONOMY]] §"Project (operational routing field)" and [[areas-not-projects]].
-> - **`goal` and `target` are distinct.** Targets join tasks to goals with an impact factor. Neither parents anything; work links to targets via `contributes_to` metadata, and targets link to goals.
-> - **Actionable types are `epic, task, learn`.** Top-level work nodes are root-level epics (or root-level tasks for trivial standalones).
+> **`project` is no longer a node type.** "Project" is the narrow operational name for a polecat-registered repo, carried as the `project: <slug>` metadata field on tasks. See [[TAXONOMY]] §"Project (operational routing field)" and [[areas-not-projects]].
 >
 > The sections below are kept for historical context. Where they reference `project` as a tree role, treat those as superseded.
+
+## Goals, Targets, and Work — the three tiers
+
+The PKB separates **why / what / how**. `goal` and `target` are **strategic nodes beside the work tree** (reference tier): never parents, never in "to-do" surfaces, connected to work only by `contributes_to`. `epic`/`task`/`learn` are the **work tree** and the only actionable tier.
+
+- **`goal` — identity (why).** An identity-level commitment: *who I am / how I define myself*. **Unquantifiable** — you cannot count "achievement," and there is no meaningful consequence-of-missing an identity. So a goal has **no `severity`, no `consequence`, no `due`**. Roots of meaning (~10), e.g. *World-Class Academic Profile*. Out of the work tree: never a parent, never parented.
+- **`target` — milestone (what).** A tangible, **countable, measurable** output/milestone — *done / not done*. Carries the quantifiable stakes: **`severity` (SEV0–SEV4) + `consequence`** (+ optional `due`). The unit that propagates weight into the work tree, e.g. *Deliver LLB242 marks by deadline*. Out of the work tree: never a parent, never parented. Advances ≥1 goal via `contributes_to`.
+- **`epic` / `task` / `learn` — work (how).** Verbs. The only actionable tier (`ACTIONABLE_TYPES`) and the only nodes in the parent-child tree (`EPIC → EPIC|TASK → …`). Advances outcomes via `contributes_to` to **targets** (or directly to **goals**).
+
+Linkage (out-of-tree, via `contributes_to`): `task/epic → target → goal`. The `to:` of a `contributes_to` edge may be a **target or a goal**. Linkage is metadata, not structure — never parent-child, never affects tree traversal; goals & targets are excluded from orphan detection (parentless is correct). **Severity lives only on targets** and propagates down `contributes_to` (Birnbaum); goals carry no severity. `goal` is **not** an alias of `target` — the 2026-05-10 retirement is reversed; distinct coexisting types.
 
 ## Problem
 

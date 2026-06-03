@@ -7,6 +7,39 @@ use std::collections::{HashMap, HashSet};
 
 const ACTIONABLE_FLAT_TYPES: &[&str] = &["task", "epic"];
 
+/// Model B connectivity: returns true iff `node` or any node in its work-subtree
+/// (children, recursively) has a `contributes_to` edge whose destination resolves
+/// to a `target` or `goal` node. This is the Model-B replacement for parent-ancestry
+/// "connection": work joins the strategy tier via `contributes_to`, never via a
+/// structural parent. Goals & targets are out of the work tree.
+fn subtree_contributes_to_outcome(
+    graph: &GraphStore,
+    node: &crate::graph::GraphNode,
+    visited: &mut HashSet<String>,
+) -> bool {
+    if !visited.insert(node.id.clone()) {
+        return false;
+    }
+    // Direct contribution: does this node contribute to a target or goal?
+    for ct in &node.contributes_to {
+        let dest = ct.resolved_to.clone().unwrap_or_else(|| ct.to.clone());
+        if let Some(dest_node) = graph.resolve(&dest) {
+            if crate::graph::is_strategic_target(dest_node.node_type.as_deref()) {
+                return true;
+            }
+        }
+    }
+    // Transitive: recurse through child work nodes.
+    for child_id in &node.children {
+        if let Some(child) = graph.get_node(child_id) {
+            if subtree_contributes_to_outcome(graph, child, visited) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Walk the parent chain looking for an ancestor whose type is in `types`.
 fn has_ancestor_of_type(graph: &GraphStore, node: &crate::graph::GraphNode, types: &[&str]) -> bool {
     let mut current_id = node.parent.clone();
@@ -48,7 +81,8 @@ pub struct GraphStats {
     pub priority_distribution: HashMap<String, usize>,
     /// Count per document type
     pub type_distribution: HashMap<String, usize>,
-    /// Epics not connected to a project or goal via their ancestor chain
+    /// Epics not connected (Model B) to a `target`/`goal` via a `contributes_to`
+    /// edge from the epic or any node in its work-subtree.
     pub disconnected_epics: usize,
     /// Projects not linked to any goal
     pub projects_without_goals: usize,
@@ -254,9 +288,13 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
             }
         }
 
-        // Disconnected epics: traverse full parent chain looking for project or goal ancestor
+        // Disconnected epics (Model B): an epic is connected iff it — or any node in
+        // its work-subtree — has a `contributes_to` edge resolving to a `target` or
+        // `goal`. Connection is via `contributes_to`, NOT parent-ancestry: goals and
+        // targets live beside the work tree, never as parents.
         if node_type == "epic" {
-            if !has_ancestor_of_type(graph, node, &["project", "goal"]) {
+            let mut visited = HashSet::new();
+            if !subtree_contributes_to_outcome(graph, node, &mut visited) {
                 disconnected_epics += 1;
             }
         }
@@ -322,4 +360,85 @@ fn parse_age_days(date_str: &str, now: chrono::NaiveDate) -> Option<i64> {
     };
 
     Some(now.signed_duration_since(parsed).num_days())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pkb::PkbDocument;
+    use std::path::{Path, PathBuf};
+
+    /// Build a minimal PkbDocument for graph-stats tests.
+    fn doc(
+        path: &str,
+        id: &str,
+        doc_type: &str,
+        parent: Option<&str>,
+        contributes_to: Option<&str>,
+    ) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), serde_json::json!(id));
+        fm.insert("type".to_string(), serde_json::json!(doc_type));
+        fm.insert("status".to_string(), serde_json::json!("active"));
+        fm.insert("id".to_string(), serde_json::json!(id));
+        if let Some(p) = parent {
+            fm.insert("parent".to_string(), serde_json::json!(p));
+        }
+        if let Some(c) = contributes_to {
+            fm.insert(
+                "contributes_to".to_string(),
+                serde_json::json!([{ "to": c, "weight": "Certain", "why": "test" }]),
+            );
+        }
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: id.to_string(),
+            body: String::new(),
+            doc_type: Some(doc_type.to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test".to_string(),
+            file_hash: "test".to_string(),
+        }
+    }
+
+    /// Model B: an epic is connected iff it (or any node in its work-subtree) has a
+    /// `contributes_to` edge resolving to a `target`/`goal`. Parent-ancestry under a
+    /// goal/target no longer makes an epic "connected".
+    #[test]
+    fn disconnected_epics_uses_model_b_contributes_to_not_parent_ancestry() {
+        let docs = vec![
+            // Strategy tier — out of the work tree, never parents.
+            doc("targets/target-1.md", "target-1", "target", None, None),
+            doc("goals/goal-1.md", "goal-1", "goal", None, None),
+            // Epic contributing directly to a target → CONNECTED.
+            doc("tasks/epic-connected.md", "epic-connected", "epic", None, Some("target-1")),
+            // Identical epic WITHOUT contributes_to → DISCONNECTED.
+            doc("tasks/epic-disconnected.md", "epic-disconnected", "epic", None, None),
+            // Epic with no contributes_to itself, but a child task that contributes
+            // transitively → CONNECTED via the work-subtree.
+            doc("tasks/epic-via-child.md", "epic-via-child", "epic", None, None),
+            doc(
+                "tasks/child-contrib.md",
+                "child-contrib",
+                "task",
+                Some("epic-via-child"),
+                Some("target-1"),
+            ),
+            // Epic parented UNDER a goal (parent-ancestry) but NO contributes_to →
+            // DISCONNECTED. Proves parent-ancestry no longer changes the verdict.
+            doc("tasks/epic-goal-parent.md", "epic-goal-parent", "epic", Some("goal-1"), None),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-modelb"));
+        let stats = graph_stats(&graph);
+
+        // Disconnected: epic-disconnected + epic-goal-parent. Connected:
+        // epic-connected (direct) + epic-via-child (transitive).
+        assert_eq!(
+            stats.disconnected_epics, 2,
+            "Model B: only epics with no contributes_to→target/goal in their subtree are disconnected"
+        );
+    }
 }

@@ -3,7 +3,7 @@ id: multi-parent
 title: "Multi-parent edges, target-node severity propagation, and focus scoring"
 type: spec
 created: 2026-05-04T06:32:47.344677231+00:00
-modified: 2026-05-07T00:00:00.000000000+00:00
+modified: 2026-06-03T00:00:00.000000000+00:00
 alias:
   - "multi-parent-multi-parent-edges-target-node-severity-propagation-and-focus-scoring"
   - "multi-parent"
@@ -174,6 +174,8 @@ contributes_to:
 ```
 
 **Canonical fields**: `stated_weight` and `justification`. The shorter aliases `weight` and `why` are accepted on read for backward compatibility (serde aliases as of mem PR #265). New edges should prefer canonical names.
+
+**Destination (`to:`) may be a `target` OR a `goal`.** Both are out-of-tree strategic nodes (reference tier — never parents, never parented). The typical chain is `task/epic → target → goal`, but work may also contribute directly to a goal (`to: <goal-id>`). **Severity lives only on `target` nodes** and propagates down `contributes_to` (Birnbaum, §1.8). **Goals carry no `severity` (and no `consequence`/`due`)** — a goal is an unquantifiable identity-level commitment, so a `contributes_to` edge whose `to:` resolves to a goal contributes no severity-driven urgency, only structural connection. See [[pkb-type-taxonomy]] §"Goals, Targets, and Work — the three tiers" and [[TAXONOMY]].
 
 ### 1.7 Weight scale — Renooij-Witteman
 

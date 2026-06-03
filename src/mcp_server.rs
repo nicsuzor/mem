@@ -1654,13 +1654,19 @@ impl PkbSearchServer {
                 .unwrap_or_default(),
         };
 
-        // Hierarchy validation: tasks must have a parent
-        if fields.parent.is_none() {
+        // Hierarchy validation: actionable tasks must have a parent. Strategic
+        // out-of-tree nodes (`goal`, `target`) and root-able types (`epic`, `learn`,
+        // `project`) are exempt — goals & targets live beside the work tree and are
+        // never parented (work links to them via `contributes_to`); epics may be
+        // root-level containers per the PKB type taxonomy spec.
+        let task_type_str = fields.task_type.as_deref().unwrap_or("task");
+        let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn" | "project");
+        if fields.parent.is_none() && !root_able {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
                     "Missing required parameter: parent. Tasks must have a parent node. \
-                     Only goal, learn, and project types can be root-level.",
+                     Only goal, target, epic, learn, and project types can be root-level.",
                 ),
                 data: None,
             });
@@ -5769,7 +5775,7 @@ impl PkbSearchServer {
                 "## create_document\n\n\
                  Create a new PKB node (task, memory, note, etc.).\n\n\
                  **Parameters:**\n\
-                 - `type`: task, memory, note, goal, project, epic\n\
+                 - `type`: task, memory, note, goal, target, project, epic\n\
                  - `title`: String (required)\n\
                  - `parent`: Parent ID (required for tasks)\n\
                  - `fields`: Object containing priority (0-4), tags (array), depends_on (array), assignee, etc.\n\
@@ -6363,7 +6369,7 @@ impl PkbSearchServer {
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
                         "project": { "type": "string", "description": "Project identifier (required, e.g. 'aops', 'mem', 'adhoc-sessions')" },
-                        "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, project." },
+                        "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, target, project. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
                         "status": { "type": "string", "description": "Task status (default: 'draft' — new tasks start as draft and are excluded from ready queue until promoted to 'active'). Also accepts: active, blocked, done, merge_ready, in_progress, etc." },
                         "allow_missing_parent": { "type": "boolean", "description": "Allow creating under a missing parent (logs warning). Default: false." },
                         "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." }
@@ -6416,7 +6422,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Document title (required)" },
-                        "type": { "type": "string", "description": "Document type (required): note, knowledge, memory, insight, observation, task, project, goal, etc." },
+                        "type": { "type": "string", "description": "Document type (required): note, knowledge, memory, insight, observation, task, project, goal, target, etc." },
                         "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body" },
