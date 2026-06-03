@@ -175,6 +175,8 @@ contributes_to:
 
 **Canonical fields**: `stated_weight` and `justification`. The shorter aliases `weight` and `why` are accepted on read for backward compatibility (serde aliases as of mem PR #265). New edges should prefer canonical names.
 
+**Destination (`to:`) may be a `target` OR a `goal`.** Both are out-of-tree strategic nodes (reference tier — never parents, never parented). The typical chain is `task/epic → target → goal`, but work may also contribute directly to a goal (`to: <goal-id>`). **Severity lives only on `target` nodes** and propagates down `contributes_to` (Birnbaum, §1.8). **Goals carry no `severity` (and no `consequence`/`due`)** — a goal is an unquantifiable identity-level commitment, so a `contributes_to` edge whose `to:` resolves to a goal contributes no severity-driven urgency, only structural connection. See [[pkb-type-taxonomy]] §"Goals, Targets, and Work — the three tiers" and [[TAXONOMY]].
+
 ### 1.7 Weight scale — Renooij-Witteman
 
 Verbal terms only. Raw decimals rejected at parse.

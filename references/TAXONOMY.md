@@ -126,7 +126,8 @@ The primary node types in the PKB:
 
 | Type         | Description                                                                                                                          |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| **goal**     | A multi-month/year desired outcome — the root of the hierarchy. Also stored as `type: target` (alias, same schema).                  |
+| **goal**     | An identity-level commitment (why). Out of the work tree — never a parent, never parented. Unquantifiable: no `severity`/`consequence`/`due`. Distinct from `target` (NOT an alias). See three-tier model below. |
+| **target**   | A countable, measurable milestone (what) — done / not done. Out of the work tree — never a parent, never parented. Carries `severity` (SEV0–SEV4) + `consequence` (+ optional `due`). Distinct from `goal` (NOT an alias). See three-tier model below. |
 | **project**  | A discrete thing we work on — a noun with defined scope and boundaries                                                               |
 | **epic**     | A bundle of related work that together achieves an aim — a verb                                                                      |
 | **task**     | A discrete deliverable, completable in a single focused session                                                                      |
@@ -177,18 +178,15 @@ This replaces the anti-pattern of re-using a single task body (which accumulates
 
 **Example**: `examples/templates/daily.md` in the `mem` repo.
 
-### `target` nodes
+## Goals, Targets, and Work — the three tiers
 
-`target` is an alias for `goal`. Both represent user-declared strategic priorities with the same schema and computed properties. The distinction is stylistic — "goal" emphasises aspiration, "target" emphasises a concrete proof of achievement. Treat them identically in tooling and documentation.
+The PKB separates **why / what / how**. `goal` and `target` are **strategic nodes beside the work tree** (reference tier): never parents, never in "to-do" surfaces, connected to work only by `contributes_to`. `epic`/`task`/`learn` are the **work tree** and the only actionable tier.
 
-**Key fields on goal/target nodes:**
+- **`goal` — identity (why).** An identity-level commitment: *who I am / how I define myself*. **Unquantifiable** — you cannot count "achievement," and there is no meaningful consequence-of-missing an identity. So a goal has **no `severity`, no `consequence`, no `due`**. Roots of meaning (~10), e.g. *World-Class Academic Profile*. Out of the work tree: never a parent, never parented.
+- **`target` — milestone (what).** A tangible, **countable, measurable** output/milestone — *done / not done*. Carries the quantifiable stakes: **`severity` (SEV0–SEV4) + `consequence`** (+ optional `due`). The unit that propagates weight into the work tree, e.g. *Deliver LLB242 marks by deadline*. Out of the work tree: never a parent, never parented. Advances ≥1 goal via `contributes_to`.
+- **`epic` / `task` / `learn` — work (how).** Verbs. The only actionable tier (`ACTIONABLE_TYPES`) and the only nodes in the parent-child tree (`EPIC → EPIC|TASK → …`). Advances outcomes via `contributes_to` to **targets** (or directly to **goals**).
 
-| Field         | Description                                                                                                                                                                                     |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `consequence` | Prose description of what happens if the task or goal is not achieved. Present on tasks too — used by the daily skill to surface stakes without editorial framing.                              |
-| `goals: []`   | List of goal/target IDs that a task or project contributes to. This is how tasks and projects link to goals — not via parent hierarchy. A task can contribute to multiple goals simultaneously. |
-
-**Why `goals: []` instead of parent edges?** Goals are cross-cutting: the same task may serve multiple strategic priorities. Parent edges encode containment; `goals: []` encodes contribution. The planner enforces this distinction — goals are never used as direct parents in the task tree.
+Linkage (out-of-tree, via `contributes_to`): `task/epic → target → goal`. The `to:` of a `contributes_to` edge may be a **target or a goal**. Linkage is metadata, not structure — never parent-child, never affects tree traversal; goals & targets are excluded from orphan detection (parentless is correct). **Severity lives only on targets** and propagates down `contributes_to` (Birnbaum); goals carry no severity. `goal` is **not** an alias of `target` — the 2026-05-10 retirement is reversed; distinct coexisting types.
 
 ---
 
