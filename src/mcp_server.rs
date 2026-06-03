@@ -1655,17 +1655,18 @@ impl PkbSearchServer {
         };
 
         // Hierarchy validation: actionable tasks must have a parent. Strategic
-        // out-of-tree nodes (`goal`, `target`) and root-able types (`learn`,
+        // out-of-tree nodes (`goal`, `target`) and root-able types (`epic`, `learn`,
         // `project`) are exempt — goals & targets live beside the work tree and are
-        // never parented (work links to them via `contributes_to`).
+        // never parented (work links to them via `contributes_to`); epics may be
+        // root-level containers per the PKB type taxonomy spec.
         let task_type_str = fields.task_type.as_deref().unwrap_or("task");
-        let root_able = matches!(task_type_str, "goal" | "target" | "learn" | "project");
+        let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn" | "project");
         if fields.parent.is_none() && !root_able {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
                     "Missing required parameter: parent. Tasks must have a parent node. \
-                     Only goal, target, learn, and project types can be root-level.",
+                     Only goal, target, epic, learn, and project types can be root-level.",
                 ),
                 data: None,
             });
