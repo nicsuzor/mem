@@ -3,7 +3,7 @@ id: multi-parent
 title: "Multi-parent edges, target-node severity propagation, and focus scoring"
 type: spec
 created: 2026-05-04T06:32:47.344677231+00:00
-modified: 2026-05-07T00:00:00.000000000+00:00
+modified: 2026-06-03T00:00:00.000000000+00:00
 alias:
   - "multi-parent-multi-parent-edges-target-node-severity-propagation-and-focus-scoring"
   - "multi-parent"
