@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.66](https://github.com/nicsuzor/mem/compare/mem-v0.3.65...mem-v0.3.66) (2026-06-04)
+
+
+### Features
+
+* implement compute_voi_term and wire focus_score ([#412](https://github.com/nicsuzor/mem/issues/412)) ([297ec3d](https://github.com/nicsuzor/mem/commit/297ec3d70f378f728d0da6dcb706c138d4de5ad7))
+* **status:** accept `partial` task status + fix list_tasks(partial) filter ([#414](https://github.com/nicsuzor/mem/issues/414)) ([a2b3d06](https://github.com/nicsuzor/mem/commit/a2b3d065aa05308416ef9f165de1a2e6f77cb14e))
+
+
+### Bug Fixes
+
+* **mcp:** exclude target nodes from actionable lists ([#407](https://github.com/nicsuzor/mem/issues/407)) ([b933152](https://github.com/nicsuzor/mem/commit/b933152086d6a82c40c5ea7f01af5854fa24aa04))
+* **mcp:** resolve missing index for decompose_task child nodes ([#411](https://github.com/nicsuzor/mem/issues/411)) ([0e0a956](https://github.com/nicsuzor/mem/commit/0e0a956cad45770cb9c551512ad5c5455707d8e8))
+* **mem:** stop PKB write path from corrupting task frontmatter (Bugs 1 & 2) ([#415](https://github.com/nicsuzor/mem/issues/415)) ([482358e](https://github.com/nicsuzor/mem/commit/482358e0a7a4e4780de7edc659b3eb8d413ec395))
+
 ## [0.3.65](https://github.com/nicsuzor/mem/compare/mem-v0.3.64...mem-v0.3.65) (2026-05-30)
 
 
