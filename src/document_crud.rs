@@ -1022,6 +1022,73 @@ fn materialise_one_edge(pkb_root: &Path, edge: serde_json::Value) -> serde_json:
 /// If any of these appear in `updates`, they update the body section instead of frontmatter.
 const FRONTMATTER_EXCLUDED_KEYS: &[&str] = &["body", "content"];
 
+/// Extract the raw YAML text of a document's frontmatter block — the lines
+/// between the opening `---` (which must be the very first line, modulo a BOM)
+/// and the next line that is exactly `---`.
+///
+/// Returns `None` when the file has no frontmatter block at all (no leading
+/// delimiter, or no closing delimiter). Used by `update_document` to tell the
+/// difference between "no frontmatter" and "frontmatter that failed to parse"
+/// so the latter can fail loud instead of being clobbered (Bug 1, task-d802855c).
+fn extract_raw_frontmatter(content: &str) -> Option<String> {
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let mut lines = content.lines();
+    match lines.next() {
+        Some(first) if first.trim_end() == "---" => {}
+        _ => return None,
+    }
+    let mut block = String::new();
+    for line in lines {
+        if line.trim_end() == "---" {
+            return Some(block);
+        }
+        block.push_str(line);
+        block.push('\n');
+    }
+    // No closing delimiter — not a well-formed frontmatter block.
+    None
+}
+
+/// Scan raw frontmatter for the first duplicated top-level mapping key.
+///
+/// Top-level keys begin at column 0 (no indentation); indented lines are list
+/// items or nested-map values and are ignored, as are comments and list dashes.
+/// A duplicate column-0 key is the fingerprint of git's default line merge of
+/// two conflicting task files — it interleaves both sides' frontmatter into
+/// doubled keys with no conflict markers. Returns the offending key, or `None`.
+fn first_duplicate_top_level_key(raw: &str) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
+    for line in raw.lines() {
+        let first = match line.as_bytes().first() {
+            Some(b) => *b,
+            None => continue,
+        };
+        // Only column-0, non-comment, non-list-item lines can be top-level keys.
+        if first.is_ascii_whitespace() || first == b'#' || first == b'-' {
+            continue;
+        }
+        let trimmed = line.trim_end();
+        let sep = trimmed.find(": ").or_else(|| {
+            if trimmed.ends_with(':') {
+                Some(trimmed.len() - 1)
+            } else {
+                None
+            }
+        });
+        if let Some(idx) = sep {
+            let key = trimmed[..idx].trim();
+            // Skip prose-ish "keys" containing spaces (e.g. a stray sentence).
+            if key.is_empty() || key.contains(char::is_whitespace) {
+                continue;
+            }
+            if !seen.insert(key.to_string()) {
+                return Some(key.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Update frontmatter fields in an existing document file.
 ///
 /// Reads the file, patches the YAML frontmatter, and rewrites it.
@@ -1046,6 +1113,68 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         .and_then(|d| d.deserialize::<serde_json::Value>().ok())
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
+
+    // Bug 1 (task-d802855c): refuse to clobber unparseable frontmatter.
+    //
+    // gray_matter silently yields `data: None` when the frontmatter block is
+    // invalid YAML — most commonly duplicate keys produced by a line-based
+    // merge of two task files (e.g. `status: ready` + `status: cancelled`).
+    // The old code then fell back to an EMPTY map and rewrote the file with
+    // only the fields the caller was changing, destroying id/title/type/
+    // depends_on/parent/tags. Detect "has a non-empty frontmatter block but it
+    // didn't parse" and fail loud instead of writing a destructive subset.
+    if fm.is_empty() {
+        if let Some(raw) = extract_raw_frontmatter(&content) {
+            if !raw.trim().is_empty() {
+                // Duplicate top-level keys are the canonical recurrence: git's
+                // default line merge of two task files interleaves both sides'
+                // frontmatter into doubled keys (e.g. `status: ready` +
+                // `status: cancelled`). serde_yaml would silently take the last
+                // value — potentially the WRONG side of the conflict — so we
+                // refuse outright and let a human restore from server truth.
+                if let Some(dup) = first_duplicate_top_level_key(&raw) {
+                    anyhow::bail!(
+                        "Refusing to update {}: frontmatter has a duplicate top-level key '{}', \
+                         which usually means a bad line-based merge of two task files. Restore the \
+                         frontmatter from server truth (or fix it by hand) before updating — writing \
+                         now would silently resolve the conflict and could drop fields.",
+                        path.display(),
+                        dup
+                    );
+                }
+                match serde_yaml::from_str::<serde_json::Value>(&raw) {
+                    // gray_matter choked but serde_yaml can parse it — recover
+                    // the full map so the round-trip preserves every key. This
+                    // heals legacy single-value issues (e.g. a folded embedded
+                    // newline) without losing id/title/type.
+                    Ok(serde_json::Value::Object(map)) if !map.is_empty() => {
+                        fm = map;
+                    }
+                    // Genuinely empty / comment-only frontmatter — nothing to
+                    // lose, proceed with the (empty) map.
+                    Ok(serde_json::Value::Null) | Ok(serde_json::Value::Object(_)) => {}
+                    // Frontmatter is a scalar/array, not a mapping — refuse.
+                    Ok(_) => {
+                        anyhow::bail!(
+                            "Refusing to update {}: existing frontmatter is not a key/value mapping. \
+                             Fix the frontmatter by hand before updating.",
+                            path.display()
+                        );
+                    }
+                    // Real parse failure (bad indentation, unclosed flow, …).
+                    Err(e) => {
+                        anyhow::bail!(
+                            "Refusing to update {}: existing frontmatter could not be parsed ({}). \
+                             Restore the frontmatter from server truth (or fix it by hand) before \
+                             updating — writing now would destroy id/title/type and other fields.",
+                            path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     // Apply updates, routing body/content keys to the markdown body instead of frontmatter
     let mut new_body_text: Option<String> = None;
@@ -2380,6 +2509,75 @@ mod tests {
         assert!(content.contains("weight: Certain"), "materialised weight: {content}");
         assert!(content.contains("severity: 3"), "materialised severity: {content}");
         assert!(content.contains("inherits_from: task-b9d6ff7e"), "provenance preserved: {content}");
+    }
+
+    // ── Bug 1 (task-d802855c): write path must not clobber frontmatter ──
+
+    /// A task file whose on-disk frontmatter is unparseable (duplicate keys
+    /// from a bad line-based merge) must NOT be rewritten to a subset.
+    /// update_document must fail loud and leave the file untouched, never
+    /// reducing it to `{modified, status}` and destroying id/title/type.
+    #[test]
+    fn update_document_refuses_to_clobber_unparseable_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-dup.md");
+        // Two `status:` keys + doubled `title:` — exactly the shape produced by
+        // git's default line merge of two conflicting task files.
+        let original = "---\nid: task-ce339428\ntitle: Important\ntitle: Important Dup\ntype: task\nstatus: ready\nstatus: cancelled\npriority: 1\ndepends_on:\n  - task-x\n  - task-y\ntags:\n  - mem\n  - bug\n---\n\n# Body\n";
+        std::fs::write(&path, original).unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("status".to_string(), serde_json::json!("cancelled"));
+        let res = update_document(&path, updates);
+
+        assert!(
+            res.is_err(),
+            "update on unparseable (duplicate-key) frontmatter must fail loud"
+        );
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, original, "file must be left byte-for-byte untouched on refusal");
+        // Explicitly: must NOT have collapsed to the destructive `{modified, status}` subset.
+        assert!(after.contains("id: task-ce339428"), "id must survive");
+        assert!(after.contains("type: task"), "type must survive");
+        assert!(after.contains("depends_on"), "depends_on must survive");
+    }
+
+    /// The happy path: a normal, parseable update must round-trip every
+    /// existing frontmatter key, changing only what was asked.
+    #[test]
+    fn update_document_preserves_all_keys_on_normal_update() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-ok.md");
+        std::fs::write(
+            &path,
+            "---\nid: task-abc\ntitle: Keep Me\ntype: task\nstatus: ready\nparent: epic-1\ntags:\n  - a\n  - b\ndepends_on:\n  - task-z\n---\n\n# Body\n",
+        )
+        .unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("status".to_string(), serde_json::json!("in_progress"));
+        update_document(&path, updates).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("status: in_progress"), "status updated: {after}");
+        assert!(after.contains("id: task-abc"), "id preserved: {after}");
+        assert!(after.contains("title: Keep Me"), "title preserved: {after}");
+        assert!(after.contains("type: task"), "type preserved: {after}");
+        assert!(after.contains("parent: epic-1"), "parent preserved: {after}");
+        assert!(after.contains("task-z"), "depends_on preserved: {after}");
+        assert!(after.contains("- a") && after.contains("- b"), "tags preserved: {after}");
+    }
+
+    #[test]
+    fn extract_raw_frontmatter_handles_block_and_no_block() {
+        // Well-formed block: returns the inner YAML, sans delimiters.
+        let raw = extract_raw_frontmatter("---\nid: x\ntitle: T\n---\n\nbody\n").unwrap();
+        assert!(raw.contains("id: x") && raw.contains("title: T"));
+        assert!(!raw.contains("---"));
+        // No leading delimiter -> no block.
+        assert!(extract_raw_frontmatter("# just a heading\n").is_none());
+        // Opening delimiter but no closing -> not well-formed.
+        assert!(extract_raw_frontmatter("---\nid: x\nno closing\n").is_none());
     }
 }
 
