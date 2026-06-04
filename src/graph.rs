@@ -391,8 +391,8 @@ pub fn fallback_id(path: &Path) -> String {
 /// Normalize legacy/alternate status values to the canonical set defined in
 /// `aops-core/TAXONOMY.md`. Canonical statuses pass through unchanged.
 ///
-/// Canonical set (11 values): `inbox, ready, queued, in_progress, merge_ready,
-/// review, done, blocked, paused, someday, cancelled`.
+/// Canonical set (12 values): `inbox, ready, queued, in_progress, merge_ready,
+/// review, done, blocked, paused, someday, cancelled, partial`.
 pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         // Passthrough — canonical values
@@ -600,7 +600,7 @@ pub fn parse_effort_days(effort: &str) -> Option<i64> {
 /// See `aops-core/TAXONOMY.md` for semantic definitions.
 ///
 /// Lifecycle: `inbox → ready → queued → in_progress → merge_ready → done`
-/// with branches to `review`, `blocked`, `paused`, `someday`, `cancelled`.
+/// with branches to `review`, `blocked`, `paused`, `someday`, `cancelled`, `partial`.
 ///
 /// - **inbox**: default for new nodes — captured but not triaged
 /// - **ready**: decomposed with dependencies resolved (auto-computed)
