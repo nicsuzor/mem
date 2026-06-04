@@ -1067,8 +1067,16 @@ fn first_duplicate_top_level_key(raw: &str) -> Option<String> {
         if first.is_ascii_whitespace() || first == b'#' || first == b'-' {
             continue;
         }
-        if let Some(colon) = line.find(':') {
-            let key = line[..colon].trim();
+        let trimmed = line.trim_end();
+        let sep = trimmed.find(": ").or_else(|| {
+            if trimmed.ends_with(':') {
+                Some(trimmed.len() - 1)
+            } else {
+                None
+            }
+        });
+        if let Some(idx) = sep {
+            let key = trimmed[..idx].trim();
             // Skip prose-ish "keys" containing spaces (e.g. a stray sentence).
             if key.is_empty() || key.contains(char::is_whitespace) {
                 continue;
