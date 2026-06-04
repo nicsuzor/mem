@@ -220,6 +220,7 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 | `in_progress` | Claimed by an agent or human — actively being worked                             |
 | `merge_ready` | Work complete and committed, waiting for review/merge                            |
 | `review`      | Awaiting human review — either mid-flight attention or post-PR changes requested |
+| `partial`     | Worker legitimately stopped at a scope seam — draft PR plus a live follow-up task. Not merge-ready, not done; the follow-up child carries the remainder |
 | `done`        | Complete — no further action required                                            |
 | `blocked`     | Waiting on an external dependency that cannot be resolved internally             |
 | `paused`      | Intentionally stopped with intent to resume — work was in-flight but deferred    |
@@ -334,6 +335,7 @@ Workflows define WHAT steps to take and in WHAT order. Skills define HOW to exec
 inbox → ready → queued → in_progress → merge_ready → done
                                      ↘ review
                                      ↘ blocked
+                                     ↘ partial   (draft PR + live follow-up task)
                                      ↘ cancelled
 ```
 

@@ -3484,13 +3484,13 @@ impl PkbSearchServer {
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
-                    "Missing required parameter: status. Must be one of: merge_ready, done, review, blocked, cancelled.",
+                    "Missing required parameter: status. Must be one of: merge_ready, done, review, blocked, cancelled, partial.",
                 ),
                 data: None,
             })?;
 
         // Validate status enum with helpful suggestions
-        let valid_statuses = ["merge_ready", "done", "review", "blocked", "cancelled"];
+        let valid_statuses = ["merge_ready", "done", "review", "blocked", "cancelled", "partial"];
         if !valid_statuses.contains(&status) {
             let suggestion = match status {
                 "complete" | "completed" => " Did you mean \"done\"?",
@@ -3501,7 +3501,7 @@ impl PkbSearchServer {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!(
-                    "Invalid status \"{status}\". Must be one of: merge_ready, done, review, blocked, cancelled.{suggestion}\n\
+                    "Invalid status \"{status}\". Must be one of: merge_ready, done, review, blocked, cancelled, partial.{suggestion}\n\
                      For non-terminal updates (priority, tags, assignee), use update_task instead."
                 )),
                 data: None,
@@ -5350,7 +5350,7 @@ impl PkbSearchServer {
         tracing::debug!(target: "perf::update_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         // Soft warning if setting a terminal status via update_task instead of release_task
-        let terminal_statuses = ["merge_ready", "done", "review", "blocked", "cancelled"];
+        let terminal_statuses = ["merge_ready", "done", "review", "blocked", "cancelled", "partial"];
         let hint = updates
             .get("status")
             .and_then(|v| v.as_str())
@@ -5802,7 +5802,7 @@ impl PkbSearchServer {
                  **Parameters:**\n\
                  - `id`: Task ID\n\
                  - `params`: Object\n\
-                   - `status`: merge_ready, done, review, blocked, cancelled\n\
+                   - `status`: merge_ready, done, review, blocked, cancelled, partial\n\
                    - `summary`: What was done (1-3 sentences)\n\
                    - `pr_url`: PR link (optional)\n"
             }
@@ -6524,14 +6524,14 @@ impl PkbSearchServer {
             .with_title("Complete Task"),
             Tool::new(
                 "release_task",
-                "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created.",
+                "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled, partial). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title). If omitted, an ad-hoc task is created." },
                         "status": {
                             "type": "string",
-                            "enum": ["merge_ready", "done", "review", "blocked", "cancelled"],
+                            "enum": ["merge_ready", "done", "review", "blocked", "cancelled", "partial"],
                             "description": "Target status"
                         },
                         "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum." },
@@ -6557,7 +6557,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "project": { "type": "string", "description": "Filter by project name (case-insensitive). Returns tasks whose computed project field (nearest ancestor with node_type=project) matches." },
-                        "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, done, etc." },
+                        "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, partial, done, etc." },
                         "priority": { "type": "integer", "description": "Filter to tasks whose effective priority (own or any downstream task via blocks/parent) ≤ N. E.g. priority=0 returns every task that touches a P0, including its blockers." },
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
@@ -7376,6 +7376,104 @@ mod tests {
         // Either empty JSON tasks array or "No tasks found" message
         let is_empty = text.contains("No tasks found") || text.contains("\"tasks\":[]") || text.contains("\"tasks\": []");
         assert!(is_empty, "non-existent project should return empty: {}", text);
+    }
+
+    // ── partial status: live round-trip (create → release partial → list partial → appears) ──
+    //
+    // AC1 of mem-f9855d1e: the server must accept `partial` as a first-class task
+    // status on release_task, and `list_tasks(status="partial")` must filter to it
+    // rather than the prior behaviour (alias to in_progress → silently matched a
+    // different set). Self-contained temp dir so create/release writes don't touch
+    // the shared /tmp fixture other tests rely on.
+    #[test]
+    fn test_partial_status_release_and_list_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // helper: pull the JSON object out of a handler result and read a field
+        let id_from = |res: &CallToolResult| -> String {
+            let text = res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect::<String>();
+            let val: serde_json::Value = serde_json::from_str(&text)
+                .unwrap_or_else(|_| panic!("create_task should return JSON, got: {text}"));
+            val.get("id").and_then(|v| v.as_str()).unwrap().to_string()
+        };
+
+        // 1. create the task that will be released `partial`
+        let partial_id = id_from(
+            &server
+                .handle_create_task(&json!({
+                    "title": "Partial round-trip task",
+                    "type": "task",
+                    "project": "proj-partial",
+                    "parent": "proj-partial",
+                    "allow_missing_parent": true,
+                }))
+                .unwrap(),
+        );
+
+        // 2. create a control task that stays open (must NOT leak into the filter)
+        let control_id = id_from(
+            &server
+                .handle_create_task(&json!({
+                    "title": "Control open task",
+                    "type": "task",
+                    "project": "proj-partial",
+                    "parent": "proj-partial",
+                    "allow_missing_parent": true,
+                }))
+                .unwrap(),
+        );
+
+        // 3. release the first task as `partial` — must be accepted, not rejected
+        let released = server
+            .handle_release_task(&json!({
+                "id": partial_id,
+                "status": "partial",
+                "summary": "Shipped a clean scope-seam slice; remainder tracked in a live follow-up.",
+            }))
+            .expect("release_task(status=\"partial\") must be accepted");
+        let released_text = released
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(
+            released_text.contains("partial"),
+            "release response should confirm the partial transition: {released_text}"
+        );
+
+        // 4. list_tasks(status="partial") must contain the partial task …
+        let listed = server
+            .handle_list_tasks(&json!({"status": "partial", "format": "json"}))
+            .unwrap();
+        let ids = extract_task_ids(&listed);
+        assert!(
+            ids.contains(&partial_id),
+            "partial task {partial_id} must appear in status=partial filter, got {ids:?}"
+        );
+        // … and NOT the still-open control — proving the filter is real, not match-all.
+        assert!(
+            !ids.contains(&control_id),
+            "non-partial control {control_id} must NOT appear in status=partial filter \
+             (guards against the old alias/match-everything behaviour), got {ids:?}"
+        );
     }
 
     // ── create_task: project required ──
