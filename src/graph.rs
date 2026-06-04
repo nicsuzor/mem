@@ -391,13 +391,13 @@ pub fn fallback_id(path: &Path) -> String {
 /// Normalize legacy/alternate status values to the canonical set defined in
 /// `aops-core/TAXONOMY.md`. Canonical statuses pass through unchanged.
 ///
-/// Canonical set (11 values): `inbox, ready, queued, in_progress, merge_ready,
-/// review, done, blocked, paused, someday, cancelled`.
+/// Canonical set (12 values): `inbox, ready, queued, in_progress, merge_ready,
+/// review, done, blocked, paused, someday, cancelled, partial`.
 pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         // Passthrough — canonical values
         "inbox" | "ready" | "queued" | "in_progress" | "merge_ready" | "review"
-        | "done" | "blocked" | "paused" | "someday" | "cancelled" => status,
+        | "done" | "blocked" | "paused" | "someday" | "cancelled" | "partial" => status,
 
         // Legacy "active" (old taxonomy collapsed ready/queued/in_progress into
         // one label). Map to "ready" — let the auto-computed leaf-with-no-unmet-deps
@@ -408,7 +408,7 @@ pub fn resolve_status_alias(status: &str) -> &str {
         "todo" | "open" | "draft" | "early-scaffold" | "planning" | "seed" | "incoming" => "inbox",
 
         // In-progress spellings (decomposing = was active work mid-flight)
-        "in-progress" | "in-preparation" | "partial" | "decomposing" | "growing" => "in_progress",
+        "in-progress" | "in-preparation" | "decomposing" | "growing" => "in_progress",
 
         // Review-family: awaiting human or external decision
         "in_review" | "in-review" | "ready-for-review" | "ISSUES_FOUND"
@@ -552,8 +552,11 @@ pub fn status_rank(status: &str) -> i32 {
         "review" => 4,
         "merge_ready" => 5,
         "done" => 6,
-        // Side states are generally ranked low but high enough to not flag everything
-        "blocked" | "paused" | "someday" | "cancelled" => -1,
+        // Side states are generally ranked low but high enough to not flag everything.
+        // `partial` is a stop-gate shape (worker paused at a seam with a live child),
+        // so rank it like the other side states — entering or resuming it must not
+        // trip the backwards-transition warning.
+        "blocked" | "paused" | "someday" | "cancelled" | "partial" => -1,
         _ => 0,
     }
 }
@@ -597,7 +600,7 @@ pub fn parse_effort_days(effort: &str) -> Option<i64> {
 /// See `aops-core/TAXONOMY.md` for semantic definitions.
 ///
 /// Lifecycle: `inbox → ready → queued → in_progress → merge_ready → done`
-/// with branches to `review`, `blocked`, `paused`, `someday`, `cancelled`.
+/// with branches to `review`, `blocked`, `paused`, `someday`, `cancelled`, `partial`.
 ///
 /// - **inbox**: default for new nodes — captured but not triaged
 /// - **ready**: decomposed with dependencies resolved (auto-computed)
@@ -610,9 +613,13 @@ pub fn parse_effort_days(effort: &str) -> Option<i64> {
 /// - **paused**: intentionally stopped mid-flight with intent to resume
 /// - **someday**: explicitly deferred idea — differs from inbox by intent
 /// - **cancelled**: will not be done
+/// - **partial**: worker legitimately stopped at a scope seam — a draft PR plus a
+///   live follow-up task. Not merge-ready (excluded from Nic's merge queue) and not
+///   done (the follow-up child carries the remainder). Surfaced by the §6
+///   partial-orphan backstop via `list_tasks(status="partial")`.
 pub const VALID_STATUSES: &[&str] = &[
     "inbox", "ready", "queued", "in_progress", "merge_ready", "review",
-    "done", "blocked", "paused", "someday", "cancelled",
+    "done", "blocked", "paused", "someday", "cancelled", "partial",
 ];
 
 /// Terminal statuses — no further work expected.
@@ -622,7 +629,7 @@ pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled"];
 /// Used for surfacing active work in dashboards and filters.
 pub const ACTIVE_STATUSES: &[&str] = &[
     "inbox", "ready", "queued", "in_progress", "merge_ready", "review",
-    "paused", "someday",
+    "paused", "someday", "partial",
 ];
 
 /// Statuses that represent blocked work.
