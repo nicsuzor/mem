@@ -53,8 +53,19 @@ fn ordered_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
     let out = Command::new(env!("CARGO_BIN_EXE_pkb"))
         .args(&args)
         .env("AOPS_OFFLINE", "1")
+        // default_value_t = default_pkb_root() is evaluated eagerly at parse
+        // time and calls process::exit(1) if ACA_DATA is unset — even when
+        // --pkb-root is explicitly supplied. Set it to the same temp dir so
+        // the default function doesn't abort before args are parsed.
+        .env("ACA_DATA", dir.to_string_lossy().as_ref())
         .output()
         .expect("run pkb tasks");
+    assert!(
+        out.status.success(),
+        "pkb tasks exited with {}: stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     let known = ["t-hi", "t-mid", "t-sev"];
