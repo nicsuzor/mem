@@ -5105,7 +5105,7 @@ impl PkbSearchServer {
         //   2. Flat:   {"id": "...", "status": "done"}
         // If `updates` is present, it wins. Otherwise collect top-level fields.
         const ROUTING_KEYS: &[&str] = &["id", "updates", "recursive", "unparent", "force", "allow_missing_parent"];
-        let updates: serde_json::Map<String, serde_json::Value> =
+        let mut updates: serde_json::Map<String, serde_json::Value> =
             if let Some(nested) = args.get("updates").and_then(|v| v.as_object()) {
                 nested.clone()
             } else {
@@ -5118,6 +5118,22 @@ impl PkbSearchServer {
                     })
                     .unwrap_or_default()
             };
+
+        // Bug 2 (task-d802855c): `unparent` is a routing directive, never a
+        // frontmatter field. Accept it from EITHER the top-level args or the
+        // nested `updates` object, strip it so it can never be written to the
+        // document, and translate it into a `parent: null` removal. Previously:
+        //   - top-level `unparent=true` was filtered out by ROUTING_KEYS, so
+        //     `updates` was empty -> "No fields to update".
+        //   - nested `{unparent: true}` fell through to the writer and persisted
+        //     a junk `unparent: true` key while leaving `parent` in place.
+        let unparent_flag = args.get("unparent").and_then(|v| v.as_bool()).unwrap_or(false)
+            || updates.get("unparent").and_then(|v| v.as_bool()).unwrap_or(false);
+        updates.remove("unparent");
+        if unparent_flag {
+            updates.insert("parent".to_string(), serde_json::Value::Null);
+        }
+
         if updates.is_empty() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -5134,9 +5150,8 @@ impl PkbSearchServer {
             // Treat null / empty string as "clear parent"
             let new_parent = new_parent_val.as_str().unwrap_or("").trim();
             if new_parent.is_empty() {
-                let unparent = args.get("unparent").and_then(|v| v.as_bool()).unwrap_or(false);
                 let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-                if !unparent && !force {
+                if !unparent_flag && !force {
                     return Err(McpError {
                         code: ErrorCode::INVALID_PARAMS,
                         message: std::borrow::Cow::from("To remove a task's parent, pass unparent=true explicitly."),
@@ -7563,6 +7578,96 @@ mod tests {
             msg.to_lowercase().contains("cycle")
                 || msg.to_lowercase().contains("circular"),
             "error should mention cycle/circular, got: {msg}"
+        );
+    }
+
+    // ── Bug 2 (task-d802855c): unparent removes parent, never writes junk ──
+
+    /// Build a server backed by a real temp directory with the given
+    /// `<relative-path>, <full-file-contents>` task files on disk, so
+    /// handle_update_task can actually read and rewrite them.
+    fn build_disk_backed_server(files: &[(&str, &str)]) -> (tempfile::TempDir, PkbSearchServer) {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        for (rel, contents) in files {
+            let path = root.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, contents).unwrap();
+        }
+        let docs: Vec<PkbDocument> = crate::pkb::scan_directory_all(&root)
+            .iter()
+            .filter_map(|p| crate::pkb::parse_file_relative(p, &root))
+            .collect();
+        let graph = GraphStore::build(&docs, &root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.clone(),
+            root.join("db"),
+            Arc::new(RwLock::new(graph)),
+        );
+        (tmp, server)
+    }
+
+    #[test]
+    fn test_update_task_unparent_top_level_removes_parent_no_junk() {
+        let (tmp, server) = build_disk_backed_server(&[
+            ("tasks/task-child.md", "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\n---\n\n# Child\n"),
+            ("tasks/task-parent.md", "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\n---\n\n# Parent\n"),
+        ]);
+
+        // Top-level form: was previously rejected with "No fields to update".
+        server
+            .handle_update_task(&json!({"id": "task-child", "unparent": true}))
+            .expect("unparent=true should succeed");
+
+        let content = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
+        assert!(!content.contains("parent:"), "parent key must be gone, got:\n{content}");
+        assert!(!content.contains("unparent"), "unparent must never be persisted, got:\n{content}");
+        // Round-trip: the rest of the frontmatter survives.
+        assert!(content.contains("id: task-child"), "id preserved:\n{content}");
+        assert!(content.contains("title: Child"), "title preserved:\n{content}");
+        assert!(content.contains("type: task"), "type preserved:\n{content}");
+    }
+
+    #[test]
+    fn test_update_task_unparent_nested_form_removes_parent_no_junk() {
+        let (tmp, server) = build_disk_backed_server(&[
+            ("tasks/task-child.md", "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\n---\n\n# Child\n"),
+            ("tasks/task-parent.md", "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\n---\n\n# Parent\n"),
+        ]);
+
+        // Nested form: previously wrote a literal `unparent: true` frontmatter
+        // key and left `parent` in place.
+        server
+            .handle_update_task(&json!({"id": "task-child", "updates": {"unparent": true}}))
+            .expect("nested unparent should succeed");
+
+        let content = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
+        assert!(!content.contains("parent:"), "parent key must be gone, got:\n{content}");
+        assert!(!content.contains("unparent"), "unparent must never be persisted, got:\n{content}");
+        assert!(content.contains("id: task-child"), "id preserved:\n{content}");
+    }
+
+    #[test]
+    fn test_update_task_bare_parent_null_still_requires_unparent_flag() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            ("tasks/task-child.md", "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\n---\n\n# Child\n"),
+            ("tasks/task-parent.md", "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\n---\n\n# Parent\n"),
+        ]);
+
+        // Setting parent:null WITHOUT the unparent flag must still be rejected
+        // (guards against accidental parent clearing).
+        let err = server
+            .handle_update_task(&json!({"id": "task-child", "updates": {"parent": null}}))
+            .expect_err("bare parent:null should require explicit unparent");
+        let msg = format!("{}", err.message);
+        assert!(
+            msg.to_lowercase().contains("unparent"),
+            "error should direct caller to pass unparent=true, got: {msg}"
         );
     }
 
