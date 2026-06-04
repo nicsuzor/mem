@@ -1213,6 +1213,7 @@ async fn main() -> Result<()> {
             let mut tasks: Vec<&graph::GraphNode> = tasks;
             if let Some(ref sort_key) = sort {
                 match sort_key.as_str() {
+                    // Honour explicit sort keys verbatim (AC4 — explicit args unaffected).
                     "weight" => {
                         tasks.sort_by(|a, b| {
                             b.downstream_weight
@@ -1240,6 +1241,11 @@ async fn main() -> Result<()> {
                     // Unknown sort key: leave ordering unchanged
                     _ => {}
                 }
+            } else {
+                // Default ordering (AC1/AC6): focus_score DESC via the same
+                // comparator the MCP `list_tasks` handler uses, so the CLI and
+                // MCP surfaces agree for the same query.
+                graph_store::GraphStore::sort_by_focus(&mut tasks);
             }
 
             if tasks.is_empty() {

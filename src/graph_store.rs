@@ -692,6 +692,37 @@ impl GraphStore {
         self.blocked.iter().any(|s| s == id)
     }
 
+    /// Canonical default ordering for any flat task/node result set.
+    ///
+    /// `focus_score` DESC is the documented primary ranking signal (the composite
+    /// of priority, severity, deadline urgency, age, downstream weight, stakeholder
+    /// waiting, urgency and VOI computed in [`Self::compute_focus_scores`]). Ties are
+    /// broken deterministically so repeated identical calls yield identical ordering:
+    ///   1. `focus_score` DESC (nodes with no score sort last)
+    ///   2. `effective_priority` ASC (propagated min-priority in the downstream cone)
+    ///   3. `order` ASC (authored/sequence order)
+    ///   4. `id` ASC (unique — guarantees total, stable ordering)
+    ///
+    /// Both the MCP `list_tasks` handler and the CLI `list` command sort through this
+    /// single comparator, so the two surfaces agree for the same query by construction.
+    pub fn focus_cmp(a: &GraphNode, b: &GraphNode) -> std::cmp::Ordering {
+        let fa = a.focus_score.unwrap_or(i64::MIN);
+        let fb = b.focus_score.unwrap_or(i64::MIN);
+        fb.cmp(&fa)
+            .then(
+                a.effective_priority
+                    .unwrap_or(4)
+                    .cmp(&b.effective_priority.unwrap_or(4)),
+            )
+            .then(a.order.cmp(&b.order))
+            .then(a.id.cmp(&b.id))
+    }
+
+    /// Sort a slice of node refs in place by the canonical focus-score default order.
+    pub fn sort_by_focus(nodes: &mut [&GraphNode]) {
+        nodes.sort_by(|a, b| Self::focus_cmp(a, b));
+    }
+
     pub fn all_tasks(&self) -> Vec<&GraphNode> {
         let mut tasks: Vec<&GraphNode> = self
             .nodes
