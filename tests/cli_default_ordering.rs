@@ -5,20 +5,7 @@
 //! These run fully offline — `pkb tasks` builds the graph from the PKB directory
 //! and needs no embeddings/ONNX — so they execute on every machine. (mem-e394a6d0)
 
-use std::path::PathBuf;
 use std::process::Command;
-
-fn pkb_binary() -> PathBuf {
-    let release = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/pkb");
-    if release.exists() {
-        return release;
-    }
-    let debug = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/pkb");
-    if debug.exists() {
-        return debug;
-    }
-    PathBuf::from("pkb")
-}
 
 /// Seed a temp PKB whose focus_score ordering DIVERGES from priority ordering:
 ///   - t-hi   : priority 0          → focus_score 10000
@@ -63,7 +50,7 @@ fn ordered_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
     ];
     args.extend(extra.iter().map(|s| s.to_string()));
 
-    let out = Command::new(pkb_binary())
+    let out = Command::new(env!("CARGO_BIN_EXE_pkb"))
         .args(&args)
         .env("AOPS_OFFLINE", "1")
         .output()
