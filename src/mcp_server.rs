@@ -2177,15 +2177,19 @@ impl PkbSearchServer {
         if !node.depends_on.is_empty() {
             output.push_str("\n### Depends on\n");
             for dep in &node.depends_on {
-                let label = graph.get_node(dep).map(|n| n.label.as_str()).unwrap_or("?");
-                output.push_str(&format!("- `{dep}` — {label}\n"));
+                let n = graph.get_node(dep);
+                let label = n.map(|n| n.label.as_str()).unwrap_or("?");
+                let status = n.and_then(|n| n.status.as_deref()).unwrap_or("-");
+                output.push_str(&format!("- `{dep}` [{status}] — {label}\n"));
             }
         }
         if !node.blocks.is_empty() {
             output.push_str("\n### Blocks\n");
             for b in &node.blocks {
-                let label = graph.get_node(b).map(|n| n.label.as_str()).unwrap_or("?");
-                output.push_str(&format!("- `{b}` — {label}\n"));
+                let n = graph.get_node(b);
+                let label = n.map(|n| n.label.as_str()).unwrap_or("?");
+                let status = n.and_then(|n| n.status.as_deref()).unwrap_or("-");
+                output.push_str(&format!("- `{b}` [{status}] — {label}\n"));
             }
         }
         if let Some(ref s) = node.supersedes {
@@ -2239,8 +2243,10 @@ impl PkbSearchServer {
             let mut sorted = nearby;
             sorted.sort_by_key(|(_, d)| *d);
             for (nid, dist) in &sorted {
-                let label = graph.get_node(nid).map(|n| n.label.as_str()).unwrap_or("?");
-                output.push_str(&format!("- [hop {dist}] `{nid}` — {label}\n"));
+                let n = graph.get_node(nid);
+                let label = n.map(|n| n.label.as_str()).unwrap_or("?");
+                let status = n.and_then(|n| n.status.as_deref()).unwrap_or("-");
+                output.push_str(&format!("- [hop {dist}] `{nid}` [{status}] — {label}\n"));
             }
         }
 
@@ -2354,6 +2360,12 @@ impl PkbSearchServer {
                 score
             ));
             output.push_str(&format!("**ID:** `{display_id}`\n"));
+            // Project the node's status into every hit (AC2). Search returns mixed
+            // doc types; task/graph nodes carry a status that callers rely on to tell
+            // open work from closed — omitting it let a `done` task read as "open".
+            if let Some(status) = node.and_then(|n| n.status.as_deref()) {
+                output.push_str(&format!("**Status:** {status}\n"));
+            }
             if let Some(ref dt) = r.doc_type {
                 output.push_str(&format!("**Type:** {dt}\n"));
             }
@@ -2526,6 +2538,8 @@ impl PkbSearchServer {
                 if let Some(ref t) = node.node_type {
                     output.push_str(&format!(" [{t}]"));
                 }
+                // Project status (AC2) so callers can tell open orphans from closed.
+                output.push_str(&format!(" [{}]", node.status.as_deref().unwrap_or("-")));
                 let cid = node.task_id.as_deref().unwrap_or(&node.id);
                 output.push_str(&format!(" — `{cid}`\n"));
             }
@@ -2760,6 +2774,7 @@ impl PkbSearchServer {
 
         let result = serde_json::json!({
             "id": node.task_id.as_deref().unwrap_or(&node.id),
+            "status": node.status,
             "frontmatter": frontmatter,
             "body": body,
             "depends_on": depends_on,
@@ -4813,6 +4828,14 @@ impl PkbSearchServer {
             return Ok(CallToolResult::success(vec![Content::text(label)]));
         }
 
+        // Default ordering (AC1/AC6): focus_score DESC with a deterministic
+        // tie-break. `list_tasks` exposes no explicit sort argument, so this is
+        // always the default projection ordering. Applied before truncation so
+        // the top-`limit` rows are the highest-focus tasks, and applied to every
+        // path (default / ready / blocked / filtered) since they all funnel into
+        // `tasks`. Shares the same comparator as the CLI `list` default for parity.
+        GraphStore::sort_by_focus(&mut tasks);
+
         let total = tasks.len();
         tasks.truncate(limit);
 
@@ -4869,6 +4892,7 @@ impl PkbSearchServer {
             for t in &tasks {
                 let id = t.task_id.as_deref().unwrap_or(&t.id);
                 out.push_str(&format!("### {} — {}\n", id, t.label));
+                out.push_str(&format!("**Status:** {}\n", t.status.as_deref().unwrap_or("-")));
                 if !t.depends_on.is_empty() {
                     out.push_str("**Blocked by:**\n");
                     for dep in &t.depends_on {
@@ -4882,19 +4906,19 @@ impl PkbSearchServer {
                     }
                 }
                 if t.status.as_deref() == Some("blocked") {
-                    out.push_str("**Status:** explicitly blocked\n");
+                    out.push_str("**Note:** explicitly blocked\n");
                 }
                 out.push('\n');
             }
             out
         } else if is_ready {
-            // Ready view: table with Weight column, sorted by urgency
+            // Ready view: table with Weight column, sorted by focus_score (default).
             let mut out = format!(
-                "**{total} ready tasks** (showing {}, sorted by urgency)\n\n",
+                "**{total} ready tasks** (showing {}, sorted by focus_score)\n\n",
                 tasks.len()
             );
             let today = chrono::Utc::now().date_naive();
-            out.push_str("| # | ID | Pri | Weight | Crit | Urg | Due | Title |\n|---|---|---|---|---|---|---|---|\n");
+            out.push_str("| # | ID | Status | Pri | Weight | Crit | Urg | Due | Title |\n|---|---|---|---|---|---|---|---|---|\n");
             for (i, t) in tasks.iter().enumerate() {
                 let id = t.task_id.as_deref().unwrap_or(&t.id);
                 let weight = if t.downstream_weight > 0.0 {
@@ -4939,9 +4963,10 @@ impl PkbSearchServer {
                         .unwrap_or_else(|| due[..due.floor_char_boundary(len)].to_string())
                 }).unwrap_or_else(|| "-".to_string());
                 out.push_str(&format!(
-                    "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                    "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                     i + 1,
                     id,
+                    t.status.as_deref().unwrap_or("-"),
                     t.priority.unwrap_or(2),
                     weight,
                     crit,
@@ -6537,7 +6562,7 @@ impl PkbSearchServer {
             .with_title("Release Task"),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
+                "List tasks with smart filtering. Results are returned in `focus_score`-descending order by default (highest-focus first) across every path — default, ready, and blocked — with a deterministic tie-break, so the top rows are the most important and repeated calls are stable; no re-sort is needed. Every row carries `status`. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -7182,6 +7207,125 @@ mod tests {
             }
         }
         vec![]
+    }
+
+    /// Helper: parse the full `tasks` array from a JSON-format list_tasks result.
+    fn extract_task_objects(result: &CallToolResult) -> Vec<serde_json::Value> {
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("tasks").and_then(|t| t.as_array()).cloned())
+            .unwrap_or_default()
+    }
+
+    // ── mem-e394a6d0 AC1/AC2/AC6: default focus_score-DESC ordering + status ──
+
+    /// AC1 + AC6: the DEFAULT list_tasks output (no sort/order arg) is ordered by
+    /// focus_score descending, asserted on the returned values (consecutive
+    /// focus_scores are non-increasing), and is stable across repeated calls.
+    #[test]
+    fn test_list_tasks_default_order_is_focus_desc() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&result);
+        assert!(tasks.len() >= 2, "fixture should return multiple tasks, got {}", tasks.len());
+
+        let scores: Vec<i64> = tasks
+            .iter()
+            .map(|t| t.get("focus_score").and_then(|s| s.as_i64()).unwrap_or(i64::MIN))
+            .collect();
+        for w in scores.windows(2) {
+            assert!(
+                w[0] >= w[1],
+                "focus_score must be non-increasing in default order, saw {} then {}. Full: {scores:?}",
+                w[0], w[1]
+            );
+        }
+    }
+
+    /// AC2: every returned row carries a `status` field in the default projection.
+    #[test]
+    fn test_list_tasks_default_projects_status_on_every_row() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&result);
+        assert!(!tasks.is_empty(), "fixture should return tasks");
+        for t in &tasks {
+            let status = t.get("status").and_then(|s| s.as_str());
+            assert!(
+                status.is_some() && !status.unwrap().is_empty(),
+                "every row must include a non-empty status, missing on: {t}"
+            );
+        }
+    }
+
+    /// AC6: default ordering is deterministic — two identical calls agree exactly.
+    #[test]
+    fn test_list_tasks_default_order_is_deterministic() {
+        let server = build_test_server();
+        let first = extract_task_ids(
+            &server.handle_list_tasks(&json!({"format": "json"})).unwrap(),
+        );
+        let second = extract_task_ids(
+            &server.handle_list_tasks(&json!({"format": "json"})).unwrap(),
+        );
+        assert_eq!(first, second, "repeated default calls must return identical ordering");
+        assert!(first.len() >= 2, "need multiple tasks to make the check meaningful");
+    }
+
+    /// AC1: the `ready` special filter is also focus_score-DESC by default, with
+    /// status present on every row.
+    #[test]
+    fn test_list_tasks_ready_order_is_focus_desc_with_status() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&result);
+        assert!(!tasks.is_empty(), "fixture should have ready tasks");
+        let scores: Vec<i64> = tasks
+            .iter()
+            .map(|t| t.get("focus_score").and_then(|s| s.as_i64()).unwrap_or(i64::MIN))
+            .collect();
+        for w in scores.windows(2) {
+            assert!(w[0] >= w[1], "ready focus_scores must be non-increasing: {scores:?}");
+        }
+        for t in &tasks {
+            assert!(
+                t.get("status").and_then(|s| s.as_str()).is_some(),
+                "ready row missing status: {t}"
+            );
+        }
+    }
+
+    /// AC4: an explicit `format` argument is honoured unchanged — the markdown
+    /// projection still renders a table (additive status column does not break it)
+    /// and the default-order change does not silently force JSON.
+    #[test]
+    fn test_list_tasks_explicit_markdown_format_honoured() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"format": "markdown"}))
+            .unwrap();
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(text.contains("| # | ID |"), "explicit markdown format must render a table, got: {text}");
+        assert!(text.contains("Status"), "markdown table must include a Status column");
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&text).is_err(),
+            "explicit markdown must not be silently converted to JSON"
+        );
     }
 
     // ── AC1: project filter returns only matching tasks, no leakage ──
@@ -8592,6 +8736,116 @@ mod cross_process_recovery_tests {
         assert!(
             server.store.read().len() > count_during_lock,
             "store should grow after drain processed the deferred upsert"
+        );
+    }
+}
+
+// ===========================================================================
+// mem-e394a6d0 — semantic-search status projection (AC2)
+// ===========================================================================
+
+/// AC2 for the semantic-search surfaces (`search`, `task_search`): every task/
+/// node hit must carry a `status` field in the DEFAULT projection. These methods
+/// are exempt from AC1's focus_score reordering (their intrinsic sort is semantic
+/// relevance — reordering by focus_score would defeat retrieval), but status
+/// projection is required regardless. Driven in-process with a dummy embedder so
+/// the assertions run without the ONNX model: tasks are created through the real
+/// handler (which seeds the vector store), then searched through the real handler.
+#[cfg(test)]
+mod search_status_projection_tests {
+    use super::*;
+    use crate::embeddings::{Embedder, EMBEDDING_DIM};
+    use crate::graph_store::GraphStore;
+    use crate::vectordb::VectorStore;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn build_seeded_server(pkb_root: &Path) -> PkbSearchServer {
+        std::fs::create_dir_all(pkb_root.join("projects")).unwrap();
+        std::fs::write(
+            pkb_root.join("projects/p.md"),
+            "---\nid: p\ntitle: P\ntype: project\nstatus: active\n---\n\n# P\n",
+        )
+        .unwrap();
+
+        let store = VectorStore::new(EMBEDDING_DIM);
+        let embedder = Embedder::new_dummy();
+        let graph = GraphStore::build_from_directory(pkb_root);
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            pkb_root.to_path_buf(),
+            pkb_root.join("test-index.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // Create searchable tasks (non-empty body so they get chunk embeddings).
+        for (title, body) in [
+            ("Alpha widget task", "This task is about the alpha widget subsystem and retrieval."),
+            ("Beta widget task", "This task concerns the beta widget subsystem and retrieval."),
+        ] {
+            server
+                .handle_create_task(&serde_json::json!({
+                    "title": title,
+                    "body": body,
+                    "parent": "p",
+                    "project": "p",
+                }))
+                .expect("create_task");
+        }
+        server
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>()
+    }
+
+    #[test]
+    fn test_task_search_projects_status_on_hits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+
+        let result = server
+            .handle_task_search(&serde_json::json!({"query": "widget retrieval", "limit": 5}))
+            .expect("task_search");
+        let text = result_text(&result);
+
+        assert!(
+            !text.contains("No tasks found"),
+            "seeded tasks should be retrievable; got: {text}"
+        );
+        // Every hit heading is followed by a Status line in the default projection.
+        let hit_count = text.matches("**ID:**").count();
+        let status_count = text.matches("**Status:**").count();
+        assert!(hit_count >= 1, "expected at least one hit, got text: {text}");
+        assert_eq!(
+            status_count, hit_count,
+            "every task_search hit must project status (hits={hit_count}, status lines={status_count}). Text:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_search_projects_status_on_task_hits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+
+        let result = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget retrieval", "limit": 5}))
+            .expect("search");
+        let text = result_text(&result);
+
+        assert!(
+            !text.contains("No results found"),
+            "seeded tasks should surface in search; got: {text}"
+        );
+        // The seeded task nodes carry status=inbox by default — it must be projected.
+        assert!(
+            text.contains("**Status:**"),
+            "search must project status for task/node hits. Text:\n{text}"
         );
     }
 }
