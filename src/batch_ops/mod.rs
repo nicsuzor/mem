@@ -41,12 +41,6 @@ pub struct TaskError {
     pub error: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Surface {
-    Cli,
-    Mcp,
-}
-
 /// Summary returned by all batch operations.
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchSummary {
@@ -85,17 +79,10 @@ impl BatchSummary {
     }
 
     /// Format as a human-readable summary table.
-    pub fn display(&self, surface: Surface) -> String {
+    pub fn display(&self) -> String {
         let mut out = String::new();
         if self.dry_run {
-            match surface {
-                Surface::Cli => {
-                    out.push_str("DRY RUN — no files modified. Pass --execute to apply.\n\n");
-                }
-                Surface::Mcp => {
-                    out.push_str("DRY RUN — no files modified. Pass dry_run=false to execute.\n\n");
-                }
-            }
+            out.push_str("DRY RUN — no files modified. Pass --execute to apply.\n\n");
         }
         out.push_str(&format!(
             "Batch {}: {} matched, {} changed, {} skipped",

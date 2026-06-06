@@ -3327,7 +3327,7 @@ fn handle_batch_command(
 
             let updates_val = serde_json::Value::Object(updates);
             let summary = mem::batch_ops::update::batch_update(graph, pkb_root, &filter_set, &updates_val, dry_run);
-            print!("{}", summary.display(mem::batch_ops::Surface::Cli));
+            print!("{}", summary.display());
         }
 
         BatchCommands::Reparent {
@@ -3350,7 +3350,7 @@ fn handle_batch_command(
                 &new_parent,
                 dry_run,
             );
-            print!("{}", summary.display(mem::batch_ops::Surface::Cli));
+            print!("{}", summary.display());
         }
 
         BatchCommands::Archive {
@@ -3373,7 +3373,7 @@ fn handle_batch_command(
                 reason.as_deref(),
                 dry_run,
             );
-            print!("{}", summary.display(mem::batch_ops::Surface::Cli));
+            print!("{}", summary.display());
         }
 
         BatchCommands::Merge {
@@ -3388,7 +3388,7 @@ fn handle_batch_command(
             let summary = mem::batch_ops::duplicates::batch_merge(
                 graph, pkb_root, &canonical, &merge, dry_run,
             );
-            print!("{}", summary.display(mem::batch_ops::Surface::Cli));
+            print!("{}", summary.display());
         }
 
         BatchCommands::CreateEpics {
@@ -3422,7 +3422,7 @@ fn handle_batch_command(
             let summary = mem::batch_ops::epics::batch_create_epics(
                 graph, pkb_root, parent, &file.epics, dry_run,
             );
-            print!("{}", summary.display(mem::batch_ops::Surface::Cli));
+            print!("{}", summary.display());
         }
 
         BatchCommands::Reclassify {
@@ -3438,7 +3438,7 @@ fn handle_batch_command(
             let summary = mem::batch_ops::reclassify::batch_reclassify(
                 graph, pkb_root, &filter_set, &new_type, dry_run,
             );
-            print!("{}", summary.display(mem::batch_ops::Surface::Cli));
+            print!("{}", summary.display());
         }
     }
 

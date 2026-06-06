@@ -100,6 +100,9 @@ pub struct PkbSearchServer {
     embed_worker_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
+const DRY_RUN_WARNING: &str =
+    "DRY RUN — no files modified. Pass dry_run=false to execute.\n\n";
+
 impl PkbSearchServer {
     pub fn new(
         store: Arc<RwLock<VectorStore>>,
@@ -5097,10 +5100,7 @@ impl PkbSearchServer {
             details.join("\n")
         );
         if dry_run {
-            summary_text = format!(
-                "DRY RUN — no files modified. Pass dry_run=false to execute.\n\n{}",
-                summary_text
-            );
+            summary_text = format!("{}{}", DRY_RUN_WARNING, summary_text);
         }
 
         Ok(CallToolResult::success(vec![Content::text(summary_text)]))
@@ -5437,7 +5437,7 @@ impl PkbSearchServer {
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
-            let msg = format!("DRY RUN — no files modified. Pass dry_run=false to execute.\n\n{}", json);
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
             Ok(CallToolResult::success(vec![Content::text(msg)]))
         } else {
             Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -5470,7 +5470,7 @@ impl PkbSearchServer {
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
-            let msg = format!("DRY RUN — no files modified. Pass dry_run=false to execute.\n\n{}", json);
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
             Ok(CallToolResult::success(vec![Content::text(msg)]))
         } else {
             Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -5502,7 +5502,7 @@ impl PkbSearchServer {
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
-            let msg = format!("DRY RUN — no files modified. Pass dry_run=false to execute.\n\n{}", json);
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
             Ok(CallToolResult::success(vec![Content::text(msg)]))
         } else {
             Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -5557,10 +5557,7 @@ impl PkbSearchServer {
             if dry_run { " — no changes written" } else { "" },
         );
         if dry_run {
-            msg = format!(
-                "DRY RUN — no files modified. Pass dry_run=false to execute.\n\n{}",
-                msg
-            );
+            msg = format!("{}{}", DRY_RUN_WARNING, msg);
         }
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
@@ -5745,7 +5742,7 @@ impl PkbSearchServer {
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
-            let msg = format!("DRY RUN — no files modified. Pass dry_run=false to execute.\n\n{}", json);
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
             Ok(CallToolResult::success(vec![Content::text(msg)]))
         } else {
             Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -5781,7 +5778,7 @@ impl PkbSearchServer {
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
-            let msg = format!("DRY RUN — no files modified. Pass dry_run=false to execute.\n\n{}", json);
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
             Ok(CallToolResult::success(vec![Content::text(msg)]))
         } else {
             Ok(CallToolResult::success(vec![Content::text(json)]))
