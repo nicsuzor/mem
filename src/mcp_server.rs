@@ -5780,7 +5780,12 @@ impl PkbSearchServer {
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        if dry_run {
+            let msg = format!("DRY RUN — no files modified. Pass dry_run=false to execute.\n\n{}", json);
+            Ok(CallToolResult::success(vec![Content::text(msg)]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(json)]))
+        }
     }
 
     fn handle_get_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
