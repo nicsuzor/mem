@@ -7238,11 +7238,18 @@ mod tests {
         let graph = build_project_test_graph();
         let store = VectorStore::new(3);
         let embedder = Embedder::new_dummy();
+        // Per-call isolated temp root so parallel write-tests (create_task etc.)
+        // don't race on a shared directory.
+        static TEST_ROOT_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = TEST_ROOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("mem-test-pkb-{}-{}", std::process::id(), seq));
+        let _ = std::fs::create_dir_all(&root);
+        let db = root.join("db");
         PkbSearchServer::new(
             Arc::new(RwLock::new(store)),
             Arc::new(embedder),
-            PathBuf::from("/tmp/test-pkb-project"),
-            PathBuf::from("/tmp/test-pkb-project/db"),
+            root,
+            db,
             Arc::new(RwLock::new(graph)),
         )
     }
