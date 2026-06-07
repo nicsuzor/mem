@@ -77,6 +77,8 @@ These are structural changes to the tool surface. **Do not implement without pau
 
 ### S1: Consistent dry_run defaults — all bulk ops default to true
 
+**Status**: shipped in #394 (commit 6a2a842)
+
 Change `batch_update`, `batch_reparent`, `merge_node`, and `batch_merge` to default `dry_run=true`.
 
 **Rationale**: `batch_archive` and `bulk_reparent` already default to true. Inconsistency creates operational risk. The downside is one extra explicit parameter for callers who want live execution, which is a small cost for preventing accidental bulk mutations.
@@ -84,6 +86,8 @@ Change `batch_update`, `batch_reparent`, `merge_node`, and `batch_merge` to defa
 **Migration**: Callers currently relying on `dry_run=false` default for `batch_update` must add `dry_run: false` explicitly. Update all known call sites in academicOps and plugins.
 
 ### S2: Uniform success response envelope
+
+**Status**: deferred, gated on AC#1 frequency data
 
 All write tools return a JSON object with:
 
@@ -116,6 +120,8 @@ Tools that currently return full task data (create_task) include it under a `dat
 
 ### S3: Retire the 6 consolidation wrapper tools
 
+**Status**: shipped in #394 (commit 6a2a842)
+
 Remove `create_document`, `manage_task`, `pkb_explore`, `pkb_batch`, `pkb_stats`, `pkb_tool_help` from the registered tool list.
 
 **Rationale**: These re-expose existing tools with no new capability. They create a maintenance burden (two surfaces to keep in sync) and confuse agents about which tool to call.
@@ -124,13 +130,17 @@ Remove `create_document`, `manage_task`, `pkb_explore`, `pkb_batch`, `pkb_stats`
 
 ### S4: Retire bulk_reparent in favour of batch_reparent
 
+**Status**: shipped in #394 (commit 6a2a842)
+
 `bulk_reparent` (glob/path pattern) is a legacy operation predating `batch_reparent` (structured filters). Remove it.
 
 **Migration**: Any caller using `bulk_reparent` with glob patterns should use `batch_reparent` with `subtree` or `parent` filters instead.
 
 ### S5: Merge create_subtask into create_task
 
-`create_subtask` accepts fewer fields than `create_task` and returns a different response shape. Remove it; `create_task` with `parent=<id>` is equivalent.
+**Status**: shipped in #394 (commit 6a2a842)
+
+`create_subtask` accepts fewer fields than `create_task` and returns a different response shape. Remove it; `create_task` with `parent=<id>` is used instead, though it is not fully equivalent: dot-notation `{parent}.{n}` numbered IDs survive only via the CLI path.
 
 **Migration**: Callers of `create_subtask(parent_id=X, title=Y)` switch to `create_task(parent=X, title=Y)`.
 
@@ -142,7 +152,7 @@ Once Bug Fix 1 is shipped, update the `update_task` tool description to explicit
 
 ## Tool Inventory After Redesign
 
-Target: ~22 tools (down from 39; 18 core spec + task_search, find_duplicates, release_task, decompose_task, get_dependency_tree, get_task_children, task_summary, claim_task, batch_*, delete_memory, retrieve_memory, search_by_tag, list_memories, get_semantic_neighbors trimmed to what's needed).
+Target: 42 tools (down from 50; 18 core spec + task_search, find_duplicates, release_task, decompose_task, get_dependency_tree, get_task_children, task_summary, claim_task, batch_*, delete_memory, retrieve_memory, search_by_tag, list_memories, get_semantic_neighbors, update_body, detect_weight_divergence, graph_json, get_stats, status).
 
 | # | Tool | Change |
 |---|------|--------|
@@ -190,7 +200,7 @@ Target: ~22 tools (down from 39; 18 core spec + task_search, find_duplicates, re
 | — | pkb_tool_help | **remove** (S3) |
 | — | bulk_reparent | **remove** (S4) |
 
-Net: 35 tools (from 39). The deletions are consolidation wins; the remaining tools gain correctness.
+Net: 42 tools (from 50). The deletions are consolidation wins; the remaining tools gain correctness.
 
 ---
 
@@ -209,6 +219,10 @@ Update `batch_update` and `update_task` tool descriptions to document special ke
 Remove wrapper tools (S3), bulk_reparent (S4), create_subtask (S5).
 
 **Caller audit needed**: Search academicOps and plugins for calls to: `create_document`, `manage_task`, `pkb_explore`, `pkb_batch`, `pkb_stats`, `pkb_tool_help`, `bulk_reparent`, `create_subtask`. Update each call site before removing the tools.
+
+### Caller audit — completed
+
+The caller audit itself is completed and tracked via sibling epic-a99e1bf7.
 
 ### Phase 3: dry_run defaults (S1), uniform envelope (S2)
 
