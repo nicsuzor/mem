@@ -580,6 +580,10 @@ impl GraphStore {
             }
         }
 
+        if new_node.project.is_some() {
+            new_node.parse_warnings.retain(|w| w.field != "project");
+        }
+
         // Drop any pre-existing node mapped to the same path (handles id
         // renames where the same file changes its frontmatter id).
         if let Some(ref new_path) = new_node.canonical_abs_path {
@@ -2152,6 +2156,9 @@ fn compute_project_field(nodes: &mut [GraphNode], edges: &[Edge]) {
     for i in 0..nodes.len() {
         if let Some(proj) = project_labels[i].take() {
             nodes[i].project = Some(proj);
+        }
+        if nodes[i].project.is_some() {
+            nodes[i].parse_warnings.retain(|w| w.field != "project");
         }
     }
 }

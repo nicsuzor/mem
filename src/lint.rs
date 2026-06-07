@@ -454,6 +454,30 @@ fn has_matching_ancestor(id: &str, project_value: &str, ancestor_map: &AncestorM
     false
 }
 
+/// Walk the parent chain to see if any ancestor resolves a project node (has type: project).
+fn resolves_project_node(id: &str, ancestor_map: &AncestorMap) -> bool {
+    let mut current = id.to_string();
+    let mut visited = HashSet::new();
+    for _ in 0..100 {
+        if !visited.insert(current.clone()) {
+            break;
+        }
+        if let Some(entry) = ancestor_map.get(&current) {
+            if entry.1.as_deref() == Some("project") {
+                return true;
+            }
+            if let Some(ref parent_id) = entry.0 {
+                current = parent_id.clone();
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    false
+}
+
 fn check_frontmatter(
     content: &str,
     fm_data: &Option<serde_json::Value>,
@@ -673,13 +697,25 @@ fn check_frontmatter(
         let status_val = fm.get("status").and_then(|v| v.as_str()).unwrap_or("");
         let canonical_status = graph::resolve_status_alias(status_val);
         if matches!(canonical_status, "ready" | "queued") && !fm.contains_key("project") {
-            diags.push(Diagnostic {
-                severity: Severity::Warning,
-                rule: "fm-missing-project",
-                message: "Actionable tasks (ready/queued) must have an explicit 'project' field".into(),
-                line: None,
-                fixable: false,
-            });
+            let mut resolves = false;
+            let start_id = fm.get("parent")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| fm.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()));
+            if let Some(id) = start_id {
+                if let Some(map) = ancestor_map {
+                    resolves = resolves_project_node(&id, map);
+                }
+            }
+            if !resolves {
+                diags.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule: "fm-missing-project",
+                    message: "Actionable tasks (ready/queued) must have an explicit 'project' field or resolve to a project node via ancestors".into(),
+                    line: None,
+                    fixable: false,
+                });
+            }
         }
     }
 
@@ -2144,5 +2180,49 @@ Body.\n");
         assert!(fixed_existing_dep.contains("depends_on:\n  - existing-task\n  - new-task-ref"), "merged into existing depends_on, got:\n{}", fixed_existing_dep);
         // Must not have a second depends_on: key
         assert_eq!(fixed_existing_dep.matches("depends_on:").count(), 1, "only one depends_on: key allowed, got:\n{}", fixed_existing_dep);
+    }
+
+    #[test]
+    fn test_missing_project_resolved_via_ancestor() {
+        let content_task = "---\nid: task-1\ntitle: Task 1\ntype: task\nstatus: ready\nparent: proj-1\n---\n";
+        
+        let mut ancestor_map = AncestorMap::new();
+        ancestor_map.insert("proj-1".to_string(), (None, Some("project".to_string())));
+        ancestor_map.insert("task-1".to_string(), (Some("proj-1".to_string()), Some("task".to_string())));
+
+        let mut diags = Vec::new();
+        let matter = Matter::<YAML>::new();
+        let parsed = matter.parse(content_task);
+        let fm_data = parsed.data.as_ref().and_then(|d| d.deserialize::<serde_json::Value>().ok());
+
+        check_frontmatter(
+            content_task,
+            &fm_data,
+            &mut diags,
+            None,
+            Some(&ancestor_map),
+            None,
+        );
+
+        let has_warning = diags.iter().any(|d| d.rule == "fm-missing-project");
+        assert!(!has_warning, "Task 1 has proj-1 as ancestor so it resolves project and must NOT trigger warning");
+
+        // Reparenting to a non-project node that does not resolve project
+        let mut ancestor_map_no_project = AncestorMap::new();
+        ancestor_map_no_project.insert("task-1".to_string(), (Some("other-task".to_string()), Some("task".to_string())));
+        ancestor_map_no_project.insert("other-task".to_string(), (None, Some("task".to_string())));
+
+        let mut diags_no = Vec::new();
+        check_frontmatter(
+            content_task,
+            &fm_data,
+            &mut diags_no,
+            None,
+            Some(&ancestor_map_no_project),
+            None,
+        );
+
+        let has_warning_no = diags_no.iter().any(|d| d.rule == "fm-missing-project");
+        assert!(has_warning_no, "Task 1 has other-task as ancestor which doesn't resolve to a project, so it must trigger warning");
     }
 }
