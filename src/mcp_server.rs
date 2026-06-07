@@ -100,6 +100,9 @@ pub struct PkbSearchServer {
     embed_worker_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
+const DRY_RUN_WARNING: &str =
+    "DRY RUN — no files modified. Pass dry_run=false to execute.\n\n";
+
 impl PkbSearchServer {
     pub fn new(
         store: Arc<RwLock<VectorStore>>,
@@ -5087,7 +5090,7 @@ impl PkbSearchServer {
         }
 
         let mode = if dry_run { "DRY RUN" } else { "APPLIED" };
-        let summary = format!(
+        let mut summary_text = format!(
             "bulk_reparent [{}]: {} updated, {} skipped (self), {} skipped (already parented), {} total files\n{}",
             mode,
             updated,
@@ -5096,8 +5099,11 @@ impl PkbSearchServer {
             results.len(),
             details.join("\n")
         );
+        if dry_run {
+            summary_text = format!("{}{}", DRY_RUN_WARNING, summary_text);
+        }
 
-        Ok(CallToolResult::success(vec![Content::text(summary)]))
+        Ok(CallToolResult::success(vec![Content::text(summary_text)]))
     }
 
     fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -5430,7 +5436,12 @@ impl PkbSearchServer {
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        if dry_run {
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
+            Ok(CallToolResult::success(vec![Content::text(msg)]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(json)]))
+        }
     }
 
     fn handle_batch_reparent(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -5458,7 +5469,12 @@ impl PkbSearchServer {
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        if dry_run {
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
+            Ok(CallToolResult::success(vec![Content::text(msg)]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(json)]))
+        }
     }
 
     fn handle_batch_archive(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -5485,7 +5501,12 @@ impl PkbSearchServer {
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        if dry_run {
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
+            Ok(CallToolResult::success(vec![Content::text(msg)]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(json)]))
+        }
     }
 
     fn handle_merge_node(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -5527,7 +5548,7 @@ impl PkbSearchServer {
             self.finalize_batch(&summary.modified_paths, &[]);
         }
 
-        let msg = format!(
+        let mut msg = format!(
             "merge_node{}: {} files updated, {} references redirected, {} node(s) archived{}",
             if dry_run { " (dry run)" } else { "" },
             summary.files_updated,
@@ -5535,6 +5556,9 @@ impl PkbSearchServer {
             summary.nodes_archived,
             if dry_run { " — no changes written" } else { "" },
         );
+        if dry_run {
+            msg = format!("{}{}", DRY_RUN_WARNING, msg);
+        }
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
@@ -5717,7 +5741,12 @@ impl PkbSearchServer {
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        if dry_run {
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
+            Ok(CallToolResult::success(vec![Content::text(msg)]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(json)]))
+        }
     }
 
     fn handle_batch_create_epics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -5748,7 +5777,12 @@ impl PkbSearchServer {
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        if dry_run {
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
+            Ok(CallToolResult::success(vec![Content::text(msg)]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(json)]))
+        }
     }
 
     fn handle_get_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -8728,6 +8762,71 @@ mod batch_finalize_tests {
                 "entry {id} should carry status=blocked in vector store; got {status:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_batch_dry_run_warning_message() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+        let server = build_disk_server(pkb_root);
+
+        // Create tasks to update
+        let task_ids = vec!["t1".to_string(), "t2".to_string()];
+        for id in &task_ids {
+            std::fs::write(
+                pkb_root.join(format!("{}.md", id)),
+                format!("---\nid: {}\ntitle: Task {}\ntype: task\nstatus: active\nparent: test-project\n---\n", id, id),
+            )
+            .unwrap();
+        }
+        // Force graph rebuild
+        {
+            let mut graph = server.graph.write();
+            *graph = GraphStore::build_from_directory(pkb_root);
+        }
+
+        // Run batch update as dry-run
+        let args = json!({
+            "ids": task_ids,
+            "updates": { "status": "blocked" },
+            "dry_run": true
+        });
+        let result = server.handle_batch_update(&args).expect("batch_update");
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .collect::<String>();
+        assert!(text.contains("Pass dry_run=false to execute"), "expected dry-run warning in: {text}");
+        assert!(text.contains("\"dry_run\": true"), "expected dry_run: true in JSON: {text}");
+
+        // Run bulk_reparent as dry-run
+        let bulk_args = json!({
+            "pattern": "*.md",
+            "parent_id": "test-project",
+            "dry_run": true
+        });
+        let bulk_result = server.handle_bulk_reparent(&bulk_args).expect("bulk_reparent");
+        let bulk_text = bulk_result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .collect::<String>();
+        assert!(bulk_text.contains("Pass dry_run=false to execute"), "expected dry-run warning in: {bulk_text}");
+
+        // Run merge_node as dry-run
+        let merge_args = json!({
+            "canonical_id": "t1",
+            "source_ids": ["t2"],
+            "dry_run": true
+        });
+        let merge_result = server.handle_merge_node(&merge_args).expect("merge_node");
+        let merge_text = merge_result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .collect::<String>();
+        assert!(merge_text.contains("Pass dry_run=false to execute"), "expected dry-run warning in: {merge_text}");
     }
 }
 
