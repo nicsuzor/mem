@@ -1127,7 +1127,7 @@ impl GraphNode {
                     if matches!(st.as_str(), "ready" | "queued") && project.is_none() {
                         parse_warnings.push(ParseWarning {
                             field: "project".to_string(),
-                            message: "Actionable tasks (ready/queued) must have an explicit 'project' field".to_string(),
+                            message: "Actionable tasks (ready/queued) must have an explicit 'project' field or resolve to a project node via ancestors".to_string(),
                         });
                     }
                 }

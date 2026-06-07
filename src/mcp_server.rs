@@ -1511,14 +1511,7 @@ impl PkbSearchServer {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(
-                    "Missing required parameter: project. Every task must declare a \
-                     project (e.g. 'aops', 'mem', 'adhoc-sessions').",
-                ),
-                data: None,
-            })?;
+            .map(String::from);
         if let Some(obj) = args.as_object() {
             const KNOWN_KEYS: &[&str] = &[
                 "title", "task_title", "id", "parent", "priority", "tags", "depends_on",
@@ -1620,7 +1613,7 @@ impl PkbSearchServer {
                 .get("due")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            project: Some(project.to_string()),
+            project,
             task_type: args
                 .get("type")
                 .and_then(|v| v.as_str())
@@ -2035,6 +2028,9 @@ impl PkbSearchServer {
         if let Some(ref s) = node.status {
             output.push_str(&format!("**Status:** {s}\n"));
         }
+        if let Some(ref proj) = node.project {
+            output.push_str(&format!("**Project:** {proj}\n"));
+        }
         if let Some(p) = node.priority {
             output.push_str(&format!("**Priority:** {p}\n"));
         }
@@ -2246,6 +2242,9 @@ impl PkbSearchServer {
             // open work from closed — omitting it let a `done` task read as "open".
             if let Some(status) = node.and_then(|n| n.status.as_deref()) {
                 output.push_str(&format!("**Status:** {status}\n"));
+            }
+            if let Some(project) = node.and_then(|n| n.project.as_deref()) {
+                output.push_str(&format!("**Project:** {project}\n"));
             }
             if let Some(ref dt) = r.doc_type {
                 output.push_str(&format!("**Type:** {dt}\n"));
@@ -2539,11 +2538,19 @@ impl PkbSearchServer {
         let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
         let parsed = matter.parse(&content);
 
-        let frontmatter = parsed
+        let mut frontmatter = parsed
             .data
             .as_ref()
             .and_then(|d| d.deserialize::<JsonValue>().ok())
             .unwrap_or(JsonValue::Object(serde_json::Map::new()));
+
+        if let Some(obj) = frontmatter.as_object_mut() {
+            if !obj.contains_key("project") {
+                if let Some(ref proj) = node.project {
+                    obj.insert("project".to_string(), serde_json::json!(proj));
+                }
+            }
+        }
 
         let body = parsed.content.trim().to_string();
 
@@ -2656,6 +2663,7 @@ impl PkbSearchServer {
         let result = serde_json::json!({
             "id": node.task_id.as_deref().unwrap_or(&node.id),
             "status": node.status,
+            "project": node.project,
             "frontmatter": frontmatter,
             "body": body,
             "depends_on": depends_on,
@@ -4093,23 +4101,15 @@ impl PkbSearchServer {
                         fm.get("project")
                             .and_then(|v| v.as_str())
                             .map(String::from)
-                    });
+                    })
+                    .or_else(|| node.project.clone());
                     (prefix, parent_project)
                 }
             }
         };
 
-        // Subtasks created via decompose inherit the parent's project. Reject early if
-        // the parent has none, rather than producing tasks that fail at create_task.
-        let parent_project = parent_project.ok_or_else(|| McpError {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from(format!(
-                "Parent task '{parent_id}' has no `project` field. Subtasks inherit \
-                 the parent's project — set it first or pass `project` per-subtask."
-            )),
-            data: None,
-        })?;
-        let parent_project = Some(parent_project);
+        // parent_project is Option<String>; subtasks inherit it when present, otherwise
+        // project is graph-derived at read time (compute_project_field via ancestor chain).
 
         // First pass: assign IDs to all subtasks and build title map for cross-references
         let mut subtask_ids: Vec<String> = Vec::with_capacity(subtasks.len());
@@ -5992,13 +5992,13 @@ impl PkbSearchServer {
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
-                        "project": { "type": "string", "description": "Project identifier (required, e.g. 'aops', 'mem', 'adhoc-sessions')" },
+                        "project": { "type": "string", "description": "Project identifier (optional if ancestor resolves project, e.g. 'aops', 'mem', 'adhoc-sessions')" },
                         "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, target, project. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
                         "status": { "type": "string", "description": "Task status (default: 'draft' — new tasks start as draft and are excluded from ready queue until promoted to 'active'). Also accepts: active, blocked, done, merge_ready, in_progress, etc." },
                         "allow_missing_parent": { "type": "boolean", "description": "Allow creating under a missing parent (logs warning). Default: false." },
                         "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." }
                     },
-                    "required": ["title", "project"]
+                    "required": ["title"]
                 }))
                 .unwrap(),
             )
@@ -6779,11 +6779,18 @@ mod tests {
         let graph = build_project_test_graph();
         let store = VectorStore::new(3);
         let embedder = Embedder::new_dummy();
+        // Per-call isolated temp root so parallel write-tests (create_task etc.)
+        // don't race on a shared directory.
+        static TEST_ROOT_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = TEST_ROOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("mem-test-pkb-{}-{}", std::process::id(), seq));
+        let _ = std::fs::create_dir_all(&root);
+        let db = root.join("db");
         PkbSearchServer::new(
             Arc::new(RwLock::new(store)),
             Arc::new(embedder),
-            PathBuf::from("/tmp/test-pkb-project"),
-            PathBuf::from("/tmp/test-pkb-project/db"),
+            root,
+            db,
             Arc::new(RwLock::new(graph)),
         )
     }
@@ -7318,40 +7325,32 @@ mod tests {
     }
 
     #[test]
-    fn test_create_task_rejects_missing_project() {
+    fn test_create_task_allows_missing_project() {
         let server = build_test_server();
-        let err = server
+        let result = server
             .handle_create_task(&json!({
                 "title": "no project",
                 "parent": "proj-alpha"
             }))
-            .expect_err("missing project should be rejected");
-        let msg = format!("{}", err.message);
-        assert!(
-            msg.to_lowercase().contains("project"),
-            "error should mention project, got: {msg}"
-        );
+            .expect("missing project should be allowed when parent resolves project");
+        assert!(!result.is_error.unwrap_or(false));
     }
 
     #[test]
-    fn test_create_task_rejects_blank_project() {
+    fn test_create_task_allows_blank_project() {
         let server = build_test_server();
-        let err = server
+        let result = server
             .handle_create_task(&json!({
                 "title": "blank project",
                 "parent": "proj-alpha",
                 "project": "   "
             }))
-            .expect_err("blank project should be rejected");
-        let msg = format!("{}", err.message);
-        assert!(
-            msg.to_lowercase().contains("project"),
-            "error should mention project, got: {msg}"
-        );
+            .expect("blank project should be allowed when parent resolves project");
+        assert!(!result.is_error.unwrap_or(false));
     }
 
     #[test]
-    fn test_create_task_schema_requires_project() {
+    fn test_create_task_schema_does_not_require_project() {
         let tools = PkbSearchServer::get_all_tools();
         let create = tools
             .iter()
@@ -7363,9 +7362,9 @@ mod tests {
             "create_task schema should include project field"
         );
         assert!(
-            schema.contains("\"required\":[\"title\",\"project\"]")
-                || schema.contains("\"required\": [\"title\", \"project\"]"),
-            "create_task should mark project required, got: {schema}"
+            !schema.contains("\"required\":[\"title\",\"project\"]")
+                && !schema.contains("\"required\": [\"title\", \"project\"]"),
+            "create_task should not mark project required, got: {schema}"
         );
     }
 

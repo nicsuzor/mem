@@ -580,6 +580,10 @@ impl GraphStore {
             }
         }
 
+        if new_node.project.is_some() {
+            new_node.parse_warnings.retain(|w| w.field != "project");
+        }
+
         // Drop any pre-existing node mapped to the same path (handles id
         // renames where the same file changes its frontmatter id).
         if let Some(ref new_path) = new_node.canonical_abs_path {
@@ -2152,6 +2156,9 @@ fn compute_project_field(nodes: &mut [GraphNode], edges: &[Edge]) {
     for i in 0..nodes.len() {
         if let Some(proj) = project_labels[i].take() {
             nodes[i].project = Some(proj);
+        }
+        if nodes[i].project.is_some() {
+            nodes[i].parse_warnings.retain(|w| w.field != "project");
         }
     }
 }
@@ -4743,5 +4750,41 @@ mod tests {
 
         let n_unc1 = store.get_node("c-leaf-unc1").unwrap();
         assert_eq!(n_unc1.voi_value.unwrap_or(0.0), 5000.0, "VoI should be capped at 5000");
+    }
+
+    #[test]
+    fn test_compute_project_field_resolves_via_parent_ancestor() {
+        // Verify the runtime resolution path: a task with no explicit `project` field
+        // but with a `type:project` ancestor gets its project field populated by
+        // compute_project_field (called during graph build).
+        let project_node = make_doc(
+            "tasks/proj-x.md",
+            "Project X",
+            "project",
+            "active",
+            "proj-x",
+            None,
+            &[],
+        );
+        let task_node = make_doc(
+            "tasks/task-no-proj.md",
+            "Task Without Project",
+            "task",
+            "ready",
+            "task-no-proj",
+            Some("proj-x"),
+            &[],
+        );
+        let store = GraphStore::build(&[project_node, task_node], Path::new("/tmp/test-pkb-proj"));
+        let node = store.get_node("task-no-proj").expect("task-no-proj should exist");
+        assert!(
+            node.project.is_some(),
+            "task with no explicit project but type:project parent must have project resolved"
+        );
+        assert_eq!(
+            node.project.as_deref(),
+            Some("Project X"),
+            "resolved project label should be the project node's title"
+        );
     }
 }
