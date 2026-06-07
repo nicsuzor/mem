@@ -421,13 +421,6 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         );
     }
 
-    // project is required — every task must belong to a project for routing/filtering
-    if fields.project.as_deref().map(str::is_empty).unwrap_or(true) {
-        anyhow::bail!(
-            "project is required: every task must declare a project (e.g. 'aops', \
-             'mem', 'adhoc-sessions'). Set fields.project before calling create_task."
-        );
-    }
 
     // Validation
     if let Some(ref t) = fields.task_type {
@@ -1981,7 +1974,7 @@ mod tests {
     }
 
     #[test]
-    fn create_task_rejects_missing_project() {
+    fn create_task_allows_missing_project() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let tasks_dir = root.join("tasks");
@@ -1993,32 +1986,9 @@ mod tests {
             ..Default::default()
         };
 
-        let err = create_task(root, fields).unwrap_err();
-        assert!(
-            err.to_string().contains("project is required"),
-            "error should mention project requirement: {err}"
-        );
-    }
-
-    #[test]
-    fn create_task_rejects_empty_project() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let tasks_dir = root.join("tasks");
-        fs::create_dir_all(&tasks_dir).unwrap();
-
-        let fields = TaskFields {
-            title: "Empty project task".to_string(),
-            parent: Some("parent-001".to_string()),
-            project: Some(String::new()),
-            ..Default::default()
-        };
-
-        let err = create_task(root, fields).unwrap_err();
-        assert!(
-            err.to_string().contains("project is required"),
-            "error should mention project requirement: {err}"
-        );
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("project:"));
     }
 
     #[test]

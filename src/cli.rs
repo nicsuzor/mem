@@ -1799,19 +1799,31 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            let project = match project.filter(|s| !s.is_empty()) {
-                Some(p) => p,
-                None => {
-                    eprintln!("Error: --project is required (e.g. --project aops)");
-                    std::process::exit(1);
+            let project_opt = project.filter(|s| !s.is_empty());
+            let mut gs_cache: Option<crate::graph_store::GraphStore> = None;
+            if project_opt.is_none() {
+                let mut resolves_project = false;
+                if let Some(ref parent_id) = parent {
+                    let gs = load_graph(&pkb_root, &db_path, None);
+                    if let Some(parent_node) = gs.resolve(parent_id) {
+                        if parent_node.project.is_some() {
+                            resolves_project = true;
+                        }
+                    }
+                    gs_cache = Some(gs);
                 }
-            };
+                if !resolves_project {
+                    eprintln!(
+                        "Warning: task has no explicit project and parent does not resolve a project node."
+                    );
+                }
+            }
 
             // Referential-integrity check: reject (or warn on) an unresolvable
             // parent ID. Default = reject — silently dropping the parent edge
             // accretes orphans no one notices (task-89b2af87).
             if let Some(ref parent_id) = parent {
-                let gs = load_graph(&pkb_root, &db_path, None);
+                let gs = gs_cache.unwrap_or_else(|| load_graph(&pkb_root, &db_path, None));
                 if gs.resolve(parent_id).is_none() {
                     if allow_missing_parent {
                         eprintln!(
@@ -1839,7 +1851,7 @@ async fn main() -> Result<()> {
                 title: title_str,
                 parent,
                 priority,
-                project: Some(project),
+                project: project_opt,
                 tags: tags.unwrap_or_default(),
                 depends_on: depends_on.unwrap_or_default(),
                 assignee,
