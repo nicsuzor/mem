@@ -1800,6 +1800,7 @@ async fn main() -> Result<()> {
             }
 
             let project_opt = project.filter(|s| !s.is_empty());
+            let mut gs_cache: Option<crate::graph_store::GraphStore> = None;
             if project_opt.is_none() {
                 let mut resolves_project = false;
                 if let Some(ref parent_id) = parent {
@@ -1809,6 +1810,7 @@ async fn main() -> Result<()> {
                             resolves_project = true;
                         }
                     }
+                    gs_cache = Some(gs);
                 }
                 if !resolves_project {
                     eprintln!(
@@ -1821,7 +1823,7 @@ async fn main() -> Result<()> {
             // parent ID. Default = reject — silently dropping the parent edge
             // accretes orphans no one notices (task-89b2af87).
             if let Some(ref parent_id) = parent {
-                let gs = load_graph(&pkb_root, &db_path, None);
+                let gs = gs_cache.unwrap_or_else(|| load_graph(&pkb_root, &db_path, None));
                 if gs.resolve(parent_id).is_none() {
                     if allow_missing_parent {
                         eprintln!(

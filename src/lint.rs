@@ -423,7 +423,8 @@ fn fallback_parse_frontmatter(content: &str) -> Option<serde_json::Value> {
 
 /// Map of document ID → (parent_id, doc_type) for ancestor lookups.
 /// Built during lint_directory pre-pass.
-pub type AncestorMap = HashMap<String, (Option<String>, Option<String>)>;
+/// Tuple: (parent_id, contributes_to+closes ids, doc_type)
+pub type AncestorMap = HashMap<String, (Option<String>, Vec<String>, Option<String>)>;
 
 /// Set of IDs that appear as a parent of at least one other node.
 /// A node in this set has children (scope > 0).
@@ -454,25 +455,26 @@ fn has_matching_ancestor(id: &str, project_value: &str, ancestor_map: &AncestorM
     false
 }
 
-/// Walk the parent chain to see if any ancestor resolves a project node (has type: project).
+/// BFS upward over parent + contributes_to + closes edges to find a project-typed ancestor.
+/// Mirrors the edge set used by compute_project_field in graph_store.rs.
 fn resolves_project_node(id: &str, ancestor_map: &AncestorMap) -> bool {
-    let mut current = id.to_string();
+    let mut queue = std::collections::VecDeque::new();
     let mut visited = HashSet::new();
-    for _ in 0..100 {
+    queue.push_back(id.to_string());
+    while let Some(current) = queue.pop_front() {
         if !visited.insert(current.clone()) {
-            break;
+            continue;
         }
         if let Some(entry) = ancestor_map.get(&current) {
-            if entry.1.as_deref() == Some("project") {
+            if entry.2.as_deref() == Some("project") {
                 return true;
             }
             if let Some(ref parent_id) = entry.0 {
-                current = parent_id.clone();
-            } else {
-                break;
+                queue.push_back(parent_id.clone());
             }
-        } else {
-            break;
+            for target_id in &entry.1 {
+                queue.push_back(target_id.clone());
+            }
         }
     }
     false
@@ -698,10 +700,12 @@ fn check_frontmatter(
         let canonical_status = graph::resolve_status_alias(status_val);
         if matches!(canonical_status, "ready" | "queued") && !fm.contains_key("project") {
             let mut resolves = false;
-            let start_id = fm.get("parent")
+            // Start BFS from the task's own id so contributes_to/closes edges on the
+            // task itself are also followed (not just the parent chain).
+            let start_id = fm.get("id")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .or_else(|| fm.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()));
+                .or_else(|| fm.get("parent").and_then(|v| v.as_str()).map(|s| s.to_string()));
             if let Some(id) = start_id {
                 if let Some(map) = ancestor_map {
                     resolves = resolves_project_node(&id, map);
@@ -1367,7 +1371,7 @@ pub fn lint_directory(
     };
 
     // Build ancestor map for deprecated-project autofix:
-    // Maps each document ID → (parent_id, doc_type)
+    // Maps each document ID → (parent_id, contributes_to+closes ids, doc_type)
     let ancestor_map: AncestorMap = files
         .par_iter()
         .filter_map(|p| {
@@ -1379,14 +1383,21 @@ pub fn lint_directory(
             let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
             let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
             let doc_type = fm.get("type").and_then(|v| v.as_str()).map(String::from);
-            Some((id, (parent, doc_type)))
+            let mut upward_edges: Vec<String> = Vec::new();
+            if let Some(arr) = fm.get("contributes_to").and_then(|v| v.as_array()) {
+                upward_edges.extend(arr.iter().filter_map(|v| v.as_str()).map(String::from));
+            }
+            if let Some(arr) = fm.get("closes").and_then(|v| v.as_array()) {
+                upward_edges.extend(arr.iter().filter_map(|v| v.as_str()).map(String::from));
+            }
+            Some((id, (parent, upward_edges, doc_type)))
         })
         .collect();
 
     // Derive children set: IDs that appear as a parent of at least one node.
     let children_set: ChildrenSet = ancestor_map
         .values()
-        .filter_map(|(parent_id, _)| parent_id.clone())
+        .filter_map(|(parent_id, _, _)| parent_id.clone())
         .collect();
 
     // ── Hard cycle detection ─────────────────────────────────────────────────
@@ -1437,7 +1448,7 @@ pub fn lint_directory(
         // Parent-only adjacency for the parent-cycle rule. Parent/child must
         // be a DAG; depends_on / blocks / soft_blocks may still be circular.
         let mut parent_adj: HashMap<String, Vec<String>> = HashMap::new();
-        for (id, (parent, _doc_type)) in &ancestor_map {
+        for (id, (parent, _upward, _doc_type)) in &ancestor_map {
             if let Some(p) = parent {
                 parent_adj.insert(id.clone(), vec![p.clone()]);
             }
@@ -1678,12 +1689,19 @@ pub fn lint_directory(
                 let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
                 let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
                 let doc_type = fm.get("type").and_then(|v| v.as_str()).map(String::from);
-                Some((id, (parent, doc_type)))
+                let mut upward_edges: Vec<String> = Vec::new();
+                if let Some(arr) = fm.get("contributes_to").and_then(|v| v.as_array()) {
+                    upward_edges.extend(arr.iter().filter_map(|v| v.as_str()).map(String::from));
+                }
+                if let Some(arr) = fm.get("closes").and_then(|v| v.as_array()) {
+                    upward_edges.extend(arr.iter().filter_map(|v| v.as_str()).map(String::from));
+                }
+                Some((id, (parent, upward_edges, doc_type)))
             })
             .collect();
         let children_set: ChildrenSet = ancestor_map
             .values()
-            .filter_map(|(parent_id, _)| parent_id.clone())
+            .filter_map(|(parent_id, _, _)| parent_id.clone())
             .collect();
 
         // Return fresh results after renames (cycle diagnostics still apply)
@@ -2187,8 +2205,8 @@ Body.\n");
         let content_task = "---\nid: task-1\ntitle: Task 1\ntype: task\nstatus: ready\nparent: proj-1\n---\n";
         
         let mut ancestor_map = AncestorMap::new();
-        ancestor_map.insert("proj-1".to_string(), (None, Some("project".to_string())));
-        ancestor_map.insert("task-1".to_string(), (Some("proj-1".to_string()), Some("task".to_string())));
+        ancestor_map.insert("proj-1".to_string(), (None, vec![], Some("project".to_string())));
+        ancestor_map.insert("task-1".to_string(), (Some("proj-1".to_string()), vec![], Some("task".to_string())));
 
         let mut diags = Vec::new();
         let matter = Matter::<YAML>::new();
@@ -2209,8 +2227,8 @@ Body.\n");
 
         // Reparenting to a non-project node that does not resolve project
         let mut ancestor_map_no_project = AncestorMap::new();
-        ancestor_map_no_project.insert("task-1".to_string(), (Some("other-task".to_string()), Some("task".to_string())));
-        ancestor_map_no_project.insert("other-task".to_string(), (None, Some("task".to_string())));
+        ancestor_map_no_project.insert("task-1".to_string(), (Some("other-task".to_string()), vec![], Some("task".to_string())));
+        ancestor_map_no_project.insert("other-task".to_string(), (None, vec![], Some("task".to_string())));
 
         let mut diags_no = Vec::new();
         check_frontmatter(
@@ -2224,5 +2242,33 @@ Body.\n");
 
         let has_warning_no = diags_no.iter().any(|d| d.rule == "fm-missing-project");
         assert!(has_warning_no, "Task 1 has other-task as ancestor which doesn't resolve to a project, so it must trigger warning");
+    }
+
+    #[test]
+    fn test_missing_project_resolved_via_contributes_to() {
+        // Task with contributes_to pointing to a project node (no parent edge) — must not warn.
+        // This mirrors the edge set followed by compute_project_field in graph_store.rs.
+        let content_task = "---\nid: task-2\ntitle: Task 2\ntype: task\nstatus: ready\ncontributes_to:\n  - proj-x\n---\n";
+
+        let mut ancestor_map = AncestorMap::new();
+        ancestor_map.insert("proj-x".to_string(), (None, vec![], Some("project".to_string())));
+        ancestor_map.insert("task-2".to_string(), (None, vec!["proj-x".to_string()], Some("task".to_string())));
+
+        let matter = Matter::<YAML>::new();
+        let parsed = matter.parse(content_task);
+        let fm_data = parsed.data.as_ref().and_then(|d| d.deserialize::<serde_json::Value>().ok());
+
+        let mut diags = Vec::new();
+        check_frontmatter(
+            content_task,
+            &fm_data,
+            &mut diags,
+            None,
+            Some(&ancestor_map),
+            None,
+        );
+
+        let has_warning = diags.iter().any(|d| d.rule == "fm-missing-project");
+        assert!(!has_warning, "Task 2 contributes_to a project node and must NOT trigger fm-missing-project warning");
     }
 }

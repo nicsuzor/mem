@@ -1834,10 +1834,10 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        // Validate parent exists and has a project (subtasks inherit project from parent)
+        // Validate parent exists; project is now graph-derived so no explicit project required.
         {
             let graph = self.graph.read();
-            let parent_node = graph.resolve(parent_id).ok_or_else(|| McpError {
+            graph.resolve(parent_id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Parent task not found: {parent_id}")),
                 data: None,
@@ -1852,28 +1852,6 @@ impl PkbSearchServer {
                 });
             }
 
-            let parent_has_project = crate::pkb::parse_file_relative(
-                &self.abs_path(&parent_node.path),
-                &self.pkb_root,
-            )
-            .and_then(|doc| doc.frontmatter)
-            .and_then(|fm| {
-                fm.get("project")
-                    .and_then(|v| v.as_str())
-                    .map(|s| !s.is_empty())
-            })
-            .unwrap_or(false);
-
-            if !parent_has_project {
-                return Err(McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!(
-                        "Parent task '{parent_id}' has no `project` field. Subtasks \
-                         inherit the parent's project — set the parent's project first."
-                    )),
-                    data: None,
-                });
-            }
             // Optional caller-supplied `id` — reject parent/child cycles.
             if let Some(child_id) = args.get("id").and_then(|v| v.as_str()) {
                 if let Err(msg) = graph.would_create_parent_cycle(child_id, parent_id) {
@@ -4230,17 +4208,8 @@ impl PkbSearchServer {
             }
         };
 
-        // Subtasks created via decompose inherit the parent's project. Reject early if
-        // the parent has none, rather than producing tasks that fail at create_task.
-        let parent_project = parent_project.ok_or_else(|| McpError {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from(format!(
-                "Parent task '{parent_id}' has no `project` field. Subtasks inherit \
-                 the parent's project — set it first or pass `project` per-subtask."
-            )),
-            data: None,
-        })?;
-        let parent_project = Some(parent_project);
+        // parent_project is Option<String>; subtasks inherit it when present, otherwise
+        // project is graph-derived at read time (compute_project_field via ancestor chain).
 
         // First pass: assign IDs to all subtasks and build title map for cross-references
         let mut subtask_ids: Vec<String> = Vec::with_capacity(subtasks.len());
