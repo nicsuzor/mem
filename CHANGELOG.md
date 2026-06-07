@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.67](https://github.com/nicsuzor/mem/compare/mem-v0.3.66...mem-v0.3.67) (2026-06-07)
+
+
+### Features
+
+* **crud:** reconcile specs and perform dead-code cleanup for redesigned CRUD surface ([#420](https://github.com/nicsuzor/mem/issues/420)) ([2874342](https://github.com/nicsuzor/mem/commit/2874342bd1a99b794b905c0a7e3d9c8fe7fcdbce))
+
+
+### Bug Fixes
+
+* **mcp:** update dry-run warning message to advise callers to use dry_run=false ([#417](https://github.com/nicsuzor/mem/issues/417)) ([cfc2bdf](https://github.com/nicsuzor/mem/commit/cfc2bdf7dd1878a04d2a58a352aaa8548283e8f7))
+
 ## [0.3.66](https://github.com/nicsuzor/mem/compare/mem-v0.3.65...mem-v0.3.66) (2026-06-04)
 
 
