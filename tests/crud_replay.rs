@@ -83,14 +83,17 @@ fn test_create_get_indexer_bind_replay() {
 
     // Immediately resolve the node in the graph.
     // If there were index lag/race, resolve() or get_node() would return None.
-    let g = graph.read();
-    let resolved = g.resolve("task-test1");
-    assert!(
-        resolved.is_some(),
-        "Newly created task must be immediately resolvable (no index lag)"
-    );
-    let node = resolved.unwrap();
-    assert_eq!(node.id, "task-test1");
+    // Drop the read lock before calling bench_decompose_task, which acquires a write lock.
+    {
+        let g = graph.read();
+        let resolved = g.resolve("task-test1");
+        assert!(
+            resolved.is_some(),
+            "Newly created task must be immediately resolvable (no index lag)"
+        );
+        let node = resolved.unwrap();
+        assert_eq!(node.id, "task-test1");
+    }
 
     // Also test decompose_task child node indexing
     let _decomp_res = server
@@ -108,6 +111,9 @@ fn test_create_get_indexer_bind_replay() {
             ]
         }))
         .expect("bench_decompose_task failed");
+
+    // Re-acquire read lock to verify post-decompose state.
+    let g = graph.read();
 
     // Immediately verify the children are resolvable
     let sub1 = g.resolve("task-sub1");
@@ -182,11 +188,14 @@ fn test_filtered_list_ready_tasks_replay() {
         }))
         .unwrap();
 
-    // Inspect the JSON output from CallToolResult
+    // Inspect the JSON output from CallToolResult.
+    // list_tasks json format returns {"total":…, "showing":…, "tasks":[…]}.
     let content = &res.content[0];
     let text = content.raw.as_text().unwrap().text.as_str();
-    let tasks: serde_json::Value = serde_json::from_str(text).unwrap();
-    let tasks_arr = tasks.as_array().expect("Expected a JSON array of tasks");
+    let envelope: serde_json::Value = serde_json::from_str(text).unwrap();
+    let tasks_arr = envelope["tasks"]
+        .as_array()
+        .expect("Expected a JSON array under the 'tasks' key");
 
     // We expect only task-ready-aops to be returned
     assert!(
@@ -250,7 +259,8 @@ fn test_add_depends_on_persistence_replay() {
 
     // 1. Verify that the task file on disk does NOT contain "_add_depends_on" in frontmatter,
     // but contains "depends_on" with "task-b".
-    let path = tmp.path().join("tasks/aops-task-a.md");
+    // Explicit IDs are used as-is for the filename: tasks/task-a.md.
+    let path = tmp.path().join("tasks/task-a.md");
     let content = fs::read_to_string(&path).unwrap();
     assert!(
         !content.contains("_add_depends_on"),
