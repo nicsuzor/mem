@@ -184,6 +184,22 @@ impl PkbSearchServer {
     pub fn bench_complete_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.handle_complete_task(args)
     }
+    #[doc(hidden)]
+    pub fn bench_decompose_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_decompose_task(args)
+    }
+    #[doc(hidden)]
+    pub fn bench_list_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_list_tasks(args)
+    }
+    #[doc(hidden)]
+    pub fn bench_get_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_get_task(args)
+    }
+    #[doc(hidden)]
+    pub fn bench_get_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_get_document(args)
+    }
 
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
     fn abs_path(&self, rel: &Path) -> PathBuf {
