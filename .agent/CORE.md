@@ -43,20 +43,20 @@ src/
   lib.rs           — Library root
 ```
 
-## MCP Tools (37)
+## MCP Tools (42)
 
 ### Search
 - `search` — hybrid semantic + graph-proximity
 - `get_document` — read full file contents
 - `list_documents` — browse/filter with pagination
 - `find_duplicates` — detect duplicate documents
+- `get_semantic_neighbors` — find nodes similar by embedding proximity
 
 ### Tasks
 - `task_search` — semantic search filtered to tasks
 - `list_tasks` — list with filters; `status="ready"` and `status="blocked"` are special
 - `get_task` — frontmatter + body + relationship context
 - `create_task` — new task with frontmatter
-- `create_subtask` — subtask under a parent
 - `claim_task` — instantiate a `type: template` node; creates a datestamped instance and returns it via get_task
 - `update_task` — patch frontmatter fields
 - `complete_task` — set status=done
@@ -77,6 +77,7 @@ src/
 ### Document CRUD
 - `create` — generic document creation
 - `append` — timestamped append to existing doc
+- `update_body` — atomically rewrite document body (preserves frontmatter)
 - `delete` — remove doc from disk + index
 
 ### Knowledge Graph
@@ -84,6 +85,8 @@ src/
 - `pkb_trace` — shortest paths between two nodes
 - `pkb_orphans` — disconnected nodes
 - `graph_stats` — graph statistics
+- `graph_json` — export full graph as JSON
+- `detect_weight_divergence` — detect contributes_to weight drift vs activity
 
 ### Batch Operations
 - `batch_update` — bulk update frontmatter fields
@@ -92,8 +95,11 @@ src/
 - `batch_merge` — merge multiple documents
 - `batch_create_epics` — batch create epic tasks
 - `batch_reclassify` — batch reclassify document types
-- `bulk_reparent` — reparent tasks in bulk
 - `merge_node` — merge a single node into another
+
+### Stats
+- `get_stats` — MCP tool usage telemetry (call counts and response bytes)
+- `status` — build identity: version, git describe, build profile
 
 ## Key Patterns
 

@@ -5856,7 +5856,7 @@ impl ServerHandler for PkbSearchServer {
     fn get_info(&self) -> ServerInfo {
         let mut instructions = String::from(
             "PKB Search — semantic search + task graph over personal knowledge base. \
-             39 tools for search, documents, tasks, and knowledge graph. \
+             42 tools for search, documents, tasks, and knowledge graph. \
              Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance. \
              Use get_stats to view per-tool usage telemetry.",
         );
