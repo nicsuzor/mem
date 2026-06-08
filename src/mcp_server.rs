@@ -1510,6 +1510,83 @@ impl PkbSearchServer {
         }
     }
 
+    fn handle_top_n_by_metric(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let metric = args
+            .get("metric")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: metric"),
+                data: None,
+            })?;
+
+        if metric != "pagerank" && metric != "betweenness" && metric != "degree" {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Invalid metric: must be 'pagerank', 'betweenness', or 'degree'"),
+                data: None,
+            });
+        }
+
+        let n = args
+            .get("n")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
+
+        let node_type = args
+            .get("node_type")
+            .and_then(|v| v.as_str());
+
+        let graph = self.graph.read();
+        let mut nodes: Vec<_> = graph
+            .nodes()
+            .filter(|n| {
+                if let Some(nt) = node_type {
+                    n.node_type
+                        .as_deref()
+                        .map(|t| t.eq_ignore_ascii_case(nt))
+                        .unwrap_or(false)
+                } else {
+                    true
+                }
+            })
+            .collect();
+
+        match metric {
+            "pagerank" => {
+                nodes.sort_by(|a, b| b.pagerank.partial_cmp(&a.pagerank).unwrap_or(std::cmp::Ordering::Equal));
+            }
+            "betweenness" => {
+                nodes.sort_by(|a, b| b.betweenness.partial_cmp(&a.betweenness).unwrap_or(std::cmp::Ordering::Equal));
+            }
+            "degree" => {
+                nodes.sort_by_key(|n| std::cmp::Reverse(n.indegree + n.outdegree));
+            }
+            _ => unreachable!(),
+        }
+
+        let top_nodes = nodes.into_iter().take(n);
+        let results: Vec<serde_json::Value> = top_nodes
+            .map(|n| {
+                let val = match metric {
+                    "pagerank" => n.pagerank,
+                    "betweenness" => n.betweenness,
+                    "degree" => (n.indegree + n.outdegree) as f64,
+                    _ => 0.0,
+                };
+                serde_json::json!({
+                    "id": n.id,
+                    "title": n.label,
+                    "metric_value": val,
+                })
+            })
+            .collect();
+
+        let json = serde_json::to_string_pretty(&results).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+
     fn handle_create_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         // Accept `title` (preferred) or `task_title` (alias — some skill docs use this name)
         let title = args
@@ -5745,6 +5822,7 @@ impl PkbSearchServer {
             "list_documents" => self.handle_list_documents(args),
             "task_search" => self.handle_task_search(args),
             "get_network_metrics" => self.handle_get_network_metrics(args),
+            "top_n_by_metric" => self.handle_top_n_by_metric(args),
             "create_task" => self.handle_create_task(args),
             "claim_task" => self.handle_claim_task(args),
             "create_memory" => self.handle_create_memory(args),
@@ -5994,6 +6072,33 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Get Network Metrics")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "top_n_by_metric",
+                "Return the top N nodes ranked by a specified centrality metric (pagerank, betweenness, degree), optionally filtered by node type.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "metric": {
+                            "type": "string",
+                            "enum": ["pagerank", "betweenness", "degree"],
+                            "description": "Centrality metric to rank by (pagerank, betweenness, degree)"
+                        },
+                        "n": {
+                            "type": "integer",
+                            "description": "Number of top nodes to return (default: 10)",
+                            "minimum": 1
+                        },
+                        "node_type": {
+                            "type": "string",
+                            "description": "Optional node type filter (e.g. 'task', 'epic')"
+                        }
+                    },
+                    "required": ["metric"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Top N Nodes by Centrality Metric")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_task",
@@ -6859,6 +6964,86 @@ mod tests {
     /// AC1 + AC6: the DEFAULT list_tasks output (no sort/order arg) is ordered by
     /// focus_score descending, asserted on the returned values (consecutive
     /// focus_scores are non-increasing), and is stable across repeated calls.
+    #[test]
+    fn test_top_n_by_metric() {
+        let server = build_test_server();
+
+        // 1. Test PageRank top 5
+        let res_pr = server
+            .handle_top_n_by_metric(&json!({
+                "metric": "pagerank",
+                "n": 5
+            }))
+            .unwrap();
+        let pr_text = res_pr.content[0].raw.as_text().unwrap().text.as_str();
+        let pr_val: serde_json::Value = serde_json::from_str(pr_text).unwrap();
+        let pr_arr = pr_val.as_array().unwrap();
+        assert_eq!(pr_arr.len(), 5);
+        // Assert sorting descending
+        let mut prev_val = f64::MAX;
+        for item in pr_arr {
+            let m_val = item.get("metric_value").unwrap().as_f64().unwrap();
+            assert!(m_val <= prev_val, "pagerank must be sorted descending, saw {} then {}", prev_val, m_val);
+            prev_val = m_val;
+            assert!(item.get("id").is_some());
+            assert!(item.get("title").is_some());
+        }
+
+        // 2. Test Betweenness top 3
+        let res_bt = server
+            .handle_top_n_by_metric(&json!({
+                "metric": "betweenness",
+                "n": 3
+            }))
+            .unwrap();
+        let bt_text = res_bt.content[0].raw.as_text().unwrap().text.as_str();
+        let bt_val: serde_json::Value = serde_json::from_str(bt_text).unwrap();
+        let bt_arr = bt_val.as_array().unwrap();
+        assert_eq!(bt_arr.len(), 3);
+        let mut prev_val = f64::MAX;
+        for item in bt_arr {
+            let m_val = item.get("metric_value").unwrap().as_f64().unwrap();
+            assert!(m_val <= prev_val, "betweenness must be sorted descending");
+            prev_val = m_val;
+        }
+
+        // 3. Test Degree top 3
+        let res_deg = server
+            .handle_top_n_by_metric(&json!({
+                "metric": "degree",
+                "n": 3
+            }))
+            .unwrap();
+        let deg_text = res_deg.content[0].raw.as_text().unwrap().text.as_str();
+        let deg_val: serde_json::Value = serde_json::from_str(deg_text).unwrap();
+        let deg_arr = deg_val.as_array().unwrap();
+        assert_eq!(deg_arr.len(), 3);
+        let mut prev_val = f64::MAX;
+        for item in deg_arr {
+            let m_val = item.get("metric_value").unwrap().as_f64().unwrap();
+            assert!(m_val <= prev_val, "degree must be sorted descending");
+            prev_val = m_val;
+        }
+
+        // 4. Test Node type filter (node_type = "project")
+        let res_proj = server
+            .handle_top_n_by_metric(&json!({
+                "metric": "degree",
+                "node_type": "project",
+                "n": 10
+            }))
+            .unwrap();
+        let proj_text = res_proj.content[0].raw.as_text().unwrap().text.as_str();
+        let proj_val: serde_json::Value = serde_json::from_str(proj_text).unwrap();
+        let proj_arr = proj_val.as_array().unwrap();
+        // Since build_project_test_graph has exactly 3 project nodes: proj-alpha, proj-beta, proj-gamma
+        assert_eq!(proj_arr.len(), 3);
+        for item in proj_arr {
+            let id = item.get("id").unwrap().as_str().unwrap();
+            assert!(id.starts_with("proj-"));
+        }
+    }
+
     #[test]
     fn test_list_tasks_default_order_is_focus_desc() {
         let server = build_test_server();
