@@ -1027,13 +1027,23 @@ impl GraphNode {
         let project = fm
             .as_ref()
             .and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
+        // `permalink` is the node's own slug/identifier. Fall back to the `project`
+        // frontmatter field ONLY for project nodes — for a task/epic the `project`
+        // field names its *ancestor* project, not its own permalink, so using it here
+        // would serialize semantically wrong metadata.
         let permalink = fm
             .as_ref()
             .and_then(|f| {
                 f.get("permalink")
                     .and_then(|v| v.as_str())
                     .or_else(|| f.get("slug").and_then(|v| v.as_str()))
-                    .or_else(|| f.get("project").and_then(|v| v.as_str()))
+                    .or_else(|| {
+                        if node_type.as_deref() == Some("project") {
+                            f.get("project").and_then(|v| v.as_str())
+                        } else {
+                            None
+                        }
+                    })
             })
             .map(|s| s.trim().to_string());
         let confidence = fm
