@@ -4624,15 +4624,21 @@ impl PkbSearchServer {
             all
         };
 
-        // Hide terminal tasks by default when no explicit status was requested.
-        if !include_done && status.is_none() {
+        // Hide terminal tasks by default unless explicitly requested via status or include_done
+        let is_explicit_closed_status = status
+            .map(|s| {
+                let canonical = crate::graph::resolve_status_alias(s);
+                canonical == "done" || canonical == "cancelled"
+            })
+            .unwrap_or(false);
+
+        if !include_done && !is_explicit_closed_status {
             tasks.retain(|t| {
                 t.status
                     .as_deref()
                     .map(|s| {
-                        !s.eq_ignore_ascii_case("done")
-                            && !s.eq_ignore_ascii_case("cancelled")
-                            && !s.eq_ignore_ascii_case("canceled")
+                        let canonical = crate::graph::resolve_status_alias(s);
+                        canonical != "done" && canonical != "cancelled"
                     })
                     .unwrap_or(true)
             });
@@ -6790,6 +6796,7 @@ mod tests {
             make_doc_with_priority("tasks/task-a1.md", "Alpha Task 1", "task", "active", "task-a1", Some("proj-alpha"), &[], 1, Some("alice")),
             make_doc_with_priority("tasks/task-a2.md", "Alpha Task 2", "task", "active", "task-a2", Some("proj-alpha"), &["task-a1"], 2, Some("bob")),
             make_doc_with_priority("tasks/task-a3.md", "Alpha Task 3", "task", "done", "task-a3", Some("proj-alpha"), &[], 1, None),
+            make_doc_with_priority("tasks/task-a4.md", "Alpha Task 4", "task", "archived", "task-a4", Some("proj-alpha"), &[], 1, None),
             // ProjectBeta tasks — task-b1 is a leaf with no deps (ready), task-b2 depends on task-b1
             make_doc_with_priority("tasks/task-b1.md", "Beta Task 1", "task", "active", "task-b1", Some("proj-beta"), &[], 1, None),
             make_doc_with_priority("tasks/task-b2.md", "Beta Task 2", "task", "active", "task-b2", Some("proj-beta"), &["task-b1"], 2, None),
@@ -6969,10 +6976,11 @@ mod tests {
             .handle_list_tasks(&json!({"project": "ProjectAlpha", "format": "json"}))
             .unwrap();
         let ids = extract_task_ids(&result);
-        // Default hides done tasks — task-a3 (done) should not appear
+        // Default hides done/cancelled tasks — task-a3 (done) and task-a4 (archived) should not appear
         assert!(ids.contains(&"task-a1".to_string()), "should contain task-a1");
         assert!(ids.contains(&"task-a2".to_string()), "should contain task-a2");
         assert!(!ids.contains(&"task-a3".to_string()), "done task-a3 should be hidden by default");
+        assert!(!ids.contains(&"task-a4".to_string()), "archived task-a4 should be hidden by default");
         // Should NOT contain tasks from other projects
         assert!(!ids.contains(&"task-b1".to_string()), "should not contain task-b1");
         assert!(!ids.contains(&"task-b2".to_string()), "should not contain task-b2");
@@ -6991,6 +6999,31 @@ mod tests {
         assert!(ids.contains(&"task-a1".to_string()), "should contain task-a1");
         assert!(ids.contains(&"task-a2".to_string()), "should contain task-a2");
         assert!(ids.contains(&"task-a3".to_string()), "done task-a3 should appear with include_done=true");
+        assert!(ids.contains(&"task-a4".to_string()), "archived task-a4 should appear with include_done=true");
+    }
+
+    #[test]
+    fn test_done_tasks_no_live_focus_score_urgency() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"project": "ProjectAlpha", "include_done": true, "format": "json"}))
+            .unwrap();
+
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let tasks = parsed.get("tasks").unwrap().as_array().unwrap();
+
+        // Find task-a3 (which is done)
+        let task_a3 = tasks.iter().find(|t| t.get("id").unwrap().as_str() == Some("task-a3")).unwrap();
+
+        assert_eq!(task_a3.get("focus_score"), Some(&serde_json::Value::Null), "done task should have null focus_score");
+        let signals = task_a3.get("signals").unwrap();
+        assert_eq!(signals.get("urgency").unwrap().as_f64(), Some(0.0), "done task should have 0.0 urgency");
     }
 
     #[test]

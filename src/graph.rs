@@ -640,7 +640,9 @@ pub const BLOCKED_STATUSES: &[&str] = &["blocked"];
 
 /// Returns true if the status represents a completed/finished state.
 pub fn is_completed(status: Option<&str>) -> bool {
-    matches!(status, Some("done") | Some("cancelled"))
+    status
+        .map(|s| matches!(resolve_status_alias(s), "done" | "cancelled"))
+        .unwrap_or(false)
 }
 
 /// Returns true when a status closes a node for hierarchy purposes.
