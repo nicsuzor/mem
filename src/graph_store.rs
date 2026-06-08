@@ -580,6 +580,17 @@ impl GraphStore {
             }
         }
 
+        let is_completed = new_node.status.as_deref().map(|s| {
+            let canonical = crate::graph::resolve_status_alias(s);
+            canonical == "done" || canonical == "cancelled"
+        }).unwrap_or(false);
+
+        if is_completed {
+            new_node.urgency = 0.0;
+            new_node.blocking_urgency = 0.0;
+            new_node.focus_score = None;
+        }
+
         if new_node.project.is_some() {
             new_node.parse_warnings.retain(|w| w.field != "project");
         }
@@ -1393,6 +1404,16 @@ impl GraphStore {
     fn compute_focus_scores(nodes: &mut [GraphNode]) {
         let today = chrono::Utc::now().date_naive();
         for node in nodes.iter_mut() {
+            let is_completed = node.status.as_deref().map(|s| {
+                let canonical = crate::graph::resolve_status_alias(s);
+                canonical == "done" || canonical == "cancelled"
+            }).unwrap_or(false);
+
+            if is_completed {
+                node.focus_score = None;
+                continue;
+            }
+
             let pri = node.priority.unwrap_or(2);
             let sev = node.severity.unwrap_or(0);
             let mut score: i64 = match pri {
@@ -2672,6 +2693,16 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
     const SAFE_HORIZON: f64 = 30.0;
     let k = 10.0_f64.ln() / SAFE_HORIZON;
     for i in 0..num_nodes {
+        let is_completed = nodes[i].status.as_deref().map(|s| {
+            let canonical = crate::graph::resolve_status_alias(s);
+            canonical == "done" || canonical == "cancelled"
+        }).unwrap_or(false);
+
+        if is_completed {
+            nodes[i].urgency = 0.0;
+            continue;
+        }
+
         let slack = min_slacks[i];
         // f(Slack): piecewise-exponential with ε=0.001 floor (spec §3.1)
         let f_s = if slack > SAFE_HORIZON {
