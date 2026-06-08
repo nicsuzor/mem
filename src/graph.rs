@@ -196,9 +196,10 @@ pub struct GraphNode {
     /// When the stakeholder started waiting (ISO date). Falls back to `created` if absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_since: Option<String>,
-    /// Computed: label of nearest ancestor with node_type == "project"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permalink: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub goals: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1026,6 +1027,15 @@ impl GraphNode {
         let project = fm
             .as_ref()
             .and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
+        let permalink = fm
+            .as_ref()
+            .and_then(|f| {
+                f.get("permalink")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| f.get("slug").and_then(|v| v.as_str()))
+                    .or_else(|| f.get("project").and_then(|v| v.as_str()))
+            })
+            .map(|s| s.trim().to_string());
         let confidence = fm
             .as_ref()
             .and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
@@ -1165,6 +1175,7 @@ impl GraphNode {
             stakeholder,
             waiting_since,
             project,
+            permalink,
             goals,
             complexity,
             effort,

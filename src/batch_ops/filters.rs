@@ -237,12 +237,21 @@ impl FilterSet {
             }
         }
 
-        // Project filter
         if let Some(ref project) = self.project {
+            let resolved_slug = graph.resolve(project)
+                .filter(|n| n.node_type.as_deref() == Some("project"))
+                .map(|n| n.permalink.clone().unwrap_or_else(|| n.id.clone()));
+
             let matches_project = node
                 .project
                 .as_deref()
-                .is_some_and(|p| p.eq_ignore_ascii_case(project));
+                .is_some_and(|p| {
+                    if let Some(ref slug) = resolved_slug {
+                        p.eq_ignore_ascii_case(slug) || p.eq_ignore_ascii_case(project)
+                    } else {
+                        p.eq_ignore_ascii_case(project)
+                    }
+                });
 
             let include_untagged = self.include_untagged.unwrap_or(false);
             if !matches_project && !(include_untagged && node.project.is_none()) {
