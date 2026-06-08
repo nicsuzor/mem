@@ -85,7 +85,31 @@ fn tool_call_request(id: u64, name: &str, args: Value) -> String {
     )
 }
 
+/// Drive the `pkb mcp` server over stdio, one request/response at a time.
+///
+/// Requests are sent interleaved — each id-bearing request is written and its
+/// response awaited before the next request is sent. That ordering is
+/// load-bearing for this test: `decompose_task` must finish indexing the new
+/// subtask before the following `get_task` runs, and the request round-trip is
+/// what lets indexing settle. (Batching all requests up front reintroduces a
+/// "Task not found" race.)
+///
+/// Robust against the two flake modes the naive "one `read_line` per request"
+/// loop suffered from:
+///   1. A non-JSON line on stdout (e.g. a log line) used to be consumed against
+///      a request slot, dropping that request's real response and misaligning
+///      every later index. Here a background reader keeps only JSON-RPC
+///      response objects (those carrying an `id`) and matches them to the
+///      awaited request id; everything else is skipped.
+///   2. A transient early EOF used to `break` and silently return a short
+///      vector, surfacing later as an opaque `responses[1]` out-of-bounds
+///      panic. Here each await is bounded by a timeout and, on EOF/timeout,
+///      panics with the server's captured stderr so the failure is
+///      diagnosable instead of an index panic.
 fn stdio_session_sequential(aca_path: &std::path::Path, messages: &[String]) -> Vec<Value> {
+    use std::collections::HashMap;
+    use std::sync::{mpsc, Arc, Mutex};
+
     let mut child = Command::new(pkb_binary())
         .args(["mcp"])
         .env("ACA_DATA", aca_path)
@@ -97,8 +121,42 @@ fn stdio_session_sequential(aca_path: &std::path::Path, messages: &[String]) -> 
 
     let mut stdin = child.stdin.take().unwrap();
     let stdout_handle = child.stdout.take().unwrap();
-    let mut reader = std::io::BufReader::new(stdout_handle);
+    let stderr_handle = child.stderr.take().unwrap();
 
+    // Drain stderr in the background so a server-side panic is captured.
+    let stderr_buf = Arc::new(Mutex::new(String::new()));
+    {
+        let buf = stderr_buf.clone();
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = std::io::BufReader::new(stderr_handle).read_to_string(&mut s);
+            *buf.lock().unwrap() = s;
+        });
+    }
+
+    // Background reader: forward every JSON-RPC response object (those carrying
+    // an `id`) to the channel; blank and non-JSON lines are skipped.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(stdout_handle);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(val) = serde_json::from_str::<Value>(&line) {
+                if val.get("id").is_some() && tx.send(val).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let timeout = Duration::from_secs(30);
+    let mut pending: HashMap<u64, Value> = HashMap::new();
     let mut responses = Vec::new();
 
     for msg in messages {
@@ -106,17 +164,35 @@ fn stdio_session_sequential(aca_path: &std::path::Path, messages: &[String]) -> 
         stdin.write_all(b"\n").unwrap();
         stdin.flush().unwrap();
 
-        // If it's a notification, don't wait for a response
-        if !msg.contains("\"id\"") {
-            continue;
-        }
+        // Notifications (no `id`) get no response.
+        let want_id = serde_json::from_str::<Value>(msg)
+            .ok()
+            .and_then(|v| v.get("id").and_then(|id| id.as_u64()));
+        let Some(want_id) = want_id else { continue };
 
-        let mut line = String::new();
-        if reader.read_line(&mut line).unwrap() == 0 {
-            break;
-        }
-        if let Ok(val) = serde_json::from_str::<Value>(&line) {
-            responses.push(val);
+        // Await this request's response, buffering any out-of-order arrivals.
+        loop {
+            if let Some(val) = pending.remove(&want_id) {
+                responses.push(val);
+                break;
+            }
+            match rx.recv_timeout(timeout) {
+                Ok(val) => {
+                    if let Some(id) = val.get("id").and_then(|id| id.as_u64()) {
+                        pending.insert(id, val);
+                    }
+                }
+                Err(_) => {
+                    let err = stderr_buf.lock().unwrap().clone();
+                    child.kill().ok();
+                    child.wait().ok();
+                    panic!(
+                        "stdio session: no response for request id {want_id} within {timeout:?} \
+                         (got {} of the requests answered).\n--- pkb stderr ---\n{err}",
+                        responses.len()
+                    );
+                }
+            }
         }
     }
 
