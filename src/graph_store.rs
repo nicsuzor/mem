@@ -580,12 +580,7 @@ impl GraphStore {
             }
         }
 
-        let is_completed = new_node.status.as_deref().map(|s| {
-            let canonical = crate::graph::resolve_status_alias(s);
-            canonical == "done" || canonical == "cancelled"
-        }).unwrap_or(false);
-
-        if is_completed {
+        if graph::is_completed(new_node.status.as_deref()) {
             new_node.urgency = 0.0;
             new_node.blocking_urgency = 0.0;
             new_node.focus_score = None;
@@ -1404,12 +1399,7 @@ impl GraphStore {
     fn compute_focus_scores(nodes: &mut [GraphNode]) {
         let today = chrono::Utc::now().date_naive();
         for node in nodes.iter_mut() {
-            let is_completed = node.status.as_deref().map(|s| {
-                let canonical = crate::graph::resolve_status_alias(s);
-                canonical == "done" || canonical == "cancelled"
-            }).unwrap_or(false);
-
-            if is_completed {
+            if graph::is_completed(node.status.as_deref()) {
                 node.focus_score = None;
                 continue;
             }
@@ -2693,12 +2683,7 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
     const SAFE_HORIZON: f64 = 30.0;
     let k = 10.0_f64.ln() / SAFE_HORIZON;
     for i in 0..num_nodes {
-        let is_completed = nodes[i].status.as_deref().map(|s| {
-            let canonical = crate::graph::resolve_status_alias(s);
-            canonical == "done" || canonical == "cancelled"
-        }).unwrap_or(false);
-
-        if is_completed {
+        if graph::is_completed(nodes[i].status.as_deref()) {
             nodes[i].urgency = 0.0;
             continue;
         }
