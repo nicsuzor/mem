@@ -1554,13 +1554,27 @@ impl PkbSearchServer {
 
         match metric {
             "pagerank" => {
-                nodes.sort_by(|a, b| b.pagerank.partial_cmp(&a.pagerank).unwrap_or(std::cmp::Ordering::Equal));
+                nodes.sort_by(|a, b| {
+                    b.pagerank
+                        .partial_cmp(&a.pagerank)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
             }
             "betweenness" => {
-                nodes.sort_by(|a, b| b.betweenness.partial_cmp(&a.betweenness).unwrap_or(std::cmp::Ordering::Equal));
+                nodes.sort_by(|a, b| {
+                    b.betweenness
+                        .partial_cmp(&a.betweenness)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
             }
             "degree" => {
-                nodes.sort_by_key(|n| std::cmp::Reverse(n.indegree + n.outdegree));
+                nodes.sort_by(|a, b| {
+                    let deg_a = a.indegree + a.outdegree;
+                    let deg_b = b.indegree + b.outdegree;
+                    deg_b.cmp(&deg_a).then_with(|| a.id.cmp(&b.id))
+                });
             }
             _ => unreachable!(),
         }
