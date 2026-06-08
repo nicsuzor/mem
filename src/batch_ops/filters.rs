@@ -92,9 +92,26 @@ impl FilterSet {
 
         let now = Utc::now().date_naive();
 
+        // Resolve the project filter to a slug once, not per-candidate. `self.project`
+        // is constant for the whole filter pass, and `graph.resolve` is non-trivial.
+        let resolved_project_slug: Option<String> = self.project.as_ref().and_then(|project| {
+            graph
+                .resolve(project)
+                .filter(|n| n.node_type.as_deref() == Some("project"))
+                .map(|n| n.permalink.clone().unwrap_or_else(|| n.id.clone()))
+        });
+
         candidates
             .into_iter()
-            .filter(|node| self.matches_node(node, graph, subtree_ids.as_ref(), now))
+            .filter(|node| {
+                self.matches_node(
+                    node,
+                    graph,
+                    subtree_ids.as_ref(),
+                    resolved_project_slug.as_deref(),
+                    now,
+                )
+            })
             .map(|node| node.id.clone())
             .collect()
     }
@@ -166,6 +183,7 @@ impl FilterSet {
         node: &GraphNode,
         graph: &GraphStore,
         subtree_ids: Option<&HashSet<String>>,
+        resolved_project_slug: Option<&str>,
         now: NaiveDate,
     ) -> bool {
         // Parent filter (direct children only)
@@ -237,12 +255,17 @@ impl FilterSet {
             }
         }
 
-        // Project filter
         if let Some(ref project) = self.project {
             let matches_project = node
                 .project
                 .as_deref()
-                .is_some_and(|p| p.eq_ignore_ascii_case(project));
+                .is_some_and(|p| {
+                    if let Some(slug) = resolved_project_slug {
+                        p.eq_ignore_ascii_case(slug) || p.eq_ignore_ascii_case(project)
+                    } else {
+                        p.eq_ignore_ascii_case(project)
+                    }
+                });
 
             let include_untagged = self.include_untagged.unwrap_or(false);
             if !matches_project && !(include_untagged && node.project.is_none()) {

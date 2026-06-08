@@ -2117,9 +2117,13 @@ fn compute_project_field(nodes: &mut [GraphNode], edges: &[Edge]) {
             continue;
         }
 
-        // 1. If this node IS a project, its own project is its own label
+        // 1. If this node IS a project, its own project is its own slug/permalink
         if nodes[i].node_type.as_deref() == Some("project") {
-            project_labels[i] = Some(nodes[i].label.clone());
+            let slug = nodes[i]
+                .permalink
+                .clone()
+                .unwrap_or_else(|| nodes[i].id.clone());
+            project_labels[i] = Some(slug);
             continue;
         }
 
@@ -2140,7 +2144,11 @@ fn compute_project_field(nodes: &mut [GraphNode], edges: &[Edge]) {
                 break; // cycle guard
             }
             if nodes[curr_idx].node_type.as_deref() == Some("project") {
-                project_labels[i] = Some(nodes[curr_idx].label.clone());
+                let slug = nodes[curr_idx]
+                    .permalink
+                    .clone()
+                    .unwrap_or_else(|| nodes[curr_idx].id.clone());
+                project_labels[i] = Some(slug);
                 break;
             }
             for &neighbor_idx in &adj[curr_idx] {
@@ -4144,9 +4152,9 @@ mod tests {
         let c = graph.get_node("task-c").unwrap();
         let d = graph.get_node("task-d").unwrap();
 
-        assert_eq!(a.project.as_deref(), Some("Project A"));
+        assert_eq!(a.project.as_deref(), Some("project-a"));
         assert_eq!(b.project.as_deref(), Some("Wrong Project"), "Epic B should keep its explicit 'Wrong Project'");
-        assert_eq!(c.project.as_deref(), Some("Project A"), "Task C should inherit Project A via Epic B (nearest project ancestor)");
+        assert_eq!(c.project.as_deref(), Some("project-a"), "Task C should inherit Project A via Epic B (nearest project ancestor)");
         assert_eq!(d.project.as_deref(), Some("Project E"), "Task D should keep its explicit 'Project E'");
     }
 
@@ -4783,8 +4791,47 @@ mod tests {
         );
         assert_eq!(
             node.project.as_deref(),
-            Some("Project X"),
-            "resolved project label should be the project node's title"
+            Some("proj-x"),
+            "resolved project label should be the project node's slug/id"
+        );
+    }
+
+    #[test]
+    fn test_compute_project_field_resolves_to_permalink() {
+        let mut fm_proj = serde_json::Map::new();
+        fm_proj.insert("type".to_string(), serde_json::json!("project"));
+        fm_proj.insert("id".to_string(), serde_json::json!("tja-951bc29c"));
+        fm_proj.insert("permalink".to_string(), serde_json::json!("tja"));
+
+        let project_node = PkbDocument {
+            path: std::path::PathBuf::from("projects/tja.md"),
+            title: "Trans Journalists Association".to_string(),
+            body: String::new(),
+            doc_type: Some("project".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_proj)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        };
+
+        let task_node = make_doc(
+            "tasks/task-tja.md",
+            "Some TJA Task",
+            "task",
+            "ready",
+            "task-tja",
+            Some("tja-951bc29c"),
+            &[],
+        );
+
+        let store = GraphStore::build(&[project_node, task_node], Path::new("/tmp/test-pkb-tja"));
+        let node = store.get_node("task-tja").expect("task-tja should exist");
+        assert_eq!(
+            node.project.as_deref(),
+            Some("tja"),
+            "resolved project should be the project node's permalink/slug"
         );
     }
 }

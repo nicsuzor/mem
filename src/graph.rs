@@ -196,9 +196,12 @@ pub struct GraphNode {
     /// When the stakeholder started waiting (ISO date). Falls back to `created` if absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_since: Option<String>,
-    /// Computed: label of nearest ancestor with node_type == "project"
+    /// Computed: slug/permalink of nearest ancestor with node_type == "project". Set by `compute_project_field` during graph build.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// Node's own permalink/slug from frontmatter (`permalink` or `slug` key); falls back to `id` where absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permalink: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub goals: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1026,6 +1029,25 @@ impl GraphNode {
         let project = fm
             .as_ref()
             .and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
+        // `permalink` is the node's own slug/identifier. Fall back to the `project`
+        // frontmatter field ONLY for project nodes — for a task/epic the `project`
+        // field names its *ancestor* project, not its own permalink, so using it here
+        // would serialize semantically wrong metadata.
+        let permalink = fm
+            .as_ref()
+            .and_then(|f| {
+                f.get("permalink")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| f.get("slug").and_then(|v| v.as_str()))
+                    .or_else(|| {
+                        if node_type.as_deref() == Some("project") {
+                            f.get("project").and_then(|v| v.as_str())
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .map(|s| s.trim().to_string());
         let confidence = fm
             .as_ref()
             .and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
@@ -1165,6 +1187,7 @@ impl GraphNode {
             stakeholder,
             waiting_since,
             project,
+            permalink,
             goals,
             complexity,
             effort,

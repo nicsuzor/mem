@@ -4661,10 +4661,20 @@ impl PkbSearchServer {
             });
         }
         if let Some(p) = project {
+            let resolved_slug = graph.resolve(p)
+                .filter(|n| n.node_type.as_deref() == Some("project"))
+                .map(|n| n.permalink.clone().unwrap_or_else(|| n.id.clone()));
+
             tasks.retain(|t| {
                 t.project
                     .as_deref()
-                    .map(|pr| pr.eq_ignore_ascii_case(p))
+                    .map(|pr| {
+                        if let Some(ref slug) = resolved_slug {
+                            pr.eq_ignore_ascii_case(slug) || pr.eq_ignore_ascii_case(p)
+                        } else {
+                            pr.eq_ignore_ascii_case(p)
+                        }
+                    })
                     .unwrap_or(false)
             });
         }
