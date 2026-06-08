@@ -40,7 +40,12 @@ pub fn compute_degrees(node_ids: &[String], edges: &[Edge]) -> HashMap<String, (
 /// Exact computation, O(V*E). Trivial at ~3.4k nodes.
 /// Considers all edge types equally.
 pub fn compute_betweenness_centrality(node_ids: &[String], edges: &[Edge]) -> HashMap<String, f64> {
+    use rayon::prelude::*;
+
     let n = node_ids.len();
+    if n == 0 {
+        return HashMap::new();
+    }
     let id_to_idx: HashMap<&str, usize> = node_ids
         .iter()
         .enumerate()
@@ -58,45 +63,56 @@ pub fn compute_betweenness_centrality(node_ids: &[String], edges: &[Edge]) -> Ha
         }
     }
 
-    let mut cb = vec![0.0f64; n];
+    let cb: Vec<f64> = (0..n)
+        .into_par_iter()
+        .map(|s| {
+            let mut local_cb = vec![0.0f64; n];
+            // BFS from s
+            let mut stack: Vec<usize> = Vec::new();
+            let mut pred: Vec<Vec<usize>> = vec![Vec::new(); n];
+            let mut sigma = vec![0.0f64; n];
+            let mut dist = vec![-1i64; n];
 
-    for s in 0..n {
-        // BFS from s
-        let mut stack: Vec<usize> = Vec::new();
-        let mut pred: Vec<Vec<usize>> = vec![Vec::new(); n];
-        let mut sigma = vec![0.0f64; n];
-        let mut dist = vec![-1i64; n];
+            sigma[s] = 1.0;
+            dist[s] = 0;
+            let mut queue: VecDeque<usize> = VecDeque::new();
+            queue.push_back(s);
 
-        sigma[s] = 1.0;
-        dist[s] = 0;
-        let mut queue: VecDeque<usize> = VecDeque::new();
-        queue.push_back(s);
-
-        while let Some(v) = queue.pop_front() {
-            stack.push(v);
-            for &w in &adj[v] {
-                if dist[w] < 0 {
-                    dist[w] = dist[v] + 1;
-                    queue.push_back(w);
+            while let Some(v) = queue.pop_front() {
+                stack.push(v);
+                for &w in &adj[v] {
+                    if dist[w] < 0 {
+                        dist[w] = dist[v] + 1;
+                        queue.push_back(w);
+                    }
+                    if dist[w] == dist[v] + 1 {
+                        sigma[w] += sigma[v];
+                        pred[w].push(v);
+                    }
                 }
-                if dist[w] == dist[v] + 1 {
-                    sigma[w] += sigma[v];
-                    pred[w].push(v);
+            }
+
+            // Back-propagation
+            let mut delta = vec![0.0f64; n];
+            while let Some(w) = stack.pop() {
+                for &v in &pred[w] {
+                    delta[v] += (sigma[v] / sigma[w]) * (1.0 + delta[w]);
+                }
+                if w != s {
+                    local_cb[w] += delta[w];
                 }
             }
-        }
-
-        // Back-propagation
-        let mut delta = vec![0.0f64; n];
-        while let Some(w) = stack.pop() {
-            for &v in &pred[w] {
-                delta[v] += (sigma[v] / sigma[w]) * (1.0 + delta[w]);
-            }
-            if w != s {
-                cb[w] += delta[w];
-            }
-        }
-    }
+            local_cb
+        })
+        .reduce(
+            || vec![0.0f64; n],
+            |mut a, b| {
+                for (x, y) in a.iter_mut().zip(b.iter()) {
+                    *x += y;
+                }
+                a
+            },
+        );
 
     // Normalize (undirected normalization: divide by (n-1)(n-2))
     let norm = if n > 2 {

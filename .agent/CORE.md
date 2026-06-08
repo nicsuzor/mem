@@ -26,7 +26,7 @@ Semantic search + knowledge graph MCP server for a personal knowledge base (PKB)
 ```
 src/
   cli.rs           — main() for pkb binary (CLI + MCP server via `pkb mcp`)
-  mcp_server.rs    — MCP ServerHandler: 37 tools, dispatch, tool registrations
+  mcp_server.rs    — MCP ServerHandler: 38 tools, dispatch, tool registrations
   graph_store.rs   — GraphStore: builds/queries knowledge graph from PKB docs
   graph.rs         — GraphNode (fields include stakeholder, waiting_since), Edge, EdgeType, link resolution helpers
   graph_display.rs — Graph rendering/display utilities
@@ -43,7 +43,7 @@ src/
   lib.rs           — Library root
 ```
 
-## MCP Tools (37)
+## MCP Tools (38)
 
 ### Search
 - `search` — hybrid semantic + graph-proximity
@@ -65,6 +65,7 @@ src/
 - `get_dependency_tree` — upstream/downstream dependency tree
 - `get_task_children` — direct/recursive children with completion counts
 - `get_network_metrics` — centrality metrics for a node
+- `top_n_by_metric` — top N nodes ranked by centrality metric (pagerank, betweenness, degree), with optional node_type filter
 - `task_summary` — summary statistics for tasks
 
 ### Memory
