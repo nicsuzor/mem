@@ -196,8 +196,10 @@ pub struct GraphNode {
     /// When the stakeholder started waiting (ISO date). Falls back to `created` if absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_since: Option<String>,
+    /// Computed: slug/permalink of nearest ancestor with node_type == "project". Set by `compute_project_field` during graph build.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// Node's own permalink/slug from frontmatter (`permalink` or `slug` key); falls back to `id` where absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permalink: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
