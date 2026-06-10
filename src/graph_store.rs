@@ -1120,16 +1120,60 @@ impl GraphStore {
     // Analysis tools
     // -----------------------------------------------------------------------
 
-    /// Find orphan nodes (nodes with no valid parent).
+    /// Find orphan nodes (nodes disconnected from the graph).
     ///
-    /// A node is an orphan if its `parent` field is either absent or references
-    /// an ID that doesn't exist in the graph.
+    /// Orphan-ness is **type-aware**, reflecting the two structural models the
+    /// PKB uses (SSoT: `specs/pkb-server-spec.md`, "Orphan Detection"):
+    ///
+    /// - **Actionable types** (`ACTIONABLE_TYPES`: task/epic/project/learn/pr)
+    ///   live in a *tree* whose backbone is the `parent` field. One of these is
+    ///   an orphan iff its `parent` is absent or dangling — having dependency or
+    ///   link edges does NOT excuse a missing hierarchy parent. This preserves
+    ///   task-hygiene detection and keeps `pkb_orphans`'s default in step with
+    ///   `graph_stats.orphan_count`.
+    /// - **All other types** — knowledge nodes (memory/note), out-of-tree
+    ///   strategic nodes (goal/target), and untyped documents — live in a *web*
+    ///   of associations. One of these is an orphan only if it has no valid
+    ///   parent AND no deliberate structural edge (any edge except the
+    ///   auto-computed `SimilarTo` similarity edges) connecting it to another
+    ///   node, in either direction: an inbound edge rescues a node just as an
+    ///   outbound one does. A memory carrying a `[[wikilink]]` to a related
+    ///   concept is thus correctly *not* an orphan, and neither is a parentless
+    ///   goal that work `contributes_to`.
     pub fn orphans(&self) -> Vec<&GraphNode> {
+        // IDs touched (as source or target) by a deliberate structural edge.
+        // `SimilarTo` is excluded: semantic similarity is auto-derived, not an
+        // intentional link, so it must not silently un-orphan a node.
+        let mut linked = HashSet::with_capacity(self.edges.len());
+        for e in &self.edges {
+            if e.edge_type != EdgeType::SimilarTo {
+                linked.insert(e.source.as_str());
+                linked.insert(e.target.as_str());
+            }
+        }
+
         self.nodes
             .values()
-            .filter(|n| match &n.parent {
-                None => true,
-                Some(pid) => !self.nodes.contains_key(pid.as_str()),
+            .filter(|n| {
+                let has_valid_parent = match &n.parent {
+                    None => false,
+                    Some(pid) => self.nodes.contains_key(pid.as_str()),
+                };
+                if has_valid_parent {
+                    return false;
+                }
+                // No valid parent. Actionable nodes are orphans regardless of
+                // other edges; knowledge nodes are rescued by any structural edge.
+                let is_actionable = n
+                    .node_type
+                    .as_deref()
+                    .map(|t| ACTIONABLE_TYPES.contains(&t))
+                    .unwrap_or(false);
+                if is_actionable {
+                    true
+                } else {
+                    !linked.contains(n.id.as_str())
+                }
             })
             .collect()
     }
@@ -3321,6 +3365,250 @@ mod tests {
             content_hash: "test_hash".to_string(),
             file_hash: "test_hash".to_string(),
         }
+    }
+
+    /// A memory-type document with a freeform `body`. Used to exercise the
+    /// wikilink -> Link-edge -> orphan-detection path (the `/remember` quick
+    /// path leans on body wikilinks rather than a structured parent field).
+    fn make_memory_doc(path: &str, title: &str, id: &str, body: &str) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), serde_json::json!(title));
+        fm.insert("type".to_string(), serde_json::json!("memory"));
+        fm.insert("id".to_string(), serde_json::json!(id));
+
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: body.to_string(),
+            doc_type: Some("memory".to_string()),
+            status: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_memory_with_wikilink_is_not_orphan() {
+        // AC: a memory created via the recommended quick path with one related
+        // node (a body wikilink) must NOT be reported as an orphan.
+        let docs = vec![
+            make_doc(
+                "tasks/epic-1.md",
+                "Epic One",
+                "epic",
+                "active",
+                "epic-1",
+                None,
+                &[],
+            ),
+            make_memory_doc(
+                "memory/linked-note.md",
+                "Linked Note",
+                "linked-note",
+                "A fact about [[epic-1]] worth remembering.",
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        // Sanity: the wikilink actually produced a Link edge.
+        let linked = graph
+            .resolve("linked-note")
+            .expect("memory node should exist");
+        assert!(
+            graph
+                .edges()
+                .iter()
+                .any(|e| e.source == linked.id
+                    && e.target == "epic-1"
+                    && e.edge_type == EdgeType::Link),
+            "body wikilink should produce a Link edge"
+        );
+
+        let orphan_ids: HashSet<&str> = graph.orphans().iter().map(|n| n.id.as_str()).collect();
+        assert!(
+            !orphan_ids.contains("linked-note"),
+            "a memory with a wikilink to a related node must not be an orphan"
+        );
+    }
+
+    #[test]
+    fn test_memory_without_links_is_orphan() {
+        // A genuinely disconnected memory (no parent, no links) is still an orphan.
+        let docs = vec![
+            make_doc(
+                "tasks/epic-1.md",
+                "Epic One",
+                "epic",
+                "active",
+                "epic-1",
+                None,
+                &[],
+            ),
+            make_memory_doc(
+                "memory/lonely-note.md",
+                "Lonely Note",
+                "lonely-note",
+                "A fact with no links at all.",
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let orphan_ids: HashSet<&str> = graph.orphans().iter().map(|n| n.id.as_str()).collect();
+        assert!(
+            orphan_ids.contains("lonely-note"),
+            "a memory with no parent and no links must be reported as an orphan"
+        );
+    }
+
+    #[test]
+    fn test_actionable_task_without_parent_is_orphan_despite_deps() {
+        // Task hygiene is unchanged: an actionable node with no hierarchy parent
+        // is an orphan even though it has dependency edges (web edges do not
+        // excuse a missing tree parent). This keeps pkb_orphans in step with
+        // graph_stats.orphan_count.
+        let graph = build_test_graph();
+        let orphan_ids: HashSet<&str> = graph.orphans().iter().map(|n| n.id.as_str()).collect();
+        // task-c has a depends_on edge but no parent -> still an orphan.
+        assert!(
+            orphan_ids.contains("task-c"),
+            "parentless task must remain an orphan despite dependency edges"
+        );
+        // task-a is parented under epic-1 -> not an orphan.
+        assert!(
+            !orphan_ids.contains("task-a"),
+            "parented task must not be an orphan"
+        );
+    }
+
+    #[test]
+    fn test_memory_similarity_edge_does_not_unorphan() {
+        // SimilarTo edges are auto-derived and must NOT rescue a node from
+        // orphan status — only deliberate structural edges do.
+        let docs = vec![make_memory_doc(
+            "memory/solo-note.md",
+            "Solo Note",
+            "solo-note",
+            "No deliberate links here.",
+        )];
+        let mut graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        // Inject a phantom SimilarTo edge (as the similarity pass would).
+        graph.edges.push(Edge {
+            source: "solo-note".to_string(),
+            target: "some-other-node".to_string(),
+            edge_type: EdgeType::SimilarTo,
+        });
+
+        let orphan_ids: HashSet<&str> = graph.orphans().iter().map(|n| n.id.as_str()).collect();
+        assert!(
+            orphan_ids.contains("solo-note"),
+            "a SimilarTo edge must not un-orphan a node"
+        );
+    }
+
+    #[test]
+    fn test_memory_inbound_link_rescues() {
+        // Connectivity counts in either direction: a memory with no outbound
+        // links is still rescued when another node wikilinks TO it. (Pins the
+        // spec's "in either direction" clause; /remember-contract enforcement
+        // of outbound links is a separate, downstream concern.)
+        let docs = vec![
+            make_memory_doc(
+                "memory/hub-note.md",
+                "Hub Note",
+                "hub-note",
+                "See also [[quiet-note]].",
+            ),
+            make_memory_doc(
+                "memory/quiet-note.md",
+                "Quiet Note",
+                "quiet-note",
+                "No outbound links here.",
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let orphan_ids: HashSet<&str> = graph.orphans().iter().map(|n| n.id.as_str()).collect();
+        assert!(
+            !orphan_ids.contains("quiet-note"),
+            "a memory that is the target of another node's wikilink must not be an orphan"
+        );
+        assert!(
+            !orphan_ids.contains("hub-note"),
+            "the linking memory must not be an orphan either"
+        );
+    }
+
+    #[test]
+    fn test_goal_with_inbound_contributes_to_is_not_orphan() {
+        // Out-of-tree strategic nodes (goal/target) are deliberately parentless;
+        // an inbound ContributesTo edge from work is a deliberate structural
+        // edge and must rescue them from orphan status.
+        let mut goal_fm = serde_json::Map::new();
+        goal_fm.insert("title".to_string(), serde_json::json!("Goal One"));
+        goal_fm.insert("type".to_string(), serde_json::json!("goal"));
+        goal_fm.insert("id".to_string(), serde_json::json!("goal-1"));
+        let goal_doc = PkbDocument {
+            path: PathBuf::from("goals/goal-1.md"),
+            title: "Goal One".to_string(),
+            body: String::new(),
+            doc_type: Some("goal".to_string()),
+            status: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(goal_fm)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        };
+
+        let mut task_fm = serde_json::Map::new();
+        task_fm.insert("title".to_string(), serde_json::json!("Task A"));
+        task_fm.insert("type".to_string(), serde_json::json!("task"));
+        task_fm.insert("status".to_string(), serde_json::json!("active"));
+        task_fm.insert("id".to_string(), serde_json::json!("task-ct"));
+        task_fm.insert(
+            "contributes_to".to_string(),
+            serde_json::json!([{"to": "goal-1"}]),
+        );
+        let task_doc = PkbDocument {
+            path: PathBuf::from("tasks/task-ct.md"),
+            title: "Task A".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(task_fm)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        };
+
+        let graph = GraphStore::build(&[goal_doc, task_doc], Path::new("/tmp/test-pkb"));
+
+        // Sanity: the contributes_to frontmatter produced a ContributesTo edge.
+        assert!(
+            graph
+                .edges()
+                .iter()
+                .any(|e| e.source == "task-ct"
+                    && e.target == "goal-1"
+                    && e.edge_type == EdgeType::ContributesTo),
+            "contributes_to frontmatter should produce a ContributesTo edge"
+        );
+
+        let orphan_ids: HashSet<&str> = graph.orphans().iter().map(|n| n.id.as_str()).collect();
+        assert!(
+            !orphan_ids.contains("goal-1"),
+            "a parentless goal with an inbound ContributesTo edge must not be an orphan"
+        );
+        // The task itself is actionable and parentless -> still an orphan
+        // (tree rule unaffected by its outbound web edge).
+        assert!(
+            orphan_ids.contains("task-ct"),
+            "the contributing task remains an orphan under the actionable tree rule"
+        );
     }
 
     /// Build a small test graph:
