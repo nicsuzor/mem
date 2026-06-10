@@ -4448,9 +4448,28 @@ mod tests {
         marking.urgency = 10000.0;
         marking.voi_value = None; // re-keyed VoI: no dependents -> 0 (was 5000)
 
-        let mut nodes = vec![jolt, marking];
+        // task-ethics-8b89a1ae — overdue QUT ethics progress report. A leaf
+        // contributing to a compliance target, with a `consequence`, no stakeholder,
+        // no dependents. Inputs: due 14d overdue, created 44d ago, urgency 1000,
+        // VoI 2000 (OLD, leaked). Under main (post-#426: consequence no longer
+        // multiplies the deadline) + this change (VoI -> 0): deadline 10800 +
+        // staleness 44 + urgency 1000 = 11844. The task AC asks JOLT to land
+        // "roughly level with the ethics compliance task" — this asserts it.
+        let mut ethics = GraphNode::default();
+        ethics.priority = Some(2);
+        ethics.due = Some(ago(14));
+        ethics.created = Some(ago(44));
+        ethics.consequence = Some("compliance exposure".to_string()); // ignored by deadline (#426)
+        ethics.urgency = 1000.0;
+        ethics.voi_value = None; // re-keyed VoI: no dependents -> 0 (was 2000)
+
+        let mut nodes = vec![jolt, marking, ethics];
         GraphStore::compute_focus_scores(&mut nodes);
-        let (jolt_new, marking_new) = (nodes[0].focus_score.unwrap(), nodes[1].focus_score.unwrap());
+        let (jolt_new, marking_new, ethics_new) = (
+            nodes[0].focus_score.unwrap(),
+            nodes[1].focus_score.unwrap(),
+            nodes[2].focus_score.unwrap(),
+        );
 
         // (1) JOLT falls into the 12–14k band, down from the live 23287.
         assert_eq!(jolt_new, 12900, "JOLT re-scores to 12900 (deadline 10800 + stakeholder base 2000 + urgency 100)");
@@ -4464,6 +4483,10 @@ mod tests {
         // The SEV4 target itself (task-9c33dd1b, live 116080: severity 100000 +
         // urgency 10000 + …) is untouched by this change (non-leaf target, no
         // stakeholder, no VoI) and remains the unmistakable global #1.
+
+        // (3) JOLT lands roughly level with the ethics compliance task (task AC).
+        assert_eq!(ethics_new, 11844, "ethics re-scores to 11844 (deadline 10800 + staleness 44 + urgency 1000)");
+        assert!((jolt_new - ethics_new).abs() < 2000, "JOLT must be roughly level with the ethics task");
     }
 
     #[test]
