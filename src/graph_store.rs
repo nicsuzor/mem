@@ -1144,12 +1144,13 @@ impl GraphStore {
         // IDs touched (as source or target) by a deliberate structural edge.
         // `SimilarTo` is excluded: semantic similarity is auto-derived, not an
         // intentional link, so it must not silently un-orphan a node.
-        let linked: HashSet<&str> = self
-            .edges
-            .iter()
-            .filter(|e| e.edge_type != EdgeType::SimilarTo)
-            .flat_map(|e| [e.source.as_str(), e.target.as_str()])
-            .collect();
+        let mut linked = HashSet::with_capacity(self.edges.len());
+        for e in &self.edges {
+            if e.edge_type != EdgeType::SimilarTo {
+                linked.insert(e.source.as_str());
+                linked.insert(e.target.as_str());
+            }
+        }
 
         self.nodes
             .values()
