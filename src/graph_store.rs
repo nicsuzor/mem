@@ -1475,7 +1475,7 @@ impl GraphStore {
                         .and_then(crate::graph::parse_effort_days)
                         .unwrap_or(3);
 
-                    let mut deadline_score = if days_until < 0 {
+                    let deadline_score = if days_until < 0 {
                         8000 + std::cmp::min((-days_until) * 200, 4000)
                     } else {
                         let ratio = effort_days as f64 / (days_until.max(1) as f64);
@@ -1491,9 +1491,10 @@ impl GraphStore {
                         }
                     };
 
-                    if node.consequence.is_some() {
-                        deadline_score = (deadline_score as f64 * 1.5) as i64;
-                    }
+                    // Stakes do NOT enter the deadline term via consequence prose.
+                    // `consequence` is explanatory prose (TAXONOMY.md L159); the sanctioned
+                    // stakes channel is target `severity` reaching tasks through
+                    // `contributes_to` edges (Birnbaum-weighted, slack-discounted).
                     score += deadline_score;
                 }
             }
@@ -4284,14 +4285,22 @@ mod tests {
         );
         assert_eq!(nodes[5].focus_score.unwrap(), 0);
 
-        // Consequence multiplier: +50% on deadline score
+        // Consequence presence must NOT alter the deadline term.
+        // `consequence` is explanatory prose, not a scoring lever; stakes flow via
+        // target severity through `contributes_to` edges (TAXONOMY.md L159, L282-300).
+        // A task identical to scenario 2 (effort=1d, due tomorrow -> +6000) but carrying
+        // a consequence string must score exactly the same.
         let mut node7 = GraphNode::default();
         node7.due = Some(tomorrow.format("%Y-%m-%d").to_string());
         node7.effort = Some("1d".to_string());
         node7.consequence = Some("high".to_string());
         let mut nodes7 = vec![node7];
         GraphStore::compute_focus_scores(&mut nodes7);
-        assert_eq!(nodes7[0].focus_score.unwrap(), 9000);
+        assert_eq!(
+            nodes7[0].focus_score.unwrap(),
+            6000,
+            "consequence presence must not change the deadline term (was inflated ×1.5 to 9000)"
+        );
 
         // Scenario 8: Overdue by 2 days: +8000 + 2*200 = 8400
         let mut node8 = GraphNode::default();
