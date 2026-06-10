@@ -1455,6 +1455,11 @@ impl GraphStore {
                 1 => 5000,
                 _ => 0,
             };
+            // Whether a hard `due` produced a positive deadline ramp this pass.
+            // When true, lateness is already counted by the deadline ramp, so the
+            // stakeholder-waiting ramp drops its per-day growth (see below) to avoid
+            // double-counting the same "late to an external party" fact (mem-830588f3).
+            let mut deadline_ramp_fired = false;
             // Severity bonus (lexicographic for SEV4)
             score += match sev {
                 4 => 100000,
@@ -1496,6 +1501,7 @@ impl GraphStore {
                     // stakes channel is target `severity` reaching tasks through
                     // `contributes_to` edges (Birnbaum-weighted, slack-discounted).
                     score += deadline_score;
+                    deadline_ramp_fired = deadline_score > 0;
                 }
             }
             if pri >= 2 {
@@ -1513,21 +1519,33 @@ impl GraphStore {
             score += (node.downstream_weight * 10.0) as i64;
             // Stakeholder waiting urgency: someone external is waiting on this task.
             // Base +2000 (someone is waiting at all), growing +200/day, capped at +8000 total.
+            //
+            // The per-day growth is the *lateness* signal. When a hard `due` already
+            // fired the deadline ramp, that lateness is counted there — so we suppress
+            // the per-day growth and keep only the +2000 base, avoiding the additive
+            // double-count of one "late to an external party" fact (mem-830588f3). The
+            // ramp's distinct job is the "I promised, but there's no formal deadline"
+            // case, which has no `due` and so keeps its full time-growth.
             if node.stakeholder.is_some() {
-                let anchor = node.waiting_since.as_ref().or(node.created.as_ref());
-                if let Some(anchor_str) = anchor {
-                    let len = std::cmp::min(10, anchor_str.len());
-                    if let Ok(anchor_date) = chrono::NaiveDate::parse_from_str(
-                        &anchor_str[..anchor_str.floor_char_boundary(len)],
-                        "%Y-%m-%d",
-                    ) {
-                        let days = (today - anchor_date).num_days().max(0);
-                        score += 2000 + std::cmp::min(days * 200, 6000);
-                    } else {
-                        score += 2000; // stakeholder set but unparseable date
-                    }
+                if deadline_ramp_fired {
+                    // Deadline ramp already counts the lateness; keep only the base.
+                    score += 2000;
                 } else {
-                    score += 2000; // stakeholder set but no date at all
+                    let anchor = node.waiting_since.as_ref().or(node.created.as_ref());
+                    if let Some(anchor_str) = anchor {
+                        let len = std::cmp::min(10, anchor_str.len());
+                        if let Ok(anchor_date) = chrono::NaiveDate::parse_from_str(
+                            &anchor_str[..anchor_str.floor_char_boundary(len)],
+                            "%Y-%m-%d",
+                        ) {
+                            let days = (today - anchor_date).num_days().max(0);
+                            score += 2000 + std::cmp::min(days * 200, 6000);
+                        } else {
+                            score += 2000; // stakeholder set but unparseable date
+                        }
+                    } else {
+                        score += 2000; // stakeholder set but no date at all
+                    }
                 }
             }
             score += node.urgency.round() as i64;
@@ -2502,8 +2520,28 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
 /// Compute Value of Information (VoI) term for each node.
 ///
 /// Formula: VoI(x) = K_voi * is_leaf(x) * dep_resolution_ratio(x)
-///                   * Σ_{d} uncertainty(d) * edge_weight(x->d) * downstream_weight(d)
+///                   * Σ_{d ∈ dependents(x)} uncertainty(d) * downstream_weight(d)
 ///                   / max(effort_days(x), 0.5)
+///
+/// VoI rewards uncertainty-resolving work (spikes/probes) that *unblocks a
+/// downstream cone*. The Σ-domain is therefore the set of **dependents** of `x`
+/// — tasks that `depends_on` x (materialised as `x.blocks` via `compute_inverses`)
+/// — i.e. the information channel: doing x lets that downstream work proceed.
+///
+/// This deliberately does NOT key off `contributes_to` targets. A pure
+/// deliverable wired to a busy, slightly-uncertain target resolves no
+/// uncertainty for downstream work and must score ~0 VoI; its importance is
+/// already carried by the severity/criticality channel (target severity reaching
+/// the task through `contributes_to`). Keying off `contributes_to.downstream_weight`
+/// re-counted that same importance (mem-830588f3).
+///
+/// Two distinct dependency directions, never conflated:
+/// - `dep_resolution_ratio` keys on **x's own `depends_on`** (upstream readiness:
+///   how much of what x waits on is resolved). A blocked x cannot realise its VoI yet.
+/// - the Σ-sum keys on **x's dependents** (`x.blocks`, downstream: what waits on x).
+///
+/// Edge weight is 1.0: `depends_on`/`blocks` are hard binary dependencies with no
+/// verbal-scale weight (unlike `contributes_to`).
 fn compute_voi_term(nodes: &mut [GraphNode]) {
     let id_to_idx: HashMap<String, usize> = nodes
         .iter()
@@ -2519,6 +2557,7 @@ fn compute_voi_term(nodes: &mut [GraphNode]) {
             continue;
         }
 
+        // Upstream readiness: discount VoI by how much of x's own deps are unresolved.
         let mut dep_resolution_ratio = 1.0;
         let total_deps = node.depends_on.len();
         if total_deps > 0 {
@@ -2534,14 +2573,13 @@ fn compute_voi_term(nodes: &mut [GraphNode]) {
             dep_resolution_ratio = resolved_deps as f64 / total_deps as f64;
         }
 
+        // Downstream cone: sum over the tasks that depend on x (x.blocks). With no
+        // dependents the sum is 0 → VoI = 0 (legacy zero-condition, re-keyed AC-9).
         let mut sum_downstream = 0.0;
-        for ct in &node.contributes_to {
-            if let Some(target_id) = &ct.resolved_to {
-                if let Some(&t_idx) = id_to_idx.get(target_id) {
-                    let target = &nodes[t_idx];
-                    let w = ct.numeric_weight();
-                    sum_downstream += target.uncertainty * w * target.downstream_weight;
-                }
+        for dep_id in &node.blocks {
+            if let Some(&d_idx) = id_to_idx.get(dep_id) {
+                let dependent = &nodes[d_idx];
+                sum_downstream += dependent.uncertainty * dependent.downstream_weight;
             }
         }
 
@@ -4314,6 +4352,143 @@ mod tests {
         assert_eq!(nodes8[0].focus_score.unwrap(), 8400);
     }
 
+    /// mem-830588f3 defect 1: when a task has BOTH a hard `due` and a
+    /// `stakeholder`, the overdue-deadline ramp and the stakeholder-waiting ramp
+    /// must NOT both count the same lateness. The deadline ramp owns lateness; the
+    /// stakeholder ramp keeps only its +2000 "someone is waiting" base. A
+    /// stakeholder with NO `due` keeps its full per-day growth (its distinct job:
+    /// "I promised, but there's no formal deadline").
+    #[test]
+    fn test_deadline_and_stakeholder_do_not_double_count_lateness() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        let d28_ago = (today - chrono::Duration::days(28)).format("%Y-%m-%d").to_string();
+
+        // A: overdue `due` (13d late) AND a stakeholder waiting 28d.
+        // Deadline ramp: 8000 + min(13*200, 4000) = 8000 + 2600 = 10600.
+        // Stakeholder ramp is suppressed to its base +2000 (lateness already counted).
+        // Expected = 10600 + 2000 = 12600 (no per-day stakeholder growth).
+        let mut a = GraphNode::default();
+        a.due = Some((today - chrono::Duration::days(13)).format("%Y-%m-%d").to_string());
+        a.effort = Some("1d".to_string());
+        a.stakeholder = Some("external-party".to_string());
+        a.waiting_since = Some(d28_ago.clone());
+
+        // B: stakeholder waiting 28d, NO `due`. Full ramp: 2000 + min(28*200, 6000) = 7600.
+        let mut b = GraphNode::default();
+        b.stakeholder = Some("external-party".to_string());
+        b.waiting_since = Some(d28_ago.clone());
+
+        // C: same overdue `due` as A but NO stakeholder. Deadline ramp only = 10600.
+        let mut c = GraphNode::default();
+        c.due = Some((today - chrono::Duration::days(13)).format("%Y-%m-%d").to_string());
+        c.effort = Some("1d".to_string());
+
+        let mut nodes = vec![a, b, c];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        let (sa, sb, sc) = (
+            nodes[0].focus_score.unwrap(),
+            nodes[1].focus_score.unwrap(),
+            nodes[2].focus_score.unwrap(),
+        );
+
+        // Core AC: A must NOT receive the full sum of both ramps (10600 + 7600 = 18200).
+        let full_sum = 18200;
+        assert!(
+            sa < full_sum,
+            "deadline + stakeholder must not fully sum: got {sa}, full sum would be {full_sum}"
+        );
+        // A is exactly the deadline ramp plus the suppressed stakeholder base.
+        assert_eq!(sa, 12600, "expected deadline ramp (10600) + stakeholder base (2000)");
+        // The stakeholder contribution on A (sa - sc) is just the +2000 base, far
+        // below B's full no-due ramp (+7600).
+        assert_eq!(sa - sc, 2000, "stakeholder adds only its base when a due ramp already fired");
+        assert_eq!(sb, 7600, "no-due stakeholder keeps full per-day ramp");
+        assert_eq!(sc, 10600, "deadline ramp alone (13d overdue)");
+    }
+
+    /// mem-830588f3 binding proof (calibration target, epic aops-496a64ee).
+    /// Re-scores the live over-ranked node and a sibling under the FIXED formula,
+    /// using the exact scoring inputs pulled from the PKB MCP on 2026-06-10.
+    /// `voi_value` is set to its NEW value (0 → modelled as None) because both
+    /// nodes are leaf deliverables with no dependents (`blocks == []`); under the
+    /// re-keyed VoI the contributes_to target's downstream_weight no longer leaks
+    /// in. Dates are relative so the deadline ramp is run-date stable.
+    #[test]
+    fn test_live_calibration_rescore_jolt_and_marking() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+        let today = Utc::now().date_naive();
+        let ago = |d: i64| (today - chrono::Duration::days(d)).format("%Y-%m-%d").to_string();
+
+        // brain-2ae555b3 — ANU JOLT peer review. Live (OLD) focus_score = 23287
+        // = deadline 10800 (14d overdue) + stakeholder 7800 (2000 + 29d ramp)
+        //   + VoI 4587 (leaked from contributes_to target) + urgency 100.
+        // No `created` field in live frontmatter -> P2 staleness bonus is 0.
+        let mut jolt = GraphNode::default();
+        jolt.priority = Some(2);
+        jolt.due = Some(ago(14));
+        jolt.stakeholder = Some("ANU JOLT Editors".to_string());
+        jolt.waiting_since = Some(ago(29));
+        jolt.urgency = 100.0;
+        jolt.voi_value = None; // re-keyed VoI: no dependents -> 0 (was 4587)
+
+        // task-d73c1ffa — LLB242 A2 marking. Live (OLD) focus_score = 24823
+        // = deadline 9800 (9d overdue) + VoI 5000 (capped, leaked from the SEV4
+        //   target's downstream_weight) + urgency 10000 (SEV4 inherited) + staleness 23.
+        // This is itself an instance of defect 2: a pure marking deliverable with
+        // no dependents was earning max VoI. The fix removes that 5000.
+        let mut marking = GraphNode::default();
+        marking.priority = Some(2);
+        marking.due = Some(ago(9));
+        marking.created = Some(ago(23));
+        marking.urgency = 10000.0;
+        marking.voi_value = None; // re-keyed VoI: no dependents -> 0 (was 5000)
+
+        // task-ethics-8b89a1ae — overdue QUT ethics progress report. A leaf
+        // contributing to a compliance target, with a `consequence`, no stakeholder,
+        // no dependents. Inputs: due 14d overdue, created 44d ago, urgency 1000,
+        // VoI 2000 (OLD, leaked). Under main (post-#426: consequence no longer
+        // multiplies the deadline) + this change (VoI -> 0): deadline 10800 +
+        // staleness 44 + urgency 1000 = 11844. The task AC asks JOLT to land
+        // "roughly level with the ethics compliance task" — this asserts it.
+        let mut ethics = GraphNode::default();
+        ethics.priority = Some(2);
+        ethics.due = Some(ago(14));
+        ethics.created = Some(ago(44));
+        ethics.consequence = Some("compliance exposure".to_string()); // ignored by deadline (#426)
+        ethics.urgency = 1000.0;
+        ethics.voi_value = None; // re-keyed VoI: no dependents -> 0 (was 2000)
+
+        let mut nodes = vec![jolt, marking, ethics];
+        GraphStore::compute_focus_scores(&mut nodes);
+        let (jolt_new, marking_new, ethics_new) = (
+            nodes[0].focus_score.unwrap(),
+            nodes[1].focus_score.unwrap(),
+            nodes[2].focus_score.unwrap(),
+        );
+
+        // (1) JOLT falls into the 12–14k band, down from the live 23287.
+        assert_eq!(jolt_new, 12900, "JOLT re-scores to 12900 (deadline 10800 + stakeholder base 2000 + urgency 100)");
+        assert!((12000..=14000).contains(&jolt_new), "JOLT must land in the 12–14k band");
+        assert!(jolt_new < 23287, "JOLT must drop from the live double-counted 23287");
+
+        // (2) The SEV4 LLB242 marking work stays clearly above JOLT (its spurious
+        //     VoI is removed too, but real SEV4 urgency + deadline dominate).
+        assert_eq!(marking_new, 19823, "marking re-scores to 19823 (deadline 9800 + urgency 10000 + staleness 23)");
+        assert!(marking_new > jolt_new, "the SEV4 marking task must remain clearly above JOLT");
+        // The SEV4 target itself (task-9c33dd1b, live 116080: severity 100000 +
+        // urgency 10000 + …) is untouched by this change (non-leaf target, no
+        // stakeholder, no VoI) and remains the unmistakable global #1.
+
+        // (3) JOLT lands roughly level with the ethics compliance task (task AC).
+        assert_eq!(ethics_new, 11844, "ethics re-scores to 11844 (deadline 10800 + staleness 44 + urgency 1000)");
+        assert!((jolt_new - ethics_new).abs() < 2000, "JOLT must be roughly level with the ethics task");
+    }
+
     #[test]
     fn test_tarjan_scc_no_cycles() {
         // A → B → C (linear chain, no cycles)
@@ -5017,60 +5192,122 @@ mod tests {
         );
     }
 
+    /// mem-830588f3 defect 2: VoI keys off the *dependents* of a node (tasks that
+    /// `depends_on` it — the downstream cone this task unblocks), NOT off the
+    /// `downstream_weight` of a `contributes_to` target. A spike with an uncertain,
+    /// downstream-heavy dependent earns VoI; a pure deliverable wired to a busy
+    /// target but with no dependents earns ~0.
     #[test]
     fn test_compute_voi_term() {
         let root = std::path::PathBuf::from("/tmp/pkb");
-        
-        let make_target = |id: &str, confidence: f64| -> crate::pkb::PkbDocument {
-            let mut d = make_doc(&format!("goals/{id}.md"), id, "target", "active", id, None, &[]);
+
+        // A leaf "spike": effort + a depends_on edge to its upstream dependency.
+        // (The dependent lists THIS node in its depends_on, materialising as
+        //  spike.blocks via compute_inverses.)
+        let make_spike = |id: &str, effort: &str| -> crate::pkb::PkbDocument {
+            let mut d = make_doc(&format!("tasks/{id}.md"), id, "task", "active", id, None, &[]);
+            let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("effort".to_string(), serde_json::json!(effort));
+            d.frontmatter = Some(serde_json::Value::Object(fm));
+            d
+        };
+
+        // A dependent that depends_on `spike_id`, with an explicit confidence
+        // (→ uncertainty = 1 - confidence) and a child to give it downstream_weight.
+        let make_dependent = |id: &str, spike_id: &str, confidence: f64| -> crate::pkb::PkbDocument {
+            let mut d = make_doc(&format!("tasks/{id}.md"), id, "task", "active", id, None, &[spike_id]);
             let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
             fm.insert("confidence".to_string(), serde_json::json!(confidence));
             d.frontmatter = Some(serde_json::Value::Object(fm));
             d
         };
-
-        let make_contributor = |id: &str, target_id: &str, effort: &str, has_children: bool| -> crate::pkb::PkbDocument {
-            let mut d = make_doc(&format!("tasks/{id}.md"), id, "task", "active", id, None, &[]);
-            let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
-            fm.insert("effort".to_string(), serde_json::json!(effort));
-            fm.insert("contributes_to".to_string(), serde_json::json!([{"to": target_id, "weight": "Certain"}]));
-            if has_children {
-                // We create a dummy child below.
-            }
-            d.frontmatter = Some(serde_json::Value::Object(fm));
-            d
+        let child_of = |id: &str, parent: &str| -> crate::pkb::PkbDocument {
+            make_doc(&format!("tasks/{id}.md"), id, "task", "active", id, Some(parent), &[])
         };
 
-        let target_unc0 = make_target("target-unc0", 1.0); // 1.0 confidence -> 0.0 uncertainty
-        let target_unc1 = make_target("target-unc1", 0.0); // 0.0 confidence -> 1.0 uncertainty
-        
-        let contrib_leaf_unc0 = make_contributor("c-leaf-unc0", "target-unc0", "1d", false);
-        let contrib_leaf_unc1 = make_contributor("c-leaf-unc1", "target-unc1", "1d", false);
-        let contrib_extreme = make_contributor("c-extreme", "target-unc1", "0.5d", false);
-        
-        let contrib_non_leaf = make_contributor("c-non-leaf", "target-unc1", "1d", true);
-        let dummy_child = make_doc("tasks/dummy.md", "dummy", "task", "active", "dummy", Some("c-non-leaf"), &[]);
-        
+        // --- Positive (modest): spike unblocks a dependent with uncertainty 0.5,
+        //     downstream_weight 1.0 (one child), effort 1d.
+        //     VoI = 5000 * 1.0(dep_ratio) * (0.5 * 1.0) / max(1,0.5) = 2500.
+        let spike_modest = make_spike("spike-modest", "1d");
+        let dep_modest = make_dependent("dep-modest", "spike-modest", 0.5);
+        let dep_modest_child = child_of("kid-m", "dep-modest");
+
+        // --- Cap: dependent uncertainty 1.0, downstream_weight 2.0 (two children),
+        //     spike effort 1d. Raw = 5000 * (1.0 * 2.0) / 1.0 = 10000 -> clamped 5000.
+        let spike_extreme = make_spike("spike-extreme", "1d");
+        let dep_extreme = make_dependent("dep-extreme", "spike-extreme", 0.0);
+        let dep_extreme_c1 = child_of("kid-e1", "dep-extreme");
+        let dep_extreme_c2 = child_of("kid-e2", "dep-extreme");
+
+        // --- Zero uncertainty: dependent confidence 1.0 (uncertainty 0) -> VoI 0.
+        let spike_zero = make_spike("spike-zero", "1d");
+        let dep_certain = make_dependent("dep-certain", "spike-zero", 1.0);
+        let dep_certain_child = child_of("kid-c", "dep-certain");
+
+        // --- AC(b): a leaf wired via contributes_to to a busy, uncertain target,
+        //     with NO dependents, must score ~0 VoI regardless of the target's
+        //     downstream_weight.
+        let mut busy_target = make_doc("goals/busy-target.md", "busy-target", "target", "active", "busy-target", None, &[]);
+        {
+            let mut fm = busy_target.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("confidence".to_string(), serde_json::json!(0.1)); // uncertainty 0.9
+            busy_target.frontmatter = Some(serde_json::Value::Object(fm));
+        }
+        let bt_child1 = child_of("bt-child1", "busy-target"); // give busy-target downstream_weight
+        let bt_child2 = child_of("bt-child2", "busy-target");
+        let mut leaf_no_deps = make_doc("tasks/leaf-no-deps.md", "leaf-no-deps", "task", "active", "leaf-no-deps", None, &[]);
+        {
+            let mut fm = leaf_no_deps.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("effort".to_string(), serde_json::json!("0.5d"));
+            fm.insert("contributes_to".to_string(), serde_json::json!([{"to": "busy-target", "weight": "Certain"}]));
+            leaf_no_deps.frontmatter = Some(serde_json::Value::Object(fm));
+        }
+
+        // --- AC-12: a NON-leaf node scores 0 VoI even with an uncertain dependent.
+        let non_leaf_spike = make_spike("non-leaf-spike", "1d");
+        let nls_child = child_of("nls-child", "non-leaf-spike"); // makes it non-leaf
+        let dep_nls = make_dependent("dep-nls", "non-leaf-spike", 0.0);
+        let dep_nls_child = child_of("kid-n", "dep-nls");
+
         let store = GraphStore::build(&[
-            target_unc0, target_unc1,
-            contrib_leaf_unc0, contrib_leaf_unc1, contrib_extreme,
-            contrib_non_leaf, dummy_child
+            spike_modest, dep_modest, dep_modest_child,
+            spike_extreme, dep_extreme, dep_extreme_c1, dep_extreme_c2,
+            spike_zero, dep_certain, dep_certain_child,
+            busy_target, bt_child1, bt_child2, leaf_no_deps,
+            non_leaf_spike, nls_child, dep_nls, dep_nls_child,
         ], &root);
 
-        // a) zero VoI for non-leaf nodes
-        let n_non_leaf = store.get_node("c-non-leaf").unwrap();
-        assert_eq!(n_non_leaf.voi_value.unwrap_or(0.0), 0.0, "VoI should be 0 for non-leaf");
+        // Positive modest case: exact arithmetic.
+        let s_modest = store.get_node("spike-modest").unwrap();
+        assert_eq!(
+            s_modest.voi_value.unwrap_or(0.0), 2500.0,
+            "spike unblocking an unc=0.5, dw=1.0 dependent (effort 1d) -> VoI 2500"
+        );
 
-        // b) zero VoI when all downstream uncertainty is 0
-        let n_unc0 = store.get_node("c-leaf-unc0").unwrap();
-        assert_eq!(n_unc0.voi_value.unwrap_or(0.0), 0.0, "VoI should be 0 when downstream uncertainty is 0");
+        // Cap (AC-11): raw 10000 clamps to 5000.
+        let s_extreme = store.get_node("spike-extreme").unwrap();
+        assert_eq!(s_extreme.voi_value.unwrap_or(0.0), 5000.0, "VoI must clamp at 5000");
 
-        // c) cap at 5,000 under extreme inputs
-        let n_extreme = store.get_node("c-extreme").unwrap();
-        assert_eq!(n_extreme.voi_value.unwrap_or(0.0), 5000.0, "VoI should be capped at 5000");
+        // Zero downstream uncertainty -> 0.
+        let s_zero = store.get_node("spike-zero").unwrap();
+        assert_eq!(s_zero.voi_value.unwrap_or(0.0), 0.0, "zero-uncertainty dependent -> VoI 0");
 
-        let n_unc1 = store.get_node("c-leaf-unc1").unwrap();
-        assert_eq!(n_unc1.voi_value.unwrap_or(0.0), 5000.0, "VoI should be capped at 5000");
+        // AC(b): no dependents -> ~0 VoI regardless of contributes_to target weight.
+        let busy = store.get_node("busy-target").unwrap();
+        assert!(
+            busy.downstream_weight > 0.0,
+            "busy-target must have real downstream_weight for this to be a meaningful test, got {}",
+            busy.downstream_weight
+        );
+        let l_no_deps = store.get_node("leaf-no-deps").unwrap();
+        assert_eq!(
+            l_no_deps.voi_value.unwrap_or(0.0), 0.0,
+            "a leaf with no dependents must score ~0 VoI regardless of its contributes_to target's downstream_weight"
+        );
+
+        // AC-12: non-leaf -> 0.
+        let s_non_leaf = store.get_node("non-leaf-spike").unwrap();
+        assert_eq!(s_non_leaf.voi_value.unwrap_or(0.0), 0.0, "VoI must be 0 for non-leaf nodes");
     }
 
     #[test]

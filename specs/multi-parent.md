@@ -66,7 +66,7 @@ Given a task with `contributes_to: [{to: <target-id>, weight: <verbal-term>, why
 A task contributing to a `severity: 4, goal_type: committed` target with `Slack ≤ 0` MUST have `urgency ≥ 10_000`. SEV0–3 targets and `aspirational`/`learning` SEV4 targets MUST NOT trigger the override.
 
 **AC-4 — `urgency` composes additively into `focus_score`.**
-`focus_score` MUST equal `priority_base + severity_bonus + deadline_score + age_staleness_bonus + downstream_weight × 10 + stakeholder_waiting_bonus + round(urgency) + round(voi_value)` (see §2.2). The `voi_value` term is 0 on any graph without `contributes_to` edges, so this reduces to the legacy form (AC-9).
+`focus_score` MUST equal `priority_base + severity_bonus + deadline_score + age_staleness_bonus + downstream_weight × 10 + stakeholder_waiting_bonus + round(urgency) + round(voi_value)` (see §2.2). The `voi_value` term is 0 on any graph with **no dependency topology** (no task `depends_on` another), so this reduces to the legacy form (AC-9).
 
 **AC-5 — Single sort signal.**
 `focus_picks`, `list_tasks` default sort, and the TUI Focus view MUST sort by `focus_score` descending. Filtering by component fields (e.g. `urgency_gte`) is permitted; sorting by them is not.
@@ -81,7 +81,7 @@ The ready-queue candidate set MUST include tasks with `Slack ≤ safe_horizon` e
 When a task is created with `contributes_to: [{to: <prototype-id>, inherits_from: <prototype-id>}]`, the prototype's `edge_template` fields MUST be copied into the materialised edge YAML at creation. Editing the prototype later MUST NOT retroactively rewrite existing edges.
 
 **AC-9 — Backwards compatibility.**
-A graph with no targets, prototypes, or `contributes_to` edges MUST produce identical `focus_score` values as before this spec landed (urgency contribution = 0).
+A graph with no targets, prototypes, or `contributes_to` edges MUST produce identical `focus_score` values as before this spec landed (urgency contribution = 0). **The VoI zero-condition is keyed on the dependency channel, not the contribution channel:** `voi_value = 0` for any node with **no dependents** (no task `depends_on` it), so a graph carrying no `depends_on`/`blocks` topology scores `voi_value = 0` everywhere — the legacy behaviour. (Pre-[[mem-830588f3]] the zero-condition was "no `contributes_to` edges"; the VoI Σ-domain was re-keyed from `contributes_to` targets to `depends_on`/`blocks` dependents, so the backwards-compat condition moves with it.)
 
 **AC-10 — Mandatory consequence prose.**
 Target nodes MUST have `consequence:` populated. Surface (don't block) missing prose via `/maintain`.
@@ -257,7 +257,7 @@ The function pre-computes `S_lex` and own slack per node, then BFS-propagates `S
 
 ### 2.2 Focus score composition
 
-Implemented as `compute_focus_scores` (`mem/src/graph_store.rs:914`).
+Implemented as `compute_focus_scores` in `mem/src/graph_store.rs` (companion: `compute_voi_term`). Cite by function name — line anchors drift.
 
 ```
 focus_score =
@@ -278,34 +278,35 @@ focus_score =
 | `deadline_score` | 0 – 12 000 | Overdue: 8 000 + min(days × 200, 4 000). Tight (effort ≥ days_until): 6 000. Near-tight: linear interp 2 000–6 000. ≤30 days: 1 000. `× 1.5` if `consequence` set. |
 | `age_staleness_bonus` | 0 – 200 | min(days_since_created, 200), P2+ only. Prevents old low-priority items being buried. |
 | `downstream_weight × 10` | 0 – ∞ | downstream_weight float × 10 to land in same magnitude as base scores. |
-| `stakeholder_waiting_bonus` | 0 / 2 000 – 8 000 | When `stakeholder` set: 2 000 + min(days × 200, 6 000). Anchor: `waiting_since` ?? `created`. |
+| `stakeholder_waiting_bonus` | 0 / 2 000 – 8 000 | When `stakeholder` set: 2 000 + min(days × 200, 6 000). Anchor: `waiting_since` ?? `created`. **When a hard `due` already fired a positive `deadline_score`, only the +2 000 base applies** — the per-day growth is suppressed so deadline lateness is not counted twice (the ramp's distinct job is the no-formal-deadline "I promised" case; [[mem-830588f3]]). |
 | `urgency_term` | 0 – 10 000+ | `round(node.urgency)`. SEV4-committed contribution drives this to 10 000+. |
-| `voi_term` | 0 – 5 000 | `round(node.voi_value)`. Value-of-information premium for uncertainty-resolving leaf tasks. Capped at 5 000 to stay below the SEV4-committed urgency floor (AC-11); zero for non-leaf nodes (AC-12). |
+| `voi_term` | 0 – 5 000 | `round(node.voi_value)`. Value-of-information premium for a leaf task that **unblocks a downstream cone** (tasks that `depends_on` it); keyed off dependents, not `contributes_to` targets ([[mem-830588f3]]). Capped at 5 000 to stay below the SEV4-committed urgency floor (AC-11); zero for non-leaf nodes (AC-12). |
 
 `urgency_term` composes additively because `S_lex × W_edge × f(Slack)` produces values in the same integer-magnitude scale as the other terms (~0.001 to 10 000+). The lexicographic-override property survives: a SEV4-committed contribution with `Slack ≤ 0` pushes `urgency_term` past every non-SEV4 task's combined score, mirroring `severity_bonus = 100 000` for the target itself.
 
-`voi_term` adds a **value-of-information** premium so that uncertainty-resolving work (spikes, probes, prototypes) is not starved by a purely exploitative signal — a leaf task whose own exploitation utility is low but which would resolve large downstream uncertainty earns ranking credit it would otherwise be denied. It is `round(node.voi_value)`, where:
+`voi_term` adds a **value-of-information** premium so that uncertainty-resolving work (spikes, probes, prototypes) is not starved by a purely exploitative signal — a leaf task whose own exploitation utility is low but which **unblocks a downstream cone of uncertain work** earns ranking credit it would otherwise be denied. It is `round(node.voi_value)`, where:
 
 ```
-voi_value = K_voi · leaf · dep_resolution_ratio
-          · Σ_{d ∈ immediate_downstream(x)} uncertainty(d) × edge_weight(x→d) × downstream_weight(d)
-          / max(effort_days, 0.5)
+voi_value = K_voi · leaf(x) · dep_resolution_ratio(x)
+          · Σ_{d ∈ dependents(x)} uncertainty(d) × downstream_weight(d)
+          / max(effort_days(x), 0.5)
 ```
 
-- `leaf` and `uncertainty(d)` are the computed properties defined in TAXONOMY.md §Core Computed Properties. `leaf` gates the term to actionable nodes — a node with `leaf = false` scores `voi_value = 0` (AC-12), so undecomposed epics never accumulate VoI.
-- `dep_resolution_ratio(x)` gates credit to ready-now work (fraction of `depends_on` edges resolved).
-- `edge_weight(x→d)` is the Birnbaum importance on the `contributes_to` edge (Renooij-Witteman scale, §1.7–1.8): the conditional likelihood that not doing `x` fails downstream node `d`.
-- `downstream_weight(d)` is the existing structural-importance field (TAXONOMY.md §criticality).
-- `/ max(effort_days, 0.5)` is the cost normalization (information-gap-ratio form, kb-9230ba76 §5): it prevents a long probe from outranking a short one with the same downstream uncertainty.
+- `leaf(x)` and `uncertainty(d)` are the computed properties defined in TAXONOMY.md §Core Computed Properties. `leaf` gates the term to actionable nodes — a node with `leaf = false` scores `voi_value = 0` (AC-12), so undecomposed epics never accumulate VoI.
+- **`dependents(x)` is the Σ-domain: the set of tasks that `depends_on` x — the downstream cone x *unblocks* — materialised as `x.blocks` by `compute_inverses` (a `DependsOn` edge `d → x` yields `x.blocks ∋ d`).** This is the **information channel**: completing `x` resolves uncertainty that lets that downstream work proceed. VoI deliberately does **NOT** range over `contributes_to` targets. A pure deliverable wired to a busy, slightly-uncertain target (e.g. a peer review feeding a "review obligations" target) resolves no downstream uncertainty for the user's own work; its importance is already carried by the **severity/criticality channel** (target `severity` reaching the task through `contributes_to`). Keying VoI off the *target's* `downstream_weight` re-counted that same importance and made every deliverable inherit near-cap VoI — the defect fixed in [[mem-830588f3]].
+- `dep_resolution_ratio(x)` keys on **x's own `depends_on`** (fraction of its upstream dependencies resolved) — *upstream readiness*. A still-blocked `x` cannot realise its VoI yet, so the premium is discounted. This is the **opposite dependency direction** from the Σ-sum (which ranges over x's *dependents*, downstream); the two directions are kept distinct and never conflated.
+- Edge weight is **1**: `depends_on`/`blocks` are hard binary dependency edges with no verbal-scale weight (unlike `contributes_to`, which carries a Renooij-Witteman weight). The old formula's per-edge Birnbaum `edge_weight(x→d)` term is therefore dropped from the dependent-sum.
+- `downstream_weight(d)` is the dependent's existing structural-importance field (TAXONOMY.md §criticality) — the size of the cone that `d` (and so, transitively, `x`) unblocks.
+- `/ max(effort_days(x), 0.5)` is the cost normalization (information-gap-ratio form, kb-9230ba76 §5): it prevents a long probe from outranking a short one with the same downstream uncertainty.
 - `K_voi` is a calibration constant (config field) chosen so `voi_value` typically remains ≤ 5 000, with a hard clamp at 5 000 (AC-11) to guarantee it stays below the SEV4-committed urgency floor of 10 000, preserving the lexicographic override (AC-3).
 
-The term reduces to 0 when no `contributes_to` edges exist, keeping backwards compatibility (AC-9). `voi_value` is surfaced on metadata for filter/debug only; ranking is always via `focus_score`. Canonical definitions of the inputs `uncertainty` and `downstream_weight` live in TAXONOMY.md §Core Computed Properties.
+The term reduces to 0 when `x` has **no dependents** (no task `depends_on` x), keeping backwards compatibility (AC-9): a graph with no dependency topology scores `voi_value = 0` everywhere, the legacy behaviour. `voi_value` is surfaced on metadata for filter/debug only; ranking is always via `focus_score`. Canonical definitions of the inputs `uncertainty` and `downstream_weight` live in TAXONOMY.md §Core Computed Properties.
 
 ### 2.3 Compute order
 
 `compute_urgency` MUST run before `compute_focus_scores` during graph build. Verified by current pipeline.
 
-`compute_voi_term` MUST run **after** `compute_downstream_metrics` — it consumes `downstream_weight`, `leaf`, and `dep_resolution_ratio`, all produced by the downstream-metrics pass — and **before** `compute_focus_scores`, which sums `voi_term` into the composite. The Phase 1 dependency chain is therefore `compute_downstream_metrics` → `compute_voi_term` → `compute_focus_scores`; `compute_urgency` likewise runs before `compute_focus_scores`.
+`compute_voi_term` MUST run **after** `compute_inverses` (which materialises `x.blocks` — the dependents that form the VoI Σ-domain) **and after** `compute_downstream_metrics` — it consumes each dependent's `downstream_weight` and `uncertainty`, plus `leaf` and `dep_resolution_ratio` — and **before** `compute_focus_scores`, which sums `voi_term` into the composite. The Phase 1 dependency chain is therefore `compute_inverses` → `compute_downstream_metrics` → `compute_uncertainty` → `compute_voi_term` → `compute_focus_scores`; `compute_urgency` likewise runs before `compute_focus_scores`.
 
 Scores are stored on `GraphNode.urgency`, `GraphNode.voi_value`, and `GraphNode.focus_score`, recomputed on every full rebuild (~300ms). No TTL cache needed at current scale.
 
