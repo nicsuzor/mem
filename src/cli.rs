@@ -3091,6 +3091,7 @@ async fn main() -> Result<()> {
             let store = store.unwrap();
 
             eprintln!("🔍 PKB Search MCP Server starting...");
+            eprintln!("   Version:  {} ({})", env!("CARGO_PKG_VERSION"), env!("BUILD_GIT_HASH"));
             eprintln!("   PKB root: {}", pkb_root.display());
             eprintln!("   DB path:  {}", db_path.display());
             eprintln!(
