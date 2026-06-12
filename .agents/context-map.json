@@ -1,0 +1,82 @@
+{
+  "docs": [
+    {
+      "topic": "project_overview",
+      "path": "README.md",
+      "description": "mem PKB MCP server overview — architecture, install, CLI usage, and tool surface",
+      "keywords": ["overview", "readme", "installation", "architecture", "pkb", "mcp"]
+    },
+    {
+      "topic": "main_source",
+      "path": "src/mcp_server.rs",
+      "description": "MCP ServerHandler — 38+ tools, call_tool dispatch, handle_* methods for search/tasks/graph/crud",
+      "keywords": ["mcp", "server", "handler", "tools", "dispatch", "create_task", "search", "call_tool"]
+    },
+    {
+      "topic": "graph_store",
+      "path": "src/graph_store.rs",
+      "description": "GraphStore — builds/queries knowledge graph from PKB docs; node resolution, rebuild, patching",
+      "keywords": ["graph", "graphstore", "node", "resolution", "rebuild", "patching", "knowledge graph"]
+    },
+    {
+      "topic": "graph",
+      "path": "src/graph.rs",
+      "description": "GraphNode, Edge, EdgeType, link resolution helpers; fields include stakeholder, waiting_since",
+      "keywords": ["graph", "node", "edge", "resolution", "graphnode", "edge type"]
+    },
+    {
+      "topic": "vector_store",
+      "path": "src/vectordb.rs",
+      "description": "VectorStore — cosine similarity search over BGE-M3 embeddings; SearchResult, DocumentEntry",
+      "keywords": ["vector", "vectorstore", "search", "cosine", "similarity", "embeddings", "searchresult"]
+    },
+    {
+      "topic": "embeddings",
+      "path": "src/embeddings.rs",
+      "description": "Embedder — BGE-M3 via ONNX Runtime (1024-dim); encode_query, encode_passage",
+      "keywords": ["embedder", "onnx", "bge", "embedding", "encode", "query", "passage"]
+    },
+    {
+      "topic": "pkb_document",
+      "path": "src/pkb.rs",
+      "description": "PkbDocument parsing, directory scanning, YAML frontmatter extraction",
+      "keywords": ["pkb", "document", "parsing", "frontmatter", "yaml", "markdown"]
+    },
+    {
+      "topic": "document_crud",
+      "path": "src/document_crud.rs",
+      "description": "create_task, update_task, append, delete — markdown document CRUD on disk",
+      "keywords": ["crud", "create", "update", "delete", "append", "task", "document", "disk"]
+    },
+    {
+      "topic": "cli_main",
+      "path": "src/cli.rs",
+      "description": "main() entry point for pkb binary — CLI commands and MCP server startup",
+      "keywords": ["cli", "main", "binary", "startup", "commands"]
+    },
+    {
+      "topic": "task_index",
+      "path": "src/task_index.rs",
+      "description": "MCP index export — used by CLI graph command",
+      "keywords": ["task", "index", "export", "graph", "cli"]
+    },
+    {
+      "topic": "tests",
+      "path": "tests/",
+      "description": "Integration test suite — server tests, search tests, task CRUD tests",
+      "keywords": ["tests", "integration", "server", "search", "task", "crud"]
+    },
+    {
+      "topic": "changelog",
+      "path": "CHANGELOG.md",
+      "description": "Release history and version changelog",
+      "keywords": ["changelog", "release", "version", "history"]
+    },
+    {
+      "topic": "specs",
+      "path": "specs/",
+      "description": "Design specifications and approved current-state documentation",
+      "keywords": ["specs", "specification", "design", "architecture"]
+    }
+  ]
+}
