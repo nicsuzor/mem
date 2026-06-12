@@ -291,6 +291,78 @@ fn test_add_depends_on_persistence_replay() {
     );
 }
 
+// ── create_task: missing parent returns suggested_parents in error data ──
+
+/// When `create_task` is called without a `parent` and the vector store contains
+/// project/epic nodes, the McpError data must include `suggested_parents`.
+#[test]
+fn test_create_task_missing_parent_returns_suggested_parents() {
+    let (tmp, db_path) = seed_pkb();
+    let root = tmp.path().to_path_buf();
+
+    // Build graph + server, keeping hold of the store Arc to seed it directly.
+    let graph_store = GraphStore::build_from_directory(&root);
+    let graph = Arc::new(RwLock::new(graph_store));
+    let store = Arc::new(RwLock::new(VectorStore::new(1024)));
+    let embedder = Arc::new(Embedder::new_dummy());
+    let server = PkbSearchServer::new(
+        store.clone(),
+        embedder,
+        root.clone(),
+        db_path,
+        graph,
+    );
+
+    // Insert the seeded project into the vector store with a dummy zero-vector
+    // embedding so the semantic search path can find it.
+    let proj_path = root.join("projects/proj-root.md");
+    let doc = mem::pkb::parse_file_relative(&proj_path, &root)
+        .expect("seeded project file must parse");
+    {
+        let dummy_emb = vec![0.0f32; 1024];
+        store.write().insert_precomputed(&doc, vec!["Root Project".into()], vec![dummy_emb]);
+    }
+
+    // create_task with no parent on a plain task type must fail.
+    let err = server
+        .bench_create_task(&json!({ "title": "Root Project related work" }))
+        .expect_err("create_task without parent must return an error");
+
+    let data = err.data.expect("error must carry a data payload with suggested_parents");
+    let suggestions = data
+        .get("suggested_parents")
+        .and_then(|v| v.as_array())
+        .expect("data must have a suggested_parents array");
+
+    assert!(
+        !suggestions.is_empty(),
+        "suggested_parents must contain at least one candidate; got empty list"
+    );
+
+    let has_project = suggestions.iter().any(|s| {
+        s.get("type").and_then(|v| v.as_str()) == Some("project")
+    });
+    assert!(has_project, "suggested_parents must include the seeded project node; got: {:?}", suggestions);
+}
+
+/// When the vector store has no matching project/epic nodes, the error data is None.
+#[test]
+fn test_create_task_missing_parent_empty_store_data_is_none() {
+    let (tmp, db_path) = seed_pkb();
+    // build_server uses an empty VectorStore, so no candidates are available.
+    let (server, _graph) = build_server(tmp.path(), &db_path);
+
+    let err = server
+        .bench_create_task(&json!({ "title": "Something unrelated" }))
+        .expect_err("create_task without parent must return an error");
+
+    assert!(
+        err.data.is_none(),
+        "When the vector store has no candidates, error data must be None; got: {:?}",
+        err.data
+    );
+}
+
 // ── Replay Case 4: session reaping on 60s keep-alive (mem-2ae61ce6) ──
 
 #[test]
