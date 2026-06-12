@@ -3267,6 +3267,117 @@ impl PkbSearchServer {
         ))]))
     }
 
+    /// Build the compact "mutation neighborhood" returned by `complete_task` and
+    /// `release_task`. See `specs/mutation-neighborhood.md`. Computed against the
+    /// post-write graph, so statuses, `siblings_open`, and `unblocked` reflect the
+    /// just-applied close. Returns `Value::Null` when no field carries signal.
+    ///
+    /// `cascade_closed` is the number of descendants closed by a recursive cascade
+    /// (0 when the close was non-recursive).
+    fn build_mutation_neighborhood(
+        graph: &GraphStore,
+        node_id: &str,
+        cascade_closed: usize,
+    ) -> serde_json::Value {
+        use crate::graph::{is_closed_for_hierarchy, is_completed, GraphNode};
+
+        let Some(node) = graph.get_node(node_id) else {
+            return serde_json::Value::Null;
+        };
+
+        // Titles are truncated for display at 80 chars on a UTF-8 char boundary.
+        let title_of = |n: &GraphNode| -> String {
+            let t = n.label.as_str();
+            t[..t.floor_char_boundary(80)].to_string()
+        };
+
+        let mut neighborhood = serde_json::Map::new();
+
+        // --- parent + siblings (omitted when the task has no parent) ---
+        if let Some(parent_id) = node.parent.as_deref() {
+            if let Some(parent) = graph.get_node(parent_id) {
+                let mut siblings_open = 0usize;
+                let mut sample: Vec<serde_json::Value> = Vec::new();
+                for child_id in &parent.children {
+                    if child_id == node_id {
+                        continue;
+                    }
+                    let Some(child) = graph.get_node(child_id) else {
+                        continue;
+                    };
+                    // archived/done/cancelled all count as closed for hierarchy.
+                    if is_closed_for_hierarchy(child.status.as_deref()) {
+                        continue;
+                    }
+                    siblings_open += 1;
+                    if sample.len() < 3 {
+                        sample.push(serde_json::json!({
+                            "id": child_id,
+                            "title": title_of(child),
+                            "status": child.status,
+                        }));
+                    }
+                }
+                let mut parent_obj = serde_json::Map::new();
+                parent_obj.insert("id".into(), serde_json::json!(parent_id));
+                parent_obj.insert("title".into(), serde_json::json!(title_of(parent)));
+                parent_obj.insert("status".into(), serde_json::json!(parent.status));
+                parent_obj.insert("siblings_open".into(), serde_json::json!(siblings_open));
+                if siblings_open > 0 {
+                    parent_obj.insert("siblings_sample".into(), serde_json::Value::Array(sample));
+                }
+                neighborhood.insert("parent".into(), serde_json::Value::Object(parent_obj));
+            }
+        }
+
+        // --- children: only when carrying a fact the close did not already imply ---
+        let mut children_obj = serde_json::Map::new();
+        if cascade_closed > 0 {
+            children_obj.insert("closed_by_cascade".into(), serde_json::json!(cascade_closed));
+        }
+        let open_children = node
+            .children
+            .iter()
+            .filter(|c| {
+                graph
+                    .get_node(c)
+                    .is_some_and(|n| !is_closed_for_hierarchy(n.status.as_deref()))
+            })
+            .count();
+        if open_children > 0 {
+            children_obj.insert("open".into(), serde_json::json!(open_children));
+        }
+        if !children_obj.is_empty() {
+            neighborhood.insert("children".into(), serde_json::Value::Object(children_obj));
+        }
+
+        // --- unblocked: dependents (node.blocks) now clear of all blockers, ≤5 ---
+        let mut unblocked: Vec<serde_json::Value> = Vec::new();
+        for dep_id in &node.blocks {
+            if unblocked.len() >= 5 {
+                break;
+            }
+            let Some(dep) = graph.get_node(dep_id) else {
+                continue;
+            };
+            if !graph.is_blocked(dep_id) && !is_completed(dep.status.as_deref()) {
+                unblocked.push(serde_json::json!({
+                    "id": dep_id,
+                    "title": title_of(dep),
+                }));
+            }
+        }
+        if !unblocked.is_empty() {
+            neighborhood.insert("unblocked".into(), serde_json::Value::Array(unblocked));
+        }
+
+        if neighborhood.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::Object(neighborhood)
+        }
+    }
+
     fn handle_complete_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
@@ -3321,7 +3432,11 @@ impl PkbSearchServer {
 
         let abs_path = self.abs_path(&node.path);
         let label = node.label.clone();
+        let node_id = node.id.clone();
         drop(graph);
+
+        // Number of descendants this close cascades shut (0 unless recursive).
+        let cascade_closed = if recursive { open_descs.len() } else { 0 };
 
         let t_total = std::time::Instant::now();
 
@@ -3390,10 +3505,22 @@ impl PkbSearchServer {
 
         tracing::debug!(target: "perf::complete_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Completed: {} (`{}`)",
-            label, id
-        ))]))
+        // Compute the neighborhood against the post-write graph.
+        let neighborhood = {
+            let graph = self.graph.read();
+            Self::build_mutation_neighborhood(&graph, &node_id, cascade_closed)
+        };
+
+        let response = serde_json::json!({
+            "ok": true,
+            "id": id,
+            "status": "done",
+            "message": format!("Completed: {} (`{}`)", label, id),
+            "neighborhood": neighborhood,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&response).unwrap_or_default(),
+        )]))
     }
 
     /// Release a task to a handoff/terminal status with required summary.
@@ -3628,6 +3755,7 @@ impl PkbSearchServer {
 
         let abs_path = self.abs_path(&node.path);
         let label = node.label.clone();
+        let node_id = node.id.clone();
         drop(graph);
 
         // Cascade-close open descendants when recursive=true. Batch the
@@ -3826,18 +3954,27 @@ impl PkbSearchServer {
             response_text.push_str(&format!("\n{w}"));
         }
 
+        // Compute the neighborhood against the post-write graph. `unblocked` is
+        // gated on `!is_blocked`, so a release to a non-clearing status (e.g.
+        // `blocked`) yields an empty `unblocked` — the task still blocks its deps.
+        let neighborhood = {
+            let graph = self.graph.read();
+            Self::build_mutation_neighborhood(&graph, &node_id, recursive_close_descs.len())
+        };
+
+        let mut json = serde_json::json!({
+            "ok": true,
+            "id": id,
+            "status": status,
+            "message": response_text,
+            "neighborhood": neighborhood,
+        });
         if let Some(nid) = created_id {
-            let json = serde_json::json!({
-                "status": "success",
-                "message": response_text,
-                "created_id": nid,
-            });
-            Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&json).unwrap_or_default(),
-            )]))
-        } else {
-            Ok(CallToolResult::success(vec![Content::text(response_text)]))
+            json["created_id"] = serde_json::json!(nid);
         }
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap_or_default(),
+        )]))
     }
 
     // =========================================================================
@@ -8296,6 +8433,119 @@ mod tests {
     }
 
     // ── Open-children validation (task-8f232401) ──────────────────────────────
+
+    // ── Mutation neighborhood (specs/mutation-neighborhood.md) ────────────────
+
+    #[test]
+    fn test_mutation_neighborhood_shape() {
+        // Graph:
+        //   epic-x ── children: task-c (done, the closed task),
+        //             s1/s2/s3/s4 (open), s-arch (archived), s-done (done)
+        //   task-c blocks task-d (active, only dep is task-c → now unblocked)
+        //          and task-e (active, also depends on s1 which is open → still blocked)
+        let docs = vec![
+            make_doc("e.md", "Epic X", "epic", "active", "epic-x", None, &[]),
+            make_doc("c.md", "Closed task", "task", "done", "task-c", Some("epic-x"), &[]),
+            make_doc("s1.md", "Sibling 1", "task", "active", "task-s1", Some("epic-x"), &[]),
+            make_doc("s2.md", "Sibling 2", "task", "active", "task-s2", Some("epic-x"), &[]),
+            make_doc("s3.md", "Sibling 3", "task", "active", "task-s3", Some("epic-x"), &[]),
+            make_doc("s4.md", "Sibling 4", "task", "active", "task-s4", Some("epic-x"), &[]),
+            make_doc("sa.md", "Archived sib", "task", "archived", "task-sa", Some("epic-x"), &[]),
+            make_doc("sd.md", "Done sib", "task", "done", "task-sd", Some("epic-x"), &[]),
+            make_doc("d.md", "Dependent D", "task", "active", "task-d", None, &["task-c"]),
+            make_doc("ee.md", "Dependent E", "task", "active", "task-e", None, &["task-c", "task-s1"]),
+            // A bare leaf with no parent and no dependents.
+            make_doc("lone.md", "Lone leaf", "task", "done", "task-lone", None, &[]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-nbhd"));
+
+        let n = PkbSearchServer::build_mutation_neighborhood(&graph, "task-c", 0);
+
+        // parent present with sibling counts; archived + done excluded from open.
+        let parent = &n["parent"];
+        assert_eq!(parent["id"], "epic-x");
+        assert_eq!(
+            parent["siblings_open"], 4,
+            "s1..s4 are the only open siblings (archived/done excluded): {n}"
+        );
+        // siblings_sample capped at 3.
+        assert_eq!(
+            parent["siblings_sample"].as_array().unwrap().len(),
+            3,
+            "siblings_sample must cap at 3: {n}"
+        );
+
+        // unblocked: task-d cleared (only dep was task-c), task-e still blocked by task-s1.
+        let unblocked: Vec<&str> = n["unblocked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap())
+            .collect();
+        assert!(unblocked.contains(&"task-d"), "task-d must be unblocked: {n}");
+        assert!(
+            !unblocked.contains(&"task-e"),
+            "task-e is still blocked by open task-s1 and must NOT appear: {n}"
+        );
+
+        // task-c has no open children and no cascade → children omitted.
+        assert!(n.get("children").is_none(), "children must be omitted for a clean close: {n}");
+
+        // Omit-when-empty: a lone leaf returns null.
+        let empty = PkbSearchServer::build_mutation_neighborhood(&graph, "task-lone", 0);
+        assert!(empty.is_null(), "lone leaf must yield null neighborhood: {empty}");
+    }
+
+    #[test]
+    fn test_mutation_neighborhood_cascade_count() {
+        // A recursive close reports closed_by_cascade and omits parent when none.
+        let docs = vec![
+            make_doc("p.md", "Parent task", "task", "done", "task-p", None, &[]),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-nbhd2"));
+        let n = PkbSearchServer::build_mutation_neighborhood(&graph, "task-p", 3);
+        assert_eq!(n["children"]["closed_by_cascade"], 3, "cascade count surfaced: {n}");
+        assert!(n.get("parent").is_none(), "no parent → parent omitted: {n}");
+    }
+
+    #[test]
+    fn test_complete_task_returns_neighborhood_end_to_end() {
+        // Full write path: epic-z parents z1 + z2; z2 depends on z1.
+        // Completing z1 should return a JSON envelope whose neighborhood names
+        // the parent and reports z2 as newly unblocked.
+        let (tmp, server) = build_disk_backed_server(&[
+            ("e.md", "---\nid: epic-z\ntitle: Epic Z\ntype: epic\nstatus: active\n---\n\n# Epic Z\n"),
+            ("z1.md", "---\nid: task-z1\ntitle: Task Z1\ntype: task\nstatus: ready\nparent: epic-z\n---\n\n# Z1\n"),
+            ("z2.md", "---\nid: task-z2\ntitle: Task Z2\ntype: task\nstatus: ready\nparent: epic-z\ndepends_on: [task-z1]\n---\n\n# Z2\n"),
+        ]);
+
+        let res = server
+            .handle_complete_task(&json!({
+                "id": "task-z1",
+                "completion_evidence": "Implemented Z1 in the test fixture.",
+            }))
+            .expect("complete_task should succeed for a leaf task");
+        let text = res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        let v: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("response must be JSON: {e}\n{text}"));
+
+        assert_eq!(v["ok"], true, "envelope ok flag: {v}");
+        assert_eq!(v["status"], "done", "status: {v}");
+        assert_eq!(v["neighborhood"]["parent"]["id"], "epic-z", "parent surfaced: {v}");
+        let unblocked: Vec<&str> = v["neighborhood"]["unblocked"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|o| o["id"].as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            unblocked.contains(&"task-z2"),
+            "z2 should be unblocked once z1 closes: {v}"
+        );
+        drop(tmp);
+    }
 
     #[test]
     fn test_complete_task_rejects_with_open_children() {
