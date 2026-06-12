@@ -3959,7 +3959,7 @@ impl PkbSearchServer {
         // `blocked`) yields an empty `unblocked` — the task still blocks its deps.
         let neighborhood = {
             let graph = self.graph.read();
-            Self::build_mutation_neighborhood(&graph, &node_id, recursive_close_descs.len())
+            Self::build_mutation_neighborhood(&graph, &node_id, actual_cascade_closed)
         };
 
         let mut json = serde_json::json!({
