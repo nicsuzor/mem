@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.68](https://github.com/nicsuzor/mem/compare/mem-v0.3.67...mem-v0.3.68) (2026-06-12)
+
+
+### Features
+
+* **create_task:** return top-5 semantic parent suggestions on missing-parent error ([#430](https://github.com/nicsuzor/mem/issues/430)) ([1205e92](https://github.com/nicsuzor/mem/commit/1205e92b0e190148c6038ca9bc63fee7a165c891))
+* **mcp:** return compact graph neighborhood from complete_task/release_task ([#428](https://github.com/nicsuzor/mem/issues/428)) ([9774ab9](https://github.com/nicsuzor/mem/commit/9774ab983f59519ca9498042119b26a2b75027af))
+
 ## [0.3.67](https://github.com/nicsuzor/mem/compare/mem-v0.3.66...mem-v0.3.67) (2026-06-07)
 
 

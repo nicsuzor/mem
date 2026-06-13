@@ -1765,13 +1765,50 @@ impl PkbSearchServer {
         let task_type_str = fields.task_type.as_deref().unwrap_or("task");
         let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn" | "project");
         if fields.parent.is_none() && !root_able {
+            // Semantic search for candidate parents so agents can immediately see options.
+            let suggested_parents: Option<serde_json::Value> = if !fields.title.is_empty() {
+                match self.embedder.encode_query(&fields.title) {
+                    Ok(query_embedding) => {
+                        let candidates = {
+                            let store = self.store.read();
+                            store.search(&query_embedding, 50, &self.pkb_root, None, None)
+                        };
+                        let mut suggestions: Vec<serde_json::Value> = Vec::new();
+                        for r in candidates {
+                            if suggestions.len() >= 5 {
+                                break;
+                            }
+                            match r.doc_type.as_deref() {
+                                Some("project") | Some("epic") => {
+                                    suggestions.push(serde_json::json!({
+                                        "id": r.id,
+                                        "title": r.title,
+                                        "type": r.doc_type,
+                                        "score": r.score,
+                                    }));
+                                }
+                                _ => {}
+                            }
+                        }
+                        if suggestions.is_empty() {
+                            None
+                        } else {
+                            Some(serde_json::json!({ "suggested_parents": suggestions }))
+                        }
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
                     "Missing required parameter: parent. Tasks must have a parent node. \
                      Only goal, target, epic, learn, and project types can be root-level.",
                 ),
-                data: None,
+                data: suggested_parents,
             });
         }
 
@@ -3959,7 +3996,7 @@ impl PkbSearchServer {
         // `blocked`) yields an empty `unblocked` — the task still blocks its deps.
         let neighborhood = {
             let graph = self.graph.read();
-            Self::build_mutation_neighborhood(&graph, &node_id, actual_cascade_closed)
+            Self::build_mutation_neighborhood(&graph, &node_id, cascade_closed)
         };
 
         let mut json = serde_json::json!({
