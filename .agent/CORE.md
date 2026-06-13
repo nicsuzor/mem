@@ -59,8 +59,8 @@ src/
 - `create_subtask` — subtask under a parent
 - `claim_task` — instantiate a `type: template` node; creates a datestamped instance and returns it via get_task
 - `update_task` — patch frontmatter fields
-- `complete_task` — set status=done
-- `release_task` — terminal status release and session handover (populates session_id, pr_url, issue_url, follow_up_tasks, release_summary); handles ad-hoc creation if ID omitted
+- `complete_task` — set status=done; returns `{ok, id, status, message, neighborhood}` JSON envelope with compact graph context (see `specs/mutation-neighborhood.md`)
+- `release_task` — terminal status release and session handover (populates session_id, pr_url, issue_url, follow_up_tasks, release_summary); handles ad-hoc creation if ID omitted; returns `{ok, id, status, message, neighborhood}` JSON envelope with compact graph context (see `specs/mutation-neighborhood.md`)
 - `decompose_task` — batch create subtasks under a parent
 - `get_dependency_tree` — upstream/downstream dependency tree
 - `get_task_children` — direct/recursive children with completion counts

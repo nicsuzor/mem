@@ -3994,9 +3994,10 @@ impl PkbSearchServer {
         // Compute the neighborhood against the post-write graph. `unblocked` is
         // gated on `!is_blocked`, so a release to a non-clearing status (e.g.
         // `blocked`) yields an empty `unblocked` — the task still blocks its deps.
+        let cascade_closed = recursive_close_descs.len();
         let neighborhood = {
             let graph = self.graph.read();
-            Self::build_mutation_neighborhood(&graph, &node_id, 0)
+            Self::build_mutation_neighborhood(&graph, &node_id, cascade_closed)
         };
 
         let mut json = serde_json::json!({
