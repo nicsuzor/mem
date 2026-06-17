@@ -8,6 +8,11 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Canonical ID for the well-known ad-hoc sessions root node.
+/// The file is `projects/adhoc-sessions.md`; its frontmatter `id:` carries this
+/// value so graph child-lookup (which traverses by canonical id) resolves correctly.
+pub const ADHOC_SESSIONS_ROOT_ID: &str = "adhoc-826c89bd";
+
 /// Document type determines subdirectory, ID prefix, and default frontmatter.
 #[derive(Debug, Clone, Copy)]
 pub enum DocType {
@@ -405,12 +410,13 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
     }
 
     // Write directly so the filename stays `adhoc-sessions.md` (human-readable)
-    // while the frontmatter id is the canonical `adhoc-826c89bd`. The file stem
+    // while the frontmatter id is the canonical ADHOC_SESSIONS_ROOT_ID. The file stem
     // plus the alias entry both register "adhoc-sessions" in the id_map so
     // tasks written with either form resolve to the same node.
     let now = chrono::Utc::now().to_rfc3339();
+    let id = ADHOC_SESSIONS_ROOT_ID;
     let content = format!(
-        "---\nid: adhoc-826c89bd\ntitle: \"Ad-hoc Sessions\"\ntype: project\ncreated: {now}\nmodified: {now}\nalias:\n  - \"adhoc-826c89bd-ad-hoc-sessions\"\n  - \"adhoc-826c89bd\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: active\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
+        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: project\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: active\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
     std::fs::write(&adhoc_path, content)
         .with_context(|| format!("Failed to write adhoc-sessions root: {}", adhoc_path.display()))?;
