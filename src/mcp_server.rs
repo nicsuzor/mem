@@ -3594,7 +3594,7 @@ impl PkbSearchServer {
 
         let fields = crate::document_crud::TaskFields {
             title,
-            parent: Some("adhoc-sessions".to_string()),
+            parent: Some("adhoc-826c89bd".to_string()),
             project: Some("adhoc-sessions".to_string()),
             tags: vec!["adhoc".to_string(), "session-release".to_string()],
             session_id: args.get("session_id").and_then(|v| v.as_str()).map(String::from),
