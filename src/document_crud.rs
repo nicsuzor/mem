@@ -8,6 +8,11 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Canonical ID for the well-known ad-hoc sessions root node.
+/// The file is `projects/adhoc-sessions.md`; its frontmatter `id:` carries this
+/// value so graph child-lookup (which traverses by canonical id) resolves correctly.
+pub const ADHOC_SESSIONS_ROOT_ID: &str = "adhoc-826c89bd";
+
 /// Document type determines subdirectory, ID prefix, and default frontmatter.
 #[derive(Debug, Clone, Copy)]
 pub enum DocType {
@@ -390,24 +395,31 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
 /// Returns the path to the created file. The filename is derived from the
 /// task ID and title (slugified).
 /// Ensure the well-known root node for ad-hoc sessions exists.
-/// If it doesn't exist, creates a new project document with ID "adhoc-sessions".
+/// Creates `projects/adhoc-sessions.md` with canonical id `adhoc-826c89bd`
+/// and permalink/alias `adhoc-sessions` so both resolution forms work.
 pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
-    // Check if it already exists in projects/
     let adhoc_path = root.join("projects").join("adhoc-sessions.md");
     if adhoc_path.exists() {
         return Ok(());
     }
 
-    let fields = DocumentFields {
-        title: "Ad-hoc Sessions".to_string(),
-        doc_type: "project".to_string(),
-        id: Some("adhoc-sessions".to_string()),
-        status: Some("active".to_string()),
-        body: Some("# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n".to_string()),
-        ..Default::default()
-    };
+    let projects_dir = root.join("projects");
+    if !projects_dir.is_dir() {
+        std::fs::create_dir_all(&projects_dir)
+            .with_context(|| format!("Failed to create projects dir: {}", projects_dir.display()))?;
+    }
 
-    create_document(root, fields)?;
+    // Write directly so the filename stays `adhoc-sessions.md` (human-readable)
+    // while the frontmatter id is the canonical ADHOC_SESSIONS_ROOT_ID. The file stem
+    // plus the alias entry both register "adhoc-sessions" in the id_map so
+    // tasks written with either form resolve to the same node.
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = ADHOC_SESSIONS_ROOT_ID;
+    let content = format!(
+        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: project\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: active\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
+    );
+    std::fs::write(&adhoc_path, content)
+        .with_context(|| format!("Failed to write adhoc-sessions root: {}", adhoc_path.display()))?;
     Ok(())
 }
 
@@ -2548,6 +2560,47 @@ mod tests {
         assert!(extract_raw_frontmatter("# just a heading\n").is_none());
         // Opening delimiter but no closing -> not well-formed.
         assert!(extract_raw_frontmatter("---\nid: x\nno closing\n").is_none());
+    }
+
+    #[test]
+    fn ensure_adhoc_sessions_root_writes_canonical_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        ensure_adhoc_sessions_root(root).unwrap();
+
+        let adhoc_path = root.join("projects").join("adhoc-sessions.md");
+        assert!(adhoc_path.exists(), "adhoc-sessions.md must be created");
+
+        let content = std::fs::read_to_string(&adhoc_path).unwrap();
+        assert!(
+            content.contains("id: adhoc-826c89bd"),
+            "canonical id must be adhoc-826c89bd, got: {content}"
+        );
+        assert!(
+            content.contains("adhoc-sessions"),
+            "alias adhoc-sessions must appear in the file"
+        );
+        assert!(
+            !content.contains("id: adhoc-sessions"),
+            "alias string must not be used as the id"
+        );
+    }
+
+    #[test]
+    fn ensure_adhoc_sessions_root_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // First call creates the file
+        ensure_adhoc_sessions_root(root).unwrap();
+        let adhoc_path = root.join("projects").join("adhoc-sessions.md");
+        let content_first = std::fs::read_to_string(&adhoc_path).unwrap();
+
+        // Second call must not overwrite
+        ensure_adhoc_sessions_root(root).unwrap();
+        let content_second = std::fs::read_to_string(&adhoc_path).unwrap();
+        assert_eq!(content_first, content_second, "second call must not modify the file");
     }
 }
 
