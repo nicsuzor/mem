@@ -6078,6 +6078,19 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    fn handle_refresh_graph(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.rebuild_graph();
+        let node_count = self.graph.read().node_count();
+        let json = serde_json::json!({
+            "ok": true,
+            "node_count": node_count,
+            "message": format!("Graph index rebuilt from disk. {node_count} nodes loaded.")
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap_or_default(),
+        )]))
+    }
+
     // =========================================================================
     // CONSOLIDATED TOOLS (Progressive Disclosure)
     // =========================================================================
@@ -6222,6 +6235,7 @@ impl PkbSearchServer {
             "batch_reclassify" => self.handle_batch_reclassify(args),
             "get_stats" => self.handle_get_stats(args),
             "status" => self.handle_status(args),
+            "refresh_graph" => self.handle_refresh_graph(args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {name}")),
@@ -7142,6 +7156,20 @@ impl PkbSearchServer {
             )
             .with_title("Build Status")
             .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "refresh_graph",
+                "Synchronously rebuild the in-memory graph index from on-disk state. \
+                 Refreshes parent→child relations, edges, and derived metrics without re-embedding. \
+                 Use when graph queries return stale results after bulk mutations (e.g. batch_reparent). \
+                 Returns the number of nodes loaded. This is a cheap operation — no ONNX/embedding step.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }))
+                .unwrap(),
+            )
+            .with_title("Refresh Graph Index")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
         ]
     }
 }
@@ -8900,6 +8928,59 @@ mod tests {
             }
         }
     }
+
+    /// refresh_graph must reflect new files written to disk after server startup.
+    #[test]
+    fn test_refresh_graph_reflects_disk_changes() {
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/initial.md",
+            "---\nid: initial-task\ntitle: Initial Task\ntype: task\nstatus: ready\n---\n\n# Initial\n",
+        )]);
+
+        // new-task is not yet on disk — must be absent from graph.
+        assert!(
+            server.graph.read().get_node("new-task").is_none(),
+            "new-task must not be in graph before disk write"
+        );
+
+        // Write a new file to disk without going through the server mutation path.
+        std::fs::write(
+            tmp.path().join("tasks/new-task.md"),
+            "---\nid: new-task\ntitle: New Task\ntype: task\nstatus: ready\n---\n\n# New\n",
+        )
+        .unwrap();
+
+        // Graph is still stale — in-memory index hasn't been told about the new file.
+        assert!(
+            server.graph.read().get_node("new-task").is_none(),
+            "new-task must not be in graph before refresh_graph"
+        );
+
+        // Call refresh_graph — should scan disk and load new-task.
+        let result = server
+            .handle_refresh_graph(&json!({}))
+            .expect("refresh_graph must succeed");
+        let text: String = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+
+        // After refresh, new-task must be in the graph.
+        assert!(
+            server.graph.read().get_node("new-task").is_some(),
+            "new-task must be in graph after refresh_graph; response: {text}"
+        );
+
+        // Response JSON: ok=true, node_count positive.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("response must be valid JSON");
+        assert_eq!(parsed["ok"], true, "response ok must be true: {text}");
+        assert!(
+            parsed["node_count"].as_u64().unwrap_or(0) > 0,
+            "node_count must be positive: {text}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -8979,6 +9060,28 @@ mod annotation_tests {
                 );
             }
         }
+    }
+
+    /// Full embedding reindex (pkb reindex --force) must remain CLI-only.
+    /// No MCP tool name may suggest a full reindex path.
+    #[test]
+    fn test_no_full_reindex_tool_on_mcp_surface() {
+        let tools = PkbSearchServer::get_all_tools();
+        let suspect: Vec<String> = tools
+            .iter()
+            .filter(|t| {
+                t.name.contains("reindex")
+                    || t.name.contains("force_index")
+                    || t.name.contains("embed_all")
+                    || t.name.contains("full_index")
+            })
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            suspect.is_empty(),
+            "Full reindex must remain CLI-only (pkb reindex --force). \
+             These MCP tool names look like full reindex paths: {suspect:?}",
+        );
     }
 }
 
