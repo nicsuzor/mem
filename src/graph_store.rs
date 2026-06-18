@@ -547,9 +547,11 @@ impl GraphStore {
                     .cloned()
             })
         });
-        // Capture the old parent before consuming `prior`, so we can fix up
-        // parent→child edges below after the derived-field carry-over.
+        // Capture the old parent and old id before consuming `prior`, so we can
+        // fix up parent→child edges below after the derived-field carry-over.
+        // old_node_id differs from new_node.id when the same file is renamed.
         let old_parent_id: Option<String> = prior.as_ref().and_then(|n| n.parent.clone());
+        let old_node_id: Option<String> = prior.as_ref().map(|n| n.id.clone());
 
         if let Some(old) = prior {
             // Derived: only carry over if the incoming node didn't supply one.
@@ -597,10 +599,14 @@ impl GraphStore {
         // nodes in the same graph write-lock window, making the close-gate
         // immediately consistent with what `get_task` reports.
         let new_parent_id = new_node.parent.clone();
-        if old_parent_id != new_parent_id {
+        let reparented = old_parent_id != new_parent_id;
+        let renamed = old_node_id.as_ref().map_or(false, |old_id| old_id != &new_node.id);
+
+        if reparented || renamed {
             if let Some(ref old_pid) = old_parent_id {
                 if let Some(p) = self.nodes.get_mut(old_pid.as_str()) {
-                    p.children.retain(|c| c != &new_node.id);
+                    let old_nid = old_node_id.as_ref().unwrap_or(&new_node.id);
+                    p.children.retain(|c| c != old_nid);
                     p.leaf = p.children.is_empty();
                 }
             }
@@ -609,7 +615,7 @@ impl GraphStore {
                     if !p.children.contains(&new_node.id) {
                         p.children.push(new_node.id.clone());
                     }
-                    p.leaf = p.children.is_empty();
+                    p.leaf = false;
                 }
             }
         }
