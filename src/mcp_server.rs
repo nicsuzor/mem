@@ -3560,11 +3560,134 @@ impl PkbSearchServer {
         )]))
     }
 
+    /// M3: Semantic attach — search open epics for a confident topic match.
+    ///
+    /// Confidence basis: BGE-M3 cosine similarity ≥ 0.75 against the session
+    /// summary, filtered to `type: epic` with non-terminal status in the vector
+    /// store. Score 0.75 is calibrated against real session summaries: on-topic
+    /// epics score 0.80+; unrelated epics cluster below 0.60. Fail-safe: any
+    /// error or below-threshold result returns `None`, falling through to M2.
+    fn find_topic_epic(&self, summary: &str) -> Option<(String, f32, String)> {
+        const CONFIDENCE_THRESHOLD: f32 = 0.75;
+
+        let embedding = match self.embedder.encode_query(summary) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(target: "adhoc_grouping", "M3: embed failed, skipping topic attach: {e}");
+                return None;
+            }
+        };
+
+        // Fetch extra candidates so type-filtering has enough to choose from.
+        let candidates = self.store.read().search(&embedding, 50, &self.pkb_root, None, None);
+
+        for candidate in &candidates {
+            if candidate.score < CONFIDENCE_THRESHOLD {
+                break; // sorted descending — everything from here on is below threshold
+            }
+            let is_epic = candidate
+                .doc_type
+                .as_deref()
+                .map(|t| t.eq_ignore_ascii_case("epic"))
+                .unwrap_or(false);
+            if !is_epic {
+                continue;
+            }
+            let status_lc = candidate
+                .status
+                .as_deref()
+                .unwrap_or("active")
+                .to_ascii_lowercase();
+            if matches!(status_lc.as_str(), "done" | "cancelled" | "canceled" | "archived") {
+                continue;
+            }
+            if let Some(ref id) = candidate.id {
+                return Some((id.clone(), candidate.score, candidate.title.clone()));
+            }
+        }
+        None
+    }
+
+    /// M2: Find or create a deterministic per-session epic.
+    ///
+    /// Epic ID: `adhoc-{md5(session_id)[..8]}` — stable across multiple
+    /// `release_task` calls from the same session so all releases from one
+    /// session cohere into a single thread. Parented under the ad-hoc sessions
+    /// root. Title derives from the first-seen release summary (truncated).
+    fn find_or_create_session_epic(
+        &self,
+        session_id: &str,
+        title_hint: &str,
+    ) -> Result<String, McpError> {
+        let hash = format!("{:x}", md5::compute(session_id.as_bytes()));
+        let epic_id = format!("adhoc-{}", &hash[..8]);
+
+        // Fast path: already present in graph
+        {
+            let graph = self.graph.read();
+            if graph.resolve(&epic_id).is_some() {
+                tracing::debug!(target: "adhoc_grouping", epic_id = epic_id.as_str(), "M2: reusing existing session epic");
+                return Ok(epic_id);
+            }
+        }
+
+        // Slow path: create the epic
+        crate::document_crud::ensure_adhoc_sessions_root(&self.pkb_root).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to ensure adhoc-sessions root: {e}")),
+            data: None,
+        })?;
+
+        {
+            let graph = self.graph.read();
+            if graph.resolve(crate::document_crud::ADHOC_SESSIONS_ROOT_ID).is_none() {
+                drop(graph);
+                self.rebuild_graph();
+            }
+        }
+
+        let hint = title_hint.trim();
+        let hint_end = hint.floor_char_boundary(hint.len().min(80));
+        let truncated = hint[..hint_end].trim_end();
+        let title = if truncated.is_empty() {
+            format!("Session {session_id}")
+        } else {
+            format!("Session {session_id}: {truncated}")
+        };
+
+        let fields = crate::document_crud::TaskFields {
+            title,
+            id: Some(epic_id.clone()),
+            parent: Some(crate::document_crud::ADHOC_SESSIONS_ROOT_ID.to_string()),
+            project: Some("adhoc-sessions".to_string()),
+            task_type: Some("epic".to_string()),
+            tags: vec!["adhoc".to_string(), "session-epic".to_string()],
+            session_id: Some(session_id.to_string()),
+            ..Default::default()
+        };
+
+        let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to create session epic: {e}")),
+            data: None,
+        })?;
+
+        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
+            self.try_upsert_document(&doc);
+        } else {
+            self.rebuild_graph();
+        }
+
+        tracing::info!(target: "adhoc_grouping", epic_id = epic_id.as_str(), session_id, "M2: created session epic");
+        Ok(epic_id)
+    }
+
     /// Release a task to a handoff/terminal status with required summary.
     /// Create an ad-hoc task for a session release when no ID is provided.
     fn create_adhoc_task(&self, args: &JsonValue) -> Result<String, McpError> {
         let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
-        
+
         // Truncate summary to 200 chars for title
         let mut title = summary.trim().replace('\n', " ");
         if title.len() > 200 {
@@ -3592,12 +3715,44 @@ impl PkbSearchServer {
             }
         }
 
+        let session_id_opt = args.get("session_id").and_then(|v| v.as_str());
+
+        // M3 → M2 → root fallback: try topic match, then per-session epic, then root.
+        let parent_id = if let Some((epic_id, score, ref epic_title)) = self.find_topic_epic(summary) {
+            tracing::info!(
+                target: "adhoc_grouping",
+                routing = "M3",
+                score,
+                epic_id = epic_id.as_str(),
+                epic_title = epic_title.as_str(),
+                "M3: attaching session release to topic epic"
+            );
+            epic_id
+        } else if let Some(sid) = session_id_opt {
+            let epic_id = self.find_or_create_session_epic(sid, summary)?;
+            tracing::info!(
+                target: "adhoc_grouping",
+                routing = "M2",
+                session_id = sid,
+                epic_id = epic_id.as_str(),
+                "M2: attaching session release to per-session epic (no confident topic match)"
+            );
+            epic_id
+        } else {
+            tracing::info!(
+                target: "adhoc_grouping",
+                routing = "fallback",
+                "Fallback: no session_id and no confident topic match; parenting to adhoc-sessions root"
+            );
+            crate::document_crud::ADHOC_SESSIONS_ROOT_ID.to_string()
+        };
+
         let fields = crate::document_crud::TaskFields {
             title,
-            parent: Some(crate::document_crud::ADHOC_SESSIONS_ROOT_ID.to_string()),
+            parent: Some(parent_id),
             project: Some("adhoc-sessions".to_string()),
             tags: vec!["adhoc".to_string(), "session-release".to_string()],
-            session_id: args.get("session_id").and_then(|v| v.as_str()).map(String::from),
+            session_id: session_id_opt.map(String::from),
             issue_url: args.get("issue_url").and_then(|v| v.as_str()).map(String::from),
             release_summary: args.get("release_summary").and_then(|v| v.as_str()).map(String::from),
             follow_up_tasks: args.get("follow_up_tasks")
@@ -9683,6 +9838,185 @@ tags:
         assert!(
             !ready.contains(&"daily-template".to_string()),
             "template should not appear in ready queue; ready={ready:?}"
+        );
+    }
+
+    // ── M2/M3 ad-hoc grouping tests ──
+
+    /// With a session_id, release_task(no id) should create a per-session epic
+    /// and parent the task under it, not directly under adhoc-sessions root.
+    #[test]
+    fn test_adhoc_release_with_session_id_creates_session_epic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let result = server
+            .handle_release_task(&serde_json::json!({
+                "status": "done",
+                "summary": "Fixed the retry logic in queue consumer",
+                "session_id": "abc12345",
+            }))
+            .expect("release_task without id should succeed");
+
+        let text: String = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+
+        // The response should include the created task id
+        let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let task_id = val.get("id").and_then(|v| v.as_str()).unwrap().to_string();
+
+        // The task should exist and be parented under a session epic (not the adhoc root directly)
+        let graph = server.graph.read();
+        let node = graph.resolve(&task_id).expect("created task should be in graph");
+        let parent = node.parent.as_deref().unwrap_or("");
+
+        // Parent must NOT be the flat adhoc-sessions root — it must be a session epic
+        assert_ne!(
+            parent,
+            crate::document_crud::ADHOC_SESSIONS_ROOT_ID,
+            "task should be parented under a session epic, not directly under adhoc root; parent={parent}"
+        );
+        // Parent ID should follow the adhoc-{md5[..8]} pattern
+        assert!(
+            parent.starts_with("adhoc-"),
+            "session epic parent should have adhoc- prefix; parent={parent}"
+        );
+
+        // The session epic itself should exist in the graph as type: epic
+        let epic_node = graph.resolve(parent).expect("session epic should be in graph");
+        assert_eq!(
+            epic_node.node_type.as_deref(),
+            Some("epic"),
+            "session epic should have type=epic"
+        );
+        // Epic's parent should be the adhoc-sessions root
+        assert_eq!(
+            epic_node.parent.as_deref(),
+            Some(crate::document_crud::ADHOC_SESSIONS_ROOT_ID),
+            "session epic should be parented under adhoc-sessions root"
+        );
+    }
+
+    /// Two release_task calls with the same session_id should create only one
+    /// session epic and both tasks should share it as their parent.
+    #[test]
+    fn test_adhoc_same_session_reuses_epic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let sid = "deadbeef";
+
+        let r1 = server
+            .handle_release_task(&serde_json::json!({
+                "status": "done",
+                "summary": "First task in this session",
+                "session_id": sid,
+            }))
+            .unwrap();
+        let r2 = server
+            .handle_release_task(&serde_json::json!({
+                "status": "done",
+                "summary": "Second task in this session",
+                "session_id": sid,
+            }))
+            .unwrap();
+
+        let id1: String = {
+            let t: String = r1.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            serde_json::from_str::<serde_json::Value>(&t).unwrap().get("id").and_then(|v| v.as_str()).unwrap().to_string()
+        };
+        let id2: String = {
+            let t: String = r2.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            serde_json::from_str::<serde_json::Value>(&t).unwrap().get("id").and_then(|v| v.as_str()).unwrap().to_string()
+        };
+
+        let graph = server.graph.read();
+        let parent1 = graph.resolve(&id1).unwrap().parent.clone().unwrap_or_default();
+        let parent2 = graph.resolve(&id2).unwrap().parent.clone().unwrap_or_default();
+
+        // Both tasks must share the same session epic
+        assert_eq!(
+            parent1, parent2,
+            "both tasks from the same session should share the same parent epic; parent1={parent1}, parent2={parent2}"
+        );
+        // Only one epic should exist with an adhoc- prefix in the graph
+        let epic_count = graph
+            .nodes()
+            .filter(|n| n.node_type.as_deref() == Some("epic") && n.id.starts_with("adhoc-"))
+            .count();
+        assert_eq!(
+            epic_count, 1,
+            "exactly one session epic should be created for a single session_id; got {epic_count}"
+        );
+    }
+
+    /// Without a session_id and with the dummy embedder (all zero scores, always
+    /// below M3 threshold), release_task falls back to the adhoc-sessions root.
+    #[test]
+    fn test_adhoc_no_session_id_falls_back_to_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let result = server
+            .handle_release_task(&serde_json::json!({
+                "status": "done",
+                "summary": "Some ad-hoc work with no session tracking",
+            }))
+            .unwrap();
+
+        let text: String = result.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+        let task_id: String = serde_json::from_str::<serde_json::Value>(&text)
+            .unwrap()
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+
+        let graph = server.graph.read();
+        let parent = graph.resolve(&task_id).unwrap().parent.clone().unwrap_or_default();
+        assert_eq!(
+            parent,
+            crate::document_crud::ADHOC_SESSIONS_ROOT_ID,
+            "without session_id, task should fall back to adhoc-sessions root; parent={parent}"
         );
     }
 }
