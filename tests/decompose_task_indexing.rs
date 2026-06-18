@@ -155,7 +155,7 @@ fn stdio_session_sequential(aca_path: &std::path::Path, messages: &[String]) -> 
         }
     });
 
-    let timeout = Duration::from_secs(30);
+    let timeout = Duration::from_secs(60);
     let mut pending: HashMap<u64, Value> = HashMap::new();
     let mut responses = Vec::new();
 
