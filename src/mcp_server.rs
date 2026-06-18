@@ -3593,12 +3593,13 @@ impl PkbSearchServer {
             if !is_epic {
                 continue;
             }
-            let status_lc = candidate
+            let status_raw = candidate
                 .status
                 .as_deref()
                 .unwrap_or("active")
                 .to_ascii_lowercase();
-            if matches!(status_lc.as_str(), "done" | "cancelled" | "canceled" | "archived") {
+            let canonical_status = crate::graph::resolve_status_alias(&status_raw);
+            if matches!(canonical_status, "done" | "cancelled") {
                 continue;
             }
             if let Some(ref id) = candidate.id {
@@ -3666,11 +3667,22 @@ impl PkbSearchServer {
             ..Default::default()
         };
 
-        let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Failed to create session epic: {e}")),
-            data: None,
-        })?;
+        let path = match crate::document_crud::create_task(&self.pkb_root, fields) {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("already exists") {
+                    // Concurrent request created the same epic; reuse it.
+                    tracing::debug!(target: "adhoc_grouping", epic_id = epic_id.as_str(), "M2: session epic created concurrently, reusing");
+                    return Ok(epic_id);
+                }
+                return Err(McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from(format!("Failed to create session epic: {e}")),
+                    data: None,
+                });
+            }
+        };
 
         if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
             self.rebuild_graph_for_pkb_document(&doc);
