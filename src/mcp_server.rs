@@ -8639,6 +8639,67 @@ mod tests {
 
     // ── Open-children validation (task-8f232401) ──────────────────────────────
 
+    /// Regression test for task-31a499fe:
+    ///
+    /// Scenario: oldParent has exactly one open child. Agent reparents the child
+    /// to newParent. The close-gate must immediately reflect the reparent so that
+    /// `complete_task(oldParent)` succeeds without waiting for the Tier-2 rebuild.
+    ///
+    /// Before the fix, `upsert_node_in_place` updated the child's `parent` field
+    /// but left `oldParent.children` stale; `open_descendants(oldParent)` still
+    /// found the child, causing `complete_task` to reject with "open children".
+    #[test]
+    fn test_reparent_only_child_then_complete_old_parent_succeeds() {
+        let (tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/old-parent.md",
+                "---\nid: old-parent\ntitle: Old Parent\ntype: task\nstatus: ready\n---\n\n# Old Parent\n",
+            ),
+            (
+                "tasks/new-parent.md",
+                "---\nid: new-parent\ntitle: New Parent\ntype: task\nstatus: ready\n---\n\n# New Parent\n",
+            ),
+            (
+                "tasks/only-child.md",
+                "---\nid: only-child\ntitle: Only Child\ntype: task\nstatus: ready\nparent: old-parent\n---\n\n# Only Child\n",
+            ),
+        ]);
+
+        // Step 1: reparent the only child to new-parent.
+        server
+            .handle_update_task(&json!({
+                "id": "only-child",
+                "parent": "new-parent",
+                "allow_missing_parent": false
+            }))
+            .expect("reparent should succeed");
+
+        // Step 2: disk must reflect the new parent.
+        let child_content =
+            std::fs::read_to_string(tmp.path().join("tasks/only-child.md")).unwrap();
+        assert!(
+            child_content.contains("parent: new-parent"),
+            "child's frontmatter must have new-parent on disk; got:\n{child_content}"
+        );
+        assert!(
+            !child_content.contains("parent: old-parent"),
+            "child must no longer reference old-parent on disk; got:\n{child_content}"
+        );
+        // modified must be bumped on every update.
+        assert!(
+            child_content.contains("modified:"),
+            "modified timestamp must be present; got:\n{child_content}"
+        );
+
+        // Step 3: old-parent now has zero open children — complete_task must succeed.
+        server
+            .handle_complete_task(&json!({
+                "id": "old-parent",
+                "completion_evidence": "all children reparented"
+            }))
+            .expect("complete_task(old-parent) must succeed after its only child was reparented out");
+    }
+
     // ── Mutation neighborhood (specs/mutation-neighborhood.md) ────────────────
 
     #[test]
