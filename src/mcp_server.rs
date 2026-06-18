@@ -6087,7 +6087,8 @@ impl PkbSearchServer {
             "message": format!("Graph index rebuilt from disk. {node_count} nodes loaded.")
         });
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap_or_default(),
+            serde_json::to_string_pretty(&json)
+                .expect("infallible: static JSON value with primitive types"),
         )]))
     }
 
@@ -8976,9 +8977,10 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&text).expect("response must be valid JSON");
         assert_eq!(parsed["ok"], true, "response ok must be true: {text}");
-        assert!(
-            parsed["node_count"].as_u64().unwrap_or(0) > 0,
-            "node_count must be positive: {text}"
+        assert_eq!(
+            parsed["node_count"].as_u64().unwrap_or(0),
+            2,
+            "node_count must be exactly 2 (initial-task + new-task): {text}"
         );
     }
 }
