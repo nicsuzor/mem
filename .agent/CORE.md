@@ -26,7 +26,7 @@ Semantic search + knowledge graph MCP server for a personal knowledge base (PKB)
 ```
 src/
   cli.rs           — main() for pkb binary (CLI + MCP server via `pkb mcp`)
-  mcp_server.rs    — MCP ServerHandler: 38 tools, dispatch, tool registrations
+  mcp_server.rs    — MCP ServerHandler: 39 tools, dispatch, tool registrations
   graph_store.rs   — GraphStore: builds/queries knowledge graph from PKB docs
   graph.rs         — GraphNode (fields include stakeholder, waiting_since), Edge, EdgeType, link resolution helpers
   graph_display.rs — Graph rendering/display utilities
@@ -43,7 +43,7 @@ src/
   lib.rs           — Library root
 ```
 
-## MCP Tools (38)
+## MCP Tools (39)
 
 ### Search
 - `search` — hybrid semantic + graph-proximity
@@ -85,6 +85,7 @@ src/
 - `pkb_trace` — shortest paths between two nodes
 - `pkb_orphans` — disconnected nodes
 - `graph_stats` — graph statistics
+- `refresh_graph` — synchronously rebuild in-memory graph index from disk (no ONNX re-embed)
 
 ### Batch Operations
 - `batch_update` — bulk update frontmatter fields
