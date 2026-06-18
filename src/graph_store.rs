@@ -547,6 +547,10 @@ impl GraphStore {
                     .cloned()
             })
         });
+        // Capture the old parent before consuming `prior`, so we can fix up
+        // parent→child edges below after the derived-field carry-over.
+        let old_parent_id: Option<String> = prior.as_ref().and_then(|n| n.parent.clone());
+
         if let Some(old) = prior {
             // Derived: only carry over if the incoming node didn't supply one.
             // The from_pkb_document path always emits empty children/subtasks/
@@ -577,6 +581,36 @@ impl GraphStore {
             new_node.focus_score = old.focus_score;
             if new_node.project.is_none() {
                 new_node.project = old.project;
+            }
+        }
+
+        // Synchronously fix parent→child edges when a reparent occurred.
+        //
+        // `upsert_node_in_place` only patches the single child node; the
+        // background Tier-2 rebuild recomputes inverses from disk, but it runs
+        // asynchronously.  Until it lands, `open_descendants(old_parent)` still
+        // traverses `old_parent.children` — which still contained the child —
+        // causing `complete_task(old_parent)` to reject with "open children"
+        // even though the reparent already succeeded on disk and in `get_task`.
+        //
+        // Fix: update the live `children` lists of both the old and new parent
+        // nodes in the same graph write-lock window, making the close-gate
+        // immediately consistent with what `get_task` reports.
+        let new_parent_id = new_node.parent.clone();
+        if old_parent_id != new_parent_id {
+            if let Some(ref old_pid) = old_parent_id {
+                if let Some(p) = self.nodes.get_mut(old_pid.as_str()) {
+                    p.children.retain(|c| c != &new_node.id);
+                    p.leaf = p.children.is_empty();
+                }
+            }
+            if let Some(ref new_pid) = new_parent_id {
+                if let Some(p) = self.nodes.get_mut(new_pid.as_str()) {
+                    if !p.children.contains(&new_node.id) {
+                        p.children.push(new_node.id.clone());
+                    }
+                    p.leaf = p.children.is_empty();
+                }
             }
         }
 
