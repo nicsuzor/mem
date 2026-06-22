@@ -515,7 +515,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     if let Some(p) = fields.priority {
         fm.push_str(&format!("priority: {}\n", p));
     } else {
-        fm.push_str("priority: 2\n");
+        fm.push_str("priority: 3\n");
     }
 
     if let Some(ref parent) = fields.parent {
@@ -718,7 +718,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     fm.push_str("status: in_progress\n");
     fm.push_str(&format!(
         "priority: {}\n",
-        fields.priority.unwrap_or(2)
+        fields.priority.unwrap_or(3)
     ));
 
     if let Some(ref parent) = fields.parent {
@@ -1983,6 +1983,84 @@ mod tests {
         assert!(content.contains("type: task"), "default type should be 'task': {content}");
         assert!(content.contains("status: inbox"), "default status should be 'inbox': {content}");
         assert!(content.contains("project: aops"), "project should be written: {content}");
+        assert!(
+            content.contains("priority: 3"),
+            "default priority should be P3 (uncurated default), not P2: {content}"
+        );
+    }
+
+    #[test]
+    fn create_task_default_priority_is_p3_not_p2() {
+        // create_task with no explicit priority must persist priority: 3 (uncurated default).
+        // Writing priority: 2 violates the intent-authority rule — agents must not originate
+        // a non-default priority band.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Uncurated task".to_string(),
+            parent: Some("parent-001".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            content.contains("priority: 3"),
+            "create_task with no priority arg must default to P3: {content}"
+        );
+        assert!(
+            !content.contains("priority: 2"),
+            "create_task must not stamp P2 when no priority is supplied: {content}"
+        );
+    }
+
+    #[test]
+    fn create_task_explicit_priority_is_honoured() {
+        // An explicit priority=0 passed to create_task must be persisted as-is.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Critical task".to_string(),
+            parent: Some("parent-001".to_string()),
+            priority: Some(0),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            content.contains("priority: 0"),
+            "explicit priority=0 must be honoured: {content}"
+        );
+    }
+
+    #[test]
+    fn claim_template_instance_default_priority_is_p3() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TemplateInstanceFields {
+            template_title: "Template Task".to_string(),
+            template_body: "Body".to_string(),
+            template_id: "task-template-123".to_string(),
+            ..Default::default()
+        };
+        let path = claim_template_instance(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            content.contains("priority: 3"),
+            "claim_template_instance with no priority must default to P3: {content}"
+        );
+        assert!(
+            !content.contains("priority: 2"),
+            "claim_template_instance must not stamp P2 when no priority is supplied: {content}"
+        );
     }
 
     #[test]
