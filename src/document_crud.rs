@@ -720,7 +720,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     fm.push_str("status: in_progress\n");
     fm.push_str(&format!(
         "priority: {}\n",
-        fields.priority.unwrap_or(2)
+        fields.priority.unwrap_or(3)
     ));
 
     if let Some(ref parent) = fields.parent {
@@ -2033,6 +2033,80 @@ mod tests {
         assert!(content.contains("type: task"), "default type should be 'task': {content}");
         assert!(content.contains("status: inbox"), "default status should be 'inbox': {content}");
         assert!(content.contains("project: aops"), "project should be written: {content}");
+        // #1905: no default priority is stamped when none is supplied
+        assert!(
+            !content.contains("priority:"),
+            "create_task must not stamp any default priority: {content}"
+        );
+    }
+
+    #[test]
+    fn create_task_default_priority_is_p3_not_p2() {
+        // #1905: create_task with no explicit priority must NOT stamp any priority at all.
+        // Agents must not originate a priority band the caller never expressed.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Uncurated task".to_string(),
+            parent: Some("parent-001".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            !content.contains("priority:"),
+            "create_task must not stamp any default priority when none is supplied: {content}"
+        );
+    }
+
+    #[test]
+    fn create_task_explicit_priority_is_honoured() {
+        // An explicit priority=0 passed to create_task must be persisted as-is.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Critical task".to_string(),
+            parent: Some("parent-001".to_string()),
+            priority: Some(0),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            content.contains("priority: 0"),
+            "explicit priority=0 must be honoured: {content}"
+        );
+    }
+
+    #[test]
+    fn claim_template_instance_default_priority_is_p3() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TemplateInstanceFields {
+            template_title: "Template Task".to_string(),
+            template_body: "Body".to_string(),
+            template_id: "task-template-123".to_string(),
+            ..Default::default()
+        };
+        let path = claim_template_instance(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            content.contains("priority: 3"),
+            "claim_template_instance with no priority must default to P3: {content}"
+        );
+        assert!(
+            !content.contains("priority: 2"),
+            "claim_template_instance must not stamp P2 when no priority is supplied: {content}"
+        );
     }
 
     #[test]
@@ -2939,15 +3013,20 @@ pub fn expand_special_update_keys(
             continue;
         }
 
-        // #1908: a JSON `null` is an explicit "remove this field" request and
-        // must ALWAYS be applied — never treated as a no-op. The no-op checks
-        // below coerce the value with `as_str()` / `as_i64()`, both of which
-        // yield `None` for null; that made `update_task(priority=null)` (and any
-        // other field=null) collapse to a silent no-op whenever the current
-        // value also coerced to `None`, so the field was never removed. Let null
-        // fall straight through to `update_document`, which deletes the key.
+        // #1908: a JSON `null` is an explicit "remove this field" request.
+        // It is a no-op only when the field is already absent on the node —
+        // in that case there is nothing to remove and we skip the write so
+        // that `modified` is not bumped spuriously. For unknown fields we
+        // cannot know the on-disk state so we always apply (safe default).
         let is_noop = if value.is_null() {
-            false
+            match key.as_str() {
+                "status" => node.status.is_none(),
+                "priority" => node.priority.is_none(),
+                "assignee" => node.assignee.is_none(),
+                "complexity" => node.complexity.is_none(),
+                "parent" => node.parent.is_none(),
+                _ => false,
+            }
         } else {
             match key.as_str() {
                 "status" => node.status.as_deref() == value.as_str(),
