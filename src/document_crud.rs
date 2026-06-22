@@ -2039,6 +2039,31 @@ mod tests {
     }
 
     #[test]
+    fn claim_template_instance_default_priority_is_p3() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TemplateInstanceFields {
+            template_title: "Template Task".to_string(),
+            template_body: "Body".to_string(),
+            template_id: "task-template-123".to_string(),
+            ..Default::default()
+        };
+        let path = claim_template_instance(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            content.contains("priority: 3"),
+            "claim_template_instance with no priority must default to P3: {content}"
+        );
+        assert!(
+            !content.contains("priority: 2"),
+            "claim_template_instance must not stamp P2 when no priority is supplied: {content}"
+        );
+    }
+
+    #[test]
     fn create_task_allows_missing_project() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
