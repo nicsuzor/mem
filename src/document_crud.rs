@@ -512,10 +512,12 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         fields.status.as_deref().unwrap_or("inbox")
     ));
 
+    // #1905: do NOT force a default priority. Only stamp `priority:` when the
+    // caller explicitly supplied one. New/swept tasks without a caller-supplied
+    // priority are created with NO priority field (left unset/None), so they can
+    // be prioritised deliberately rather than inheriting an unwanted P2.
     if let Some(p) = fields.priority {
         fm.push_str(&format!("priority: {}\n", p));
-    } else {
-        fm.push_str("priority: 2\n");
     }
 
     if let Some(ref parent) = fields.parent {
@@ -1964,6 +1966,54 @@ mod tests {
     }
 
     #[test]
+    fn create_task_does_not_force_priority() {
+        // #1905: create_task must NOT auto-stamp a default priority. A task
+        // created without an explicit priority must have NO `priority:` field.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "No priority task".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            !content.contains("priority:"),
+            "create_task must NOT stamp any priority when none is supplied (no forced P2): {content}"
+        );
+    }
+
+    #[test]
+    fn create_task_honours_explicit_priority() {
+        // #1905: a caller-supplied priority must still be written verbatim.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Explicit priority task".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            priority: Some(0),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            content.contains("priority: 0"),
+            "caller-supplied priority must be honoured: {content}"
+        );
+    }
+
+    #[test]
     fn create_task_defaults_type_and_status() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -2550,6 +2600,90 @@ mod tests {
         assert!(after.contains("- a") && after.contains("- b"), "tags preserved: {after}");
     }
 
+    // ── #1908: a JSON null value must REMOVE the field, generally ──
+
+    /// update_document: a `null` value deletes the key from frontmatter (and
+    /// still bumps `modified`), while every other key round-trips untouched.
+    /// Covers both `priority` (the reported case) and `assignee` (generality).
+    #[test]
+    fn update_document_null_removes_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-null.md");
+        std::fs::write(
+            &path,
+            "---\nid: task-null1\ntitle: Clear Me\ntype: task\nstatus: ready\npriority: 2\nassignee: alice\nmodified: 2020-01-01T00:00:00Z\n---\n\n# Body\n",
+        )
+        .unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("priority".to_string(), serde_json::Value::Null);
+        updates.insert("assignee".to_string(), serde_json::Value::Null);
+        update_document(&path, updates).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("priority:"), "priority field must be removed: {after}");
+        assert!(!after.contains("assignee:"), "assignee field must be removed: {after}");
+        // Other fields survive and modified is bumped off the stale value.
+        assert!(after.contains("id: task-null1"), "id preserved: {after}");
+        assert!(after.contains("status: ready"), "status preserved: {after}");
+        assert!(!after.contains("2020-01-01"), "modified must be bumped: {after}");
+    }
+
+    /// End-to-end through the MCP write path: `expand_special_update_keys`
+    /// must NOT swallow a `null` value as a no-op (the #1908 root cause), so a
+    /// `priority: null` update flows through to `update_document` and the field
+    /// is gone on read-back. Verified for priority plus a non-special field.
+    #[test]
+    fn expand_then_update_null_removes_field_via_graph_node() {
+        use crate::graph::GraphNode;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        // Create a task with an explicit priority so there is a value to clear.
+        let fields = TaskFields {
+            title: "Wrongly stamped P2".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            priority: Some(2),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        assert!(
+            fs::read_to_string(&path).unwrap().contains("priority: 2"),
+            "precondition: task has priority 2"
+        );
+
+        // Build the graph node exactly as the MCP server does before updating.
+        let doc = crate::pkb::parse_file(&path).expect("parse created task");
+        let node = GraphNode::from_pkb_document(&doc);
+        assert_eq!(node.priority, Some(2), "node carries the on-disk priority");
+
+        // Caller sends priority=null (clear) plus a generic field=null.
+        let mut updates_map = serde_json::Map::new();
+        updates_map.insert("priority".to_string(), serde_json::Value::Null);
+        updates_map.insert("custom_field".to_string(), serde_json::Value::Null);
+
+        let effective = expand_special_update_keys(&node, &updates_map).unwrap();
+        assert!(
+            effective.contains_key("priority"),
+            "null priority must NOT be dropped as a no-op (#1908): {effective:?}"
+        );
+        assert!(
+            effective.get("priority").map(|v| v.is_null()).unwrap_or(false),
+            "priority must still be null going into the writer"
+        );
+
+        update_document(&path, effective).unwrap();
+
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(
+            !after.contains("priority:"),
+            "priority must be removed from frontmatter on read-back: {after}"
+        );
+    }
+
     #[test]
     fn extract_raw_frontmatter_handles_block_and_no_block() {
         // Well-formed block: returns the inner YAML, sans delimiters.
@@ -2805,13 +2939,24 @@ pub fn expand_special_update_keys(
             continue;
         }
 
-        let is_noop = match key.as_str() {
-            "status" => node.status.as_deref() == value.as_str(),
-            "priority" => node.priority == value.as_i64().map(|v| v as i32),
-            "assignee" => node.assignee.as_deref() == value.as_str(),
-            "complexity" => node.complexity.as_deref() == value.as_str(),
-            "parent" => node.parent.as_deref() == value.as_str(),
-            _ => false,
+        // #1908: a JSON `null` is an explicit "remove this field" request and
+        // must ALWAYS be applied — never treated as a no-op. The no-op checks
+        // below coerce the value with `as_str()` / `as_i64()`, both of which
+        // yield `None` for null; that made `update_task(priority=null)` (and any
+        // other field=null) collapse to a silent no-op whenever the current
+        // value also coerced to `None`, so the field was never removed. Let null
+        // fall straight through to `update_document`, which deletes the key.
+        let is_noop = if value.is_null() {
+            false
+        } else {
+            match key.as_str() {
+                "status" => node.status.as_deref() == value.as_str(),
+                "priority" => node.priority == value.as_i64().map(|v| v as i32),
+                "assignee" => node.assignee.as_deref() == value.as_str(),
+                "complexity" => node.complexity.as_deref() == value.as_str(),
+                "parent" => node.parent.as_deref() == value.as_str(),
+                _ => false,
+            }
         };
 
         if !is_noop {
