@@ -135,7 +135,7 @@ The instance is created with **`status: in_progress`** — template instances by
 | --------------- | ---------------------------------------------- |
 | `title`         | Datestamped copy, e.g. `Daily Review 2026-05-31` |
 | `tags`          | Copied verbatim                                |
-| `priority`      | Copied; defaults to 3 if absent                |
+| `priority`      | Copied if present; no field written when absent (no forced default — #1905) |
 | `project`       | Copied if present                              |
 | `parent`        | Copied if present                              |
 | `consequence`   | Copied if present                              |
