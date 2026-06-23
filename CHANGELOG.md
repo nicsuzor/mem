@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.69](https://github.com/nicsuzor/mem/compare/mem-v0.3.68...mem-v0.3.69) (2026-06-23)
+
+
+### Features
+
+* **mcp:** add refresh_graph tool; confirm full reindex is CLI-only ([#438](https://github.com/nicsuzor/mem/issues/438)) ([2078f76](https://github.com/nicsuzor/mem/commit/2078f761b0c9d88a298c1bc96a92ae87902c58c4))
+* **release_task:** M3+M2 session-close grouping — semantic topic attach with per-session epic fallback ([#435](https://github.com/nicsuzor/mem/issues/435)) ([1ddb96e](https://github.com/nicsuzor/mem/commit/1ddb96e4c946dfc071cc760876956568e4fc1730))
+
+
+### Bug Fixes
+
+* **adhoc:** write canonical root id (adhoc-826c89bd) not alias string ([#432](https://github.com/nicsuzor/mem/issues/432)) ([e4f3f39](https://github.com/nicsuzor/mem/commit/e4f3f396bbd938bf44753e5164c48776f941b3a2))
+* **create_task:** default priority to P3 (uncurated) not P2 ([#439](https://github.com/nicsuzor/mem/issues/439)) ([1a29a15](https://github.com/nicsuzor/mem/commit/1a29a1522a76203078e08be58bcf356c591b291f))
+* **graph:** synchronously update parent→child edges on reparent ([#437](https://github.com/nicsuzor/mem/issues/437)) ([b3b782f](https://github.com/nicsuzor/mem/commit/b3b782f2478c1260a67f9881f6902a337b82fe0e))
+* **tasks:** stop forcing P2 on create; remove fields on null update ([#440](https://github.com/nicsuzor/mem/issues/440)) ([8e240c1](https://github.com/nicsuzor/mem/commit/8e240c104c4241704446604ad4c29bc2af8e31e1))
+* **template:** remove residual forced-default priority from claim_template_instance ([#1905](https://github.com/nicsuzor/mem/issues/1905)) ([#443](https://github.com/nicsuzor/mem/issues/443)) ([366f310](https://github.com/nicsuzor/mem/commit/366f31057d8415b1930fc2ed9907fa5beb88ae12))
+
 ## [0.3.68](https://github.com/nicsuzor/mem/compare/mem-v0.3.67...mem-v0.3.68) (2026-06-12)
 
 
