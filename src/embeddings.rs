@@ -55,6 +55,48 @@ fn gpu_available() -> bool {
     })
 }
 
+/// Pre-load the WSL2 paravirtual `libcuda.so.1` into the global symbol namespace
+/// before ORT loads its CUDA execution provider.
+///
+/// On WSL2 the real GPU driver lives at `/usr/lib/wsl/lib/libcuda.so.1`. If a native
+/// Linux NVIDIA driver package is also installed it drops a *second* `libcuda.so.1`
+/// under `/usr/lib/x86_64-linux-gnu/` which the dynamic loader resolves first (it is in
+/// the ld.so cache). The CUDA runtime then loads the non-WSL driver and `cudaSetDevice`
+/// fails with "no CUDA-capable device is detected", so ORT silently falls back to CPU.
+///
+/// Modifying `LD_LIBRARY_PATH` from inside the process does not help — glibc parses it
+/// once at startup. Instead we `dlopen` the WSL driver by absolute path with
+/// `RTLD_GLOBAL`, registering it under the soname `libcuda.so.1`. When ORT's CUDA
+/// provider is later loaded, the loader reuses this already-resident object instead of
+/// pulling in the native driver. No-op when the WSL driver is absent (i.e. not WSL).
+#[cfg(target_os = "linux")]
+fn preload_wsl_libcuda() {
+    use std::sync::OnceLock;
+    static PRELOADED: OnceLock<bool> = OnceLock::new();
+    PRELOADED.get_or_init(|| {
+        let wsl_libcuda = "/usr/lib/wsl/lib/libcuda.so.1";
+        if !std::path::Path::new(wsl_libcuda).exists() {
+            return false;
+        }
+        let c_path = match std::ffi::CString::new(wsl_libcuda) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        // SAFETY: dlopen with a valid NUL-terminated path; we never dlclose (process-lifetime).
+        let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+        if handle.is_null() {
+            tracing::warn!("WSL libcuda preload failed (dlopen returned null) — GPU may be unavailable");
+            false
+        } else {
+            tracing::info!("Preloaded WSL libcuda from {wsl_libcuda} for CUDA EP");
+            true
+        }
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn preload_wsl_libcuda() {}
+
 // =============================================================================
 // CONFIGURATION
 // =============================================================================
@@ -343,6 +385,25 @@ fn download_onnx_runtime() -> Result<PathBuf> {
     eprintln!("  Done ({variant_label})");
 
     Ok(lib_path)
+}
+
+/// True if the cached ONNX Runtime build satisfies the execution-provider variant
+/// we want for this machine. The CPU build is always acceptable when we don't want
+/// GPU. When CUDA is available we additionally require the CUDA EP provider library
+/// to be present next to libonnxruntime.so — the GPU build co-locates it there, and
+/// without it ORT falls back to CPU even though `CUDA::default()` "registers".
+fn onnx_cache_satisfies_variant() -> bool {
+    if !gpu_available() {
+        return true;
+    }
+    let cache = get_cache_dir().join("onnxruntime");
+
+    #[cfg(target_os = "windows")]
+    let cuda_provider = "onnxruntime_providers_cuda.dll";
+    #[cfg(not(target_os = "windows"))]
+    let cuda_provider = "libonnxruntime_providers_cuda.so";
+
+    cache.join(cuda_provider).exists()
 }
 
 fn get_onnx_runtime_path() -> Option<PathBuf> {
@@ -1010,6 +1071,12 @@ fn ensure_ort_available(offline: bool) -> Result<()> {
 }
 
 fn init_ort_path(offline: bool) -> std::result::Result<PathBuf, String> {
+    // On WSL2, ensure the paravirtual GPU driver wins over any native libcuda before
+    // ORT loads its CUDA provider. Harmless (no-op) when not on WSL or when GPU is off.
+    if gpu_available() {
+        preload_wsl_libcuda();
+    }
+
     #[cfg(target_os = "windows")]
     {
         if let Ok(current_path) = std::env::var("PATH") {
@@ -1030,10 +1097,27 @@ fn init_ort_path(offline: bool) -> std::result::Result<PathBuf, String> {
         }
     }
 
-    // Check cache
+    // Check cache — but only accept a cached lib if it matches the execution-provider
+    // variant we want for this machine. A stale CPU-only cache must NOT shadow a GPU
+    // build when CUDA is available, or ORT silently registers the CUDA EP and then runs
+    // every operator on CPU (no GPU memory allocated, no speed-up). The CUDA provider
+    // shared libraries are co-located with the main lib only in the GPU build.
     if let Some(cached) = get_onnx_runtime_path() {
-        std::env::set_var("ORT_DYLIB_PATH", &cached);
-        return Ok(cached);
+        if onnx_cache_satisfies_variant() {
+            std::env::set_var("ORT_DYLIB_PATH", &cached);
+            return Ok(cached);
+        }
+        if offline {
+            // Can't re-download; use the stale (CPU) build rather than failing outright.
+            tracing::warn!(
+                "Cached ONNX Runtime is CPU-only but CUDA is available; \
+                 AOPS_OFFLINE=true prevents fetching the GPU build — running on CPU."
+            );
+            std::env::set_var("ORT_DYLIB_PATH", &cached);
+            return Ok(cached);
+        }
+        // Wanted the GPU build but cache is CPU-only — fall through to (re)download.
+        eprintln!("  Cached ONNX Runtime is CPU-only; fetching GPU/CUDA build...");
     }
 
     if offline {

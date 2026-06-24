@@ -1390,6 +1390,7 @@ dependencies = [
  "gray_matter",
  "ignore",
  "indicatif",
+ "libc",
  "md5",
  "ndarray 0.16.1",
  "notify",

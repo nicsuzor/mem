@@ -66,6 +66,7 @@ rayon = "1"
 ordered-float = "4"
 dirs = "5"
 parking_lot = "0.12"
+libc = "0.2"  # dlopen for WSL2 libcuda preload (see preload_wsl_libcuda in embeddings.rs)
 terminal_size = "0.4"
 
 # Logging
