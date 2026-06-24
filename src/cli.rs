@@ -3486,27 +3486,27 @@ fn index_pkb(
         store.remove_deleted(&existing_paths)
     };
 
-    // Figure out which files need updating
-    let to_process: Vec<_> = files
-        .iter()
-        .filter(|file_path| {
-            let path_str = file_path
-                .strip_prefix(pkb_root)
-                .unwrap_or(file_path)
-                .to_string_lossy()
-                .to_string();
-            // Compute content hash for change detection
-            let content_hash = std::fs::read(file_path)
-                .ok()
-                .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
-                .unwrap_or_default();
-            force_all || {
-                let store = store.read();
-                store.needs_update(&path_str, &content_hash)
-            }
-        })
-        .cloned()
-        .collect();
+    // Figure out which files need updating (acquire read lock once)
+    let to_process: Vec<_> = {
+        let store = store.read();
+        files
+            .iter()
+            .filter(|file_path| {
+                let path_str = file_path
+                    .strip_prefix(pkb_root)
+                    .unwrap_or(file_path)
+                    .to_string_lossy()
+                    .to_string();
+                // Compute content hash for change detection
+                let content_hash = std::fs::read(file_path)
+                    .ok()
+                    .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+                    .unwrap_or_default();
+                force_all || store.needs_update(&path_str, &content_hash)
+            })
+            .cloned()
+            .collect()
+    };
 
     let skipped = files.len() - to_process.len();
     if skipped > 0 {
@@ -3533,9 +3533,28 @@ fn index_pkb(
     let total_chunks: usize = parsed.iter().map(|(_, c)| c.len()).sum();
     eprintln!("  {} chunks across {} docs", total_chunks, parsed.len());
 
-    // Embed and store — batches of 20 docs with progressive saves.
-    // Smaller batches give more granular progress and better recoverability.
-    let pb = ProgressBar::new(parsed.len() as u64);
+    // Group documents into batches such that each batch contains at most 20 documents
+    // and at most 256 chunks (matching the GPU max batch size).
+    // This maximizes GPU batch utilization while ensuring smooth progress reporting.
+    let mut batches: Vec<Vec<(pkb::PkbDocument, Vec<String>)>> = Vec::new();
+    let mut current_batch = Vec::new();
+    let mut current_chunks = 0;
+
+    for item in parsed {
+        let chunk_count = item.1.len();
+        if !current_batch.is_empty() && (current_batch.len() >= 20 || current_chunks + chunk_count > 256) {
+            batches.push(std::mem::take(&mut current_batch));
+            current_chunks = 0;
+        }
+        current_chunks += chunk_count;
+        current_batch.push(item);
+    }
+    if !current_batch.is_empty() {
+        batches.push(current_batch);
+    }
+
+    // Embed and store. Progress bar tracks chunk resolution for linear progress and stable ETA.
+    let pb = ProgressBar::new(total_chunks as u64);
     pb.set_style(
         ProgressStyle::with_template(
             "  {bar:30.cyan/dim} {pos}/{len} [{elapsed}<{eta}] {msg}",
@@ -3547,18 +3566,22 @@ fn index_pkb(
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     let mut indexed = 0;
+    let mut last_save = std::time::Instant::now();
+    let save_interval = std::time::Duration::from_secs(30);
 
-    for batch in parsed.chunks(20) {
+    for batch in batches {
         // Collect all chunks from this batch
         let mut all_chunks: Vec<&str> = Vec::new();
         let mut chunk_counts: Vec<usize> = Vec::new();
 
-        for (_doc, chunks) in batch {
+        for (_doc, chunks) in &batch {
             chunk_counts.push(chunks.len());
             for chunk in chunks {
                 all_chunks.push(chunk.as_str());
             }
         }
+
+        let batch_chunks_len = all_chunks.len();
 
         match embedder.encode_batch(&all_chunks) {
             Ok(all_embeddings) => {
@@ -3576,12 +3599,20 @@ fn index_pkb(
                 pb.suspend(|| eprintln!("  ✗ batch embed failed: {e}"));
             }
         }
-        pb.inc(batch.len() as u64);
+        pb.inc(batch_chunks_len as u64);
 
-        // Progressive save so interrupted runs don't lose work
-        if let Err(e) = store.read().save(db_path) {
-            pb.suspend(|| eprintln!("  ✗ progressive save failed: {e}"));
+        // Time-throttled progressive save to avoid constant disk writes of large database files
+        if last_save.elapsed() >= save_interval {
+            if let Err(e) = store.read().save(db_path) {
+                pb.suspend(|| eprintln!("  ✗ progressive save failed: {e}"));
+            }
+            last_save = std::time::Instant::now();
         }
+    }
+
+    // Final save to guarantee everything is written to disk
+    if let Err(e) = store.read().save(db_path) {
+        eprintln!("  ✗ final save failed: {e}");
     }
 
     pb.finish_and_clear();

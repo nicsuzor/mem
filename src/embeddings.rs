@@ -27,7 +27,7 @@ static ORT_PATH_INIT: OnceLock<std::result::Result<PathBuf, String>> = OnceLock:
 static GPU_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
 /// Check if CUDA GPU is available for ONNX Runtime inference.
-/// Looks for libcuda.so in WSL2 paravirtualization path and standard locations.
+/// Looks for libcuda.so in WSL2 paravirtualization path and standard locations, or nvcuda.dll on Windows.
 fn gpu_available() -> bool {
     *GPU_AVAILABLE.get_or_init(|| {
         // Allow explicit override: AOPS_GPU=0 disables, AOPS_GPU=1 forces
@@ -35,12 +35,19 @@ fn gpu_available() -> bool {
             return val == "1" || val.to_lowercase() == "true";
         }
 
-        let cuda_paths = [
-            "/usr/lib/wsl/lib/libcuda.so",
-            "/usr/lib/x86_64-linux-gnu/libcuda.so",
-            "/usr/local/cuda/lib64/libcudart.so",
-        ];
-        let found = cuda_paths.iter().any(|p| std::path::Path::new(p).exists());
+        #[cfg(target_os = "windows")]
+        let found = std::path::Path::new("C:\\Windows\\System32\\nvcuda.dll").exists();
+
+        #[cfg(not(target_os = "windows"))]
+        let found = {
+            let cuda_paths = [
+                "/usr/lib/wsl/lib/libcuda.so",
+                "/usr/lib/x86_64-linux-gnu/libcuda.so",
+                "/usr/local/cuda/lib64/libcudart.so",
+            ];
+            cuda_paths.iter().any(|p| std::path::Path::new(p).exists())
+        };
+
         if found {
             tracing::info!("CUDA libraries detected, GPU acceleration available");
         }
@@ -215,6 +222,13 @@ fn download_onnx_runtime() -> Result<PathBuf> {
         "libonnxruntime.dylib",
     );
 
+    #[cfg(target_os = "windows")]
+    let (cpu_url, gpu_url, lib_name) = (
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-gpu-1.23.2.zip",
+        "onnxruntime.dll",
+    );
+
     let url = if use_gpu { gpu_url } else { cpu_url };
 
     let lib_path = cache.join(lib_name);
@@ -231,49 +245,90 @@ fn download_onnx_runtime() -> Result<PathBuf> {
     let resp = ureq::get(url)
         .call()
         .with_context(|| format!("Failed to download {variant_label} from {url}"))?;
-    let reader = resp.into_reader();
-    let decoder = flate2::read::GzDecoder::new(reader);
-    let mut archive = tar::Archive::new(decoder);
+    let mut reader = resp.into_reader();
 
     let mut found_main = false;
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        if entry.header().entry_type().is_symlink() {
-            continue;
+
+    #[cfg(target_os = "windows")]
+    {
+        let zip_file = cache.join("onnxruntime.zip");
+        let mut file = std::fs::File::create(&zip_file)?;
+        std::io::copy(&mut reader, &mut file)?;
+
+        // Extract using tar.exe
+        let status = std::process::Command::new("tar.exe")
+            .args(&["-xf", zip_file.to_str().unwrap(), "-C", cache.to_str().unwrap()])
+            .status()?;
+        if !status.success() {
+            bail!("Failed to extract zip file using tar.exe");
         }
-        let path = entry.path()?.to_string_lossy().to_string();
 
-        // For GPU builds, extract ALL shared libraries from the lib/ directory.
-        // CUDA EP requires libonnxruntime_providers_shared.so and
-        // libonnxruntime_providers_cuda.so to be next to libonnxruntime.so.
-        let is_shared_lib = if cfg!(target_os = "linux") {
-            path.contains(".so") && entry.size() > 0
-        } else {
-            path.contains(".dylib") && entry.size() > 0
-        };
+        // Find all DLL files in the extracted directory and move them to cache
+        for entry in glob::glob(&format!("{}/**/*.dll", cache.display()))? {
+            let path = entry?;
+            let filename = path.file_name().unwrap();
+            let dest = cache.join(filename);
+            std::fs::rename(&path, &dest).or_else(|_| std::fs::copy(&path, &dest).map(|_| ()))?;
+            if filename.to_string_lossy() == lib_name {
+                found_main = true;
+            }
+        }
 
-        if is_shared_lib {
-            // Extract filename from archive path (e.g. "onnxruntime-linux-x64-gpu-1.23.2/lib/libfoo.so")
-            let filename = std::path::Path::new(&path)
-                .file_name()
-                .map(|f| f.to_string_lossy().to_string());
+        // Clean up zip file and extracted folders
+        let _ = std::fs::remove_file(&zip_file);
+        for entry in std::fs::read_dir(&cache)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+    }
 
-            if let Some(fname) = filename {
-                // Normalize the main library name (strip version suffix)
-                let dest_name = if fname.contains(lib_name) {
-                    lib_name.to_string()
-                } else {
-                    fname
-                };
-                let dest = cache.join(&dest_name);
-                let mut file = std::fs::File::create(&dest)?;
-                let bytes = std::io::copy(&mut entry, &mut file)?;
+    #[cfg(not(target_os = "windows"))]
+    {
+        let decoder = flate2::read::GzDecoder::new(reader);
+        let mut archive = tar::Archive::new(decoder);
 
-                if dest_name == lib_name {
-                    found_main = true;
-                    eprintln!("  + {dest_name} ({:.1} MB)", bytes as f64 / 1_048_576.0);
-                } else {
-                    eprintln!("  + {dest_name} ({:.1} MB)", bytes as f64 / 1_048_576.0);
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            if entry.header().entry_type().is_symlink() {
+                continue;
+            }
+            let path = entry.path()?.to_string_lossy().to_string();
+
+            // For GPU builds, extract ALL shared libraries from the lib/ directory.
+            // CUDA EP requires libonnxruntime_providers_shared.so and
+            // libonnxruntime_providers_cuda.so to be next to libonnxruntime.so.
+            let is_shared_lib = if cfg!(target_os = "linux") {
+                path.contains(".so") && entry.size() > 0
+            } else {
+                path.contains(".dylib") && entry.size() > 0
+            };
+
+            if is_shared_lib {
+                // Extract filename from archive path (e.g. "onnxruntime-linux-x64-gpu-1.23.2/lib/libfoo.so")
+                let filename = std::path::Path::new(&path)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string());
+
+                if let Some(fname) = filename {
+                    // Normalize the main library name (strip version suffix)
+                    let dest_name = if fname.contains(lib_name) {
+                        lib_name.to_string()
+                    } else {
+                        fname
+                    };
+                    let dest = cache.join(&dest_name);
+                    let mut file = std::fs::File::create(&dest)?;
+                    let bytes = std::io::copy(&mut entry, &mut file)?;
+
+                    if dest_name == lib_name {
+                        found_main = true;
+                        eprintln!("  + {dest_name} ({:.1} MB)", bytes as f64 / 1_048_576.0);
+                    } else {
+                        eprintln!("  + {dest_name} ({:.1} MB)", bytes as f64 / 1_048_576.0);
+                    }
                 }
             }
         }
@@ -297,6 +352,8 @@ fn get_onnx_runtime_path() -> Option<PathBuf> {
     let lib_name = "libonnxruntime.so";
     #[cfg(target_os = "macos")]
     let lib_name = "libonnxruntime.dylib";
+    #[cfg(target_os = "windows")]
+    let lib_name = "onnxruntime.dll";
 
     let path = cache.join(lib_name);
     if path.exists() {
@@ -953,6 +1010,18 @@ fn ensure_ort_available(offline: bool) -> Result<()> {
 }
 
 fn init_ort_path(offline: bool) -> std::result::Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(current_path) = std::env::var("PATH") {
+            let cache = get_cache_dir().join("onnxruntime");
+            let cache_str = cache.to_string_lossy().to_string();
+            if !current_path.contains(&cache_str) {
+                let new_path = format!("{};{}", cache_str, current_path);
+                std::env::set_var("PATH", new_path);
+            }
+        }
+    }
+
     // Check existing env var
     if let Ok(existing) = std::env::var("ORT_DYLIB_PATH") {
         let path = PathBuf::from(&existing);
