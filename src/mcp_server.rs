@@ -777,11 +777,7 @@ impl PkbSearchServer {
                 }
             } else {
                 let rel = abs_path.strip_prefix(&self.pkb_root).unwrap_or(abs_path);
-                let node_id = {
-                    let graph = self.graph.read();
-                    let found = graph.nodes().find(|n| n.path == rel).map(|n| n.id.clone());
-                    found
-                };
+                let node_id = self.graph.read().nodes().find(|n| n.path == rel).map(|n| n.id.clone());
                 let id = node_id.unwrap_or_else(|| crate::pkb::fallback_id(rel));
                 if self.store.write().remove(&id) {
                     applied_removes += 1;
@@ -9281,7 +9277,7 @@ mod batch_finalize_tests {
         let pre: std::collections::HashMap<String, Option<String>> = {
             let s = server.store.read();
             s.documents()
-                .filter_map(|(_path, e)| e.id.clone().map(|id| (id, e.status.clone())))
+                .filter_map(|(_path, e)| if !e.id.is_empty() { Some((e.id.clone(), e.status.clone())) } else { None })
                 .collect()
         };
         let task_ids: Vec<String> = pre
@@ -9310,7 +9306,7 @@ mod batch_finalize_tests {
         let post: std::collections::HashMap<String, Option<String>> = {
             let s = server.store.read();
             s.documents()
-                .filter_map(|(_path, e)| e.id.clone().map(|id| (id, e.status.clone())))
+                .filter_map(|(_path, e)| if !e.id.is_empty() { Some((e.id.clone(), e.status.clone())) } else { None })
                 .collect()
         };
         for id in &task_ids {
