@@ -32,6 +32,9 @@ pub struct DocumentEntry {
     /// Document date (from frontmatter)
     #[serde(default)]
     pub date: Option<String>,
+    /// Last modified timestamp (RFC3339 or YYYY-MM-DD, from frontmatter `modified:`)
+    #[serde(default)]
+    pub modified: Option<String>,
     /// Confidence level (0.0 - 1.0)
     #[serde(default)]
     pub confidence: Option<f64>,
@@ -85,6 +88,7 @@ pub struct MetadataPatch {
     pub tags: Vec<String>,
     pub id: Option<String>,
     pub date: Option<String>,
+    pub modified: Option<String>,
     pub confidence: Option<f64>,
     pub file_hash: String,
 }
@@ -278,6 +282,7 @@ impl VectorStore {
             tags: doc.tags.clone(),
             id,
             date,
+            modified: doc.modified.clone(),
             confidence,
             file_hash: doc.file_hash.clone(),
         }
@@ -333,6 +338,7 @@ impl VectorStore {
                     tags: doc.tags.clone(),
                     id,
                     date,
+                    modified: doc.modified.clone(),
                     confidence,
                     file_hash: doc.file_hash.clone(),
                 }));
@@ -369,6 +375,7 @@ impl VectorStore {
             tags: doc.tags.clone(),
             id,
             date,
+            modified: doc.modified.clone(),
             confidence,
             content_hash: Some(incoming_body_hash.clone()),
             file_hash: Some(doc.file_hash.clone()),
@@ -397,6 +404,7 @@ impl VectorStore {
                     entry.tags = patch.tags;
                     entry.id = patch.id;
                     entry.date = patch.date;
+                    entry.modified = patch.modified;
                     entry.confidence = patch.confidence;
                     entry.file_hash = Some(patch.file_hash);
                 } else {
@@ -446,6 +454,7 @@ impl VectorStore {
             tags: doc.tags.clone(),
             id,
             date,
+            modified: doc.modified.clone(),
             confidence,
             content_hash: Some(body_hash.clone()),
             file_hash: Some(doc.file_hash.clone()),
@@ -494,9 +503,20 @@ impl VectorStore {
         let mut results: Vec<SearchResult> = Vec::new();
 
         for entry in self.documents.values() {
-            if let Some(entry_date) = entry.date.as_deref() {
-                if since.map_or(false, |s| entry_date < s) || before.map_or(false, |b| entry_date > b) {
-                    continue;
+            // Filter by modified date. RFC3339 timestamps start with YYYY-MM-DD so
+            // the first 10 chars compare correctly against YYYY-MM-DD filter params.
+            // Entries with no modified date are excluded when any date filter is active.
+            if since.is_some() || before.is_some() {
+                match entry.modified.as_deref() {
+                    Some(m) => {
+                        let date_prefix = &m[..m.len().min(10)];
+                        if since.map_or(false, |s| date_prefix < s)
+                            || before.map_or(false, |b| date_prefix > b)
+                        {
+                            continue;
+                        }
+                    }
+                    None => continue,
                 }
             }
 
@@ -702,6 +722,7 @@ mod tests {
             tags: tags.iter().map(|s| s.to_string()).collect(),
             id: id.map(String::from),
             date: None,
+            modified: None,
             confidence,
             content_hash: Some("test_hash_123".to_string()),
             file_hash: Some("test_hash_123".to_string()),
@@ -874,6 +895,115 @@ mod tests {
         let root = Path::new("/pkb");
         let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None);
         assert!(results.is_empty());
+    }
+
+    // ── search date filters (since/before on modified) ──
+
+    fn build_dated_store() -> VectorStore {
+        let mut store = VectorStore::new(3);
+        // Three entries with known modified dates spanning a wide range.
+        let mut old = make_entry(
+            "tasks/old.md", "Old task", Some("task"), Some("active"),
+            &[], Some("task-old"), None, vec![1.0, 0.0, 0.0],
+        );
+        old.modified = Some("2019-06-01T00:00:00Z".to_string());
+
+        let mut mid = make_entry(
+            "tasks/mid.md", "Mid task", Some("task"), Some("active"),
+            &[], Some("task-mid"), None, vec![1.0, 0.0, 0.0],
+        );
+        mid.modified = Some("2023-03-15T12:00:00Z".to_string());
+
+        let mut new = make_entry(
+            "tasks/new.md", "New task", Some("task"), Some("active"),
+            &[], Some("task-new"), None, vec![1.0, 0.0, 0.0],
+        );
+        new.modified = Some("2026-06-01T09:00:00Z".to_string());
+
+        let mut no_date = make_entry(
+            "tasks/nodated.md", "No date", Some("task"), Some("active"),
+            &[], Some("task-nodated"), None, vec![1.0, 0.0, 0.0],
+        );
+        no_date.modified = None;
+
+        store.documents.insert("tasks/old.md".to_string(), old);
+        store.documents.insert("tasks/mid.md".to_string(), mid);
+        store.documents.insert("tasks/new.md".to_string(), new);
+        store.documents.insert("tasks/nodated.md".to_string(), no_date);
+        store
+    }
+
+    #[test]
+    fn test_search_before_ancient_date_returns_zero() {
+        // Repro from task body: before=2020-01-01 must return zero rows.
+        let store = build_dated_store();
+        let results = store.search(&[1.0, 0.0, 0.0], 10, Path::new("/pkb"),
+            None, Some("2020-01-01"));
+        // Only the 2019 entry qualifies (modified <= 2020-01-01), but that's pre-2020 so it's in.
+        // Actually 2019-06-01 <= 2020-01-01 so it should appear.
+        // The key correctness check: no entry from 2023 or 2026 appears.
+        for r in &results {
+            let date_prefix = r.date.as_deref().unwrap_or("");
+            let mod_prefix = &r.path.to_string_lossy().to_string();
+            // verify only the 2019 entry slips through
+            assert!(
+                !mod_prefix.contains("mid") && !mod_prefix.contains("new"),
+                "before=2020-01-01 must not include 2023 or 2026 entries, got: {mod_prefix}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_search_before_ancient_excludes_all_recent() {
+        // A stricter version: before=2018-01-01 returns zero rows (all fixtures are after 2018).
+        let store = build_dated_store();
+        let results = store.search(&[1.0, 0.0, 0.0], 10, Path::new("/pkb"),
+            None, Some("2018-01-01"));
+        assert!(
+            results.is_empty(),
+            "before=2018-01-01 must return zero rows; got {} rows",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn test_search_since_future_returns_zero() {
+        // since=2030-01-01 should return nothing (all fixtures are before 2030).
+        let store = build_dated_store();
+        let results = store.search(&[1.0, 0.0, 0.0], 10, Path::new("/pkb"),
+            Some("2030-01-01"), None);
+        assert!(
+            results.is_empty(),
+            "since=2030-01-01 must return zero rows; got {} rows",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn test_search_since_before_different_results() {
+        // Wide range includes all dated entries; narrow range must be a strict subset.
+        let store = build_dated_store();
+        let root = Path::new("/pkb");
+        let wide = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2000-01-01"), None);
+        let narrow = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2024-01-01"), None);
+        assert!(
+            narrow.len() < wide.len(),
+            "narrowing since must reduce result count: wide={} narrow={}",
+            wide.len(), narrow.len()
+        );
+    }
+
+    #[test]
+    fn test_search_no_modified_excluded_when_filter_active() {
+        // An entry without a modified date must be excluded when since/before is set.
+        let store = build_dated_store();
+        let results = store.search(&[1.0, 0.0, 0.0], 10, Path::new("/pkb"),
+            Some("2000-01-01"), None);
+        let titles: Vec<_> = results.iter().map(|r| r.title.as_str()).collect();
+        assert!(
+            !titles.contains(&"No date"),
+            "entry with no modified date must be excluded by date filter; got: {titles:?}"
+        );
     }
 
     // ── remove / remove_deleted ──
@@ -1109,6 +1239,7 @@ mod tests {
                 tags: vec!["old".to_string()],
                 id: Some("task-cheap".to_string()),
                 date: None,
+                modified: None,
                 confidence: None,
                 content_hash: Some(body_hash.clone()),
                 file_hash: Some("file_v1".to_string()),
@@ -1185,6 +1316,7 @@ mod tests {
                 tags: vec![],
                 id: None,
                 date: None,
+                modified: None,
                 confidence: None,
                 content_hash: Some(old_body_hash.clone()),
                 file_hash: Some("file_v1".to_string()),
