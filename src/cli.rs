@@ -3648,16 +3648,12 @@ fn bench_reindex(
                 if stale.len() >= count {
                     break;
                 }
-                let path_str = file_path
-                    .strip_prefix(pkb_root)
-                    .unwrap_or(&file_path)
-                    .to_string_lossy()
-                    .to_string();
-                let content_hash = std::fs::read(&file_path)
-                    .ok()
-                    .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
-                    .unwrap_or_default();
-                if s.needs_update(&path_str, &content_hash) {
+                // The store is keyed by document id, so the staleness check
+                // must resolve the file's id (and file hash) by parsing it.
+                let Some(doc) = pkb::parse_file_relative(&file_path, pkb_root) else {
+                    continue;
+                };
+                if s.needs_update(&doc.id(), &doc.file_hash) {
                     stale.push(file_path);
                 }
             }
