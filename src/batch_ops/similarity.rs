@@ -158,11 +158,8 @@ pub fn run_analysis(
     }
 }
 
-fn get_node_embedding(id: &str, path: &str, store: &VectorStore) -> Option<Vec<f32>> {
-    let entry = store.get_entry(path).or_else(|| {
-        let stripped = path.strip_prefix("tasks/").unwrap_or(path);
-        store.get_entry(stripped)
-    });
+fn get_node_embedding(id: &str, _path: &str, store: &VectorStore) -> Option<Vec<f32>> {
+    let entry = store.get_entry(id);
 
     if let Some(entry) = entry {
         average_embedding(&entry.chunk_embeddings)

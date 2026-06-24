@@ -48,9 +48,9 @@ pub struct DocumentEntry {
     pub status: Option<String>,
     /// Tags
     pub tags: Vec<String>,
-    /// Document ID (from frontmatter)
+    /// Document ID (from frontmatter or fallback)
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Document date (from frontmatter)
     #[serde(default)]
     pub date: Option<String>,
@@ -94,7 +94,7 @@ pub struct SearchResult {
     pub snippet: String,
     /// Full text of the best-matching chunk
     pub chunk_text: String,
-    pub id: Option<String>,
+    pub id: String,
     pub date: Option<String>,
     pub doc_type: Option<String>,
     pub status: Option<String>,
@@ -107,12 +107,11 @@ pub struct SearchResult {
 /// without touching `chunk_embeddings`, `chunk_texts`, or `body_chunks`.
 #[derive(Debug, Clone)]
 pub struct MetadataPatch {
-    pub path_key: String,
+    pub id: String,
     pub title: String,
     pub doc_type: Option<String>,
     pub status: Option<String>,
     pub tags: Vec<String>,
-    pub id: Option<String>,
     pub date: Option<String>,
     pub modified: Option<String>,
     pub confidence: Option<f64>,
@@ -257,11 +256,9 @@ impl VectorStore {
     /// Check if the store is empty
     pub fn is_empty(&self) -> bool {
         self.documents.is_empty()
-    }
-
-    /// Check if a document needs re-indexing (metadata OR body change)
-    pub fn needs_update(&self, path: &str, file_hash: &str) -> bool {
-        match self.documents.get(path) {
+     /// Check if a document needs re-indexing (metadata OR body change)
+    pub fn needs_update(&self, id: &str, file_hash: &str) -> bool {
+        match self.documents.get(id) {
             Some(entry) => {
                 // Prefer file_hash if present
                 if let Some(stored_file) = &entry.file_hash {
@@ -295,18 +292,18 @@ impl VectorStore {
     /// to a background worker.
     ///
     /// Apply via [`apply_prepared`] with `PreparedUpsert::MetadataOnly`.
-    /// If no entry exists for this path yet, the apply step drops the patch
+    /// If no entry exists for this ID yet, the apply step drops the patch
     /// — callers should ensure an entry exists (via [`prepare_upsert`]) on
     /// first index of a new document.
     pub fn prepare_metadata_patch(doc: &PkbDocument) -> MetadataPatch {
         let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
+        let canonical_id = id.unwrap_or_else(|| doc.id());
         MetadataPatch {
-            path_key: doc.path.to_string_lossy().to_string(),
+            id: canonical_id,
             title: doc.title.clone(),
             doc_type: doc.doc_type.clone(),
             status: doc.status.clone(),
             tags: doc.tags.clone(),
-            id,
             date,
             modified: doc.modified.clone(),
             confidence,
@@ -356,13 +353,13 @@ impl VectorStore {
                     .map_or(false, |h| h == incoming_body_hash);
             if body_match {
                 let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
+                let canonical_id = id.unwrap_or_else(|| doc.id());
                 return Ok(PreparedUpsert::MetadataOnly(MetadataPatch {
-                    path_key: doc.path.to_string_lossy().to_string(),
+                    id: canonical_id,
                     title: doc.title.clone(),
                     doc_type: doc.doc_type.clone(),
                     status: doc.status.clone(),
                     tags: doc.tags.clone(),
-                    id,
                     date,
                     modified: doc.modified.clone(),
                     confidence,
@@ -380,6 +377,7 @@ impl VectorStore {
         let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
 
         let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
+        let canonical_id = id.unwrap_or_else(|| doc.id());
 
         // Defensive: an entry with empty chunk_embeddings is invisible to
         // search (the max-similarity loop never enters and best_score stays
@@ -393,13 +391,15 @@ impl VectorStore {
             );
         }
 
+        let norm_path = PathBuf::from(doc.path.to_string_lossy().replace('\\', "/"));
+
         let entry = DocumentEntry {
-            path: doc.path.clone(),
+            path: norm_path,
             title: doc.title.clone(),
             doc_type: doc.doc_type.clone(),
             status: doc.status.clone(),
             tags: doc.tags.clone(),
-            id,
+            id: canonical_id,
             date,
             modified: doc.modified.clone(),
             confidence,
@@ -423,12 +423,11 @@ impl VectorStore {
     pub fn apply_prepared(&mut self, prepared: PreparedUpsert) {
         match prepared {
             PreparedUpsert::MetadataOnly(patch) => {
-                if let Some(entry) = self.documents.get_mut(&patch.path_key) {
+                if let Some(entry) = self.documents.get_mut(&patch.id) {
                     entry.title = patch.title;
                     entry.doc_type = patch.doc_type;
                     entry.status = patch.status;
                     entry.tags = patch.tags;
-                    entry.id = patch.id;
                     entry.date = patch.date;
                     entry.modified = patch.modified;
                     entry.confidence = patch.confidence;
@@ -438,13 +437,12 @@ impl VectorStore {
                     // Drop the patch — there's nothing to update.
                     tracing::debug!(
                         "MetadataOnly upsert dropped: entry vanished for {}",
-                        patch.path_key
+                        patch.id
                     );
                 }
             }
             PreparedUpsert::Full(entry) => {
-                let path_key = entry.path.to_string_lossy().to_string();
-                self.documents.insert(path_key, *entry);
+                self.documents.insert(entry.id.clone(), *entry);
             }
         }
     }
@@ -454,8 +452,8 @@ impl VectorStore {
     /// the full embed**; prefer the split form on the hot path so other
     /// writers don't serialise behind embedding.
     pub fn upsert(&mut self, doc: &PkbDocument, embedder: &embeddings::Embedder) -> Result<()> {
-        let path_str = doc.path.to_string_lossy().to_string();
-        let prepared = Self::prepare_upsert(doc, embedder, self.documents.get(&path_str))?;
+        let id = doc.id();
+        let prepared = Self::prepare_upsert(doc, embedder, self.documents.get(&id))?;
         self.apply_prepared(prepared);
         Ok(())
     }
@@ -467,18 +465,21 @@ impl VectorStore {
         chunks: Vec<String>,
         chunk_embeddings: Vec<Vec<f32>>,
     ) {
-        let path_str = doc.path.to_string_lossy().to_string();
         let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
+        let canonical_id = id.unwrap_or_else(|| doc.id());
         let body_chunks =
             embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
         let body_hash = doc.body_hash();
+
+        let norm_path = PathBuf::from(doc.path.to_string_lossy().replace('\\', "/"));
+
         let entry = DocumentEntry {
-            path: doc.path.clone(),
+            path: norm_path,
             title: doc.title.clone(),
             doc_type: doc.doc_type.clone(),
             status: doc.status.clone(),
             tags: doc.tags.clone(),
-            id,
+            id: canonical_id.clone(),
             date,
             modified: doc.modified.clone(),
             confidence,
@@ -490,22 +491,22 @@ impl VectorStore {
             body_chunks,
         };
 
-        self.documents.insert(path_str, entry);
+        self.documents.insert(canonical_id, entry);
     }
 
 
-    /// Remove a single document by its absolute path string.
+    /// Remove a single document by its ID.
     ///
     /// Returns true if the document was found and removed.
-    pub fn remove(&mut self, path: &str) -> bool {
-        self.documents.remove(path).is_some()
+    pub fn remove(&mut self, id: &str) -> bool {
+        self.documents.remove(id).is_some()
     }
 
-    /// Remove documents whose files no longer exist
-    pub fn remove_deleted(&mut self, existing_paths: &std::collections::HashSet<String>) -> usize {
+    /// Remove documents whose IDs are no longer present in the PKB.
+    pub fn remove_deleted_by_ids(&mut self, existing_ids: &std::collections::HashSet<String>) -> usize {
         let before = self.documents.len();
         self.documents
-            .retain(|path, _| existing_paths.contains(path));
+            .retain(|id, _| existing_ids.contains(id));
         let removed = before - self.documents.len();
         if removed > 0 {
             tracing::info!("Removed {removed} deleted documents from index");
@@ -746,7 +747,7 @@ mod tests {
             doc_type: doc_type.map(String::from),
             status: status.map(String::from),
             tags: tags.iter().map(|s| s.to_string()).collect(),
-            id: id.map(String::from),
+            id: id.map(String::from).unwrap_or_else(|| "fallback".to_string()),
             date: None,
             modified: None,
             confidence,
@@ -762,7 +763,7 @@ mod tests {
     fn build_test_store() -> VectorStore {
         let mut store = VectorStore::new(3);
         store.documents.insert(
-            "tasks/task-abc.md".to_string(),
+            "task-abc".to_string(),
             make_entry(
                 "tasks/task-abc.md",
                 "Fix the bug",
@@ -775,7 +776,7 @@ mod tests {
             ),
         );
         store.documents.insert(
-            "memories/mem-001.md".to_string(),
+            "mem-001".to_string(),
             make_entry(
                 "memories/mem-001.md",
                 "Important insight",
@@ -788,7 +789,7 @@ mod tests {
             ),
         );
         store.documents.insert(
-            "notes/note-xyz.md".to_string(),
+            "note-xyz".to_string(),
             make_entry(
                 "notes/note-xyz.md",
                 "Research notes",
@@ -952,10 +953,10 @@ mod tests {
         );
         no_date.modified = None;
 
-        store.documents.insert("tasks/old.md".to_string(), old);
-        store.documents.insert("tasks/mid.md".to_string(), mid);
-        store.documents.insert("tasks/new.md".to_string(), new);
-        store.documents.insert("tasks/nodated.md".to_string(), no_date);
+        store.documents.insert("task-old".to_string(), old);
+        store.documents.insert("task-mid".to_string(), mid);
+        store.documents.insert("task-new".to_string(), new);
+        store.documents.insert("task-nodated".to_string(), no_date);
         store
     }
 
@@ -1038,14 +1039,14 @@ mod tests {
     fn test_remove_existing() {
         let mut store = build_test_store();
         assert_eq!(store.len(), 3);
-        assert!(store.remove("tasks/task-abc.md"));
+        assert!(store.remove("task-abc"));
         assert_eq!(store.len(), 2);
     }
 
     #[test]
     fn test_remove_nonexistent() {
         let mut store = build_test_store();
-        assert!(!store.remove("nonexistent.md"));
+        assert!(!store.remove("nonexistent"));
         assert_eq!(store.len(), 3);
     }
 
@@ -1053,9 +1054,9 @@ mod tests {
     fn test_remove_deleted() {
         let mut store = build_test_store();
         let mut existing = std::collections::HashSet::new();
-        existing.insert("tasks/task-abc.md".to_string());
+        existing.insert("task-abc".to_string());
         // Only keep task-abc, remove the other two
-        let removed = store.remove_deleted(&existing);
+        let removed = store.remove_deleted_by_ids(&existing);
         assert_eq!(removed, 2);
         assert_eq!(store.len(), 1);
     }
@@ -1065,21 +1066,21 @@ mod tests {
     #[test]
     fn test_needs_update_new_doc() {
         let store = build_test_store();
-        assert!(store.needs_update("new-doc.md", "any_hash"));
+        assert!(store.needs_update("new-doc", "any_hash"));
     }
 
     #[test]
     fn test_needs_update_stale() {
         let store = build_test_store();
         // Stored hash is "test_hash_123", different hash means changed
-        assert!(store.needs_update("tasks/task-abc.md", "different_hash"));
+        assert!(store.needs_update("task-abc", "different_hash"));
     }
 
     #[test]
     fn test_needs_update_fresh() {
         let store = build_test_store();
         // Stored hash is "test_hash_123", same hash means unchanged
-        assert!(!store.needs_update("tasks/task-abc.md", "test_hash_123"));
+        assert!(!store.needs_update("task-abc", "test_hash_123"));
     }
 
     #[test]
@@ -1092,14 +1093,14 @@ mod tests {
             Some("task"),
             None,
             &[],
-            None,
+            Some("old-task"),
             None,
             vec![1.0, 0.0, 0.0],
         );
         entry.content_hash = None;
-        store.documents.insert("tasks/old-task.md".to_string(), entry);
+        store.documents.insert("old-task".to_string(), entry);
 
-        assert!(store.needs_update("tasks/old-task.md", "any_hash"));
+        assert!(store.needs_update("old-task", "any_hash"));
     }
 
     #[test]
@@ -1112,14 +1113,14 @@ mod tests {
             Some("task"),
             None,
             &[],
-            None,
+            Some("old-task"),
             None,
             vec![1.0, 0.0, 0.0],
         );
         entry.content_hash = Some(String::new());
-        store.documents.insert("tasks/old-task.md".to_string(), entry);
+        store.documents.insert("old-task".to_string(), entry);
 
-        assert!(store.needs_update("tasks/old-task.md", "any_hash"));
+        assert!(store.needs_update("old-task", "any_hash"));
     }
 
     // ── persistence ──
@@ -1233,13 +1234,13 @@ mod tests {
 
         // Reload and check
         let final_store = VectorStore::load_or_create(&db_path, dimension).unwrap();
-        let has_a = final_store.get_entry("doc_a.md").is_some();
-        let has_b = final_store.get_entry("doc_b.md").is_some();
-
+        let has_a = final_store.get_entry("doc_a").is_some();
+        let has_b = final_store.get_entry("doc_b").is_some();
+ 
         assert!(has_a, "Doc A should be present");
         assert!(has_b, "Doc B should be present");
     }
-
+ 
     /// A frontmatter-only change (e.g. title) on a document with the same body
     /// must NOT re-run the embedder and must NOT mutate the cached
     /// `chunk_embeddings` / `chunk_texts` / `body_chunks`. This is the contract
@@ -1247,7 +1248,7 @@ mod tests {
     #[test]
     fn test_metadata_only_update_preserves_embeddings_without_embedder() {
         let mut store = VectorStore::new(3);
-
+ 
         // Seed an entry with known embeddings.
         let path = PathBuf::from("tasks/cheap-meta.md");
         let body = "the unchanging body of the document".to_string();
@@ -1256,14 +1257,14 @@ mod tests {
         let original_chunks = vec!["seeded chunk text".to_string()];
         let original_body_chunks = vec!["seeded body chunk".to_string()];
         store.documents.insert(
-            path.to_string_lossy().to_string(),
+            "cheap-meta".to_string(),
             DocumentEntry {
                 path: path.clone(),
                 title: "Original Title".to_string(),
                 doc_type: Some("task".to_string()),
                 status: Some("active".to_string()),
                 tags: vec!["old".to_string()],
-                id: Some("task-cheap".to_string()),
+                id: "cheap-meta".to_string(),
                 date: None,
                 modified: None,
                 confidence: None,
@@ -1275,7 +1276,7 @@ mod tests {
                 body_chunks: original_body_chunks.clone(),
             },
         );
-
+ 
         // Build a PkbDocument with the SAME body but changed title/tags/status.
         let updated_doc = crate::pkb::PkbDocument {
             path: path.clone(),
@@ -1289,10 +1290,9 @@ mod tests {
             file_hash: "file_v2".to_string(),
             frontmatter: None,
         };
-
-        let path_key = path.to_string_lossy().to_string();
-        let existing = store.get_entry(&path_key).cloned();
-
+ 
+        let existing = store.get_entry("cheap-meta").cloned();
+ 
         // A dummy embedder would panic if invoked when not is_dummy. We rely
         // on prepare_upsert taking the metadata-only path so the embedder is
         // never called. Use a real (is_dummy=true) embedder that returns
@@ -1306,8 +1306,8 @@ mod tests {
             "expected metadata-only path when body hash matches"
         );
         store.apply_prepared(prepared);
-
-        let after = store.get_entry(&path_key).expect("entry present");
+ 
+        let after = store.get_entry("cheap-meta").expect("entry present");
         assert_eq!(after.title, "Brand New Title");
         assert_eq!(after.status.as_deref(), Some("done"));
         assert_eq!(after.tags, vec!["fresh".to_string()]);
@@ -1325,7 +1325,7 @@ mod tests {
             "body_chunks must be preserved on metadata-only update"
         );
     }
-
+ 
     /// Body change must take the Full path and produce a fresh entry.
     #[test]
     fn test_body_change_takes_full_path() {
@@ -1333,14 +1333,14 @@ mod tests {
         let path = PathBuf::from("tasks/body-change.md");
         let old_body_hash = blake3::hash(b"old body").to_hex().to_string();
         store.documents.insert(
-            path.to_string_lossy().to_string(),
+            "body-change".to_string(),
             DocumentEntry {
                 path: path.clone(),
                 title: "T".to_string(),
                 doc_type: None,
                 status: None,
                 tags: vec![],
-                id: None,
+                id: "body-change".to_string(),
                 date: None,
                 modified: None,
                 confidence: None,
@@ -1366,7 +1366,7 @@ mod tests {
             file_hash: "file_v2".to_string(),
             frontmatter: None,
         };
-        let existing = store.get_entry(&path.to_string_lossy()).cloned();
+        let existing = store.get_entry("body-change").cloned();
         let embedder = embeddings::Embedder::new_dummy();
         let prepared =
             VectorStore::prepare_upsert(&doc, &embedder, existing.as_ref()).unwrap();

@@ -46,12 +46,12 @@ pub fn check_index_staleness(
             let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) else {
                 return false;
             };
-            let path_str = doc.path.to_string_lossy().to_string();
+            let id = doc.id();
             if !doc.is_sync_enabled() {
                 // Needs update (to be removed) if it is currently in the store
-                return store.get_entry(&path_str).is_some();
+                return store.get_entry(&id).is_some();
             }
-            store.needs_update(&path_str, &doc.file_hash)
+            store.needs_update(&id, &doc.file_hash)
         })
         .count()
 }
@@ -75,7 +75,7 @@ pub fn index_pkb(
         pkb_root.display()
     );
 
-    let mut valid_paths: HashSet<String> = HashSet::new();
+    let mut valid_ids: HashSet<String> = HashSet::new();
     let mut docs_to_index: Vec<pkb::PkbDocument> = Vec::new();
     let mut metadata_only_updates: Vec<pkb::PkbDocument> = Vec::new();
     let mut all_chunks: Vec<String> = Vec::new();
@@ -91,12 +91,12 @@ pub fn index_pkb(
             continue;
         }
 
-        let path_str = doc.path.to_string_lossy().to_string();
-        valid_paths.insert(path_str.clone());
+        let id = doc.id();
+        valid_ids.insert(id.clone());
 
         let needs_update = force_all || {
             let store = store.read();
-            store.needs_update(&path_str, &doc.file_hash)
+            store.needs_update(&id, &doc.file_hash)
         };
 
         if !needs_update {
@@ -106,7 +106,7 @@ pub fn index_pkb(
         // Check if only frontmatter changed by comparing body hash (doc.content_hash)
         let body_unchanged = {
             let store = store.read();
-            if let Some(existing) = store.get_entry(&path_str) {
+            if let Some(existing) = store.get_entry(&id) {
                 // Check content_hash (body-only hash, new) or body_hash (deprecated).
                 // Use explicit OR so a non-matching content_hash does not suppress
                 // the body_hash fallback (old stores used content_hash for full file).
@@ -134,7 +134,7 @@ pub fn index_pkb(
 
     let removed = {
         let mut store = store.write();
-        store.remove_deleted(&valid_paths)
+        store.remove_deleted_by_ids(&valid_ids)
     };
 
     let mut indexed = 0;
@@ -143,11 +143,11 @@ pub fn index_pkb(
     if !metadata_only_updates.is_empty() {
         let mut store = store.write();
         for doc in metadata_only_updates {
-            let path_str = doc.path.to_string_lossy().to_string();
+            let id = doc.id();
             // Extract data in a separate scope so the immutable borrow of `store`
             // is released before the mutable borrow in insert_precomputed.
             let existing_data = store
-                .get_entry(&path_str)
+                .get_entry(&id)
                 .map(|e| (e.chunk_embeddings.clone(), e.chunk_texts.clone()));
             if let Some((embeddings, chunks)) = existing_data {
                 store.insert_precomputed(&doc, chunks, embeddings);
@@ -368,8 +368,7 @@ mod tests {
 
         // Sentinel embedding must still be present — if encode_batch had been called
         // the dummy embedder would have replaced it with zero vectors
-        let rel_path = "task.md";
-        let entry = store.read().get_entry(rel_path).expect("entry must exist").clone();
+        let entry = store.read().get_entry(&parsed.id()).expect("entry must exist").clone();
         let stored_embedding = &entry.chunk_embeddings[0];
         assert_eq!(
             stored_embedding[0], 99.0,

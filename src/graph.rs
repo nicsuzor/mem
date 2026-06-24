@@ -3,7 +3,7 @@
 //! Provides [`GraphNode`] (extracted from [`PkbDocument`]), edge types,
 //! and link resolution helpers for building knowledge graphs over a PKB.
 
-use crate::pkb::PkbDocument;
+use crate::pkb::{fallback_id, PkbDocument};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -380,16 +380,7 @@ pub fn create_id(prefix: &str) -> String {
     format!("{}-{:08x}", prefix, random)
 }
 
-/// Derive a fallback ID from a file path (filename stem, no extension).
-///
-/// Used only when reading documents that lack an explicit `id` in frontmatter.
-/// This is stable across re-indexes (same file = same ID) but changes if the
-/// file is renamed. Prefer explicit `id` fields — the linter flags missing IDs.
-pub fn fallback_id(path: &Path) -> String {
-    path.file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string_lossy().to_string())
-}
+
 
 /// Normalize legacy/alternate status values to the canonical set defined in
 /// `aops-core/TAXONOMY.md`. Canonical statuses pass through unchanged.

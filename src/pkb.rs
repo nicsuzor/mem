@@ -37,6 +37,14 @@ pub struct PkbDocument {
 }
 
 impl PkbDocument {
+    /// Unique identifier for this document, either from frontmatter "id" or derived via fallback_id
+    pub fn id(&self) -> String {
+        self.frontmatter
+            .as_ref()
+            .and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_else(|| fallback_id(&self.path))
+    }
+
     /// Hash of the body (markdown content only, no YAML frontmatter).
     /// Used to detect whether re-embedding is needed — frontmatter-only
     /// changes (status, priority, etc.) leave this hash unchanged.
@@ -259,3 +267,15 @@ pub fn scan_directory(root: &Path) -> Vec<PathBuf> {
 
     paths
 }
+
+/// Derive a fallback ID from a file path (filename stem, no extension).
+///
+/// Used only when reading documents that lack an explicit `id` in frontmatter.
+/// This is stable across re-indexes (same file = same ID) but changes if the
+/// file is renamed. Prefer explicit `id` fields — the linter flags missing IDs.
+pub fn fallback_id(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+

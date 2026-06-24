@@ -210,38 +210,7 @@ impl PkbSearchServer {
         }
     }
 
-    /// Build an absolute-path -> &GraphNode index from the graph for O(1) lookups.
-    fn build_path_to_node_map<'g>(
-        &self,
-        graph: &'g crate::graph_store::GraphStore,
-    ) -> std::collections::HashMap<String, &'g crate::graph::GraphNode> {
-        graph
-            .nodes()
-            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n))
-            .collect()
-    }
 
-    /// Build an absolute-path -> short ID map (task_id when present, else node id).
-    fn build_path_to_id_map(
-        &self,
-        graph: &crate::graph_store::GraphStore,
-    ) -> std::collections::HashMap<String, String> {
-        graph
-            .nodes()
-            .map(|n| (self.abs_path(&n.path).to_string_lossy().to_string(), n.id.clone()))
-            .collect()
-    }
-
-    /// Look up a node in a path_map using a path that may be relative or absolute.
-    fn lookup_node<'a, 'g>(
-        &self,
-        path_map: &'a std::collections::HashMap<String, &'g crate::graph::GraphNode>,
-        path: &Path,
-    ) -> Option<&'g crate::graph::GraphNode> {
-        path_map
-            .get(self.abs_path(path).to_string_lossy().as_ref())
-            .copied()
-    }
 
     /// Validate that completion_evidence is present and non-empty.
     fn require_evidence(evidence: Option<&str>) -> Result<&str, McpError> {
@@ -807,8 +776,13 @@ impl PkbSearchServer {
                     applied_upserts += 1;
                 }
             } else {
-                let key = self.rel_key_for(abs_path);
-                if self.store.write().remove(&key) {
+                let rel = abs_path.strip_prefix(&self.pkb_root).unwrap_or(abs_path);
+                let node_id = {
+                    let graph = self.graph.read();
+                    graph.nodes().find(|n| n.path == rel).map(|n| n.id.clone())
+                };
+                let id = node_id.unwrap_or_else(|| crate::pkb::fallback_id(rel));
+                if self.store.write().remove(&id) {
                     applied_removes += 1;
                 }
             }
@@ -871,7 +845,7 @@ impl PkbSearchServer {
             return;
         }
 
-        let path_key = doc.path.to_string_lossy().to_string();
+        let doc_id = doc.id();
         let _t_upsert = std::time::Instant::now();
 
         // Check body-match under a brief read lock — extract only the two
@@ -879,7 +853,7 @@ impl PkbSearchServer {
         // large chunk_embeddings: Vec<Vec<f32>>).
         let (entry_exists, body_unchanged) = {
             let store_read = self.store.read();
-            match store_read.get_entry(&path_key) {
+            match store_read.get_entry(&doc_id) {
                 Some(e) => (true, crate::vectordb::VectorStore::body_matches(doc, Some(e))),
                 None => (false, false),
             }
@@ -991,11 +965,11 @@ impl PkbSearchServer {
                 };
 
                 if let Some(doc) = next_doc {
-                    let path_key = doc.path.to_string_lossy().to_string();
+                    let doc_id = doc.id();
                     let _t = std::time::Instant::now();
 
                     // Snapshot existing under a brief read lock.
-                    let existing = store.read().get_entry(&path_key).cloned();
+                    let existing = store.read().get_entry(&doc_id).cloned();
                     let prepared = match crate::vectordb::VectorStore::prepare_upsert(
                         &doc,
                         &embedder,
@@ -1118,18 +1092,20 @@ impl PkbSearchServer {
 
         let _t_finalize = std::time::Instant::now();
 
+        let graph = self.graph.read();
+
         // Parse + prepare in parallel (no lock).
         let results: Vec<Result<crate::vectordb::PreparedUpsert, String>> = modified_paths
             .par_iter()
             .filter_map(|abs_path| {
                 let doc = crate::pkb::parse_file_relative(abs_path, &self.pkb_root)?;
-                let path_key = doc.path.to_string_lossy().to_string();
+                let doc_id = doc.id();
                 
                 if !doc.is_sync_enabled() {
-                    return Some(Err(path_key));
+                    return Some(Err(doc_id));
                 }
 
-                let existing = self.store.read().get_entry(&path_key).cloned();
+                let existing = self.store.read().get_entry(&doc_id).cloned();
                 match crate::vectordb::VectorStore::prepare_upsert(
                     &doc,
                     &self.embedder,
@@ -1153,16 +1129,16 @@ impl PkbSearchServer {
             for res in results {
                 match res {
                     Ok(p) => store.apply_prepared(p),
-                    Err(path_key) => { store.remove(&path_key); }
+                    Err(doc_id) => { store.remove(&doc_id); }
                 }
             }
             for abs_path in removed_paths {
-                let path_key = abs_path
+                let rel = abs_path
                     .strip_prefix(&self.pkb_root)
-                    .unwrap_or(abs_path)
-                    .to_string_lossy()
-                    .to_string();
-                store.remove(&path_key);
+                    .unwrap_or(abs_path);
+                let node_id = graph.nodes().find(|n| n.path == rel).map(|n| n.id.clone());
+                let id = node_id.unwrap_or_else(|| crate::pkb::fallback_id(rel));
+                store.remove(&id);
             }
         }
 
@@ -1180,23 +1156,27 @@ impl PkbSearchServer {
     }
 
     /// Remove a document from the vector store if the index is not locked.
-    fn try_remove_document(&self, rel_path: &str) {
+    fn try_remove_document(&self, id: &str) {
         self.maybe_drain_deferred();
 
         if !self.index_lock_available() {
             // Defer the remove. Resolve to absolute so the drain step's
             // existence check works correctly (the file will be absent on
             // disk, so the drain will pick the remove path).
+            let rel_path = {
+                let graph = self.graph.read();
+                graph.resolve(id).map(|n| n.path.clone()).unwrap_or_else(|| PathBuf::from(id))
+            };
             let abs = self.pkb_root.join(rel_path);
             self.deferred_paths.lock().insert(abs);
             self.lock_was_held
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             tracing::info!(
-                "Index locked by another process — deferring in-memory remove for {rel_path}"
+                "Index locked by another process — deferring in-memory remove for {id}"
             );
             return;
         }
-        self.store.write().remove(rel_path);
+        self.store.write().remove(id);
         self.save_store();
     }
 
@@ -1284,20 +1264,11 @@ impl PkbSearchServer {
             .collect();
         let showing = page.len();
 
-        // Build path -> short ID map via graph
-        let path_map = {
-            let graph = self.graph.read();
-            self.build_path_to_id_map(&graph)
-        };
-
         let mut output =
             format!("**{total} documents found** (showing {showing}, offset {offset})\n\n");
 
         for r in &page {
-            let id = path_map
-                .get(&self.abs_path(&r.path).to_string_lossy().to_string())
-                .cloned()
-                .unwrap_or_else(|| r.id.clone().unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()));
+            let id = &r.id;
             output.push_str(&format!("- **{}**", r.title));
             if let Some(ref dt) = r.doc_type {
                 output.push_str(&format!(" [{dt}]"));
@@ -1374,9 +1345,6 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
 
-        // Build path -> node index for O(1) lookups instead of O(n) per result
-        let path_map = self.build_path_to_node_map(&graph);
-
         let mut output = String::new();
         let mut count = 0;
 
@@ -1415,7 +1383,7 @@ impl PkbSearchServer {
             // Closed-status filter (default on): hide done/cancelled unless the
             // caller explicitly asked for them via include_done.
             if !include_done {
-                if let Some(node) = self.lookup_node(&path_map, &r.path) {
+                if let Some(node) = graph.get_node(&r.id) {
                     if let Some(status) = node.status.as_deref() {
                         let s = status.to_ascii_lowercase();
                         if s == "done" || s == "cancelled" || s == "canceled" {
@@ -1431,8 +1399,8 @@ impl PkbSearchServer {
                 count, r.title, r.score
             ));
 
-            // O(1) path lookup via pre-built index
-            if let Some(node) = self.lookup_node(&path_map, &r.path) {
+            // Direct ID lookup in the graph
+            if let Some(node) = graph.get_node(&r.id) {
                 let id = node.task_id.as_deref().unwrap_or(&node.id);
                 output.push_str(&format!("**ID:** `{id}`\n"));
                 if let Some(ref s) = node.status {
@@ -2325,12 +2293,11 @@ impl PkbSearchServer {
 
         // Score and sort results
         let graph = self.graph.read();
-        let path_map = self.build_path_to_node_map(&graph);
 
         let mut scored: Vec<_> = results
             .iter()
             .map(|r| {
-                let node = self.lookup_node(&path_map, &r.path);
+                let node = graph.get_node(&r.id);
                 let node_id = node.as_ref().map(|n| n.id.clone());
                 let confidence = node.as_ref().and_then(|n| n.confidence).unwrap_or(0.5) as f32;
 
@@ -2370,10 +2337,10 @@ impl PkbSearchServer {
         );
 
         for (i, (r, score)) in scored.iter().enumerate() {
-            let node = self.lookup_node(&path_map, &r.path);
+            let node = graph.get_node(&r.id);
             let display_id = node
                 .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
-                .unwrap_or("?");
+                .unwrap_or(&r.id);
 
             output.push_str(&format!(
                 "### {}. {} (score: {:.3})\n",
@@ -2401,7 +2368,8 @@ impl PkbSearchServer {
                 "snippet" => std::borrow::Cow::Borrowed(&r.snippet),
                 "full" => {
                     // Read full document from disk
-                    match std::fs::read_to_string(&r.path) {
+                    let abs_path = node.map(|n| self.abs_path(&n.path)).unwrap_or_else(|| r.path.clone());
+                    match std::fs::read_to_string(&abs_path) {
                         Ok(content) => std::borrow::Cow::Owned(content),
                         Err(_) => std::borrow::Cow::Borrowed(&r.chunk_text),
                     }
@@ -4214,9 +4182,6 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
 
-        // Build path -> node index
-        let path_map = self.build_path_to_node_map(&graph);
-
         let memory_types = ["memory", "note", "insight", "observation"];
         let mut scored_results = Vec::new();
 
@@ -4239,8 +4204,8 @@ impl PkbSearchServer {
                 }
             }
 
-            let confidence = self
-                .lookup_node(&path_map, &r.path)
+            let confidence = graph
+                .get_node(&r.id)
                 .and_then(|n| n.confidence)
                 .unwrap_or(1.0);
 
@@ -4267,7 +4232,7 @@ impl PkbSearchServer {
             ));
 
             // Check if superseded and get display ID
-            let display_id = if let Some(node) = self.lookup_node(&path_map, &r.path) {
+            let display_id = if let Some(node) = graph.get_node(&r.id) {
                 let incoming = graph.get_incoming_edges(&node.id);
                 let superseders: Vec<_> = incoming
                     .iter()
@@ -4292,7 +4257,8 @@ impl PkbSearchServer {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
             }
             // Show full body for memories (typically short)
-            if let Ok(content) = std::fs::read_to_string(&r.path) {
+            let abs_path = graph.get_node(&r.id).map(|n| self.abs_path(&n.path)).unwrap_or_else(|| r.path.clone());
+            if let Ok(content) = std::fs::read_to_string(&abs_path) {
                 let body = if content.starts_with("---") {
                     content.splitn(3, "---").nth(2).unwrap_or("").trim()
                 } else {
@@ -4364,20 +4330,13 @@ impl PkbSearchServer {
         let total = matching.len();
         let mut output = format!("**{total} documents with tags [{}]**\n\n", tags.join(", "));
 
-        // Build path -> ID map
-        let graph = self.graph.read();
-        let path_map = self.build_path_to_id_map(&graph);
-
         for r in &matching {
             output.push_str(&format!("- **{}**", r.title));
             if let Some(ref dt) = r.doc_type {
                 output.push_str(&format!(" [{dt}]"));
             }
             output.push_str(&format!(" ({})", r.tags.join(", ")));
-            let id = path_map
-                .get(self.abs_path(&r.path).to_string_lossy().as_ref())
-                .cloned()
-                .unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            let id = &r.id;
             output.push_str(&format!(" — `{id}`\n"));
         }
 
@@ -4425,19 +4384,12 @@ impl PkbSearchServer {
         let total = memories.len();
         let mut output = format!("**{total} memories**\n\n");
 
-        // Build path -> ID map
-        let graph = self.graph.read();
-        let path_map = self.build_path_to_id_map(&graph);
-
         for r in &memories {
             output.push_str(&format!("- **{}**", r.title));
             if !r.tags.is_empty() {
                 output.push_str(&format!(" ({})", r.tags.join(", ")));
             }
-            let id = path_map
-                .get(self.abs_path(&r.path).to_string_lossy().as_ref())
-                .cloned()
-                .unwrap_or_else(|| r.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            let id = &r.id;
             output.push_str(&format!(" — `{id}`\n"));
         }
 

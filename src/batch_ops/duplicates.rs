@@ -442,16 +442,7 @@ fn build_embedding_map(nodes: &[&GraphNode], store: &VectorStore) -> HashMap<Str
     let mut map = HashMap::new();
 
     for node in nodes {
-        let path_str = node.path.to_string_lossy().to_string();
-
-        // Try exact path, then try with/without leading prefix
-        let entry = store
-            .get_entry(&path_str)
-            .or_else(|| {
-                // Try stripping leading path components
-                let stripped = path_str.strip_prefix("tasks/").unwrap_or(&path_str);
-                store.get_entry(stripped)
-            });
+        let entry = store.get_entry(&node.id);
 
         if let Some(entry) = entry {
             if let Some(avg) = average_embedding(&entry.chunk_embeddings) {
