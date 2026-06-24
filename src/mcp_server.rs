@@ -928,6 +928,7 @@ impl PkbSearchServer {
                     tags: doc.tags.clone(),
                     id,
                     date,
+                    modified: doc.modified.clone(),
                     confidence,
                     content_hash: None, // Keep None so the background worker knows it needs to embed it!
                     file_hash: Some(doc.file_hash.clone()),
@@ -4996,6 +4997,8 @@ impl PkbSearchServer {
             })
             .unwrap_or_default();
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+        let since = args.get("since").and_then(|v| v.as_str());
+        let before = args.get("before").and_then(|v| v.as_str());
         let include_subtasks = args
             .get("include_subtasks")
             .and_then(|v| v.as_bool())
@@ -5149,6 +5152,26 @@ impl PkbSearchServer {
 
         if let Some(min_score) = focus_score_gte {
             tasks.retain(|t| t.focus_score.unwrap_or(0) >= min_score);
+        }
+
+        // Date filters on modified. RFC3339 timestamps start with YYYY-MM-DD so
+        // the first 10 chars compare correctly against YYYY-MM-DD filter params.
+        // Tasks with no modified date are excluded when any date filter is active.
+        if let Some(s) = since {
+            tasks.retain(|t| {
+                t.modified
+                    .as_deref()
+                    .map(|m| &m[..m.floor_char_boundary(10)] >= s)
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(b) = before {
+            tasks.retain(|t| {
+                t.modified
+                    .as_deref()
+                    .map(|m| &m[..m.floor_char_boundary(10)] <= b)
+                    .unwrap_or(false)
+            });
         }
 
         let explicitly_wants_target = doc_type
@@ -6685,6 +6708,8 @@ impl PkbSearchServer {
                         "weight_gte": { "type": "integer", "description": "Filter to tasks with downstream weight ≥ N" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags. A task matches iff every requested tag is present in its frontmatter `tags` array (AND, case-insensitive)." },
                         "focus_score_gte": { "type": "integer", "description": "Filter to tasks whose composite focus_score is ≥ N." },
+                        "since": { "type": "string", "description": "Filter: return only tasks modified on or after YYYY-MM-DD (inclusive). Tasks with no modified date are excluded." },
+                        "before": { "type": "string", "description": "Filter: return only tasks modified on or before YYYY-MM-DD (inclusive). Tasks with no modified date are excluded." },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
                         "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (hides closed tasks so the list shows actionable work). Ignored when an explicit `status` filter is provided." },
@@ -8528,6 +8553,161 @@ mod tests {
             "list_tasks schema should include 'project' parameter, got: {}",
             schema
         );
+    }
+
+    // ── since/before date filters on list_tasks (mem-ef5e74ac) ──────────────
+
+    fn make_doc_with_modified_date(id: &str, modified: Option<&str>) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), json!(id));
+        fm.insert("type".to_string(), json!("task"));
+        fm.insert("status".to_string(), json!("active"));
+        fm.insert("id".to_string(), json!(id));
+        if let Some(m) = modified {
+            fm.insert("modified".to_string(), json!(m));
+        }
+        PkbDocument {
+            path: PathBuf::from(format!("tasks/{id}.md")),
+            title: id.to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("active".to_string()),
+            modified: modified.map(String::from),
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        }
+    }
+
+    fn build_dated_task_server() -> PkbSearchServer {
+        let docs = vec![
+            make_doc_with_modified_date("task-old", Some("2019-06-01T00:00:00Z")),
+            make_doc_with_modified_date("task-mid", Some("2023-03-15T12:00:00Z")),
+            make_doc_with_modified_date("task-new", Some("2026-06-01T09:00:00Z")),
+            make_doc_with_modified_date("task-nodated", None),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-dated-pkb"));
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("mem-dated-pkb-{}-{}", std::process::id(), seq));
+        let _ = std::fs::create_dir_all(&root);
+        let db = root.join("db");
+        PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root,
+            db,
+            Arc::new(RwLock::new(graph)),
+        )
+    }
+
+    #[test]
+    fn test_list_tasks_before_ancient_date_returns_zero() {
+        // AC: before=2020-01-01 returns zero rows (only task-old is pre-2020,
+        // but its modified is 2019-06-01 which is <= 2020-01-01, so it passes).
+        // More strictly: before=2018-01-01 must return zero (all tasks are after 2018).
+        let server = build_dated_task_server();
+        let result = server
+            .handle_list_tasks(&json!({"before": "2018-01-01", "include_done": true, "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&result);
+        assert!(
+            tasks.is_empty(),
+            "before=2018-01-01 must return zero rows; got {} tasks",
+            tasks.len()
+        );
+    }
+
+    #[test]
+    fn test_list_tasks_since_future_returns_zero() {
+        // AC: since=2030-01-01 returns zero rows.
+        let server = build_dated_task_server();
+        let result = server
+            .handle_list_tasks(&json!({"since": "2030-01-01", "include_done": true, "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&result);
+        assert!(
+            tasks.is_empty(),
+            "since=2030-01-01 must return zero rows; got {} tasks",
+            tasks.len()
+        );
+    }
+
+    #[test]
+    fn test_list_tasks_since_before_reduce_monotonically() {
+        // AC: narrowing since/before yields strictly fewer results.
+        let server = build_dated_task_server();
+        let wide = extract_task_objects(
+            &server.handle_list_tasks(&json!({"since": "2000-01-01", "include_done": true, "format": "json"})).unwrap()
+        );
+        let narrow = extract_task_objects(
+            &server.handle_list_tasks(&json!({"since": "2025-01-01", "include_done": true, "format": "json"})).unwrap()
+        );
+        assert!(
+            narrow.len() < wide.len(),
+            "narrowing since must reduce results: wide={} narrow={}",
+            wide.len(), narrow.len()
+        );
+    }
+
+    #[test]
+    fn test_list_tasks_no_modified_excluded_when_filter_active() {
+        // Tasks without a modified date must be excluded when any date filter is set.
+        let server = build_dated_task_server();
+        let result = server
+            .handle_list_tasks(&json!({"since": "2000-01-01", "include_done": true, "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&result);
+        let ids: Vec<_> = tasks.iter()
+            .filter_map(|t| t.get("id").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            !ids.contains(&"task-nodated"),
+            "task with no modified date must be excluded by date filter; ids present: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn test_list_tasks_repro_wide_date_range_not_identical() {
+        // Regression: before the fix, since=2000 vs since=2030 returned the same rows.
+        // After the fix, since=2030-01-01 returns zero and since=2000-01-01 returns some.
+        let server = build_dated_task_server();
+        let since_past = extract_task_objects(
+            &server.handle_list_tasks(&json!({"since": "2000-01-01", "include_done": true, "format": "json"})).unwrap()
+        );
+        let since_future = extract_task_objects(
+            &server.handle_list_tasks(&json!({"since": "2030-01-01", "include_done": true, "format": "json"})).unwrap()
+        );
+        assert!(
+            since_past.len() != since_future.len() || (since_past.is_empty() && since_future.is_empty()),
+            "since=2000 and since=2030 must not return identical non-empty row counts; \
+             both returned {} rows (date filter is a no-op)",
+            since_past.len()
+        );
+        assert!(
+            since_future.is_empty(),
+            "since=2030-01-01 must return zero rows; got {}",
+            since_future.len()
+        );
+        assert!(
+            !since_past.is_empty(),
+            "since=2000-01-01 must return some rows (3 dated tasks exist); got 0"
+        );
+    }
+
+    #[test]
+    fn test_list_tasks_schema_includes_since_before() {
+        let tools = PkbSearchServer::get_all_tools();
+        let schema = serde_json::to_string(
+            &tools.iter().find(|t| t.name.as_ref() == "list_tasks")
+                .expect("list_tasks tool should exist")
+                .input_schema
+        ).unwrap();
+        assert!(schema.contains("\"since\""), "list_tasks schema must include 'since'; got: {schema}");
+        assert!(schema.contains("\"before\""), "list_tasks schema must include 'before'; got: {schema}");
     }
 
     // ── Parent referential integrity (task-89b2af87) ───────────────────────
