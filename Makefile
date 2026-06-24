@@ -4,8 +4,10 @@
 CARGO        ?= cargo
 TARGET_MACOS  = aarch64-apple-darwin
 TARGET_LINUX  = x86_64-unknown-linux-gnu
+TARGET_WIN    = x86_64-pc-windows-gnullvm
 RELEASE_DIR   = target/release
 MACOS_DIR     = target/$(TARGET_MACOS)/release
+WIN_DIR       = target/$(TARGET_WIN)/release
 BINS          = pkb
 VERSION       = $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
@@ -34,6 +36,17 @@ apple: $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd
 	@for b in $(BINS); do ls -lh $(MACOS_DIR)/$$b 2>/dev/null; done
 	@echo ""
 	@file $(MACOS_DIR)/pkb
+
+# ── Windows cross-build ──────────────────────────────────────────────
+# Requires: zig 0.13, cargo-zigbuild
+# Run `make setup-cross` first to install prerequisites
+
+.PHONY: windows
+windows:
+	RUSTFLAGS="-C target-feature=+crt-static -C link-args=-static" $(CARGO) zigbuild --release --target $(TARGET_WIN)
+	@echo ""
+	@echo "Binaries:"
+	@ls -lh $(WIN_DIR)/pkb.exe 2>/dev/null || true
 
 # ── Release ────────────────────────────────────────────────────────
 # Automated via release-plz (see .github/workflows/release-plz.yml):
@@ -119,9 +132,10 @@ $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd:
 .PHONY: setup-cross
 setup-cross:
 	rustup target add $(TARGET_MACOS)
+	rustup target add $(TARGET_WIN)
 	$(CARGO) install cargo-zigbuild
 	@echo ""
-	@echo "Zig 0.13 is required (bundles macOS libc stubs)."
+	@echo "Zig 0.13 is required (bundles macOS and Windows libc/CRT stubs)."
 	@echo "Install via: pip install 'ziglang>=0.13,<0.14'"
 	@echo "Then ensure 'zig' is on your PATH."
 	@echo ""
@@ -147,6 +161,8 @@ sizes:
 	@for b in $(BINS); do ls -lh $(RELEASE_DIR)/$$b 2>/dev/null || true; done
 	@echo "── Apple Silicon ──"
 	@for b in $(BINS); do ls -lh $(MACOS_DIR)/$$b 2>/dev/null || true; done
+	@echo "── Windows ──"
+	@ls -lh $(WIN_DIR)/pkb.exe 2>/dev/null || true
 
 .PHONY: help
 help:
@@ -154,8 +170,9 @@ help:
 	@echo "  build          Release build for current host"
 	@echo "  install        Install release binaries via cargo-binstall"
 	@echo "  apple          Cross-compile for Apple Silicon (aarch64-apple-darwin)"
+	@echo "  windows        Cross-compile for Windows (x86_64-pc-windows-gnullvm)"
 	@echo "  version        Print current version"
-	@echo "  setup-cross    Install rustup target + cargo-zigbuild + zig instructions"
+	@echo "  setup-cross    Install rustup targets + cargo-zigbuild + zig instructions"
 	@echo "  check          Type-check without building"
 	@echo "  test           Run tests"
 	@echo "  clean          Remove target/"
