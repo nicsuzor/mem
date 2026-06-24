@@ -5161,7 +5161,7 @@ impl PkbSearchServer {
             tasks.retain(|t| {
                 t.modified
                     .as_deref()
-                    .map(|m| &m[..m.len().min(10)] >= s)
+                    .map(|m| &m[..m.floor_char_boundary(10)] >= s)
                     .unwrap_or(false)
             });
         }
@@ -5169,7 +5169,7 @@ impl PkbSearchServer {
             tasks.retain(|t| {
                 t.modified
                     .as_deref()
-                    .map(|m| &m[..m.len().min(10)] <= b)
+                    .map(|m| &m[..m.floor_char_boundary(10)] <= b)
                     .unwrap_or(false)
             });
         }

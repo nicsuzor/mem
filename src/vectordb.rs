@@ -32,7 +32,11 @@ pub struct DocumentEntry {
     /// Document date (from frontmatter)
     #[serde(default)]
     pub date: Option<String>,
-    /// Last modified timestamp (RFC3339 or YYYY-MM-DD, from frontmatter `modified:`)
+    /// Last modified timestamp (RFC3339 or YYYY-MM-DD, from frontmatter `modified:`).
+    /// Note: `#[serde(default)]` applies to text formats only; bincode is positional so
+    /// adding this field mid-struct breaks existing bincode files. `load_or_create` handles
+    /// the resulting `DecodeError` gracefully by discarding the old file and creating a fresh
+    /// store (one-time full reindex on first upgrade).
     #[serde(default)]
     pub modified: Option<String>,
     /// Confidence level (0.0 - 1.0)
@@ -509,7 +513,7 @@ impl VectorStore {
             if since.is_some() || before.is_some() {
                 match entry.modified.as_deref() {
                     Some(m) => {
-                        let date_prefix = &m[..m.len().min(10)];
+                        let date_prefix = &m[..m.floor_char_boundary(10)];
                         if since.map_or(false, |s| date_prefix < s)
                             || before.map_or(false, |b| date_prefix > b)
                         {
