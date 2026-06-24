@@ -1052,7 +1052,7 @@ async fn main() -> Result<()> {
                 };
 
                 // Show ID prominently if available
-                let id_str = result.id.as_deref().unwrap_or("");
+                let id_str = result.id.as_str();
                 if i == 0 && !id_str.is_empty() {
                     first_id = id_str.to_string();
                 }
@@ -3470,41 +3470,31 @@ fn index_pkb(
 
     let files = pkb::scan_directory(pkb_root);
 
-    // Use relative paths for store keys (portable across machines)
-    let existing_paths: std::collections::HashSet<String> = files
-        .iter()
-        .map(|p| {
-            p.strip_prefix(pkb_root)
-                .unwrap_or(p)
-                .to_string_lossy()
-                .to_string()
+    // The store is keyed by document id (frontmatter `id:`, or filename-stem
+    // fallback), so staleness checks and stale-removal must key by id too.
+    // Parse each file once up front to resolve its id and file hash.
+    let parsed_meta: Vec<(std::path::PathBuf, String, String)> = files
+        .par_iter()
+        .filter_map(|p| {
+            pkb::parse_file_relative(p, pkb_root).map(|d| (p.clone(), d.id(), d.file_hash.clone()))
         })
         .collect();
 
+    let existing_ids: std::collections::HashSet<String> =
+        parsed_meta.iter().map(|(_, id, _)| id.clone()).collect();
+
     let removed = {
         let mut store = store.write();
-        store.remove_deleted(&existing_paths)
+        store.remove_deleted_by_ids(&existing_ids)
     };
 
     // Figure out which files need updating (acquire read lock once)
     let to_process: Vec<_> = {
         let store = store.read();
-        files
+        parsed_meta
             .iter()
-            .filter(|file_path| {
-                let path_str = file_path
-                    .strip_prefix(pkb_root)
-                    .unwrap_or(file_path)
-                    .to_string_lossy()
-                    .to_string();
-                // Compute content hash for change detection
-                let content_hash = std::fs::read(file_path)
-                    .ok()
-                    .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
-                    .unwrap_or_default();
-                force_all || store.needs_update(&path_str, &content_hash)
-            })
-            .cloned()
+            .filter(|(_, id, file_hash)| force_all || store.needs_update(id, file_hash))
+            .map(|(path, _, _)| path.clone())
             .collect()
     };
 
