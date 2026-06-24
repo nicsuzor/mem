@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.70](https://github.com/nicsuzor/mem/compare/mem-v0.3.69...mem-v0.3.70) (2026-06-24)
+
+
+### Bug Fixes
+
+* **mcp:** honour since/before date filters on modified date in task_search/list_tasks/search ([#445](https://github.com/nicsuzor/mem/issues/445)) ([05c4da2](https://github.com/nicsuzor/mem/commit/05c4da226cc3a268da502ffd6220252cf17d17fb))
+
 ## [0.3.69](https://github.com/nicsuzor/mem/compare/mem-v0.3.68...mem-v0.3.69) (2026-06-23)
 
 
