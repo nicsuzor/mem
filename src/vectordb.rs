@@ -13,10 +13,32 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+mod path_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::path::PathBuf;
+
+    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        path_str.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(PathBuf::from(s))
+    }
+}
+
 /// A stored document entry with its embeddings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentEntry {
     /// File path (relative to pkb_root for portability)
+    #[serde(with = "path_serde")]
     pub path: PathBuf,
     /// Document title
     pub title: String,
