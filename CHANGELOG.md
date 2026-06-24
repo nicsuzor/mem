@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.71](https://github.com/nicsuzor/mem/compare/mem-v0.3.70...mem-v0.3.71) (2026-06-24)
+
+
+### Features
+
+* windows fast gpu reindex ([8a1609c](https://github.com/nicsuzor/mem/commit/8a1609c35da26261d61bcace6cc645b915ecfc70))
+
 ## [0.3.70](https://github.com/nicsuzor/mem/compare/mem-v0.3.69...mem-v0.3.70) (2026-06-24)
 
 
