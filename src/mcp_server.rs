@@ -777,10 +777,7 @@ impl PkbSearchServer {
                 }
             } else {
                 let rel = abs_path.strip_prefix(&self.pkb_root).unwrap_or(abs_path);
-                let node_id = {
-                    let graph = self.graph.read();
-                    graph.nodes().find(|n| n.path == rel).map(|n| n.id.clone())
-                };
+                let node_id = self.graph.read().nodes().find(|n| n.path == rel).map(|n| n.id.clone());
                 let id = node_id.unwrap_or_else(|| crate::pkb::fallback_id(rel));
                 if self.store.write().remove(&id) {
                     applied_removes += 1;
@@ -891,7 +888,9 @@ impl PkbSearchServer {
             _ => {
                 // New document: create a skeleton/placeholder entry instantly with empty vectors
                 let fm = doc.frontmatter.as_ref();
-                let id = fm.and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
+                let id = fm
+                    .and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from))
+                    .unwrap_or_else(|| crate::pkb::fallback_id(&doc.path));
                 let confidence = fm.and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
                 let date = fm.and_then(|f| f.get("date").and_then(|v| v.as_str()).map(String::from));
                 let entry = crate::vectordb::DocumentEntry {
@@ -3571,8 +3570,8 @@ impl PkbSearchServer {
             if matches!(canonical_status, "done" | "cancelled") {
                 continue;
             }
-            if let Some(ref id) = candidate.id {
-                return Some((id.clone(), candidate.score, candidate.title.clone()));
+            if !candidate.id.is_empty() {
+                return Some((candidate.id.clone(), candidate.score, candidate.title.clone()));
             }
         }
         None
@@ -9278,7 +9277,7 @@ mod batch_finalize_tests {
         let pre: std::collections::HashMap<String, Option<String>> = {
             let s = server.store.read();
             s.documents()
-                .filter_map(|(_path, e)| e.id.clone().map(|id| (id, e.status.clone())))
+                .filter_map(|(_path, e)| if !e.id.is_empty() { Some((e.id.clone(), e.status.clone())) } else { None })
                 .collect()
         };
         let task_ids: Vec<String> = pre
@@ -9307,7 +9306,7 @@ mod batch_finalize_tests {
         let post: std::collections::HashMap<String, Option<String>> = {
             let s = server.store.read();
             s.documents()
-                .filter_map(|(_path, e)| e.id.clone().map(|id| (id, e.status.clone())))
+                .filter_map(|(_path, e)| if !e.id.is_empty() { Some((e.id.clone(), e.status.clone())) } else { None })
                 .collect()
         };
         for id in &task_ids {

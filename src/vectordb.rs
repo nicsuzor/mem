@@ -256,7 +256,9 @@ impl VectorStore {
     /// Check if the store is empty
     pub fn is_empty(&self) -> bool {
         self.documents.is_empty()
-     /// Check if a document needs re-indexing (metadata OR body change)
+    }
+
+    /// Check if a document needs re-indexing (metadata OR body change)
     pub fn needs_update(&self, id: &str, file_hash: &str) -> bool {
         match self.documents.get(id) {
             Some(entry) => {
