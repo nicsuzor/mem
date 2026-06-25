@@ -8,7 +8,6 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use parking_lot::RwLock;
 use rmcp::ServiceExt;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -3472,29 +3471,29 @@ fn index_pkb(
 
     // The store is keyed by document id (frontmatter `id:`, or filename-stem
     // fallback), so staleness checks and stale-removal must key by id too.
-    // Parse each file once up front to resolve its id and file hash.
-    let parsed_meta: Vec<(std::path::PathBuf, String, String)> = files
+    // Parse each file once up front; the parsed docs are reused for both the
+    // staleness decision and chunking, so nothing is parsed twice.
+    let all_docs: Vec<pkb::PkbDocument> = files
         .par_iter()
-        .filter_map(|p| {
-            pkb::parse_file_relative(p, pkb_root).map(|d| (p.clone(), d.id(), d.file_hash.clone()))
-        })
+        .filter_map(|p| pkb::parse_file_relative(p, pkb_root))
         .collect();
 
     let existing_ids: std::collections::HashSet<String> =
-        parsed_meta.iter().map(|(_, id, _)| id.clone()).collect();
+        all_docs.iter().map(|d| d.id()).collect();
 
     let removed = {
         let mut store = store.write();
         store.remove_deleted_by_ids(&existing_ids)
     };
 
-    // Figure out which files need updating (acquire read lock once)
-    let to_process: Vec<_> = {
+    // Figure out which docs need updating via the single shared staleness
+    // predicate (mem::document_needs_reindex) — the same one `status` and the
+    // library indexer use, so the count and the reindex set can't diverge.
+    let to_process: Vec<pkb::PkbDocument> = {
         let store = store.read();
-        parsed_meta
-            .iter()
-            .filter(|(_, id, file_hash)| force_all || store.needs_update(id, file_hash))
-            .map(|(path, _, _)| path.clone())
+        all_docs
+            .into_iter()
+            .filter(|doc| force_all || mem::document_needs_reindex(&store, doc))
             .collect()
     };
 
@@ -3508,15 +3507,13 @@ fn index_pkb(
         return (0, removed, total);
     }
 
-    // Parse all files in parallel (fast — no progress bar needed)
+    // Chunk each stale doc in parallel (parsing already done above).
     let parsed: Vec<_> = to_process
-        .par_iter()
-        .filter_map(|path| {
-            pkb::parse_file_relative(path, pkb_root).map(|doc| {
-                let text = doc.embedding_text();
-                let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
-                (doc, chunks)
-            })
+        .into_par_iter()
+        .map(|doc| {
+            let text = doc.embedding_text();
+            let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
+            (doc, chunks)
         })
         .collect();
 

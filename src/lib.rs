@@ -30,6 +30,19 @@ use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// THE single source of truth for index freshness.
+///
+/// Everything under the PKB root is indexed — there are no document-type or
+/// `sync:` frontmatter exclusions. A document is stale (needs re-indexing) iff
+/// it is new to the store or its content hash has changed. The staleness *count*
+/// (`check_index_staleness`) and both reindex *work-list* builders (`index_pkb`
+/// here and in `cli.rs`) all route their decision through this one predicate, so
+/// the reported stale count and the set of docs reindex actually touches can
+/// never disagree.
+pub fn document_needs_reindex(store: &vectordb::VectorStore, doc: &pkb::PkbDocument) -> bool {
+    store.needs_update(&doc.id(), &doc.file_hash)
+}
+
 /// Check whether the vector store index is stale.
 ///
 /// Returns the number of documents that need re-indexing (new or modified).
@@ -42,17 +55,8 @@ pub fn check_index_staleness(
     let store = store.read();
     files
         .iter()
-        .filter(|file_path| {
-            let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) else {
-                return false;
-            };
-            let id = doc.id();
-            if !doc.is_sync_enabled() {
-                // Needs update (to be removed) if it is currently in the store
-                return store.get_entry(&id).is_some();
-            }
-            store.needs_update(&id, &doc.file_hash)
-        })
+        .filter_map(|file_path| pkb::parse_file_relative(file_path, pkb_root))
+        .filter(|doc| document_needs_reindex(&store, doc))
         .count()
 }
 
@@ -87,16 +91,12 @@ pub fn index_pkb(
             continue;
         };
 
-        if !doc.is_sync_enabled() {
-            continue;
-        }
-
         let id = doc.id();
         valid_ids.insert(id.clone());
 
         let needs_update = force_all || {
             let store = store.read();
-            store.needs_update(&id, &doc.file_hash)
+            document_needs_reindex(&store, &doc)
         };
 
         if !needs_update {
@@ -380,6 +380,50 @@ mod tests {
             entry.content_hash.as_deref(),
             Some(body_hash.as_str()),
             "content_hash must still be the body-only hash"
+        );
+    }
+
+    /// Everything in the repo is indexed — including daily notes, which used to
+    /// be excluded by `is_sync_enabled`. This also pins the invariant that the
+    /// `status` count (`check_index_staleness`) and the indexer use the SAME
+    /// staleness predicate, so the count reaches 0 after a reindex instead of
+    /// being stuck forever on perpetually-"stale" daily notes.
+    #[test]
+    fn daily_notes_are_indexed_and_clear_staleness() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+        let db_path = pkb_root.join("test.db");
+        let file_path = pkb_root.join("2026-06-25.md");
+
+        // A daily note: previously skipped by the index, counted as perpetually stale.
+        std::fs::write(
+            &file_path,
+            "---\ntype: daily\ntitle: 2026-06-25\n---\n\nWent for a walk.",
+        )
+        .unwrap();
+
+        let store = Arc::new(RwLock::new(VectorStore::new(EMBEDDING_DIM)));
+
+        // Empty store: the daily note must be reported stale (it WILL be indexed).
+        assert_eq!(
+            check_index_staleness(pkb_root, &store),
+            1,
+            "daily note must be counted as needing indexing"
+        );
+        let doc = crate::pkb::parse_file_relative(&file_path, pkb_root).expect("parse daily note");
+        assert!(
+            document_needs_reindex(&store.read(), &doc),
+            "the shared staleness predicate must select the daily note"
+        );
+
+        // Index it, then status must agree the index is fresh (count -> 0).
+        let embedder = Embedder::new_dummy();
+        let (indexed, _removed, _total) = index_pkb(pkb_root, &db_path, &store, &embedder, false);
+        assert_eq!(indexed, 1, "daily note must be indexed");
+        assert_eq!(
+            check_index_staleness(pkb_root, &store),
+            0,
+            "after reindex the daily note must no longer be stale (status == indexer)"
         );
     }
 }
