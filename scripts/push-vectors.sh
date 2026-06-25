@@ -51,7 +51,7 @@ rollback() {
 
 # 1. Validate source
 [ -f "$SRC_BIN" ] || die "source not found: $SRC_BIN"
-SIZE=$(stat -c%s "$SRC_BIN" 2>/dev/null || stat -f%z "$SRC_BIN")
+SIZE=$(wc -c < "$SRC_BIN")
 [ "$SIZE" -gt 1000000 ] || die "source suspiciously small (${SIZE} bytes): $SRC_BIN"
 log "source: $SRC_BIN ($(( SIZE / 1024 / 1024 )) MB)"
 
