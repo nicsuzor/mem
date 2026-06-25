@@ -63,11 +63,7 @@ ssh "$REMOTE" "docker restart $CONTAINER >/dev/null"
 # 5. Verify: scan + hash the brain against the new store. A low stale count proves
 #    the hashes matched (cheap startup reindex). A high count means the .bin was
 #    NOT built with the hash-fix binary — roll back rather than trigger a CPU reindex.
-log "waiting for server, then checking staleness"
-sleep 8
-STATUS=$(ssh "$REMOTE" "docker exec $CONTAINER pkb status" 2>/dev/null || true)
-echo "$STATUS" | sed 's/^/    /'
-STALE=$(printf '%s\n' "$STATUS" | grep -oiE '[0-9]+ document\(s\) need re-indexing' | grep -oE '^[0-9]+' || echo 0)
+log "waiting for server to be ready..."\nSTATUS=""\nfor i in {1..15}; do\n  STATUS=$(ssh "$REMOTE" "docker exec $CONTAINER pkb status" 2>/dev/null) && break\n  sleep 1\ndone\n\nif [ -z "$STATUS" ]; then\n  die "Failed to get status from the container. The server may have failed to start or crashed."\nfi\n\necho "$STATUS" | sed 's/^/    /'\nSTALE=$(printf '%s\n' "$STATUS" | grep -oiE '[0-9]+ document\(s\) need re-indexing' | grep -oE '^[0-9]+' | head -n 1)\nSTALE="${STALE:-0}"
 
 if [ "${STALE:-0}" -gt "$STALE_OK" ]; then
   die "stale=$STALE > $STALE_OK — hashes did NOT match. The .bin was likely built
