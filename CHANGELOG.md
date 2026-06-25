@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.72](https://github.com/nicsuzor/mem/compare/mem-v0.3.71...mem-v0.3.72) (2026-06-25)
+
+
+### Features
+
+* build on windows target ([656de71](https://github.com/nicsuzor/mem/commit/656de713d3b4e66c29d9b58cbe2200fd6cdc05b5))
+
+
+### Bug Fixes
+
+* **build:** repair broken delimiter and migrate reindex to id-keyed store ([#450](https://github.com/nicsuzor/mem/issues/450)) ([6abf1b9](https://github.com/nicsuzor/mem/commit/6abf1b9c6a006f9e82b1dbac3af50a439bbb2d98))
+* **cli:** key bench_reindex staleness check by document id ([e0240d6](https://github.com/nicsuzor/mem/commit/e0240d60bbec9230d4465d3d0981392ed3408a44))
+* **embeddings:** make CUDA reindex actually use the GPU on WSL2 ([b375c70](https://github.com/nicsuzor/mem/commit/b375c702d364beae090c6d07675caabe602714d4))
+* **pkb:** CRLF→LF hash normalization for cross-OS vector stores ([#452](https://github.com/nicsuzor/mem/issues/452)) ([c03f217](https://github.com/nicsuzor/mem/commit/c03f217edbeed9bf6c9fbf845ebbaba6abf756d1))
+* **vectordb:** serialize PathBuf as portable UTF-8 String in vector store ([88abde7](https://github.com/nicsuzor/mem/commit/88abde7e32d38f50a89bc542c4ad76b4b83954b0))
+
 ## [0.3.71](https://github.com/nicsuzor/mem/compare/mem-v0.3.70...mem-v0.3.71) (2026-06-24)
 
 
