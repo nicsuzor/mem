@@ -97,6 +97,15 @@ impl PkbDocument {
 
 /// Compute the blake3 content hash of a file
 fn compute_content_hash(content: &[u8]) -> String {
+    // Normalize CRLF -> LF before hashing so a file's hash is identical on
+    // Windows and Linux checkouts. Without this, copying a vector store across
+    // OSes flags every doc stale (CRLF bytes change the blake3 digest) and
+    // forces a full, hours-long re-embed. Applies to both file_hash (raw bytes)
+    // and content_hash (body bytes) since both route through here.
+    if content.contains(&b'\r') {
+        let normalized: Vec<u8> = content.iter().copied().filter(|&b| b != b'\r').collect();
+        return blake3::hash(&normalized).to_hex().to_string();
+    }
     blake3::hash(content).to_hex().to_string()
 }
 
@@ -277,5 +286,31 @@ pub fn fallback_id(path: &Path) -> String {
     path.file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_hash_is_line_ending_independent() {
+        // Same logical content, Windows (CRLF) vs Linux (LF) bytes, must hash
+        // identically so a vector store stays portable across OS checkouts.
+        let lf = b"---\nid: x\n---\nhello\nworld\n";
+        let crlf = b"---\r\nid: x\r\n---\r\nhello\r\nworld\r\n";
+        assert_eq!(
+            compute_content_hash(lf),
+            compute_content_hash(crlf),
+            "CRLF and LF content must produce the same hash"
+        );
+    }
+
+    #[test]
+    fn content_hash_still_distinguishes_real_changes() {
+        assert_ne!(
+            compute_content_hash(b"hello\nworld\n"),
+            compute_content_hash(b"hello\nthere\n"),
+        );
+    }
 }
 
