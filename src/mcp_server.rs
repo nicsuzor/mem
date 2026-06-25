@@ -811,16 +811,6 @@ impl PkbSearchServer {
         // reindex's state and drain anything queued.
         self.maybe_drain_deferred();
 
-        if !doc.is_sync_enabled() {
-            let path_key = doc.path.to_string_lossy().to_string();
-            let removed = self.store.write().remove(&path_key);
-            if removed {
-                tracing::info!("Removed non-synced document from index: {}", doc.path.display());
-                self.save_store();
-            }
-            return;
-        }
-
         // Only defer when an *external* process holds the file lock. When
         // our own background save thread is the holder, the in-memory
         // state is the source of truth — we should proceed with the
@@ -1093,16 +1083,13 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
 
-        // Parse + prepare in parallel (no lock).
-        let results: Vec<Result<crate::vectordb::PreparedUpsert, String>> = modified_paths
+        // Parse + prepare in parallel (no lock). Everything that parses is
+        // indexed — there are no type/sync exclusions.
+        let results: Vec<crate::vectordb::PreparedUpsert> = modified_paths
             .par_iter()
             .filter_map(|abs_path| {
                 let doc = crate::pkb::parse_file_relative(abs_path, &self.pkb_root)?;
                 let doc_id = doc.id();
-                
-                if !doc.is_sync_enabled() {
-                    return Some(Err(doc_id));
-                }
 
                 let existing = self.store.read().get_entry(&doc_id).cloned();
                 match crate::vectordb::VectorStore::prepare_upsert(
@@ -1110,7 +1097,7 @@ impl PkbSearchServer {
                     &self.embedder,
                     existing.as_ref(),
                 ) {
-                    Ok(p) => Some(Ok(p)),
+                    Ok(p) => Some(p),
                     Err(e) => {
                         tracing::warn!(
                             "finalize_batch: prepare_upsert failed for {}: {e}",
@@ -1125,11 +1112,8 @@ impl PkbSearchServer {
         // Single brief write lock for the whole batch.
         {
             let mut store = self.store.write();
-            for res in results {
-                match res {
-                    Ok(p) => store.apply_prepared(p),
-                    Err(doc_id) => { store.remove(&doc_id); }
-                }
+            for p in results {
+                store.apply_prepared(p);
             }
             for abs_path in removed_paths {
                 let rel = abs_path
