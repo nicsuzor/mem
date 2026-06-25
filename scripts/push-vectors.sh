@@ -53,18 +53,7 @@ rsync -avP --inplace "$SRC_BIN" "$REMOTE:$STAGE"
 # 3. Land it in the container volume and atomically swap (same fs => atomic rename).
 #    Back up the current store first so we can roll back if verify fails.
 log "staging into container $CONTAINER and swapping atomically"
-ssh "$REMOTE" CONTAINER="$CONTAINER" REMOTE_DB="$REMOTE_DB" STAGE="$STAGE" 'bash -s' <<'REMOTE_EOF'
-set -euo pipefail
-dir=$(dirname "$REMOTE_DB"); base=$(basename "$REMOTE_DB")
-docker cp "$STAGE" "$CONTAINER:$dir/$base.incoming"
-docker exec "$CONTAINER" sh -c '
-  set -e
-  cd "'"$dir"'"
-  [ -f "'"$base"'" ] && cp -f "'"$base"'" "'"$base"'.bak"
-  mv "'"$base"'.incoming" "'"$base"'"
-'
-rm -f "$STAGE"
-REMOTE_EOF
+ssh "$REMOTE" 'bash -s' -- "$CONTAINER" "$REMOTE_DB" "$STAGE" <<'REMOTE_EOF'\nset -euo pipefail\nCONTAINER="$1"\nREMOTE_DB="$2"\nSTAGE="$3"\ntrap 'rm -f "$STAGE"' EXIT\ndir=$(dirname "$REMOTE_DB"); base=$(basename "$REMOTE_DB")\ndocker cp "$STAGE" "$CONTAINER:$dir/$base.incoming"\ndocker exec "$CONTAINER" sh -c '\n  set -e\n  cd "'"$dir"'"\n  [ -f "'"$base"'" ] && cp -f "'"$base"'" "'"$base"'.bak"\n  mv "'"$base"'.incoming" "'"$base"'"\n'\nREMOTE_EOF
 
 # 4. Restart ONLY the pkb server so it reloads the store from disk.
 #    The pkb-sync sidecar is a separate service — leave it running.
