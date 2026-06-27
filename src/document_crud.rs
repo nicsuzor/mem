@@ -374,7 +374,9 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
         yaml_escape_double_quoted(&fields.title)
     ));
     fm.push_str("type: subtask\n");
-    fm.push_str("status: active\n");
+    // New captures default to `inbox` (canonical), matching create_task; the
+    // computed ready-gate graduates it once it has AC and resolved deps.
+    fm.push_str("status: inbox\n");
     fm.push_str(&format!("parent: {}\n", fields.parent_id));
     fm.push_str("---\n\n");
 
@@ -416,7 +418,7 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let id = ADHOC_SESSIONS_ROOT_ID;
     let content = format!(
-        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: project\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: active\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
+        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: project\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
     std::fs::write(&adhoc_path, content)
         .with_context(|| format!("Failed to write adhoc-sessions root: {}", adhoc_path.display()))?;

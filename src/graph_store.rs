@@ -76,6 +76,19 @@ pub const ACTIONABLE_TYPES: &[&str] = &["project", "epic", "task", "learn", "pr"
 /// Excludes containers (epic, project) and observational types (learn).
 pub const CLAIMABLE_TYPES: &[&str] = &["task"];
 
+/// Status-level ready predicate shared by the in-memory ready-gate and the MCP
+/// index export, so the two never silently diverge.
+///
+/// A leaf, claimable, dependency-resolved task is *ready* when its (alias-resolved)
+/// status is explicitly `ready`/`queued`, OR when it is still `inbox` but has
+/// **graduated** — i.e. it carries acceptance criteria. The `inbox → ready`
+/// transition is therefore computed, not a manual status edit: a bare `inbox`
+/// task (no AC) is never surfaced as ready. Callers still apply the leaf,
+/// claimable-type, and dependency checks separately.
+pub fn is_ready_status(status: &str, has_acceptance_criteria: bool) -> bool {
+    matches!(status, "ready" | "queued") || (status == "inbox" && has_acceptance_criteria)
+}
+
 impl GraphStore {
     /// Build a complete graph from parsed PKB documents.
     ///
@@ -2643,7 +2656,7 @@ fn compute_voi_term(nodes: &mut [GraphNode]) {
 ///
 /// Algorithm:
 /// - If any target has status: in_progress -> set blocking_urgency = 1.0
-/// - Else if any target has status: active -> set blocking_urgency = 0.5
+/// - Else if any target has status: ready/queued -> set blocking_urgency = 0.5
 /// - Else -> 0.0
 fn compute_blocking_urgency(nodes: &mut [GraphNode]) {
     let id_to_status: HashMap<String, String> = nodes
@@ -2658,7 +2671,7 @@ fn compute_blocking_urgency(nodes: &mut [GraphNode]) {
                 if status == "in_progress" {
                     urgency = 1.0;
                     break;
-                } else if status == "active" || status == "ready" || status == "queued" {
+                } else if status == "ready" || status == "queued" {
                     urgency = 0.5f64.max(urgency);
                 }
             }
@@ -2670,7 +2683,7 @@ fn compute_blocking_urgency(nodes: &mut [GraphNode]) {
                         if status == "in_progress" {
                             urgency = 1.0;
                             break;
-                        } else if status == "active" || status == "ready" || status == "queued" {
+                        } else if status == "ready" || status == "queued" {
                             urgency = 0.5f64.max(urgency);
                         }
                     }
@@ -2979,7 +2992,7 @@ fn classify_tasks(
         if node.task_id.is_none() {
             continue;
         }
-        let status = node.status.as_deref().unwrap_or("active");
+        let status = node.status.as_deref().unwrap_or("inbox");
         if graph::is_completed(Some(status)) {
             continue;
         }
@@ -3014,7 +3027,12 @@ fn classify_tasks(
         let node = nodes.get(id).unwrap();
         if effectively_blocked.contains(id) {
             blocked.push(id.clone());
-        } else if node.leaf && matches!(node.status.as_deref().unwrap_or("inbox"), "ready" | "queued") {
+        } else if node.leaf
+            && is_ready_status(
+                node.status.as_deref().unwrap_or("inbox"),
+                node.has_acceptance_criteria,
+            )
+        {
             // Only claimable types — epics/projects/goals/containers are graph structure, not work items
             if CLAIMABLE_TYPES.contains(&node.node_type.as_deref().unwrap_or("")) {
                 ready.push(id.clone());
@@ -3718,7 +3736,7 @@ mod tests {
                 "tasks/task-b.md",
                 "Task B",
                 "task",
-                "active",
+                "ready",
                 "task-b",
                 Some("epic-1"),
                 &[],
@@ -4080,7 +4098,7 @@ mod tests {
     fn test_ready_tasks() {
         let graph = build_test_graph();
         let ready = graph.ready_tasks();
-        // task-b should be ready (no deps, leaf, active)
+        // task-b should be ready (no deps, leaf, status=ready)
         let task_b_id = graph.resolve("task-b").unwrap().id.clone();
         assert!(ready.iter().any(|n| n.id == task_b_id));
     }
@@ -4091,11 +4109,11 @@ mod tests {
         // With unified type system: only "task" is claimable; bug/feature/action
         // are now type=task with a classification field.
         let docs = vec![
-            make_doc("tasks/epic-1.md", "Lone Epic", "epic", "active", "epic-1", None, &[]),
-            make_doc("tasks/proj-1.md", "Lone Project", "project", "active", "proj-1", None, &[]),
-            make_doc("tasks/task-1.md", "Task One", "task", "active", "task-1", None, &[]),
-            make_doc("tasks/task-2.md", "Task Two", "task", "active", "task-2", None, &[]),
-            make_doc("tasks/learn-1.md", "Learn One", "learn", "active", "learn-1", None, &[]),
+            make_doc("tasks/epic-1.md", "Lone Epic", "epic", "ready", "epic-1", None, &[]),
+            make_doc("tasks/proj-1.md", "Lone Project", "project", "ready", "proj-1", None, &[]),
+            make_doc("tasks/task-1.md", "Task One", "task", "ready", "task-1", None, &[]),
+            make_doc("tasks/task-2.md", "Task Two", "task", "ready", "task-2", None, &[]),
+            make_doc("tasks/learn-1.md", "Learn One", "learn", "ready", "learn-1", None, &[]),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let ready = graph.ready_tasks();
@@ -4109,16 +4127,38 @@ mod tests {
 
     #[test]
     fn test_ready_excludes_inbox_tasks() {
-        // Inbox tasks are not yet promoted to the ready queue — they need
-        // review (AC / estimate / priority) before they become actionable.
+        // Computed graduation (`inbox → ready` is automatic, not a manual edit):
+        // a *bare* inbox task (no AC, not decomposed) still needs triage and must
+        // NOT be ready. An inbox leaf that has *graduated* — acceptance criteria
+        // present, all deps resolved — IS surfaced as ready with no status edit.
+        // An explicit `ready` task remains ready.
+        let mut inbox_graduated = make_doc(
+            "tasks/task-inbox-ac.md",
+            "Graduated Inbox Task",
+            "task",
+            "inbox",
+            "task-inbox-ac",
+            None,
+            &[],
+        );
+        inbox_graduated.body = "## Acceptance Criteria\n- it ships\n".to_string();
+
         let docs = vec![
-            make_doc("tasks/task-inbox.md", "Inbox Task", "task", "inbox", "task-inbox", None, &[]),
-            make_doc("tasks/task-active.md", "Active Task", "task", "active", "task-active", None, &[]),
+            make_doc("tasks/task-inbox.md", "Bare Inbox Task", "task", "inbox", "task-inbox", None, &[]),
+            inbox_graduated,
+            make_doc("tasks/task-ready.md", "Ready Task", "task", "ready", "task-ready", None, &[]),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let ready_ids: Vec<&str> = graph.ready_tasks().iter().map(|n| n.id.as_str()).collect();
-        assert!(!ready_ids.contains(&"task-inbox"), "inbox tasks must not appear in ready");
-        assert!(ready_ids.contains(&"task-active"), "active tasks must appear in ready");
+        assert!(
+            !ready_ids.contains(&"task-inbox"),
+            "bare inbox tasks (no AC) must not appear in ready"
+        );
+        assert!(
+            ready_ids.contains(&"task-inbox-ac"),
+            "graduated inbox leaf (AC + deps resolved) must be surfaced as ready"
+        );
+        assert!(ready_ids.contains(&"task-ready"), "ready tasks must appear in ready");
     }
 
     #[test]

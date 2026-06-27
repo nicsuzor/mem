@@ -52,6 +52,10 @@ pub struct McpIndexEntry {
     pub stakeholder_exposure: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus_score: Option<i64>,
+    /// True if the body specifies acceptance criteria — the graduation signal
+    /// that lets an `inbox` leaf be surfaced as ready without a manual status edit.
+    #[serde(default)]
+    pub has_acceptance_criteria: bool,
 }
 
 /// The full MCP task index.
@@ -91,7 +95,7 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
                 id: tid,
                 title: node.label.clone(),
                 task_type: node.node_type.clone().unwrap_or_else(|| "task".to_string()),
-                status: node.status.clone().unwrap_or_else(|| "active".to_string()),
+                status: node.status.clone().unwrap_or_else(|| "inbox".to_string()),
                 priority: node.priority.unwrap_or(2),
                 order: node.order,
                 parent: node.parent.clone(),
@@ -114,6 +118,7 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
                 downstream_weight: node.downstream_weight,
                 stakeholder_exposure: node.stakeholder_exposure,
                 focus_score: node.focus_score,
+                has_acceptance_criteria: node.has_acceptance_criteria,
             },
         );
     }
@@ -243,7 +248,18 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
             .collect();
         if !unmet.is_empty() || entry.status == "blocked" {
             blocked.push(tid.clone());
-        } else if entry.leaf && entry.status == "active" && entry.task_type != "learn" {
+        } else if entry.leaf
+            && crate::graph_store::CLAIMABLE_TYPES.contains(&entry.task_type.as_str())
+            && crate::graph_store::is_ready_status(
+                entry.status.as_str(),
+                entry.has_acceptance_criteria,
+            )
+        {
+            // Mirror the canonical ready-gate in graph_store.rs: a leaf claimable
+            // task is ready when explicitly `ready`/`queued`, OR when it is still
+            // `inbox` but has graduated (acceptance criteria present, deps resolved).
+            // `entry.status` is already alias-resolved at node build, so legacy
+            // "active" never reaches here as a ready signal.
             ready.push(tid.clone());
         }
     }
