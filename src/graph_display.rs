@@ -179,7 +179,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
 fn status_tag(status: Option<&str>) -> String {
     match status {
         Some("done" | "complete" | "completed") => "\x1b[32mdone\x1b[0m".to_string(),
-        Some("active") => "\x1b[33mactive\x1b[0m".to_string(),
+        Some("in_progress") => "\x1b[33min_progress\x1b[0m".to_string(),
         Some("blocked") => "\x1b[31mblocked\x1b[0m".to_string(),
         Some(s) => format!("\x1b[2m{s}\x1b[0m"),
         None => String::new(),
@@ -399,7 +399,7 @@ fn status_label(status: Option<&str>, plain: bool) -> String {
     }
     let colour = match s {
         "done" | "complete" | "completed" => "\x1b[32m",
-        "active" | "in_progress" | "ready" => "\x1b[33m",
+        "in_progress" | "ready" | "queued" => "\x1b[33m",
         "blocked" | "waiting" => "\x1b[31m",
         _ => "\x1b[2m",
     };

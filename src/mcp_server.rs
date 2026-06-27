@@ -3548,7 +3548,7 @@ impl PkbSearchServer {
             let status_raw = candidate
                 .status
                 .as_deref()
-                .unwrap_or("active")
+                .unwrap_or("inbox")
                 .to_ascii_lowercase();
             let canonical_status = crate::graph::resolve_status_alias(&status_raw);
             if matches!(canonical_status, "done" | "cancelled") {
@@ -3865,7 +3865,7 @@ impl PkbSearchServer {
         }
 
         // Check task is not already terminal
-        let current_status = node.status.as_deref().unwrap_or("active");
+        let current_status = node.status.as_deref().unwrap_or("inbox");
         if current_status == "done" || current_status == "cancelled" {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -6445,7 +6445,7 @@ impl PkbSearchServer {
                         "task_title": { "type": "string", "description": "Alias for title" },
                         "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
                         "parent": { "type": "string", "description": "Parent task ID" },
-                        "priority": { "type": "integer", "description": "0-4 (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)" },
+                        "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See TAXONOMY §Priority Labels." },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
@@ -6460,7 +6460,7 @@ impl PkbSearchServer {
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
                         "project": { "type": "string", "description": "Project identifier (optional if ancestor resolves project, e.g. 'aops', 'mem', 'adhoc-sessions')" },
                         "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, target, project. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
-                        "status": { "type": "string", "description": "Task status (default: 'draft' — new tasks start as draft and are excluded from ready queue until promoted to 'active'). Also accepts: active, blocked, done, merge_ready, in_progress, etc." },
+                        "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
                         "allow_missing_parent": { "type": "boolean", "description": "Allow creating under a missing parent (logs warning). Default: false." },
                         "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." }
                     },
@@ -6516,8 +6516,8 @@ impl PkbSearchServer {
                         "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body" },
-                        "status": { "type": "string" },
-                        "priority": { "type": "integer", "description": "0-4 (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)" },
+                        "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Document/task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
+                        "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See TAXONOMY §Priority Labels." },
                         "parent": { "type": "string", "description": "Parent document ID" },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
@@ -6632,7 +6632,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "project": { "type": "string", "description": "Filter by project name (case-insensitive). Returns tasks whose computed project field (nearest ancestor with node_type=project) matches." },
-                        "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also: active, in_progress, partial, done, etc." },
+                        "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also any canonical status: inbox, queued, in_progress, review, merge_ready, paused, someday, partial, done, cancelled." },
                         "priority": { "type": "integer", "description": "Filter to tasks whose effective priority (own or any downstream task via blocks/parent) ≤ N. E.g. priority=0 returns every task that touches a P0, including its blockers." },
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
                         "goal_type": { "type": "string", "description": "Filter by goal type" },

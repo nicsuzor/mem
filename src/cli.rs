@@ -208,7 +208,7 @@ enum Commands {
         #[arg(long)]
         allow_missing_parent: bool,
 
-        /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
+        /// Priority (0=Critical, 1=Active intent, 2=Active work, 3=Planned, 4=Backlog)
         #[arg(short, long)]
         priority: Option<i32>,
 
@@ -267,7 +267,7 @@ enum Commands {
         #[arg(short, long)]
         status: Option<String>,
 
-        /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
+        /// Priority (0=Critical, 1=Active intent, 2=Active work, 3=Planned, 4=Backlog)
         #[arg(short, long)]
         priority: Option<i32>,
 
@@ -322,11 +322,11 @@ enum Commands {
         /// Task ID
         id: String,
 
-        /// Status (active, in_progress, blocked, waiting, review, merge_ready, done, cancelled)
+        /// Status (inbox, ready, queued, in_progress, review, merge_ready, blocked, paused, someday, done, cancelled, partial)
         #[arg(short, long)]
         status: Option<String>,
 
-        /// Priority (0=critical, 1=intended, 2=active, 3=planned, 4=backlog)
+        /// Priority (0=Critical, 1=Active intent, 2=Active work, 3=Planned, 4=Backlog)
         #[arg(short, long)]
         priority: Option<i32>,
 

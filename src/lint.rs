@@ -1889,8 +1889,9 @@ mod tests {
 
     #[test]
     fn fixes_status_alias() {
+        // Legacy "active" auto-migrates to canonical "in_progress" (Nic 2026-06-27).
         let fixed = fix_str("---\ntitle: Test\nstatus: active\ntype: note\n---\n\nBody.\n");
-        assert!(fixed.contains("status: ready"), "Got: {}", fixed);
+        assert!(fixed.contains("status: in_progress"), "Got: {}", fixed);
         assert!(!fixed.contains("status: active"));
     }
 

@@ -393,10 +393,12 @@ pub fn resolve_status_alias(status: &str) -> &str {
         "inbox" | "ready" | "queued" | "in_progress" | "merge_ready" | "review"
         | "done" | "blocked" | "paused" | "someday" | "cancelled" | "partial" => status,
 
-        // Legacy "active" (old taxonomy collapsed ready/queued/in_progress into
-        // one label). Map to "ready" — let the auto-computed leaf-with-no-unmet-deps
-        // signal decide dispatchability rather than implicitly promoting to queued.
-        "active" => "ready",
+        // Legacy "active" = in-flight / claimed work (per Nic 2026-06-27). The old
+        // taxonomy collapsed ready/queued/in_progress into one "active" label, but
+        // the load-bearing meaning of a node someone marked "active" is that work is
+        // underway — so map it to "in_progress", not "ready". Computed graduation
+        // (leaf + no unmet deps + AC) surfaces `inbox` tasks as ready on its own.
+        "active" => "in_progress",
 
         // Inbox-family: untriaged capture
         "todo" | "open" | "draft" | "early-scaffold" | "planning" | "seed" | "incoming" => "inbox",
@@ -517,6 +519,15 @@ mod taxonomy_sync_tests {
              in src/graph.rs to match.",
             parsed_set, code_set
         );
+    }
+
+    #[test]
+    fn active_alias_resolves_to_in_progress() {
+        // Legacy "active" means in-flight / claimed work, not "ready" (Nic 2026-06-27).
+        assert_eq!(resolve_status_alias("active"), "in_progress");
+        // Canonical values still pass through untouched.
+        assert_eq!(resolve_status_alias("ready"), "ready");
+        assert_eq!(resolve_status_alias("inbox"), "inbox");
     }
 }
 
