@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.73](https://github.com/nicsuzor/mem/compare/mem-v0.3.72...mem-v0.3.73) (2026-07-01)
+
+
+### Features
+
+* **crud:** cap filename slugs at 80 chars ([#457](https://github.com/nicsuzor/mem/issues/457)) ([85ff152](https://github.com/nicsuzor/mem/commit/85ff152bf67559f2dc04995a5773f3a4f065104d))
+
+
+### Bug Fixes
+
+* **index:** index everything via a single staleness predicate ([#455](https://github.com/nicsuzor/mem/issues/455)) ([309717e](https://github.com/nicsuzor/mem/commit/309717ed3c55fab2d73b3a08a84258b08ddbeb3f))
+
+
+### Miscellaneous
+
+* remove scripts/push-vectors.sh (moved to dotfiles) ([#453](https://github.com/nicsuzor/mem/issues/453)) ([27d4a1c](https://github.com/nicsuzor/mem/commit/27d4a1c410742fde144aaba81b39574e0ab9c63e))
+* saving uncommitted agent work ([#456](https://github.com/nicsuzor/mem/issues/456)) ([0c5d2f2](https://github.com/nicsuzor/mem/commit/0c5d2f2926f2188641a2be8c84cd5df76ff1bf58))
+
 ## [0.3.72](https://github.com/nicsuzor/mem/compare/mem-v0.3.71...mem-v0.3.72) (2026-06-25)
 
 
