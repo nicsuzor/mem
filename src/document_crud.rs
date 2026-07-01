@@ -174,6 +174,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
             let prefix = type_prefix;
             let id = generate_id(prefix);
             let slug = slugify(&fields.title);
+            let slug = truncate_slug(&slug, MAX_FILENAME_SLUG_LEN);
             let filename = format!("{}-{}.md", id, slug);
             (id, filename)
         }
@@ -480,6 +481,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
                 .unwrap_or("task");
             let id = generate_id(prefix);
             let slug = slugify(&fields.title);
+            let slug = truncate_slug(&slug, MAX_FILENAME_SLUG_LEN);
             let filename = format!("{}-{}.md", id, slug);
             (id, filename)
         }
@@ -690,7 +692,10 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     // Use floor_char_boundary to safely truncate multi-byte host strings.
     let host_truncated = &host[..host.floor_char_boundary(12)];
 
-    let template_slug = slugify(&fields.template_title);
+    let template_slug_full = slugify(&fields.template_title);
+    // Reserve room for "-YYYYMMDD-HHMMSS-<host12>" suffix (~29 chars) so the
+    // full instance_id stays comfortably under 100 characters.
+    let template_slug = truncate_slug(&template_slug_full, 60);
     let instance_id = format!(
         "{}-{}-{}-{}",
         template_slug, date_str, time_str, host_truncated
@@ -830,6 +835,7 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
         None => {
             let id = generate_id("mem");
             let slug = slugify(&fields.title);
+            let slug = truncate_slug(&slug, MAX_FILENAME_SLUG_LEN);
             let filename = format!("{}-{}.md", id, slug);
             (id, filename)
         }
@@ -1736,6 +1742,25 @@ fn slugify(title: &str) -> String {
         .join("-")
 }
 
+/// Maximum number of characters in the slug portion of a filename.
+///
+/// Keeps generated filenames short enough to be comfortable on any filesystem
+/// and readable in directory listings. IDs are excluded — only the title-derived
+/// slug is capped.
+const MAX_FILENAME_SLUG_LEN: usize = 80;
+
+/// Truncate a slug to `max_len` characters, trimming trailing hyphens.
+///
+/// Uses `floor_char_boundary` for correctness, though post-`slugify` slugs are
+/// always ASCII so byte and char lengths coincide.
+fn truncate_slug(slug: &str, max_len: usize) -> &str {
+    if slug.len() <= max_len {
+        return slug;
+    }
+    let cut = slug.floor_char_boundary(max_len);
+    slug[..cut].trim_end_matches('-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1895,6 +1920,50 @@ mod tests {
         assert_eq!(slugify("Hello World"), "hello-world");
         assert_eq!(slugify("foo--bar"), "foo-bar");
         assert_eq!(slugify("  spaces  "), "spaces");
+    }
+
+    #[test]
+    fn truncate_slug_short_passthrough() {
+        let s = "hello-world";
+        assert_eq!(truncate_slug(s, 80), s);
+    }
+
+    #[test]
+    fn truncate_slug_long_is_capped() {
+        let long = "a".repeat(100);
+        let result = truncate_slug(&long, 80);
+        assert!(result.len() <= 80, "truncated slug must be <= 80 chars");
+    }
+
+    #[test]
+    fn truncate_slug_trims_trailing_hyphen() {
+        // "aaa-bbb" truncated at 5 chars hits the hyphen — should be trimmed.
+        let s = "aaa-bbb";
+        let result = truncate_slug(s, 4); // "aaa-" → trim → "aaa"
+        assert_eq!(result, "aaa");
+    }
+
+    #[test]
+    fn create_task_long_title_produces_short_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let long_title = "word ".repeat(30).trim().to_string(); // ~150 chars
+        let fields = TaskFields {
+            title: long_title,
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        let stem = path.file_stem().unwrap().to_string_lossy();
+        // ID (~14) + dash + slug (≤80) = ≤95 chars
+        assert!(
+            stem.len() <= 100,
+            "filename stem must be ≤100 chars for long titles, got {} chars: {stem}",
+            stem.len()
+        );
     }
 
     #[test]
