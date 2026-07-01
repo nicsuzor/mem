@@ -1125,6 +1125,10 @@ impl PkbSearchServer {
             }
         }
 
+        // Release the graph read guard before rebuild_graph() takes the
+        // write lock — holding both self-deadlocks the calling thread.
+        drop(graph);
+
         tracing::debug!(
             target: "perf::batch_finalize",
             n_modified = modified_paths.len(),
