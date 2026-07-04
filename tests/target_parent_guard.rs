@@ -47,6 +47,8 @@ fn task_node(id: &str, title: &str, extra: &str) -> String {
 /// Seed a target + a normal task so `--parent` can resolve against both.
 fn seed_basic() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
+    // Register the `aops` slug so `--project aops` passes polecat.yaml validation.
+    write(tmp.path(), "polecat.yaml", "projects:\n  aops: {}\n");
     write(tmp.path(), "targets/targ-strategy.md", &target_node("targ-strategy", "Strategy"));
     write(tmp.path(), "tasks/task-normal.md", &task_node("task-normal", "Normal", ""));
     tmp
@@ -138,6 +140,7 @@ fn batch_reparent_rejects_target() {
 ///                   target (→ untouched)
 fn seed_migration() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "polecat.yaml", "projects:\n  aops: {}\n");
     write(tmp.path(), "targets/targ-strategy.md", &target_node("targ-strategy", "Strategy"));
     write(tmp.path(), "targets/targ-other.md", &target_node("targ-other", "Other"));
     write(tmp.path(), "tasks/task-parent.md", &task_node("task-parent", "Parent", ""));

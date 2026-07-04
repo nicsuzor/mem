@@ -20,6 +20,8 @@ tags:
 >
 > **`project` is no longer a node type.** "Project" is the narrow operational name for a polecat-registered repo, carried as the `project: <slug>` metadata field on tasks. See [[TAXONOMY]] §"Project (operational routing field)" and [[areas-not-projects]].
 >
+> This is **implemented in mem**: `project` is out of `VALID_NODE_TYPES`/`ACTIONABLE_TYPES` (new writes reject it; legacy `type: project` files read-coerce to `epic` and lint warns via `fm-deprecated-project-type`). `project:` frontmatter values are validated + canonicalized against the polecat.yaml registry (slug, `slug:` override, aliases, `project_aliases:`; builtins `task`/`adhoc-sessions`) at every write path, and tasks that omit the field inherit the nearest parent-chain ancestor's explicit value. See `specs/pkb-server-spec.md` §"Project registry (polecat.yaml)".
+>
 > The sections below are kept for historical context. Where they reference `project` as a tree role, treat those as superseded.
 
 ## Goals, Targets, and Work — the three tiers

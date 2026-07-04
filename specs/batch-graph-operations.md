@@ -289,7 +289,7 @@ Change the `type` field and move the file to the correct subdirectory. Useful fo
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | filters | FilterSet | Yes | Target selection |
-| new_type | string | Yes | New document type (task, memory, note, knowledge, project, epic, goal) |
+| new_type | string | Yes | New document type (task, memory, note, knowledge, epic, goal). `project` is retired as a type — reclassify legacy `type: project` files TO `epic`, never to `project`. |
 | dry_run | bool | No | Preview only (default: false) |
 
 **Behavior:**
@@ -297,7 +297,6 @@ Change the `type` field and move the file to the correct subdirectory. Useful fo
 - Updates `type` field in frontmatter
 - Moves the file to the correct subdirectory based on type routing:
   - task/bug/epic/feature → `tasks/`
-  - project → `projects/`
   - goal → `goals/`
   - memory/note/insight/observation → `memories/`
   - knowledge → `notes/`
@@ -558,15 +557,15 @@ Report on graph health to guide reorganization. Not a mutation — pure read ope
 | total_tasks | Count by status (active, archived, done, blocked) |
 | orphan_count | Tasks with no parent and no project |
 | max_depth | Deepest nesting level |
-| avg_depth | Average nesting level (goal=1, project=2, epic=3, task=4) |
-| flat_tasks | Count of leaf tasks directly under a project (no epic) |
+| avg_depth | Average nesting level (epic tree depth; project is not a hierarchy level) |
+| flat_tasks | Count of leaf tasks directly under a root container (no intermediate epic) |
 | duplicate_candidates | Count of potential duplicates (quick title hash) |
 | stale_count | Tasks not modified in >60 days |
 | priority_distribution | Count per priority level |
 | type_distribution | Count per document type |
 | disconnected_epics | Epics with no children |
-| goals_without_projects | Goals with no project children |
-| projects_without_goals | Projects not linked to any goal |
+| goals_without_projects | DEAD (always 0): `type: project` is retired; kept for output-schema stability pending the areas migration (see [[areas-not-projects]] AC 8) |
+| projects_without_goals | DEAD (always 0): same as above |
 
 **CLI:**
 ```bash

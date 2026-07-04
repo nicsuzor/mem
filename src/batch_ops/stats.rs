@@ -207,6 +207,13 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
     for node in graph.nodes() {
         let node_type = node.node_type.as_deref().unwrap_or("unknown");
 
+        // DEAD METRIC: `type: project` is retired and read-coerces to `epic` at
+        // parse time, so node_type is never "project" and these three counters
+        // (total_projects, projects_with_goals_field, projects_without_goals)
+        // report 0 permanently. Kept only for output-schema stability; their
+        // replacement (epics_without_areas et al.) is owned by the on-hold
+        // areas migration — see specs/areas-not-projects.md, acceptance
+        // criterion 8.
         if node_type == "project" {
             total_projects += 1;
             if !node.goals.is_empty() {
@@ -299,7 +306,9 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
             }
         }
 
-        // Projects without goals: traverse full parent chain for goal ancestor
+        // Projects without goals: traverse full parent chain for goal ancestor.
+        // DEAD METRIC — see the note on total_projects above; node_type is
+        // never "project" post-retirement.
         if node_type == "project" {
             if !has_ancestor_of_type(graph, node, &["goal"]) {
                 projects_without_goals += 1;

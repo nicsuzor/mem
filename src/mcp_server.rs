@@ -1714,12 +1714,12 @@ impl PkbSearchServer {
         };
 
         // Hierarchy validation: actionable tasks must have a parent. Strategic
-        // out-of-tree nodes (`goal`, `target`) and root-able types (`epic`, `learn`,
-        // `project`) are exempt — goals & targets live beside the work tree and are
+        // out-of-tree nodes (`goal`, `target`) and root-able types (`epic`,
+        // `learn`) are exempt — goals & targets live beside the work tree and are
         // never parented (work links to them via `contributes_to`); epics may be
         // root-level containers per the PKB type taxonomy spec.
         let task_type_str = fields.task_type.as_deref().unwrap_or("task");
-        let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn" | "project");
+        let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn");
         if fields.parent.is_none() && !root_able {
             // Semantic search for candidate parents so agents can immediately see options.
             let suggested_parents: Option<serde_json::Value> = if !fields.title.is_empty() {
@@ -1735,7 +1735,7 @@ impl PkbSearchServer {
                                 break;
                             }
                             match r.doc_type.as_deref() {
-                                Some("project") | Some("epic") => {
+                                Some("epic") => {
                                     suggestions.push(serde_json::json!({
                                         "id": r.id,
                                         "title": r.title,
@@ -1762,7 +1762,7 @@ impl PkbSearchServer {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
                     "Missing required parameter: parent. Tasks must have a parent node. \
-                     Only goal, target, epic, learn, and project types can be root-level.",
+                     Only goal, target, epic, and learn types can be root-level.",
                 ),
                 data: suggested_parents,
             });
@@ -2989,7 +2989,7 @@ impl PkbSearchServer {
 
         // Hierarchy validation: warn if task-like type without parent
         let mut warnings = Vec::new();
-        let root_allowed = ["learn", "project"];
+        let root_allowed = ["learn", "epic"];
         let task_like = ["task", "epic"];
         if task_like.contains(&doc_type) && fields.parent.is_none() {
             warnings.push(format!(
@@ -5042,9 +5042,16 @@ impl PkbSearchServer {
             });
         }
         if let Some(p) = project {
-            let resolved_slug = graph.resolve(p)
-                .filter(|n| n.node_type.as_deref() == Some("project"))
-                .map(|n| n.permalink.clone().unwrap_or_else(|| n.id.clone()));
+            // Resolve the filter value through the polecat.yaml registry so an
+            // alias (e.g. `ao`) matches tasks stored with the canonical slug.
+            // Deliberate read-path tradeoff: a missing OR malformed registry
+            // degrades to literal matching (`.ok().flatten()`) rather than
+            // failing the whole list_tasks call — searches should stay usable
+            // when the registry is broken; the write paths stay fail-fast.
+            let resolved_slug = crate::polecat_config::PolecatRegistry::load(&self.pkb_root)
+                .ok()
+                .flatten()
+                .and_then(|reg| reg.resolve(p));
 
             tasks.retain(|t| {
                 t.project
@@ -5377,6 +5384,21 @@ impl PkbSearchServer {
                 ),
                 data: None,
             });
+        }
+
+        // Validate + canonicalize a project change against polecat.yaml before
+        // it reaches disk. `null` is an explicit "remove project" and passes
+        // through untouched.
+        if let Some(v) = updates.get("project") {
+            if let Some(raw) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                let canonical = crate::polecat_config::resolve_project(&self.pkb_root, raw)
+                    .map_err(|e| McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!("{e:#}")),
+                        data: None,
+                    })?;
+                updates.insert("project".to_string(), serde_json::Value::String(canonical));
+            }
         }
 
         // Validate parent change: reject if the new parent does not exist
@@ -5898,7 +5920,7 @@ impl PkbSearchServer {
         let graph = self.graph.read();
         let store = self.store.read();
         let report = crate::batch_ops::duplicates::find_duplicates(
-            &graph, &store, &filters, mode, title_threshold, semantic_threshold,
+            &graph, &store, &filters, mode, title_threshold, semantic_threshold, &self.pkb_root,
         );
         drop(graph);
         drop(store);
@@ -6390,7 +6412,7 @@ impl PkbSearchServer {
                         "before": { "type": "string", "description": "Filter: date <= YYYY-MM-DD" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." },
                         "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (hides closed tasks so search returns actionable work)." },
-                        "type": { "type": "string", "description": "Filter by task type. Single value (e.g. 'epic') or comma-separated list (e.g. 'epic,feature'). Recognised actionable types: project, epic, task, learn. Default: all actionable types." }
+                        "type": { "type": "string", "description": "Filter by task type. Single value (e.g. 'epic') or comma-separated list (e.g. 'epic,feature'). Recognised actionable types: epic, task, learn. Default: all actionable types." }
                     },
                     "required": ["query"]
                 }))
@@ -6462,8 +6484,8 @@ impl PkbSearchServer {
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
-                        "project": { "type": "string", "description": "Project identifier (optional if ancestor resolves project, e.g. 'aops', 'mem', 'adhoc-sessions')" },
-                        "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, target, project. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
+                        "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (slug or any registered alias; canonicalized on write). Optional — omitted tasks inherit the nearest ancestor's project. Builtins 'task' and 'adhoc-sessions' are always accepted." },
+                        "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, target. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
                         "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
                         "allow_missing_parent": { "type": "boolean", "description": "Allow creating under a missing parent (logs warning). Default: false." },
                         "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." }
@@ -6516,7 +6538,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Document title (required)" },
-                        "type": { "type": "string", "description": "Document type (required): note, knowledge, memory, insight, observation, task, project, goal, target, etc." },
+                        "type": { "type": "string", "description": "Document type (required): note, knowledge, memory, insight, observation, task, epic, goal, target, etc." },
                         "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body" },
@@ -6635,7 +6657,7 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "project": { "type": "string", "description": "Filter by project name (case-insensitive). Returns tasks whose computed project field (nearest ancestor with node_type=project) matches." },
+                        "project": { "type": "string", "description": "Filter by project slug or any polecat.yaml alias (case-insensitive). Returns tasks whose project field (own or inherited from the nearest ancestor that set one) matches." },
                         "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also any canonical status: inbox, queued, in_progress, review, merge_ready, paused, someday, partial, done, cancelled." },
                         "priority": { "type": "integer", "description": "Filter to tasks whose effective priority (own or any downstream task via blocks/parent) ≤ N. E.g. priority=0 returns every task that touches a P0, including its blockers." },
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
@@ -6854,7 +6876,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "limit": { "type": "integer", "description": "Max results (default: all). Set to 0 for unlimited." },
-                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Overrides default actionable-only filter." },
+                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"epic\"]). Overrides default actionable-only filter." },
                         "include_all": { "type": "boolean", "description": "Include all node types (notes, memories, etc.) — default false." }
                     }
                 }))
@@ -6893,7 +6915,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().idempotent(true)),
             Tool::new(
                 "batch_reparent",
-                "Bulk move tasks to a new parent node. Use for major restructuring, such as grouping flat tasks into a new project or epic.",
+                "Bulk move tasks to a new parent node. Use for major restructuring, such as grouping flat tasks into a new epic.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -7090,7 +7112,7 @@ impl PkbSearchServer {
                         "status": { "type": "string", "description": "Filter by status" },
                         "type": { "type": "string", "description": "Filter by current type" },
                         "title_contains": { "type": "string", "description": "Filter by title substring" },
-                        "new_type": { "type": "string", "description": "New document type (task, memory, note, knowledge, project, epic, goal)" },
+                        "new_type": { "type": "string", "description": "New document type (task, memory, note, knowledge, epic, goal)" },
                         "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
                     },
                     "required": ["new_type"]
@@ -7224,40 +7246,87 @@ mod tests {
         }
     }
 
-    /// Build a test graph with 3 projects and tasks under each, plus an orphan.
+    /// Make an epic container doc that declares an explicit `project:` slug,
+    /// which its children inherit via compute_project_field.
+    fn make_container_doc(path: &str, title: &str, id: &str, project: &str) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("id".to_string(), serde_json::json!(id));
+        fm.insert("title".to_string(), serde_json::json!(title));
+        fm.insert("type".to_string(), serde_json::json!("epic"));
+        fm.insert("status".to_string(), serde_json::json!("active"));
+        fm.insert("project".to_string(), serde_json::json!(project));
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some("epic".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        }
+    }
+
+    /// Write a minimal polecat.yaml registering the slugs (plus title-style
+    /// aliases) the tests use, so project values pass registry validation and
+    /// alias filtering works.
+    fn write_test_polecat_yaml(root: &Path) {
+        let content = "\
+projects:
+  proj-alpha:
+    aliases: [ProjectAlpha]
+  proj-beta:
+    aliases: [ProjectBeta]
+  proj-gamma:
+    aliases: [ProjectGamma]
+  proj-partial: {}
+  proj-test: {}
+  test-project: {}
+  aops: {}
+  mem: {}
+  test: {}
+  p: {}
+";
+        let _ = std::fs::write(root.join("polecat.yaml"), content);
+    }
+
+    /// Build a test graph with 3 project-slug containers and tasks under each,
+    /// plus an orphan.
     ///
-    /// ProjectAlpha:
+    /// proj-alpha (epic, project: proj-alpha; alias ProjectAlpha):
     ///   - task-a1: active, priority 1, assignee "alice"
     ///   - task-a2: active, priority 2, assignee "bob" (depends on task-a1)
     ///   - task-a3: done, priority 1
     ///
-    /// ProjectBeta:
+    /// proj-beta:
     ///   - task-b1: active, priority 1 (leaf, no deps = ready)
     ///   - task-b2: active, priority 2 (depends on task-b1 = blocked)
     ///
-    /// ProjectGamma:
+    /// proj-gamma:
     ///   - task-g1: active, priority 3
     ///
     /// Orphan (no project):
     ///   - task-orphan: active, priority 1
     fn build_project_test_graph() -> GraphStore {
         let docs = vec![
-            // Project nodes
-            make_doc("projects/proj-alpha.md", "ProjectAlpha", "project", "active", "proj-alpha", None, &[]),
-            make_doc("projects/proj-beta.md", "ProjectBeta", "project", "active", "proj-beta", None, &[]),
-            make_doc("projects/proj-gamma.md", "ProjectGamma", "project", "active", "proj-gamma", None, &[]),
+            // Container nodes declaring explicit project slugs
+            make_container_doc("projects/proj-alpha.md", "ProjectAlpha", "proj-alpha", "proj-alpha"),
+            make_container_doc("projects/proj-beta.md", "ProjectBeta", "proj-beta", "proj-beta"),
+            make_container_doc("projects/proj-gamma.md", "ProjectGamma", "proj-gamma", "proj-gamma"),
             // ProjectAlpha tasks
-            make_doc_with_priority("tasks/task-a1.md", "Alpha Task 1", "task", "active", "task-a1", Some("proj-alpha"), &[], 1, Some("alice")),
-            make_doc_with_priority("tasks/task-a2.md", "Alpha Task 2", "task", "active", "task-a2", Some("proj-alpha"), &["task-a1"], 2, Some("bob")),
+            make_doc_with_priority("tasks/task-a1.md", "Alpha Task 1", "task", "ready", "task-a1", Some("proj-alpha"), &[], 1, Some("alice")),
+            make_doc_with_priority("tasks/task-a2.md", "Alpha Task 2", "task", "ready", "task-a2", Some("proj-alpha"), &["task-a1"], 2, Some("bob")),
             make_doc_with_priority("tasks/task-a3.md", "Alpha Task 3", "task", "done", "task-a3", Some("proj-alpha"), &[], 1, None),
             make_doc_with_priority("tasks/task-a4.md", "Alpha Task 4", "task", "archived", "task-a4", Some("proj-alpha"), &[], 1, None),
             // ProjectBeta tasks — task-b1 is a leaf with no deps (ready), task-b2 depends on task-b1
-            make_doc_with_priority("tasks/task-b1.md", "Beta Task 1", "task", "active", "task-b1", Some("proj-beta"), &[], 1, None),
-            make_doc_with_priority("tasks/task-b2.md", "Beta Task 2", "task", "active", "task-b2", Some("proj-beta"), &["task-b1"], 2, None),
+            make_doc_with_priority("tasks/task-b1.md", "Beta Task 1", "task", "ready", "task-b1", Some("proj-beta"), &[], 1, None),
+            make_doc_with_priority("tasks/task-b2.md", "Beta Task 2", "task", "ready", "task-b2", Some("proj-beta"), &["task-b1"], 2, None),
             // ProjectGamma task
-            make_doc_with_priority("tasks/task-g1.md", "Gamma Task 1", "task", "active", "task-g1", Some("proj-gamma"), &[], 3, None),
+            make_doc_with_priority("tasks/task-g1.md", "Gamma Task 1", "task", "ready", "task-g1", Some("proj-gamma"), &[], 3, None),
             // Orphan task (no parent, no project)
-            make_doc_with_priority("tasks/task-orphan.md", "Orphan Task", "task", "active", "task-orphan", None, &[], 1, None),
+            make_doc_with_priority("tasks/task-orphan.md", "Orphan Task", "task", "ready", "task-orphan", None, &[], 1, None),
         ];
         GraphStore::build(&docs, Path::new("/tmp/test-pkb-project"))
     }
@@ -7272,6 +7341,7 @@ mod tests {
         let seq = TEST_ROOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!("mem-test-pkb-{}-{}", std::process::id(), seq));
         let _ = std::fs::create_dir_all(&root);
+        write_test_polecat_yaml(&root);
         let db = root.join("db");
         PkbSearchServer::new(
             Arc::new(RwLock::new(store)),
@@ -7381,18 +7451,18 @@ mod tests {
             prev_val = m_val;
         }
 
-        // 4. Test Node type filter (node_type = "project")
+        // 4. Test Node type filter (node_type = "epic" — the fixture's 3 containers)
         let res_proj = server
             .handle_top_n_by_metric(&json!({
                 "metric": "degree",
-                "node_type": "project",
+                "node_type": "epic",
                 "n": 10
             }))
             .unwrap();
         let proj_text = res_proj.content[0].raw.as_text().unwrap().text.as_str();
         let proj_val: serde_json::Value = serde_json::from_str(proj_text).unwrap();
         let proj_arr = proj_val.as_array().unwrap();
-        // Since build_project_test_graph has exactly 3 project nodes: proj-alpha, proj-beta, proj-gamma
+        // build_project_test_graph has exactly 3 epic containers: proj-alpha, proj-beta, proj-gamma
         assert_eq!(proj_arr.len(), 3);
         for item in proj_arr {
             let id = item.get("id").unwrap().as_str().unwrap();
@@ -7718,6 +7788,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         std::fs::create_dir_all(root.join("tasks")).unwrap();
+        write_test_polecat_yaml(root);
 
         let graph = GraphStore::build(&[], root);
         let store = VectorStore::new(3);
@@ -9219,6 +9290,11 @@ mod batch_finalize_tests {
     fn build_disk_server(pkb_root: &Path) -> PkbSearchServer {
         std::fs::create_dir_all(pkb_root.join("projects")).unwrap();
         std::fs::write(
+            pkb_root.join("polecat.yaml"),
+            "projects:\n  test-project: {}\n  p: {}\n  aops: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
             pkb_root.join("projects/test-project.md"),
             "---\nid: test-project\ntitle: Test Project\ntype: project\nstatus: active\n---\n\n\
              # Test Project\n",
@@ -9374,6 +9450,11 @@ mod cross_process_recovery_tests {
     fn build_disk_server(pkb_root: &Path) -> PkbSearchServer {
         std::fs::create_dir_all(pkb_root.join("projects")).unwrap();
         std::fs::write(
+            pkb_root.join("polecat.yaml"),
+            "projects:\n  p: {}\n  aops: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
             pkb_root.join("projects/p.md"),
             "---\nid: p\ntitle: P\ntype: project\nstatus: active\n---\n\n# P\n",
         )
@@ -9498,6 +9579,11 @@ mod search_status_projection_tests {
 
     fn build_seeded_server(pkb_root: &Path) -> PkbSearchServer {
         std::fs::create_dir_all(pkb_root.join("projects")).unwrap();
+        std::fs::write(
+            pkb_root.join("polecat.yaml"),
+            "projects:\n  p: {}\n  aops: {}\n",
+        )
+        .unwrap();
         std::fs::write(
             pkb_root.join("projects/p.md"),
             "---\nid: p\ntitle: P\ntype: project\nstatus: active\n---\n\n# P\n",
@@ -9755,8 +9841,8 @@ mod tier_rebuild_tests {
     #[test]
     fn tier1_classification_membership_is_fresh() {
         let docs = vec![
-            make_task_doc("task-x", "active", 1, &[]),
-            make_task_doc("task-y", "active", 2, &[]),
+            make_task_doc("task-x", "ready", 1, &[]),
+            make_task_doc("task-y", "ready", 2, &[]),
         ];
         let server = build_server(docs);
 
@@ -9786,8 +9872,8 @@ mod tier_rebuild_tests {
     #[test]
     fn tier1_does_not_recompute_similarity_edges() {
         let docs = vec![
-            make_task_doc("task-x", "active", 1, &[]),
-            make_task_doc("task-y", "active", 2, &[]),
+            make_task_doc("task-x", "ready", 1, &[]),
+            make_task_doc("task-y", "ready", 2, &[]),
         ];
         let server = build_server(docs);
         let sim_before = server
@@ -9863,8 +9949,8 @@ mod tier_rebuild_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn tier2_swap_does_not_revert_concurrent_tier1_patch() {
         let docs = vec![
-            make_task_doc("task-x", "active", 1, &[]),
-            make_task_doc("task-y", "active", 2, &[]),
+            make_task_doc("task-x", "ready", 1, &[]),
+            make_task_doc("task-y", "ready", 2, &[]),
         ];
         let server = build_server(docs);
         // Make Tier-2 slow enough to interleave with a Tier-1 patch.
@@ -9953,8 +10039,8 @@ mod tier_rebuild_tests {
     #[test]
     fn read_after_write_status_visible_immediately() {
         let docs = vec![
-            make_task_doc("task-x", "active", 1, &[]),
-            make_task_doc("task-y", "active", 2, &[]),
+            make_task_doc("task-x", "ready", 1, &[]),
+            make_task_doc("task-y", "ready", 2, &[]),
         ];
         let server = build_server(docs);
 
@@ -10013,12 +10099,17 @@ tags:
 ";
         std::fs::write(tasks_dir.join("daily-template.md"), template_content).unwrap();
 
-        // Write the parent project file so validation passes
+        // Write the parent container file so validation passes
         let projects_dir = root.join("projects");
         std::fs::create_dir_all(&projects_dir).unwrap();
         std::fs::write(
             projects_dir.join("proj-test.md"),
-            "---\nid: proj-test\ntitle: \"Test Project\"\ntype: project\nstatus: active\n---\n",
+            "---\nid: proj-test\ntitle: \"Test Project\"\ntype: epic\nproject: proj-test\nstatus: active\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("polecat.yaml"),
+            "projects:\n  proj-test: {}\n  aops: {}\n",
         )
         .unwrap();
 
@@ -10038,6 +10129,35 @@ tags:
             Arc::new(RwLock::new(graph)),
         );
         (server, tmp)
+    }
+
+    /// A template whose `project:` slug is not registered in polecat.yaml
+    /// must fail to claim — the claim path validates like every other write
+    /// path that stamps an explicit project value.
+    #[test]
+    fn claim_task_rejects_unregistered_template_project() {
+        let (server, tmp) = setup_with_template();
+
+        // Rewrite the template's project to a slug the fixture registry
+        // (proj-test, aops) does not contain, then refresh the graph.
+        let template_path = tmp.path().join("tasks/daily-template.md");
+        let content = std::fs::read_to_string(&template_path).unwrap();
+        let stale = content.replace("project: aops", "project: deregistered-slug");
+        assert_ne!(content, stale, "fixture must carry project: aops");
+        std::fs::write(&template_path, stale).unwrap();
+        {
+            let graph = GraphStore::build_from_directory(tmp.path());
+            *server.graph.write() = graph;
+        }
+
+        let err = server
+            .handle_claim_task(&serde_json::json!({ "id": "daily-template" }))
+            .expect_err("claiming a template with an unregistered project must fail");
+        assert!(
+            err.message.contains("deregistered-slug"),
+            "error should name the unknown slug; got: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -10263,10 +10383,16 @@ tags:
             parent1, parent2,
             "both tasks from the same session should share the same parent epic; parent1={parent1}, parent2={parent2}"
         );
-        // Only one epic should exist with an adhoc- prefix in the graph
+        // Only one SESSION epic should exist with an adhoc- prefix in the graph.
+        // The adhoc-sessions bootstrap root is itself `type: epic` now (project
+        // is no longer a node type), so exclude it from the count.
         let epic_count = graph
             .nodes()
-            .filter(|n| n.node_type.as_deref() == Some("epic") && n.id.starts_with("adhoc-"))
+            .filter(|n| {
+                n.node_type.as_deref() == Some("epic")
+                    && n.id.starts_with("adhoc-")
+                    && n.id != crate::document_crud::ADHOC_SESSIONS_ROOT_ID
+            })
             .count();
         assert_eq!(
             epic_count, 1,

@@ -125,7 +125,6 @@ pub struct MemoryFields {
 ///
 /// Subdirectory routing (overridden by `dir` field):
 /// - `task|bug|epic|feature` → `tasks/`
-/// - `project` → `projects/`
 /// - `goal` → `goals/`
 /// - Everything else → `notes/`
 pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
@@ -153,7 +152,6 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     let type_prefix = match fields.doc_type.as_str() {
         "task" | "epic" => "task",
-        "project" => "proj",
         "memory" => "mem",
         "note" => "note",
         "knowledge" => "kb",
@@ -186,7 +184,6 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         .map(|d| expand_env_vars(&d))
         .unwrap_or_else(|| match fields.doc_type.as_str() {
             "task" | "epic" | "learn" => "tasks".to_string(),
-            "project" => "projects".to_string(),
             "memory" => "memories".to_string(),
             _ => "notes".to_string(),
         });
@@ -419,7 +416,7 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let id = ADHOC_SESSIONS_ROOT_ID;
     let content = format!(
-        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: project\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
+        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: epic\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
     std::fs::write(&adhoc_path, content)
         .with_context(|| format!("Failed to write adhoc-sessions root: {}", adhoc_path.display()))?;
@@ -427,12 +424,21 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
 }
 
 pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
-    // parent is required — tasks must be linked to an existing node
-    if fields.parent.as_deref().map(str::is_empty).unwrap_or(true) {
+    // parent is required for plain tasks — they must be linked to an existing
+    // node. Root-able types are exempt: goals/targets live beside the work
+    // tree (never parented), and epics/learn nodes may be tree roots. Mirrors
+    // handle_create_task's `root_able` gate for callers that bypass the MCP
+    // layer (CLI `pkb new`, direct library use).
+    let root_able = matches!(
+        fields.task_type.as_deref().unwrap_or("task"),
+        "goal" | "target" | "epic" | "learn"
+    );
+    if !root_able && fields.parent.as_deref().map(str::is_empty).unwrap_or(true) {
         anyhow::bail!(
             "parent is required: tasks must be linked to a parent node \
-             (goal, epic, or project). Only top-level types (goal, project, learn) \
-             can be root-level."
+             (an epic or another task). Goals and targets are strategic priorities, not \
+             structural parents — link to them via `contributes_to` instead. Only \
+             top-level types (goal, target, epic, learn) can be root-level."
         );
     }
 
@@ -459,6 +465,14 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         }
     }
 
+    // Validate + canonicalize the project slug against polecat.yaml before it
+    // is used anywhere (ID prefix, frontmatter). Builtin slugs (`task`,
+    // `adhoc-sessions`) pass without a registry; anything else must resolve.
+    let project = match fields.project.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => Some(crate::polecat_config::resolve_project(root, raw)?),
+        None => None,
+    };
+
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: sanitize to prevent path traversal
@@ -467,18 +481,15 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             (safe_id, filename)
         }
         None => {
-            // Prefix source: use `project` when set so IDs/filenames are
-            // namespaced like `aops-<hash>` / `aops-<hash>-<slug>.md`.
+            // Prefix source: use the canonical `project` slug when set so
+            // IDs/filenames are namespaced like `aops-<hash>` /
+            // `aops-<hash>-<slug>.md`.
             // Fallback when project is missing: literal `"task"` to preserve
             // legacy behaviour for projectless / ad-hoc tasks (yields
             // `task-<hash>` / `task-<hash>-<slug>.md`). The `task_type` field
             // is intentionally NOT used here — it is captured in the
             // frontmatter `type:` field, not the ID prefix.
-            let prefix = fields
-                .project
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .unwrap_or("task");
+            let prefix = project.as_deref().unwrap_or("task");
             let id = generate_id(prefix);
             let slug = slugify(&fields.title);
             let slug = truncate_slug(&slug, MAX_FILENAME_SLUG_LEN);
@@ -528,7 +539,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         fm.push_str(&format!("parent: {}\n", parent));
     }
 
-    if let Some(ref project) = fields.project {
+    if let Some(ref project) = project {
         fm.push_str(&format!("project: {}\n", project));
     }
 
@@ -677,6 +688,16 @@ pub struct TemplateInstanceFields {
 /// `id`, `status: inbox`, `created`, `modified`, and a `template_id` back-reference.
 /// The template file is not modified.
 pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> Result<PathBuf> {
+    // Validate + canonicalize the inherited project slug against polecat.yaml,
+    // same as every other path that writes an explicit `project:` value. A
+    // template whose slug was deregistered/renamed must fail here rather than
+    // stamping the stale value onto every future instance; the
+    // fm-unregistered-project lint rule surfaces such templates ahead of time.
+    let project = match fields.project.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => Some(crate::polecat_config::resolve_project(root, raw)?),
+        None => None,
+    };
+
     let now = chrono::Utc::now();
     let date_str = now.format("%Y%m%d").to_string();
     let time_str = now.format("%H%M%S").to_string();
@@ -737,7 +758,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
         fm.push_str(&format!("parent: {}\n", parent));
     }
 
-    if let Some(ref project) = fields.project {
+    if let Some(ref project) = project {
         fm.push_str(&format!("project: {}\n", project));
     }
 
@@ -1763,6 +1784,16 @@ fn truncate_slug(slug: &str, max_len: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
+
+    /// Write a minimal polecat.yaml registering the slugs tests use, so
+    /// project values pass registry validation.
+    fn write_test_polecat_yaml(root: &std::path::Path, slugs: &[&str]) {
+        let mut content = String::from("projects:\n");
+        for s in slugs {
+            content.push_str(&format!("  {}: {{}}\n", s));
+        }
+        std::fs::write(root.join("polecat.yaml"), content).unwrap();
+    }
     use super::*;
     use std::fs;
 
@@ -1775,6 +1806,7 @@ mod tests {
     fn test_bulk_reparent_dry_run() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let subdir = root.join("archive");
         fs::create_dir_all(&subdir).unwrap();
 
@@ -1795,6 +1827,7 @@ mod tests {
     fn test_bulk_reparent_apply() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let subdir = root.join("tasks");
         fs::create_dir_all(&subdir).unwrap();
 
@@ -1818,6 +1851,7 @@ mod tests {
     fn test_bulk_reparent_skips_self() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let subdir = root.join("docs");
         fs::create_dir_all(&subdir).unwrap();
 
@@ -1837,6 +1871,7 @@ mod tests {
     fn test_bulk_reparent_skips_already_parented() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let subdir = root.join("notes");
         fs::create_dir_all(&subdir).unwrap();
 
@@ -1947,6 +1982,7 @@ mod tests {
     fn create_task_long_title_produces_short_filename() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let long_title = "word ".repeat(30).trim().to_string(); // ~150 chars
@@ -1979,6 +2015,7 @@ mod tests {
     fn create_task_writes_project_type_status() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
@@ -2008,11 +2045,41 @@ mod tests {
     }
 
     #[test]
+    fn create_task_allows_root_level_epic_without_parent() {
+        // Root-able types (goal, target, epic, learn) are exempt from the
+        // parent requirement; plain tasks still hard-require one.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let epic = TaskFields {
+            title: "Root epic".to_string(),
+            task_type: Some("epic".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+        create_task(root, epic).expect("root-level epic must not require a parent");
+
+        let task = TaskFields {
+            title: "Plain task".to_string(),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+        let err = create_task(root, task).unwrap_err();
+        assert!(
+            err.to_string().contains("parent is required"),
+            "plain tasks still require a parent: {err}"
+        );
+    }
+
+    #[test]
     fn create_task_uses_project_as_id_prefix() {
         // Regression: task-381788fb. create_task(project="aops", title="Foo")
         // must produce ID `aops-<hash>` and filename `aops-<hash>-foo.md`.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2045,6 +2112,7 @@ mod tests {
         // created without an explicit priority must have NO `priority:` field.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2068,6 +2136,7 @@ mod tests {
         // #1905: a caller-supplied priority must still be written verbatim.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2091,6 +2160,7 @@ mod tests {
     fn create_task_defaults_type_and_status() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
@@ -2119,6 +2189,7 @@ mod tests {
         // An explicit priority=0 passed to create_task must be persisted as-is.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2143,6 +2214,7 @@ mod tests {
         // uncurated instance stays distinct from an explicit priority band.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TemplateInstanceFields {
@@ -2165,6 +2237,7 @@ mod tests {
         // A priority copied from the template must be written verbatim.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TemplateInstanceFields {
@@ -2187,6 +2260,7 @@ mod tests {
     fn create_task_allows_missing_project() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
@@ -2208,6 +2282,7 @@ mod tests {
         // lists, and blank lines — is preserved verbatim.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
@@ -2247,6 +2322,7 @@ mod tests {
         // and downstream tools rendered the task as having no metadata.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
         let multiline = "Single biggest token sink in the framework.\nEach cron \
                          firing reuses the prior context window.\nBlows up over time.";
@@ -2307,6 +2383,7 @@ mod tests {
         // ID, knows the title, and defaults type=task).
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
@@ -2348,6 +2425,7 @@ mod tests {
     fn rewrite_body_roundtrip_equality() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2374,6 +2452,7 @@ mod tests {
     fn rewrite_body_preserves_frontmatter() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2419,6 +2498,7 @@ mod tests {
     fn rewrite_body_idempotent_on_same_content() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let body = "## Stable\n\nContent that doesn't change.\n";
@@ -2480,6 +2560,7 @@ mod tests {
     fn setup_pkb_with_prototype(template_yaml: &str) -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
+        write_test_polecat_yaml(&root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
         fs::create_dir_all(root.join("notes")).unwrap();
 
@@ -2610,6 +2691,7 @@ mod tests {
     fn edge_without_inherits_from_passes_through_unchanged() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let edge = serde_json::json!({
@@ -2636,6 +2718,7 @@ mod tests {
     fn inherits_from_with_missing_prototype_passes_through() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let edge = serde_json::json!({
@@ -2787,6 +2870,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         // Create a task with an explicit priority so there is a value to clear.
@@ -2848,6 +2932,7 @@ mod tests {
     fn ensure_adhoc_sessions_root_writes_canonical_id() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
 
         ensure_adhoc_sessions_root(root).unwrap();
 
@@ -2873,6 +2958,7 @@ mod tests {
     fn ensure_adhoc_sessions_root_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
 
         // First call creates the file
         ensure_adhoc_sessions_root(root).unwrap();

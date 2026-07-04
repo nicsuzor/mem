@@ -73,7 +73,8 @@ impl FilterSet {
     }
 
     /// Resolve against graph, return matching node IDs.
-    pub fn resolve(&self, graph: &GraphStore) -> Vec<String> {
+    /// `pkb_root` locates polecat.yaml for project-alias resolution.
+    pub fn resolve(&self, graph: &GraphStore, pkb_root: &std::path::Path) -> Vec<String> {
         // Start with candidate set
         let candidates: Vec<&GraphNode> = if let Some(ref ids) = self.ids {
             // Explicit IDs — resolve each flexibly
@@ -92,13 +93,14 @@ impl FilterSet {
 
         let now = Utc::now().date_naive();
 
-        // Resolve the project filter to a slug once, not per-candidate. `self.project`
-        // is constant for the whole filter pass, and `graph.resolve` is non-trivial.
+        // Resolve the project filter through the polecat.yaml registry once, not
+        // per-candidate, so an alias (e.g. `ao`) matches tasks stored with the
+        // canonical slug. Missing/unregistered values fall back to literal match.
         let resolved_project_slug: Option<String> = self.project.as_ref().and_then(|project| {
-            graph
-                .resolve(project)
-                .filter(|n| n.node_type.as_deref() == Some("project"))
-                .map(|n| n.permalink.clone().unwrap_or_else(|| n.id.clone()))
+            crate::polecat_config::PolecatRegistry::load(pkb_root)
+                .ok()
+                .flatten()
+                .and_then(|reg| reg.resolve(project))
         });
 
         candidates

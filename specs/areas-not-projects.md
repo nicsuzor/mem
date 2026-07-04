@@ -23,11 +23,13 @@ tags:
 
 > **2026-05-10 update — partially adopted, partially on hold.**
 >
-> **Adopted:**
+> **Adopted (and implemented in mem, 2026-07-04):**
 >
 > - `project` is removed from the work hierarchy. The word now refers narrowly to a polecat repo — the dispatch routing field on tasks. See [[TAXONOMY]] §"Project (operational routing field)".
 > - The work tree is `EPIC → EPIC | TASK → …`. No container type. Existing `type: project` containers migrate to root-level epics.
-> - `goal` is replaced by `target`. Targets do not parent. Linkage via `contributes_to` metadata.
+> - `goal` is replaced by `target`. Targets do not parent. Linkage via `contributes_to` metadata. *(Later reversed 2026-06-03 — goal & target are distinct coexisting out-of-tree types; see [[pkb-type-taxonomy]].)*
+>
+> Implementation state in `mem`: new `type: project` writes are rejected; legacy files read-coerce to `epic` (lint: `fm-deprecated-project-type`, `--fix` reclassifies; or run `batch_reclassify`). `project:` frontmatter is a polecat.yaml-validated routing slug — canonical slug from the registry (map key / `slug:` / aliases / `project_aliases:`), inherited from the nearest parent-chain ancestor when omitted. See `specs/pkb-server-spec.md` §"Project registry (polecat.yaml)".
 >
 > **On hold — pending re-spec ([[aops-118e994e]]):**
 >

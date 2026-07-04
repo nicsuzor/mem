@@ -19,6 +19,7 @@ pub mod mcp_server;
 pub mod metrics;
 pub mod migrations;
 pub mod pkb;
+pub mod polecat_config;
 pub mod task_index;
 pub mod telemetry;
 pub mod vectordb;

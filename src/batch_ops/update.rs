@@ -22,7 +22,7 @@ pub fn batch_update(
 ) -> BatchSummary {
     let mut summary = BatchSummary::new("update", dry_run);
 
-    let matched_ids = filters.resolve(graph);
+    let matched_ids = filters.resolve(graph, pkb_root);
     summary.matched = matched_ids.len();
 
     if matched_ids.is_empty() {
@@ -84,6 +84,29 @@ pub fn batch_update(
             return summary;
         }
     };
+
+    // Validate + canonicalize a project change against polecat.yaml ONCE for
+    // the whole batch (not per matched node — the registry lookup is a file
+    // parse). `null` is an explicit removal and passes through untouched.
+    let mut updates_map = updates_map.clone();
+    if let Some(v) = updates_map.get("project") {
+        if let Some(raw) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            match crate::polecat_config::resolve_project(pkb_root, raw) {
+                Ok(canonical) => {
+                    updates_map
+                        .insert("project".to_string(), serde_json::Value::String(canonical));
+                }
+                Err(e) => {
+                    summary.errors.push(TaskError {
+                        id: "".to_string(),
+                        error: format!("{e:#}"),
+                    });
+                    return summary;
+                }
+            }
+        }
+    }
+    let updates_map = &updates_map;
 
     let mut ctx = BatchContext::new(graph, pkb_root);
 
@@ -185,7 +208,7 @@ pub fn batch_archive(
 ) -> BatchSummary {
     let mut summary = BatchSummary::new("archive", dry_run);
 
-    let matched_ids = filters.resolve(graph);
+    let matched_ids = filters.resolve(graph, pkb_root);
     summary.matched = matched_ids.len();
 
     if matched_ids.is_empty() {

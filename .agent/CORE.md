@@ -25,22 +25,23 @@ Semantic search + knowledge graph MCP server for a personal knowledge base (PKB)
 
 ```
 src/
-  cli.rs           — main() for pkb binary (CLI + MCP server via `pkb mcp`)
-  mcp_server.rs    — MCP ServerHandler: 39 tools, dispatch, tool registrations
-  graph_store.rs   — GraphStore: builds/queries knowledge graph from PKB docs
-  graph.rs         — GraphNode (fields include stakeholder, waiting_since), Edge, EdgeType, link resolution helpers
-  graph_display.rs — Graph rendering/display utilities
-  vectordb.rs      — VectorStore: cosine similarity search over embeddings
-  embeddings.rs    — Embedder: BGE-M3 via ONNX Runtime (1024-dim)
-  pkb.rs           — PkbDocument parsing, directory scanning
-  document_crud.rs — Create/update/delete/append for markdown docs
-  metrics.rs       — Network centrality (PageRank, betweenness, degree)
-  task_index.rs    — MCP index export (used by CLI graph command)
-  distance.rs      — Distance/similarity calculations
-  eval.rs          — Evaluation utilities
-  lint.rs          — PKB linting/validation
-  reproduction.rs  — Reproduction/test helpers
-  lib.rs           — Library root
+  cli.rs            — main() for pkb binary (CLI + MCP server via `pkb mcp`)
+  mcp_server.rs     — MCP ServerHandler: 39 tools, dispatch, tool registrations
+  graph_store.rs    — GraphStore: builds/queries knowledge graph from PKB docs
+  graph.rs          — GraphNode (fields include stakeholder, waiting_since), Edge, EdgeType, link resolution helpers
+  graph_display.rs  — Graph rendering/display utilities
+  vectordb.rs       — VectorStore: cosine similarity search over embeddings
+  embeddings.rs     — Embedder: BGE-M3 via ONNX Runtime (1024-dim)
+  pkb.rs            — PkbDocument parsing, directory scanning
+  polecat_config.rs — polecat.yaml project-slug registry (validation + alias resolution)
+  document_crud.rs  — Create/update/delete/append for markdown docs
+  metrics.rs        — Network centrality (PageRank, betweenness, degree)
+  task_index.rs     — MCP index export (used by CLI graph command)
+  distance.rs       — Distance/similarity calculations
+  eval.rs           — Evaluation utilities
+  lint.rs           — PKB linting/validation
+  reproduction.rs   — Reproduction/test helpers
+  lib.rs            — Library root
 ```
 
 ## MCP Tools (39)

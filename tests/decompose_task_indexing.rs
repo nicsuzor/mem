@@ -19,6 +19,8 @@ fn pkb_binary() -> PathBuf {
 
 fn seed_pkb() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
+    // Register the `aops` slug so inherited project values pass validation.
+    std::fs::write(tmp.path().join("polecat.yaml"), "projects:\n  aops: {}\n").unwrap();
     let projects_dir = tmp.path().join("projects");
     std::fs::create_dir_all(&projects_dir).unwrap();
 
