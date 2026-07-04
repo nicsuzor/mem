@@ -431,8 +431,9 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     if fields.parent.as_deref().map(str::is_empty).unwrap_or(true) {
         anyhow::bail!(
             "parent is required: tasks must be linked to a parent node \
-             (goal, target, or epic). Only top-level types (goal, target, epic, learn) \
-             can be root-level."
+             (an epic or another task). Goals and targets are strategic priorities, not \
+             structural parents — link to them via `contributes_to` instead. Only \
+             top-level types (goal, target, epic, learn) can be root-level."
         );
     }
 
