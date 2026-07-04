@@ -78,7 +78,7 @@ All CRUD operations work reliably 100% of the time. Format consistency enforced.
 
 ### US5: Connected work graph
 
-> Every task must be connected to the hierarchy: task -> epic -> chain -> project -> strategic priority.
+> Every task must be connected to the hierarchy: task -> epic -> ... -> root epic; strategic priorities (goals/targets) link via `contributes_to` metadata. "Project" is not a hierarchy level — it is the polecat.yaml routing slug carried in the `project:` frontmatter field (own or inherited).
 
 Disconnected tasks are invisible to prioritisation. The server exposes graph topology so agents and humans can identify orphans, understand dependencies, and maintain structural integrity.
 
@@ -117,7 +117,7 @@ The server computes deterministic metrics (counts, depths, degrees). It does NOT
 ### Graph & Connectivity
 
 - **Orphan Detection**: Disconnected nodes (orphans) can be identified by users and agents through specific graph traversal tools or dedicated commands. Orphan-ness is **type-aware**, reflecting the two structural models the PKB uses:
-  - **Actionable types** (project, epic, task, learn, pr) live in a *tree* whose backbone is the `parent` field. One is an orphan iff its `parent` is absent or dangling — dependency or link edges do not excuse a missing hierarchy parent. (Keeps `pkb_orphans`'s actionable default in step with `graph_stats.orphan_count`.)
+  - **Actionable types** (epic, task, learn, pr) live in a *tree* whose backbone is the `parent` field. One is an orphan iff its `parent` is absent or dangling — dependency or link edges do not excuse a missing hierarchy parent. (Keeps `pkb_orphans`'s actionable default in step with `graph_stats.orphan_count`.)
   - **All other types** — knowledge nodes (memory, note), out-of-tree strategic nodes (goal, target), and untyped documents — live in a *web* of associations. One is an orphan only if it has no valid parent **and** no deliberate structural edge to another node, in either direction (an inbound link rescues a node just as an outbound one does — connectivity, not authorship, is what is being measured). Body `[[wikilinks]]` are auto-extracted into `link` edges, so a memory carrying one wikilink to a related concept is *not* an orphan; likewise a parentless goal that work `contributes_to` is *not* an orphan. Auto-computed `similar_to` (similarity) edges are excluded — only deliberate links rescue a node. Note that “not an orphan” means *graph-reachable*; it does not certify compliance with the `/remember` curation contract (which requires an outbound wikilink on every note).
 - **Relationship Transparency**: Every task retrieval (`get_task`) includes its immediate neighborhood (parents, children, dependencies, blockers) by default.
 - **Deterministic Metrics**: Centrality and weight metrics (PageRank, downstream weight) are stable and reproducible.
@@ -229,7 +229,7 @@ Create and maintain knowledge artifacts. Notes, memories, insights.
 | Append   | `append <id> <content>` | `append`                  | Add timestamped content to existing document |
 | Delete   | `delete <id>`           | `delete`                  | Remove document                              |
 
-**Document types**: `task`, `bug`, `epic`, `feature`, `project`, `goal`, `note`, `knowledge`, `memory`, `insight`, `observation`
+**Document types**: `task`, `bug`, `epic`, `feature`, `goal`, `note`, `knowledge`, `memory`, `insight`, `observation`. (`project` is retired as a type — legacy `type: project` files read as epics; "project" is the routing-slug frontmatter field.)
 
 **Routing**: Documents auto-route to subdirectories by type (tasks/ projects/ goals/ notes/).
 
@@ -302,7 +302,7 @@ permalink: same-as-id
 # Optional:
 status: active
 priority: 0-4
-project: aops
+project: aops   # polecat.yaml-validated routing slug; inherited from nearest ancestor when omitted
 tags: [tag1, tag2]
 assignee: nic|bot
 depends_on: [other-id]
@@ -322,11 +322,33 @@ In-memory graph built from frontmatter relationships and wikilinks on each start
 
 ## Environment
 
-| Variable       | Default   | Purpose                        |
-| -------------- | --------- | ------------------------------ |
-| `ACA_DATA`     | `~/brain` | PKB root directory (the files) |
-| `RUST_LOG`     | `info`    | Log level                      |
-| `AOPS_OFFLINE` | `false`   | Disable model auto-download    |
+| Variable              | Default   | Purpose                                             |
+| --------------------- | --------- | --------------------------------------------------- |
+| `ACA_DATA`            | `~/brain` | PKB root directory (the files)                      |
+| `RUST_LOG`            | `info`    | Log level                                           |
+| `AOPS_OFFLINE`        | `false`   | Disable model auto-download                         |
+| `AOPS_POLECAT_CONFIG` | unset     | Explicit path to polecat.yaml (project registry)    |
+| `AOPS_SESSIONS`       | unset     | Sessions repo; fallback home of polecat.yaml        |
+
+### Project registry (polecat.yaml)
+
+`project:` frontmatter values are operational routing slugs validated against
+the shared polecat.yaml registry (the same file the academicOps polecat
+launcher reads). mem parses only the `projects:` block (map key = canonical
+slug; optional `slug:` override; per-project `aliases:`) and the top-level
+`project_aliases:` shorthand map; all other keys are ignored. Lookup order:
+`$ACA_DATA/polecat.yaml`, then `$AOPS_POLECAT_CONFIG`, then
+`$AOPS_SESSIONS/polecat.yaml` — first match wins (root-local is checked first
+so isolated test roots are deterministic).
+
+Write paths (`create_task`, `update_task`, `batch_update`, `pkb update
+--project`) hard-fail on values that do not resolve; matches are canonicalized
+to the registry slug before being written (and used as the ID/filename
+prefix). Builtin slugs `task` and `adhoc-sessions` are always valid with no
+registry. When a task omits `project`, it inherits the nearest parent-chain
+ancestor's explicit value (computed at graph build). Read paths (`list_tasks`
+/ batch filters) resolve aliases through the same registry but degrade to
+literal matching when the registry is missing or malformed.
 
 ## Non-Goals
 

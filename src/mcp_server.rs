@@ -5044,7 +5044,10 @@ impl PkbSearchServer {
         if let Some(p) = project {
             // Resolve the filter value through the polecat.yaml registry so an
             // alias (e.g. `ao`) matches tasks stored with the canonical slug.
-            // A missing/unregistered value falls back to literal matching.
+            // Deliberate read-path tradeoff: a missing OR malformed registry
+            // degrades to literal matching (`.ok().flatten()`) rather than
+            // failing the whole list_tasks call — searches should stay usable
+            // when the registry is broken; the write paths stay fail-fast.
             let resolved_slug = crate::polecat_config::PolecatRegistry::load(&self.pkb_root)
                 .ok()
                 .flatten()
@@ -7243,28 +7246,75 @@ mod tests {
         }
     }
 
-    /// Build a test graph with 3 projects and tasks under each, plus an orphan.
+    /// Make an epic container doc that declares an explicit `project:` slug,
+    /// which its children inherit via compute_project_field.
+    fn make_container_doc(path: &str, title: &str, id: &str, project: &str) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("id".to_string(), serde_json::json!(id));
+        fm.insert("title".to_string(), serde_json::json!(title));
+        fm.insert("type".to_string(), serde_json::json!("epic"));
+        fm.insert("status".to_string(), serde_json::json!("active"));
+        fm.insert("project".to_string(), serde_json::json!(project));
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some("epic".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        }
+    }
+
+    /// Write a minimal polecat.yaml registering the slugs (plus title-style
+    /// aliases) the tests use, so project values pass registry validation and
+    /// alias filtering works.
+    fn write_test_polecat_yaml(root: &Path) {
+        let content = "\
+projects:
+  proj-alpha:
+    aliases: [ProjectAlpha]
+  proj-beta:
+    aliases: [ProjectBeta]
+  proj-gamma:
+    aliases: [ProjectGamma]
+  proj-partial: {}
+  proj-test: {}
+  test-project: {}
+  aops: {}
+  mem: {}
+  test: {}
+  p: {}
+";
+        let _ = std::fs::write(root.join("polecat.yaml"), content);
+    }
+
+    /// Build a test graph with 3 project-slug containers and tasks under each,
+    /// plus an orphan.
     ///
-    /// ProjectAlpha:
+    /// proj-alpha (epic, project: proj-alpha; alias ProjectAlpha):
     ///   - task-a1: active, priority 1, assignee "alice"
     ///   - task-a2: active, priority 2, assignee "bob" (depends on task-a1)
     ///   - task-a3: done, priority 1
     ///
-    /// ProjectBeta:
+    /// proj-beta:
     ///   - task-b1: active, priority 1 (leaf, no deps = ready)
     ///   - task-b2: active, priority 2 (depends on task-b1 = blocked)
     ///
-    /// ProjectGamma:
+    /// proj-gamma:
     ///   - task-g1: active, priority 3
     ///
     /// Orphan (no project):
     ///   - task-orphan: active, priority 1
     fn build_project_test_graph() -> GraphStore {
         let docs = vec![
-            // Project nodes
-            make_doc("projects/proj-alpha.md", "ProjectAlpha", "project", "active", "proj-alpha", None, &[]),
-            make_doc("projects/proj-beta.md", "ProjectBeta", "project", "active", "proj-beta", None, &[]),
-            make_doc("projects/proj-gamma.md", "ProjectGamma", "project", "active", "proj-gamma", None, &[]),
+            // Container nodes declaring explicit project slugs
+            make_container_doc("projects/proj-alpha.md", "ProjectAlpha", "proj-alpha", "proj-alpha"),
+            make_container_doc("projects/proj-beta.md", "ProjectBeta", "proj-beta", "proj-beta"),
+            make_container_doc("projects/proj-gamma.md", "ProjectGamma", "proj-gamma", "proj-gamma"),
             // ProjectAlpha tasks
             make_doc_with_priority("tasks/task-a1.md", "Alpha Task 1", "task", "active", "task-a1", Some("proj-alpha"), &[], 1, Some("alice")),
             make_doc_with_priority("tasks/task-a2.md", "Alpha Task 2", "task", "active", "task-a2", Some("proj-alpha"), &["task-a1"], 2, Some("bob")),
@@ -7291,6 +7341,7 @@ mod tests {
         let seq = TEST_ROOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!("mem-test-pkb-{}-{}", std::process::id(), seq));
         let _ = std::fs::create_dir_all(&root);
+        write_test_polecat_yaml(&root);
         let db = root.join("db");
         PkbSearchServer::new(
             Arc::new(RwLock::new(store)),
@@ -7400,18 +7451,18 @@ mod tests {
             prev_val = m_val;
         }
 
-        // 4. Test Node type filter (node_type = "project")
+        // 4. Test Node type filter (node_type = "epic" — the fixture's 3 containers)
         let res_proj = server
             .handle_top_n_by_metric(&json!({
                 "metric": "degree",
-                "node_type": "project",
+                "node_type": "epic",
                 "n": 10
             }))
             .unwrap();
         let proj_text = res_proj.content[0].raw.as_text().unwrap().text.as_str();
         let proj_val: serde_json::Value = serde_json::from_str(proj_text).unwrap();
         let proj_arr = proj_val.as_array().unwrap();
-        // Since build_project_test_graph has exactly 3 project nodes: proj-alpha, proj-beta, proj-gamma
+        // build_project_test_graph has exactly 3 epic containers: proj-alpha, proj-beta, proj-gamma
         assert_eq!(proj_arr.len(), 3);
         for item in proj_arr {
             let id = item.get("id").unwrap().as_str().unwrap();
@@ -7737,6 +7788,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         std::fs::create_dir_all(root.join("tasks")).unwrap();
+        write_test_polecat_yaml(root);
 
         let graph = GraphStore::build(&[], root);
         let store = VectorStore::new(3);
@@ -9238,6 +9290,11 @@ mod batch_finalize_tests {
     fn build_disk_server(pkb_root: &Path) -> PkbSearchServer {
         std::fs::create_dir_all(pkb_root.join("projects")).unwrap();
         std::fs::write(
+            pkb_root.join("polecat.yaml"),
+            "projects:\n  test-project: {}\n  p: {}\n  aops: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
             pkb_root.join("projects/test-project.md"),
             "---\nid: test-project\ntitle: Test Project\ntype: project\nstatus: active\n---\n\n\
              # Test Project\n",
@@ -9393,6 +9450,11 @@ mod cross_process_recovery_tests {
     fn build_disk_server(pkb_root: &Path) -> PkbSearchServer {
         std::fs::create_dir_all(pkb_root.join("projects")).unwrap();
         std::fs::write(
+            pkb_root.join("polecat.yaml"),
+            "projects:\n  p: {}\n  aops: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
             pkb_root.join("projects/p.md"),
             "---\nid: p\ntitle: P\ntype: project\nstatus: active\n---\n\n# P\n",
         )
@@ -9517,6 +9579,11 @@ mod search_status_projection_tests {
 
     fn build_seeded_server(pkb_root: &Path) -> PkbSearchServer {
         std::fs::create_dir_all(pkb_root.join("projects")).unwrap();
+        std::fs::write(
+            pkb_root.join("polecat.yaml"),
+            "projects:\n  p: {}\n  aops: {}\n",
+        )
+        .unwrap();
         std::fs::write(
             pkb_root.join("projects/p.md"),
             "---\nid: p\ntitle: P\ntype: project\nstatus: active\n---\n\n# P\n",
@@ -10032,12 +10099,17 @@ tags:
 ";
         std::fs::write(tasks_dir.join("daily-template.md"), template_content).unwrap();
 
-        // Write the parent project file so validation passes
+        // Write the parent container file so validation passes
         let projects_dir = root.join("projects");
         std::fs::create_dir_all(&projects_dir).unwrap();
         std::fs::write(
             projects_dir.join("proj-test.md"),
-            "---\nid: proj-test\ntitle: \"Test Project\"\ntype: project\nstatus: active\n---\n",
+            "---\nid: proj-test\ntitle: \"Test Project\"\ntype: epic\nproject: proj-test\nstatus: active\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("polecat.yaml"),
+            "projects:\n  proj-test: {}\n  aops: {}\n",
         )
         .unwrap();
 
@@ -10282,10 +10354,16 @@ tags:
             parent1, parent2,
             "both tasks from the same session should share the same parent epic; parent1={parent1}, parent2={parent2}"
         );
-        // Only one epic should exist with an adhoc- prefix in the graph
+        // Only one SESSION epic should exist with an adhoc- prefix in the graph.
+        // The adhoc-sessions bootstrap root is itself `type: epic` now (project
+        // is no longer a node type), so exclude it from the count.
         let epic_count = graph
             .nodes()
-            .filter(|n| n.node_type.as_deref() == Some("epic") && n.id.starts_with("adhoc-"))
+            .filter(|n| {
+                n.node_type.as_deref() == Some("epic")
+                    && n.id.starts_with("adhoc-")
+                    && n.id != crate::document_crud::ADHOC_SESSIONS_ROOT_ID
+            })
             .count();
         assert_eq!(
             epic_count, 1,

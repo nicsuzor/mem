@@ -18,14 +18,18 @@ fn seed_pkb() -> (tempfile::TempDir, std::path::PathBuf) {
     fs::create_dir_all(root.join("tasks")).unwrap();
     fs::create_dir_all(root.join("projects")).unwrap();
 
-    // Seed a project so parents can resolve
+    // Register the slugs used by these tests so project values validate.
+    fs::write(root.join("polecat.yaml"), "projects:\n  aops: {}\n  beta: {}\n").unwrap();
+
+    // Seed a root container so parents can resolve (project is no longer a
+    // node type — root containers are epics carrying an explicit project slug)
     let proj_path = root.join("projects/proj-root.md");
     fs::write(
         &proj_path,
         "---\n\
          id: proj-root\n\
          title: \"Root Project\"\n\
-         type: project\n\
+         type: epic\n\
          status: active\n\
          project: aops\n\
          ---\n\n# Root Project\n",
@@ -339,10 +343,10 @@ fn test_create_task_missing_parent_returns_suggested_parents() {
         "suggested_parents must contain at least one candidate; got empty list"
     );
 
-    let has_project = suggestions.iter().any(|s| {
-        s.get("type").and_then(|v| v.as_str()) == Some("project")
+    let has_container = suggestions.iter().any(|s| {
+        s.get("type").and_then(|v| v.as_str()) == Some("epic")
     });
-    assert!(has_project, "suggested_parents must include the seeded project node; got: {:?}", suggestions);
+    assert!(has_container, "suggested_parents must include the seeded epic container; got: {:?}", suggestions);
 }
 
 /// When the vector store has no matching project/epic nodes, the error data is None.

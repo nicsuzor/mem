@@ -33,6 +33,7 @@ src/
   vectordb.rs      — VectorStore: cosine similarity search over embeddings
   embeddings.rs    — Embedder: BGE-M3 via ONNX Runtime (1024-dim)
   pkb.rs           — PkbDocument parsing, directory scanning
+  polecat_config.rs — polecat.yaml project-slug registry (validation + alias resolution)
   document_crud.rs — Create/update/delete/append for markdown docs
   metrics.rs       — Network centrality (PageRank, betweenness, degree)
   task_index.rs    — MCP index export (used by CLI graph command)
