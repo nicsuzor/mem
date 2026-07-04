@@ -125,7 +125,6 @@ pub struct MemoryFields {
 ///
 /// Subdirectory routing (overridden by `dir` field):
 /// - `task|bug|epic|feature` → `tasks/`
-/// - `project` → `projects/`
 /// - `goal` → `goals/`
 /// - Everything else → `notes/`
 pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
@@ -153,7 +152,6 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     let type_prefix = match fields.doc_type.as_str() {
         "task" | "epic" => "task",
-        "project" => "proj",
         "memory" => "mem",
         "note" => "note",
         "knowledge" => "kb",
@@ -186,7 +184,6 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         .map(|d| expand_env_vars(&d))
         .unwrap_or_else(|| match fields.doc_type.as_str() {
             "task" | "epic" | "learn" => "tasks".to_string(),
-            "project" => "projects".to_string(),
             "memory" => "memories".to_string(),
             _ => "notes".to_string(),
         });
