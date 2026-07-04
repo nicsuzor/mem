@@ -7316,17 +7316,17 @@ projects:
             make_container_doc("projects/proj-beta.md", "ProjectBeta", "proj-beta", "proj-beta"),
             make_container_doc("projects/proj-gamma.md", "ProjectGamma", "proj-gamma", "proj-gamma"),
             // ProjectAlpha tasks
-            make_doc_with_priority("tasks/task-a1.md", "Alpha Task 1", "task", "active", "task-a1", Some("proj-alpha"), &[], 1, Some("alice")),
-            make_doc_with_priority("tasks/task-a2.md", "Alpha Task 2", "task", "active", "task-a2", Some("proj-alpha"), &["task-a1"], 2, Some("bob")),
+            make_doc_with_priority("tasks/task-a1.md", "Alpha Task 1", "task", "ready", "task-a1", Some("proj-alpha"), &[], 1, Some("alice")),
+            make_doc_with_priority("tasks/task-a2.md", "Alpha Task 2", "task", "ready", "task-a2", Some("proj-alpha"), &["task-a1"], 2, Some("bob")),
             make_doc_with_priority("tasks/task-a3.md", "Alpha Task 3", "task", "done", "task-a3", Some("proj-alpha"), &[], 1, None),
             make_doc_with_priority("tasks/task-a4.md", "Alpha Task 4", "task", "archived", "task-a4", Some("proj-alpha"), &[], 1, None),
             // ProjectBeta tasks — task-b1 is a leaf with no deps (ready), task-b2 depends on task-b1
-            make_doc_with_priority("tasks/task-b1.md", "Beta Task 1", "task", "active", "task-b1", Some("proj-beta"), &[], 1, None),
-            make_doc_with_priority("tasks/task-b2.md", "Beta Task 2", "task", "active", "task-b2", Some("proj-beta"), &["task-b1"], 2, None),
+            make_doc_with_priority("tasks/task-b1.md", "Beta Task 1", "task", "ready", "task-b1", Some("proj-beta"), &[], 1, None),
+            make_doc_with_priority("tasks/task-b2.md", "Beta Task 2", "task", "ready", "task-b2", Some("proj-beta"), &["task-b1"], 2, None),
             // ProjectGamma task
-            make_doc_with_priority("tasks/task-g1.md", "Gamma Task 1", "task", "active", "task-g1", Some("proj-gamma"), &[], 3, None),
+            make_doc_with_priority("tasks/task-g1.md", "Gamma Task 1", "task", "ready", "task-g1", Some("proj-gamma"), &[], 3, None),
             // Orphan task (no parent, no project)
-            make_doc_with_priority("tasks/task-orphan.md", "Orphan Task", "task", "active", "task-orphan", None, &[], 1, None),
+            make_doc_with_priority("tasks/task-orphan.md", "Orphan Task", "task", "ready", "task-orphan", None, &[], 1, None),
         ];
         GraphStore::build(&docs, Path::new("/tmp/test-pkb-project"))
     }
@@ -9841,8 +9841,8 @@ mod tier_rebuild_tests {
     #[test]
     fn tier1_classification_membership_is_fresh() {
         let docs = vec![
-            make_task_doc("task-x", "active", 1, &[]),
-            make_task_doc("task-y", "active", 2, &[]),
+            make_task_doc("task-x", "ready", 1, &[]),
+            make_task_doc("task-y", "ready", 2, &[]),
         ];
         let server = build_server(docs);
 
@@ -9872,8 +9872,8 @@ mod tier_rebuild_tests {
     #[test]
     fn tier1_does_not_recompute_similarity_edges() {
         let docs = vec![
-            make_task_doc("task-x", "active", 1, &[]),
-            make_task_doc("task-y", "active", 2, &[]),
+            make_task_doc("task-x", "ready", 1, &[]),
+            make_task_doc("task-y", "ready", 2, &[]),
         ];
         let server = build_server(docs);
         let sim_before = server
@@ -9949,8 +9949,8 @@ mod tier_rebuild_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn tier2_swap_does_not_revert_concurrent_tier1_patch() {
         let docs = vec![
-            make_task_doc("task-x", "active", 1, &[]),
-            make_task_doc("task-y", "active", 2, &[]),
+            make_task_doc("task-x", "ready", 1, &[]),
+            make_task_doc("task-y", "ready", 2, &[]),
         ];
         let server = build_server(docs);
         // Make Tier-2 slow enough to interleave with a Tier-1 patch.
@@ -10039,8 +10039,8 @@ mod tier_rebuild_tests {
     #[test]
     fn read_after_write_status_visible_immediately() {
         let docs = vec![
-            make_task_doc("task-x", "active", 1, &[]),
-            make_task_doc("task-y", "active", 2, &[]),
+            make_task_doc("task-x", "ready", 1, &[]),
+            make_task_doc("task-y", "ready", 2, &[]),
         ];
         let server = build_server(docs);
 

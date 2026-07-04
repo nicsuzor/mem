@@ -3708,7 +3708,7 @@ mod tests {
                 "tasks/task-a.md",
                 "Task A",
                 "task",
-                "active",
+                "ready",
                 "task-a",
                 Some("epic-1"),
                 &["task-b"],
@@ -3808,7 +3808,7 @@ mod tests {
             },
             GraphNode {
                 id: "target-active".to_string(),
-                status: Some("active".to_string()),
+                status: Some("ready".to_string()),
                 ..Default::default()
             },
             GraphNode {
@@ -4713,7 +4713,7 @@ mod tests {
             let mut fm = serde_json::Map::new();
             fm.insert("title".to_string(), serde_json::json!(id));
             fm.insert("type".to_string(), serde_json::json!("task"));
-            fm.insert("status".to_string(), serde_json::json!("active"));
+            fm.insert("status".to_string(), serde_json::json!("ready"));
             fm.insert("id".to_string(), serde_json::json!(id));
             fm.insert("priority".to_string(), serde_json::json!(priority));
             if let Some(sev) = severity {
@@ -4724,7 +4724,7 @@ mod tests {
                 title: id.to_string(),
                 body: String::new(),
                 doc_type: Some("task".to_string()),
-                status: Some("active".to_string()),
+                status: Some("ready".to_string()),
                 modified: None,
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
