@@ -22,7 +22,7 @@ pub fn batch_update(
 ) -> BatchSummary {
     let mut summary = BatchSummary::new("update", dry_run);
 
-    let matched_ids = filters.resolve(graph);
+    let matched_ids = filters.resolve(graph, pkb_root);
     summary.matched = matched_ids.len();
 
     if matched_ids.is_empty() {
@@ -208,7 +208,7 @@ pub fn batch_archive(
 ) -> BatchSummary {
     let mut summary = BatchSummary::new("archive", dry_run);
 
-    let matched_ids = filters.resolve(graph);
+    let matched_ids = filters.resolve(graph, pkb_root);
     summary.matched = matched_ids.len();
 
     if matched_ids.is_empty() {

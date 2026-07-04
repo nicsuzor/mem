@@ -5917,7 +5917,7 @@ impl PkbSearchServer {
         let graph = self.graph.read();
         let store = self.store.read();
         let report = crate::batch_ops::duplicates::find_duplicates(
-            &graph, &store, &filters, mode, title_threshold, semantic_threshold,
+            &graph, &store, &filters, mode, title_threshold, semantic_threshold, &self.pkb_root,
         );
         drop(graph);
         drop(store);

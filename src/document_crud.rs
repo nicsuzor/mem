@@ -1769,6 +1769,16 @@ fn truncate_slug(slug: &str, max_len: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
+
+    /// Write a minimal polecat.yaml registering the slugs tests use, so
+    /// project values pass registry validation.
+    fn write_test_polecat_yaml(root: &std::path::Path, slugs: &[&str]) {
+        let mut content = String::from("projects:\n");
+        for s in slugs {
+            content.push_str(&format!("  {}: {{}}\n", s));
+        }
+        std::fs::write(root.join("polecat.yaml"), content).unwrap();
+    }
     use super::*;
     use std::fs;
 
@@ -1781,6 +1791,7 @@ mod tests {
     fn test_bulk_reparent_dry_run() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let subdir = root.join("archive");
         fs::create_dir_all(&subdir).unwrap();
 
@@ -1801,6 +1812,7 @@ mod tests {
     fn test_bulk_reparent_apply() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let subdir = root.join("tasks");
         fs::create_dir_all(&subdir).unwrap();
 
@@ -1824,6 +1836,7 @@ mod tests {
     fn test_bulk_reparent_skips_self() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let subdir = root.join("docs");
         fs::create_dir_all(&subdir).unwrap();
 
@@ -1843,6 +1856,7 @@ mod tests {
     fn test_bulk_reparent_skips_already_parented() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let subdir = root.join("notes");
         fs::create_dir_all(&subdir).unwrap();
 
@@ -1953,6 +1967,7 @@ mod tests {
     fn create_task_long_title_produces_short_filename() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let long_title = "word ".repeat(30).trim().to_string(); // ~150 chars
@@ -1985,6 +2000,7 @@ mod tests {
     fn create_task_writes_project_type_status() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
@@ -2019,6 +2035,7 @@ mod tests {
         // must produce ID `aops-<hash>` and filename `aops-<hash>-foo.md`.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2051,6 +2068,7 @@ mod tests {
         // created without an explicit priority must have NO `priority:` field.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2074,6 +2092,7 @@ mod tests {
         // #1905: a caller-supplied priority must still be written verbatim.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2097,6 +2116,7 @@ mod tests {
     fn create_task_defaults_type_and_status() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
@@ -2125,6 +2145,7 @@ mod tests {
         // An explicit priority=0 passed to create_task must be persisted as-is.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2149,6 +2170,7 @@ mod tests {
         // uncurated instance stays distinct from an explicit priority band.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TemplateInstanceFields {
@@ -2171,6 +2193,7 @@ mod tests {
         // A priority copied from the template must be written verbatim.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TemplateInstanceFields {
@@ -2193,6 +2216,7 @@ mod tests {
     fn create_task_allows_missing_project() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
@@ -2214,6 +2238,7 @@ mod tests {
         // lists, and blank lines — is preserved verbatim.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
@@ -2253,6 +2278,7 @@ mod tests {
         // and downstream tools rendered the task as having no metadata.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
         let multiline = "Single biggest token sink in the framework.\nEach cron \
                          firing reuses the prior context window.\nBlows up over time.";
@@ -2313,6 +2339,7 @@ mod tests {
         // ID, knows the title, and defaults type=task).
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
@@ -2354,6 +2381,7 @@ mod tests {
     fn rewrite_body_roundtrip_equality() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2380,6 +2408,7 @@ mod tests {
     fn rewrite_body_preserves_frontmatter() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
@@ -2425,6 +2454,7 @@ mod tests {
     fn rewrite_body_idempotent_on_same_content() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let body = "## Stable\n\nContent that doesn't change.\n";
@@ -2486,6 +2516,7 @@ mod tests {
     fn setup_pkb_with_prototype(template_yaml: &str) -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
+        write_test_polecat_yaml(&root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
         fs::create_dir_all(root.join("notes")).unwrap();
 
@@ -2616,6 +2647,7 @@ mod tests {
     fn edge_without_inherits_from_passes_through_unchanged() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let edge = serde_json::json!({
@@ -2642,6 +2674,7 @@ mod tests {
     fn inherits_from_with_missing_prototype_passes_through() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let edge = serde_json::json!({
@@ -2793,6 +2826,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         // Create a task with an explicit priority so there is a value to clear.
@@ -2854,6 +2888,7 @@ mod tests {
     fn ensure_adhoc_sessions_root_writes_canonical_id() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
 
         ensure_adhoc_sessions_root(root).unwrap();
 
@@ -2879,6 +2914,7 @@ mod tests {
     fn ensure_adhoc_sessions_root_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
 
         // First call creates the file
         ensure_adhoc_sessions_root(root).unwrap();

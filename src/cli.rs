@@ -2972,6 +2972,7 @@ async fn main() -> Result<()> {
                 dup_mode,
                 title_threshold,
                 semantic_threshold,
+                &pkb_root,
             );
 
             if report.clusters.is_empty() {

@@ -4648,63 +4648,63 @@ mod tests {
 
     #[test]
     fn test_compute_project_field_hierarchy() {
-        // Setup a hierarchy:
-        // Project A (type: project)
-        //   Epic B (type: epic, parent: Project A, project: "Wrong Project")
-        //     Task C (type: task, parent: Epic B)
-        // Task D (type: task, project: "Project E") -- no project ancestor
-        
+        // Setup a hierarchy (project = explicit routing slug, inherited via parent):
+        // Epic A (type: epic, project: "aops")
+        //   Epic B (type: epic, parent: Epic A, project: "mem")   -- subtree override
+        //     Task C (type: task, parent: Epic B)                  -- inherits "mem"
+        //   Task F (type: task, parent: Epic A)                    -- inherits "aops"
+        // Task D (type: task, project: "other")                    -- keeps own value
+
+        let mut fm_a = serde_json::Map::new();
+        fm_a.insert("type".to_string(), serde_json::json!("epic"));
+        fm_a.insert("id".to_string(), serde_json::json!("epic-a"));
+        fm_a.insert("project".to_string(), serde_json::json!("aops"));
+
         let mut fm_b = serde_json::Map::new();
         fm_b.insert("type".to_string(), serde_json::json!("epic"));
         fm_b.insert("id".to_string(), serde_json::json!("epic-b"));
-        fm_b.insert("parent".to_string(), serde_json::json!("project-a"));
-        fm_b.insert("project".to_string(), serde_json::json!("Wrong Project"));
-        
+        fm_b.insert("parent".to_string(), serde_json::json!("epic-a"));
+        fm_b.insert("project".to_string(), serde_json::json!("mem"));
+
         let mut fm_d = serde_json::Map::new();
         fm_d.insert("type".to_string(), serde_json::json!("task"));
         fm_d.insert("id".to_string(), serde_json::json!("task-d"));
-        fm_d.insert("project".to_string(), serde_json::json!("Project E"));
+        fm_d.insert("project".to_string(), serde_json::json!("other"));
+
+        let mk_fm_doc = |path: &str, title: &str, fm: serde_json::Map<String, serde_json::Value>| PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: fm.get("type").and_then(|v| v.as_str()).map(String::from),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        };
 
         let docs = vec![
-            make_doc("projects/a.md", "Project A", "project", "active", "project-a", None, &[]),
-            PkbDocument {
-                path: PathBuf::from("epics/b.md"),
-                title: "Epic B".to_string(),
-                body: String::new(),
-                doc_type: Some("epic".to_string()),
-                status: Some("active".to_string()),
-                modified: None,
-                tags: vec![],
-                frontmatter: Some(serde_json::Value::Object(fm_b)),
-                content_hash: "test_hash".to_string(),
-                file_hash: "test_hash".to_string(),
-            },
+            mk_fm_doc("epics/a.md", "Epic A", fm_a),
+            mk_fm_doc("epics/b.md", "Epic B", fm_b),
             make_doc("tasks/c.md", "Task C", "task", "active", "task-c", Some("epic-b"), &[]),
-            PkbDocument {
-                path: PathBuf::from("tasks/d.md"),
-                title: "Task D".to_string(),
-                body: String::new(),
-                doc_type: Some("task".to_string()),
-                status: Some("active".to_string()),
-                modified: None,
-                tags: vec![],
-                frontmatter: Some(serde_json::Value::Object(fm_d)),
-                content_hash: "test_hash".to_string(),
-                file_hash: "test_hash".to_string(),
-            },
+            mk_fm_doc("tasks/d.md", "Task D", fm_d),
+            make_doc("tasks/f.md", "Task F", "task", "active", "task-f", Some("epic-a"), &[]),
         ];
 
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
 
-        let a = graph.get_node("project-a").unwrap();
+        let a = graph.get_node("epic-a").unwrap();
         let b = graph.get_node("epic-b").unwrap();
         let c = graph.get_node("task-c").unwrap();
         let d = graph.get_node("task-d").unwrap();
+        let f = graph.get_node("task-f").unwrap();
 
-        assert_eq!(a.project.as_deref(), Some("project-a"));
-        assert_eq!(b.project.as_deref(), Some("Wrong Project"), "Epic B should keep its explicit 'Wrong Project'");
-        assert_eq!(c.project.as_deref(), Some("project-a"), "Task C should inherit Project A via Epic B (nearest project ancestor)");
-        assert_eq!(d.project.as_deref(), Some("Project E"), "Task D should keep its explicit 'Project E'");
+        assert_eq!(a.project.as_deref(), Some("aops"), "Epic A keeps its explicit slug");
+        assert_eq!(b.project.as_deref(), Some("mem"), "Epic B's explicit slug overrides for its subtree");
+        assert_eq!(c.project.as_deref(), Some("mem"), "Task C inherits the NEAREST explicit value (Epic B's)");
+        assert_eq!(d.project.as_deref(), Some("other"), "Task D keeps its explicit value");
+        assert_eq!(f.project.as_deref(), Some("aops"), "Task F inherits Epic A's slug");
     }
 
     #[test]
@@ -5373,46 +5373,55 @@ mod tests {
 
     #[test]
     fn test_compute_project_field_resolves_via_parent_ancestor() {
-        // Verify the runtime resolution path: a task with no explicit `project` field
-        // but with a `type:project` ancestor gets its project field populated by
-        // compute_project_field (called during graph build).
-        let project_node = make_doc(
-            "tasks/proj-x.md",
-            "Project X",
-            "project",
-            "active",
-            "proj-x",
-            None,
-            &[],
-        );
+        // Verify the runtime resolution path: a task with no explicit `project`
+        // field inherits the nearest parent-chain ancestor's explicit value.
+        let mut fm_epic = serde_json::Map::new();
+        fm_epic.insert("type".to_string(), serde_json::json!("epic"));
+        fm_epic.insert("id".to_string(), serde_json::json!("epic-x"));
+        fm_epic.insert("project".to_string(), serde_json::json!("proj-x"));
+        let epic_node = PkbDocument {
+            path: std::path::PathBuf::from("tasks/epic-x.md"),
+            title: "Epic X".to_string(),
+            body: String::new(),
+            doc_type: Some("epic".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_epic)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        };
         let task_node = make_doc(
             "tasks/task-no-proj.md",
             "Task Without Project",
             "task",
             "ready",
             "task-no-proj",
-            Some("proj-x"),
+            Some("epic-x"),
             &[],
         );
-        let store = GraphStore::build(&[project_node, task_node], Path::new("/tmp/test-pkb-proj"));
+        let store = GraphStore::build(&[epic_node, task_node], Path::new("/tmp/test-pkb-proj"));
         let node = store.get_node("task-no-proj").expect("task-no-proj should exist");
         assert!(
             node.project.is_some(),
-            "task with no explicit project but type:project parent must have project resolved"
+            "task with no explicit project but an ancestor with one must have project resolved"
         );
         assert_eq!(
             node.project.as_deref(),
             Some("proj-x"),
-            "resolved project label should be the project node's slug/id"
+            "resolved project label should be the ancestor's explicit slug"
         );
     }
 
     #[test]
-    fn test_compute_project_field_resolves_to_permalink() {
+    fn test_legacy_project_type_reads_as_epic() {
+        // Legacy `type: project` files read-coerce to epic; their explicit
+        // `project:` value (self-referential idiom) still inherits normally.
         let mut fm_proj = serde_json::Map::new();
         fm_proj.insert("type".to_string(), serde_json::json!("project"));
         fm_proj.insert("id".to_string(), serde_json::json!("tja-951bc29c"));
         fm_proj.insert("permalink".to_string(), serde_json::json!("tja"));
+        fm_proj.insert("project".to_string(), serde_json::json!("tja"));
 
         let project_node = PkbDocument {
             path: std::path::PathBuf::from("projects/tja.md"),
@@ -5438,11 +5447,17 @@ mod tests {
         );
 
         let store = GraphStore::build(&[project_node, task_node], Path::new("/tmp/test-pkb-tja"));
+        let container = store.get_node("tja-951bc29c").expect("container should exist");
+        assert_eq!(
+            container.node_type.as_deref(),
+            Some("epic"),
+            "legacy type: project must read-coerce to epic"
+        );
         let node = store.get_node("task-tja").expect("task-tja should exist");
         assert_eq!(
             node.project.as_deref(),
             Some("tja"),
-            "resolved project should be the project node's permalink/slug"
+            "child inherits the container's explicit project value"
         );
     }
 }

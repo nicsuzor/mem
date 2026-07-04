@@ -424,60 +424,30 @@ fn fallback_parse_frontmatter(content: &str) -> Option<serde_json::Value> {
     }
 }
 
-/// Map of document ID → (parent_id, doc_type) for ancestor lookups.
+/// Map of document ID → (parent_id, explicit project value) for ancestor lookups.
 /// Built during lint_directory pre-pass.
-/// Tuple: (parent_id, contributes_to+closes ids, doc_type)
-pub type AncestorMap = HashMap<String, (Option<String>, Vec<String>, Option<String>)>;
+pub type AncestorMap = HashMap<String, (Option<String>, Option<String>)>;
 
 /// Set of IDs that appear as a parent of at least one other node.
 /// A node in this set has children (scope > 0).
 pub type ChildrenSet = HashSet<String>;
 
-/// Walk the parent chain to check if any ancestor's ID matches the given value.
-fn has_matching_ancestor(id: &str, project_value: &str, ancestor_map: &AncestorMap) -> bool {
+/// Walk the parent chain to find a node with an explicit `project:` value.
+/// Mirrors the inheritance rule used by compute_project_field in graph_store.rs.
+fn resolves_project(id: &str, ancestor_map: &AncestorMap) -> bool {
     let mut current = id.to_string();
     let mut visited = HashSet::new();
-    for _ in 0..20 {
-        // max hops to avoid cycles
-        if !visited.insert(current.clone()) {
-            break;
-        }
+    while visited.insert(current.clone()) {
         let entry = match ancestor_map.get(&current) {
             Some(e) => e,
             None => break,
         };
-        if let Some(ref parent_id) = entry.0 {
-            if parent_id == project_value {
-                return true;
-            }
-            current = parent_id.clone();
-        } else {
-            break;
+        if entry.1.is_some() {
+            return true;
         }
-    }
-    false
-}
-
-/// BFS upward over parent + contributes_to + closes edges to find a project-typed ancestor.
-/// Mirrors the edge set used by compute_project_field in graph_store.rs.
-fn resolves_project_node(id: &str, ancestor_map: &AncestorMap) -> bool {
-    let mut queue = std::collections::VecDeque::new();
-    let mut visited = HashSet::new();
-    queue.push_back(id.to_string());
-    while let Some(current) = queue.pop_front() {
-        if !visited.insert(current.clone()) {
-            continue;
-        }
-        if let Some(entry) = ancestor_map.get(&current) {
-            if entry.2.as_deref() == Some("project") {
-                return true;
-            }
-            if let Some(ref parent_id) = entry.0 {
-                queue.push_back(parent_id.clone());
-            }
-            for target_id in &entry.1 {
-                queue.push_back(target_id.clone());
-            }
+        match entry.0 {
+            Some(ref parent_id) => current = parent_id.clone(),
+            None => break,
         }
     }
     false
@@ -679,7 +649,10 @@ fn check_frontmatter(
 
     // id format check (should match prefix-hex pattern)
     // Prefix may contain uppercase letters (e.g. "academicOps-b5d43955" is valid)
-    // Goals, targets, and projects use special canonical IDs (e.g. "my-project") — skip format check.
+    // Goals and targets use special canonical IDs (e.g. "my-goal") — skip format
+    // check. Legacy `type: project` files (retired type) keep the exemption so
+    // their canonical IDs never get flagged/renamed; the deprecation warning
+    // surfaces them instead.
     let node_type_for_id = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let is_root_node = matches!(node_type_for_id, "goal" | "target" | "project");
     if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
@@ -709,28 +682,28 @@ fn check_frontmatter(
         });
     }
 
-    // Project field: required for actionable tasks (ready/queued); project nodes are their own project
-    if is_task_type && node_type != "project" {
+    // Project field: required for actionable tasks (ready/queued). A task
+    // satisfies this by declaring its own `project: <slug>` or by inheriting
+    // one from the nearest ancestor (parent chain) that declared one.
+    if is_task_type || node_type == "project" {
         let status_val = fm.get("status").and_then(|v| v.as_str()).unwrap_or("");
         let canonical_status = graph::resolve_status_alias(status_val);
         if matches!(canonical_status, "ready" | "queued") && !fm.contains_key("project") {
             let mut resolves = false;
-            // Start BFS from the task's own id so contributes_to/closes edges on the
-            // task itself are also followed (not just the parent chain).
-            let start_id = fm.get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| fm.get("parent").and_then(|v| v.as_str()).map(|s| s.to_string()));
-            if let Some(id) = start_id {
+            // Start from the parent: the task's own map entry mirrors its own
+            // (absent) project field, so walking from the parent is equivalent
+            // and avoids a pointless self-hop.
+            let start_id = fm.get("parent").and_then(|v| v.as_str()).map(|s| s.to_string());
+            if let Some(parent_id) = start_id {
                 if let Some(map) = ancestor_map {
-                    resolves = resolves_project_node(&id, map);
+                    resolves = resolves_project(&parent_id, map);
                 }
             }
             if !resolves {
                 diags.push(Diagnostic {
                     severity: Severity::Warning,
                     rule: "fm-missing-project",
-                    message: "Actionable tasks (ready/queued) must have an explicit 'project' field or resolve to a project node via ancestors".into(),
+                    message: "Actionable tasks (ready/queued) must have an explicit 'project' field or inherit one from an ancestor".into(),
                     line: None,
                     fixable: false,
                 });
@@ -1068,22 +1041,9 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, 
         // Note: fm-id-format fix is handled at directory level via rename_id
         // (requires cross-file reference updates)
 
-        // Fix 5c: Remove deprecated 'project' field from frontmatter
-        if let Some(project_val) = fm.get("project").and_then(|v| v.as_str()) {
-            let has_parent = fm.contains_key("parent");
-            let doc_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let can_fix = if !has_parent {
-                true
-            } else if let Some(amap) = ancestor_map {
-                has_matching_ancestor(doc_id, project_val, amap)
-            } else {
-                false
-            };
-            if can_fix {
-                let re = regex::Regex::new(r"(?m)^project:.*\n").unwrap();
-                result = re.replace(&result, "").to_string();
-            }
-        }
+        // (Former Fix 5c removed: an explicit `project:` value is no longer
+        // deprecated — it is the polecat.yaml routing slug that declares or
+        // overrides the project for this node and its subtree.)
 
         // Fix 6: Migrate 'body' frontmatter key → append its value to the markdown body
         if fm.contains_key("body") {
@@ -1397,22 +1357,15 @@ pub fn lint_directory(
                 .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
             let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
             let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
-            let doc_type = fm.get("type").and_then(|v| v.as_str()).map(String::from);
-            let mut upward_edges: Vec<String> = Vec::new();
-            if let Some(arr) = fm.get("contributes_to").and_then(|v| v.as_array()) {
-                upward_edges.extend(arr.iter().filter_map(|v| v.as_str()).map(String::from));
-            }
-            if let Some(arr) = fm.get("closes").and_then(|v| v.as_array()) {
-                upward_edges.extend(arr.iter().filter_map(|v| v.as_str()).map(String::from));
-            }
-            Some((id, (parent, upward_edges, doc_type)))
+            let project = fm.get("project").and_then(|v| v.as_str()).map(String::from);
+            Some((id, (parent, project)))
         })
         .collect();
 
     // Derive children set: IDs that appear as a parent of at least one node.
     let children_set: ChildrenSet = ancestor_map
         .values()
-        .filter_map(|(parent_id, _, _)| parent_id.clone())
+        .filter_map(|(parent_id, _)| parent_id.clone())
         .collect();
 
     // ── Hard cycle detection ─────────────────────────────────────────────────
@@ -1463,7 +1416,7 @@ pub fn lint_directory(
         // Parent-only adjacency for the parent-cycle rule. Parent/child must
         // be a DAG; depends_on / blocks / soft_blocks may still be circular.
         let mut parent_adj: HashMap<String, Vec<String>> = HashMap::new();
-        for (id, (parent, _upward, _doc_type)) in &ancestor_map {
+        for (id, (parent, _project)) in &ancestor_map {
             if let Some(p) = parent {
                 parent_adj.insert(id.clone(), vec![p.clone()]);
             }
@@ -1595,6 +1548,50 @@ pub fn lint_directory(
         diag_map
     };
 
+    // ── Project slug validation ─────────────────────────────────────────────
+    // Explicit `project:` values must resolve against polecat.yaml (or be a
+    // builtin slug). The registry is loaded once for the whole run; when no
+    // polecat.yaml is locatable, non-builtin values are flagged (mem cannot
+    // vouch for a slug it cannot check — same rule the write paths enforce).
+    let project_slug_diags: HashMap<PathBuf, Diagnostic> = {
+        let registry = match crate::polecat_config::PolecatRegistry::load(pkb_root) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("lint: failed to load polecat.yaml: {e:#}");
+                None
+            }
+        };
+        files
+            .par_iter()
+            .filter_map(|p| {
+                let content = std::fs::read_to_string(p).ok()?;
+                let matter = Matter::<YAML>::new();
+                let parsed = matter.parse(&content);
+                let fm = parsed
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
+                let project_val = fm.get("project").and_then(|v| v.as_str())?.trim();
+                if project_val.is_empty() {
+                    return None;
+                }
+                match crate::polecat_config::resolve_with(registry.as_ref(), project_val) {
+                    Ok(_) => None,
+                    Err(e) => Some((
+                        p.clone(),
+                        Diagnostic {
+                            severity: Severity::Warning,
+                            rule: "fm-unregistered-project",
+                            message: format!("{e:#}"),
+                            line: None,
+                            fixable: false,
+                        },
+                    )),
+                }
+            })
+            .collect()
+    };
+
     // Pre-fix pass: collect ID renames needed (old_id → new_id) before per-file fixes
     // Only IDs that genuinely don't match the prefix-hexhash pattern are renamed.
     // Prefix may contain uppercase letters (e.g. "academicOps-b5d43955").
@@ -1609,7 +1606,9 @@ pub fn lint_directory(
                 let fm = parsed.data.as_ref()
                     .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
                 let id = fm.get("id")?.as_str()?;
-                // Goals, targets, and projects use special canonical IDs — never auto-rename them.
+                // Goals and targets use special canonical IDs — never auto-rename
+                // them. Legacy `type: project` files (retired type) keep the
+                // exemption too: renaming their IDs would break references.
                 let node_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 if !id.is_empty() && !id_re.is_match(id) && !matches!(node_type, "goal" | "target" | "project") {
                     let prefix = extract_id_prefix(id);
@@ -1629,12 +1628,15 @@ pub fn lint_directory(
         .map(|p| lint_file(p, fix, known_ids.as_ref(), Some(&ancestor_map), Some(&children_set)))
         .collect();
 
-    // Merge cycle diagnostics into per-file results
+    // Merge cycle + project-slug diagnostics into per-file results
     for r in &mut results {
         if let Some(diag) = cycle_diags.get(&r.path) {
             r.diagnostics.push(diag.clone());
         }
         if let Some(diag) = parent_cycle_diags.get(&r.path) {
+            r.diagnostics.push(diag.clone());
+        }
+        if let Some(diag) = project_slug_diags.get(&r.path) {
             r.diagnostics.push(diag.clone());
         }
     }
@@ -1703,29 +1705,25 @@ pub fn lint_directory(
                     .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
                 let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
                 let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
-                let doc_type = fm.get("type").and_then(|v| v.as_str()).map(String::from);
-                let mut upward_edges: Vec<String> = Vec::new();
-                if let Some(arr) = fm.get("contributes_to").and_then(|v| v.as_array()) {
-                    upward_edges.extend(arr.iter().filter_map(|v| v.as_str()).map(String::from));
-                }
-                if let Some(arr) = fm.get("closes").and_then(|v| v.as_array()) {
-                    upward_edges.extend(arr.iter().filter_map(|v| v.as_str()).map(String::from));
-                }
-                Some((id, (parent, upward_edges, doc_type)))
+                let project = fm.get("project").and_then(|v| v.as_str()).map(String::from);
+                Some((id, (parent, project)))
             })
             .collect();
         let children_set: ChildrenSet = ancestor_map
             .values()
-            .filter_map(|(parent_id, _, _)| parent_id.clone())
+            .filter_map(|(parent_id, _)| parent_id.clone())
             .collect();
 
-        // Return fresh results after renames (cycle diagnostics still apply)
+        // Return fresh results after renames (cycle + project-slug diagnostics still apply)
         let mut results: Vec<FileResult> = files
             .par_iter()
             .map(|p| lint_file(p, false, known_ids.as_ref(), Some(&ancestor_map), Some(&children_set)))
             .collect();
         for r in &mut results {
             if let Some(diag) = cycle_diags.get(&r.path) {
+                r.diagnostics.push(diag.clone());
+            }
+            if let Some(diag) = project_slug_diags.get(&r.path) {
                 r.diagnostics.push(diag.clone());
             }
         }
@@ -2218,11 +2216,12 @@ Body.\n");
 
     #[test]
     fn test_missing_project_resolved_via_ancestor() {
-        let content_task = "---\nid: task-1\ntitle: Task 1\ntype: task\nstatus: ready\nparent: proj-1\n---\n";
-        
+        let content_task = "---\nid: task-1\ntitle: Task 1\ntype: task\nstatus: ready\nparent: epic-1\n---\n";
+
+        // epic-1 declares an explicit project slug; task-1 inherits it.
         let mut ancestor_map = AncestorMap::new();
-        ancestor_map.insert("proj-1".to_string(), (None, vec![], Some("project".to_string())));
-        ancestor_map.insert("task-1".to_string(), (Some("proj-1".to_string()), vec![], Some("task".to_string())));
+        ancestor_map.insert("epic-1".to_string(), (None, Some("aops".to_string())));
+        ancestor_map.insert("task-1".to_string(), (Some("epic-1".to_string()), None));
 
         let mut diags = Vec::new();
         let matter = Matter::<YAML>::new();
@@ -2239,17 +2238,20 @@ Body.\n");
         );
 
         let has_warning = diags.iter().any(|d| d.rule == "fm-missing-project");
-        assert!(!has_warning, "Task 1 has proj-1 as ancestor so it resolves project and must NOT trigger warning");
+        assert!(!has_warning, "Task 1 inherits epic-1's explicit project and must NOT trigger warning");
 
-        // Reparenting to a non-project node that does not resolve project
+        // Reparenting under an ancestor chain with no explicit project value
+        let content_no = "---\nid: task-1\ntitle: Task 1\ntype: task\nstatus: ready\nparent: other-task\n---\n";
+        let parsed_no = matter.parse(content_no);
+        let fm_data_no = parsed_no.data.as_ref().and_then(|d| d.deserialize::<serde_json::Value>().ok());
         let mut ancestor_map_no_project = AncestorMap::new();
-        ancestor_map_no_project.insert("task-1".to_string(), (Some("other-task".to_string()), vec![], Some("task".to_string())));
-        ancestor_map_no_project.insert("other-task".to_string(), (None, vec![], Some("task".to_string())));
+        ancestor_map_no_project.insert("task-1".to_string(), (Some("other-task".to_string()), None));
+        ancestor_map_no_project.insert("other-task".to_string(), (None, None));
 
         let mut diags_no = Vec::new();
         check_frontmatter(
-            content_task,
-            &fm_data,
+            content_no,
+            &fm_data_no,
             &mut diags_no,
             None,
             Some(&ancestor_map_no_project),
@@ -2257,18 +2259,18 @@ Body.\n");
         );
 
         let has_warning_no = diags_no.iter().any(|d| d.rule == "fm-missing-project");
-        assert!(has_warning_no, "Task 1 has other-task as ancestor which doesn't resolve to a project, so it must trigger warning");
+        assert!(has_warning_no, "Task 1's ancestor chain declares no project, so it must trigger warning");
     }
 
     #[test]
-    fn test_missing_project_resolved_via_contributes_to() {
-        // Task with contributes_to pointing to a project node (no parent edge) — must not warn.
-        // This mirrors the edge set followed by compute_project_field in graph_store.rs.
-        let content_task = "---\nid: task-2\ntitle: Task 2\ntype: task\nstatus: ready\ncontributes_to:\n  - proj-x\n---\n";
+    fn test_missing_project_not_resolved_via_contributes_to() {
+        // contributes_to points at out-of-tree goals/targets, which carry no
+        // routing slug — it must NOT satisfy the project requirement.
+        let content_task = "---\nid: task-2\ntitle: Task 2\ntype: task\nstatus: ready\ncontributes_to:\n  - target-x\n---\n";
 
         let mut ancestor_map = AncestorMap::new();
-        ancestor_map.insert("proj-x".to_string(), (None, vec![], Some("project".to_string())));
-        ancestor_map.insert("task-2".to_string(), (None, vec!["proj-x".to_string()], Some("task".to_string())));
+        ancestor_map.insert("target-x".to_string(), (None, Some("aops".to_string())));
+        ancestor_map.insert("task-2".to_string(), (None, None));
 
         let matter = Matter::<YAML>::new();
         let parsed = matter.parse(content_task);
@@ -2285,6 +2287,24 @@ Body.\n");
         );
 
         let has_warning = diags.iter().any(|d| d.rule == "fm-missing-project");
-        assert!(!has_warning, "Task 2 contributes_to a project node and must NOT trigger fm-missing-project warning");
+        assert!(has_warning, "contributes_to must not satisfy the project requirement (parent-chain only)");
+    }
+
+    #[test]
+    fn test_deprecated_project_type_warns_and_fixes_to_epic() {
+        let content = "---\nid: my-container\ntitle: Legacy Container\ntype: project\nstatus: in_progress\n---\n\nBody.\n";
+        let diags = lint_str(content);
+        assert!(
+            diags.iter().any(|d| d.rule == "fm-deprecated-project-type"),
+            "type: project must trigger the deprecation warning, got: {diags:?}"
+        );
+        // No fm-id-format noise for legacy canonical IDs on project files.
+        assert!(
+            !diags.iter().any(|d| d.rule == "fm-id-format"),
+            "legacy project files keep the canonical-ID exemption, got: {diags:?}"
+        );
+        // --fix reclassifies to epic via resolve_type_alias.
+        let fixed = fix_str(content);
+        assert!(fixed.contains("type: epic"), "fix should rewrite type: project → epic, got:\n{fixed}");
     }
 }

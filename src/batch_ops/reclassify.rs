@@ -38,7 +38,7 @@ pub fn batch_reclassify(
         return summary;
     }
 
-    let matched_ids = filters.resolve(graph);
+    let matched_ids = filters.resolve(graph, pkb_root);
     summary.matched = matched_ids.len();
 
     if matched_ids.is_empty() {

@@ -69,8 +69,9 @@ pub fn find_duplicates(
     mode: DuplicateMode,
     title_threshold: f64,
     semantic_threshold: f64,
+    pkb_root: &std::path::Path,
 ) -> DuplicateReport {
-    let matched_ids = filters.resolve(graph);
+    let matched_ids = filters.resolve(graph, pkb_root);
 
     // Collect nodes for comparison
     let nodes: Vec<&GraphNode> = matched_ids
