@@ -129,6 +129,7 @@ const KNOWN_KEYS: &[&str] = &[
     "due",
     "created",
     "modified",
+    "last_modified",
     "source",
     "confidence",
     "supersedes",
