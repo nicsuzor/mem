@@ -129,6 +129,7 @@ const KNOWN_KEYS: &[&str] = &[
     "due",
     "created",
     "modified",
+    "last_modified",
     "source",
     "confidence",
     "supersedes",
@@ -2036,6 +2037,14 @@ Body.\n");
     fn alias_key_is_known() {
         let diags = lint_str("---\ntitle: Test\ntype: note\nalias: foo\n---\n\nBody.\n");
         assert!(!diags.iter().any(|d| d.rule == "fm-unknown-key"), "alias should be a known key");
+    }
+
+    #[test]
+    fn last_modified_key_is_known() {
+        let diags = lint_str("---\ntitle: Test\ntype: note\ncreated: 2026-01-01T00:00:00Z\nmodified: 2026-01-01T00:00:00Z\nlast_modified: 2026-01-01T00:00:00+10:00\n---\n\nBody.\n");
+        assert!(!diags.iter().any(|d| d.rule == "fm-unknown-key"),
+            "last_modified should be a known key, got: {:?}",
+            diags.iter().filter(|d| d.rule == "fm-unknown-key").map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]

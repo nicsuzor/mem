@@ -297,6 +297,7 @@ title: Human-readable title
 type: task|note|knowledge|memory|insight|...
 created: 2026-02-22T10:00:00Z
 modified: 2026-02-22T10:00:00Z
+last_modified: 2026-07-04T18:40:17+10:00
 alias: [resolution-keys]
 permalink: same-as-id
 # Optional:

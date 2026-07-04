@@ -200,6 +200,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     let now = chrono::Utc::now().to_rfc3339();
+    let local_now = chrono::Local::now().to_rfc3339();
 
     // Build YAML frontmatter
     let mut fm = String::from("---\n");
@@ -211,6 +212,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     fm.push_str(&format!("type: {}\n", fields.doc_type));
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
+    fm.push_str(&format!("last_modified: {}\n", local_now));
 
     // Alias and permalink
     let slug = slugify(&fields.title);
@@ -365,6 +367,9 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
         anyhow::bail!("Sub-task file already exists: {}", path.display());
     }
 
+    let now = chrono::Utc::now().to_rfc3339();
+    let local_now = chrono::Local::now().to_rfc3339();
+
     let mut fm = String::from("---\n");
     fm.push_str(&format!("id: {}\n", id));
     fm.push_str(&format!(
@@ -372,6 +377,9 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
         yaml_escape_double_quoted(&fields.title)
     ));
     fm.push_str("type: subtask\n");
+    fm.push_str(&format!("created: {}\n", now));
+    fm.push_str(&format!("modified: {}\n", now));
+    fm.push_str(&format!("last_modified: {}\n", local_now));
     // New captures default to `inbox` (canonical), matching create_task; the
     // computed ready-gate graduates it once it has AC and resolved deps.
     fm.push_str("status: inbox\n");
@@ -414,9 +422,10 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
     // plus the alias entry both register "adhoc-sessions" in the id_map so
     // tasks written with either form resolve to the same node.
     let now = chrono::Utc::now().to_rfc3339();
+    let local_now = chrono::Local::now().to_rfc3339();
     let id = ADHOC_SESSIONS_ROOT_ID;
     let content = format!(
-        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: epic\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
+        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: epic\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nlast_modified: {local_now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
     std::fs::write(&adhoc_path, content)
         .with_context(|| format!("Failed to write adhoc-sessions root: {}", adhoc_path.display()))?;
@@ -511,6 +520,9 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         anyhow::bail!("Task file already exists: {}", path.display());
     }
 
+    let now = chrono::Utc::now().to_rfc3339();
+    let local_now = chrono::Local::now().to_rfc3339();
+
     // Build YAML frontmatter
     let mut fm = String::from("---\n");
     fm.push_str(&format!("id: {}\n", id));
@@ -522,6 +534,9 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         "type: {}\n",
         fields.task_type.as_deref().unwrap_or("task")
     ));
+    fm.push_str(&format!("created: {}\n", now));
+    fm.push_str(&format!("modified: {}\n", now));
+    fm.push_str(&format!("last_modified: {}\n", local_now));
     fm.push_str(&format!(
         "status: {}\n",
         fields.status.as_deref().unwrap_or("inbox")
@@ -800,6 +815,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     fm.push_str(&format!("template_id: \"{}\"\n", yaml_escape_double_quoted(&fields.template_id)));
     fm.push_str(&format!("created: {}\n", created_at));
     fm.push_str(&format!("modified: {}\n", created_at));
+    fm.push_str(&format!("last_modified: {}\n", chrono::Local::now().to_rfc3339()));
 
     let slug = slugify(&instance_title);
     fm.push_str("alias:\n");
@@ -904,7 +920,11 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
         fm.push_str(&format!("supersedes: \"{}\"\n", yaml_escape_double_quoted(s)));
     }
 
-    fm.push_str(&format!("created: {}\n", chrono::Utc::now().to_rfc3339()));
+    let now = chrono::Utc::now().to_rfc3339();
+    let local_now = chrono::Local::now().to_rfc3339();
+    fm.push_str(&format!("created: {}\n", now));
+    fm.push_str(&format!("modified: {}\n", now));
+    fm.push_str(&format!("last_modified: {}\n", local_now));
     fm.push_str("---\n\n");
 
     let body = fields
@@ -1306,6 +1326,10 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         "modified".to_string(),
         serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
     );
+    fm.insert(
+        "last_modified".to_string(),
+        serde_json::Value::String(chrono::Local::now().to_rfc3339()),
+    );
 
     // Rebuild the file
     let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
@@ -1368,6 +1392,10 @@ pub fn rewrite_body(path: &Path, new_body: &str, preserve_frontmatter: bool) -> 
             "modified".to_string(),
             serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
         );
+        fm.insert(
+            "last_modified".to_string(),
+            serde_json::Value::String(chrono::Local::now().to_rfc3339()),
+        );
 
         let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
         let body_chars_after = trimmed_body.len();
@@ -1419,6 +1447,10 @@ pub fn append_to_document(path: &Path, content: &str, section: Option<&str>) -> 
     fm.insert(
         "modified".to_string(),
         serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+    );
+    fm.insert(
+        "last_modified".to_string(),
+        serde_json::Value::String(chrono::Local::now().to_rfc3339()),
     );
 
     let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
@@ -1999,6 +2031,45 @@ mod tests {
             stem.len() <= 100,
             "filename stem must be ≤100 chars for long titles, got {} chars: {stem}",
             stem.len()
+        );
+    }
+
+    #[test]
+    fn create_task_last_modified_has_explicit_offset() {
+        // `last_modified` must carry an explicit numeric UTC offset (e.g. "+10:00"
+        // or "+00:00"), never a bare "Z". A bare "Z" would mean the value collapsed
+        // to `chrono::Utc` formatting and lost the "local timezone" semantics this
+        // field exists for, even if the host's local offset happens to be zero.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Offset check".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let last_modified_line = content
+            .lines()
+            .find(|l| l.starts_with("last_modified:"))
+            .expect("last_modified field must be present");
+        // The date portion always contains '-', so isolate the time-of-day
+        // portion (after 'T') where '-' or '+' can only appear as an offset sign.
+        let time_part = last_modified_line
+            .split('T')
+            .nth(1)
+            .expect("last_modified must be a full RFC3339 timestamp with a 'T' separator");
+        assert!(
+            !time_part.trim_end().ends_with('Z'),
+            "last_modified must use an explicit offset, not 'Z': {last_modified_line}"
+        );
+        assert!(
+            time_part.contains('+') || time_part.contains('-'),
+            "last_modified must contain a numeric UTC offset: {last_modified_line}"
         );
     }
 
