@@ -1714,12 +1714,12 @@ impl PkbSearchServer {
         };
 
         // Hierarchy validation: actionable tasks must have a parent. Strategic
-        // out-of-tree nodes (`goal`, `target`) and root-able types (`epic`, `learn`,
-        // `project`) are exempt — goals & targets live beside the work tree and are
+        // out-of-tree nodes (`goal`, `target`) and root-able types (`epic`,
+        // `learn`) are exempt — goals & targets live beside the work tree and are
         // never parented (work links to them via `contributes_to`); epics may be
         // root-level containers per the PKB type taxonomy spec.
         let task_type_str = fields.task_type.as_deref().unwrap_or("task");
-        let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn" | "project");
+        let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn");
         if fields.parent.is_none() && !root_able {
             // Semantic search for candidate parents so agents can immediately see options.
             let suggested_parents: Option<serde_json::Value> = if !fields.title.is_empty() {
@@ -1735,7 +1735,7 @@ impl PkbSearchServer {
                                 break;
                             }
                             match r.doc_type.as_deref() {
-                                Some("project") | Some("epic") => {
+                                Some("epic") => {
                                     suggestions.push(serde_json::json!({
                                         "id": r.id,
                                         "title": r.title,
@@ -1762,7 +1762,7 @@ impl PkbSearchServer {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
                     "Missing required parameter: parent. Tasks must have a parent node. \
-                     Only goal, target, epic, learn, and project types can be root-level.",
+                     Only goal, target, epic, and learn types can be root-level.",
                 ),
                 data: suggested_parents,
             });
@@ -2989,7 +2989,7 @@ impl PkbSearchServer {
 
         // Hierarchy validation: warn if task-like type without parent
         let mut warnings = Vec::new();
-        let root_allowed = ["learn", "project"];
+        let root_allowed = ["learn", "epic"];
         let task_like = ["task", "epic"];
         if task_like.contains(&doc_type) && fields.parent.is_none() {
             warnings.push(format!(
@@ -5042,9 +5042,13 @@ impl PkbSearchServer {
             });
         }
         if let Some(p) = project {
-            let resolved_slug = graph.resolve(p)
-                .filter(|n| n.node_type.as_deref() == Some("project"))
-                .map(|n| n.permalink.clone().unwrap_or_else(|| n.id.clone()));
+            // Resolve the filter value through the polecat.yaml registry so an
+            // alias (e.g. `ao`) matches tasks stored with the canonical slug.
+            // A missing/unregistered value falls back to literal matching.
+            let resolved_slug = crate::polecat_config::PolecatRegistry::load(&self.pkb_root)
+                .ok()
+                .flatten()
+                .and_then(|reg| reg.resolve(p));
 
             tasks.retain(|t| {
                 t.project
@@ -5377,6 +5381,21 @@ impl PkbSearchServer {
                 ),
                 data: None,
             });
+        }
+
+        // Validate + canonicalize a project change against polecat.yaml before
+        // it reaches disk. `null` is an explicit "remove project" and passes
+        // through untouched.
+        if let Some(v) = updates.get("project") {
+            if let Some(raw) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                let canonical = crate::polecat_config::resolve_project(&self.pkb_root, raw)
+                    .map_err(|e| McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!("{e:#}")),
+                        data: None,
+                    })?;
+                updates.insert("project".to_string(), serde_json::Value::String(canonical));
+            }
         }
 
         // Validate parent change: reject if the new parent does not exist
@@ -6390,7 +6409,7 @@ impl PkbSearchServer {
                         "before": { "type": "string", "description": "Filter: date <= YYYY-MM-DD" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." },
                         "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (hides closed tasks so search returns actionable work)." },
-                        "type": { "type": "string", "description": "Filter by task type. Single value (e.g. 'epic') or comma-separated list (e.g. 'epic,feature'). Recognised actionable types: project, epic, task, learn. Default: all actionable types." }
+                        "type": { "type": "string", "description": "Filter by task type. Single value (e.g. 'epic') or comma-separated list (e.g. 'epic,feature'). Recognised actionable types: epic, task, learn. Default: all actionable types." }
                     },
                     "required": ["query"]
                 }))
@@ -6462,8 +6481,8 @@ impl PkbSearchServer {
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
-                        "project": { "type": "string", "description": "Project identifier (optional if ancestor resolves project, e.g. 'aops', 'mem', 'adhoc-sessions')" },
-                        "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, target, project. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
+                        "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (slug or any registered alias; canonicalized on write). Optional — omitted tasks inherit the nearest ancestor's project. Builtins 'task' and 'adhoc-sessions' are always accepted." },
+                        "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, target. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
                         "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
                         "allow_missing_parent": { "type": "boolean", "description": "Allow creating under a missing parent (logs warning). Default: false." },
                         "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." }
@@ -6516,7 +6535,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Document title (required)" },
-                        "type": { "type": "string", "description": "Document type (required): note, knowledge, memory, insight, observation, task, project, goal, target, etc." },
+                        "type": { "type": "string", "description": "Document type (required): note, knowledge, memory, insight, observation, task, epic, goal, target, etc." },
                         "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body" },
@@ -6635,7 +6654,7 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "project": { "type": "string", "description": "Filter by project name (case-insensitive). Returns tasks whose computed project field (nearest ancestor with node_type=project) matches." },
+                        "project": { "type": "string", "description": "Filter by project slug or any polecat.yaml alias (case-insensitive). Returns tasks whose project field (own or inherited from the nearest ancestor that set one) matches." },
                         "status": { "type": "string", "description": "Filter by status. Special values: 'ready' (actionable leaf tasks), 'blocked' (tasks with unmet deps). Also any canonical status: inbox, queued, in_progress, review, merge_ready, paused, someday, partial, done, cancelled." },
                         "priority": { "type": "integer", "description": "Filter to tasks whose effective priority (own or any downstream task via blocks/parent) ≤ N. E.g. priority=0 returns every task that touches a P0, including its blockers." },
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
@@ -6854,7 +6873,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "limit": { "type": "integer", "description": "Max results (default: all). Set to 0 for unlimited." },
-                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"project\"]). Overrides default actionable-only filter." },
+                        "types": { "type": "array", "items": { "type": "string" }, "description": "Filter by node type (e.g. [\"task\"], [\"task\", \"epic\"]). Overrides default actionable-only filter." },
                         "include_all": { "type": "boolean", "description": "Include all node types (notes, memories, etc.) — default false." }
                     }
                 }))
@@ -6893,7 +6912,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().idempotent(true)),
             Tool::new(
                 "batch_reparent",
-                "Bulk move tasks to a new parent node. Use for major restructuring, such as grouping flat tasks into a new project or epic.",
+                "Bulk move tasks to a new parent node. Use for major restructuring, such as grouping flat tasks into a new epic.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -7090,7 +7109,7 @@ impl PkbSearchServer {
                         "status": { "type": "string", "description": "Filter by status" },
                         "type": { "type": "string", "description": "Filter by current type" },
                         "title_contains": { "type": "string", "description": "Filter by title substring" },
-                        "new_type": { "type": "string", "description": "New document type (task, memory, note, knowledge, project, epic, goal)" },
+                        "new_type": { "type": "string", "description": "New document type (task, memory, note, knowledge, epic, goal)" },
                         "dry_run": { "type": "boolean", "description": "Preview changes without writing (default: false)" }
                     },
                     "required": ["new_type"]

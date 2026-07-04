@@ -204,6 +204,9 @@ fn resolve_type_alias(t: &str) -> &'static str {
     match t {
         // Collapsed actionable types → task
         "bug" | "feature" | "action" | "milestone" | "subproject" => "task",
+        // Retired container type — "project" is now a polecat.yaml routing slug,
+        // not a node type. Legacy containers reclassify to epic.
+        "project" => "epic",
         // Reference aliases
         "article" | "reading-guide" | "talk" => "reference",
         "observation" | "insight" | "exploration" => "note",
@@ -540,7 +543,19 @@ fn check_frontmatter(
 
     // Required: type
     if let Some(t) = fm.get("type").and_then(|v| v.as_str()) {
-        if !graph::is_valid_node_type(t) {
+        if t == "project" {
+            // Retired type: read-compat treats it as epic; nudge migration.
+            diags.push(Diagnostic {
+                severity: Severity::Warning,
+                rule: "fm-deprecated-project-type",
+                message: "'type: project' is retired — the node is read as an epic. \
+                          Reclassify to 'epic' (e.g. via batch_reclassify); 'project' \
+                          is now the polecat.yaml routing slug in the 'project:' field."
+                    .into(),
+                line: None,
+                fixable: true,
+            });
+        } else if !graph::is_valid_node_type(t) {
             let mapped = resolve_type_alias(t);
             diags.push(Diagnostic {
                 severity: Severity::Style,

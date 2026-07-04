@@ -667,7 +667,7 @@ pub fn status_group(status: Option<&str>) -> &'static str {
 /// Node types that represent actionable work items (shown in dashboards).
 /// `template` is intentionally excluded — templates are meta-artifacts that spawn
 /// task instances via `claim_task`; they are not themselves actionable work items.
-pub const TASK_TYPES: &[&str] = &["task", "project", "epic", "learn", "pr"];
+pub const TASK_TYPES: &[&str] = &["task", "epic", "learn", "pr"];
 
 /// Strategic priority node types ("targets" and "goals") that must never serve as a structural
 /// parent. Work links to targets via `contributes_to` metadata, and targets connect to goals.
@@ -681,9 +681,13 @@ pub fn is_strategic_target(node_type: Option<&str>) -> bool {
 }
 
 /// All recognized canonical node type values.
+///
+/// `project` is intentionally absent: it is retired as a node type ("project"
+/// is a polecat.yaml routing slug carried in the `project:` frontmatter
+/// field). Legacy `type: project` files are read-coerced to `epic`.
 pub const VALID_NODE_TYPES: &[&str] = &[
     // Actionable work items (subset also in TASK_TYPES)
-    "project", "epic", "task", "learn", "pr",
+    "epic", "task", "learn", "pr",
     // Recurring workflow templates — not actionable; claim_task() instantiates these
     "template",
     // Reference
@@ -816,9 +820,21 @@ impl GraphNode {
             .and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
         let id = task_id.clone().unwrap_or_else(|| fallback_id(&doc.path));
 
-        let node_type = fm
+        // Raw frontmatter type, before legacy coercion. Needed below for the
+        // permalink fallback that only ever applied to old project containers.
+        let raw_node_type = fm
             .as_ref()
             .and_then(|f| f.get("type").and_then(|v| v.as_str()).map(String::from));
+        // `type: project` is retired (project = polecat.yaml routing slug, not
+        // a node type). Legacy files keep parsing but are treated as epics for
+        // all structural purposes; `pkb lint` nags toward reclassification.
+        let node_type = raw_node_type.as_deref().map(|t| {
+            if t == "project" {
+                "epic".to_string()
+            } else {
+                t.to_string()
+            }
+        });
         let status = fm.as_ref().and_then(|f| {
             f.get("status")
                 .and_then(|v| v.as_str())
@@ -1034,9 +1050,10 @@ impl GraphNode {
             .as_ref()
             .and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
         // `permalink` is the node's own slug/identifier. Fall back to the `project`
-        // frontmatter field ONLY for project nodes — for a task/epic the `project`
-        // field names its *ancestor* project, not its own permalink, so using it here
-        // would serialize semantically wrong metadata.
+        // frontmatter field ONLY for legacy `type: project` containers (keyed on
+        // the RAW type — coercion above renames them to epic) — for a task/epic
+        // the `project` field names its routing slug, not its own permalink, so
+        // using it here would serialize semantically wrong metadata.
         let permalink = fm
             .as_ref()
             .and_then(|f| {
@@ -1044,7 +1061,7 @@ impl GraphNode {
                     .and_then(|v| v.as_str())
                     .or_else(|| f.get("slug").and_then(|v| v.as_str()))
                     .or_else(|| {
-                        if node_type.as_deref() == Some("project") {
+                        if raw_node_type.as_deref() == Some("project") {
                             f.get("project").and_then(|v| v.as_str())
                         } else {
                             None
@@ -1148,12 +1165,12 @@ impl GraphNode {
         });
 
         if let Some(nt) = node_type.as_deref() {
-            if TASK_TYPES.contains(&nt) && nt != "project" {
+            if TASK_TYPES.contains(&nt) {
                 if let Some(ref st) = status {
                     if matches!(st.as_str(), "ready" | "queued") && project.is_none() {
                         parse_warnings.push(ParseWarning {
                             field: "project".to_string(),
-                            message: "Actionable tasks (ready/queued) must have an explicit 'project' field or resolve to a project node via ancestors".to_string(),
+                            message: "Actionable tasks (ready/queued) must have an explicit 'project' field or inherit one from an ancestor".to_string(),
                         });
                     }
                 }

@@ -70,10 +70,12 @@ pub struct GraphStore {
 }
 
 /// Document types considered actionable work items in task trees and dashboards.
-pub const ACTIONABLE_TYPES: &[&str] = &["project", "epic", "task", "learn", "pr"];
+/// `project` is retired as a node type (legacy `type: project` files read-coerce
+/// to `epic`); "project" is the polecat.yaml routing slug in frontmatter.
+pub const ACTIONABLE_TYPES: &[&str] = &["epic", "task", "learn", "pr"];
 
 /// Document types that represent claimable work items — leaf tasks a worker can actually do.
-/// Excludes containers (epic, project) and observational types (learn).
+/// Excludes containers (epic) and observational types (learn).
 pub const CLAIMABLE_TYPES: &[&str] = &["task"];
 
 /// Status-level ready predicate shared by the in-memory ready-gate and the MCP
@@ -294,7 +296,8 @@ impl GraphStore {
                 } else if ref_id.starts_with("pr-") {
                     ghost.node_type = Some("pr".to_string());
                 } else if ref_id.starts_with("project-") {
-                    ghost.node_type = Some("project".to_string());
+                    // Legacy prefix — project is no longer a node type.
+                    ghost.node_type = Some("epic".to_string());
                 }
                 
                 let virtual_path = format!("/virtual/{}", ref_id);
@@ -2210,9 +2213,15 @@ fn compute_centrality_metrics(nodes: &mut [GraphNode], edges: &[Edge]) {
     }
 }
 
-/// Compute the `project` field for each node by walking up the ancestor chain
-/// (`parent`, `contributes_to`, `closes` edges) to find the nearest ancestor
-/// with `node_type == "project"`.
+/// Compute the `project` field for each node by walking up the `parent` chain
+/// to the nearest ancestor that declared an explicit `project: <slug>` in its
+/// own frontmatter, and inheriting that value.
+///
+/// `project` is an operational routing slug validated against polecat.yaml at
+/// write time — not a node type. A node's own explicit value always wins (the
+/// skip below preserves it); descendants without one inherit the nearest
+/// ancestor's. Only `parent` edges participate: `contributes_to`/`closes`
+/// point at out-of-tree goals/targets, which carry no routing slug.
 fn compute_project_field(nodes: &mut [GraphNode], edges: &[Edge]) {
     let id_to_idx: HashMap<String, usize> = nodes
         .iter()
@@ -2220,70 +2229,42 @@ fn compute_project_field(nodes: &mut [GraphNode], edges: &[Edge]) {
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
-    // Upward adjacency list: source -> targets for upward edge types
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    // parent adjacency: child -> parent (a strict tree, but tolerate multiple
+    // recorded parent edges defensively by taking the first that resolves)
+    let mut parent_of: Vec<Option<usize>> = vec![None; nodes.len()];
     for edge in edges {
-        if matches!(
-            edge.edge_type,
-            EdgeType::Parent | EdgeType::ContributesTo | EdgeType::Closes
-        ) {
+        if matches!(edge.edge_type, EdgeType::Parent) {
             if let (Some(&s_idx), Some(&t_idx)) =
                 (id_to_idx.get(&edge.source), id_to_idx.get(&edge.target))
             {
-                adj[s_idx].push(t_idx);
+                if parent_of[s_idx].is_none() {
+                    parent_of[s_idx] = Some(t_idx);
+                }
             }
         }
     }
 
     let mut project_labels: Vec<Option<String>> = vec![None; nodes.len()];
-    let mut queue = std::collections::VecDeque::new();
-    let mut visited = vec![false; nodes.len()];
 
     for i in 0..nodes.len() {
+        // Node's own explicit (already-validated) value wins untouched.
         if nodes[i].project.is_some() {
             continue;
         }
 
-        // 1. If this node IS a project, its own project is its own slug/permalink
-        if nodes[i].node_type.as_deref() == Some("project") {
-            let slug = nodes[i]
-                .permalink
-                .clone()
-                .unwrap_or_else(|| nodes[i].id.clone());
-            project_labels[i] = Some(slug);
-            continue;
-        }
-
-        // 2. Walk up ancestor chain via BFS; reuse buffers to avoid per-node allocation
-        visited.fill(false);
-        queue.clear();
-
-        visited[i] = true;
-        for &neighbor_idx in &adj[i] {
-            if !visited[neighbor_idx] {
-                visited[neighbor_idx] = true;
-                queue.push_back((neighbor_idx, 1));
-            }
-        }
-
-        while let Some((curr_idx, depth)) = queue.pop_front() {
+        // Walk up the parent chain to the nearest explicit project value.
+        let mut current = parent_of[i];
+        let mut depth = 0;
+        while let Some(idx) = current {
+            depth += 1;
             if depth > 100 {
                 break; // cycle guard
             }
-            if nodes[curr_idx].node_type.as_deref() == Some("project") {
-                let slug = nodes[curr_idx]
-                    .permalink
-                    .clone()
-                    .unwrap_or_else(|| nodes[curr_idx].id.clone());
-                project_labels[i] = Some(slug);
+            if let Some(ref proj) = nodes[idx].project {
+                project_labels[i] = Some(proj.clone());
                 break;
             }
-            for &neighbor_idx in &adj[curr_idx] {
-                if !visited[neighbor_idx] {
-                    visited[neighbor_idx] = true;
-                    queue.push_back((neighbor_idx, depth + 1));
-                }
-            }
+            current = parent_of[idx];
         }
     }
 

@@ -2095,7 +2095,21 @@ async fn main() -> Result<()> {
                         );
                     }
                     if let Some(proj) = project {
-                        updates.insert("project".to_string(), serde_json::Value::String(proj));
+                        // Validate + canonicalize against polecat.yaml — this
+                        // path calls update_document directly, bypassing the
+                        // MCP server's update handler.
+                        let canonical =
+                            match mem::polecat_config::resolve_project(&pkb_root, &proj) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    eprintln!("error: {e:#}");
+                                    std::process::exit(1);
+                                }
+                            };
+                        updates.insert(
+                            "project".to_string(),
+                            serde_json::Value::String(canonical),
+                        );
                     }
                     if let Some(a) = assignee {
                         updates.insert("assignee".to_string(), serde_json::Value::String(a));

@@ -419,7 +419,7 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let id = ADHOC_SESSIONS_ROOT_ID;
     let content = format!(
-        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: project\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
+        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: epic\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
     std::fs::write(&adhoc_path, content)
         .with_context(|| format!("Failed to write adhoc-sessions root: {}", adhoc_path.display()))?;
@@ -431,7 +431,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     if fields.parent.as_deref().map(str::is_empty).unwrap_or(true) {
         anyhow::bail!(
             "parent is required: tasks must be linked to a parent node \
-             (goal, epic, or project). Only top-level types (goal, project, learn) \
+             (goal, target, or epic). Only top-level types (goal, target, epic, learn) \
              can be root-level."
         );
     }
@@ -459,6 +459,14 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         }
     }
 
+    // Validate + canonicalize the project slug against polecat.yaml before it
+    // is used anywhere (ID prefix, frontmatter). Builtin slugs (`task`,
+    // `adhoc-sessions`) pass without a registry; anything else must resolve.
+    let project = match fields.project.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => Some(crate::polecat_config::resolve_project(root, raw)?),
+        None => None,
+    };
+
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: sanitize to prevent path traversal
@@ -467,18 +475,15 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             (safe_id, filename)
         }
         None => {
-            // Prefix source: use `project` when set so IDs/filenames are
-            // namespaced like `aops-<hash>` / `aops-<hash>-<slug>.md`.
+            // Prefix source: use the canonical `project` slug when set so
+            // IDs/filenames are namespaced like `aops-<hash>` /
+            // `aops-<hash>-<slug>.md`.
             // Fallback when project is missing: literal `"task"` to preserve
             // legacy behaviour for projectless / ad-hoc tasks (yields
             // `task-<hash>` / `task-<hash>-<slug>.md`). The `task_type` field
             // is intentionally NOT used here — it is captured in the
             // frontmatter `type:` field, not the ID prefix.
-            let prefix = fields
-                .project
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .unwrap_or("task");
+            let prefix = project.as_deref().unwrap_or("task");
             let id = generate_id(prefix);
             let slug = slugify(&fields.title);
             let slug = truncate_slug(&slug, MAX_FILENAME_SLUG_LEN);
@@ -528,7 +533,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         fm.push_str(&format!("parent: {}\n", parent));
     }
 
-    if let Some(ref project) = fields.project {
+    if let Some(ref project) = project {
         fm.push_str(&format!("project: {}\n", project));
     }
 
