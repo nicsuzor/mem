@@ -2035,6 +2035,45 @@ mod tests {
     }
 
     #[test]
+    fn create_task_last_modified_has_explicit_offset() {
+        // `last_modified` must carry an explicit numeric UTC offset (e.g. "+10:00"
+        // or "+00:00"), never a bare "Z". A bare "Z" would mean the value collapsed
+        // to `chrono::Utc` formatting and lost the "local timezone" semantics this
+        // field exists for, even if the host's local offset happens to be zero.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Offset check".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let last_modified_line = content
+            .lines()
+            .find(|l| l.starts_with("last_modified:"))
+            .expect("last_modified field must be present");
+        // The date portion always contains '-', so isolate the time-of-day
+        // portion (after 'T') where '-' or '+' can only appear as an offset sign.
+        let time_part = last_modified_line
+            .split('T')
+            .nth(1)
+            .expect("last_modified must be a full RFC3339 timestamp with a 'T' separator");
+        assert!(
+            !time_part.trim_end().ends_with('Z'),
+            "last_modified must use an explicit offset, not 'Z': {last_modified_line}"
+        );
+        assert!(
+            time_part.contains('+') || time_part.contains('-'),
+            "last_modified must contain a numeric UTC offset: {last_modified_line}"
+        );
+    }
+
+    #[test]
     fn generate_id_deterministic() {
         let id1 = generate_id("task");
         let id2 = generate_id("task");
