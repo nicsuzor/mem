@@ -427,8 +427,16 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
 }
 
 pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
-    // parent is required — tasks must be linked to an existing node
-    if fields.parent.as_deref().map(str::is_empty).unwrap_or(true) {
+    // parent is required for plain tasks — they must be linked to an existing
+    // node. Root-able types are exempt: goals/targets live beside the work
+    // tree (never parented), and epics/learn nodes may be tree roots. Mirrors
+    // handle_create_task's `root_able` gate for callers that bypass the MCP
+    // layer (CLI `pkb new`, direct library use).
+    let root_able = matches!(
+        fields.task_type.as_deref().unwrap_or("task"),
+        "goal" | "target" | "epic" | "learn"
+    );
+    if !root_able && fields.parent.as_deref().map(str::is_empty).unwrap_or(true) {
         anyhow::bail!(
             "parent is required: tasks must be linked to a parent node \
              (an epic or another task). Goals and targets are strategic priorities, not \
@@ -683,6 +691,16 @@ pub struct TemplateInstanceFields {
 /// `id`, `status: inbox`, `created`, `modified`, and a `template_id` back-reference.
 /// The template file is not modified.
 pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> Result<PathBuf> {
+    // Validate + canonicalize the inherited project slug against polecat.yaml,
+    // same as every other path that writes an explicit `project:` value. A
+    // template whose slug was deregistered/renamed must fail here rather than
+    // stamping the stale value onto every future instance; the
+    // fm-unregistered-project lint rule surfaces such templates ahead of time.
+    let project = match fields.project.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => Some(crate::polecat_config::resolve_project(root, raw)?),
+        None => None,
+    };
+
     let now = chrono::Utc::now();
     let date_str = now.format("%Y%m%d").to_string();
     let time_str = now.format("%H%M%S").to_string();
@@ -743,7 +761,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
         fm.push_str(&format!("parent: {}\n", parent));
     }
 
-    if let Some(ref project) = fields.project {
+    if let Some(ref project) = project {
         fm.push_str(&format!("project: {}\n", project));
     }
 
@@ -2026,6 +2044,35 @@ mod tests {
             path.file_name().unwrap().to_string_lossy().starts_with("aops-"),
             "filename should use project prefix: {:?}",
             path.file_name()
+        );
+    }
+
+    #[test]
+    fn create_task_allows_root_level_epic_without_parent() {
+        // Root-able types (goal, target, epic, learn) are exempt from the
+        // parent requirement; plain tasks still hard-require one.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let epic = TaskFields {
+            title: "Root epic".to_string(),
+            task_type: Some("epic".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+        create_task(root, epic).expect("root-level epic must not require a parent");
+
+        let task = TaskFields {
+            title: "Plain task".to_string(),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+        let err = create_task(root, task).unwrap_err();
+        assert!(
+            err.to_string().contains("parent is required"),
+            "plain tasks still require a parent: {err}"
         );
     }
 

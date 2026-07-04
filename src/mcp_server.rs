@@ -10131,6 +10131,35 @@ tags:
         (server, tmp)
     }
 
+    /// A template whose `project:` slug is not registered in polecat.yaml
+    /// must fail to claim — the claim path validates like every other write
+    /// path that stamps an explicit project value.
+    #[test]
+    fn claim_task_rejects_unregistered_template_project() {
+        let (server, tmp) = setup_with_template();
+
+        // Rewrite the template's project to a slug the fixture registry
+        // (proj-test, aops) does not contain, then refresh the graph.
+        let template_path = tmp.path().join("tasks/daily-template.md");
+        let content = std::fs::read_to_string(&template_path).unwrap();
+        let stale = content.replace("project: aops", "project: deregistered-slug");
+        assert_ne!(content, stale, "fixture must carry project: aops");
+        std::fs::write(&template_path, stale).unwrap();
+        {
+            let graph = GraphStore::build_from_directory(tmp.path());
+            *server.graph.write() = graph;
+        }
+
+        let err = server
+            .handle_claim_task(&serde_json::json!({ "id": "daily-template" }))
+            .expect_err("claiming a template with an unregistered project must fail");
+        assert!(
+            err.message.contains("deregistered-slug"),
+            "error should name the unknown slug; got: {}",
+            err.message
+        );
+    }
+
     #[test]
     fn claim_task_creates_datestamped_instance() {
         let (server, tmp) = setup_with_template();

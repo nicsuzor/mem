@@ -119,6 +119,8 @@ impl PolecatRegistry {
         // Top-level shorthand aliases: alias -> project map key (or slug).
         // Resolve the target through the project lookup so `ao: aops` still
         // lands on the canonical slug even if aops' entry has a slug: override.
+        // A target that doesn't resolve is a config bug (e.g. `ao: aopps`
+        // typo) — fail fast rather than silently minting a bogus slug.
         for (alias, target) in &raw.project_aliases {
             let alias = alias.trim();
             if alias.is_empty() {
@@ -127,7 +129,16 @@ impl PolecatRegistry {
             let canonical = lookup
                 .get(&target.trim().to_lowercase())
                 .cloned()
-                .unwrap_or_else(|| target.trim().to_string());
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "malformed polecat.yaml at {}: project_aliases entry \
+                         '{}: {}' points at a project that does not exist in \
+                         the projects: block",
+                        path.display(),
+                        alias,
+                        target
+                    )
+                })?;
             lookup.insert(alias.to_lowercase(), canonical);
         }
 
@@ -298,6 +309,20 @@ projects:
         let dir = tempfile::tempdir().unwrap();
         write_yaml(dir.path(), "projects: [not, a, map]\n");
         assert!(PolecatRegistry::load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn dangling_project_alias_target_is_err() {
+        // `ao: aopps` (typo) must fail at load, not silently mint a slug.
+        let dir = tempfile::tempdir().unwrap();
+        write_yaml(
+            dir.path(),
+            "projects:\n  aops: {}\nproject_aliases:\n  ao: aopps\n",
+        );
+        let err = PolecatRegistry::load(dir.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("ao: aopps"), "{msg}");
+        assert!(msg.contains("does not exist"), "{msg}");
     }
 
     #[test]

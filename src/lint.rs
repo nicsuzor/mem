@@ -685,7 +685,9 @@ fn check_frontmatter(
     // Project field: required for actionable tasks (ready/queued). A task
     // satisfies this by declaring its own `project: <slug>` or by inheriting
     // one from the nearest ancestor (parent chain) that declared one.
-    if is_task_type || node_type == "project" {
+    // Legacy `type: project` containers are excluded — they already get
+    // fm-deprecated-project-type; double-nagging them here is noise.
+    if is_task_type {
         let status_val = fm.get("status").and_then(|v| v.as_str()).unwrap_or("");
         let canonical_status = graph::resolve_status_alias(status_val);
         if matches!(canonical_status, "ready" | "queued") && !fm.contains_key("project") {
@@ -1357,7 +1359,12 @@ pub fn lint_directory(
                 .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
             let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
             let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
-            let project = fm.get("project").and_then(|v| v.as_str()).map(String::from);
+            let project = fm
+                .get("project")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from);
             Some((id, (parent, project)))
         })
         .collect();
@@ -1705,7 +1712,12 @@ pub fn lint_directory(
                     .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
                 let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
                 let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
-                let project = fm.get("project").and_then(|v| v.as_str()).map(String::from);
+                let project = fm
+                .get("project")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from);
                 Some((id, (parent, project)))
             })
             .collect();
