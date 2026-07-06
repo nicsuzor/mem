@@ -2154,8 +2154,8 @@ mod tests {
         let id1 = generate_id("task");
         let id2 = generate_id("task");
         // IDs include random component, just check prefix
-        assert!(id1.starts_with("task-"));
-        assert!(id2.starts_with("task-"));
+        assert!(id1.starts_with("task_"));
+        assert!(id2.starts_with("task_"));
     }
 
     #[test]
@@ -2197,7 +2197,7 @@ mod tests {
             path.file_name()
                 .unwrap()
                 .to_string_lossy()
-                .starts_with("aops-"),
+                .starts_with("aops_"),
             "filename should use project prefix: {:?}",
             path.file_name()
         );
@@ -2251,14 +2251,14 @@ mod tests {
         let path = create_task(root, fields).unwrap();
         let filename = path.file_name().unwrap().to_string_lossy().to_string();
         assert!(
-            filename.starts_with("aops-") && filename.ends_with("-foo.md"),
-            "filename must be aops-<hash>-foo.md, got {filename}"
+            filename.starts_with("aops_") && filename.ends_with("-foo.md"),
+            "filename must be aops_<hash>-foo.md, got {filename}"
         );
 
         let content = fs::read_to_string(&path).unwrap();
         // Frontmatter id must match the project-prefixed ID (which is also
         // the filename stem minus the slug).
-        let expected_id_prefix = "id: aops-";
+        let expected_id_prefix = "id: aops_";
         assert!(
             content.contains(expected_id_prefix),
             "frontmatter id must start with `aops-`: {content}"

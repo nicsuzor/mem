@@ -3669,7 +3669,7 @@ impl PkbSearchServer {
         title_hint: &str,
     ) -> Result<String, McpError> {
         let hash = format!("{:x}", md5::compute(session_id.as_bytes()));
-        let epic_id = format!("adhoc-{}", &hash[..8]);
+        let epic_id = format!("adhoc_{}", &hash[..8]);
 
         // Fast path: already present in graph
         {
@@ -10055,7 +10055,7 @@ mod batch_finalize_tests {
         let task_ids: Vec<String> = pre
             .iter()
             .filter(|(_, status)| status.as_deref() == Some("ready"))
-            .filter(|(id, _)| id.starts_with("test-project-"))
+            .filter(|(id, _)| id.starts_with("test_project_"))
             .map(|(id, _)| id.clone())
             .collect();
         assert_eq!(
@@ -11056,8 +11056,8 @@ tags:
         );
         // Parent ID should follow the adhoc-{md5[..8]} pattern
         assert!(
-            parent.starts_with("adhoc-"),
-            "session epic parent should have adhoc- prefix; parent={parent}"
+            parent.starts_with("adhoc_"),
+            "session epic parent should have adhoc_ prefix; parent={parent}"
         );
 
         // The session epic itself should exist in the graph as type: epic
@@ -11166,7 +11166,7 @@ tags:
             .nodes()
             .filter(|n| {
                 n.node_type.as_deref() == Some("epic")
-                    && n.id.starts_with("adhoc-")
+                    && n.id.starts_with("adhoc_")
                     && n.id != crate::document_crud::ADHOC_SESSIONS_ROOT_ID
             })
             .count();
