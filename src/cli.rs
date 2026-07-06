@@ -2,7 +2,10 @@
 //!
 //! Provides subcommands: search, reindex, tasks, focus, mcp, ...
 
-use mem::{document_crud, embeddings, eval, graph, graph_display, graph_store, lint, mcp_server, metrics, pkb, task_index, vectordb};
+use mem::{
+    document_crud, embeddings, eval, graph, graph_display, graph_store, lint, mcp_server, metrics,
+    pkb, task_index, vectordb,
+};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -909,14 +912,10 @@ fn print_staleness_warning(pkb_root: &std::path::Path, missing_id: &str) {
         eprintln!();
         eprintln!("\x1b[33m  ⚠  Possible CLI ↔ MCP visibility gap\x1b[0m");
         eprintln!("     {reason}");
-        eprintln!(
-            "     If '{missing_id}' was just created via MCP tools, the local checkout"
-        );
+        eprintln!("     If '{missing_id}' was just created via MCP tools, the local checkout");
         eprintln!("     hasn't synced yet. Try one of:");
         eprintln!("       • query via MCP: get_task / search (canonical, always fresh)");
-        eprintln!(
-            "       • wait for next cron sync (~5m) or run repo-sync-cron.sh manually"
-        );
+        eprintln!("       • wait for next cron sync (~5m) or run repo-sync-cron.sh manually");
         eprintln!("     See task-84f6de68 for context.");
         eprintln!();
     }
@@ -932,22 +931,35 @@ async fn main() -> Result<()> {
     // CLI mode: only warnings.
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    let mut filter = tracing_subscriber::EnvFilter::new(if is_mcp { "info" } else { "warn" });
-                    if is_mcp {
-                        // Suppress noisy rmcp session close errors (benign during shutdown/cleanup).
-                        // Refs task-2ae61ce6.
-                        filter = filter.add_directive("rmcp::transport::streamable_http_server::tower=warn".parse().unwrap());
-                    }
-                    filter
-                }),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                let mut filter =
+                    tracing_subscriber::EnvFilter::new(if is_mcp { "info" } else { "warn" });
+                if is_mcp {
+                    // Suppress noisy rmcp session close errors (benign during shutdown/cleanup).
+                    // Refs task-2ae61ce6.
+                    filter = filter.add_directive(
+                        "rmcp::transport::streamable_http_server::tower=warn"
+                            .parse()
+                            .unwrap(),
+                    );
+                }
+                filter
+            }),
         )
         .with_writer(std::io::stderr)
         .init();
 
     let pkb_root = PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root));
     let db_path = PathBuf::from(&cli.db_path);
+
+    // Disable GPU for quick interactive commands unless explicitly overridden
+    let is_batch_op = matches!(
+        command,
+        Commands::Reindex { .. } | Commands::BenchReindex { .. }
+    );
+    if !is_batch_op && std::env::var("AOPS_GPU").is_err() {
+        std::env::set_var("AOPS_GPU", "0");
+    }
 
     // Exclusive lock for index updates
     let needs_exclusive_lock = matches!(
@@ -1003,10 +1015,22 @@ async fn main() -> Result<()> {
         let mut e = embeddings::Embedder::new()?;
         // Apply parallelism overrides for reindex/bench-reindex
         let overrides = match &command {
-            Commands::Reindex { sessions, threads, batch_size, .. }
-            | Commands::BenchReindex { sessions, threads, batch_size, .. } => {
-                Some((sessions.unwrap_or(0), threads.unwrap_or(0), batch_size.unwrap_or(0)))
+            Commands::Reindex {
+                sessions,
+                threads,
+                batch_size,
+                ..
             }
+            | Commands::BenchReindex {
+                sessions,
+                threads,
+                batch_size,
+                ..
+            } => Some((
+                sessions.unwrap_or(0),
+                threads.unwrap_or(0),
+                batch_size.unwrap_or(0),
+            )),
             _ => None,
         };
         if let Some((s, t, b)) = overrides {
@@ -1023,7 +1047,13 @@ async fn main() -> Result<()> {
     };
 
     match command {
-        Commands::Search { query, limit, full, since, before } => {
+        Commands::Search {
+            query,
+            limit,
+            full,
+            since,
+            before,
+        } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
             let query_text = query.join(" ");
@@ -1033,7 +1063,13 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode_query(&query_text)?;
-            let results = store.read().search(&query_embedding, limit, &pkb_root, since.as_deref(), before.as_deref());
+            let results = store.read().search(
+                &query_embedding,
+                limit,
+                &pkb_root,
+                since.as_deref(),
+                before.as_deref(),
+            );
 
             if results.is_empty() {
                 println!("No results found for: {query_text}");
@@ -1142,7 +1178,12 @@ async fn main() -> Result<()> {
             );
         }
 
-        Commands::Reindex { force, sessions: _, threads: _, batch_size: _ } => {
+        Commands::Reindex {
+            force,
+            sessions: _,
+            threads: _,
+            batch_size: _,
+        } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
             let (indexed, removed, total) = index_pkb(&pkb_root, &db_path, store, embedder, force);
@@ -1179,19 +1220,31 @@ async fn main() -> Result<()> {
             // Index freshness
             let num_stale_documents = mem::check_index_staleness(&pkb_root, &store);
             if num_stale_documents > 0 {
-                println!("Index:       {}⚠ stale — {} document(s) need re-indexing{}", colors::YELLOW, num_stale_documents, colors::RESET);
+                println!(
+                    "Index:       {}⚠ stale — {} document(s) need re-indexing{}",
+                    colors::YELLOW,
+                    num_stale_documents,
+                    colors::RESET
+                );
             } else {
                 println!("Index:       {}✓ fresh{}", colors::GREEN, colors::RESET);
             }
 
             // Graph stats
             let gs = load_graph(&pkb_root, &db_path, None);
-            println!("Graph:       {} nodes, {} edges", gs.node_count(), gs.edge_count());
+            println!(
+                "Graph:       {} nodes, {} edges",
+                gs.node_count(),
+                gs.edge_count()
+            );
 
             let ready = gs.ready_tasks().len();
             let blocked = gs.blocked_tasks().len();
             let all = gs.all_tasks().len();
-            println!("Tasks:       {} open ({} ready, {} blocked)", all, ready, blocked);
+            println!(
+                "Tasks:       {} open ({} ready, {} blocked)",
+                all, ready, blocked
+            );
         }
 
         Commands::Tasks {
@@ -1338,7 +1391,6 @@ async fn main() -> Result<()> {
                 for cid in &context_ids {
                     visible.insert(cid.as_str());
                 }
-
 
                 // Sort siblings — context nodes first, then tasks by priority/weight
                 fn sort_siblings(nodes: &mut [&graph::GraphNode], context_ids: &HashSet<String>) {
@@ -1553,35 +1605,11 @@ async fn main() -> Result<()> {
                         println!("  Created:  {created}");
                     }
 
-                    // --- Local Graph Context (ASCII) ---
-                    println!("\n  \x1b[1mGraph Context:\x1b[0m");
+                    // --- Context (ASCII Graph) ---
+                    println!("\n  \x1b[1mContext:\x1b[0m");
                     let graph_lines = graph_display::render_ascii_graph(&gs, &node.id);
                     for line in graph_lines {
                         println!("    {line}");
-                    }
-
-                    // --- Parent Chain (with cycle detection) ---
-                    let mut parents = Vec::new();
-                    let mut curr = node.parent.as_deref();
-                    let mut visited = std::collections::HashSet::new();
-                    visited.insert(node.id.clone());
-                    while let Some(pid) = curr {
-                        if !visited.insert(pid.to_string()) {
-                            break; // cycle detected
-                        }
-                        if let Some(p) = gs.get_node(pid) {
-                            parents.push(format!("{} ({})", p.label, pid));
-                            curr = p.parent.as_deref();
-                        } else {
-                            break;
-                        }
-                    }
-                    if !parents.is_empty() {
-                        parents.reverse();
-                        println!("\n  \x1b[1mParent Chain:\x1b[0m");
-                        for (i, p) in parents.iter().enumerate() {
-                            println!("    {} \x1b[2m{}\x1b[0m", "  ".repeat(i), p);
-                        }
                     }
 
                     // --- Weight / Metrics ---
@@ -1607,12 +1635,8 @@ async fn main() -> Result<()> {
                         };
                         if !body.is_empty() {
                             println!("\n  \x1b[1mBody:\x1b[0m");
-                            let lines: Vec<_> = body.lines().collect();
-                            for line in lines.iter().take(20) {
+                            for line in body.lines() {
                                 println!("  {line}");
-                            }
-                            if lines.len() > 20 {
-                                println!("  \x1b[2m... (truncated)\x1b[0m");
                             }
                         }
                     }
@@ -1660,9 +1684,7 @@ async fn main() -> Result<()> {
             }
             println!();
             if !plain {
-                println!(
-                    "  \x1b[2mTip: pkb context {id}  — semantic + graph neighbourhood\x1b[0m"
-                );
+                println!("  \x1b[2mTip: pkb context {id}  — semantic + graph neighbourhood\x1b[0m");
                 println!();
             }
         }
@@ -1741,40 +1763,53 @@ async fn main() -> Result<()> {
                     let print_ready = |title: &str, nodes: &[&graph::GraphNode]| {
                         println!();
                         println!("  \x1b[1m=== Top 20 {} ===\x1b[0m", title);
-                        println!("  {:<35} {:>4} {:>6} {:>8} {:>8}", "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN");
+                        println!(
+                            "  {:<35} {:>4} {:>6} {:>8} {:>8}",
+                            "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN"
+                        );
                         println!("  {}", "-".repeat(65));
                         for node in nodes.iter().take(20) {
                             let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
                             let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
                             let exposure = if node.stakeholder_exposure { "!" } else { "" };
-                            println!("  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
+                            println!(
+                                "  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
                                 trunc(&node.label, 35),
                                 node.priority.unwrap_or(2),
                                 node.downstream_weight,
                                 exposure,
-                                p, b);
+                                p,
+                                b
+                            );
                         }
                     };
 
                     let mut ready_nodes = gs.ready_tasks();
                     ready_nodes.sort_by(|a, b| {
-                        b.downstream_weight.partial_cmp(&a.downstream_weight)
+                        b.downstream_weight
+                            .partial_cmp(&a.downstream_weight)
                             .unwrap_or(std::cmp::Ordering::Equal)
                     });
                     print_ready("Ready Tasks by Downstream Weight", &ready_nodes);
 
-                    let mut ready_by_pr: Vec<_> = ready_nodes.iter()
+                    let mut ready_by_pr: Vec<_> = ready_nodes
+                        .iter()
                         .map(|node| {
                             let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
                             (*node, p)
                         })
                         .collect();
-                    ready_by_pr.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    ready_by_pr
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                     let sorted_by_pr: Vec<_> = ready_by_pr.iter().map(|(n, _)| *n).collect();
                     print_ready("Ready Tasks by PageRank", &sorted_by_pr);
 
-                    println!("\n  {} nodes, {} edges, {} ready tasks",
-                        gs.node_count(), gs.edge_count(), ready_nodes.len());
+                    println!(
+                        "\n  {} nodes, {} edges, {} ready tasks",
+                        gs.node_count(),
+                        gs.edge_count(),
+                        ready_nodes.len()
+                    );
                     println!();
                 }
             }
@@ -1869,7 +1904,6 @@ async fn main() -> Result<()> {
                         .unwrap_or_default();
                     println!("Created \x1b[1m{id}\x1b[0m: {title_display}");
                     println!("  \x1b[2m{}\x1b[0m", path.display());
-
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -1951,7 +1985,6 @@ async fn main() -> Result<()> {
                         .unwrap_or_default();
                     println!("Created \x1b[1m{id}\x1b[0m: {title_display}");
                     println!("  \x1b[2m{}\x1b[0m", path.display());
-
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -2098,18 +2131,15 @@ async fn main() -> Result<()> {
                         // Validate + canonicalize against polecat.yaml — this
                         // path calls update_document directly, bypassing the
                         // MCP server's update handler.
-                        let canonical =
-                            match mem::polecat_config::resolve_project(&pkb_root, &proj) {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    eprintln!("error: {e:#}");
-                                    std::process::exit(1);
-                                }
-                            };
-                        updates.insert(
-                            "project".to_string(),
-                            serde_json::Value::String(canonical),
-                        );
+                        let canonical = match mem::polecat_config::resolve_project(&pkb_root, &proj)
+                        {
+                            Ok(c) => c,
+                            Err(e) => {
+                                eprintln!("error: {e:#}");
+                                std::process::exit(1);
+                            }
+                        };
+                        updates.insert("project".to_string(), serde_json::Value::String(canonical));
                     }
                     if let Some(a) = assignee {
                         updates.insert("assignee".to_string(), serde_json::Value::String(a));
@@ -2295,7 +2325,10 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Orphans { node_type, project: _ } => {
+        Commands::Orphans {
+            node_type,
+            project: _,
+        } => {
             let gs = load_graph(&pkb_root, &db_path, None);
             let mut orphans = gs.orphans();
 
@@ -2345,11 +2378,13 @@ async fn main() -> Result<()> {
 
             match format.to_lowercase().as_str() {
                 "all" => {
-                    let sessions_default = std::env::var("AOPS_SESSIONS").ok().map(|s| format!("{s}/graph"));
-                    let base = output.as_deref().unwrap_or_else(|| sessions_default.as_deref().unwrap_or("graph"));
-                    let base = base
-                        .trim_end_matches(".json")
-                        .trim_end_matches(".graphml");
+                    let sessions_default = std::env::var("AOPS_SESSIONS")
+                        .ok()
+                        .map(|s| format!("{s}/graph"));
+                    let base = output
+                        .as_deref()
+                        .unwrap_or_else(|| sessions_default.as_deref().unwrap_or("graph"));
+                    let base = base.trim_end_matches(".json").trim_end_matches(".graphml");
 
                     let written = gs.output_all_files(base)?;
                     for path in &written {
@@ -2427,7 +2462,9 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode(&query_text)?;
-            let results = store.read().search(&query_embedding, limit * 3, &pkb_root, None, None);
+            let results = store
+                .read()
+                .search(&query_embedding, limit * 3, &pkb_root, None, None);
 
             let memory_types = ["memory", "note", "insight", "observation"];
             let mut count = 0;
@@ -2604,8 +2641,7 @@ async fn main() -> Result<()> {
                                 w.remove(&rel_path);
                                 let _ = w.save(&db_path);
                             }
-
-                                }
+                        }
                         Err(e) => {
                             eprintln!("Error: {e}");
                             std::process::exit(1);
@@ -2695,34 +2731,41 @@ async fn main() -> Result<()> {
             }
             println!();
             if !plain {
-                println!(
-                    "  \x1b[2mTip: pkb deps {id}  — full upstream + downstream tree\x1b[0m"
-                );
+                println!("  \x1b[2mTip: pkb deps {id}  — full upstream + downstream tree\x1b[0m");
                 println!();
             }
         }
 
         Commands::RenameId { old, new } => {
-            let (files, refs) = lint::rename_id(&pkb_root, &old, &new)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            println!("Renamed '{}' → '{}': {} files modified, {} references updated", old, new, files, refs);
+            let (files, refs) =
+                lint::rename_id(&pkb_root, &old, &new).map_err(|e| anyhow::anyhow!(e))?;
+            println!(
+                "Renamed '{}' → '{}': {} files modified, {} references updated",
+                old, new, files, refs
+            );
         }
 
-        Commands::MergeNode { canonical_id, source_ids, dry_run } => {
-            let summary = document_crud::merge_node(&pkb_root, &source_ids, &canonical_id, dry_run)?;
+        Commands::MergeNode {
+            canonical_id,
+            source_ids,
+            dry_run,
+        } => {
+            let summary =
+                document_crud::merge_node(&pkb_root, &source_ids, &canonical_id, dry_run)?;
             if dry_run {
                 println!(
                     "Dry run — merge '{}' → '{}':",
-                    source_ids.join(", "), canonical_id
+                    source_ids.join(", "),
+                    canonical_id
                 );
                 println!("  {} files would be updated", summary.files_updated);
-                println!("  {} references would be redirected", summary.refs_redirected);
+                println!(
+                    "  {} references would be redirected",
+                    summary.refs_redirected
+                );
                 println!("  {} node(s) would be archived", summary.nodes_archived);
             } else {
-                println!(
-                    "Merged '{}' → '{}':",
-                    source_ids.join(", "), canonical_id
-                );
+                println!("Merged '{}' → '{}':", source_ids.join(", "), canonical_id);
                 println!("  {} files updated", summary.files_updated);
                 println!("  {} references redirected", summary.refs_redirected);
                 println!("  {} node(s) archived", summary.nodes_archived);
@@ -2796,10 +2839,7 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    let rel_path = r
-                        .path
-                        .strip_prefix(&pkb_root)
-                        .unwrap_or(&r.path);
+                    let rel_path = r.path.strip_prefix(&pkb_root).unwrap_or(&r.path);
                     println!("\x1b[1m{}\x1b[0m", rel_path.display());
                     for d in &diags {
                         let color = match d.severity {
@@ -3003,21 +3043,41 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Similarity { id, threshold, limit } => {
+        Commands::Similarity {
+            id,
+            threshold,
+            limit,
+        } => {
             let store = load_store(&db_path, embeddings::EMBEDDING_DIM)?;
             let store_read = store.read();
             let graph = load_graph(&pkb_root, &db_path, Some(&store_read));
 
-            let neighbors = mem::batch_ops::similarity::find_neighbors(&id, &graph, &store_read, threshold, limit);
+            let neighbors = mem::batch_ops::similarity::find_neighbors(
+                &id,
+                &graph,
+                &store_read,
+                threshold,
+                limit,
+            );
 
             if neighbors.is_empty() {
-                println!("No similar nodes found for '{}' above threshold {:.2}", id, threshold);
+                println!(
+                    "No similar nodes found for '{}' above threshold {:.2}",
+                    id, threshold
+                );
             } else {
-                println!("Semantic neighbors for '{}' (threshold {:.2}):\n", id, threshold);
+                println!(
+                    "Semantic neighbors for '{}' (threshold {:.2}):\n",
+                    id, threshold
+                );
                 println!("  {:<24} {:<48} {:<8} {}", "ID", "Title", "Score", "Edge");
                 println!("  {}", "─".repeat(88));
                 for n in neighbors {
-                    let edge = if n.is_explicit_edge { "explicit" } else { "none" };
+                    let edge = if n.is_explicit_edge {
+                        "explicit"
+                    } else {
+                        "none"
+                    };
                     println!("  {:<24} {:<48} {:<8.3} {}", n.id, n.title, n.score, edge);
                 }
             }
@@ -3035,8 +3095,11 @@ async fn main() -> Result<()> {
             println!("Nodes checked:        {:>8}", report.total_nodes);
             println!("Pairs checked:        {:>8}", report.total_pairs_checked);
             println!("Similarity edges:     {:>8}", report.similarity_edges_found);
-            println!("Explicit edges:       {:>8} (skipped)", report.explicit_edges_skipped);
-            
+            println!(
+                "Explicit edges:       {:>8} (skipped)",
+                report.explicit_edges_skipped
+            );
+
             let density = if report.total_pairs_checked > 0 {
                 report.similarity_edges_found as f64 / report.total_pairs_checked as f64
             } else {
@@ -3049,8 +3112,14 @@ async fn main() -> Result<()> {
                 println!("  {:<24} <──> {:<24} {:<8}", "Source", "Target", "Score");
                 println!("  {}", "─".repeat(64));
                 for sample in report.sample_neighbors {
-                    println!("  {:<24} <──> {:<24} {:<8.3}", sample.source_id, sample.target_id, sample.score);
-                    println!("    {:<24}      {:<24}", sample.source_title, sample.target_title);
+                    println!(
+                        "  {:<24} <──> {:<24} {:<8.3}",
+                        sample.source_id, sample.target_id, sample.score
+                    );
+                    println!(
+                        "    {:<24}      {:<24}",
+                        sample.source_title, sample.target_title
+                    );
                 }
             }
         }
@@ -3065,7 +3134,9 @@ async fn main() -> Result<()> {
             let mut entries: Vec<_> = stats.into_iter().collect();
             match sort.as_str() {
                 "bytes" => entries.sort_by(|a, b| b.1.total_bytes.cmp(&a.1.total_bytes)),
-                "latency" => entries.sort_by(|a, b| b.1.total_latency_ms.cmp(&a.1.total_latency_ms)),
+                "latency" => {
+                    entries.sort_by(|a, b| b.1.total_latency_ms.cmp(&a.1.total_latency_ms))
+                }
                 "errors" => entries.sort_by(|a, b| b.1.error_count.cmp(&a.1.error_count)),
                 _ => entries.sort_by(|a, b| b.1.count.cmp(&a.1.count)),
             }
@@ -3105,13 +3176,14 @@ async fn main() -> Result<()> {
             let store = store.unwrap();
 
             eprintln!("🔍 PKB Search MCP Server starting...");
-            eprintln!("   Version:  {} ({})", env!("CARGO_PKG_VERSION"), env!("BUILD_GIT_HASH"));
+            eprintln!(
+                "   Version:  {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("BUILD_GIT_HASH")
+            );
             eprintln!("   PKB root: {}", pkb_root.display());
             eprintln!("   DB path:  {}", db_path.display());
-            eprintln!(
-                "   Embeddings: BGE-M3 ({}-dim)",
-                embedder.dimension()
-            );
+            eprintln!("   Embeddings: BGE-M3 ({}-dim)", embedder.dimension());
 
             // Check index freshness
             eprintln!("   Checking index freshness...");
@@ -3158,8 +3230,8 @@ async fn main() -> Result<()> {
             if http {
                 // HTTP/SSE mode
                 use rmcp::transport::streamable_http_server::{
-                    session::local::LocalSessionManager,
-                    StreamableHttpServerConfig, StreamableHttpService,
+                    session::local::LocalSessionManager, StreamableHttpServerConfig,
+                    StreamableHttpService,
                 };
 
                 let ct = tokio_util::sync::CancellationToken::new();
@@ -3181,14 +3253,11 @@ async fn main() -> Result<()> {
                     Some(std::time::Duration::from_secs(24 * 3600));
                 let session_manager = std::sync::Arc::new(session_manager_inner);
 
-                let mcp_service = StreamableHttpService::new(
-                    move || Ok(server.clone()),
-                    session_manager,
-                    config,
-                );
+                let mcp_service =
+                    StreamableHttpService::new(move || Ok(server.clone()), session_manager, config);
 
-                let app = axum::Router::new()
-                    .route("/mcp", axum::routing::any_service(mcp_service));
+                let app =
+                    axum::Router::new().route("/mcp", axum::routing::any_service(mcp_service));
 
                 let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
                 eprintln!("   Starting MCP HTTP/SSE server on http://{addr}/mcp");
@@ -3232,7 +3301,11 @@ fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
         assignee: None,
         complexity: args.complexity.clone(),
         project: args.project.clone(),
-        include_untagged: if args.include_untagged { Some(true) } else { None },
+        include_untagged: if args.include_untagged {
+            Some(true)
+        } else {
+            None
+        },
         weight_gte: args.weight_gte,
     }
 }
@@ -3337,23 +3410,35 @@ fn handle_batch_command(
             if let Some(tags) = add_tags {
                 updates.insert(
                     "_add_tags".to_string(),
-                    serde_json::Value::Array(tags.into_iter().map(serde_json::Value::String).collect()),
+                    serde_json::Value::Array(
+                        tags.into_iter().map(serde_json::Value::String).collect(),
+                    ),
                 );
             }
             if let Some(tags) = remove_tags {
                 updates.insert(
                     "_remove_tags".to_string(),
-                    serde_json::Value::Array(tags.into_iter().map(serde_json::Value::String).collect()),
+                    serde_json::Value::Array(
+                        tags.into_iter().map(serde_json::Value::String).collect(),
+                    ),
                 );
             }
 
             if updates.is_empty() {
-                eprintln!("Error: no updates specified (use --set, --unset, --add-tag, or --remove-tag)");
+                eprintln!(
+                    "Error: no updates specified (use --set, --unset, --add-tag, or --remove-tag)"
+                );
                 std::process::exit(1);
             }
 
             let updates_val = serde_json::Value::Object(updates);
-            let summary = mem::batch_ops::update::batch_update(graph, pkb_root, &filter_set, &updates_val, dry_run);
+            let summary = mem::batch_ops::update::batch_update(
+                graph,
+                pkb_root,
+                &filter_set,
+                &updates_val,
+                dry_run,
+            );
             print!("{}", summary.display());
         }
 
@@ -3424,11 +3509,10 @@ fn handle_batch_command(
             project: _,
             dry_run,
         } => {
-            let content = std::fs::read_to_string(&from)
-                .unwrap_or_else(|e| {
-                    eprintln!("Error reading {from}: {e}");
-                    std::process::exit(1);
-                });
+            let content = std::fs::read_to_string(&from).unwrap_or_else(|e| {
+                eprintln!("Error reading {from}: {e}");
+                std::process::exit(1);
+            });
 
             #[derive(serde::Deserialize)]
             struct EpicsFile {
@@ -3437,17 +3521,20 @@ fn handle_batch_command(
                 epics: Vec<mem::batch_ops::epics::EpicDef>,
             }
 
-            let file: EpicsFile = serde_yaml::from_str(&content)
-                .unwrap_or_else(|e| {
-                    eprintln!("Error parsing YAML: {e}");
-                    std::process::exit(1);
-                });
+            let file: EpicsFile = serde_yaml::from_str(&content).unwrap_or_else(|e| {
+                eprintln!("Error parsing YAML: {e}");
+                std::process::exit(1);
+            });
 
             // CLI args override file-level defaults
             let parent = parent.as_deref().or(file.parent.as_deref());
 
             let summary = mem::batch_ops::epics::batch_create_epics(
-                graph, pkb_root, parent, &file.epics, dry_run,
+                graph,
+                pkb_root,
+                parent,
+                &file.epics,
+                dry_run,
             );
             print!("{}", summary.display());
         }
@@ -3463,7 +3550,11 @@ fn handle_batch_command(
                 std::process::exit(1);
             }
             let summary = mem::batch_ops::reclassify::batch_reclassify(
-                graph, pkb_root, &filter_set, &new_type, dry_run,
+                graph,
+                pkb_root,
+                &filter_set,
+                &new_type,
+                dry_run,
             );
             print!("{}", summary.display());
         }
@@ -3493,8 +3584,7 @@ fn index_pkb(
         .filter_map(|p| pkb::parse_file_relative(p, pkb_root))
         .collect();
 
-    let existing_ids: std::collections::HashSet<String> =
-        all_docs.iter().map(|d| d.id()).collect();
+    let existing_ids: std::collections::HashSet<String> = all_docs.iter().map(|d| d.id()).collect();
 
     let removed = {
         let mut store = store.write();
@@ -3544,7 +3634,9 @@ fn index_pkb(
 
     for item in parsed {
         let chunk_count = item.1.len();
-        if !current_batch.is_empty() && (current_batch.len() >= 20 || current_chunks + chunk_count > 256) {
+        if !current_batch.is_empty()
+            && (current_batch.len() >= 20 || current_chunks + chunk_count > 256)
+        {
             batches.push(std::mem::take(&mut current_batch));
             current_chunks = 0;
         }
@@ -3558,11 +3650,9 @@ fn index_pkb(
     // Embed and store. Progress bar tracks chunk resolution for linear progress and stable ETA.
     let pb = ProgressBar::new(total_chunks as u64);
     pb.set_style(
-        ProgressStyle::with_template(
-            "  {bar:30.cyan/dim} {pos}/{len} [{elapsed}<{eta}] {msg}",
-        )
-        .unwrap()
-        .progress_chars("━╸─"),
+        ProgressStyle::with_template("  {bar:30.cyan/dim} {pos}/{len} [{elapsed}<{eta}] {msg}")
+            .unwrap()
+            .progress_chars("━╸─"),
     );
     pb.set_message("embedding");
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
@@ -3635,7 +3725,9 @@ fn bench_reindex(
     use std::time::Instant;
 
     let (eff_sessions, eff_threads, eff_batch) = embedder.effective_config();
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
 
     println!("bench-reindex config:");
     println!("  cpu cores:    {cores}");
@@ -3696,14 +3788,16 @@ fn bench_reindex(
 
     let total_chunks: usize = parsed.iter().map(|(_, c)| c.len()).sum();
     for (doc, chunks) in &parsed {
-        let rel = doc
-            .path
-            .strip_prefix(pkb_root)
-            .unwrap_or(&doc.path);
+        let rel = doc.path.strip_prefix(pkb_root).unwrap_or(&doc.path);
         println!("  {} ({} chunks)", rel.display(), chunks.len());
     }
     println!();
-    println!("parse:   {:>8.1}ms  ({} docs, {} chunks)", parse_elapsed.as_secs_f64() * 1000.0, parsed.len(), total_chunks);
+    println!(
+        "parse:   {:>8.1}ms  ({} docs, {} chunks)",
+        parse_elapsed.as_secs_f64() * 1000.0,
+        parsed.len(),
+        total_chunks
+    );
 
     // Embed all chunks in a single batch (mirrors real reindex behavior)
     let mut all_chunks: Vec<&str> = Vec::new();
@@ -3719,7 +3813,10 @@ fn bench_reindex(
     let warmup_start = Instant::now();
     embedder.encode("warmup sentence for benchmarking")?;
     let warmup_elapsed = warmup_start.elapsed();
-    println!("warmup:  {:>8.1}ms  (session init + 1 inference)", warmup_elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "warmup:  {:>8.1}ms  (session init + 1 inference)",
+        warmup_elapsed.as_secs_f64() * 1000.0
+    );
 
     let embed_start = Instant::now();
     let all_embeddings = embedder.encode_batch(&all_chunks)?;
@@ -3786,13 +3883,12 @@ fn abs_node_path(path: &std::path::Path, pkb_root: &std::path::Path) -> PathBuf 
 /// E.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4"
 fn extract_id_from_path(path: &std::path::Path) -> String {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    // ID is prefix-8hexchars, match the pattern
-    let re = regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").unwrap();
+    // ID is prefix-8hexchars or prefix_8hexchars, match the pattern
+    let re = regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z0-9-]+-[0-9a-f]{8})").unwrap();
     re.find(&stem)
         .map(|m| m.as_str().to_string())
         .unwrap_or_else(|| stem.to_string())
 }
-
 
 fn format_bytes(bytes: usize) -> String {
     if bytes < 1024 {

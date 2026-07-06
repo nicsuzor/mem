@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 static TASK_ID_PREFIX_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^([a-z]{1,10}-[a-z0-9]+)-").unwrap());
+    LazyLock::new(|| Regex::new(r"^([a-z0-9_]{1,20}_[a-z0-9]+|[a-z]{1,10}-[a-z0-9]+)-").unwrap());
 
 // ===========================================================================
 // Types
@@ -377,10 +377,9 @@ pub fn create_id(prefix: &str) -> String {
     use rand::Rng;
     let mut rng = rand::rng();
     let random: u32 = rng.random();
-    format!("{}-{:08x}", prefix, random)
+    let snake_prefix = prefix.to_lowercase().replace('-', "_");
+    format!("{}_{:08x}", snake_prefix, random)
 }
-
-
 
 /// Normalize legacy/alternate status values to the canonical set defined in
 /// `aops-core/TAXONOMY.md`. Canonical statuses pass through unchanged.
@@ -390,8 +389,8 @@ pub fn create_id(prefix: &str) -> String {
 pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         // Passthrough — canonical values
-        "inbox" | "ready" | "queued" | "in_progress" | "merge_ready" | "review"
-        | "done" | "blocked" | "paused" | "someday" | "cancelled" | "partial" => status,
+        "inbox" | "ready" | "queued" | "in_progress" | "merge_ready" | "review" | "done"
+        | "blocked" | "paused" | "someday" | "cancelled" | "partial" => status,
 
         // Legacy "active" = in-flight / claimed work (per Nic 2026-06-27). The old
         // taxonomy collapsed ready/queued/in_progress into one "active" label, but
@@ -407,16 +406,23 @@ pub fn resolve_status_alias(status: &str) -> &str {
         "in-progress" | "in-preparation" | "decomposing" | "growing" => "in_progress",
 
         // Review-family: awaiting human or external decision
-        "in_review" | "in-review" | "ready-for-review" | "ISSUES_FOUND"
-        | "conditionally-accepted" | "revise-and-resubmit"
-        | "waiting" | "invited" | "awaiting-approval" | "submitted" => "review",
+        "in_review"
+        | "in-review"
+        | "ready-for-review"
+        | "ISSUES_FOUND"
+        | "conditionally-accepted"
+        | "revise-and-resubmit"
+        | "waiting"
+        | "invited"
+        | "awaiting-approval"
+        | "submitted" => "review",
 
         // Merge-ready
         "merge-ready" => "merge_ready",
 
         // Done-family: completed externally or internally
-        "complete" | "completed" | "closed" | "archived" | "resolved"
-        | "published-spir" | "historical" | "accepted" => "done",
+        "complete" | "completed" | "closed" | "archived" | "resolved" | "published-spir"
+        | "historical" | "accepted" => "done",
 
         // Cancelled-family — "superseded" means replaced by a newer artefact,
         // which is functionally equivalent to cancelled (no longer in play).
@@ -461,9 +467,7 @@ pub fn parse_canonical_statuses_from_taxonomy(md: &str) -> Vec<String> {
         // Match table rows: `| `token` | ... |`
         if trimmed.starts_with('|') && trimmed.contains('`') {
             // Skip the header separator row `| --- | --- |`
-            if trimmed.chars().filter(|&c| c == '-').count() > 3
-                && !trimmed.contains('`')
-            {
+            if trimmed.chars().filter(|&c| c == '-').count() > 3 && !trimmed.contains('`') {
                 continue;
             }
             // Skip the header row "| Status | Meaning |" — it has no backticks
@@ -507,8 +511,7 @@ mod taxonomy_sync_tests {
 
         let parsed_set: std::collections::BTreeSet<&str> =
             parsed.iter().map(|s| s.as_str()).collect();
-        let code_set: std::collections::BTreeSet<&str> =
-            VALID_STATUSES.iter().copied().collect();
+        let code_set: std::collections::BTreeSet<&str> = VALID_STATUSES.iter().copied().collect();
 
         assert_eq!(
             parsed_set, code_set,
@@ -623,8 +626,18 @@ pub fn parse_effort_days(effort: &str) -> Option<i64> {
 ///   done (the follow-up child carries the remainder). Surfaced by the §6
 ///   partial-orphan backstop via `list_tasks(status="partial")`.
 pub const VALID_STATUSES: &[&str] = &[
-    "inbox", "ready", "queued", "in_progress", "merge_ready", "review",
-    "done", "blocked", "paused", "someday", "cancelled", "partial",
+    "inbox",
+    "ready",
+    "queued",
+    "in_progress",
+    "merge_ready",
+    "review",
+    "done",
+    "blocked",
+    "paused",
+    "someday",
+    "cancelled",
+    "partial",
 ];
 
 /// Terminal statuses — no further work expected.
@@ -633,8 +646,15 @@ pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled"];
 /// Open work items — everything that is neither terminal nor blocked.
 /// Used for surfacing active work in dashboards and filters.
 pub const ACTIVE_STATUSES: &[&str] = &[
-    "inbox", "ready", "queued", "in_progress", "merge_ready", "review",
-    "paused", "someday", "partial",
+    "inbox",
+    "ready",
+    "queued",
+    "in_progress",
+    "merge_ready",
+    "review",
+    "paused",
+    "someday",
+    "partial",
 ];
 
 /// Statuses that represent blocked work.
@@ -687,14 +707,30 @@ pub fn is_strategic_target(node_type: Option<&str>) -> bool {
 /// field). Legacy `type: project` files are read-coerced to `epic`.
 pub const VALID_NODE_TYPES: &[&str] = &[
     // Actionable work items (subset also in TASK_TYPES)
-    "epic", "task", "learn", "pr",
+    "epic",
+    "task",
+    "learn",
+    "pr",
     // Recurring workflow templates — not actionable; claim_task() instantiates these
     "template",
     // Reference
-    "goal", "target", "note", "knowledge", "memory", "contact",
-    "document", "reference", "review", "case", "spec", "prototype",
+    "goal",
+    "target",
+    "note",
+    "knowledge",
+    "memory",
+    "contact",
+    "document",
+    "reference",
+    "review",
+    "case",
+    "spec",
+    "prototype",
     // Structural / log
-    "index", "daily", "session-log", "audit-report",
+    "index",
+    "daily",
+    "session-log",
+    "audit-report",
 ];
 
 /// Parse a string array from a JSON frontmatter value.
@@ -798,7 +834,8 @@ pub fn deduplicate_vec(vec: &mut Vec<String>) {
 /// and "definition of done" sections.
 pub fn detect_acceptance_criteria(body: &str) -> bool {
     static AC_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?i)(acceptance criteria|done when|definition of done|## ac\r?\n)").unwrap()
+        regex::Regex::new(r"(?i)(acceptance criteria|done when|definition of done|## ac\r?\n)")
+            .unwrap()
     });
     AC_REGEX.is_match(body)
 }
@@ -853,15 +890,19 @@ impl GraphNode {
         let due = fm
             .as_ref()
             .and_then(|f| f.get("due").and_then(|v| v.as_str()).map(String::from));
-        let complexity = fm
-            .as_ref()
-            .and_then(|f| f.get("complexity").and_then(|v| v.as_str()).map(String::from));
+        let complexity = fm.as_ref().and_then(|f| {
+            f.get("complexity")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
         let effort = fm
             .as_ref()
             .and_then(|f| f.get("effort").and_then(|v| v.as_str()).map(String::from));
-        let consequence = fm
-            .as_ref()
-            .and_then(|f| f.get("consequence").and_then(|v| v.as_str()).map(String::from));
+        let consequence = fm.as_ref().and_then(|f| {
+            f.get("consequence")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
         let mut parse_warnings: Vec<ParseWarning> = Vec::new();
 
         // Severity: integer 0..=4. Anything else is rejected with a structured warning.
@@ -880,10 +921,7 @@ impl GraphNode {
                 } else if !v.is_null() {
                     parse_warnings.push(ParseWarning {
                         field: "severity".to_string(),
-                        message: format!(
-                            "severity must be an integer 0..=4; got {}",
-                            v
-                        ),
+                        message: format!("severity must be an integer 0..=4; got {}", v),
                     });
                     None
                 } else {
@@ -1040,12 +1078,16 @@ impl GraphNode {
         let assignee = fm
             .as_ref()
             .and_then(|f| f.get("assignee").and_then(|v| v.as_str()).map(String::from));
-        let stakeholder = fm
-            .as_ref()
-            .and_then(|f| f.get("stakeholder").and_then(|v| v.as_str()).map(String::from));
-        let waiting_since = fm
-            .as_ref()
-            .and_then(|f| f.get("waiting_since").and_then(|v| v.as_str()).map(String::from));
+        let stakeholder = fm.as_ref().and_then(|f| {
+            f.get("stakeholder")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+        let waiting_since = fm.as_ref().and_then(|f| {
+            f.get("waiting_since")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
         let project = fm
             .as_ref()
             .and_then(|f| f.get("project").and_then(|v| v.as_str()).map(String::from));
@@ -1262,10 +1304,7 @@ mod target_prototype_tests {
             path: PathBuf::from("/tmp/fixture.md"),
             title: "Fixture".to_string(),
             tags: vec![],
-            doc_type: fm
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            doc_type: fm.get("type").and_then(|v| v.as_str()).map(String::from),
             status: None,
             modified: None,
             body: "Body text.".to_string(),
@@ -1346,7 +1385,10 @@ mod target_prototype_tests {
         assert_eq!(tmpl.severity, Some(3));
         assert_eq!(tmpl.goal_type.as_deref(), Some("committed"));
         assert_eq!(tmpl.weight.as_deref(), Some("Probable"));
-        assert_eq!(tmpl.consequence.as_deref(), Some("Inherited consequence prose."));
+        assert_eq!(
+            tmpl.consequence.as_deref(),
+            Some("Inherited consequence prose.")
+        );
         // Prototype is class-like — no `due` at the node level.
         assert!(n.due.is_none());
         assert!(n.parse_warnings.is_empty());
@@ -1423,7 +1465,9 @@ mod target_prototype_tests {
             },
         });
         let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
-        let tmpl = n.edge_template.expect("partial template still returns Some");
+        let tmpl = n
+            .edge_template
+            .expect("partial template still returns Some");
         assert_eq!(tmpl.severity, None);
         assert_eq!(tmpl.goal_type.as_deref(), Some("committed"));
         assert!(n

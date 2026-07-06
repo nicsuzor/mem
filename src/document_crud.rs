@@ -179,14 +179,15 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     };
 
     // Determine subdirectory
-    let subdir = fields
-        .dir
-        .map(|d| expand_env_vars(&d))
-        .unwrap_or_else(|| match fields.doc_type.as_str() {
-            "task" | "epic" | "learn" => "tasks".to_string(),
-            "memory" => "memories".to_string(),
-            _ => "notes".to_string(),
-        });
+    let subdir =
+        fields
+            .dir
+            .map(|d| expand_env_vars(&d))
+            .unwrap_or_else(|| match fields.doc_type.as_str() {
+                "task" | "epic" | "learn" => "tasks".to_string(),
+                "memory" => "memories".to_string(),
+                _ => "notes".to_string(),
+            });
 
     let dir = root.join(&subdir);
     if !dir.is_dir() {
@@ -256,7 +257,10 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     if let Some(ref source) = fields.source {
-        fm.push_str(&format!("source: \"{}\"\n", yaml_escape_double_quoted(source)));
+        fm.push_str(&format!(
+            "source: \"{}\"\n",
+            yaml_escape_double_quoted(source)
+        ));
     }
 
     if let Some(c) = fields.confidence {
@@ -264,7 +268,10 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     if let Some(ref s) = fields.supersedes {
-        fm.push_str(&format!("supersedes: \"{}\"\n", yaml_escape_double_quoted(s)));
+        fm.push_str(&format!(
+            "supersedes: \"{}\"\n",
+            yaml_escape_double_quoted(s)
+        ));
     }
 
     if let Some(sev) = fields.severity {
@@ -413,8 +420,9 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
 
     let projects_dir = root.join("projects");
     if !projects_dir.is_dir() {
-        std::fs::create_dir_all(&projects_dir)
-            .with_context(|| format!("Failed to create projects dir: {}", projects_dir.display()))?;
+        std::fs::create_dir_all(&projects_dir).with_context(|| {
+            format!("Failed to create projects dir: {}", projects_dir.display())
+        })?;
     }
 
     // Write directly so the filename stays `adhoc-sessions.md` (human-readable)
@@ -427,8 +435,12 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
     let content = format!(
         "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: epic\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nlast_modified: {local_now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
-    std::fs::write(&adhoc_path, content)
-        .with_context(|| format!("Failed to write adhoc-sessions root: {}", adhoc_path.display()))?;
+    std::fs::write(&adhoc_path, content).with_context(|| {
+        format!(
+            "Failed to write adhoc-sessions root: {}",
+            adhoc_path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -451,7 +463,6 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         );
     }
 
-
     // Validation
     if let Some(ref t) = fields.task_type {
         if !crate::graph::is_valid_node_type(t) {
@@ -470,14 +481,22 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     }
     if let Some(ref effort) = fields.effort {
         if !crate::graph::is_valid_effort(effort) {
-            anyhow::bail!("Invalid effort: {}. Expected duration like '1d', '2h', '1w'.", effort);
+            anyhow::bail!(
+                "Invalid effort: {}. Expected duration like '1d', '2h', '1w'.",
+                effort
+            );
         }
     }
 
     // Validate + canonicalize the project slug against polecat.yaml before it
     // is used anywhere (ID prefix, frontmatter). Builtin slugs (`task`,
     // `adhoc-sessions`) pass without a registry; anything else must resolve.
-    let project = match fields.project.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let project = match fields
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(raw) => Some(crate::polecat_config::resolve_project(root, raw)?),
         None => None,
     };
@@ -708,7 +727,12 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     // template whose slug was deregistered/renamed must fail here rather than
     // stamping the stale value onto every future instance; the
     // fm-unregistered-project lint rule surfaces such templates ahead of time.
-    let project = match fields.project.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let project = match fields
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(raw) => Some(crate::polecat_config::resolve_project(root, raw)?),
         None => None,
     };
@@ -720,9 +744,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     // Derive hostname: try env vars then /etc/hostname, fall back to "local".
     let raw_host = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("HOST"))
-        .or_else(|_| {
-            std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string())
-        })
+        .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
         .unwrap_or_else(|_| "local".to_string());
     let host = sanitize_prefix(&raw_host);
     // Use floor_char_boundary to safely truncate multi-byte host strings.
@@ -778,7 +800,10 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     }
 
     if let Some(ref consequence) = fields.consequence {
-        fm.push_str(&format!("consequence: \"{}\"\n", yaml_escape_double_quoted(consequence)));
+        fm.push_str(&format!(
+            "consequence: \"{}\"\n",
+            yaml_escape_double_quoted(consequence)
+        ));
     }
 
     if !fields.contributes_to.is_empty() {
@@ -809,13 +834,22 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     }
 
     if let Some(ref stakeholder) = fields.stakeholder {
-        fm.push_str(&format!("stakeholder: \"{}\"\n", yaml_escape_double_quoted(stakeholder)));
+        fm.push_str(&format!(
+            "stakeholder: \"{}\"\n",
+            yaml_escape_double_quoted(stakeholder)
+        ));
     }
 
-    fm.push_str(&format!("template_id: \"{}\"\n", yaml_escape_double_quoted(&fields.template_id)));
+    fm.push_str(&format!(
+        "template_id: \"{}\"\n",
+        yaml_escape_double_quoted(&fields.template_id)
+    ));
     fm.push_str(&format!("created: {}\n", created_at));
     fm.push_str(&format!("modified: {}\n", created_at));
-    fm.push_str(&format!("last_modified: {}\n", chrono::Local::now().to_rfc3339()));
+    fm.push_str(&format!(
+        "last_modified: {}\n",
+        chrono::Local::now().to_rfc3339()
+    ));
 
     let slug = slugify(&instance_title);
     fm.push_str("alias:\n");
@@ -831,7 +865,10 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     }
 
     if let Some(ref assignee) = fields.assignee {
-        fm.push_str(&format!("assignee: \"{}\"\n", yaml_escape_double_quoted(assignee)));
+        fm.push_str(&format!(
+            "assignee: \"{}\"\n",
+            yaml_escape_double_quoted(assignee)
+        ));
     }
 
     fm.push_str("---\n\n");
@@ -909,7 +946,10 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     }
 
     if let Some(ref source) = fields.source {
-        fm.push_str(&format!("source: \"{}\"\n", yaml_escape_double_quoted(source)));
+        fm.push_str(&format!(
+            "source: \"{}\"\n",
+            yaml_escape_double_quoted(source)
+        ));
     }
 
     if let Some(c) = fields.confidence {
@@ -917,7 +957,10 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     }
 
     if let Some(ref s) = fields.supersedes {
-        fm.push_str(&format!("supersedes: \"{}\"\n", yaml_escape_double_quoted(s)));
+        fm.push_str(&format!(
+            "supersedes: \"{}\"\n",
+            yaml_escape_double_quoted(s)
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -1292,7 +1335,10 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
             "effort" => {
                 if let Some(e) = value.as_str() {
                     if !crate::graph::is_valid_effort(e) {
-                        anyhow::bail!("Invalid effort: {}. Expected duration like '1d', '2h', '1w'.", e);
+                        anyhow::bail!(
+                            "Invalid effort: {}. Expected duration like '1d', '2h', '1w'.",
+                            e
+                        );
                     }
                 }
             }
@@ -1361,7 +1407,11 @@ pub struct RewriteBodyResult {
 /// content.
 ///
 /// Returns body character counts (before and after) for observability.
-pub fn rewrite_body(path: &Path, new_body: &str, preserve_frontmatter: bool) -> Result<RewriteBodyResult> {
+pub fn rewrite_body(
+    path: &Path,
+    new_body: &str,
+    preserve_frontmatter: bool,
+) -> Result<RewriteBodyResult> {
     use gray_matter::engine::YAML;
     use gray_matter::Matter;
 
@@ -1407,16 +1457,16 @@ pub fn rewrite_body(path: &Path, new_body: &str, preserve_frontmatter: bool) -> 
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Could not get parent directory for {}", path.display()))?;
     // Write to a temp file in the same directory, then rename for atomicity.
-    let tmp_path = dir.join(format!(
-        ".rewrite_body_{}.tmp",
-        std::process::id()
-    ));
+    let tmp_path = dir.join(format!(".rewrite_body_{}.tmp", std::process::id()));
     std::fs::write(&tmp_path, new_content.as_bytes())
         .with_context(|| format!("Failed to write temp file {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, path)
         .with_context(|| format!("Failed to rename temp file to {}", path.display()))?;
 
-    Ok(RewriteBodyResult { body_chars_before, body_chars_after })
+    Ok(RewriteBodyResult {
+        body_chars_before,
+        body_chars_after,
+    })
 }
 
 /// Append timestamped content to an existing document.
@@ -1565,15 +1615,21 @@ fn generate_id(prefix: &str) -> String {
 pub fn sanitize_prefix(prefix: &str) -> String {
     let sanitized: String = prefix
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .to_lowercase();
-    // Collapse consecutive hyphens and trim leading/trailing hyphens
+    // Collapse consecutive hyphens and underscores, then join with underscore
     let collapsed: String = sanitized
-        .split('-')
+        .split(|c| c == '-' || c == '_')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
-        .join("-");
+        .join("_");
     if collapsed.is_empty() {
         "doc".to_string()
     } else {
@@ -1864,7 +1920,11 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
 
         write_md(&subdir, "t1.md", "id: t1\ntitle: Task1\n");
-        write_md(&subdir, "t2.md", "id: t2\ntitle: Task2\nparent: old-parent\n");
+        write_md(
+            &subdir,
+            "t2.md",
+            "id: t2\ntitle: Task2\nparent: old-parent\n",
+        );
 
         let results = bulk_reparent(root, "tasks", "new-parent", false).unwrap();
         assert_eq!(results.len(), 2);
@@ -1887,14 +1947,22 @@ mod tests {
         let subdir = root.join("docs");
         fs::create_dir_all(&subdir).unwrap();
 
-        write_md(&subdir, "parent.md", "id: epic-001\npermalink: epic-001\ntitle: Epic\n");
+        write_md(
+            &subdir,
+            "parent.md",
+            "id: epic-001\npermalink: epic-001\ntitle: Epic\n",
+        );
         write_md(&subdir, "child.md", "id: child-001\ntitle: Child\n");
 
         let results = bulk_reparent(root, "docs", "epic-001", true).unwrap();
         assert_eq!(results.len(), 2);
 
-        let self_skip = results.iter().any(|r| matches!(r, ReparentResult::SkippedSelf(_)));
-        let updated = results.iter().any(|r| matches!(r, ReparentResult::Updated(_)));
+        let self_skip = results
+            .iter()
+            .any(|r| matches!(r, ReparentResult::SkippedSelf(_)));
+        let updated = results
+            .iter()
+            .any(|r| matches!(r, ReparentResult::Updated(_)));
         assert!(self_skip, "Should skip the parent file itself");
         assert!(updated, "Should update the child file");
     }
@@ -1907,14 +1975,22 @@ mod tests {
         let subdir = root.join("notes");
         fs::create_dir_all(&subdir).unwrap();
 
-        write_md(&subdir, "already.md", "id: n1\ntitle: Note\nparent: target-parent\n");
+        write_md(
+            &subdir,
+            "already.md",
+            "id: n1\ntitle: Note\nparent: target-parent\n",
+        );
         write_md(&subdir, "new.md", "id: n2\ntitle: New Note\n");
 
         let results = bulk_reparent(root, "notes", "target-parent", true).unwrap();
         assert_eq!(results.len(), 2);
 
-        let already = results.iter().any(|r| matches!(r, ReparentResult::SkippedAlreadyParented(_)));
-        let updated = results.iter().any(|r| matches!(r, ReparentResult::Updated(_)));
+        let already = results
+            .iter()
+            .any(|r| matches!(r, ReparentResult::SkippedAlreadyParented(_)));
+        let updated = results
+            .iter()
+            .any(|r| matches!(r, ReparentResult::Updated(_)));
         assert!(already, "Should skip already-parented file");
         assert!(updated, "Should update the unparented file");
     }
@@ -2102,14 +2178,26 @@ mod tests {
         let path = create_task(root, fields).unwrap();
         let content = fs::read_to_string(&path).unwrap();
 
-        assert!(content.contains("type: epic"), "type field should be written: {content}");
-        assert!(content.contains("status: in_progress"), "status field should be written: {content}");
-        assert!(content.contains("project: aops"), "project field should be written: {content}");
+        assert!(
+            content.contains("type: epic"),
+            "type field should be written: {content}"
+        );
+        assert!(
+            content.contains("status: in_progress"),
+            "status field should be written: {content}"
+        );
+        assert!(
+            content.contains("project: aops"),
+            "project field should be written: {content}"
+        );
         // ID should use the PROJECT as prefix (not task_type) — see
         // create_task: regression task-381788fb. Filename inherits the
         // project-prefixed ID.
         assert!(
-            path.file_name().unwrap().to_string_lossy().starts_with("aops-"),
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("aops-"),
             "filename should use project prefix: {:?}",
             path.file_name()
         );
@@ -2245,9 +2333,18 @@ mod tests {
         let path = create_task(root, fields).unwrap();
         let content = fs::read_to_string(&path).unwrap();
 
-        assert!(content.contains("type: task"), "default type should be 'task': {content}");
-        assert!(content.contains("status: inbox"), "default status should be 'inbox': {content}");
-        assert!(content.contains("project: aops"), "project should be written: {content}");
+        assert!(
+            content.contains("type: task"),
+            "default type should be 'task': {content}"
+        );
+        assert!(
+            content.contains("status: inbox"),
+            "default status should be 'inbox': {content}"
+        );
+        assert!(
+            content.contains("project: aops"),
+            "project should be written: {content}"
+        );
         // #1905: no default priority is stamped when none is supplied
         assert!(
             !content.contains("priority:"),
@@ -2357,7 +2454,8 @@ mod tests {
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
-        let body = "## Problem\n\nWhen X happens, Y goes wrong.\n\n## AC\n\n- [ ] item 1\n- [ ] item 2\n";
+        let body =
+            "## Problem\n\nWhen X happens, Y goes wrong.\n\n## AC\n\n- [ ] item 1\n- [ ] item 2\n";
         let fields = TaskFields {
             title: "Body roundtrip task".to_string(),
             parent: Some("parent-001".to_string()),
@@ -2482,10 +2580,22 @@ mod tests {
                 .lines()
                 .any(|line| line.starts_with(&format!("{key}: ")) && line.len() > key.len() + 2)
         };
-        assert!(has_field("id"), "id: must always be written; frontmatter:\n{frontmatter}");
-        assert!(has_field("title"), "title: must always be written; frontmatter:\n{frontmatter}");
-        assert!(has_field("type"), "type: must always be written; frontmatter:\n{frontmatter}");
-        assert!(has_field("status"), "status: must always be written; frontmatter:\n{frontmatter}");
+        assert!(
+            has_field("id"),
+            "id: must always be written; frontmatter:\n{frontmatter}"
+        );
+        assert!(
+            has_field("title"),
+            "title: must always be written; frontmatter:\n{frontmatter}"
+        );
+        assert!(
+            has_field("type"),
+            "type: must always be written; frontmatter:\n{frontmatter}"
+        );
+        assert!(
+            has_field("status"),
+            "status: must always be written; frontmatter:\n{frontmatter}"
+        );
     }
 
     // =====================================================================
@@ -2546,7 +2656,10 @@ mod tests {
             .and_then(|d| d.deserialize::<serde_json::Value>().ok())
             .expect("frontmatter must parse");
 
-        assert!(fm.is_object(), "frontmatter should be an object after rewrite");
+        assert!(
+            fm.is_object(),
+            "frontmatter should be an object after rewrite"
+        );
         let obj = fm.as_object().unwrap();
         assert_eq!(
             obj.get("priority").and_then(|v| v.as_i64()),
@@ -2590,7 +2703,10 @@ mod tests {
         let content_after_second = fs::read_to_string(&path).unwrap();
 
         // Body size is stable across rewrites.
-        assert_eq!(r1.body_chars_after, r2.body_chars_after, "body size stable across rewrites");
+        assert_eq!(
+            r1.body_chars_after, r2.body_chars_after,
+            "body size stable across rewrites"
+        );
 
         // Body content is identical after both rewrites.
         let body_after_first = content_after_first.split("---\n\n").nth(1).unwrap_or("");
@@ -2619,8 +2735,14 @@ mod tests {
         rewrite_body(&path, new_body, false).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
-        assert_eq!(content.trim_end_matches('\n'), new_body.trim_end_matches('\n'));
-        assert!(!content.contains("---"), "frontmatter should be gone when preserve_frontmatter=false");
+        assert_eq!(
+            content.trim_end_matches('\n'),
+            new_body.trim_end_matches('\n')
+        );
+        assert!(
+            !content.contains("---"),
+            "frontmatter should be gone when preserve_frontmatter=false"
+        );
     }
 
     // =====================================================================
@@ -2668,11 +2790,22 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
 
         // Template fields materialised onto the edge YAML.
-        assert!(content.contains("weight: Certain"), "weight from template: {content}");
-        assert!(content.contains("goal_type: committed"), "goal_type from template: {content}");
-        assert!(content.contains("severity: 3"), "severity from template: {content}");
         assert!(
-            content.contains("consequence: OSB obligation") || content.contains("consequence: 'OSB obligation'") || content.contains("consequence: \"OSB obligation\""),
+            content.contains("weight: Certain"),
+            "weight from template: {content}"
+        );
+        assert!(
+            content.contains("goal_type: committed"),
+            "goal_type from template: {content}"
+        );
+        assert!(
+            content.contains("severity: 3"),
+            "severity from template: {content}"
+        );
+        assert!(
+            content.contains("consequence: OSB obligation")
+                || content.contains("consequence: 'OSB obligation'")
+                || content.contains("consequence: \"OSB obligation\""),
             "consequence from template: {content}"
         );
         // Provenance preserved.
@@ -2712,11 +2845,23 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
 
         // Instance weight wins.
-        assert!(content.contains("weight: Expected"), "instance weight wins: {content}");
-        assert!(!content.contains("weight: Certain"), "template weight NOT applied: {content}");
+        assert!(
+            content.contains("weight: Expected"),
+            "instance weight wins: {content}"
+        );
+        assert!(
+            !content.contains("weight: Certain"),
+            "template weight NOT applied: {content}"
+        );
         // Other template fields fill gaps.
-        assert!(content.contains("goal_type: committed"), "template goal_type fills gap: {content}");
-        assert!(content.contains("severity: 3"), "template severity fills gap: {content}");
+        assert!(
+            content.contains("goal_type: committed"),
+            "template goal_type fills gap: {content}"
+        );
+        assert!(
+            content.contains("severity: 3"),
+            "template severity fills gap: {content}"
+        );
     }
 
     #[test]
@@ -2753,9 +2898,18 @@ mod tests {
 
         // 3. Existing edge file MUST NOT be rewritten.
         let after = fs::read_to_string(&edge_path).unwrap();
-        assert_eq!(original, after, "existing edge file untouched by prototype edit");
-        assert!(after.contains("weight: Certain"), "old materialised value still on edge");
-        assert!(!after.contains("weight: Improbable"), "new template value not applied");
+        assert_eq!(
+            original, after,
+            "existing edge file untouched by prototype edit"
+        );
+        assert!(
+            after.contains("weight: Certain"),
+            "old materialised value still on edge"
+        );
+        assert!(
+            !after.contains("weight: Improbable"),
+            "new template value not applied"
+        );
     }
 
     #[test]
@@ -2840,9 +2994,18 @@ mod tests {
         update_document(&task_path, updates).unwrap();
 
         let content = fs::read_to_string(&task_path).unwrap();
-        assert!(content.contains("weight: Certain"), "materialised weight: {content}");
-        assert!(content.contains("severity: 3"), "materialised severity: {content}");
-        assert!(content.contains("inherits_from: task-b9d6ff7e"), "provenance preserved: {content}");
+        assert!(
+            content.contains("weight: Certain"),
+            "materialised weight: {content}"
+        );
+        assert!(
+            content.contains("severity: 3"),
+            "materialised severity: {content}"
+        );
+        assert!(
+            content.contains("inherits_from: task-b9d6ff7e"),
+            "provenance preserved: {content}"
+        );
     }
 
     // ── Bug 1 (task-d802855c): write path must not clobber frontmatter ──
@@ -2869,7 +3032,10 @@ mod tests {
             "update on unparseable (duplicate-key) frontmatter must fail loud"
         );
         let after = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(after, original, "file must be left byte-for-byte untouched on refusal");
+        assert_eq!(
+            after, original,
+            "file must be left byte-for-byte untouched on refusal"
+        );
         // Explicitly: must NOT have collapsed to the destructive `{modified, status}` subset.
         assert!(after.contains("id: task-ce339428"), "id must survive");
         assert!(after.contains("type: task"), "type must survive");
@@ -2893,13 +3059,22 @@ mod tests {
         update_document(&path, updates).unwrap();
 
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("status: in_progress"), "status updated: {after}");
+        assert!(
+            after.contains("status: in_progress"),
+            "status updated: {after}"
+        );
         assert!(after.contains("id: task-abc"), "id preserved: {after}");
         assert!(after.contains("title: Keep Me"), "title preserved: {after}");
         assert!(after.contains("type: task"), "type preserved: {after}");
-        assert!(after.contains("parent: epic-1"), "parent preserved: {after}");
+        assert!(
+            after.contains("parent: epic-1"),
+            "parent preserved: {after}"
+        );
         assert!(after.contains("task-z"), "depends_on preserved: {after}");
-        assert!(after.contains("- a") && after.contains("- b"), "tags preserved: {after}");
+        assert!(
+            after.contains("- a") && after.contains("- b"),
+            "tags preserved: {after}"
+        );
     }
 
     // ── #1908: a JSON null value must REMOVE the field, generally ──
@@ -2923,12 +3098,21 @@ mod tests {
         update_document(&path, updates).unwrap();
 
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(!after.contains("priority:"), "priority field must be removed: {after}");
-        assert!(!after.contains("assignee:"), "assignee field must be removed: {after}");
+        assert!(
+            !after.contains("priority:"),
+            "priority field must be removed: {after}"
+        );
+        assert!(
+            !after.contains("assignee:"),
+            "assignee field must be removed: {after}"
+        );
         // Other fields survive and modified is bumped off the stale value.
         assert!(after.contains("id: task-null1"), "id preserved: {after}");
         assert!(after.contains("status: ready"), "status preserved: {after}");
-        assert!(!after.contains("2020-01-01"), "modified must be bumped: {after}");
+        assert!(
+            !after.contains("2020-01-01"),
+            "modified must be bumped: {after}"
+        );
     }
 
     /// End-to-end through the MCP write path: `expand_special_update_keys`
@@ -2974,7 +3158,10 @@ mod tests {
             "null priority must NOT be dropped as a no-op (#1908): {effective:?}"
         );
         assert!(
-            effective.get("priority").map(|v| v.is_null()).unwrap_or(false),
+            effective
+                .get("priority")
+                .map(|v| v.is_null())
+                .unwrap_or(false),
             "priority must still be null going into the writer"
         );
 
@@ -3039,7 +3226,10 @@ mod tests {
         // Second call must not overwrite
         ensure_adhoc_sessions_root(root).unwrap();
         let content_second = std::fs::read_to_string(&adhoc_path).unwrap();
-        assert_eq!(content_first, content_second, "second call must not modify the file");
+        assert_eq!(
+            content_first, content_second,
+            "second call must not modify the file"
+        );
     }
 }
 
@@ -3154,8 +3344,7 @@ pub fn merge_node(
                                     let old_item = format!("- {}", ref_id);
                                     let new_item = format!("- {}", canonical_id);
                                     if new_content.contains(&old_item) {
-                                        new_content =
-                                            new_content.replacen(&old_item, &new_item, 1);
+                                        new_content = new_content.replacen(&old_item, &new_item, 1);
                                         modified = true;
                                         refs_redirected += 1;
                                     }
@@ -3228,7 +3417,6 @@ pub fn merge_node(
     })
 }
 
-
 // ── Special Keys Expansion ──────────────────────────────────────────────────────────
 
 /// Expand special update keys like `_add_depends_on` and `_remove_tags` into effective document state updates.
@@ -3237,7 +3425,13 @@ pub fn expand_special_update_keys(
     updates_map: &serde_json::Map<String, serde_json::Value>,
 ) -> anyhow::Result<std::collections::HashMap<String, serde_json::Value>> {
     let mut effective = std::collections::HashMap::new();
-    let special_keys = ["_add_tags", "_remove_tags", "_add_depends_on", "_remove_depends_on", "superseded_by"];
+    let special_keys = [
+        "_add_tags",
+        "_remove_tags",
+        "_add_depends_on",
+        "_remove_depends_on",
+        "superseded_by",
+    ];
 
     for (key, value) in updates_map {
         if special_keys.contains(&key.as_str()) {
@@ -3276,10 +3470,16 @@ pub fn expand_special_update_keys(
 
     // Handle _add_tags
     if let Some(add_tags_val) = updates_map.get("_add_tags") {
-        let add_tags = add_tags_val.as_array().ok_or_else(|| anyhow::anyhow!("_add_tags must be an array of strings"))?;
+        let add_tags = add_tags_val
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("_add_tags must be an array of strings"))?;
         let new_tags: Vec<String> = add_tags
             .iter()
-            .map(|v| v.as_str().map(String::from).ok_or_else(|| anyhow::anyhow!("_add_tags elements must be strings")))
+            .map(|v| {
+                v.as_str()
+                    .map(String::from)
+                    .ok_or_else(|| anyhow::anyhow!("_add_tags elements must be strings"))
+            })
             .collect::<anyhow::Result<Vec<String>>>()?
             .into_iter()
             .filter(|t| !node.tags.contains(t))
@@ -3289,17 +3489,27 @@ pub fn expand_special_update_keys(
             all_tags.extend(new_tags);
             effective.insert(
                 "tags".to_string(),
-                serde_json::Value::Array(all_tags.into_iter().map(serde_json::Value::String).collect()),
+                serde_json::Value::Array(
+                    all_tags
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
             );
         }
     }
 
     // Handle _remove_tags
     if let Some(remove_tags_val) = updates_map.get("_remove_tags") {
-        let remove_tags = remove_tags_val.as_array().ok_or_else(|| anyhow::anyhow!("_remove_tags must be an array of strings"))?;
+        let remove_tags = remove_tags_val
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("_remove_tags must be an array of strings"))?;
         let remove_set: std::collections::HashSet<&str> = remove_tags
             .iter()
-            .map(|v| v.as_str().ok_or_else(|| anyhow::anyhow!("_remove_tags elements must be strings")))
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| anyhow::anyhow!("_remove_tags elements must be strings"))
+            })
             .collect::<anyhow::Result<std::collections::HashSet<&str>>>()?;
         if node.tags.iter().any(|t| remove_set.contains(t.as_str())) {
             let remaining: Vec<String> = node
@@ -3310,17 +3520,28 @@ pub fn expand_special_update_keys(
                 .collect();
             effective.insert(
                 "tags".to_string(),
-                serde_json::Value::Array(remaining.into_iter().map(serde_json::Value::String).collect()),
+                serde_json::Value::Array(
+                    remaining
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
             );
         }
     }
 
     // Handle _add_depends_on
     if let Some(add_deps_val) = updates_map.get("_add_depends_on") {
-        let add_deps = add_deps_val.as_array().ok_or_else(|| anyhow::anyhow!("_add_depends_on must be an array of strings"))?;
+        let add_deps = add_deps_val
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("_add_depends_on must be an array of strings"))?;
         let new_deps: Vec<String> = add_deps
             .iter()
-            .map(|v| v.as_str().map(String::from).ok_or_else(|| anyhow::anyhow!("_add_depends_on elements must be strings")))
+            .map(|v| {
+                v.as_str()
+                    .map(String::from)
+                    .ok_or_else(|| anyhow::anyhow!("_add_depends_on elements must be strings"))
+            })
             .collect::<anyhow::Result<Vec<String>>>()?
             .into_iter()
             .filter(|d| !node.depends_on.contains(d))
@@ -3330,19 +3551,33 @@ pub fn expand_special_update_keys(
             all_deps.extend(new_deps);
             effective.insert(
                 "depends_on".to_string(),
-                serde_json::Value::Array(all_deps.into_iter().map(serde_json::Value::String).collect()),
+                serde_json::Value::Array(
+                    all_deps
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
             );
         }
     }
 
     // Handle _remove_depends_on
     if let Some(remove_deps_val) = updates_map.get("_remove_depends_on") {
-        let remove_deps = remove_deps_val.as_array().ok_or_else(|| anyhow::anyhow!("_remove_depends_on must be an array of strings"))?;
+        let remove_deps = remove_deps_val
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("_remove_depends_on must be an array of strings"))?;
         let remove_set: std::collections::HashSet<&str> = remove_deps
             .iter()
-            .map(|v| v.as_str().ok_or_else(|| anyhow::anyhow!("_remove_depends_on elements must be strings")))
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| anyhow::anyhow!("_remove_depends_on elements must be strings"))
+            })
             .collect::<anyhow::Result<std::collections::HashSet<&str>>>()?;
-        if node.depends_on.iter().any(|d| remove_set.contains(d.as_str())) {
+        if node
+            .depends_on
+            .iter()
+            .any(|d| remove_set.contains(d.as_str()))
+        {
             let remaining: Vec<String> = node
                 .depends_on
                 .iter()
@@ -3351,7 +3586,12 @@ pub fn expand_special_update_keys(
                 .collect();
             effective.insert(
                 "depends_on".to_string(),
-                serde_json::Value::Array(remaining.into_iter().map(serde_json::Value::String).collect()),
+                serde_json::Value::Array(
+                    remaining
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
             );
         }
     }
