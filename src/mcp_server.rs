@@ -4658,7 +4658,7 @@ impl PkbSearchServer {
             let id = subtask
                 .get("id")
                 .and_then(|v| v.as_str())
-                .map(crate::document_crud::sanitize_prefix)
+                .map(crate::document_crud::sanitize_explicit_id)
                 .unwrap_or_else(|| crate::graph::create_id(&project_prefix));
 
             if !seen_ids.insert(id.clone()) {

@@ -86,7 +86,7 @@ fn pkb_new_rejects_nonexistent_parent() {
         .unwrap()
         .any(|e| {
             e.ok()
-                .map(|e| e.file_name().to_string_lossy().starts_with("aops-"))
+                .map(|e| e.file_name().to_string_lossy().starts_with("aops_"))
                 .unwrap_or(false)
         });
     assert!(
@@ -132,7 +132,7 @@ fn pkb_new_with_allow_missing_parent_proceeds_with_warning() {
         .find_map(|e| {
             let e = e.ok()?;
             let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("aops-") {
+            if name.starts_with("aops_") {
                 Some(e.path())
             } else {
                 None

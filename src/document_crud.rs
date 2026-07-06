@@ -162,8 +162,9 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
-            // Explicit ID: sanitize to prevent path traversal
-            let safe_id = sanitize_prefix(&explicit_id);
+            // Explicit ID: sanitize to prevent path traversal, preserving
+            // the caller's separator convention (see sanitize_explicit_id).
+            let safe_id = sanitize_explicit_id(&explicit_id);
             let filename = format!("{}.md", safe_id);
             (safe_id, filename)
         }
@@ -503,8 +504,9 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
-            // Explicit ID: sanitize to prevent path traversal
-            let safe_id = sanitize_prefix(&explicit_id);
+            // Explicit ID: sanitize to prevent path traversal, preserving
+            // the caller's separator convention (see sanitize_explicit_id).
+            let safe_id = sanitize_explicit_id(&explicit_id);
             let filename = format!("{}.md", safe_id);
             (safe_id, filename)
         }
@@ -1634,6 +1636,33 @@ pub fn sanitize_prefix(prefix: &str) -> String {
         "doc".to_string()
     } else {
         collapsed
+    }
+}
+
+/// Sanitize a caller-supplied, already-complete explicit ID: strip path
+/// separators and invalid characters, but preserve the caller's original
+/// hyphen/underscore separators as-is. Unlike `sanitize_prefix` (which
+/// normalizes a bare prefix fragment onto the underscore convention before
+/// `create_id` appends a hash), an explicit ID is used verbatim for the
+/// filename and must round-trip through `GraphStore::resolve` unchanged —
+/// rewriting its separators breaks lookups for any caller that already knows
+/// the ID it passed in (e.g. session epics, batch subtask IDs).
+pub fn sanitize_explicit_id(id: &str) -> String {
+    let sanitized: String = id
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .to_lowercase();
+    if sanitized.is_empty() {
+        "doc".to_string()
+    } else {
+        sanitized
     }
 }
 
