@@ -990,12 +990,12 @@ async fn main() -> Result<()> {
             | Commands::Duplicates { .. }
             | Commands::Stats { .. }
             | Commands::Similarity { .. }
-            | Commands::Reparent { .. }
-            | Commands::Archive { .. }
-            | Commands::Merge { .. }
-            | Commands::CreateEpics { .. }
-            | Commands::Reclassify { .. }
-            | Commands::TargetParents { .. }
+            | Commands::Batch(BatchCommands::Reparent { .. })
+            | Commands::Batch(BatchCommands::Archive { .. })
+            | Commands::Batch(BatchCommands::Merge { .. })
+            | Commands::Batch(BatchCommands::CreateEpics { .. })
+            | Commands::Batch(BatchCommands::Reclassify { .. })
+            | Commands::Migrate(MigrateCommands::TargetParents { .. })
     );
     if disables_gpu && std::env::var("AOPS_GPU").is_err() {
         std::env::set_var("AOPS_GPU", "0");
