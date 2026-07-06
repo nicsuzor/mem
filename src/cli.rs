@@ -986,7 +986,6 @@ async fn main() -> Result<()> {
             | Commands::Lint { .. }
             | Commands::Eval { .. }
             | Commands::GraphStats { .. }
-            | Commands::Mcp { .. }
             | Commands::Duplicates { .. }
             | Commands::Stats { .. }
             | Commands::Similarity { .. }
