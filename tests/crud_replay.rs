@@ -19,7 +19,11 @@ fn seed_pkb() -> (tempfile::TempDir, std::path::PathBuf) {
     fs::create_dir_all(root.join("projects")).unwrap();
 
     // Register the slugs used by these tests so project values validate.
-    fs::write(root.join("polecat.yaml"), "projects:\n  aops: {}\n  beta: {}\n").unwrap();
+    fs::write(
+        root.join("polecat.yaml"),
+        "projects:\n  aops: {}\n  beta: {}\n",
+    )
+    .unwrap();
 
     // Seed a root container so parents can resolve (project is no longer a
     // node type — root containers are epics carrying an explicit project slug)
@@ -309,22 +313,18 @@ fn test_create_task_missing_parent_returns_suggested_parents() {
     let graph = Arc::new(RwLock::new(graph_store));
     let store = Arc::new(RwLock::new(VectorStore::new(1024)));
     let embedder = Arc::new(Embedder::new_dummy());
-    let server = PkbSearchServer::new(
-        store.clone(),
-        embedder,
-        root.clone(),
-        db_path,
-        graph,
-    );
+    let server = PkbSearchServer::new(store.clone(), embedder, root.clone(), db_path, graph);
 
     // Insert the seeded project into the vector store with a dummy zero-vector
     // embedding so the semantic search path can find it.
     let proj_path = root.join("projects/proj-root.md");
-    let doc = mem::pkb::parse_file_relative(&proj_path, &root)
-        .expect("seeded project file must parse");
+    let doc =
+        mem::pkb::parse_file_relative(&proj_path, &root).expect("seeded project file must parse");
     {
         let dummy_emb = vec![0.0f32; 1024];
-        store.write().insert_precomputed(&doc, vec!["Root Project".into()], vec![dummy_emb]);
+        store
+            .write()
+            .insert_precomputed(&doc, vec!["Root Project".into()], vec![dummy_emb]);
     }
 
     // create_task with no parent on a plain task type must fail.
@@ -332,7 +332,9 @@ fn test_create_task_missing_parent_returns_suggested_parents() {
         .bench_create_task(&json!({ "title": "Root Project related work" }))
         .expect_err("create_task without parent must return an error");
 
-    let data = err.data.expect("error must carry a data payload with suggested_parents");
+    let data = err
+        .data
+        .expect("error must carry a data payload with suggested_parents");
     let suggestions = data
         .get("suggested_parents")
         .and_then(|v| v.as_array())
@@ -343,10 +345,14 @@ fn test_create_task_missing_parent_returns_suggested_parents() {
         "suggested_parents must contain at least one candidate; got empty list"
     );
 
-    let has_container = suggestions.iter().any(|s| {
-        s.get("type").and_then(|v| v.as_str()) == Some("epic")
-    });
-    assert!(has_container, "suggested_parents must include the seeded epic container; got: {:?}", suggestions);
+    let has_container = suggestions
+        .iter()
+        .any(|s| s.get("type").and_then(|v| v.as_str()) == Some("epic"));
+    assert!(
+        has_container,
+        "suggested_parents must include the seeded epic container; got: {:?}",
+        suggestions
+    );
 }
 
 /// When the vector store has no matching project/epic nodes, the error data is None.

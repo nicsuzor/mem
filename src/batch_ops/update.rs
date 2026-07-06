@@ -3,8 +3,8 @@
 //! Covers the general case: status changes, priority adjustments, tag
 //! modifications, field removal, and supersedes marking.
 
-use super::{BatchContext, BatchSummary, TaskAction, TaskError};
 use super::filters::FilterSet;
+use super::{BatchContext, BatchSummary, TaskAction, TaskError};
 use crate::graph_store::GraphStore;
 use std::collections::HashMap;
 use std::path::Path;
@@ -54,7 +54,10 @@ pub fn batch_update(
                             if !crate::graph::is_valid_priority(p as i32) {
                                 summary.errors.push(TaskError {
                                     id: "".to_string(),
-                                    error: format!("Invalid priority: {}. Must be between 0 and 4.", p),
+                                    error: format!(
+                                        "Invalid priority: {}. Must be between 0 and 4.",
+                                        p
+                                    ),
                                 });
                                 return summary;
                             }
@@ -93,8 +96,7 @@ pub fn batch_update(
         if let Some(raw) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
             match crate::polecat_config::resolve_project(pkb_root, raw) {
                 Ok(canonical) => {
-                    updates_map
-                        .insert("project".to_string(), serde_json::Value::String(canonical));
+                    updates_map.insert("project".to_string(), serde_json::Value::String(canonical));
                 }
                 Err(e) => {
                     summary.errors.push(TaskError {
@@ -123,7 +125,11 @@ pub fn batch_update(
         };
 
         if let Some(s) = updates_map.get("status").and_then(|v| v.as_str()) {
-            let is_task = node.node_type.as_deref().map(|t| crate::graph::TASK_TYPES.contains(&t)).unwrap_or(false);
+            let is_task = node
+                .node_type
+                .as_deref()
+                .map(|t| crate::graph::TASK_TYPES.contains(&t))
+                .unwrap_or(false);
             if is_task && !crate::graph::is_valid_status(s) {
                 summary.errors.push(TaskError {
                     id: id.clone(),
@@ -236,7 +242,10 @@ pub fn batch_archive(
                 id: id.clone(),
                 title: node.label.clone(),
                 action: "skipped".to_string(),
-                detail: Some(format!("already {}", node.status.as_deref().unwrap_or("done"))),
+                detail: Some(format!(
+                    "already {}",
+                    node.status.as_deref().unwrap_or("done")
+                )),
                 old_value: None,
                 new_value: None,
             });
@@ -249,11 +258,16 @@ pub fn batch_archive(
             warnings.push("was in_progress");
         }
         if !node.children.is_empty() {
-            let active_children: Vec<_> = node.children.iter().filter(|cid| {
-                graph.get_node(cid)
-                    .map(|c| !crate::graph::is_completed(c.status.as_deref()))
-                    .unwrap_or(false)
-            }).collect();
+            let active_children: Vec<_> = node
+                .children
+                .iter()
+                .filter(|cid| {
+                    graph
+                        .get_node(cid)
+                        .map(|c| !crate::graph::is_completed(c.status.as_deref()))
+                        .unwrap_or(false)
+                })
+                .collect();
             if !active_children.is_empty() {
                 warnings.push("has active children");
             }
@@ -289,8 +303,11 @@ pub fn batch_archive(
             Ok(()) => {
                 // Append archive reason if provided
                 if let Some(reason) = reason {
-                    let note = format!("<!-- archived {}: {} -->",
-                        chrono::Utc::now().format("%Y-%m-%d"), reason);
+                    let note = format!(
+                        "<!-- archived {}: {} -->",
+                        chrono::Utc::now().format("%Y-%m-%d"),
+                        reason
+                    );
                     let _ = ctx.append_to_task(id, &note);
                 }
                 summary.changed += 1;

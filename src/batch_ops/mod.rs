@@ -159,7 +159,10 @@ impl<'a> BatchContext<'a> {
 
         let abs_path = self.abs_path(&node.path);
         if !abs_path.exists() {
-            anyhow::bail!("File not found on disk (index stale?): {}", abs_path.display());
+            anyhow::bail!(
+                "File not found on disk (index stale?): {}",
+                abs_path.display()
+            );
         }
 
         document_crud::update_document(&abs_path, updates)?;
@@ -168,11 +171,7 @@ impl<'a> BatchContext<'a> {
     }
 
     /// Append content to a task file body. Records the path for later rebuild.
-    pub fn append_to_task(
-        &mut self,
-        node_id: &str,
-        content: &str,
-    ) -> Result<()> {
+    pub fn append_to_task(&mut self, node_id: &str, content: &str) -> Result<()> {
         let node = self
             .graph
             .get_node(node_id)

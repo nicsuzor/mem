@@ -41,7 +41,11 @@ fn subtree_contributes_to_outcome(
 }
 
 /// Walk the parent chain looking for an ancestor whose type is in `types`.
-fn has_ancestor_of_type(graph: &GraphStore, node: &crate::graph::GraphNode, types: &[&str]) -> bool {
+fn has_ancestor_of_type(
+    graph: &GraphStore,
+    node: &crate::graph::GraphNode,
+    types: &[&str],
+) -> bool {
     let mut current_id = node.parent.clone();
     let mut visited = HashSet::new();
     while let Some(ref pid) = current_id {
@@ -147,10 +151,7 @@ impl GraphStats {
         out.push_str("\nHealth indicators:\n");
         out.push_str(&format!("  Orphans:              {}\n", self.orphan_count));
         out.push_str(&format!("  Flat tasks:           {}\n", self.flat_tasks));
-        out.push_str(&format!(
-            "  Stale (>60d):         {}\n",
-            self.stale_count
-        ));
+        out.push_str(&format!("  Stale (>60d):         {}\n", self.stale_count));
         out.push_str(&format!("  Max depth:            {}\n", self.max_depth));
         out.push_str(&format!(
             "  Empty epics:          {}\n",
@@ -177,10 +178,7 @@ impl GraphStats {
             "  Soft cycle count:     {}\n",
             self.soft_cycle_count
         ));
-        out.push_str(&format!(
-            "  Metrics hash:         {}\n",
-            self.metrics_hash
-        ));
+        out.push_str(&format!("  Metrics hash:         {}\n", self.metrics_hash));
 
         out
     }
@@ -224,9 +222,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         // Only count actionable types
         if !ACTIONABLE_TYPES.contains(&node_type) {
             // Still count type distribution
-            *type_distribution
-                .entry(node_type.to_string())
-                .or_insert(0) += 1;
+            *type_distribution.entry(node_type.to_string()).or_insert(0) += 1;
             continue;
         }
 
@@ -238,9 +234,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
 
         // Skip completed for most metrics
         if is_completed(node.status.as_deref()) {
-            *type_distribution
-                .entry(node_type.to_string())
-                .or_insert(0) += 1;
+            *type_distribution.entry(node_type.to_string()).or_insert(0) += 1;
             continue;
         }
 
@@ -251,9 +245,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
             .or_insert(0) += 1;
 
         // Type
-        *type_distribution
-            .entry(node_type.to_string())
-            .or_insert(0) += 1;
+        *type_distribution.entry(node_type.to_string()).or_insert(0) += 1;
 
         // Orphan: no parent
         if node.parent.is_none() {
@@ -423,12 +415,30 @@ mod tests {
             doc("targets/target-1.md", "target-1", "target", None, None),
             doc("goals/goal-1.md", "goal-1", "goal", None, None),
             // Epic contributing directly to a target → CONNECTED.
-            doc("tasks/epic-connected.md", "epic-connected", "epic", None, Some("target-1")),
+            doc(
+                "tasks/epic-connected.md",
+                "epic-connected",
+                "epic",
+                None,
+                Some("target-1"),
+            ),
             // Identical epic WITHOUT contributes_to → DISCONNECTED.
-            doc("tasks/epic-disconnected.md", "epic-disconnected", "epic", None, None),
+            doc(
+                "tasks/epic-disconnected.md",
+                "epic-disconnected",
+                "epic",
+                None,
+                None,
+            ),
             // Epic with no contributes_to itself, but a child task that contributes
             // transitively → CONNECTED via the work-subtree.
-            doc("tasks/epic-via-child.md", "epic-via-child", "epic", None, None),
+            doc(
+                "tasks/epic-via-child.md",
+                "epic-via-child",
+                "epic",
+                None,
+                None,
+            ),
             doc(
                 "tasks/child-contrib.md",
                 "child-contrib",
@@ -438,7 +448,13 @@ mod tests {
             ),
             // Epic parented UNDER a goal (parent-ancestry) but NO contributes_to →
             // DISCONNECTED. Proves parent-ancestry no longer changes the verdict.
-            doc("tasks/epic-goal-parent.md", "epic-goal-parent", "epic", Some("goal-1"), None),
+            doc(
+                "tasks/epic-goal-parent.md",
+                "epic-goal-parent",
+                "epic",
+                Some("goal-1"),
+                None,
+            ),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-modelb"));
         let stats = graph_stats(&graph);

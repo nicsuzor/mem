@@ -79,10 +79,7 @@ mod tests {
 
     #[test]
     fn test_typed_fact_serialization() {
-        let fact = TypedFact::new(
-            "test_value".to_string(),
-            FactSource::GraphStoreNode,
-        );
+        let fact = TypedFact::new("test_value".to_string(), FactSource::GraphStoreNode);
         let serialized = serde_json::to_string(&fact).unwrap();
         let deserialized: TypedFact<String> = serde_json::from_str(&serialized).unwrap();
         assert_eq!(fact, deserialized);

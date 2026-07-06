@@ -18,13 +18,11 @@ use std::time::{Duration, Instant};
 
 fn pkb_binary() -> PathBuf {
     // Prefer release build, fall back to debug
-    let release = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/release/pkb");
+    let release = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/pkb");
     if release.exists() {
         return release;
     }
-    let debug = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/debug/pkb");
+    let debug = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/pkb");
     if debug.exists() {
         return debug;
     }
@@ -72,11 +70,7 @@ fn initialize_request(id: u64) -> String {
 }
 
 fn tool_call_request(id: u64, name: &str, args: Value) -> String {
-    jsonrpc_request(
-        id,
-        "tools/call",
-        json!({"name": name, "arguments": args}),
-    )
+    jsonrpc_request(id, "tools/call", json!({"name": name, "arguments": args}))
 }
 
 fn tools_list_request(id: u64) -> String {
@@ -151,12 +145,10 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
 
     // Wait for responses with timeout
     let timeout = Duration::from_secs(30);
-    let responses = rx
-        .recv_timeout(timeout)
-        .unwrap_or_else(|_| {
-            child.kill().ok();
-            panic!("pkb mcp stdio timed out after {timeout:?}");
-        });
+    let responses = rx.recv_timeout(timeout).unwrap_or_else(|_| {
+        child.kill().ok();
+        panic!("pkb mcp stdio timed out after {timeout:?}");
+    });
 
     // Kill the process (it may still be running)
     child.kill().ok();
@@ -176,7 +168,12 @@ impl HttpServer {
     fn start() -> Self {
         if let Ok(url) = std::env::var("PKB_MCP_URL") {
             let port_str = url.split(':').last().unwrap_or("8026");
-            let port = port_str.split('/').next().unwrap_or("8026").parse().unwrap_or(8026);
+            let port = port_str
+                .split('/')
+                .next()
+                .unwrap_or("8026")
+                .parse()
+                .unwrap_or(8026);
             return HttpServer { child: None, port };
         }
 
@@ -192,7 +189,10 @@ impl HttpServer {
             .spawn()
             .expect("failed to spawn pkb mcp --http");
 
-        let server = HttpServer { child: Some(child), port };
+        let server = HttpServer {
+            child: Some(child),
+            port,
+        };
         server.wait_ready();
         server
     }
@@ -204,12 +204,10 @@ impl HttpServer {
         let start = Instant::now();
         let timeout = Duration::from_secs(30);
         while start.elapsed() < timeout {
-            if let Ok(stream) =
-                std::net::TcpStream::connect_timeout(
-                    &format!("127.0.0.1:{}", self.port).parse().unwrap(),
-                    Duration::from_millis(200),
-                )
-            {
+            if let Ok(stream) = std::net::TcpStream::connect_timeout(
+                &format!("127.0.0.1:{}", self.port).parse().unwrap(),
+                Duration::from_millis(200),
+            ) {
                 drop(stream);
                 // Give the server a moment after port is open
                 std::thread::sleep(Duration::from_millis(500));
@@ -252,7 +250,12 @@ fn http_post(
         let mut parts = url.split(':');
         let h = parts.next().unwrap().to_string();
         let p_str = parts.next().unwrap_or("80");
-        let p = p_str.split('/').next().unwrap_or("80").parse().unwrap_or(80);
+        let p = p_str
+            .split('/')
+            .next()
+            .unwrap_or("80")
+            .parse()
+            .unwrap_or(80);
         (h, p)
     } else {
         ("127.0.0.1".to_string(), port)
@@ -333,7 +336,10 @@ fn parse_sse_messages(body: &str) -> Vec<Value> {
 /// Full HTTP session: initialize, send notifications/initialized, return session ID.
 fn http_initialize(port: u16) -> (String, Value) {
     let (status, headers, body) = http_post(port, &initialize_request(1), None);
-    assert_eq!(status, 200, "initialize failed with status {status}. Body: {body}");
+    assert_eq!(
+        status, 200,
+        "initialize failed with status {status}. Body: {body}"
+    );
 
     let session_id = headers
         .get("mcp-session-id")
@@ -368,18 +374,8 @@ fn http_initialize(port: u16) -> (String, Value) {
 }
 
 /// Call a tool over HTTP with an existing session.
-fn http_call_tool(
-    port: u16,
-    session_id: &str,
-    id: u64,
-    tool: &str,
-    args: Value,
-) -> Value {
-    let (status, _, body) = http_post(
-        port,
-        &tool_call_request(id, tool, args),
-        Some(session_id),
-    );
+fn http_call_tool(port: u16, session_id: &str, id: u64, tool: &str, args: Value) -> Value {
+    let (status, _, body) = http_post(port, &tool_call_request(id, tool, args), Some(session_id));
     assert!(
         status == 200,
         "tool call '{tool}' returned status {status}. Body:\n{body}"
@@ -402,7 +398,10 @@ fn test_stdio_initialize() {
     assert!(!responses.is_empty(), "no response from stdio initialize");
 
     let result = &responses[0];
-    assert!(result.get("result").is_some(), "no 'result' in response: {result}");
+    assert!(
+        result.get("result").is_some(),
+        "no 'result' in response: {result}"
+    );
 
     let server_info = &result["result"]["serverInfo"];
     assert_eq!(
@@ -501,9 +500,7 @@ fn test_http_initialize() {
     assert_eq!(status, 200, "initialize status: {status}");
 
     // Validate SSE content type
-    let content_type = headers
-        .get("content-type")
-        .expect("no Content-Type header");
+    let content_type = headers.get("content-type").expect("no Content-Type header");
     assert!(
         content_type.contains("text/event-stream"),
         "expected text/event-stream, got: {content_type}"
@@ -563,7 +560,13 @@ fn test_http_multiple_tools() {
     ];
 
     for (i, (tool_name, args)) in tools.iter().enumerate() {
-        let result = http_call_tool(server.port, &session_id, (i + 2) as u64, tool_name, args.clone());
+        let result = http_call_tool(
+            server.port,
+            &session_id,
+            (i + 2) as u64,
+            tool_name,
+            args.clone(),
+        );
         assert!(
             result.get("result").is_some(),
             "tool '{tool_name}' (call #{}) returned error: {result}",
@@ -581,11 +584,7 @@ fn test_http_tools_list_count() {
     let server = HttpServer::start();
     let (session_id, _) = http_initialize(server.port);
 
-    let (status, _, body) = http_post(
-        server.port,
-        &tools_list_request(2),
-        Some(&session_id),
-    );
+    let (status, _, body) = http_post(server.port, &tools_list_request(2), Some(&session_id));
     assert_eq!(status, 200);
 
     let messages = parse_sse_messages(&body);
@@ -794,8 +793,7 @@ fn test_http_seeded_search_returns_seeded_doc() {
     std::env::remove_var("PKB_MCP_URL");
 
     let result = (|| -> Value {
-        let (status, headers, body) =
-            http_post(port, &initialize_request(1), None);
+        let (status, headers, body) = http_post(port, &initialize_request(1), None);
         assert_eq!(status, 200, "initialize failed: {body}");
         let session_id = headers
             .get("mcp-session-id")
@@ -855,7 +853,11 @@ fn test_http_concurrent_sessions() {
                     port,
                     &session_id,
                     2,
-                    if i == 0 { "graph_stats" } else { "task_summary" },
+                    if i == 0 {
+                        "graph_stats"
+                    } else {
+                        "task_summary"
+                    },
                     json!({}),
                 );
                 (session_id, result)

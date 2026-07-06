@@ -111,8 +111,14 @@ pub fn index_pkb(
                 // Check content_hash (body-only hash, new) or body_hash (deprecated).
                 // Use explicit OR so a non-matching content_hash does not suppress
                 // the body_hash fallback (old stores used content_hash for full file).
-                existing.content_hash.as_deref().map_or(false, |h| h == doc.content_hash)
-                    || existing.body_hash.as_deref().map_or(false, |h| h == doc.content_hash)
+                existing
+                    .content_hash
+                    .as_deref()
+                    .map_or(false, |h| h == doc.content_hash)
+                    || existing
+                        .body_hash
+                        .as_deref()
+                        .map_or(false, |h| h == doc.content_hash)
             } else {
                 false
             }
@@ -124,8 +130,7 @@ pub fn index_pkb(
         }
 
         let embedding_text = doc.embedding_text();
-        let chunks =
-            embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
+        let chunks = embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
         let chunk_start = all_chunks.len();
         let chunk_count = chunks.len();
         all_chunks.extend(chunks);
@@ -160,9 +165,7 @@ pub fn index_pkb(
 
     if docs_to_index.is_empty() {
         let total = store.read().len();
-        tracing::info!(
-            "Indexing complete: {indexed} updated, {removed} removed, {total} total"
-        );
+        tracing::info!("Indexing complete: {indexed} updated, {removed} removed, {total} total");
         return (indexed, removed, total);
     }
 
@@ -271,10 +274,7 @@ mod stdout_guard {
                 let content = match std::fs::read_to_string(&path) {
                     Ok(c) => c,
                     Err(e) => {
-                        violations.push(format!(
-                            "  {}:0: <error reading file: {e}>",
-                            filename
-                        ));
+                        violations.push(format!("  {}:0: <error reading file: {e}>", filename));
                         continue;
                     }
                 };
@@ -285,8 +285,8 @@ mod stdout_guard {
                         continue;
                     }
                     // Match println!/print! but NOT eprintln!/eprint!
-                    let has_println = trimmed.contains("println!(")
-                        && !trimmed.contains("eprintln!(");
+                    let has_println =
+                        trimmed.contains("println!(") && !trimmed.contains("eprintln!(");
                     let has_print = trimmed.contains("print!(")
                         && !trimmed.contains("eprint!(")
                         && !trimmed.contains("println!(")
@@ -297,12 +297,7 @@ mod stdout_guard {
                         if trimmed.contains("\\\"") || trimmed.contains("\\n") {
                             continue;
                         }
-                        violations.push(format!(
-                            "  {}:{}: {}",
-                            filename,
-                            line_no + 1,
-                            trimmed
-                        ));
+                        violations.push(format!("  {}:{}: {}", filename, line_no + 1, trimmed));
                     }
                 }
             }
@@ -315,8 +310,8 @@ mod tests {
     use super::*;
     use crate::embeddings::{Embedder, EMBEDDING_DIM};
     use crate::vectordb::VectorStore;
-    use std::sync::Arc;
     use parking_lot::RwLock;
+    use std::sync::Arc;
 
     /// Regression test: a frontmatter-only change must NOT trigger encode_batch.
     ///
@@ -336,7 +331,8 @@ mod tests {
         std::fs::write(&file_path, initial_content).unwrap();
 
         // Parse the file with relative path so store keys match what index_pkb uses
-        let parsed = crate::pkb::parse_file_relative(&file_path, pkb_root).expect("parse initial file");
+        let parsed =
+            crate::pkb::parse_file_relative(&file_path, pkb_root).expect("parse initial file");
         let body_hash = parsed.content_hash.clone();
 
         // Build sentinel embeddings (non-zero, so distinguishable from dummy output)
@@ -356,7 +352,8 @@ mod tests {
         }
 
         // Now mutate only the frontmatter (change status: inbox → active)
-        let updated_content = "---\nstatus: active\ntitle: Test Task\n---\n\nThis is the body text.";
+        let updated_content =
+            "---\nstatus: active\ntitle: Test Task\n---\n\nThis is the body text.";
         std::fs::write(&file_path, updated_content).unwrap();
 
         // Run index_pkb with a dummy embedder (returns zero vectors if called)
@@ -369,7 +366,11 @@ mod tests {
 
         // Sentinel embedding must still be present — if encode_batch had been called
         // the dummy embedder would have replaced it with zero vectors
-        let entry = store.read().get_entry(&parsed.id()).expect("entry must exist").clone();
+        let entry = store
+            .read()
+            .get_entry(&parsed.id())
+            .expect("entry must exist")
+            .clone();
         let stored_embedding = &entry.chunk_embeddings[0];
         assert_eq!(
             stored_embedding[0], 99.0,

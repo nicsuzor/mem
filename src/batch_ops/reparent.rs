@@ -1,7 +1,7 @@
 //! `batch_reparent` — move multiple tasks to a new parent.
 
-use super::{BatchContext, BatchSummary, TaskAction, TaskError};
 use super::filters::FilterSet;
+use super::{BatchContext, BatchSummary, TaskAction, TaskError};
 use crate::graph_store::GraphStore;
 use std::collections::HashMap;
 use std::path::Path;
@@ -54,7 +54,10 @@ pub fn batch_reparent(
             summary.skipped += 1;
             summary.tasks.push(TaskAction {
                 id: id.clone(),
-                title: graph.get_node(id).map(|n| n.label.clone()).unwrap_or_default(),
+                title: graph
+                    .get_node(id)
+                    .map(|n| n.label.clone())
+                    .unwrap_or_default(),
                 action: "skipped".to_string(),
                 detail: Some("cannot reparent under self".to_string()),
                 old_value: None,
