@@ -57,7 +57,14 @@ fn seed_pkb() -> tempfile::TempDir {
 fn pkb_new_rejects_nonexistent_parent() {
     let pkb = seed_pkb();
     let out = Command::new(pkb_binary())
-        .args(["new", "Sample title", "--project", "aops", "--parent", "task-does-not-exist"])
+        .args([
+            "new",
+            "Sample title",
+            "--project",
+            "aops",
+            "--parent",
+            "task-does-not-exist",
+        ])
         .env("ACA_DATA", pkb.path())
         .output()
         .expect("failed to spawn pkb");
@@ -79,14 +86,13 @@ fn pkb_new_rejects_nonexistent_parent() {
         .unwrap()
         .any(|e| {
             e.ok()
-                .map(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("aops-")
-                })
+                .map(|e| e.file_name().to_string_lossy().starts_with("aops_"))
                 .unwrap_or(false)
         });
-    assert!(!any_task, "no task file should exist when parent is invalid");
+    assert!(
+        !any_task,
+        "no task file should exist when parent is invalid"
+    );
 }
 
 #[test]
@@ -126,7 +132,7 @@ fn pkb_new_with_allow_missing_parent_proceeds_with_warning() {
         .find_map(|e| {
             let e = e.ok()?;
             let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("aops-") {
+            if name.starts_with("aops_") {
                 Some(e.path())
             } else {
                 None
@@ -144,7 +150,14 @@ fn pkb_new_with_allow_missing_parent_proceeds_with_warning() {
 fn pkb_new_with_existing_parent_succeeds() {
     let pkb = seed_pkb();
     let out = Command::new(pkb_binary())
-        .args(["new", "Sample title", "--project", "aops", "--parent", "proj-realdead"])
+        .args([
+            "new",
+            "Sample title",
+            "--project",
+            "aops",
+            "--parent",
+            "proj-realdead",
+        ])
         .env("ACA_DATA", pkb.path())
         .output()
         .expect("failed to spawn pkb");

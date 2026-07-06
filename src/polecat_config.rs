@@ -300,6 +300,8 @@ projects:
 
     #[test]
     fn missing_file_is_ok_none() {
+        std::env::remove_var("AOPS_POLECAT_CONFIG");
+        std::env::remove_var("AOPS_SESSIONS");
         let dir = tempfile::tempdir().unwrap();
         assert!(PolecatRegistry::load(dir.path()).unwrap().is_none());
     }
@@ -337,6 +339,8 @@ projects:
 
     #[test]
     fn non_builtin_without_registry_hard_fails() {
+        std::env::remove_var("AOPS_POLECAT_CONFIG");
+        std::env::remove_var("AOPS_SESSIONS");
         let dir = tempfile::tempdir().unwrap();
         let err = resolve_project(dir.path(), "aops").unwrap_err();
         assert!(err.to_string().contains("no polecat.yaml found"), "{err}");
@@ -414,7 +418,11 @@ crew_names:
         assert_eq!(reg.resolve("ao").as_deref(), Some("aops"));
         assert_eq!(
             reg.known_slugs(),
-            &["aops".to_string(), "junior".to_string(), "sessions".to_string()]
+            &[
+                "aops".to_string(),
+                "junior".to_string(),
+                "sessions".to_string()
+            ]
         );
     }
 }

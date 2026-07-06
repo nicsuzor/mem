@@ -1,9 +1,9 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ToolCallTelemetry {
@@ -42,13 +42,10 @@ pub fn telemetry_path() -> Option<PathBuf> {
     Some(base.join("mem").join("telemetry.jsonl"))
 }
 
-pub fn record_call(
-    tool_name: &str,
-    response_bytes: usize,
-    latency_ms: u128,
-    is_error: bool,
-) {
-    let Some(telemetry_path) = telemetry_path() else { return };
+pub fn record_call(tool_name: &str, response_bytes: usize, latency_ms: u128, is_error: bool) {
+    let Some(telemetry_path) = telemetry_path() else {
+        return;
+    };
 
     let entry = ToolCallTelemetry {
         timestamp: Utc::now(),
@@ -74,7 +71,9 @@ pub fn record_call(
 
 pub fn get_stats() -> HashMap<String, ToolStats> {
     let mut stats: HashMap<String, ToolStats> = HashMap::new();
-    let Some(telemetry_path) = telemetry_path() else { return stats };
+    let Some(telemetry_path) = telemetry_path() else {
+        return stats;
+    };
 
     if let Ok(file) = File::open(telemetry_path) {
         let reader = BufReader::new(file);

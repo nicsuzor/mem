@@ -64,7 +64,8 @@ pub fn find_neighbors(
             continue;
         }
 
-        if let Some(other_emb) = get_node_embedding(&other.id, &other.path.to_string_lossy(), store) {
+        if let Some(other_emb) = get_node_embedding(&other.id, &other.path.to_string_lossy(), store)
+        {
             let score = cosine_similarity(&node_embedding, &other_emb) as f64;
             if score >= threshold {
                 neighbors.push(SimilarityNeighbor {
@@ -83,14 +84,10 @@ pub fn find_neighbors(
 }
 
 /// Run empirical analysis on the full graph.
-pub fn run_analysis(
-    graph: &GraphStore,
-    store: &VectorStore,
-    threshold: f64,
-) -> SimilarityReport {
+pub fn run_analysis(graph: &GraphStore, store: &VectorStore, threshold: f64) -> SimilarityReport {
     let nodes: Vec<&GraphNode> = graph.nodes().collect();
     let n = nodes.len();
-    
+
     let mut embedding_map = HashMap::new();
     for node in &nodes {
         if let Some(emb) = get_node_embedding(&node.id, &node.path.to_string_lossy(), store) {
@@ -127,9 +124,12 @@ pub fn run_analysis(
             let score = cosine_similarity(emb_a, emb_b) as f64;
 
             if score >= threshold {
-                let is_explicit = explicit_targets.contains(&node_b.id) || 
-                                 graph.get_outgoing_edges(&node_b.id).iter().any(|e| e.target == node_a.id);
-                
+                let is_explicit = explicit_targets.contains(&node_b.id)
+                    || graph
+                        .get_outgoing_edges(&node_b.id)
+                        .iter()
+                        .any(|e| e.target == node_a.id);
+
                 if is_explicit {
                     explicit_edges_skipped += 1;
                 } else {

@@ -280,7 +280,9 @@ impl VectorStore {
     }
 
     /// Extract id, confidence, and date from frontmatter
-    fn extract_frontmatter_fields(doc: &PkbDocument) -> (Option<String>, Option<f64>, Option<String>) {
+    fn extract_frontmatter_fields(
+        doc: &PkbDocument,
+    ) -> (Option<String>, Option<f64>, Option<String>) {
         let fm = doc.frontmatter.as_ref();
         let id = fm.and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
         let confidence = fm.and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
@@ -496,7 +498,6 @@ impl VectorStore {
         self.documents.insert(canonical_id, entry);
     }
 
-
     /// Remove a single document by its ID.
     ///
     /// Returns true if the document was found and removed.
@@ -505,10 +506,12 @@ impl VectorStore {
     }
 
     /// Remove documents whose IDs are no longer present in the PKB.
-    pub fn remove_deleted_by_ids(&mut self, existing_ids: &std::collections::HashSet<String>) -> usize {
+    pub fn remove_deleted_by_ids(
+        &mut self,
+        existing_ids: &std::collections::HashSet<String>,
+    ) -> usize {
         let before = self.documents.len();
-        self.documents
-            .retain(|id, _| existing_ids.contains(id));
+        self.documents.retain(|id, _| existing_ids.contains(id));
         let removed = before - self.documents.len();
         if removed > 0 {
             tracing::info!("Removed {removed} deleted documents from index");
@@ -749,7 +752,9 @@ mod tests {
             doc_type: doc_type.map(String::from),
             status: status.map(String::from),
             tags: tags.iter().map(|s| s.to_string()).collect(),
-            id: id.map(String::from).unwrap_or_else(|| "fallback".to_string()),
+            id: id
+                .map(String::from)
+                .unwrap_or_else(|| "fallback".to_string()),
             date: None,
             modified: None,
             confidence,
@@ -932,26 +937,50 @@ mod tests {
         let mut store = VectorStore::new(3);
         // Three entries with known modified dates spanning a wide range.
         let mut old = make_entry(
-            "tasks/old.md", "Old task", Some("task"), Some("active"),
-            &[], Some("task-old"), None, vec![1.0, 0.0, 0.0],
+            "tasks/old.md",
+            "Old task",
+            Some("task"),
+            Some("active"),
+            &[],
+            Some("task-old"),
+            None,
+            vec![1.0, 0.0, 0.0],
         );
         old.modified = Some("2019-06-01T00:00:00Z".to_string());
 
         let mut mid = make_entry(
-            "tasks/mid.md", "Mid task", Some("task"), Some("active"),
-            &[], Some("task-mid"), None, vec![1.0, 0.0, 0.0],
+            "tasks/mid.md",
+            "Mid task",
+            Some("task"),
+            Some("active"),
+            &[],
+            Some("task-mid"),
+            None,
+            vec![1.0, 0.0, 0.0],
         );
         mid.modified = Some("2023-03-15T12:00:00Z".to_string());
 
         let mut new = make_entry(
-            "tasks/new.md", "New task", Some("task"), Some("active"),
-            &[], Some("task-new"), None, vec![1.0, 0.0, 0.0],
+            "tasks/new.md",
+            "New task",
+            Some("task"),
+            Some("active"),
+            &[],
+            Some("task-new"),
+            None,
+            vec![1.0, 0.0, 0.0],
         );
         new.modified = Some("2026-06-01T09:00:00Z".to_string());
 
         let mut no_date = make_entry(
-            "tasks/nodated.md", "No date", Some("task"), Some("active"),
-            &[], Some("task-nodated"), None, vec![1.0, 0.0, 0.0],
+            "tasks/nodated.md",
+            "No date",
+            Some("task"),
+            Some("active"),
+            &[],
+            Some("task-nodated"),
+            None,
+            vec![1.0, 0.0, 0.0],
         );
         no_date.modified = None;
 
@@ -966,8 +995,13 @@ mod tests {
     fn test_search_before_ancient_date_returns_zero() {
         // Repro from task body: before=2020-01-01 must return zero rows.
         let store = build_dated_store();
-        let results = store.search(&[1.0, 0.0, 0.0], 10, Path::new("/pkb"),
-            None, Some("2020-01-01"));
+        let results = store.search(
+            &[1.0, 0.0, 0.0],
+            10,
+            Path::new("/pkb"),
+            None,
+            Some("2020-01-01"),
+        );
         // Only the 2019 entry qualifies (modified <= 2020-01-01), but that's pre-2020 so it's in.
         // Actually 2019-06-01 <= 2020-01-01 so it should appear.
         // The key correctness check: no entry from 2023 or 2026 appears.
@@ -986,8 +1020,13 @@ mod tests {
     fn test_search_before_ancient_excludes_all_recent() {
         // A stricter version: before=2018-01-01 returns zero rows (all fixtures are after 2018).
         let store = build_dated_store();
-        let results = store.search(&[1.0, 0.0, 0.0], 10, Path::new("/pkb"),
-            None, Some("2018-01-01"));
+        let results = store.search(
+            &[1.0, 0.0, 0.0],
+            10,
+            Path::new("/pkb"),
+            None,
+            Some("2018-01-01"),
+        );
         assert!(
             results.is_empty(),
             "before=2018-01-01 must return zero rows; got {} rows",
@@ -999,8 +1038,13 @@ mod tests {
     fn test_search_since_future_returns_zero() {
         // since=2030-01-01 should return nothing (all fixtures are before 2030).
         let store = build_dated_store();
-        let results = store.search(&[1.0, 0.0, 0.0], 10, Path::new("/pkb"),
-            Some("2030-01-01"), None);
+        let results = store.search(
+            &[1.0, 0.0, 0.0],
+            10,
+            Path::new("/pkb"),
+            Some("2030-01-01"),
+            None,
+        );
         assert!(
             results.is_empty(),
             "since=2030-01-01 must return zero rows; got {} rows",
@@ -1018,7 +1062,8 @@ mod tests {
         assert!(
             narrow.len() < wide.len(),
             "narrowing since must reduce result count: wide={} narrow={}",
-            wide.len(), narrow.len()
+            wide.len(),
+            narrow.len()
         );
     }
 
@@ -1026,8 +1071,13 @@ mod tests {
     fn test_search_no_modified_excluded_when_filter_active() {
         // An entry without a modified date must be excluded when since/before is set.
         let store = build_dated_store();
-        let results = store.search(&[1.0, 0.0, 0.0], 10, Path::new("/pkb"),
-            Some("2000-01-01"), None);
+        let results = store.search(
+            &[1.0, 0.0, 0.0],
+            10,
+            Path::new("/pkb"),
+            Some("2000-01-01"),
+            None,
+        );
         let titles: Vec<_> = results.iter().map(|r| r.title.as_str()).collect();
         assert!(
             !titles.contains(&"No date"),
@@ -1238,11 +1288,11 @@ mod tests {
         let final_store = VectorStore::load_or_create(&db_path, dimension).unwrap();
         let has_a = final_store.get_entry("doc_a").is_some();
         let has_b = final_store.get_entry("doc_b").is_some();
- 
+
         assert!(has_a, "Doc A should be present");
         assert!(has_b, "Doc B should be present");
     }
- 
+
     /// A frontmatter-only change (e.g. title) on a document with the same body
     /// must NOT re-run the embedder and must NOT mutate the cached
     /// `chunk_embeddings` / `chunk_texts` / `body_chunks`. This is the contract
@@ -1250,7 +1300,7 @@ mod tests {
     #[test]
     fn test_metadata_only_update_preserves_embeddings_without_embedder() {
         let mut store = VectorStore::new(3);
- 
+
         // Seed an entry with known embeddings.
         let path = PathBuf::from("tasks/cheap-meta.md");
         let body = "the unchanging body of the document".to_string();
@@ -1278,7 +1328,7 @@ mod tests {
                 body_chunks: original_body_chunks.clone(),
             },
         );
- 
+
         // Build a PkbDocument with the SAME body but changed title/tags/status.
         let updated_doc = crate::pkb::PkbDocument {
             path: path.clone(),
@@ -1292,9 +1342,9 @@ mod tests {
             file_hash: "file_v2".to_string(),
             frontmatter: None,
         };
- 
+
         let existing = store.get_entry("cheap-meta").cloned();
- 
+
         // A dummy embedder would panic if invoked when not is_dummy. We rely
         // on prepare_upsert taking the metadata-only path so the embedder is
         // never called. Use a real (is_dummy=true) embedder that returns
@@ -1308,7 +1358,7 @@ mod tests {
             "expected metadata-only path when body hash matches"
         );
         store.apply_prepared(prepared);
- 
+
         let after = store.get_entry("cheap-meta").expect("entry present");
         assert_eq!(after.title, "Brand New Title");
         assert_eq!(after.status.as_deref(), Some("done"));
@@ -1327,7 +1377,7 @@ mod tests {
             "body_chunks must be preserved on metadata-only update"
         );
     }
- 
+
     /// Body change must take the Full path and produce a fresh entry.
     #[test]
     fn test_body_change_takes_full_path() {
@@ -1370,8 +1420,7 @@ mod tests {
         };
         let existing = store.get_entry("body-change").cloned();
         let embedder = embeddings::Embedder::new_dummy();
-        let prepared =
-            VectorStore::prepare_upsert(&doc, &embedder, existing.as_ref()).unwrap();
+        let prepared = VectorStore::prepare_upsert(&doc, &embedder, existing.as_ref()).unwrap();
         assert!(
             matches!(prepared, PreparedUpsert::Full(_)),
             "expected Full path when body hash changes"

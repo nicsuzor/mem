@@ -282,14 +282,24 @@ pub fn batch_merge(
     let tags_vec: Vec<String> = all_tags.into_iter().collect();
     canonical_updates.insert(
         "tags".to_string(),
-        serde_json::Value::Array(tags_vec.into_iter().map(serde_json::Value::String).collect()),
+        serde_json::Value::Array(
+            tags_vec
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
     );
 
     if !all_depends_on.is_empty() {
         let deps_vec: Vec<String> = all_depends_on.into_iter().collect();
         canonical_updates.insert(
             "depends_on".to_string(),
-            serde_json::Value::Array(deps_vec.into_iter().map(serde_json::Value::String).collect()),
+            serde_json::Value::Array(
+                deps_vec
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
         );
     }
 
@@ -363,7 +373,10 @@ pub fn batch_merge(
                     updates.insert(
                         "depends_on".to_string(),
                         serde_json::Value::Array(
-                            new_deps.into_iter().map(serde_json::Value::String).collect(),
+                            new_deps
+                                .into_iter()
+                                .map(serde_json::Value::String)
+                                .collect(),
                         ),
                     );
                 }
@@ -382,7 +395,10 @@ pub fn batch_merge(
                     updates.insert(
                         "soft_depends_on".to_string(),
                         serde_json::Value::Array(
-                            new_deps.into_iter().map(serde_json::Value::String).collect(),
+                            new_deps
+                                .into_iter()
+                                .map(serde_json::Value::String)
+                                .collect(),
                         ),
                     );
                 }
@@ -401,7 +417,10 @@ pub fn batch_merge(
                     updates.insert(
                         "soft_blocks".to_string(),
                         serde_json::Value::Array(
-                            new_blocks.into_iter().map(serde_json::Value::String).collect(),
+                            new_blocks
+                                .into_iter()
+                                .map(serde_json::Value::String)
+                                .collect(),
                         ),
                     );
                 }
@@ -533,18 +552,11 @@ fn build_clusters(
                 .iter()
                 .min_by(|&&a, &&b| {
                     // Prefer oldest
-                    let date_cmp = nodes[a]
-                        .created
-                        .cmp(&nodes[b].created);
+                    let date_cmp = nodes[a].created.cmp(&nodes[b].created);
                     // Then most children
-                    let children_cmp = nodes[b]
-                        .children
-                        .len()
-                        .cmp(&nodes[a].children.len());
+                    let children_cmp = nodes[b].children.len().cmp(&nodes[a].children.len());
                     // Then most content
-                    let content_cmp = nodes[b]
-                        .word_count
-                        .cmp(&nodes[a].word_count);
+                    let content_cmp = nodes[b].word_count.cmp(&nodes[a].word_count);
                     date_cmp.then(children_cmp).then(content_cmp)
                 })
                 .unwrap();
@@ -570,7 +582,11 @@ fn build_clusters(
         })
         .collect();
 
-    clusters.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    clusters.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     clusters
 }
 
@@ -580,7 +596,14 @@ mod tests {
 
     #[test]
     fn test_title_similarity_identical() {
-        assert!((title_similarity("Write spec for analyst skill", "Write spec for analyst skill") - 1.0).abs() < f64::EPSILON);
+        assert!(
+            (title_similarity(
+                "Write spec for analyst skill",
+                "Write spec for analyst skill"
+            ) - 1.0)
+                .abs()
+                < f64::EPSILON
+        );
     }
 
     #[test]

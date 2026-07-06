@@ -85,7 +85,9 @@ fn preload_wsl_libcuda() {
         // SAFETY: dlopen with a valid NUL-terminated path; we never dlclose (process-lifetime).
         let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
         if handle.is_null() {
-            tracing::warn!("WSL libcuda preload failed (dlopen returned null) — GPU may be unavailable");
+            tracing::warn!(
+                "WSL libcuda preload failed (dlopen returned null) — GPU may be unavailable"
+            );
             false
         } else {
             tracing::info!("Preloaded WSL libcuda from {wsl_libcuda} for CUDA EP");
@@ -299,7 +301,12 @@ fn download_onnx_runtime() -> Result<PathBuf> {
 
         // Extract using tar.exe
         let status = std::process::Command::new("tar.exe")
-            .args(&["-xf", zip_file.to_str().unwrap(), "-C", cache.to_str().unwrap()])
+            .args(&[
+                "-xf",
+                zip_file.to_str().unwrap(),
+                "-C",
+                cache.to_str().unwrap(),
+            ])
             .status()?;
         if !status.success() {
             bail!("Failed to extract zip file using tar.exe");
@@ -464,10 +471,18 @@ impl SessionPool {
     /// Create pool with a single session (fast startup for search).
     /// Additional sessions are added lazily via `ensure_sessions()`.
     /// Tries CUDA execution provider first if GPU is available, falls back to CPU.
-    fn new(config: &EmbeddingConfig, override_max_sessions: usize, override_threads: usize) -> Result<Self> {
+    fn new(
+        config: &EmbeddingConfig,
+        override_max_sessions: usize,
+        override_threads: usize,
+    ) -> Result<Self> {
         use ort::session::builder::GraphOptimizationLevel;
 
-        let threads = if override_threads > 0 { override_threads } else { THREADS_PER_SESSION };
+        let threads = if override_threads > 0 {
+            override_threads
+        } else {
+            THREADS_PER_SESSION
+        };
         let want_gpu = gpu_available();
         let mut using_gpu = false;
 
@@ -626,9 +641,7 @@ impl SessionPool {
                 match TensorRef::from_array_view((shape, token_type_data.as_slice())) {
                     Ok(v) => v,
                     Err(e) => {
-                        tracing::warn!(
-                            "GPU probe: tensor creation failed ({e}), assuming no GPU"
-                        );
+                        tracing::warn!("GPU probe: tensor creation failed ({e}), assuming no GPU");
                         return false;
                     }
                 };
@@ -639,7 +652,10 @@ impl SessionPool {
         let elapsed_ms = start.elapsed().as_millis();
 
         if result.is_err() {
-            tracing::warn!("GPU probe: inference failed ({:?}), assuming no GPU", result.err());
+            tracing::warn!(
+                "GPU probe: inference failed ({:?}), assuming no GPU",
+                result.err()
+            );
             return false;
         }
 
@@ -679,7 +695,10 @@ impl SessionPool {
         sessions.push(Arc::new(Mutex::new(cpu_session)));
 
         self.gpu_mode.store(false, Ordering::Relaxed);
-        tracing::info!("Now using CPU parallel mode (up to {} sessions)", max_sessions_cpu());
+        tracing::info!(
+            "Now using CPU parallel mode (up to {} sessions)",
+            max_sessions_cpu()
+        );
         Ok(())
     }
 
@@ -698,7 +717,11 @@ impl SessionPool {
         } else {
             max_sessions_cpu()
         };
-        let threads = if self.override_threads > 0 { self.override_threads } else { THREADS_PER_SESSION };
+        let threads = if self.override_threads > 0 {
+            self.override_threads
+        } else {
+            THREADS_PER_SESSION
+        };
         let current = self.sessions.read().len();
         let needed = count.min(max_sess);
         if current >= needed {
@@ -879,9 +902,13 @@ impl Embedder {
 
     fn ensure_pool(&self) -> Result<&Arc<SessionPool>> {
         let result = self.pool.get_or_init(|| {
-            SessionPool::new(&self.config, self.override_max_sessions, self.override_threads)
-                .map(Arc::new)
-                .map_err(|e| e.to_string())
+            SessionPool::new(
+                &self.config,
+                self.override_max_sessions,
+                self.override_threads,
+            )
+            .map(Arc::new)
+            .map_err(|e| e.to_string())
         });
 
         match result {
@@ -1511,8 +1538,16 @@ mod tests {
     fn chunk_markdown_mixed_content() {
         // Build content large enough to exceed 1500 chars so chunking kicks in
         let intro = (0..20).map(|i| format!("Introduction sentence {i} with enough words to make this paragraph substantial and meaningful.")).collect::<Vec<_>>().join(" ");
-        let methods = (0..15).map(|i| format!("- Step {i}: perform the analysis procedure carefully")).collect::<Vec<_>>().join("\n");
-        let results = (0..20).map(|i| format!("Result finding {i} shows statistical significance in the data analysis.")).collect::<Vec<_>>().join(" ");
+        let methods = (0..15)
+            .map(|i| format!("- Step {i}: perform the analysis procedure carefully"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let results = (0..20)
+            .map(|i| {
+                format!("Result finding {i} shows statistical significance in the data analysis.")
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
 
         let md = format!("# Introduction\n\n{intro}\n\n## Methods\n\n{methods}\n\n## Results\n\n```python\ndef analyze():\n    return 42\n```\n\n{results}");
 
@@ -1520,14 +1555,25 @@ mod tests {
         let chunks = chunk_markdown(&md, &config);
 
         // Should produce multiple chunks, each a semantic unit
-        assert!(chunks.len() >= 3, "Expected at least 3 chunks, got {} (total len={})", chunks.len(), md.len());
+        assert!(
+            chunks.len() >= 3,
+            "Expected at least 3 chunks, got {} (total len={})",
+            chunks.len(),
+            md.len()
+        );
 
         // First chunks should have heading context
-        assert!(chunks[0].contains("Introduction"), "First chunk should have heading context");
+        assert!(
+            chunks[0].contains("Introduction"),
+            "First chunk should have heading context"
+        );
 
         // Code block should be preserved as a unit
         let code_chunk = chunks.iter().find(|c| c.contains("def analyze")).unwrap();
-        assert!(code_chunk.contains("return 42"), "Code block should stay together");
+        assert!(
+            code_chunk.contains("return 42"),
+            "Code block should stay together"
+        );
     }
 
     #[test]
@@ -1553,7 +1599,10 @@ Yet another short line.";
     #[test]
     fn chunk_markdown_splits_oversized() {
         // Create a paragraph that exceeds max chunk size
-        let long_para = (0..200).map(|i| format!("Sentence number {i} with some extra words to pad it out.")).collect::<Vec<_>>().join(" ");
+        let long_para = (0..200)
+            .map(|i| format!("Sentence number {i} with some extra words to pad it out."))
+            .collect::<Vec<_>>()
+            .join(" ");
         let md = format!("# Big Section\n\n{long_para}");
 
         let config = ChunkConfig::default();
@@ -1562,8 +1611,11 @@ Yet another short line.";
         assert!(chunks.len() > 1, "Oversized block should be sub-split");
         for chunk in &chunks {
             // Each chunk should be within bounds (with some tolerance for heading context)
-            assert!(chunk.len() <= config.chunk_size + 200,
-                "Chunk too large: {} chars", chunk.len());
+            assert!(
+                chunk.len() <= config.chunk_size + 200,
+                "Chunk too large: {} chars",
+                chunk.len()
+            );
         }
     }
 
@@ -1590,7 +1642,10 @@ After the code.";
         let chunks = chunk_markdown(md, &config);
 
         let code_chunk = chunks.iter().find(|c| c.contains("println")).unwrap();
-        assert!(code_chunk.contains("let x = 42"), "Code fence should not be split on blank lines");
+        assert!(
+            code_chunk.contains("let x = 42"),
+            "Code fence should not be split on blank lines"
+        );
     }
 
     #[test]

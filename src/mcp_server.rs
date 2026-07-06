@@ -9,6 +9,7 @@ use crate::graph::is_completed;
 use crate::graph_store::{GraphStore, DEFAULT_DIVERGENCE_THRESHOLD_DAYS};
 use crate::vectordb::VectorStore;
 use parking_lot::{Mutex, RwLock};
+use rayon::prelude::*;
 use rmcp::model::*;
 use rmcp::{Error as McpError, ServerHandler};
 use serde_json::Value as JsonValue;
@@ -17,7 +18,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use rayon::prelude::*;
 
 const GOAL_TYPE_ENUM: &[&str] = &["committed", "aspirational", "learning"];
 
@@ -100,8 +100,7 @@ pub struct PkbSearchServer {
     embed_worker_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
-const DRY_RUN_WARNING: &str =
-    "DRY RUN — no files modified. Pass dry_run=false to execute.\n\n";
+const DRY_RUN_WARNING: &str = "DRY RUN — no files modified. Pass dry_run=false to execute.\n\n";
 
 impl PkbSearchServer {
     pub fn new(
@@ -210,8 +209,6 @@ impl PkbSearchServer {
         }
     }
 
-
-
     /// Validate that completion_evidence is present and non-empty.
     fn require_evidence(evidence: Option<&str>) -> Result<&str, McpError> {
         let ev = evidence.ok_or_else(|| McpError {
@@ -234,16 +231,26 @@ impl PkbSearchServer {
     }
 
     /// Append a "## Completion Evidence" section to a document.
-    fn append_evidence(path: &std::path::Path, evidence: &str, pr_url: Option<&str>) -> Result<(), McpError> {
+    fn append_evidence(
+        path: &std::path::Path,
+        evidence: &str,
+        pr_url: Option<&str>,
+    ) -> Result<(), McpError> {
         let evidence_block = if let Some(url) = pr_url {
-            format!("\n\n## Completion Evidence\n\n{}\n\nPR: {}\n", evidence.trim(), url)
+            format!(
+                "\n\n## Completion Evidence\n\n{}\n\nPR: {}\n",
+                evidence.trim(),
+                url
+            )
         } else {
             format!("\n\n## Completion Evidence\n\n{}\n", evidence.trim())
         };
-        crate::document_crud::append_to_document(path, &evidence_block, None).map_err(|e| McpError {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Failed to append evidence: {e}")),
-            data: None,
+        crate::document_crud::append_to_document(path, &evidence_block, None).map_err(|e| {
+            McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to append evidence: {e}")),
+                data: None,
+            }
         })
     }
 
@@ -398,10 +405,7 @@ impl PkbSearchServer {
 
         // Try to claim the worker slot. Only the caller that flips
         // pending false→true is responsible for spawning.
-        if self
-            .graph_rebuild_pending
-            .swap(true, Ordering::SeqCst)
-        {
+        if self.graph_rebuild_pending.swap(true, Ordering::SeqCst) {
             return;
         }
 
@@ -426,9 +430,8 @@ impl PkbSearchServer {
             let snapshot = store.read().averaged_embeddings();
             let nodes = graph.read().nodes_cloned();
 
-            let new_graph = GraphStore::rebuild_from_nodes_fast_with_embeddings(
-                nodes, &pkb_root, &snapshot,
-            );
+            let new_graph =
+                GraphStore::rebuild_from_nodes_fast_with_embeddings(nodes, &pkb_root, &snapshot);
 
             #[cfg(test)]
             {
@@ -468,7 +471,8 @@ impl PkbSearchServer {
             }
 
             let mut g = graph.write();
-            let late: Vec<String> = patched.lock()
+            let late: Vec<String> = patched
+                .lock()
                 .iter()
                 .filter(|id| !initial_patched.contains(*id))
                 .cloned()
@@ -520,12 +524,7 @@ impl PkbSearchServer {
                     // caller already grabbed it, we're done.
                     if dirty.load(Ordering::SeqCst)
                         && pending
-                            .compare_exchange(
-                                false,
-                                true,
-                                Ordering::SeqCst,
-                                Ordering::SeqCst,
-                            )
+                            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                             .is_ok()
                     {
                         continue;
@@ -777,7 +776,12 @@ impl PkbSearchServer {
                 }
             } else {
                 let rel = abs_path.strip_prefix(&self.pkb_root).unwrap_or(abs_path);
-                let node_id = self.graph.read().nodes().find(|n| n.path == rel).map(|n| n.id.clone());
+                let node_id = self
+                    .graph
+                    .read()
+                    .nodes()
+                    .find(|n| n.path == rel)
+                    .map(|n| n.id.clone());
                 let id = node_id.unwrap_or_else(|| crate::pkb::fallback_id(rel));
                 if self.store.write().remove(&id) {
                     applied_removes += 1;
@@ -841,7 +845,10 @@ impl PkbSearchServer {
         let (entry_exists, body_unchanged) = {
             let store_read = self.store.read();
             match store_read.get_entry(&doc_id) {
-                Some(e) => (true, crate::vectordb::VectorStore::body_matches(doc, Some(e))),
+                Some(e) => (
+                    true,
+                    crate::vectordb::VectorStore::body_matches(doc, Some(e)),
+                ),
                 None => (false, false),
             }
         };
@@ -882,7 +889,8 @@ impl PkbSearchServer {
                     .and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from))
                     .unwrap_or_else(|| crate::pkb::fallback_id(&doc.path));
                 let confidence = fm.and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
-                let date = fm.and_then(|f| f.get("date").and_then(|v| v.as_str()).map(String::from));
+                let date =
+                    fm.and_then(|f| f.get("date").and_then(|v| v.as_str()).map(String::from));
                 let entry = crate::vectordb::DocumentEntry {
                     path: doc.path.clone(),
                     title: doc.title.clone(),
@@ -895,7 +903,7 @@ impl PkbSearchServer {
                     confidence,
                     content_hash: None, // Keep None so the background worker knows it needs to embed it!
                     file_hash: Some(doc.file_hash.clone()),
-                    body_hash: None,    // Keep None so background worker knows it needs to embed it!
+                    body_hash: None, // Keep None so background worker knows it needs to embed it!
                     chunk_embeddings: Vec::new(),
                     chunk_texts: Vec::new(),
                     body_chunks: Vec::new(),
@@ -928,10 +936,7 @@ impl PkbSearchServer {
         self.embed_pending.lock().insert(path_key, doc);
 
         // Single-worker gate: only the caller that flips false→true spawns.
-        if self
-            .embed_worker_running
-            .swap(true, Ordering::SeqCst)
-        {
+        if self.embed_worker_running.swap(true, Ordering::SeqCst) {
             return;
         }
 
@@ -1060,7 +1065,11 @@ impl PkbSearchServer {
     /// in-memory work entirely; the on-disk markdown files are already
     /// written and the reindex will pick them up. (PR4 will add a deferred
     /// queue so the live server self-heals after the reindex completes.)
-    fn finalize_batch(&self, modified_paths: &[std::path::PathBuf], removed_paths: &[std::path::PathBuf]) {
+    fn finalize_batch(
+        &self,
+        modified_paths: &[std::path::PathBuf],
+        removed_paths: &[std::path::PathBuf],
+    ) {
         if modified_paths.is_empty() && removed_paths.is_empty() {
             // Still rebuild graph in case callers rely on it post-mutation.
             self.rebuild_graph();
@@ -1116,9 +1125,7 @@ impl PkbSearchServer {
                 store.apply_prepared(p);
             }
             for abs_path in removed_paths {
-                let rel = abs_path
-                    .strip_prefix(&self.pkb_root)
-                    .unwrap_or(abs_path);
+                let rel = abs_path.strip_prefix(&self.pkb_root).unwrap_or(abs_path);
                 let node_id = graph.nodes().find(|n| n.path == rel).map(|n| n.id.clone());
                 let id = node_id.unwrap_or_else(|| crate::pkb::fallback_id(rel));
                 store.remove(&id);
@@ -1152,15 +1159,16 @@ impl PkbSearchServer {
             // disk, so the drain will pick the remove path).
             let rel_path = {
                 let graph = self.graph.read();
-                graph.resolve(id).map(|n| n.path.clone()).unwrap_or_else(|| PathBuf::from(id))
+                graph
+                    .resolve(id)
+                    .map(|n| n.path.clone())
+                    .unwrap_or_else(|| PathBuf::from(id))
             };
             let abs = self.pkb_root.join(rel_path);
             self.deferred_paths.lock().insert(abs);
             self.lock_was_held
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            tracing::info!(
-                "Index locked by another process — deferring in-memory remove for {id}"
-            );
+            tracing::info!("Index locked by another process — deferring in-memory remove for {id}");
             return;
         }
         self.store.write().remove(id);
@@ -1206,7 +1214,10 @@ impl PkbSearchServer {
         if !path.exists() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(format!("File not found for ID '{query}': {}", path.display())),
+                message: Cow::from(format!(
+                    "File not found for ID '{query}': {}",
+                    path.display()
+                )),
                 data: None,
             });
         }
@@ -1219,8 +1230,7 @@ impl PkbSearchServer {
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "## {}\n\n{}",
-            label,
-            content
+            label, content
         ))]))
     }
 
@@ -1301,10 +1311,8 @@ impl PkbSearchServer {
         // Optional `type` filter: either a single type ("epic") or a comma-
         // separated list ("epic,feature"). When set, only matching types are
         // returned. Recognised actionable types: project, epic, task, learn.
-        let type_filter: Option<HashSet<String>> = args
-            .get("type")
-            .and_then(|v| v.as_str())
-            .map(|s| {
+        let type_filter: Option<HashSet<String>> =
+            args.get("type").and_then(|v| v.as_str()).map(|s| {
                 s.split(',')
                     .map(|t| t.trim().to_ascii_lowercase())
                     .filter(|t| !t.is_empty())
@@ -1339,20 +1347,37 @@ impl PkbSearchServer {
             if count >= limit {
                 break;
             }
-            let is_target = r.doc_type.as_deref().map(|t| t.eq_ignore_ascii_case("target")).unwrap_or(false);
-            let explicit_target = is_target && type_filter.as_ref().map(|f| f.contains("target")).unwrap_or(false);
+            let is_target = r
+                .doc_type
+                .as_deref()
+                .map(|t| t.eq_ignore_ascii_case("target"))
+                .unwrap_or(false);
+            let explicit_target = is_target
+                && type_filter
+                    .as_ref()
+                    .map(|f| f.contains("target"))
+                    .unwrap_or(false);
 
             let is_task = r
                 .doc_type
                 .as_deref()
                 .map(|t| crate::graph_store::ACTIONABLE_TYPES.contains(&t))
-                .unwrap_or(false) || explicit_target;
+                .unwrap_or(false)
+                || explicit_target;
 
             if !is_task {
                 continue;
             }
-            let is_subtask = r.doc_type.as_deref().map(|t| t.eq_ignore_ascii_case("subtask")).unwrap_or(false);
-            let subtask_allowed = include_subtasks || type_filter.as_ref().map(|f| f.contains("subtask")).unwrap_or(false);
+            let is_subtask = r
+                .doc_type
+                .as_deref()
+                .map(|t| t.eq_ignore_ascii_case("subtask"))
+                .unwrap_or(false);
+            let subtask_allowed = include_subtasks
+                || type_filter
+                    .as_ref()
+                    .map(|f| f.contains("subtask"))
+                    .unwrap_or(false);
             if is_subtask && !subtask_allowed {
                 continue;
             }
@@ -1479,19 +1504,16 @@ impl PkbSearchServer {
         if metric != "pagerank" && metric != "betweenness" && metric != "degree" {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Invalid metric: must be 'pagerank', 'betweenness', or 'degree'"),
+                message: Cow::from(
+                    "Invalid metric: must be 'pagerank', 'betweenness', or 'degree'",
+                ),
                 data: None,
             });
         }
 
-        let n = args
-            .get("n")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
+        let n = args.get("n").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
-        let node_type = args
-            .get("node_type")
-            .and_then(|v| v.as_str());
+        let node_type = args.get("node_type").and_then(|v| v.as_str());
 
         let graph = self.graph.read();
         let mut nodes: Vec<_> = graph
@@ -1556,7 +1578,6 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-
     fn handle_create_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         // Accept `title` (preferred) or `task_title` (alias — some skill docs use this name)
         let title = args
@@ -1577,11 +1598,33 @@ impl PkbSearchServer {
             .map(String::from);
         if let Some(obj) = args.as_object() {
             const KNOWN_KEYS: &[&str] = &[
-                "title", "task_title", "id", "parent", "priority", "tags", "depends_on",
-                "assignee", "complexity", "effort", "consequence", "severity", "goal_type",
-                "body", "stakeholder", "waiting_since", "due", "project", "type", "status",
-                "session_id", "issue_url", "follow_up_tasks", "release_summary", "contributes_to",
-                "allow_missing_parent", "force",
+                "title",
+                "task_title",
+                "id",
+                "parent",
+                "priority",
+                "tags",
+                "depends_on",
+                "assignee",
+                "complexity",
+                "effort",
+                "consequence",
+                "severity",
+                "goal_type",
+                "body",
+                "stakeholder",
+                "waiting_since",
+                "due",
+                "project",
+                "type",
+                "status",
+                "session_id",
+                "issue_url",
+                "follow_up_tasks",
+                "release_summary",
+                "contributes_to",
+                "allow_missing_parent",
+                "force",
             ];
             let received: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
             let unknown: Vec<&str> = received
@@ -1609,7 +1652,10 @@ impl PkbSearchServer {
         }
 
         let mut severity_warning = false;
-        let mut severity = args.get("severity").and_then(|v| v.as_i64()).map(|v| v as i32);
+        let mut severity = args
+            .get("severity")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
         let is_target = args.get("type").and_then(|v| v.as_str()) == Some("target");
         if !is_target && severity.unwrap_or(0) != 0 {
             severity = Some(0);
@@ -1653,7 +1699,10 @@ impl PkbSearchServer {
                 .get("complexity")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            effort: args.get("effort").and_then(|v| v.as_str()).map(String::from),
+            effort: args
+                .get("effort")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             consequence: args
                 .get("consequence")
                 .and_then(|v| v.as_str())
@@ -1672,15 +1721,9 @@ impl PkbSearchServer {
                 .get("waiting_since")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            due: args
-                .get("due")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            due: args.get("due").and_then(|v| v.as_str()).map(String::from),
             project,
-            task_type: args
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            task_type: args.get("type").and_then(|v| v.as_str()).map(String::from),
             status: args
                 .get("status")
                 .and_then(|v| v.as_str())
@@ -1776,10 +1819,7 @@ impl PkbSearchServer {
                 .get("allow_missing_parent")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let force = args
-                .get("force")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let graph = self.graph.read();
             if let Some(ref parent_id) = fields.parent {
                 match graph.resolve(parent_id) {
@@ -1812,7 +1852,9 @@ impl PkbSearchServer {
                         }
                         // Reject closed parents unless caller opts in with force=true.
                         let parent_status = parent_node.status.as_deref().unwrap_or("");
-                        if crate::graph::is_closed_for_hierarchy(parent_node.status.as_deref()) && !force {
+                        if crate::graph::is_closed_for_hierarchy(parent_node.status.as_deref())
+                            && !force
+                        {
                             return Err(McpError {
                                 code: ErrorCode::INVALID_PARAMS,
                                 message: Cow::from(format!(
@@ -1871,7 +1913,10 @@ impl PkbSearchServer {
             let elapsed_upsert = t.elapsed();
             tracing::debug!(target: "perf::create_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
-            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                path
+            );
             let t = std::time::Instant::now();
             self.rebuild_graph();
             tracing::debug!(target: "perf::create_task", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
@@ -1886,8 +1931,9 @@ impl PkbSearchServer {
             .file_stem()
             .map(|s| {
                 let stem = s.to_string_lossy();
-                static RE: std::sync::LazyLock<regex::Regex> =
-                    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]{8}").unwrap());
+                static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+                    regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").unwrap()
+                });
                 RE.find(&stem)
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_else(|| stem.to_string())
@@ -1911,7 +1957,8 @@ impl PkbSearchServer {
             data: None,
         })?;
         if severity_warning {
-            res.content.push(Content::text("severity ignored: not a target node\n"));
+            res.content
+                .push(Content::text("severity ignored: not a target node\n"));
         }
         Ok(res)
     }
@@ -1931,8 +1978,14 @@ impl PkbSearchServer {
             })?;
 
         // Resolve the node and validate it is a template.
-        let (template_id, template_path, template_label, template_tags, template_priority,
-             template_assignee) = {
+        let (
+            template_id,
+            template_path,
+            template_label,
+            template_tags,
+            template_priority,
+            template_assignee,
+        ) = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -1980,38 +2033,32 @@ impl PkbSearchServer {
             .and_then(|d| d.deserialize::<serde_json::Value>().ok())
             .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
-        let template_project = fm
-            .get("project")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let template_parent = fm
-            .get("parent")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        let template_project = fm.get("project").and_then(|v| v.as_str()).map(String::from);
+        let template_parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
 
         let consequence = fm
             .get("consequence")
             .and_then(|v| v.as_str())
             .map(String::from);
-            
+
         let contributes_to = fm
             .get("contributes_to")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-            
+
         let depends_on = crate::graph::parse_string_array(&fm, "depends_on");
-            
+
         let goal_type = fm
             .get("goal_type")
             .and_then(|v| v.as_str())
             .map(String::from);
-            
+
         let severity = fm
             .get("severity")
             .and_then(|v| v.as_i64())
             .map(|v| v as i32);
-            
+
         let stakeholder = fm
             .get("stakeholder")
             .and_then(|v| v.as_str())
@@ -2293,12 +2340,21 @@ impl PkbSearchServer {
                     .and_then(|nid| boost_map.get(nid))
                     .unwrap_or(&0.0);
 
-                let type_boost = match r.doc_type.as_deref().map(|s| s.to_ascii_lowercase()).as_deref() {
-                    Some("knowledge") | Some("memory") | Some("note") | Some("insight") | Some("observation") => 0.15,
+                let type_boost = match r
+                    .doc_type
+                    .as_deref()
+                    .map(|s| s.to_ascii_lowercase())
+                    .as_deref()
+                {
+                    Some("knowledge") | Some("memory") | Some("note") | Some("insight")
+                    | Some("observation") => 0.15,
                     _ => 0.0,
                 };
 
-                (r, r.score * (1.0 + boost + type_boost) + (confidence * 0.05))
+                (
+                    r,
+                    r.score * (1.0 + boost + type_boost) + (confidence * 0.05),
+                )
             })
             .collect();
 
@@ -2355,7 +2411,9 @@ impl PkbSearchServer {
                 "snippet" => std::borrow::Cow::Borrowed(&r.snippet),
                 "full" => {
                     // Read full document from disk
-                    let abs_path = node.map(|n| self.abs_path(&n.path)).unwrap_or_else(|| r.path.clone());
+                    let abs_path = node
+                        .map(|n| self.abs_path(&n.path))
+                        .unwrap_or_else(|| r.path.clone());
                     match std::fs::read_to_string(&abs_path) {
                         Ok(content) => std::borrow::Cow::Owned(content),
                         Err(_) => std::borrow::Cow::Borrowed(&r.chunk_text),
@@ -2532,11 +2590,11 @@ impl PkbSearchServer {
 
         if !lint_warnings.is_empty() {
             lint_warnings.sort_by(|a, b| a.label.cmp(&b.label));
-            
+
             let max = limit.unwrap_or(lint_warnings.len());
             let total = lint_warnings.len();
             let showing = total.min(max);
-            
+
             output.push_str(&format!(
                 "**{total} nodes with lint warnings** (showing {showing})\n\n"
             ));
@@ -2568,13 +2626,17 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let threshold = args.get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.85);
+        let threshold = args
+            .get("threshold")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.85);
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let graph = self.graph.read();
         let store = self.store.read();
 
-        let neighbors = crate::batch_ops::similarity::find_neighbors(id, &graph, &store, threshold, limit);
+        let neighbors =
+            crate::batch_ops::similarity::find_neighbors(id, &graph, &store, threshold, limit);
 
         if neighbors.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -2590,8 +2652,15 @@ impl PkbSearchServer {
         );
 
         for n in neighbors {
-            let edge = if n.is_explicit_edge { " (explicitly linked)" } else { "" };
-            output.push_str(&format!("- **{}** (`{}`): score {:.3}{}\n", n.title, n.id, n.score, edge));
+            let edge = if n.is_explicit_edge {
+                " (explicitly linked)"
+            } else {
+                ""
+            };
+            output.push_str(&format!(
+                "- **{}** (`{}`): score {:.3}{}\n",
+                n.title, n.id, n.score, edge
+            ));
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -2672,8 +2741,7 @@ impl PkbSearchServer {
         let blocks: Vec<serde_json::Value> = node.blocks.iter().map(|b| resolve_ref(b)).collect();
         let children: Vec<serde_json::Value> =
             node.children.iter().map(|c| resolve_ref(c)).collect();
-        let closes: Vec<serde_json::Value> =
-            node.closes.iter().map(|c| resolve_ref(c)).collect();
+        let closes: Vec<serde_json::Value> = node.closes.iter().map(|c| resolve_ref(c)).collect();
         let parent = node.parent.as_ref().map(|p| resolve_ref(p));
 
         // Build subtask list and inject a checklist section into the body
@@ -2709,9 +2777,7 @@ impl PkbSearchServer {
         let body = if !subtask_nodes_sorted.is_empty() {
             let mut checklist = String::from("\n\n## Subtasks\n\n");
             for st in &subtask_nodes_sorted {
-                let done = crate::graph::is_completed(
-                    st.get("status").and_then(|s| s.as_str()),
-                );
+                let done = crate::graph::is_completed(st.get("status").and_then(|s| s.as_str()));
                 let check = if done { "x" } else { " " };
                 let title = st
                     .get("title")
@@ -2738,9 +2804,8 @@ impl PkbSearchServer {
             .as_deref()
             .and_then(crate::graph::parse_effort_days)
             .unwrap_or(3);
-        let urgency_ratio: Option<f64> = days_until_due.map(|d| {
-            (effort_days as f64 / d.max(1) as f64).min(1.0)
-        });
+        let urgency_ratio: Option<f64> =
+            days_until_due.map(|d| (effort_days as f64 / d.max(1) as f64).min(1.0));
 
         let contributes_to: Vec<serde_json::Value> = node
             .contributes_to
@@ -2877,7 +2942,10 @@ impl PkbSearchServer {
             let elapsed_upsert = t.elapsed();
             tracing::debug!(target: "perf::create_memory", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
-            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                path
+            );
             let t = std::time::Instant::now();
             self.rebuild_graph();
             tracing::debug!(target: "perf::create_memory", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
@@ -3030,7 +3098,10 @@ impl PkbSearchServer {
             let elapsed_upsert = t.elapsed();
             tracing::debug!(target: "perf::create_document", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
-            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                path
+            );
             let t = std::time::Instant::now();
             self.rebuild_graph();
             tracing::debug!(target: "perf::create_document", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
@@ -3053,7 +3124,9 @@ impl PkbSearchServer {
         if args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("The 'path' parameter is no longer supported. Please use 'id' instead."),
+                message: Cow::from(
+                    "The 'path' parameter is no longer supported. Please use 'id' instead.",
+                ),
                 data: None,
             });
         }
@@ -3119,7 +3192,10 @@ impl PkbSearchServer {
             let elapsed_upsert = t.elapsed();
             tracing::debug!(target: "perf::append_to_document", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
-            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                abs_path
+            );
             let t = std::time::Instant::now();
             self.rebuild_graph();
             tracing::debug!(target: "perf::append_to_document", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
@@ -3170,13 +3246,12 @@ impl PkbSearchServer {
             (self.abs_path(&node.path), node.label.clone())
         };
 
-        let result =
-            crate::document_crud::rewrite_body(&abs_path, new_body, preserve_frontmatter)
-                .map_err(|e| McpError {
-                    code: ErrorCode::INTERNAL_ERROR,
-                    message: Cow::from(format!("Failed to rewrite body: {e}")),
-                    data: None,
-                })?;
+        let result = crate::document_crud::rewrite_body(&abs_path, new_body, preserve_frontmatter)
+            .map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to rewrite body: {e}")),
+                data: None,
+            })?;
 
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
             self.rebuild_graph_for_pkb_document(&doc);
@@ -3326,7 +3401,10 @@ impl PkbSearchServer {
         // --- children: only when carrying a fact the close did not already imply ---
         let mut children_obj = serde_json::Map::new();
         if cascade_closed > 0 {
-            children_obj.insert("closed_by_cascade".into(), serde_json::json!(cascade_closed));
+            children_obj.insert(
+                "closed_by_cascade".into(),
+                serde_json::json!(cascade_closed),
+            );
         }
         let open_children = node
             .children
@@ -3381,9 +3459,8 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let evidence = Self::require_evidence(
-            args.get("completion_evidence").and_then(|v| v.as_str()),
-        )?;
+        let evidence =
+            Self::require_evidence(args.get("completion_evidence").and_then(|v| v.as_str()))?;
 
         let pr_url = args.get("pr_url").and_then(|v| v.as_str());
 
@@ -3404,7 +3481,9 @@ impl PkbSearchServer {
             .open_descendants(&node.id)
             .into_iter()
             .filter_map(|desc_id| {
-                graph.get_node(&desc_id).map(|n| (desc_id, self.abs_path(&n.path)))
+                graph
+                    .get_node(&desc_id)
+                    .map(|n| (desc_id, self.abs_path(&n.path)))
             })
             .collect();
 
@@ -3441,9 +3520,12 @@ impl PkbSearchServer {
                 serde_json::Value::String("done".to_string()),
             );
             for (_, desc_path) in &open_descs {
-                if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
+                if let Err(e) =
+                    crate::document_crud::update_document(desc_path, desc_updates.clone())
+                {
                     tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
-                } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
+                } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root)
+                {
                     self.rebuild_graph_for_pkb_document(&doc);
                     self.try_upsert_document(&doc);
                 }
@@ -3490,7 +3572,10 @@ impl PkbSearchServer {
             let elapsed_upsert = t.elapsed();
             tracing::debug!(target: "perf::complete_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
-            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                abs_path
+            );
             let t = std::time::Instant::now();
             self.rebuild_graph();
             tracing::debug!(target: "perf::complete_task", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
@@ -3535,7 +3620,10 @@ impl PkbSearchServer {
         };
 
         // Fetch extra candidates so type-filtering has enough to choose from.
-        let candidates = self.store.read().search(&embedding, 50, &self.pkb_root, None, None);
+        let candidates = self
+            .store
+            .read()
+            .search(&embedding, 50, &self.pkb_root, None, None);
 
         for candidate in &candidates {
             if candidate.score < CONFIDENCE_THRESHOLD {
@@ -3559,7 +3647,11 @@ impl PkbSearchServer {
                 continue;
             }
             if !candidate.id.is_empty() {
-                return Some((candidate.id.clone(), candidate.score, candidate.title.clone()));
+                return Some((
+                    candidate.id.clone(),
+                    candidate.score,
+                    candidate.title.clone(),
+                ));
             }
         }
         None
@@ -3577,7 +3669,7 @@ impl PkbSearchServer {
         title_hint: &str,
     ) -> Result<String, McpError> {
         let hash = format!("{:x}", md5::compute(session_id.as_bytes()));
-        let epic_id = format!("adhoc-{}", &hash[..8]);
+        let epic_id = format!("adhoc_{}", &hash[..8]);
 
         // Fast path: already present in graph
         {
@@ -3597,7 +3689,10 @@ impl PkbSearchServer {
 
         {
             let graph = self.graph.read();
-            if graph.resolve(crate::document_crud::ADHOC_SESSIONS_ROOT_ID).is_none() {
+            if graph
+                .resolve(crate::document_crud::ADHOC_SESSIONS_ROOT_ID)
+                .is_none()
+            {
                 drop(graph);
                 self.rebuild_graph();
             }
@@ -3686,7 +3781,9 @@ impl PkbSearchServer {
         let session_id_opt = args.get("session_id").and_then(|v| v.as_str());
 
         // M3 → M2 → root fallback: try topic match, then per-session epic, then root.
-        let parent_id = if let Some((epic_id, score, ref epic_title)) = self.find_topic_epic(summary) {
+        let parent_id = if let Some((epic_id, score, ref epic_title)) =
+            self.find_topic_epic(summary)
+        {
             tracing::info!(
                 target: "adhoc_grouping",
                 routing = "M3",
@@ -3721,9 +3818,16 @@ impl PkbSearchServer {
             project: Some("adhoc-sessions".to_string()),
             tags: vec!["adhoc".to_string(), "session-release".to_string()],
             session_id: session_id_opt.map(String::from),
-            issue_url: args.get("issue_url").and_then(|v| v.as_str()).map(String::from),
-            release_summary: args.get("release_summary").and_then(|v| v.as_str()).map(String::from),
-            follow_up_tasks: args.get("follow_up_tasks")
+            issue_url: args
+                .get("issue_url")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            release_summary: args
+                .get("release_summary")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            follow_up_tasks: args
+                .get("follow_up_tasks")
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
@@ -3734,23 +3838,21 @@ impl PkbSearchServer {
             ..Default::default()
         };
 
-        let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Failed to create ad-hoc task: {e}")),
-            data: None,
-        })?;
+        let path =
+            crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to create ad-hoc task: {e}")),
+                data: None,
+            })?;
 
         // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4")
-        static ID_RE: std::sync::LazyLock<regex::Regex> =
-            std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]{8}").unwrap());
+        static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").unwrap()
+        });
         let id = path
             .file_stem()
             .and_then(|s| s.to_str())
-            .map(|s| {
-                ID_RE.find(s)
-                    .map(|m| m.as_str())
-                    .unwrap_or(s)
-            })
+            .map(|s| ID_RE.find(s).map(|m| m.as_str()).unwrap_or(s))
             .unwrap_or("task-unknown")
             .to_string();
 
@@ -3788,7 +3890,14 @@ impl PkbSearchServer {
             })?;
 
         // Validate status enum with helpful suggestions
-        let valid_statuses = ["merge_ready", "done", "review", "blocked", "cancelled", "partial"];
+        let valid_statuses = [
+            "merge_ready",
+            "done",
+            "review",
+            "blocked",
+            "cancelled",
+            "partial",
+        ];
         if !valid_statuses.contains(&status) {
             let suggestion = match status {
                 "complete" | "completed" => " Did you mean \"done\"?",
@@ -3893,7 +4002,9 @@ impl PkbSearchServer {
                     .open_descendants(&node.id)
                     .into_iter()
                     .filter_map(|desc_id| {
-                        graph.get_node(&desc_id).map(|n| (desc_id, self.abs_path(&n.path)))
+                        graph
+                            .get_node(&desc_id)
+                            .map(|n| (desc_id, self.abs_path(&n.path)))
                     })
                     .collect();
                 if !open_descs.is_empty() && !recursive {
@@ -3908,7 +4019,11 @@ impl PkbSearchServer {
                         data: None,
                     });
                 }
-                if recursive { open_descs } else { vec![] }
+                if recursive {
+                    open_descs
+                } else {
+                    vec![]
+                }
             } else {
                 vec![]
             };
@@ -3938,7 +4053,9 @@ impl PkbSearchServer {
             let parsed_descs: Vec<crate::pkb::PkbDocument> = recursive_close_descs
                 .iter()
                 .filter_map(|(_, desc_path)| {
-                    if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
+                    if let Err(e) =
+                        crate::document_crud::update_document(desc_path, desc_updates.clone())
+                    {
                         tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
                         return None;
                     }
@@ -4005,7 +4122,10 @@ impl PkbSearchServer {
         }
 
         if let Some(url) = issue_url {
-            updates.insert("issue_url".to_string(), serde_json::Value::String(url.to_string()));
+            updates.insert(
+                "issue_url".to_string(),
+                serde_json::Value::String(url.to_string()),
+            );
         }
 
         if !follow_up_ids.is_empty() {
@@ -4041,7 +4161,10 @@ impl PkbSearchServer {
         })?;
 
         // Build and append release evidence block
-        let mut evidence_block = format!("\n\n## Release: {status}\n\n**{now}**\n\n{}", summary.trim());
+        let mut evidence_block = format!(
+            "\n\n## Release: {status}\n\n**{now}**\n\n{}",
+            summary.trim()
+        );
         if let Some(url) = pr_url {
             evidence_block.push_str(&format!("\n\nPR: {url}"));
         }
@@ -4060,11 +4183,13 @@ impl PkbSearchServer {
         }
         evidence_block.push('\n');
 
-        crate::document_crud::append_to_document(&abs_path, &evidence_block, None).map_err(|e| McpError {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Failed to append release evidence: {e}")),
-            data: None,
-        })?;
+        crate::document_crud::append_to_document(&abs_path, &evidence_block, None).map_err(
+            |e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to append release evidence: {e}")),
+                data: None,
+            },
+        )?;
         let elapsed_write = t.elapsed();
         tracing::debug!(target: "perf::release_task", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
@@ -4084,7 +4209,10 @@ impl PkbSearchServer {
             let elapsed_upsert = t.elapsed();
             tracing::debug!(target: "perf::release_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
-            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", abs_path);
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                abs_path
+            );
             let t = std::time::Instant::now();
             self.rebuild_graph();
             tracing::debug!(target: "perf::release_task", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
@@ -4100,7 +4228,9 @@ impl PkbSearchServer {
         if status == "blocked" && blocker.map_or(true, |b| b.trim().is_empty()) {
             warnings.push("WARNING: No blocker description. Consider updating with what's blocking this task.");
         }
-        if (status == "cancelled" || status == "review") && reason.map_or(true, |r| r.trim().is_empty()) {
+        if (status == "cancelled" || status == "review")
+            && reason.map_or(true, |r| r.trim().is_empty())
+        {
             warnings.push("WARNING: No reason provided. Future you will want to know why.");
         }
         if let Some(rs) = release_summary {
@@ -4244,7 +4374,10 @@ impl PkbSearchServer {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
             }
             // Show full body for memories (typically short)
-            let abs_path = graph.get_node(&r.id).map(|n| self.abs_path(&n.path)).unwrap_or_else(|| r.path.clone());
+            let abs_path = graph
+                .get_node(&r.id)
+                .map(|n| self.abs_path(&n.path))
+                .unwrap_or_else(|| r.path.clone());
             if let Ok(content) = std::fs::read_to_string(&abs_path) {
                 let body = if content.starts_with("---") {
                     content.splitn(3, "---").nth(2).unwrap_or("").trim()
@@ -4481,17 +4614,13 @@ impl PkbSearchServer {
                     let prefix = node.node_type.clone().unwrap_or_else(|| "task".to_string());
                     // Read parent's raw frontmatter `project` field so subtasks can inherit it.
                     // GraphNode.project is a computed ancestor label, not the frontmatter value.
-                    let parent_project = crate::pkb::parse_file_relative(
-                        &self.abs_path(&node.path),
-                        &self.pkb_root,
-                    )
-                    .and_then(|doc| doc.frontmatter)
-                    .and_then(|fm| {
-                        fm.get("project")
-                            .and_then(|v| v.as_str())
-                            .map(String::from)
-                    })
-                    .or_else(|| node.project.clone());
+                    let parent_project =
+                        crate::pkb::parse_file_relative(&self.abs_path(&node.path), &self.pkb_root)
+                            .and_then(|doc| doc.frontmatter)
+                            .and_then(|fm| {
+                                fm.get("project").and_then(|v| v.as_str()).map(String::from)
+                            })
+                            .or_else(|| node.project.clone());
                     (prefix, parent_project)
                 }
             }
@@ -4505,11 +4634,14 @@ impl PkbSearchServer {
         let mut title_to_id: HashMap<String, String> = HashMap::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
         for subtask in subtasks {
-            let title = subtask.get("title").and_then(|v| v.as_str()).ok_or_else(|| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Each subtask must have a 'title'"),
-                data: None,
-            })?;
+            let title = subtask
+                .get("title")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Each subtask must have a 'title'"),
+                    data: None,
+                })?;
 
             let title_lower = title.to_lowercase();
             if title_to_id.contains_key(&title_lower) {
@@ -4526,10 +4658,8 @@ impl PkbSearchServer {
             let id = subtask
                 .get("id")
                 .and_then(|v| v.as_str())
-                .map(crate::document_crud::sanitize_prefix)
-                .unwrap_or_else(|| {
-                    crate::graph::create_id(&project_prefix)
-                });
+                .map(crate::document_crud::sanitize_explicit_id)
+                .unwrap_or_else(|| crate::graph::create_id(&project_prefix));
 
             if !seen_ids.insert(id.clone()) {
                 return Err(McpError {
@@ -4574,14 +4704,17 @@ impl PkbSearchServer {
         if !unresolvable.is_empty() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: std::borrow::Cow::from(format!("Unresolvable sibling references in decompose_task: {:?}", unresolvable)),
+                message: std::borrow::Cow::from(format!(
+                    "Unresolvable sibling references in decompose_task: {:?}",
+                    unresolvable
+                )),
                 data: None,
             });
         }
 
         let mut created: Vec<(String, String)> = Vec::new();
         static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex")
+            regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").expect("valid static regex")
         });
 
         let mut severity_warning = false;
@@ -4681,7 +4814,10 @@ impl PkbSearchServer {
                     .map(String::from),
                 severity: {
                     let is_target = subtask.get("type").and_then(|v| v.as_str()) == Some("target");
-                    let mut sev = subtask.get("severity").and_then(|v| v.as_i64()).map(|v| v as i32);
+                    let mut sev = subtask
+                        .get("severity")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v as i32);
                     if !is_target && sev.unwrap_or(0) != 0 {
                         sev = Some(0);
                         severity_warning = true;
@@ -4727,7 +4863,10 @@ impl PkbSearchServer {
             if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
                 docs.push(doc);
             } else {
-                tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+                tracing::warn!(
+                    "Incremental parse failed for {:?}, doing full rebuild",
+                    path
+                );
                 failed = true;
             }
         }
@@ -4747,7 +4886,7 @@ impl PkbSearchServer {
         for (id_str, path) in &created {
             output.push_str(&format!("- `{id_str}` — `{path}`\n"));
         }
-        
+
         if severity_warning {
             output.push_str("\nWarning: severity ignored for one or more non-target nodes.\n");
         }
@@ -5125,7 +5264,11 @@ impl PkbSearchServer {
             .unwrap_or(false);
 
         if !explicitly_wants_target {
-            tasks.retain(|t| !t.node_type.as_deref().map_or(false, |s| s.eq_ignore_ascii_case("target")));
+            tasks.retain(|t| {
+                !t.node_type
+                    .as_deref()
+                    .map_or(false, |s| s.eq_ignore_ascii_case("target"))
+            });
         }
 
         if !include_subtasks {
@@ -5207,7 +5350,10 @@ impl PkbSearchServer {
             for t in &tasks {
                 let id = t.task_id.as_deref().unwrap_or(&t.id);
                 out.push_str(&format!("### {} — {}\n", id, t.label));
-                out.push_str(&format!("**Status:** {}\n", t.status.as_deref().unwrap_or("-")));
+                out.push_str(&format!(
+                    "**Status:** {}\n",
+                    t.status.as_deref().unwrap_or("-")
+                ));
                 if !t.depends_on.is_empty() {
                     out.push_str("**Blocked by:**\n");
                     for dep in &t.depends_on {
@@ -5261,9 +5407,15 @@ impl PkbSearchServer {
                 } else {
                     "-".to_string()
                 };
-                let due_str = t.due.as_deref().map(|due| {
-                    let len = std::cmp::min(10, due.len());
-                    chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+                let due_str = t
+                    .due
+                    .as_deref()
+                    .map(|due| {
+                        let len = std::cmp::min(10, due.len());
+                        chrono::NaiveDate::parse_from_str(
+                            &due[..due.floor_char_boundary(len)],
+                            "%Y-%m-%d",
+                        )
                         .ok()
                         .map(|due_date| {
                             let d = (due_date - today).num_days();
@@ -5276,7 +5428,8 @@ impl PkbSearchServer {
                             }
                         })
                         .unwrap_or_else(|| due[..due.floor_char_boundary(len)].to_string())
-                }).unwrap_or_else(|| "-".to_string());
+                    })
+                    .unwrap_or_else(|| "-".to_string());
                 out.push_str(&format!(
                     "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                     i + 1,
@@ -5316,21 +5469,25 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-
     fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         if args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("The 'path' parameter is no longer supported. Please use 'id' instead."),
+                message: Cow::from(
+                    "The 'path' parameter is no longer supported. Please use 'id' instead.",
+                ),
                 data: None,
             });
         }
 
-        let id = args.get("id").and_then(|v| v.as_str()).ok_or_else(|| McpError {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from("Missing required parameter: id"),
-            data: None,
-        })?;
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
 
         let (path, canonical_id) = {
             let graph = self.graph.read();
@@ -5346,7 +5503,14 @@ impl PkbSearchServer {
         //   1. Nested: {"id": "...", "updates": {"status": "done"}}
         //   2. Flat:   {"id": "...", "status": "done"}
         // If `updates` is present, it wins. Otherwise collect top-level fields.
-        const ROUTING_KEYS: &[&str] = &["id", "updates", "recursive", "unparent", "force", "allow_missing_parent"];
+        const ROUTING_KEYS: &[&str] = &[
+            "id",
+            "updates",
+            "recursive",
+            "unparent",
+            "force",
+            "allow_missing_parent",
+        ];
         let mut updates: serde_json::Map<String, serde_json::Value> =
             if let Some(nested) = args.get("updates").and_then(|v| v.as_object()) {
                 nested.clone()
@@ -5369,8 +5533,14 @@ impl PkbSearchServer {
         //     `updates` was empty -> "No fields to update".
         //   - nested `{unparent: true}` fell through to the writer and persisted
         //     a junk `unparent: true` key while leaving `parent` in place.
-        let unparent_flag = args.get("unparent").and_then(|v| v.as_bool()).unwrap_or(false)
-            || updates.get("unparent").and_then(|v| v.as_bool()).unwrap_or(false);
+        let unparent_flag = args
+            .get("unparent")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || updates
+                .get("unparent")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
         updates.remove("unparent");
         if unparent_flag {
             updates.insert("parent".to_string(), serde_json::Value::Null);
@@ -5411,7 +5581,9 @@ impl PkbSearchServer {
                 if !unparent_flag && !force {
                     return Err(McpError {
                         code: ErrorCode::INVALID_PARAMS,
-                        message: std::borrow::Cow::from("To remove a task's parent, pass unparent=true explicitly."),
+                        message: std::borrow::Cow::from(
+                            "To remove a task's parent, pass unparent=true explicitly.",
+                        ),
                         data: None,
                     });
                 }
@@ -5473,7 +5645,9 @@ impl PkbSearchServer {
                         .open_descendants(&canonical_id)
                         .into_iter()
                         .filter_map(|desc_id| {
-                            graph.get_node(&desc_id).map(|n| (desc_id, self.abs_path(&n.path)))
+                            graph
+                                .get_node(&desc_id)
+                                .map(|n| (desc_id, self.abs_path(&n.path)))
                         })
                         .collect()
                 };
@@ -5496,9 +5670,17 @@ impl PkbSearchServer {
                         serde_json::Value::String(ns.to_string()),
                     );
                     for (_, desc_path) in &open_descs {
-                        if let Err(e) = crate::document_crud::update_document(desc_path, desc_updates.clone()) {
-                            tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
-                        } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
+                        if let Err(e) =
+                            crate::document_crud::update_document(desc_path, desc_updates.clone())
+                        {
+                            tracing::warn!(
+                                "recursive close: failed to update {:?}: {}",
+                                desc_path,
+                                e
+                            );
+                        } else if let Some(doc) =
+                            crate::pkb::parse_file_relative(desc_path, &self.pkb_root)
+                        {
                             self.rebuild_graph_for_pkb_document(&doc);
                             self.try_upsert_document(&doc);
                         }
@@ -5546,7 +5728,9 @@ impl PkbSearchServer {
             let graph = self.graph.read();
             let node = graph.resolve(&canonical_id).ok_or_else(|| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
-                message: std::borrow::Cow::from(format!("Failed to resolve canonical id: {canonical_id}")),
+                message: std::borrow::Cow::from(format!(
+                    "Failed to resolve canonical id: {canonical_id}"
+                )),
                 data: None,
             })?;
             let mut filtered_updates = serde_json::Map::new();
@@ -5555,11 +5739,13 @@ impl PkbSearchServer {
                     filtered_updates.insert(k.clone(), v.clone());
                 }
             }
-            crate::document_crud::expand_special_update_keys(&node, &filtered_updates).map_err(|e| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: std::borrow::Cow::from(format!("Invalid updates: {e}")),
-                data: None,
-            })?
+            crate::document_crud::expand_special_update_keys(&node, &filtered_updates).map_err(
+                |e| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: std::borrow::Cow::from(format!("Invalid updates: {e}")),
+                    data: None,
+                },
+            )?
         };
 
         // Per-phase timing for write-path perf investigation (task-a4dcc039).
@@ -5598,7 +5784,10 @@ impl PkbSearchServer {
             let elapsed_upsert = t.elapsed();
             tracing::debug!(target: "perf::update_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
-            tracing::warn!("Incremental parse failed for {:?}, doing full rebuild", path);
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                path
+            );
             let t = std::time::Instant::now();
             self.rebuild_graph();
             tracing::debug!(target: "perf::update_task", phase = "rebuild_graph_full", elapsed_ms = t.elapsed().as_secs_f64() * 1000.0);
@@ -5607,15 +5796,24 @@ impl PkbSearchServer {
         tracing::debug!(target: "perf::update_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         // Soft warning if setting a terminal status via update_task instead of release_task
-        let terminal_statuses = ["merge_ready", "done", "review", "blocked", "cancelled", "partial"];
+        let terminal_statuses = [
+            "merge_ready",
+            "done",
+            "review",
+            "blocked",
+            "cancelled",
+            "partial",
+        ];
         let hint = updates
             .get("status")
             .and_then(|v| v.as_str())
             .filter(|s| terminal_statuses.contains(s))
-            .map(|s| format!(
+            .map(|s| {
+                format!(
                 "\nHINT: Use release_task(id=\"...\", status=\"{s}\", summary=\"...\") instead of \
                  update_task for status transitions. release_task captures work history."
-            ))
+            )
+            })
             .unwrap_or_default();
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -5629,8 +5827,14 @@ impl PkbSearchServer {
 
     fn handle_batch_update(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
-        let updates = args.get("updates").cloned().unwrap_or(JsonValue::Object(serde_json::Map::new()));
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
+        let updates = args
+            .get("updates")
+            .cloned()
+            .unwrap_or(JsonValue::Object(serde_json::Map::new()));
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         if filters.is_empty() && updates.as_object().map(|m| m.is_empty()).unwrap_or(true) {
             return Err(McpError {
@@ -5654,7 +5858,13 @@ impl PkbSearchServer {
                 }
             }
         }
-        let summary = crate::batch_ops::update::batch_update(&graph, &self.pkb_root, &filters, &updates, dry_run);
+        let summary = crate::batch_ops::update::batch_update(
+            &graph,
+            &self.pkb_root,
+            &filters,
+            &updates,
+            dry_run,
+        );
         drop(graph);
 
         if !dry_run && summary.changed > 0 {
@@ -5682,11 +5892,18 @@ impl PkbSearchServer {
             .to_string();
 
         let filters = crate::batch_ops::filters::parse_filter_set(args);
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         let graph = self.graph.read();
         let summary = crate::batch_ops::reparent::batch_reparent(
-            &graph, &self.pkb_root, &filters, &new_parent, dry_run,
+            &graph,
+            &self.pkb_root,
+            &filters,
+            &new_parent,
+            dry_run,
         );
         drop(graph);
 
@@ -5705,7 +5922,10 @@ impl PkbSearchServer {
 
     fn handle_batch_archive(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true); // default true!
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true); // default true!
         let reason = args.get("reason").and_then(|v| v.as_str());
 
         if filters.is_empty() {
@@ -5718,7 +5938,11 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let summary = crate::batch_ops::update::batch_archive(
-            &graph, &self.pkb_root, &filters, reason, dry_run,
+            &graph,
+            &self.pkb_root,
+            &filters,
+            reason,
+            dry_run,
         );
         drop(graph);
 
@@ -5749,7 +5973,11 @@ impl PkbSearchServer {
         let source_ids: Vec<String> = args
             .get("source_ids")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         if source_ids.is_empty() {
@@ -5760,15 +5988,18 @@ impl PkbSearchServer {
             });
         }
 
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         let summary =
             crate::document_crud::merge_node(&self.pkb_root, &source_ids, &canonical_id, dry_run)
                 .map_err(|e| McpError {
-                    code: ErrorCode::INTERNAL_ERROR,
-                    message: Cow::from(format!("merge_node failed: {e}")),
-                    data: None,
-                })?;
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("merge_node failed: {e}")),
+                data: None,
+            })?;
 
         if !dry_run && (summary.nodes_archived > 0 || summary.files_updated > 0) {
             self.finalize_batch(&summary.modified_paths, &[]);
@@ -5780,7 +6011,11 @@ impl PkbSearchServer {
             summary.files_updated,
             summary.refs_redirected,
             summary.nodes_archived,
-            if dry_run { " — no changes written" } else { "" },
+            if dry_run {
+                " — no changes written"
+            } else {
+                ""
+            },
         );
         if dry_run {
             msg = format!("{}{}", DRY_RUN_WARNING, msg);
@@ -5808,7 +6043,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    fn handle_detect_weight_divergence(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    fn handle_detect_weight_divergence(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let threshold_days = args
             .get("threshold_days")
             .and_then(|v| v.as_i64())
@@ -5822,7 +6060,7 @@ impl PkbSearchServer {
 
         if total == 0 {
             return Ok(CallToolResult::success(vec![Content::text(
-                "No weight divergences detected (high stated weight with revealed inactivity)."
+                "No weight divergences detected (high stated weight with revealed inactivity).",
             )]));
         }
 
@@ -5914,13 +6152,25 @@ impl PkbSearchServer {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("both");
         let mode = crate::batch_ops::duplicates::DuplicateMode::from_str(mode_str);
-        let title_threshold = args.get("title_threshold").and_then(|v| v.as_f64()).unwrap_or(0.7);
-        let semantic_threshold = args.get("similarity_threshold").and_then(|v| v.as_f64()).unwrap_or(0.85);
+        let title_threshold = args
+            .get("title_threshold")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.7);
+        let semantic_threshold = args
+            .get("similarity_threshold")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.85);
 
         let graph = self.graph.read();
         let store = self.store.read();
         let report = crate::batch_ops::duplicates::find_duplicates(
-            &graph, &store, &filters, mode, title_threshold, semantic_threshold, &self.pkb_root,
+            &graph,
+            &store,
+            &filters,
+            mode,
+            title_threshold,
+            semantic_threshold,
+            &self.pkb_root,
         );
         drop(graph);
         drop(store);
@@ -5943,10 +6193,17 @@ impl PkbSearchServer {
         let merge_ids: Vec<String> = args
             .get("merge_ids")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         if merge_ids.is_empty() {
             return Err(McpError {
@@ -5958,7 +6215,11 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let summary = crate::batch_ops::duplicates::batch_merge(
-            &graph, &self.pkb_root, &canonical, &merge_ids, dry_run,
+            &graph,
+            &self.pkb_root,
+            &canonical,
+            &merge_ids,
+            dry_run,
         );
         drop(graph);
 
@@ -5977,7 +6238,10 @@ impl PkbSearchServer {
 
     fn handle_batch_create_epics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let parent = args.get("parent").and_then(|v| v.as_str());
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let epics: Vec<crate::batch_ops::epics::EpicDef> = args
             .get("epics")
@@ -5994,7 +6258,11 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let summary = crate::batch_ops::epics::batch_create_epics(
-            &graph, &self.pkb_root, parent, &epics, dry_run,
+            &graph,
+            &self.pkb_root,
+            parent,
+            &epics,
+            dry_run,
         );
         drop(graph);
 
@@ -6038,7 +6306,10 @@ impl PkbSearchServer {
                 message: Cow::from("new_type is required"),
                 data: None,
             })?;
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         if filters.is_empty() {
             return Err(McpError {
@@ -6050,7 +6321,11 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let summary = crate::batch_ops::reclassify::batch_reclassify(
-            &graph, &self.pkb_root, &filters, new_type, dry_run,
+            &graph,
+            &self.pkb_root,
+            &filters,
+            new_type,
+            dry_run,
         );
         drop(graph);
 
@@ -6080,7 +6355,6 @@ impl PkbSearchServer {
     // CONSOLIDATED TOOLS (Progressive Disclosure)
     // =========================================================================
 
-
     fn handle_list_prompts(&self) -> Result<ListPromptsResult, McpError> {
         fn required_arg(name: &str, description: &str) -> PromptArgument {
             PromptArgument::new(name)
@@ -6101,10 +6375,7 @@ impl PkbSearchServer {
             Prompt::new(
                 "navigate-graph",
                 Some("What's connected to X?"),
-                Some(vec![required_arg(
-                    "id",
-                    "The node ID, title, or filename",
-                )]),
+                Some(vec![required_arg("id", "The node ID, title, or filename")]),
             ),
             Prompt::new(
                 "find-by-tag",
@@ -6162,10 +6433,13 @@ impl PkbSearchServer {
                     message: Cow::from("Missing required parameter: tag"),
                     data: None,
                 })?;
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
-                    "Show me everything tagged '{}'. Please use 'search_by_tag' with this tag.",
-                    tag
-                ))]))
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!(
+                        "Show me everything tagged '{}'. Please use 'search_by_tag' with this tag.",
+                        tag
+                    ),
+                )]))
             }
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
@@ -6281,12 +6555,7 @@ impl ServerHandler for PkbSearchServer {
                 Err(e) => serde_json::to_vec(e).map(|v| v.len()).unwrap_or(0),
             };
 
-            crate::telemetry::record_call(
-                &effective_name,
-                response_bytes,
-                latency,
-                is_error,
-            );
+            crate::telemetry::record_call(&effective_name, response_bytes, latency, is_error);
 
             result
         }
@@ -6300,7 +6569,6 @@ impl ServerHandler for PkbSearchServer {
         let tools = Self::get_all_tools();
         std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
-
 
     fn list_prompts(
         &self,
@@ -7312,21 +7580,116 @@ projects:
     fn build_project_test_graph() -> GraphStore {
         let docs = vec![
             // Container nodes declaring explicit project slugs
-            make_container_doc("projects/proj-alpha.md", "ProjectAlpha", "proj-alpha", "proj-alpha"),
-            make_container_doc("projects/proj-beta.md", "ProjectBeta", "proj-beta", "proj-beta"),
-            make_container_doc("projects/proj-gamma.md", "ProjectGamma", "proj-gamma", "proj-gamma"),
+            make_container_doc(
+                "projects/proj-alpha.md",
+                "ProjectAlpha",
+                "proj-alpha",
+                "proj-alpha",
+            ),
+            make_container_doc(
+                "projects/proj-beta.md",
+                "ProjectBeta",
+                "proj-beta",
+                "proj-beta",
+            ),
+            make_container_doc(
+                "projects/proj-gamma.md",
+                "ProjectGamma",
+                "proj-gamma",
+                "proj-gamma",
+            ),
             // ProjectAlpha tasks
-            make_doc_with_priority("tasks/task-a1.md", "Alpha Task 1", "task", "ready", "task-a1", Some("proj-alpha"), &[], 1, Some("alice")),
-            make_doc_with_priority("tasks/task-a2.md", "Alpha Task 2", "task", "ready", "task-a2", Some("proj-alpha"), &["task-a1"], 2, Some("bob")),
-            make_doc_with_priority("tasks/task-a3.md", "Alpha Task 3", "task", "done", "task-a3", Some("proj-alpha"), &[], 1, None),
-            make_doc_with_priority("tasks/task-a4.md", "Alpha Task 4", "task", "archived", "task-a4", Some("proj-alpha"), &[], 1, None),
+            make_doc_with_priority(
+                "tasks/task-a1.md",
+                "Alpha Task 1",
+                "task",
+                "ready",
+                "task-a1",
+                Some("proj-alpha"),
+                &[],
+                1,
+                Some("alice"),
+            ),
+            make_doc_with_priority(
+                "tasks/task-a2.md",
+                "Alpha Task 2",
+                "task",
+                "ready",
+                "task-a2",
+                Some("proj-alpha"),
+                &["task-a1"],
+                2,
+                Some("bob"),
+            ),
+            make_doc_with_priority(
+                "tasks/task-a3.md",
+                "Alpha Task 3",
+                "task",
+                "done",
+                "task-a3",
+                Some("proj-alpha"),
+                &[],
+                1,
+                None,
+            ),
+            make_doc_with_priority(
+                "tasks/task-a4.md",
+                "Alpha Task 4",
+                "task",
+                "archived",
+                "task-a4",
+                Some("proj-alpha"),
+                &[],
+                1,
+                None,
+            ),
             // ProjectBeta tasks — task-b1 is a leaf with no deps (ready), task-b2 depends on task-b1
-            make_doc_with_priority("tasks/task-b1.md", "Beta Task 1", "task", "ready", "task-b1", Some("proj-beta"), &[], 1, None),
-            make_doc_with_priority("tasks/task-b2.md", "Beta Task 2", "task", "ready", "task-b2", Some("proj-beta"), &["task-b1"], 2, None),
+            make_doc_with_priority(
+                "tasks/task-b1.md",
+                "Beta Task 1",
+                "task",
+                "ready",
+                "task-b1",
+                Some("proj-beta"),
+                &[],
+                1,
+                None,
+            ),
+            make_doc_with_priority(
+                "tasks/task-b2.md",
+                "Beta Task 2",
+                "task",
+                "ready",
+                "task-b2",
+                Some("proj-beta"),
+                &["task-b1"],
+                2,
+                None,
+            ),
             // ProjectGamma task
-            make_doc_with_priority("tasks/task-g1.md", "Gamma Task 1", "task", "ready", "task-g1", Some("proj-gamma"), &[], 3, None),
+            make_doc_with_priority(
+                "tasks/task-g1.md",
+                "Gamma Task 1",
+                "task",
+                "ready",
+                "task-g1",
+                Some("proj-gamma"),
+                &[],
+                3,
+                None,
+            ),
             // Orphan task (no parent, no project)
-            make_doc_with_priority("tasks/task-orphan.md", "Orphan Task", "task", "ready", "task-orphan", None, &[], 1, None),
+            make_doc_with_priority(
+                "tasks/task-orphan.md",
+                "Orphan Task",
+                "task",
+                "ready",
+                "task-orphan",
+                None,
+                &[],
+                1,
+                None,
+            ),
         ];
         GraphStore::build(&docs, Path::new("/tmp/test-pkb-project"))
     }
@@ -7337,9 +7700,11 @@ projects:
         let embedder = Embedder::new_dummy();
         // Per-call isolated temp root so parallel write-tests (create_task etc.)
         // don't race on a shared directory.
-        static TEST_ROOT_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static TEST_ROOT_SEQ: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
         let seq = TEST_ROOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("mem-test-pkb-{}-{}", std::process::id(), seq));
+        let root =
+            std::env::temp_dir().join(format!("mem-test-pkb-{}-{}", std::process::id(), seq));
         let _ = std::fs::create_dir_all(&root);
         write_test_polecat_yaml(&root);
         let db = root.join("db");
@@ -7409,7 +7774,12 @@ projects:
         let mut prev_val = f64::MAX;
         for item in pr_arr {
             let m_val = item.get("metric_value").unwrap().as_f64().unwrap();
-            assert!(m_val <= prev_val, "pagerank must be sorted descending, saw {} then {}", prev_val, m_val);
+            assert!(
+                m_val <= prev_val,
+                "pagerank must be sorted descending, saw {} then {}",
+                prev_val,
+                m_val
+            );
             prev_val = m_val;
             assert!(item.get("id").is_some());
             assert!(item.get("title").is_some());
@@ -7477,11 +7847,19 @@ projects:
             .handle_list_tasks(&json!({"format": "json"}))
             .unwrap();
         let tasks = extract_task_objects(&result);
-        assert!(tasks.len() >= 2, "fixture should return multiple tasks, got {}", tasks.len());
+        assert!(
+            tasks.len() >= 2,
+            "fixture should return multiple tasks, got {}",
+            tasks.len()
+        );
 
         let scores: Vec<i64> = tasks
             .iter()
-            .map(|t| t.get("focus_score").and_then(|s| s.as_i64()).unwrap_or(i64::MIN))
+            .map(|t| {
+                t.get("focus_score")
+                    .and_then(|s| s.as_i64())
+                    .unwrap_or(i64::MIN)
+            })
             .collect();
         for w in scores.windows(2) {
             assert!(
@@ -7515,13 +7893,23 @@ projects:
     fn test_list_tasks_default_order_is_deterministic() {
         let server = build_test_server();
         let first = extract_task_ids(
-            &server.handle_list_tasks(&json!({"format": "json"})).unwrap(),
+            &server
+                .handle_list_tasks(&json!({"format": "json"}))
+                .unwrap(),
         );
         let second = extract_task_ids(
-            &server.handle_list_tasks(&json!({"format": "json"})).unwrap(),
+            &server
+                .handle_list_tasks(&json!({"format": "json"}))
+                .unwrap(),
         );
-        assert_eq!(first, second, "repeated default calls must return identical ordering");
-        assert!(first.len() >= 2, "need multiple tasks to make the check meaningful");
+        assert_eq!(
+            first, second,
+            "repeated default calls must return identical ordering"
+        );
+        assert!(
+            first.len() >= 2,
+            "need multiple tasks to make the check meaningful"
+        );
     }
 
     /// AC1: the `ready` special filter is also focus_score-DESC by default, with
@@ -7536,10 +7924,17 @@ projects:
         assert!(!tasks.is_empty(), "fixture should have ready tasks");
         let scores: Vec<i64> = tasks
             .iter()
-            .map(|t| t.get("focus_score").and_then(|s| s.as_i64()).unwrap_or(i64::MIN))
+            .map(|t| {
+                t.get("focus_score")
+                    .and_then(|s| s.as_i64())
+                    .unwrap_or(i64::MIN)
+            })
             .collect();
         for w in scores.windows(2) {
-            assert!(w[0] >= w[1], "ready focus_scores must be non-increasing: {scores:?}");
+            assert!(
+                w[0] >= w[1],
+                "ready focus_scores must be non-increasing: {scores:?}"
+            );
         }
         for t in &tasks {
             assert!(
@@ -7563,8 +7958,14 @@ projects:
             .iter()
             .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
             .collect::<String>();
-        assert!(text.contains("| # | ID |"), "explicit markdown format must render a table, got: {text}");
-        assert!(text.contains("Status"), "markdown table must include a Status column");
+        assert!(
+            text.contains("| # | ID |"),
+            "explicit markdown format must render a table, got: {text}"
+        );
+        assert!(
+            text.contains("Status"),
+            "markdown table must include a Status column"
+        );
         assert!(
             serde_json::from_str::<serde_json::Value>(&text).is_err(),
             "explicit markdown must not be silently converted to JSON"
@@ -7581,15 +7982,39 @@ projects:
             .unwrap();
         let ids = extract_task_ids(&result);
         // Default hides done/cancelled tasks — task-a3 (done) and task-a4 (archived) should not appear
-        assert!(ids.contains(&"task-a1".to_string()), "should contain task-a1");
-        assert!(ids.contains(&"task-a2".to_string()), "should contain task-a2");
-        assert!(!ids.contains(&"task-a3".to_string()), "done task-a3 should be hidden by default");
-        assert!(!ids.contains(&"task-a4".to_string()), "archived task-a4 should be hidden by default");
+        assert!(
+            ids.contains(&"task-a1".to_string()),
+            "should contain task-a1"
+        );
+        assert!(
+            ids.contains(&"task-a2".to_string()),
+            "should contain task-a2"
+        );
+        assert!(
+            !ids.contains(&"task-a3".to_string()),
+            "done task-a3 should be hidden by default"
+        );
+        assert!(
+            !ids.contains(&"task-a4".to_string()),
+            "archived task-a4 should be hidden by default"
+        );
         // Should NOT contain tasks from other projects
-        assert!(!ids.contains(&"task-b1".to_string()), "should not contain task-b1");
-        assert!(!ids.contains(&"task-b2".to_string()), "should not contain task-b2");
-        assert!(!ids.contains(&"task-g1".to_string()), "should not contain task-g1");
-        assert!(!ids.contains(&"task-orphan".to_string()), "should not contain orphan");
+        assert!(
+            !ids.contains(&"task-b1".to_string()),
+            "should not contain task-b1"
+        );
+        assert!(
+            !ids.contains(&"task-b2".to_string()),
+            "should not contain task-b2"
+        );
+        assert!(
+            !ids.contains(&"task-g1".to_string()),
+            "should not contain task-g1"
+        );
+        assert!(
+            !ids.contains(&"task-orphan".to_string()),
+            "should not contain orphan"
+        );
     }
 
     #[test]
@@ -7597,20 +8022,36 @@ projects:
         let server = build_test_server();
         // With include_done=true, done tasks should appear
         let result = server
-            .handle_list_tasks(&json!({"project": "ProjectAlpha", "include_done": true, "format": "json"}))
+            .handle_list_tasks(
+                &json!({"project": "ProjectAlpha", "include_done": true, "format": "json"}),
+            )
             .unwrap();
         let ids = extract_task_ids(&result);
-        assert!(ids.contains(&"task-a1".to_string()), "should contain task-a1");
-        assert!(ids.contains(&"task-a2".to_string()), "should contain task-a2");
-        assert!(ids.contains(&"task-a3".to_string()), "done task-a3 should appear with include_done=true");
-        assert!(ids.contains(&"task-a4".to_string()), "archived task-a4 should appear with include_done=true");
+        assert!(
+            ids.contains(&"task-a1".to_string()),
+            "should contain task-a1"
+        );
+        assert!(
+            ids.contains(&"task-a2".to_string()),
+            "should contain task-a2"
+        );
+        assert!(
+            ids.contains(&"task-a3".to_string()),
+            "done task-a3 should appear with include_done=true"
+        );
+        assert!(
+            ids.contains(&"task-a4".to_string()),
+            "archived task-a4 should appear with include_done=true"
+        );
     }
 
     #[test]
     fn test_done_tasks_no_live_focus_score_urgency() {
         let server = build_test_server();
         let result = server
-            .handle_list_tasks(&json!({"project": "ProjectAlpha", "include_done": true, "format": "json"}))
+            .handle_list_tasks(
+                &json!({"project": "ProjectAlpha", "include_done": true, "format": "json"}),
+            )
             .unwrap();
 
         let text = result
@@ -7623,11 +8064,22 @@ projects:
         let tasks = parsed.get("tasks").unwrap().as_array().unwrap();
 
         // Find task-a3 (which is done)
-        let task_a3 = tasks.iter().find(|t| t.get("id").unwrap().as_str() == Some("task-a3")).unwrap();
+        let task_a3 = tasks
+            .iter()
+            .find(|t| t.get("id").unwrap().as_str() == Some("task-a3"))
+            .unwrap();
 
-        assert_eq!(task_a3.get("focus_score"), Some(&serde_json::Value::Null), "done task should have null focus_score");
+        assert_eq!(
+            task_a3.get("focus_score"),
+            Some(&serde_json::Value::Null),
+            "done task should have null focus_score"
+        );
         let signals = task_a3.get("signals").unwrap();
-        assert_eq!(signals.get("urgency").unwrap().as_f64(), Some(0.0), "done task should have 0.0 urgency");
+        assert_eq!(
+            signals.get("urgency").unwrap().as_f64(),
+            Some(0.0),
+            "done task should have 0.0 urgency"
+        );
     }
 
     #[test]
@@ -7638,8 +8090,14 @@ projects:
             .handle_list_tasks(&json!({"status": "done", "format": "json"}))
             .unwrap();
         let ids = extract_task_ids(&result);
-        assert!(ids.contains(&"task-a3".to_string()), "explicit status=done should return done tasks");
-        assert!(!ids.contains(&"task-a1".to_string()), "active task should not appear in done filter");
+        assert!(
+            ids.contains(&"task-a3".to_string()),
+            "explicit status=done should return done tasks"
+        );
+        assert!(
+            !ids.contains(&"task-a1".to_string()),
+            "active task should not appear in done filter"
+        );
     }
 
     // ── AC2: case-insensitive matching ──
@@ -7735,9 +8193,15 @@ projects:
     fn test_list_tasks_project_filter_multiple_projects() {
         let server = build_test_server();
 
-        let alpha = server.handle_list_tasks(&json!({"project": "ProjectAlpha", "format": "json"})).unwrap();
-        let beta = server.handle_list_tasks(&json!({"project": "ProjectBeta", "format": "json"})).unwrap();
-        let gamma = server.handle_list_tasks(&json!({"project": "ProjectGamma", "format": "json"})).unwrap();
+        let alpha = server
+            .handle_list_tasks(&json!({"project": "ProjectAlpha", "format": "json"}))
+            .unwrap();
+        let beta = server
+            .handle_list_tasks(&json!({"project": "ProjectBeta", "format": "json"}))
+            .unwrap();
+        let gamma = server
+            .handle_list_tasks(&json!({"project": "ProjectGamma", "format": "json"}))
+            .unwrap();
 
         let alpha_ids = extract_task_ids(&alpha);
         let beta_ids = extract_task_ids(&beta);
@@ -7749,11 +8213,23 @@ projects:
 
         // Verify no overlap
         for id in &alpha_ids {
-            assert!(!beta_ids.contains(id), "alpha task {} should not be in beta", id);
-            assert!(!gamma_ids.contains(id), "alpha task {} should not be in gamma", id);
+            assert!(
+                !beta_ids.contains(id),
+                "alpha task {} should not be in beta",
+                id
+            );
+            assert!(
+                !gamma_ids.contains(id),
+                "alpha task {} should not be in gamma",
+                id
+            );
         }
         for id in &beta_ids {
-            assert!(!gamma_ids.contains(id), "beta task {} should not be in gamma", id);
+            assert!(
+                !gamma_ids.contains(id),
+                "beta task {} should not be in gamma",
+                id
+            );
         }
     }
 
@@ -7772,8 +8248,14 @@ projects:
             .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
             .collect::<String>();
         // Either empty JSON tasks array or "No tasks found" message
-        let is_empty = text.contains("No tasks found") || text.contains("\"tasks\":[]") || text.contains("\"tasks\": []");
-        assert!(is_empty, "non-existent project should return empty: {}", text);
+        let is_empty = text.contains("No tasks found")
+            || text.contains("\"tasks\":[]")
+            || text.contains("\"tasks\": []");
+        assert!(
+            is_empty,
+            "non-existent project should return empty: {}",
+            text
+        );
     }
 
     // ── partial status: live round-trip (create → release partial → list partial → appears) ──
@@ -7892,13 +8374,25 @@ projects:
                 "parent": "proj-alpha"
             }))
             .unwrap();
-        let target_text = res_target.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect::<String>();
+        let target_text = res_target
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
         let target_val: serde_json::Value = serde_json::from_str(&target_text).unwrap();
         let target_id = target_val.get("id").unwrap().as_str().unwrap().to_string();
 
         let get_target = server.handle_get_task(&json!({"id": target_id})).unwrap();
-        let get_target_text = get_target.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect::<String>();
-        assert!(get_target_text.contains("\"severity\": 3"), "Target node should retain severity. text: {}", get_target_text);
+        let get_target_text = get_target
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(
+            get_target_text.contains("\"severity\": 3"),
+            "Target node should retain severity. text: {}",
+            get_target_text
+        );
 
         // 2. Create a standard task with severity
         let res_task = server
@@ -7910,7 +8404,7 @@ projects:
                 "parent": "proj-alpha"
             }))
             .unwrap();
-        
+
         let mut has_warning = false;
         let mut task_json_text = String::new();
         for c in &res_task.content {
@@ -7922,13 +8416,23 @@ projects:
                 }
             }
         }
-        assert!(has_warning, "Standard task should return a warning about severity coercion");
-        
+        assert!(
+            has_warning,
+            "Standard task should return a warning about severity coercion"
+        );
+
         let task_val: serde_json::Value = serde_json::from_str(&task_json_text).unwrap();
         let task_id = task_val.get("id").unwrap().as_str().unwrap().to_string();
         let get_task = server.handle_get_task(&json!({"id": task_id})).unwrap();
-        let get_task_text = get_task.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect::<String>();
-        assert!(!get_task_text.contains("\"severity\": 3"), "Standard task should coerce severity to 0 or null");
+        let get_task_text = get_task
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(
+            !get_task_text.contains("\"severity\": 3"),
+            "Standard task should coerce severity to 0 or null"
+        );
     }
 
     #[test]
@@ -7945,7 +8449,7 @@ projects:
                 "parent": "proj-alpha"
             }))
             .unwrap();
-            
+
         let mut parent_id = String::new();
         for c in &parent_res.content {
             if let Some(t) = c.raw.as_text() {
@@ -7976,11 +8480,18 @@ projects:
             }))
             .unwrap();
 
-        let res_text = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect::<String>();
-        assert!(res_text.contains("severity ignored for one or more non-target nodes"), "Should have warning");
+        let res_text = res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(
+            res_text.contains("severity ignored for one or more non-target nodes"),
+            "Should have warning"
+        );
 
         let graph = server.graph.read();
-        
+
         let target_node = graph.resolve("Subtask Target Sev").unwrap();
         assert_eq!(target_node.severity, Some(3));
 
@@ -8045,8 +8556,7 @@ projects:
             .expect_err("self-parent should be rejected");
         let msg = format!("{}", err.message);
         assert!(
-            msg.to_lowercase().contains("cycle")
-                || msg.to_lowercase().contains("own parent"),
+            msg.to_lowercase().contains("cycle") || msg.to_lowercase().contains("own parent"),
             "error should mention cycle/own-parent, got: {msg}"
         );
     }
@@ -8064,8 +8574,7 @@ projects:
             .expect_err("descendant parent should be rejected");
         let msg = format!("{}", err.message);
         assert!(
-            msg.to_lowercase().contains("cycle")
-                || msg.to_lowercase().contains("circular"),
+            msg.to_lowercase().contains("cycle") || msg.to_lowercase().contains("circular"),
             "error should mention cycle/circular, got: {msg}"
         );
     }
@@ -8114,11 +8623,23 @@ projects:
             .expect("unparent=true should succeed");
 
         let content = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
-        assert!(!content.contains("parent:"), "parent key must be gone, got:\n{content}");
-        assert!(!content.contains("unparent"), "unparent must never be persisted, got:\n{content}");
+        assert!(
+            !content.contains("parent:"),
+            "parent key must be gone, got:\n{content}"
+        );
+        assert!(
+            !content.contains("unparent"),
+            "unparent must never be persisted, got:\n{content}"
+        );
         // Round-trip: the rest of the frontmatter survives.
-        assert!(content.contains("id: task-child"), "id preserved:\n{content}");
-        assert!(content.contains("title: Child"), "title preserved:\n{content}");
+        assert!(
+            content.contains("id: task-child"),
+            "id preserved:\n{content}"
+        );
+        assert!(
+            content.contains("title: Child"),
+            "title preserved:\n{content}"
+        );
         assert!(content.contains("type: task"), "type preserved:\n{content}");
     }
 
@@ -8136,9 +8657,18 @@ projects:
             .expect("nested unparent should succeed");
 
         let content = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
-        assert!(!content.contains("parent:"), "parent key must be gone, got:\n{content}");
-        assert!(!content.contains("unparent"), "unparent must never be persisted, got:\n{content}");
-        assert!(content.contains("id: task-child"), "id preserved:\n{content}");
+        assert!(
+            !content.contains("parent:"),
+            "parent key must be gone, got:\n{content}"
+        );
+        assert!(
+            !content.contains("unparent"),
+            "unparent must never be persisted, got:\n{content}"
+        );
+        assert!(
+            content.contains("id: task-child"),
+            "id preserved:\n{content}"
+        );
     }
 
     #[test]
@@ -8251,7 +8781,14 @@ projects:
                 .get("signals")
                 .and_then(|s| s.as_object())
                 .expect("signals must be a top-level object");
-            for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty", "voi_value"] {
+            for key in &[
+                "criticality",
+                "urgency",
+                "downstream_weight",
+                "scope",
+                "uncertainty",
+                "voi_value",
+            ] {
                 assert!(
                     signals.contains_key(*key),
                     "signals.{key} must exist under signals, not at top level"
@@ -8327,7 +8864,14 @@ projects:
             .get("signals")
             .and_then(|s| s.as_object())
             .expect("signals must be a top-level object in get_task response");
-        for key in &["criticality", "urgency", "downstream_weight", "scope", "uncertainty", "voi_value"] {
+        for key in &[
+            "criticality",
+            "urgency",
+            "downstream_weight",
+            "scope",
+            "uncertainty",
+            "voi_value",
+        ] {
             assert!(
                 signals.contains_key(*key),
                 "signals.{key} must exist under signals in get_task response"
@@ -8341,12 +8885,7 @@ projects:
 
     // ── Tag filtering ──
 
-    fn make_doc_with_tags(
-        path: &str,
-        title: &str,
-        id: &str,
-        tags: &[&str],
-    ) -> PkbDocument {
+    fn make_doc_with_tags(path: &str, title: &str, id: &str, tags: &[&str]) -> PkbDocument {
         let mut fm = serde_json::Map::new();
         fm.insert("title".to_string(), json!(title));
         fm.insert("type".to_string(), json!("task"));
@@ -8371,9 +8910,24 @@ projects:
 
     fn build_tag_test_server() -> PkbSearchServer {
         let docs = vec![
-            make_doc_with_tags("tasks/t-overwhelm.md", "Overwhelm task", "t-overwhelm", &["overwhelm", "rust"]),
-            make_doc_with_tags("tasks/t-overwhelm-only.md", "Overwhelm only", "t-overwhelm-only", &["overwhelm"]),
-            make_doc_with_tags("tasks/t-rust-only.md", "Rust only", "t-rust-only", &["rust"]),
+            make_doc_with_tags(
+                "tasks/t-overwhelm.md",
+                "Overwhelm task",
+                "t-overwhelm",
+                &["overwhelm", "rust"],
+            ),
+            make_doc_with_tags(
+                "tasks/t-overwhelm-only.md",
+                "Overwhelm only",
+                "t-overwhelm-only",
+                &["overwhelm"],
+            ),
+            make_doc_with_tags(
+                "tasks/t-rust-only.md",
+                "Rust only",
+                "t-rust-only",
+                &["rust"],
+            ),
             make_doc_with_tags("tasks/t-untagged.md", "Untagged task", "t-untagged", &[]),
             make_doc_with_tags("tasks/t-other.md", "Other task", "t-other", &["misc"]),
         ];
@@ -8479,7 +9033,10 @@ projects:
             .and_then(|t| t.as_array())
             .cloned()
             .unwrap_or_default();
-        assert!(!unfiltered_tasks.is_empty(), "fixture should have ready tasks");
+        assert!(
+            !unfiltered_tasks.is_empty(),
+            "fixture should have ready tasks"
+        );
 
         let filtered = server
             .handle_list_tasks(&json!({
@@ -8602,7 +9159,8 @@ projects:
         let embedder = Embedder::new_dummy();
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("mem-dated-pkb-{}-{}", std::process::id(), seq));
+        let root =
+            std::env::temp_dir().join(format!("mem-dated-pkb-{}-{}", std::process::id(), seq));
         let _ = std::fs::create_dir_all(&root);
         let db = root.join("db");
         PkbSearchServer::new(
@@ -8621,7 +9179,9 @@ projects:
         // More strictly: before=2018-01-01 must return zero (all tasks are after 2018).
         let server = build_dated_task_server();
         let result = server
-            .handle_list_tasks(&json!({"before": "2018-01-01", "include_done": true, "format": "json"}))
+            .handle_list_tasks(
+                &json!({"before": "2018-01-01", "include_done": true, "format": "json"}),
+            )
             .unwrap();
         let tasks = extract_task_objects(&result);
         assert!(
@@ -8636,7 +9196,9 @@ projects:
         // AC: since=2030-01-01 returns zero rows.
         let server = build_dated_task_server();
         let result = server
-            .handle_list_tasks(&json!({"since": "2030-01-01", "include_done": true, "format": "json"}))
+            .handle_list_tasks(
+                &json!({"since": "2030-01-01", "include_done": true, "format": "json"}),
+            )
             .unwrap();
         let tasks = extract_task_objects(&result);
         assert!(
@@ -8651,15 +9213,24 @@ projects:
         // AC: narrowing since/before yields strictly fewer results.
         let server = build_dated_task_server();
         let wide = extract_task_objects(
-            &server.handle_list_tasks(&json!({"since": "2000-01-01", "include_done": true, "format": "json"})).unwrap()
+            &server
+                .handle_list_tasks(
+                    &json!({"since": "2000-01-01", "include_done": true, "format": "json"}),
+                )
+                .unwrap(),
         );
         let narrow = extract_task_objects(
-            &server.handle_list_tasks(&json!({"since": "2025-01-01", "include_done": true, "format": "json"})).unwrap()
+            &server
+                .handle_list_tasks(
+                    &json!({"since": "2025-01-01", "include_done": true, "format": "json"}),
+                )
+                .unwrap(),
         );
         assert!(
             narrow.len() < wide.len(),
             "narrowing since must reduce results: wide={} narrow={}",
-            wide.len(), narrow.len()
+            wide.len(),
+            narrow.len()
         );
     }
 
@@ -8668,10 +9239,13 @@ projects:
         // Tasks without a modified date must be excluded when any date filter is set.
         let server = build_dated_task_server();
         let result = server
-            .handle_list_tasks(&json!({"since": "2000-01-01", "include_done": true, "format": "json"}))
+            .handle_list_tasks(
+                &json!({"since": "2000-01-01", "include_done": true, "format": "json"}),
+            )
             .unwrap();
         let tasks = extract_task_objects(&result);
-        let ids: Vec<_> = tasks.iter()
+        let ids: Vec<_> = tasks
+            .iter()
             .filter_map(|t| t.get("id").and_then(|v| v.as_str()))
             .collect();
         assert!(
@@ -8686,13 +9260,22 @@ projects:
         // After the fix, since=2030-01-01 returns zero and since=2000-01-01 returns some.
         let server = build_dated_task_server();
         let since_past = extract_task_objects(
-            &server.handle_list_tasks(&json!({"since": "2000-01-01", "include_done": true, "format": "json"})).unwrap()
+            &server
+                .handle_list_tasks(
+                    &json!({"since": "2000-01-01", "include_done": true, "format": "json"}),
+                )
+                .unwrap(),
         );
         let since_future = extract_task_objects(
-            &server.handle_list_tasks(&json!({"since": "2030-01-01", "include_done": true, "format": "json"})).unwrap()
+            &server
+                .handle_list_tasks(
+                    &json!({"since": "2030-01-01", "include_done": true, "format": "json"}),
+                )
+                .unwrap(),
         );
         assert!(
-            since_past.len() != since_future.len() || (since_past.is_empty() && since_future.is_empty()),
+            since_past.len() != since_future.len()
+                || (since_past.is_empty() && since_future.is_empty()),
             "since=2000 and since=2030 must not return identical non-empty row counts; \
              both returned {} rows (date filter is a no-op)",
             since_past.len()
@@ -8712,12 +9295,21 @@ projects:
     fn test_list_tasks_schema_includes_since_before() {
         let tools = PkbSearchServer::get_all_tools();
         let schema = serde_json::to_string(
-            &tools.iter().find(|t| t.name.as_ref() == "list_tasks")
+            &tools
+                .iter()
+                .find(|t| t.name.as_ref() == "list_tasks")
                 .expect("list_tasks tool should exist")
-                .input_schema
-        ).unwrap();
-        assert!(schema.contains("\"since\""), "list_tasks schema must include 'since'; got: {schema}");
-        assert!(schema.contains("\"before\""), "list_tasks schema must include 'before'; got: {schema}");
+                .input_schema,
+        )
+        .unwrap();
+        assert!(
+            schema.contains("\"since\""),
+            "list_tasks schema must include 'since'; got: {schema}"
+        );
+        assert!(
+            schema.contains("\"before\""),
+            "list_tasks schema must include 'before'; got: {schema}"
+        );
     }
 
     // ── Parent referential integrity (task-89b2af87) ───────────────────────
@@ -8825,7 +9417,8 @@ projects:
         );
         assert!(
             matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "should be INVALID_PARAMS, got: {:?}", err.code
+            "should be INVALID_PARAMS, got: {:?}",
+            err.code
         );
     }
 
@@ -8916,7 +9509,9 @@ projects:
                 "id": "old-parent",
                 "completion_evidence": "all children reparented"
             }))
-            .expect("complete_task(old-parent) must succeed after its only child was reparented out");
+            .expect(
+                "complete_task(old-parent) must succeed after its only child was reparented out",
+            );
     }
 
     // ── Mutation neighborhood (specs/mutation-neighborhood.md) ────────────────
@@ -8930,17 +9525,97 @@ projects:
         //          and task-e (active, also depends on s1 which is open → still blocked)
         let docs = vec![
             make_doc("e.md", "Epic X", "epic", "active", "epic-x", None, &[]),
-            make_doc("c.md", "Closed task", "task", "done", "task-c", Some("epic-x"), &[]),
-            make_doc("s1.md", "Sibling 1", "task", "active", "task-s1", Some("epic-x"), &[]),
-            make_doc("s2.md", "Sibling 2", "task", "active", "task-s2", Some("epic-x"), &[]),
-            make_doc("s3.md", "Sibling 3", "task", "active", "task-s3", Some("epic-x"), &[]),
-            make_doc("s4.md", "Sibling 4", "task", "active", "task-s4", Some("epic-x"), &[]),
-            make_doc("sa.md", "Archived sib", "task", "archived", "task-sa", Some("epic-x"), &[]),
-            make_doc("sd.md", "Done sib", "task", "done", "task-sd", Some("epic-x"), &[]),
-            make_doc("d.md", "Dependent D", "task", "active", "task-d", None, &["task-c"]),
-            make_doc("ee.md", "Dependent E", "task", "active", "task-e", None, &["task-c", "task-s1"]),
+            make_doc(
+                "c.md",
+                "Closed task",
+                "task",
+                "done",
+                "task-c",
+                Some("epic-x"),
+                &[],
+            ),
+            make_doc(
+                "s1.md",
+                "Sibling 1",
+                "task",
+                "active",
+                "task-s1",
+                Some("epic-x"),
+                &[],
+            ),
+            make_doc(
+                "s2.md",
+                "Sibling 2",
+                "task",
+                "active",
+                "task-s2",
+                Some("epic-x"),
+                &[],
+            ),
+            make_doc(
+                "s3.md",
+                "Sibling 3",
+                "task",
+                "active",
+                "task-s3",
+                Some("epic-x"),
+                &[],
+            ),
+            make_doc(
+                "s4.md",
+                "Sibling 4",
+                "task",
+                "active",
+                "task-s4",
+                Some("epic-x"),
+                &[],
+            ),
+            make_doc(
+                "sa.md",
+                "Archived sib",
+                "task",
+                "archived",
+                "task-sa",
+                Some("epic-x"),
+                &[],
+            ),
+            make_doc(
+                "sd.md",
+                "Done sib",
+                "task",
+                "done",
+                "task-sd",
+                Some("epic-x"),
+                &[],
+            ),
+            make_doc(
+                "d.md",
+                "Dependent D",
+                "task",
+                "active",
+                "task-d",
+                None,
+                &["task-c"],
+            ),
+            make_doc(
+                "ee.md",
+                "Dependent E",
+                "task",
+                "active",
+                "task-e",
+                None,
+                &["task-c", "task-s1"],
+            ),
             // A bare leaf with no parent and no dependents.
-            make_doc("lone.md", "Lone leaf", "task", "done", "task-lone", None, &[]),
+            make_doc(
+                "lone.md",
+                "Lone leaf",
+                "task",
+                "done",
+                "task-lone",
+                None,
+                &[],
+            ),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-nbhd"));
 
@@ -8967,29 +9642,47 @@ projects:
             .iter()
             .map(|o| o["id"].as_str().unwrap())
             .collect();
-        assert!(unblocked.contains(&"task-d"), "task-d must be unblocked: {n}");
+        assert!(
+            unblocked.contains(&"task-d"),
+            "task-d must be unblocked: {n}"
+        );
         assert!(
             !unblocked.contains(&"task-e"),
             "task-e is still blocked by open task-s1 and must NOT appear: {n}"
         );
 
         // task-c has no open children and no cascade → children omitted.
-        assert!(n.get("children").is_none(), "children must be omitted for a clean close: {n}");
+        assert!(
+            n.get("children").is_none(),
+            "children must be omitted for a clean close: {n}"
+        );
 
         // Omit-when-empty: a lone leaf returns null.
         let empty = PkbSearchServer::build_mutation_neighborhood(&graph, "task-lone", 0);
-        assert!(empty.is_null(), "lone leaf must yield null neighborhood: {empty}");
+        assert!(
+            empty.is_null(),
+            "lone leaf must yield null neighborhood: {empty}"
+        );
     }
 
     #[test]
     fn test_mutation_neighborhood_cascade_count() {
         // A recursive close reports closed_by_cascade and omits parent when none.
-        let docs = vec![
-            make_doc("p.md", "Parent task", "task", "done", "task-p", None, &[]),
-        ];
+        let docs = vec![make_doc(
+            "p.md",
+            "Parent task",
+            "task",
+            "done",
+            "task-p",
+            None,
+            &[],
+        )];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-nbhd2"));
         let n = PkbSearchServer::build_mutation_neighborhood(&graph, "task-p", 3);
-        assert_eq!(n["children"]["closed_by_cascade"], 3, "cascade count surfaced: {n}");
+        assert_eq!(
+            n["children"]["closed_by_cascade"], 3,
+            "cascade count surfaced: {n}"
+        );
         assert!(n.get("parent").is_none(), "no parent → parent omitted: {n}");
     }
 
@@ -9020,7 +9713,10 @@ projects:
 
         assert_eq!(v["ok"], true, "envelope ok flag: {v}");
         assert_eq!(v["status"], "done", "status: {v}");
-        assert_eq!(v["neighborhood"]["parent"]["id"], "epic-z", "parent surfaced: {v}");
+        assert_eq!(
+            v["neighborhood"]["parent"]["id"], "epic-z",
+            "parent surfaced: {v}"
+        );
         let unblocked: Vec<&str> = v["neighborhood"]["unblocked"]
             .as_array()
             .map(|a| a.iter().filter_map(|o| o["id"].as_str()).collect())
@@ -9050,7 +9746,8 @@ projects:
         );
         assert!(
             matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "should be INVALID_PARAMS, got: {:?}", err.code
+            "should be INVALID_PARAMS, got: {:?}",
+            err.code
         );
     }
 
@@ -9072,7 +9769,8 @@ projects:
         );
         assert!(
             matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "should be INVALID_PARAMS, got: {:?}", err.code
+            "should be INVALID_PARAMS, got: {:?}",
+            err.code
         );
     }
 
@@ -9195,10 +9893,14 @@ mod annotation_tests {
             // Note: Creation tools (create_*) don't require read_only or destructive hints
             // but they still need a title.
             let annotations = tool.annotations.as_ref();
-            let is_creation = tool.name.starts_with("create") || tool.name.contains("decompose") || tool.name.contains("create_epics");
+            let is_creation = tool.name.starts_with("create")
+                || tool.name.contains("decompose")
+                || tool.name.contains("create_epics");
 
             if !is_creation {
-                let has_hint = annotations.map(|a| a.read_only_hint.is_some() || a.destructive_hint.is_some()).unwrap_or(false);
+                let has_hint = annotations
+                    .map(|a| a.read_only_hint.is_some() || a.destructive_hint.is_some())
+                    .unwrap_or(false);
                 // Some tools like 'append', 'complete_task', 'release_task' are writes but NOT destructive nor read-only.
                 // The requirement says "read-only OR destructive OR neither explicitly".
                 // I'll check that if it's NOT one of those known write tools, it should probably have a hint.
@@ -9341,16 +10043,26 @@ mod batch_finalize_tests {
         let pre: std::collections::HashMap<String, Option<String>> = {
             let s = server.store.read();
             s.documents()
-                .filter_map(|(_path, e)| if !e.id.is_empty() { Some((e.id.clone(), e.status.clone())) } else { None })
+                .filter_map(|(_path, e)| {
+                    if !e.id.is_empty() {
+                        Some((e.id.clone(), e.status.clone()))
+                    } else {
+                        None
+                    }
+                })
                 .collect()
         };
         let task_ids: Vec<String> = pre
             .iter()
             .filter(|(_, status)| status.as_deref() == Some("ready"))
-            .filter(|(id, _)| id.starts_with("test-project-"))
+            .filter(|(id, _)| id.starts_with("test_project_"))
             .map(|(id, _)| id.clone())
             .collect();
-        assert_eq!(task_ids.len(), 3, "expected 3 ready task entries; got {pre:?}");
+        assert_eq!(
+            task_ids.len(),
+            3,
+            "expected 3 ready task entries; got {pre:?}"
+        );
 
         // Run a batch update that flips status to "blocked".
         let args = json!({
@@ -9364,13 +10076,22 @@ mod batch_finalize_tests {
             .iter()
             .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
             .collect::<String>();
-        assert!(text.contains("\"changed\": 3"), "expected 3 changes; got: {text}");
+        assert!(
+            text.contains("\"changed\": 3"),
+            "expected 3 changes; got: {text}"
+        );
 
         // The fix: store entries should reflect the new status.
         let post: std::collections::HashMap<String, Option<String>> = {
             let s = server.store.read();
             s.documents()
-                .filter_map(|(_path, e)| if !e.id.is_empty() { Some((e.id.clone(), e.status.clone())) } else { None })
+                .filter_map(|(_path, e)| {
+                    if !e.id.is_empty() {
+                        Some((e.id.clone(), e.status.clone()))
+                    } else {
+                        None
+                    }
+                })
                 .collect()
         };
         for id in &task_ids {
@@ -9418,9 +10139,14 @@ mod batch_finalize_tests {
             .iter()
             .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
             .collect::<String>();
-        assert!(text.contains("Pass dry_run=false to execute"), "expected dry-run warning in: {text}");
-        assert!(text.contains("\"dry_run\": true"), "expected dry_run: true in JSON: {text}");
-
+        assert!(
+            text.contains("Pass dry_run=false to execute"),
+            "expected dry-run warning in: {text}"
+        );
+        assert!(
+            text.contains("\"dry_run\": true"),
+            "expected dry_run: true in JSON: {text}"
+        );
 
         // Run merge_node as dry-run
         let merge_args = json!({
@@ -9434,7 +10160,10 @@ mod batch_finalize_tests {
             .iter()
             .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
             .collect::<String>();
-        assert!(merge_text.contains("Pass dry_run=false to execute"), "expected dry-run warning in: {merge_text}");
+        assert!(
+            merge_text.contains("Pass dry_run=false to execute"),
+            "expected dry-run warning in: {merge_text}"
+        );
     }
 }
 
@@ -9492,7 +10221,10 @@ mod cross_process_recovery_tests {
         let _ = result;
 
         let initial_count = server.store.read().len();
-        assert!(initial_count >= 1, "store should have entries after first create");
+        assert!(
+            initial_count >= 1,
+            "store should have entries after first create"
+        );
 
         // Simulate `pkb reindex` running in another process: hold the
         // advisory file lock exclusively from a background thread so the
@@ -9603,8 +10335,14 @@ mod search_status_projection_tests {
 
         // Create searchable tasks (non-empty body so they get chunk embeddings).
         for (title, body) in [
-            ("Alpha widget task", "This task is about the alpha widget subsystem and retrieval."),
-            ("Beta widget task", "This task concerns the beta widget subsystem and retrieval."),
+            (
+                "Alpha widget task",
+                "This task is about the alpha widget subsystem and retrieval.",
+            ),
+            (
+                "Beta widget task",
+                "This task concerns the beta widget subsystem and retrieval.",
+            ),
         ] {
             server
                 .handle_create_task(&serde_json::json!({
@@ -9643,7 +10381,10 @@ mod search_status_projection_tests {
         // Every hit heading is followed by a Status line in the default projection.
         let hit_count = text.matches("**ID:**").count();
         let status_count = text.matches("**Status:**").count();
-        assert!(hit_count >= 1, "expected at least one hit, got text: {text}");
+        assert!(
+            hit_count >= 1,
+            "expected at least one hit, got text: {text}"
+        );
         assert_eq!(
             status_count, hit_count,
             "every task_search hit must project status (hits={hit_count}, status lines={status_count}). Text:\n{text}"
@@ -9777,7 +10518,9 @@ mod tier_rebuild_tests {
         // Test title_contains filter
         let ids = task_ids_from(
             &server
-                .handle_list_tasks(&json!({"title_contains": "LLB242", "type": "target", "format": "json"}))
+                .handle_list_tasks(
+                    &json!({"title_contains": "LLB242", "type": "target", "format": "json"}),
+                )
                 .unwrap(),
         );
         assert!(ids.contains(&"target-1".to_string()));
@@ -9876,20 +10619,12 @@ mod tier_rebuild_tests {
             make_task_doc("task-y", "ready", 2, &[]),
         ];
         let server = build_server(docs);
-        let sim_before = server
-            .graph
-            .read()
-            .similarity_edges_cloned()
-            .len();
+        let sim_before = server.graph.read().similarity_edges_cloned().len();
 
         let updated = make_task_doc("task-x", "blocked", 1, &[]);
         server.rebuild_graph_for_pkb_document(&updated);
 
-        let sim_after = server
-            .graph
-            .read()
-            .similarity_edges_cloned()
-            .len();
+        let sim_after = server.graph.read().similarity_edges_cloned().len();
         assert_eq!(
             sim_before, sim_after,
             "Tier-1 must not change similarity-edge count; before={} after={}",
@@ -10199,14 +10934,23 @@ tags:
             instance_files.len(),
             1,
             "exactly one instance file should exist; found: {:?}",
-            instance_files.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+            instance_files
+                .iter()
+                .map(|e| e.file_name())
+                .collect::<Vec<_>>()
         );
 
         // Instance must be type: task, not type: template
         let instance_path = instance_files[0].path();
         let content = std::fs::read_to_string(&instance_path).unwrap();
-        assert!(content.contains("type: task"), "instance must be type: task");
-        assert!(content.contains("status: in_progress"), "instance must start as in_progress");
+        assert!(
+            content.contains("type: task"),
+            "instance must be type: task"
+        );
+        assert!(
+            content.contains("status: in_progress"),
+            "instance must start as in_progress"
+        );
         assert!(
             content.contains("template_id: \"daily-template\""),
             "instance must reference the template"
@@ -10299,7 +11043,9 @@ tags:
 
         // The task should exist and be parented under a session epic (not the adhoc root directly)
         let graph = server.graph.read();
-        let node = graph.resolve(&task_id).expect("created task should be in graph");
+        let node = graph
+            .resolve(&task_id)
+            .expect("created task should be in graph");
         let parent = node.parent.as_deref().unwrap_or("");
 
         // Parent must NOT be the flat adhoc-sessions root — it must be a session epic
@@ -10310,12 +11056,14 @@ tags:
         );
         // Parent ID should follow the adhoc-{md5[..8]} pattern
         assert!(
-            parent.starts_with("adhoc-"),
-            "session epic parent should have adhoc- prefix; parent={parent}"
+            parent.starts_with("adhoc_"),
+            "session epic parent should have adhoc_ prefix; parent={parent}"
         );
 
         // The session epic itself should exist in the graph as type: epic
-        let epic_node = graph.resolve(parent).expect("session epic should be in graph");
+        let epic_node = graph
+            .resolve(parent)
+            .expect("session epic should be in graph");
         assert_eq!(
             epic_node.node_type.as_deref(),
             Some("epic"),
@@ -10366,17 +11114,45 @@ tags:
             .unwrap();
 
         let id1: String = {
-            let t: String = r1.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
-            serde_json::from_str::<serde_json::Value>(&t).unwrap().get("id").and_then(|v| v.as_str()).unwrap().to_string()
+            let t: String = r1
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
+            serde_json::from_str::<serde_json::Value>(&t)
+                .unwrap()
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap()
+                .to_string()
         };
         let id2: String = {
-            let t: String = r2.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
-            serde_json::from_str::<serde_json::Value>(&t).unwrap().get("id").and_then(|v| v.as_str()).unwrap().to_string()
+            let t: String = r2
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
+            serde_json::from_str::<serde_json::Value>(&t)
+                .unwrap()
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap()
+                .to_string()
         };
 
         let graph = server.graph.read();
-        let parent1 = graph.resolve(&id1).unwrap().parent.clone().unwrap_or_default();
-        let parent2 = graph.resolve(&id2).unwrap().parent.clone().unwrap_or_default();
+        let parent1 = graph
+            .resolve(&id1)
+            .unwrap()
+            .parent
+            .clone()
+            .unwrap_or_default();
+        let parent2 = graph
+            .resolve(&id2)
+            .unwrap()
+            .parent
+            .clone()
+            .unwrap_or_default();
 
         // Both tasks must share the same session epic
         assert_eq!(
@@ -10390,7 +11166,7 @@ tags:
             .nodes()
             .filter(|n| {
                 n.node_type.as_deref() == Some("epic")
-                    && n.id.starts_with("adhoc-")
+                    && n.id.starts_with("adhoc_")
                     && n.id != crate::document_crud::ADHOC_SESSIONS_ROOT_ID
             })
             .count();
@@ -10426,7 +11202,11 @@ tags:
             }))
             .unwrap();
 
-        let text: String = result.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+        let text: String = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
         let task_id: String = serde_json::from_str::<serde_json::Value>(&text)
             .unwrap()
             .get("id")
@@ -10435,7 +11215,12 @@ tags:
             .to_string();
 
         let graph = server.graph.read();
-        let parent = graph.resolve(&task_id).unwrap().parent.clone().unwrap_or_default();
+        let parent = graph
+            .resolve(&task_id)
+            .unwrap()
+            .parent
+            .clone()
+            .unwrap_or_default();
         assert_eq!(
             parent,
             crate::document_crud::ADHOC_SESSIONS_ROOT_ID,

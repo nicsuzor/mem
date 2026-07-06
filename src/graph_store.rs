@@ -112,7 +112,11 @@ impl GraphStore {
     /// drops the lock, and proceeds. Prefer
     /// [`Self::build_with_embeddings`] from MCP-server hot paths so the
     /// caller can hold the read lock as briefly as possible.
-    pub fn build_with_store(docs: &[PkbDocument], pkb_root: &Path, store: &crate::vectordb::VectorStore) -> Self {
+    pub fn build_with_store(
+        docs: &[PkbDocument],
+        pkb_root: &Path,
+        store: &crate::vectordb::VectorStore,
+    ) -> Self {
         let snapshot = store.averaged_embeddings();
         Self::build_with_embeddings(docs, pkb_root, &snapshot)
     }
@@ -268,15 +272,33 @@ impl GraphStore {
         // then creates minimal virtual nodes for them.
         let mut referenced_ids = HashSet::with_capacity(nodes.len() * 2);
         for n in &nodes {
-            if let Some(ref p) = n.parent { referenced_ids.insert(p.clone()); }
-            for c in &n.closes { referenced_ids.insert(c.clone()); }
-            for ct in &n.contributes_to { referenced_ids.insert(ct.to.clone()); }
-            for d in &n.depends_on { referenced_ids.insert(d.clone()); }
-            for sd in &n.soft_depends_on { referenced_ids.insert(sd.clone()); }
-            for b in &n.blocks { referenced_ids.insert(b.clone()); }
-            for sb in &n.soft_blocks { referenced_ids.insert(sb.clone()); }
-            for child in &n.children { referenced_ids.insert(child.clone()); }
-            for follow in &n.follow_up_tasks { referenced_ids.insert(follow.clone()); }
+            if let Some(ref p) = n.parent {
+                referenced_ids.insert(p.clone());
+            }
+            for c in &n.closes {
+                referenced_ids.insert(c.clone());
+            }
+            for ct in &n.contributes_to {
+                referenced_ids.insert(ct.to.clone());
+            }
+            for d in &n.depends_on {
+                referenced_ids.insert(d.clone());
+            }
+            for sd in &n.soft_depends_on {
+                referenced_ids.insert(sd.clone());
+            }
+            for b in &n.blocks {
+                referenced_ids.insert(b.clone());
+            }
+            for sb in &n.soft_blocks {
+                referenced_ids.insert(sb.clone());
+            }
+            for child in &n.children {
+                referenced_ids.insert(child.clone());
+            }
+            for follow in &n.follow_up_tasks {
+                referenced_ids.insert(follow.clone());
+            }
         }
 
         let mut ghost_nodes = Vec::with_capacity(referenced_ids.len() / 4);
@@ -299,7 +321,7 @@ impl GraphStore {
                     // Legacy prefix — project is no longer a node type.
                     ghost.node_type = Some("epic".to_string());
                 }
-                
+
                 let virtual_path = format!("/virtual/{}", ref_id);
                 path_to_id.insert(virtual_path.clone(), ref_id.clone());
                 id_map.insert(lower, virtual_path);
@@ -516,8 +538,7 @@ impl GraphStore {
         let abs = node.canonical_abs_path.clone();
         if let Some(ref new_path) = abs {
             self.nodes.retain(|_id, existing| {
-                existing.canonical_abs_path.as_ref() != Some(new_path)
-                    || existing.id == node.id
+                existing.canonical_abs_path.as_ref() != Some(new_path) || existing.id == node.id
             });
         }
         self.nodes.insert(node.id.clone(), node);
@@ -616,7 +637,9 @@ impl GraphStore {
         // immediately consistent with what `get_task` reports.
         let new_parent_id = new_node.parent.clone();
         let reparented = old_parent_id != new_parent_id;
-        let renamed = old_node_id.as_ref().map_or(false, |old_id| old_id != &new_node.id);
+        let renamed = old_node_id
+            .as_ref()
+            .map_or(false, |old_id| old_id != &new_node.id);
 
         if reparented || renamed {
             if let Some(ref old_pid) = old_parent_id {
@@ -650,8 +673,7 @@ impl GraphStore {
         // renames where the same file changes its frontmatter id).
         if let Some(ref new_path) = new_node.canonical_abs_path {
             self.nodes.retain(|_id, existing| {
-                existing.canonical_abs_path.as_ref() != Some(new_path)
-                    || existing.id == new_node.id
+                existing.canonical_abs_path.as_ref() != Some(new_path) || existing.id == new_node.id
             });
         }
 
@@ -671,13 +693,11 @@ impl GraphStore {
                 .insert(stem.to_string_lossy().to_lowercase(), new_node.id.clone());
         }
         for pl in &new_node.permalinks {
-            self.resolution_map
-                .insert(pl.clone(), new_node.id.clone());
+            self.resolution_map.insert(pl.clone(), new_node.id.clone());
         }
         let label_lower = new_node.label.to_lowercase();
         if !label_lower.is_empty() {
-            self.resolution_map
-                .insert(label_lower, new_node.id.clone());
+            self.resolution_map.insert(label_lower, new_node.id.clone());
         }
 
         self.nodes.insert(new_node.id.clone(), new_node);
@@ -799,16 +819,8 @@ impl GraphStore {
             b.urgency
                 .partial_cmp(&a.urgency)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then(
-                    b.severity
-                        .unwrap_or(0)
-                        .cmp(&a.severity.unwrap_or(0))
-                )
-                .then(
-                    a.priority
-                        .unwrap_or(2)
-                        .cmp(&b.priority.unwrap_or(2))
-                )
+                .then(b.severity.unwrap_or(0).cmp(&a.severity.unwrap_or(0)))
+                .then(a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2)))
                 .then(
                     b.downstream_weight
                         .partial_cmp(&a.downstream_weight)
@@ -1419,10 +1431,7 @@ impl GraphStore {
             }
             match self.nodes.get(&current).and_then(|n| n.parent.clone()) {
                 Some(next) => {
-                    let resolved = self
-                        .resolve(&next)
-                        .map(|n| n.id.clone())
-                        .unwrap_or(next);
+                    let resolved = self.resolve(&next).map(|n| n.id.clone()).unwrap_or(next);
                     current = resolved;
                 }
                 None => return Ok(()),
@@ -1526,9 +1535,10 @@ impl GraphStore {
             };
             if let Some(ref due) = node.due {
                 let len = std::cmp::min(10, due.len());
-                if let Ok(due_date) =
-                    chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
-                {
+                if let Ok(due_date) = chrono::NaiveDate::parse_from_str(
+                    &due[..due.floor_char_boundary(len)],
+                    "%Y-%m-%d",
+                ) {
                     let days_until = (due_date - today).num_days();
                     let effort_days = node
                         .effort
@@ -1563,9 +1573,10 @@ impl GraphStore {
             if pri >= 2 {
                 if let Some(ref created) = node.created {
                     if created.len() >= 10 {
-                        if let Ok(created_dt) =
-                            chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d")
-                        {
+                        if let Ok(created_dt) = chrono::NaiveDate::parse_from_str(
+                            &created[..created.floor_char_boundary(10)],
+                            "%Y-%m-%d",
+                        ) {
                             let days = (today - created_dt).num_days();
                             score += std::cmp::min(days.max(0), 200);
                         }
@@ -1616,7 +1627,8 @@ impl GraphStore {
     /// Status-independent surfacing (spec §3.1): imminent deadlines (urgency >= 10000)
     /// appear regardless of status — in_progress and blocked tasks are included.
     pub fn focus_picks(&self, max: usize) -> Vec<String> {
-        let mut scored: Vec<(&GraphNode, i64)> = self.ready
+        let mut scored: Vec<(&GraphNode, i64)> = self
+            .ready
             .iter()
             .filter_map(|id| self.nodes.get(id))
             .map(|t| (t, t.focus_score.unwrap_or(0)))
@@ -1672,8 +1684,12 @@ impl GraphStore {
         // Only include nodes with explicit task_id (real tasks, not bare notes)
         nodes.retain(|n| n.task_id.is_some());
         let placed_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-        let edges: Vec<_> = self.edges.iter()
-            .filter(|e| placed_ids.contains(e.source.as_str()) && placed_ids.contains(e.target.as_str()))
+        let edges: Vec<_> = self
+            .edges
+            .iter()
+            .filter(|e| {
+                placed_ids.contains(e.source.as_str()) && placed_ids.contains(e.target.as_str())
+            })
             .cloned()
             .collect();
         let focus = self.focus_picks(50);
@@ -1777,7 +1793,6 @@ impl GraphStore {
         xml.push_str("  </graph>\n</graphml>\n");
         xml
     }
-
 }
 
 /// Recency signal (0.0 - 1.0) based on modification date.
@@ -2112,7 +2127,8 @@ fn compute_similarity_edges(
     }
 
     // Pre-build adjacency set for O(1) existence check
-    let mut explicit_adj: HashSet<(String, String)> = HashSet::with_capacity(existing_edges.len() * 2);
+    let mut explicit_adj: HashSet<(String, String)> =
+        HashSet::with_capacity(existing_edges.len() * 2);
     for e in existing_edges {
         explicit_adj.insert((e.source.clone(), e.target.clone()));
         explicit_adj.insert((e.target.clone(), e.source.clone()));
@@ -2377,7 +2393,12 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
     let mut base_weights = vec![0.0; nodes.len()];
     let mut has_due = vec![false; nodes.len()];
     for (i, n) in nodes.iter().enumerate() {
-        if !n.status.as_deref().map(|s| excluded.contains(s)).unwrap_or(true) {
+        if !n
+            .status
+            .as_deref()
+            .map(|s| excluded.contains(s))
+            .unwrap_or(true)
+        {
             let pw = match n.priority.unwrap_or(2) {
                 0 => 5.0,
                 1 => 3.0,
@@ -2457,7 +2478,13 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
 
             if depth < 20 {
                 for &(neighbor_idx, factor) in &adj[tid] {
-                    bfs_enqueue(neighbor_idx, depth + 1, edge_factor * factor, &mut visited, &mut queue);
+                    bfs_enqueue(
+                        neighbor_idx,
+                        depth + 1,
+                        edge_factor * factor,
+                        &mut visited,
+                        &mut queue,
+                    );
                 }
             }
         }
@@ -2511,14 +2538,16 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
         })
         .collect();
 
-    let priorities: Vec<i32> = nodes
-        .iter()
-        .map(|n| n.priority.unwrap_or(2))
-        .collect();
+    let priorities: Vec<i32> = nodes.iter().map(|n| n.priority.unwrap_or(2)).collect();
 
     let status_completed: Vec<bool> = nodes
         .iter()
-        .map(|n| n.status.as_deref().map(|s| excluded.contains(s)).unwrap_or(false))
+        .map(|n| {
+            n.status
+                .as_deref()
+                .map(|s| excluded.contains(s))
+                .unwrap_or(false)
+        })
         .collect();
 
     let num_nodes = nodes.len();
@@ -2709,10 +2738,9 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
         // Calculate slack if due date exists
         if let Some(ref due) = n.due {
             let len = std::cmp::min(10, due.len());
-            if let Ok(due_date) = chrono::NaiveDate::parse_from_str(
-                &due[..due.floor_char_boundary(len)],
-                "%Y-%m-%d",
-            ) {
+            if let Ok(due_date) =
+                chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+            {
                 let effort_days = n
                     .effort
                     .as_deref()
@@ -2808,16 +2836,16 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
         let slack = min_slacks[i];
         // f(Slack): piecewise-exponential with ε=0.001 floor (spec §3.1)
         let f_s = if slack > SAFE_HORIZON {
-            0.001  // negligible; beyond safe horizon
+            0.001 // negligible; beyond safe horizon
         } else if slack > 0.0 {
             (k * (SAFE_HORIZON - slack)).exp()
         } else {
-            1.0  // overdue or at deadline: unlock full S_lex (spec §3.1)
+            1.0 // overdue or at deadline: unlock full S_lex (spec §3.1)
         };
         // Apply committed SEV4 guard at final site too (spec §1.3):
         // overdue committed SEV4 stays at constant 10000, not unbounded.
-        let is_committed_sev4 = nodes[i].severity == Some(4)
-            && nodes[i].goal_type.as_deref() == Some("committed");
+        let is_committed_sev4 =
+            nodes[i].severity == Some(4) && nodes[i].goal_type.as_deref() == Some("committed");
         if is_committed_sev4 && slack <= 0.0 {
             nodes[i].urgency = 10000.0;
         } else {
@@ -2838,12 +2866,12 @@ fn compute_scope(nodes: &mut [GraphNode]) {
 
     let mut scopes = Vec::with_capacity(nodes.len());
     let mut visited = HashSet::new();
-    
+
     for node in nodes.iter() {
         visited.clear();
         scopes.push(count_descendants(&node.id, &children_map, &mut visited) as i32);
     }
-    
+
     for (node, scope) in nodes.iter_mut().zip(scopes) {
         node.scope = scope;
     }
@@ -2938,9 +2966,7 @@ fn compute_criticality(nodes: &mut [GraphNode]) {
     let raws: Vec<f64> = nodes
         .iter()
         .map(|n| {
-            n.downstream_weight
-                + n.pagerank * 10.0
-                + if n.stakeholder_exposure { 3.0 } else { 0.0 }
+            n.downstream_weight + n.pagerank * 10.0 + if n.stakeholder_exposure { 3.0 } else { 0.0 }
         })
         .collect();
 
@@ -2956,9 +2982,7 @@ fn compute_criticality(nodes: &mut [GraphNode]) {
 }
 
 /// Classify tasks into ready/blocked lists and compute roots.
-fn classify_tasks(
-    nodes: &HashMap<String, GraphNode>,
-) -> (Vec<String>, Vec<String>, Vec<String>) {
+fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<String>, Vec<String>) {
     let completed_ids: HashSet<String> = nodes
         .iter()
         .filter(|(_, n)| graph::is_completed(n.status.as_deref()))
@@ -3029,11 +3053,7 @@ fn classify_tasks(
         nb.urgency
             .partial_cmp(&na.urgency)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                nb.severity
-                    .unwrap_or(0)
-                    .cmp(&na.severity.unwrap_or(0))
-            )
+            .then(nb.severity.unwrap_or(0).cmp(&na.severity.unwrap_or(0)))
             .then(
                 na.effective_priority
                     .unwrap_or(2)
@@ -3386,13 +3406,21 @@ mod tests {
         // (a) modified today -> ~1.0
         let today = now - Duration::try_minutes(5).unwrap();
         let s_today = recency_signal(&today, &now);
-        assert!(s_today > 0.99 && s_today <= 1.0, "Today signal should be ~1.0, got {}", s_today);
+        assert!(
+            s_today > 0.99 && s_today <= 1.0,
+            "Today signal should be ~1.0, got {}",
+            s_today
+        );
 
         // (b) modified 30 days ago -> ~0.37 (exp(-1))
         let thirty_days_ago = now - Duration::try_days(30).unwrap();
         let s_30 = recency_signal(&thirty_days_ago, &now);
         let expected_30 = (-1.0f64).exp();
-        assert!((s_30 - expected_30).abs() < 0.0001, "30 days ago signal should be ~0.37, got {}", s_30);
+        assert!(
+            (s_30 - expected_30).abs() < 0.0001,
+            "30 days ago signal should be ~0.37, got {}",
+            s_30
+        );
 
         // (c) modified 90+ days ago -> 0.0
         let ninety_days_ago = now - Duration::try_days(90).unwrap();
@@ -3496,12 +3524,9 @@ mod tests {
             .resolve("linked-note")
             .expect("memory node should exist");
         assert!(
-            graph
-                .edges()
-                .iter()
-                .any(|e| e.source == linked.id
-                    && e.target == "epic-1"
-                    && e.edge_type == EdgeType::Link),
+            graph.edges().iter().any(|e| e.source == linked.id
+                && e.target == "epic-1"
+                && e.edge_type == EdgeType::Link),
             "body wikilink should produce a Link edge"
         );
 
@@ -3667,12 +3692,9 @@ mod tests {
 
         // Sanity: the contributes_to frontmatter produced a ContributesTo edge.
         assert!(
-            graph
-                .edges()
-                .iter()
-                .any(|e| e.source == "task-ct"
-                    && e.target == "goal-1"
-                    && e.edge_type == EdgeType::ContributesTo),
+            graph.edges().iter().any(|e| e.source == "task-ct"
+                && e.target == "goal-1"
+                && e.edge_type == EdgeType::ContributesTo),
             "contributes_to frontmatter should produce a ContributesTo edge"
         );
 
@@ -3743,7 +3765,14 @@ mod tests {
     ///   epic-p0 (P2) with child p0-task (P0, active)
     ///   unrelated (P3, active) -- standalone
     fn build_priority_test_graph() -> GraphStore {
-        let mut make_with_priority = |path: &str, title: &str, id: &str, priority: i32, status: &str, parent: Option<&str>, depends_on: &[&str]| -> PkbDocument {
+        let mut make_with_priority = |path: &str,
+                                      title: &str,
+                                      id: &str,
+                                      priority: i32,
+                                      status: &str,
+                                      parent: Option<&str>,
+                                      depends_on: &[&str]|
+         -> PkbDocument {
             let mut fm = serde_json::Map::new();
             fm.insert("title".to_string(), serde_json::json!(title));
             fm.insert("type".to_string(), serde_json::json!("task"));
@@ -3772,13 +3801,45 @@ mod tests {
 
         let docs = vec![
             // p0-task: P0, blocked by blocker
-            make_with_priority("tasks/p0-task.md", "P0 Task", "p0-task", 0, "active", Some("epic-p0"), &["blocker"]),
+            make_with_priority(
+                "tasks/p0-task.md",
+                "P0 Task",
+                "p0-task",
+                0,
+                "active",
+                Some("epic-p0"),
+                &["blocker"],
+            ),
             // blocker: P2, ready (no deps), blocks p0-task
-            make_with_priority("tasks/blocker.md", "Blocker Task", "blocker", 2, "active", None, &[]),
+            make_with_priority(
+                "tasks/blocker.md",
+                "Blocker Task",
+                "blocker",
+                2,
+                "active",
+                None,
+                &[],
+            ),
             // epic-p0: P2 epic, parent of p0-task
-            make_with_priority("tasks/epic-p0.md", "Epic P0", "epic-p0", 2, "active", None, &[]),
+            make_with_priority(
+                "tasks/epic-p0.md",
+                "Epic P0",
+                "epic-p0",
+                2,
+                "active",
+                None,
+                &[],
+            ),
             // unrelated: P3, no connections
-            make_with_priority("tasks/unrelated.md", "Unrelated Task", "unrelated", 3, "active", None, &[]),
+            make_with_priority(
+                "tasks/unrelated.md",
+                "Unrelated Task",
+                "unrelated",
+                3,
+                "active",
+                None,
+                &[],
+            ),
         ];
         GraphStore::build(&docs, std::path::Path::new("/tmp/test-priority-pkb"))
     }
@@ -3818,7 +3879,10 @@ mod tests {
             },
             GraphNode {
                 id: "blocker-both".to_string(),
-                blocks: vec!["target-in-progress".to_string(), "target-active".to_string()],
+                blocks: vec![
+                    "target-in-progress".to_string(),
+                    "target-active".to_string(),
+                ],
                 ..Default::default()
             },
         ];
@@ -3844,7 +3908,8 @@ mod tests {
         // blocker (P2) blocks p0-task (P0) → blocker's effective_priority should be 0
         let blocker = graph.resolve("blocker").expect("blocker not found");
         assert_eq!(
-            blocker.effective_priority, Some(0),
+            blocker.effective_priority,
+            Some(0),
             "blocker should inherit P0 from downstream p0-task"
         );
     }
@@ -3855,7 +3920,8 @@ mod tests {
         // epic-p0 (P2) is parent of p0-task (P0) → epic's effective_priority should be 0
         let epic = graph.resolve("epic-p0").expect("epic-p0 not found");
         assert_eq!(
-            epic.effective_priority, Some(0),
+            epic.effective_priority,
+            Some(0),
             "epic should inherit P0 from its child p0-task"
         );
     }
@@ -3865,7 +3931,8 @@ mod tests {
         let graph = build_priority_test_graph();
         let unrelated = graph.resolve("unrelated").expect("unrelated not found");
         assert_eq!(
-            unrelated.effective_priority, Some(3),
+            unrelated.effective_priority,
+            Some(3),
             "unrelated task should keep its own priority"
         );
     }
@@ -3979,7 +4046,6 @@ mod tests {
         assert!(!graph.ready.iter().any(|id| id == "task-a"));
     }
 
-
     // ── dependency_tree ──
 
     #[test]
@@ -4090,18 +4156,67 @@ mod tests {
         // With unified type system: only "task" is claimable; bug/feature/action
         // are now type=task with a classification field.
         let docs = vec![
-            make_doc("tasks/epic-1.md", "Lone Epic", "epic", "ready", "epic-1", None, &[]),
-            make_doc("tasks/proj-1.md", "Lone Project", "project", "ready", "proj-1", None, &[]),
-            make_doc("tasks/task-1.md", "Task One", "task", "ready", "task-1", None, &[]),
-            make_doc("tasks/task-2.md", "Task Two", "task", "ready", "task-2", None, &[]),
-            make_doc("tasks/learn-1.md", "Learn One", "learn", "ready", "learn-1", None, &[]),
+            make_doc(
+                "tasks/epic-1.md",
+                "Lone Epic",
+                "epic",
+                "ready",
+                "epic-1",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/proj-1.md",
+                "Lone Project",
+                "project",
+                "ready",
+                "proj-1",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/task-1.md",
+                "Task One",
+                "task",
+                "ready",
+                "task-1",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/task-2.md",
+                "Task Two",
+                "task",
+                "ready",
+                "task-2",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/learn-1.md",
+                "Learn One",
+                "learn",
+                "ready",
+                "learn-1",
+                None,
+                &[],
+            ),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let ready = graph.ready_tasks();
         let ready_ids: Vec<&str> = ready.iter().map(|n| n.id.as_str()).collect();
-        assert!(!ready_ids.contains(&"epic-1"), "epics must not appear in ready");
-        assert!(!ready_ids.contains(&"proj-1"), "projects must not appear in ready");
-        assert!(!ready_ids.contains(&"learn-1"), "learn must not appear in ready");
+        assert!(
+            !ready_ids.contains(&"epic-1"),
+            "epics must not appear in ready"
+        );
+        assert!(
+            !ready_ids.contains(&"proj-1"),
+            "projects must not appear in ready"
+        );
+        assert!(
+            !ready_ids.contains(&"learn-1"),
+            "learn must not appear in ready"
+        );
         assert!(ready_ids.contains(&"task-1"), "task must be in ready");
         assert!(ready_ids.contains(&"task-2"), "task must be in ready");
     }
@@ -4125,9 +4240,25 @@ mod tests {
         inbox_graduated.body = "## Acceptance Criteria\n- it ships\n".to_string();
 
         let docs = vec![
-            make_doc("tasks/task-inbox.md", "Bare Inbox Task", "task", "inbox", "task-inbox", None, &[]),
+            make_doc(
+                "tasks/task-inbox.md",
+                "Bare Inbox Task",
+                "task",
+                "inbox",
+                "task-inbox",
+                None,
+                &[],
+            ),
             inbox_graduated,
-            make_doc("tasks/task-ready.md", "Ready Task", "task", "ready", "task-ready", None, &[]),
+            make_doc(
+                "tasks/task-ready.md",
+                "Ready Task",
+                "task",
+                "ready",
+                "task-ready",
+                None,
+                &[],
+            ),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let ready_ids: Vec<&str> = graph.ready_tasks().iter().map(|n| n.id.as_str()).collect();
@@ -4139,7 +4270,10 @@ mod tests {
             ready_ids.contains(&"task-inbox-ac"),
             "graduated inbox leaf (AC + deps resolved) must be surfaced as ready"
         );
-        assert!(ready_ids.contains(&"task-ready"), "ready tasks must appear in ready");
+        assert!(
+            ready_ids.contains(&"task-ready"),
+            "ready tasks must appear in ready"
+        );
     }
 
     #[test]
@@ -4166,21 +4300,46 @@ mod tests {
         assert!(task_b.reachable, "task-b should be reachable (leaf)");
 
         let task_a = graph.resolve("task-a").unwrap();
-        assert!(task_a.reachable, "task-a should be reachable (leaf with unmet dep)");
+        assert!(
+            task_a.reachable,
+            "task-a should be reachable (leaf with unmet dep)"
+        );
 
         let epic_1 = graph.resolve("epic-1").unwrap();
-        assert!(epic_1.reachable, "epic-1 should be reachable (parent of leaves)");
+        assert!(
+            epic_1.reachable,
+            "epic-1 should be reachable (parent of leaves)"
+        );
 
         let task_c = graph.resolve("task-c").unwrap();
-        assert!(task_c.reachable, "task-c should be reachable (leaf with dep)");
+        assert!(
+            task_c.reachable,
+            "task-c should be reachable (leaf with dep)"
+        );
     }
 
     #[test]
     fn test_reachable_excludes_done_orphans() {
         // A completed node with no active descendants should NOT be reachable
         let docs = vec![
-            make_doc("tasks/done-task.md", "Done Task", "task", "done", "done-task", None, &[]),
-            make_doc("tasks/active-task.md", "Active Task", "task", "active", "active-task", None, &[]),
+            make_doc(
+                "tasks/done-task.md",
+                "Done Task",
+                "task",
+                "done",
+                "done-task",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/active-task.md",
+                "Active Task",
+                "task",
+                "active",
+                "active-task",
+                None,
+                &[],
+            ),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
 
@@ -4195,26 +4354,64 @@ mod tests {
     fn test_reachable_includes_done_ancestor() {
         // A completed node that is parent of an active leaf SHOULD be reachable
         let docs = vec![
-            make_doc("tasks/done-parent.md", "Done Parent", "project", "done", "done-parent", None, &[]),
-            make_doc("tasks/active-child.md", "Active Child", "task", "active", "active-child", Some("done-parent"), &[]),
+            make_doc(
+                "tasks/done-parent.md",
+                "Done Parent",
+                "project",
+                "done",
+                "done-parent",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/active-child.md",
+                "Active Child",
+                "task",
+                "active",
+                "active-child",
+                Some("done-parent"),
+                &[],
+            ),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
 
         let parent = graph.resolve("done-parent").unwrap();
-        assert!(parent.reachable, "done parent of active leaf should be reachable");
+        assert!(
+            parent.reachable,
+            "done parent of active leaf should be reachable"
+        );
     }
 
     #[test]
     fn test_reachable_excludes_notes() {
         // Notes without status should not seed BFS
         let docs = vec![
-            make_doc("notes/my-note.md", "My Note", "note", "", "my-note", None, &[]),
-            make_doc("tasks/my-task.md", "My Task", "task", "active", "my-task", None, &[]),
+            make_doc(
+                "notes/my-note.md",
+                "My Note",
+                "note",
+                "",
+                "my-note",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/my-task.md",
+                "My Task",
+                "task",
+                "active",
+                "my-task",
+                None,
+                &[],
+            ),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
 
         let note = graph.resolve("my-note").unwrap();
-        assert!(!note.reachable, "note without status should not be reachable");
+        assert!(
+            !note.reachable,
+            "note without status should not be reachable"
+        );
     }
 
     // ── subtask relationships ──
@@ -4225,7 +4422,15 @@ mod tests {
         // - the subtask must appear in parent.subtasks, NOT in parent.children
         // - parent.leaf must remain true (subtasks don't affect leaf status)
         let docs = vec![
-            make_doc("tasks/parent.md", "Parent Task", "task", "active", "parent-abc", None, &[]),
+            make_doc(
+                "tasks/parent.md",
+                "Parent Task",
+                "task",
+                "active",
+                "parent-abc",
+                None,
+                &[],
+            ),
             make_doc(
                 "tasks/parent-abc.1.md",
                 "Subtask One",
@@ -4269,7 +4474,15 @@ mod tests {
 
         // Parent with only subtasks (no regular children) should remain a leaf
         let docs_subtask_only = vec![
-            make_doc("tasks/parent2.md", "Parent 2", "task", "active", "parent-def", None, &[]),
+            make_doc(
+                "tasks/parent2.md",
+                "Parent 2",
+                "task",
+                "active",
+                "parent-def",
+                None,
+                &[],
+            ),
             make_doc(
                 "tasks/parent-def.1.md",
                 "Only Subtask",
@@ -4282,11 +4495,19 @@ mod tests {
         ];
         let graph2 = GraphStore::build(&docs_subtask_only, Path::new("/tmp/test-pkb"));
         let parent2 = graph2.resolve("parent-def").expect("parent2 not found");
-        assert!(parent2.leaf, "parent with only subtasks should still be a leaf");
+        assert!(
+            parent2.leaf,
+            "parent with only subtasks should still be a leaf"
+        );
     }
 
     /// Helper: create a PkbDocument with soft_depends_on frontmatter.
-    fn make_doc_with_soft_dep(path: &str, title: &str, id: &str, soft_deps: &[&str]) -> PkbDocument {
+    fn make_doc_with_soft_dep(
+        path: &str,
+        title: &str,
+        id: &str,
+        soft_deps: &[&str],
+    ) -> PkbDocument {
         let mut fm = serde_json::Map::new();
         fm.insert("title".to_string(), serde_json::json!(title));
         fm.insert("type".to_string(), serde_json::json!("task"));
@@ -4425,14 +4646,20 @@ mod tests {
         use chrono::Utc;
 
         let today = Utc::now().date_naive();
-        let d28_ago = (today - chrono::Duration::days(28)).format("%Y-%m-%d").to_string();
+        let d28_ago = (today - chrono::Duration::days(28))
+            .format("%Y-%m-%d")
+            .to_string();
 
         // A: overdue `due` (13d late) AND a stakeholder waiting 28d.
         // Deadline ramp: 8000 + min(13*200, 4000) = 8000 + 2600 = 10600.
         // Stakeholder ramp is suppressed to its base +2000 (lateness already counted).
         // Expected = 10600 + 2000 = 12600 (no per-day stakeholder growth).
         let mut a = GraphNode::default();
-        a.due = Some((today - chrono::Duration::days(13)).format("%Y-%m-%d").to_string());
+        a.due = Some(
+            (today - chrono::Duration::days(13))
+                .format("%Y-%m-%d")
+                .to_string(),
+        );
         a.effort = Some("1d".to_string());
         a.stakeholder = Some("external-party".to_string());
         a.waiting_since = Some(d28_ago.clone());
@@ -4444,7 +4671,11 @@ mod tests {
 
         // C: same overdue `due` as A but NO stakeholder. Deadline ramp only = 10600.
         let mut c = GraphNode::default();
-        c.due = Some((today - chrono::Duration::days(13)).format("%Y-%m-%d").to_string());
+        c.due = Some(
+            (today - chrono::Duration::days(13))
+                .format("%Y-%m-%d")
+                .to_string(),
+        );
         c.effort = Some("1d".to_string());
 
         let mut nodes = vec![a, b, c];
@@ -4463,10 +4694,17 @@ mod tests {
             "deadline + stakeholder must not fully sum: got {sa}, full sum would be {full_sum}"
         );
         // A is exactly the deadline ramp plus the suppressed stakeholder base.
-        assert_eq!(sa, 12600, "expected deadline ramp (10600) + stakeholder base (2000)");
+        assert_eq!(
+            sa, 12600,
+            "expected deadline ramp (10600) + stakeholder base (2000)"
+        );
         // The stakeholder contribution on A (sa - sc) is just the +2000 base, far
         // below B's full no-due ramp (+7600).
-        assert_eq!(sa - sc, 2000, "stakeholder adds only its base when a due ramp already fired");
+        assert_eq!(
+            sa - sc,
+            2000,
+            "stakeholder adds only its base when a due ramp already fired"
+        );
         assert_eq!(sb, 7600, "no-due stakeholder keeps full per-day ramp");
         assert_eq!(sc, 10600, "deadline ramp alone (13d overdue)");
     }
@@ -4483,7 +4721,11 @@ mod tests {
         use crate::graph::GraphNode;
         use chrono::Utc;
         let today = Utc::now().date_naive();
-        let ago = |d: i64| (today - chrono::Duration::days(d)).format("%Y-%m-%d").to_string();
+        let ago = |d: i64| {
+            (today - chrono::Duration::days(d))
+                .format("%Y-%m-%d")
+                .to_string()
+        };
 
         // brain-2ae555b3 — ANU JOLT peer review. Live (OLD) focus_score = 23287
         // = deadline 10800 (14d overdue) + stakeholder 7800 (2000 + 29d ramp)
@@ -4533,21 +4775,42 @@ mod tests {
         );
 
         // (1) JOLT falls into the 12–14k band, down from the live 23287.
-        assert_eq!(jolt_new, 12900, "JOLT re-scores to 12900 (deadline 10800 + stakeholder base 2000 + urgency 100)");
-        assert!((12000..=14000).contains(&jolt_new), "JOLT must land in the 12–14k band");
-        assert!(jolt_new < 23287, "JOLT must drop from the live double-counted 23287");
+        assert_eq!(
+            jolt_new, 12900,
+            "JOLT re-scores to 12900 (deadline 10800 + stakeholder base 2000 + urgency 100)"
+        );
+        assert!(
+            (12000..=14000).contains(&jolt_new),
+            "JOLT must land in the 12–14k band"
+        );
+        assert!(
+            jolt_new < 23287,
+            "JOLT must drop from the live double-counted 23287"
+        );
 
         // (2) The SEV4 LLB242 marking work stays clearly above JOLT (its spurious
         //     VoI is removed too, but real SEV4 urgency + deadline dominate).
-        assert_eq!(marking_new, 19823, "marking re-scores to 19823 (deadline 9800 + urgency 10000 + staleness 23)");
-        assert!(marking_new > jolt_new, "the SEV4 marking task must remain clearly above JOLT");
+        assert_eq!(
+            marking_new, 19823,
+            "marking re-scores to 19823 (deadline 9800 + urgency 10000 + staleness 23)"
+        );
+        assert!(
+            marking_new > jolt_new,
+            "the SEV4 marking task must remain clearly above JOLT"
+        );
         // The SEV4 target itself (task-9c33dd1b, live 116080: severity 100000 +
         // urgency 10000 + …) is untouched by this change (non-leaf target, no
         // stakeholder, no VoI) and remains the unmistakable global #1.
 
         // (3) JOLT lands roughly level with the ethics compliance task (task AC).
-        assert_eq!(ethics_new, 11844, "ethics re-scores to 11844 (deadline 10800 + staleness 44 + urgency 1000)");
-        assert!((jolt_new - ethics_new).abs() < 2000, "JOLT must be roughly level with the ethics task");
+        assert_eq!(
+            ethics_new, 11844,
+            "ethics re-scores to 11844 (deadline 10800 + staleness 44 + urgency 1000)"
+        );
+        assert!(
+            (jolt_new - ethics_new).abs() < 2000,
+            "JOLT must be roughly level with the ethics task"
+        );
     }
 
     #[test]
@@ -4608,8 +4871,24 @@ mod tests {
     fn test_find_hard_cycles_on_graph() {
         // task-a depends on task-b; task-b depends on task-a → hard cycle
         let docs = vec![
-            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &["task-b"]),
-            make_doc("tasks/b.md", "Task B", "task", "active", "task-b", None, &["task-a"]),
+            make_doc(
+                "tasks/a.md",
+                "Task A",
+                "task",
+                "active",
+                "task-a",
+                None,
+                &["task-b"],
+            ),
+            make_doc(
+                "tasks/b.md",
+                "Task B",
+                "task",
+                "active",
+                "task-b",
+                None,
+                &["task-a"],
+            ),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let hard_cycles = graph.find_hard_cycles();
@@ -4623,8 +4902,24 @@ mod tests {
     fn test_find_hard_cycles_no_cycle() {
         // task-a depends on task-b (linear, no cycle)
         let docs = vec![
-            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &["task-b"]),
-            make_doc("tasks/b.md", "Task B", "task", "active", "task-b", None, &[]),
+            make_doc(
+                "tasks/a.md",
+                "Task A",
+                "task",
+                "active",
+                "task-a",
+                None,
+                &["task-b"],
+            ),
+            make_doc(
+                "tasks/b.md",
+                "Task B",
+                "task",
+                "active",
+                "task-b",
+                None,
+                &[],
+            ),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         assert!(
@@ -4641,7 +4936,11 @@ mod tests {
             make_doc_with_soft_dep("tasks/b.md", "Task B", "task-soft-b", &["task-soft-a"]),
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
-        assert_eq!(graph.find_soft_cycle_count(), 1, "soft mutual dependency = one soft cycle");
+        assert_eq!(
+            graph.find_soft_cycle_count(),
+            1,
+            "soft mutual dependency = one soft cycle"
+        );
         // Must not appear in hard cycles
         assert!(graph.find_hard_cycles().is_empty());
     }
@@ -4671,25 +4970,42 @@ mod tests {
         fm_d.insert("id".to_string(), serde_json::json!("task-d"));
         fm_d.insert("project".to_string(), serde_json::json!("other"));
 
-        let mk_fm_doc = |path: &str, title: &str, fm: serde_json::Map<String, serde_json::Value>| PkbDocument {
-            path: PathBuf::from(path),
-            title: title.to_string(),
-            body: String::new(),
-            doc_type: fm.get("type").and_then(|v| v.as_str()).map(String::from),
-            status: Some("active".to_string()),
-            modified: None,
-            tags: vec![],
-            frontmatter: Some(serde_json::Value::Object(fm)),
-            content_hash: "test_hash".to_string(),
-            file_hash: "test_hash".to_string(),
-        };
+        let mk_fm_doc =
+            |path: &str, title: &str, fm: serde_json::Map<String, serde_json::Value>| PkbDocument {
+                path: PathBuf::from(path),
+                title: title.to_string(),
+                body: String::new(),
+                doc_type: fm.get("type").and_then(|v| v.as_str()).map(String::from),
+                status: Some("active".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm)),
+                content_hash: "test_hash".to_string(),
+                file_hash: "test_hash".to_string(),
+            };
 
         let docs = vec![
             mk_fm_doc("epics/a.md", "Epic A", fm_a),
             mk_fm_doc("epics/b.md", "Epic B", fm_b),
-            make_doc("tasks/c.md", "Task C", "task", "active", "task-c", Some("epic-b"), &[]),
+            make_doc(
+                "tasks/c.md",
+                "Task C",
+                "task",
+                "active",
+                "task-c",
+                Some("epic-b"),
+                &[],
+            ),
             mk_fm_doc("tasks/d.md", "Task D", fm_d),
-            make_doc("tasks/f.md", "Task F", "task", "active", "task-f", Some("epic-a"), &[]),
+            make_doc(
+                "tasks/f.md",
+                "Task F",
+                "task",
+                "active",
+                "task-f",
+                Some("epic-a"),
+                &[],
+            ),
         ];
 
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
@@ -4700,11 +5016,31 @@ mod tests {
         let d = graph.get_node("task-d").unwrap();
         let f = graph.get_node("task-f").unwrap();
 
-        assert_eq!(a.project.as_deref(), Some("aops"), "Epic A keeps its explicit slug");
-        assert_eq!(b.project.as_deref(), Some("mem"), "Epic B's explicit slug overrides for its subtree");
-        assert_eq!(c.project.as_deref(), Some("mem"), "Task C inherits the NEAREST explicit value (Epic B's)");
-        assert_eq!(d.project.as_deref(), Some("other"), "Task D keeps its explicit value");
-        assert_eq!(f.project.as_deref(), Some("aops"), "Task F inherits Epic A's slug");
+        assert_eq!(
+            a.project.as_deref(),
+            Some("aops"),
+            "Epic A keeps its explicit slug"
+        );
+        assert_eq!(
+            b.project.as_deref(),
+            Some("mem"),
+            "Epic B's explicit slug overrides for its subtree"
+        );
+        assert_eq!(
+            c.project.as_deref(),
+            Some("mem"),
+            "Task C inherits the NEAREST explicit value (Epic B's)"
+        );
+        assert_eq!(
+            d.project.as_deref(),
+            Some("other"),
+            "Task D keeps its explicit value"
+        );
+        assert_eq!(
+            f.project.as_deref(),
+            Some("aops"),
+            "Task F inherits Epic A's slug"
+        );
     }
 
     #[test]
@@ -4754,8 +5090,13 @@ mod tests {
     #[test]
     fn test_urgency_propagation() {
         // Helper: make a PkbDocument with given fields for urgency tests.
-        let make_node = |id: &str, sev: i32, goal_type: Option<&str>, due: Option<&str>,
-                         status: &str, blocks: &[&str]| -> PkbDocument {
+        let make_node = |id: &str,
+                         sev: i32,
+                         goal_type: Option<&str>,
+                         due: Option<&str>,
+                         status: &str,
+                         blocks: &[&str]|
+         -> PkbDocument {
             let mut fm = serde_json::Map::new();
             fm.insert("title".to_string(), serde_json::json!(id));
             fm.insert("type".to_string(), serde_json::json!("task"));
@@ -4788,21 +5129,53 @@ mod tests {
         let today = chrono::Utc::now().date_naive();
         // Slack = due_in_5 - effort(3) = 2 days, within SAFE_HORIZON=30.
         // f(2) = exp(k*(30-2)) = 10^(28/30) ≈ 8.610
-        let due_5d = (today + chrono::Duration::try_days(5).unwrap()).format("%Y-%m-%d").to_string();
+        let due_5d = (today + chrono::Duration::try_days(5).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
         // Overdue: slack = (-2) - 3 = -5 days (due 2 days ago, effort 3).
-        let due_neg2d = (today - chrono::Duration::try_days(2).unwrap()).format("%Y-%m-%d").to_string();
+        let due_neg2d = (today - chrono::Duration::try_days(2).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
 
         let docs = vec![
             // Assertion 1: SEV4 committed target -> s_lex=10000; due in 5d -> urgency = 10000 * f(2) >> 10000
-            make_node("target-committed", 4, Some("committed"), Some(&due_5d), "ready", &[]),
+            make_node(
+                "target-committed",
+                4,
+                Some("committed"),
+                Some(&due_5d),
+                "ready",
+                &[],
+            ),
             // Assertion 2: SEV4 aspirational target -> s_lex=10^min(4,3)=1000 (linear), not 10000
-            make_node("target-aspirational", 4, Some("aspirational"), Some(&due_5d), "ready", &[]),
+            make_node(
+                "target-aspirational",
+                4,
+                Some("aspirational"),
+                Some(&due_5d),
+                "ready",
+                &[],
+            ),
             // Assertion 3: contributor to committed target (SEV2, blocks it)
             make_node("contrib", 2, None, None, "ready", &["target-committed"]),
             // Assertion 4: overdue committed SEV4 target -> slack<0 -> urgency=10000 constant
-            make_node("target-overdue-committed", 4, Some("committed"), Some(&due_neg2d), "ready", &[]),
+            make_node(
+                "target-overdue-committed",
+                4,
+                Some("committed"),
+                Some(&due_neg2d),
+                "ready",
+                &[],
+            ),
             // Assertion 5: in_progress task with high urgency -> should appear in focus_picks
-            make_node("inprogress-urgent", 4, Some("committed"), Some(&due_5d), "in_progress", &[]),
+            make_node(
+                "inprogress-urgent",
+                4,
+                Some("committed"),
+                Some(&due_5d),
+                "in_progress",
+                &[],
+            ),
         ];
 
         let graph = GraphStore::build(&docs, std::path::Path::new("/tmp/test-urgency-pkb2"));
@@ -4815,29 +5188,39 @@ mod tests {
 
         // 1. SEV4 committed: urgency = 10000 * f(slack=2) >> 10000
         //    f(2) = exp(ln(10)/30*(30-2)) = 10^(28/30) ≈ 8.610, so urgency ≈ 86100
-        assert!(committed.urgency > 10000.0,
+        assert!(
+            committed.urgency > 10000.0,
             "SEV4 committed target in future should have urgency > 10000 due to f(slack), got {}",
-            committed.urgency);
+            committed.urgency
+        );
 
         // 2. SEV4 aspirational: s_lex = 10^min(4,3) = 1000 (linear, not lexicographic)
         //    urgency = 1000 * f(slack=2) ≈ 8610 — well under 10000
-        assert!(aspirational.urgency < 10000.0,
+        assert!(
+            aspirational.urgency < 10000.0,
             "SEV4 aspirational target must NOT get lexicographic override, got {}",
-            aspirational.urgency);
-        assert!(aspirational.urgency > 100.0,
+            aspirational.urgency
+        );
+        assert!(
+            aspirational.urgency > 100.0,
             "SEV4 aspirational target should still have meaningful urgency, got {}",
-            aspirational.urgency);
+            aspirational.urgency
+        );
 
         // 3. Contributor inherits urgency from committed target (slack propagated, s_lex propagated)
-        assert!(contrib.urgency > 10000.0,
+        assert!(
+            contrib.urgency > 10000.0,
             "Contributor to SEV4 committed target should inherit high urgency, got {}",
-            contrib.urgency);
+            contrib.urgency
+        );
 
         // 4. Overdue committed SEV4: slack <= 0 -> constant 10000 (not unbounded growth)
         //    This is the overdue guard: urgency = 10000.0 exactly
-        assert_eq!(overdue.urgency, 10000.0,
+        assert_eq!(
+            overdue.urgency, 10000.0,
             "Overdue SEV4 committed target must have urgency=10000 (bounded), got {}",
-            overdue.urgency);
+            overdue.urgency
+        );
 
         // 5. Status-independent surfacing: in_progress task with urgency >= 10000
         //    should appear in focus_picks output
@@ -4857,26 +5240,31 @@ mod tests {
         let stale_dt = (now - chrono::Duration::try_days(20).unwrap()).to_rfc3339();
         let fresh_dt = (now - chrono::Duration::try_days(2).unwrap()).to_rfc3339();
 
-        let make_doc_with_modified =
-            |id: &str, modified: Option<String>, contributes_to: Vec<serde_json::Value>| -> PkbDocument {
-                let mut fm = serde_json::Map::new();
-                fm.insert("id".to_string(), serde_json::json!(id));
-                fm.insert("type".to_string(), serde_json::json!("task"));
-                fm.insert("status".to_string(), serde_json::json!("ready"));
-                fm.insert("contributes_to".to_string(), serde_json::json!(contributes_to));
-                PkbDocument {
-                    path: std::path::PathBuf::from(format!("tasks/{}.md", id)),
-                    title: id.to_string(),
-                    body: String::new(),
-                    doc_type: Some("task".to_string()),
-                    status: Some("ready".to_string()),
-                    modified,
-                    tags: vec![],
-                    frontmatter: Some(serde_json::Value::Object(fm)),
-                    content_hash: "test".to_string(),
-                    file_hash: "test".to_string(),
-                }
-            };
+        let make_doc_with_modified = |id: &str,
+                                      modified: Option<String>,
+                                      contributes_to: Vec<serde_json::Value>|
+         -> PkbDocument {
+            let mut fm = serde_json::Map::new();
+            fm.insert("id".to_string(), serde_json::json!(id));
+            fm.insert("type".to_string(), serde_json::json!("task"));
+            fm.insert("status".to_string(), serde_json::json!("ready"));
+            fm.insert(
+                "contributes_to".to_string(),
+                serde_json::json!(contributes_to),
+            );
+            PkbDocument {
+                path: std::path::PathBuf::from(format!("tasks/{}.md", id)),
+                title: id.to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("ready".to_string()),
+                modified,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm)),
+                content_hash: "test".to_string(),
+                file_hash: "test".to_string(),
+            }
+        };
 
         let ct_high = serde_json::json!({
             "to": "target",
@@ -4919,16 +5307,27 @@ mod tests {
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-divergence"));
         let divergences = graph.detect_weight_divergences(14);
 
-        assert_eq!(divergences.len(), 1, "Expected exactly 1 divergence, found {:?}", divergences);
+        assert_eq!(
+            divergences.len(),
+            1,
+            "Expected exactly 1 divergence, found {:?}",
+            divergences
+        );
         assert_eq!(divergences[0].source_id, "stale-high");
         assert_eq!(divergences[0].stated_weight.to_lowercase(), "certain");
 
         // Verify that the anomaly_flag was also set during build
         let node = graph.get_node("stale-high").unwrap();
-        assert!(node.contributes_to[0].anomaly_flag, "anomaly_flag should be set during build");
+        assert!(
+            node.contributes_to[0].anomaly_flag,
+            "anomaly_flag should be set during build"
+        );
 
         let fresh_node = graph.get_node("fresh-high").unwrap();
-        assert!(!fresh_node.contributes_to[0].anomaly_flag, "anomaly_flag should NOT be set for fresh task");
+        assert!(
+            !fresh_node.contributes_to[0].anomaly_flag,
+            "anomaly_flag should NOT be set for fresh task"
+        );
     }
 
     // ── parent/child cycle detection ─────────────────────────────────────────
@@ -4937,9 +5336,33 @@ mod tests {
     fn build_parent_chain_graph() -> GraphStore {
         let docs = vec![
             make_doc("tasks/root.md", "Root", "epic", "active", "root", None, &[]),
-            make_doc("tasks/mid.md", "Mid", "task", "active", "mid", Some("root"), &[]),
-            make_doc("tasks/leaf.md", "Leaf", "task", "active", "leaf", Some("mid"), &[]),
-            make_doc("tasks/sib.md", "Sibling", "task", "active", "sib", Some("root"), &[]),
+            make_doc(
+                "tasks/mid.md",
+                "Mid",
+                "task",
+                "active",
+                "mid",
+                Some("root"),
+                &[],
+            ),
+            make_doc(
+                "tasks/leaf.md",
+                "Leaf",
+                "task",
+                "active",
+                "leaf",
+                Some("mid"),
+                &[],
+            ),
+            make_doc(
+                "tasks/sib.md",
+                "Sibling",
+                "task",
+                "active",
+                "sib",
+                Some("root"),
+                &[],
+            ),
         ];
         GraphStore::build(&docs, Path::new("/tmp/test-pkb"))
     }
@@ -5003,10 +5426,17 @@ mod tests {
 
         let today = Utc::now().date_naive();
         // Due 5 days from now with default 3-day effort -> slack = 2 days
-        let due_5d = (today + chrono::Duration::try_days(5).unwrap()).format("%Y-%m-%d").to_string();
+        let due_5d = (today + chrono::Duration::try_days(5).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
 
         // Helper to create a task node with urgency test setup
-        let make_node = |id: &str, severity: Option<i32>, goal_type: Option<&str>, due: Option<&str>, blocks: &[&str]| -> PkbDocument {
+        let make_node = |id: &str,
+                         severity: Option<i32>,
+                         goal_type: Option<&str>,
+                         due: Option<&str>,
+                         blocks: &[&str]|
+         -> PkbDocument {
             let mut fm = serde_json::Map::new();
             fm.insert("title".to_string(), serde_json::json!(id));
             fm.insert("type".to_string(), serde_json::json!("task"));
@@ -5040,7 +5470,13 @@ mod tests {
 
         let docs = vec![
             // SEV4-committed target with due date in 5 days -> high urgency
-            make_node("target-sev4", Some(4), Some("committed"), Some(&due_5d), &[]),
+            make_node(
+                "target-sev4",
+                Some(4),
+                Some("committed"),
+                Some(&due_5d),
+                &[],
+            ),
             // Contributor (P3, severity 0) blocking the target -> should inherit urgency
             // This is like a blocker that needs to be resolved for the target
             make_node("contrib-p3-sev0", Some(0), None, None, &["target-sev4"]),
@@ -5049,7 +5485,9 @@ mod tests {
         let graph = GraphStore::build(&docs, std::path::Path::new("/tmp/test-urgency-focus-pkb"));
 
         let target = graph.get_node("target-sev4").expect("target not found");
-        let contrib = graph.get_node("contrib-p3-sev0").expect("contrib not found");
+        let contrib = graph
+            .get_node("contrib-p3-sev0")
+            .expect("contrib not found");
 
         // Target should have high urgency (SEV4 committed, due in 5d -> f(slack=2) boost)
         assert!(
@@ -5089,33 +5527,72 @@ mod tests {
     fn test_target_ancestors_materialization() {
         let root = PathBuf::from("/tmp/pkb");
         let docs = vec![
-            make_doc("tasks/epic-1.md", "Epic 1", "epic", "active", "epic-1", None, &[]),
-            make_doc("tasks/task-a.md", "Task A", "task", "active", "task-a", Some("epic-1"), &[]),
+            make_doc(
+                "tasks/epic-1.md",
+                "Epic 1",
+                "epic",
+                "active",
+                "epic-1",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/task-a.md",
+                "Task A",
+                "task",
+                "active",
+                "task-a",
+                Some("epic-1"),
+                &[],
+            ),
             // Multi-parent via contributes_to
             {
-                let mut d = make_doc("tasks/task-b.md", "Task B", "task", "active", "task-b", Some("epic-1"), &[]);
+                let mut d = make_doc(
+                    "tasks/task-b.md",
+                    "Task B",
+                    "task",
+                    "active",
+                    "task-b",
+                    Some("epic-1"),
+                    &[],
+                );
                 let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
-                fm.insert("contributes_to".to_string(), serde_json::json!([
-                    {"to": "epic-2", "weight": "Probable", "why": "reason"}
-                ]));
+                fm.insert(
+                    "contributes_to".to_string(),
+                    serde_json::json!([
+                        {"to": "epic-2", "weight": "Probable", "why": "reason"}
+                    ]),
+                );
                 d.frontmatter = Some(serde_json::Value::Object(fm));
                 d
             },
             // task-c closes task-b
             {
-                let mut d = make_doc("tasks/task-c.md", "Task C", "task", "active", "task-c", None, &[]);
+                let mut d = make_doc(
+                    "tasks/task-c.md",
+                    "Task C",
+                    "task",
+                    "active",
+                    "task-c",
+                    None,
+                    &[],
+                );
                 let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
                 fm.insert("closes".to_string(), serde_json::json!(["task-b"]));
                 d.frontmatter = Some(serde_json::Value::Object(fm));
                 d
-            }
+            },
         ];
 
         let store = GraphStore::build(&docs, &root);
 
         // epic-1 ancestors: []
         let n_epic1 = store.get_node("epic-1").expect("epic-1 should exist");
-        assert!(n_epic1.target_ancestors.is_empty(), "epic-1 ancestors should be empty, got {:?}", n_epic1.target_ancestors);
+        assert!(
+            n_epic1.target_ancestors.is_empty(),
+            "epic-1 ancestors should be empty, got {:?}",
+            n_epic1.target_ancestors
+        );
 
         // task-a ancestors: ["epic-1"]
         let n_taska = store.get_node("task-a").expect("task-a should exist");
@@ -5139,8 +5616,24 @@ mod tests {
         let root = PathBuf::from("/tmp/pkb");
         // A -> B -> A
         let docs = vec![
-            make_doc("tasks/task-a.md", "Task A", "task", "active", "task-a", Some("task-b"), &[]),
-            make_doc("tasks/task-b.md", "Task B", "task", "active", "task-b", Some("task-a"), &[])
+            make_doc(
+                "tasks/task-a.md",
+                "Task A",
+                "task",
+                "active",
+                "task-a",
+                Some("task-b"),
+                &[],
+            ),
+            make_doc(
+                "tasks/task-b.md",
+                "Task B",
+                "task",
+                "active",
+                "task-b",
+                Some("task-a"),
+                &[],
+            ),
         ];
 
         let store = GraphStore::build(&docs, &root);
@@ -5158,12 +5651,34 @@ mod tests {
     #[test]
     fn test_contributes_to_missing_justification_still_populates_contributed_by() {
         let root = PathBuf::from("/tmp/pkb");
-        let goal = make_doc("goals/goal-g.md", "Goal G", "target", "active", "goal-g", None, &[]);
+        let goal = make_doc(
+            "goals/goal-g.md",
+            "Goal G",
+            "target",
+            "active",
+            "goal-g",
+            None,
+            &[],
+        );
         // Entry has `to:` and `weight:` but deliberately omits `why:` / `justification:`.
         // Without #[serde(default)] on ContributesTo::justification, serde_json would return Err
         // and the whole Vec parse would silently become vec![], leaving contributed_by empty.
-        let mut contributor = make_doc("tasks/task-a.md", "Task A", "task", "active", "task-a", None, &[]);
-        let mut fm = contributor.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+        let mut contributor = make_doc(
+            "tasks/task-a.md",
+            "Task A",
+            "task",
+            "active",
+            "task-a",
+            None,
+            &[],
+        );
+        let mut fm = contributor
+            .frontmatter
+            .as_ref()
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
         fm.insert(
             "contributes_to".to_string(),
             serde_json::json!([{"to": "goal-g", "weight": "Certain"}]),
@@ -5173,7 +5688,11 @@ mod tests {
         let store = GraphStore::build(&[goal, contributor], &root);
 
         let a = store.get_node("task-a").expect("task-a must exist");
-        assert_eq!(a.contributes_to.len(), 1, "entry with missing why: should still be parsed");
+        assert_eq!(
+            a.contributes_to.len(),
+            1,
+            "entry with missing why: should still be parsed"
+        );
 
         let g = store.get_node("goal-g").expect("goal-g must exist");
         assert!(
@@ -5190,7 +5709,15 @@ mod tests {
         let root = PathBuf::from("/tmp/pkb");
 
         // goal-g: a target with no own outbound edges
-        let goal = make_doc("goals/goal-g.md", "Goal G", "target", "active", "goal-g", None, &[]);
+        let goal = make_doc(
+            "goals/goal-g.md",
+            "Goal G",
+            "target",
+            "active",
+            "goal-g",
+            None,
+            &[],
+        );
 
         // task-a and task-b both contribute_to goal-g
         let make_contributor = |path: &str, title: &str, id: &str| -> PkbDocument {
@@ -5266,7 +5793,15 @@ mod tests {
         // (The dependent lists THIS node in its depends_on, materialising as
         //  spike.blocks via compute_inverses.)
         let make_spike = |id: &str, effort: &str| -> crate::pkb::PkbDocument {
-            let mut d = make_doc(&format!("tasks/{id}.md"), id, "task", "active", id, None, &[]);
+            let mut d = make_doc(
+                &format!("tasks/{id}.md"),
+                id,
+                "task",
+                "active",
+                id,
+                None,
+                &[],
+            );
             let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
             fm.insert("effort".to_string(), serde_json::json!(effort));
             d.frontmatter = Some(serde_json::Value::Object(fm));
@@ -5275,15 +5810,32 @@ mod tests {
 
         // A dependent that depends_on `spike_id`, with an explicit confidence
         // (→ uncertainty = 1 - confidence) and a child to give it downstream_weight.
-        let make_dependent = |id: &str, spike_id: &str, confidence: f64| -> crate::pkb::PkbDocument {
-            let mut d = make_doc(&format!("tasks/{id}.md"), id, "task", "active", id, None, &[spike_id]);
-            let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
-            fm.insert("confidence".to_string(), serde_json::json!(confidence));
-            d.frontmatter = Some(serde_json::Value::Object(fm));
-            d
-        };
+        let make_dependent =
+            |id: &str, spike_id: &str, confidence: f64| -> crate::pkb::PkbDocument {
+                let mut d = make_doc(
+                    &format!("tasks/{id}.md"),
+                    id,
+                    "task",
+                    "active",
+                    id,
+                    None,
+                    &[spike_id],
+                );
+                let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+                fm.insert("confidence".to_string(), serde_json::json!(confidence));
+                d.frontmatter = Some(serde_json::Value::Object(fm));
+                d
+            };
         let child_of = |id: &str, parent: &str| -> crate::pkb::PkbDocument {
-            make_doc(&format!("tasks/{id}.md"), id, "task", "active", id, Some(parent), &[])
+            make_doc(
+                &format!("tasks/{id}.md"),
+                id,
+                "task",
+                "active",
+                id,
+                Some(parent),
+                &[],
+            )
         };
 
         // --- Positive (modest): spike unblocks a dependent with uncertainty 0.5,
@@ -5308,19 +5860,50 @@ mod tests {
         // --- AC(b): a leaf wired via contributes_to to a busy, uncertain target,
         //     with NO dependents, must score ~0 VoI regardless of the target's
         //     downstream_weight.
-        let mut busy_target = make_doc("goals/busy-target.md", "busy-target", "target", "active", "busy-target", None, &[]);
+        let mut busy_target = make_doc(
+            "goals/busy-target.md",
+            "busy-target",
+            "target",
+            "active",
+            "busy-target",
+            None,
+            &[],
+        );
         {
-            let mut fm = busy_target.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            let mut fm = busy_target
+                .frontmatter
+                .as_ref()
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
             fm.insert("confidence".to_string(), serde_json::json!(0.1)); // uncertainty 0.9
             busy_target.frontmatter = Some(serde_json::Value::Object(fm));
         }
         let bt_child1 = child_of("bt-child1", "busy-target"); // give busy-target downstream_weight
         let bt_child2 = child_of("bt-child2", "busy-target");
-        let mut leaf_no_deps = make_doc("tasks/leaf-no-deps.md", "leaf-no-deps", "task", "active", "leaf-no-deps", None, &[]);
+        let mut leaf_no_deps = make_doc(
+            "tasks/leaf-no-deps.md",
+            "leaf-no-deps",
+            "task",
+            "active",
+            "leaf-no-deps",
+            None,
+            &[],
+        );
         {
-            let mut fm = leaf_no_deps.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            let mut fm = leaf_no_deps
+                .frontmatter
+                .as_ref()
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
             fm.insert("effort".to_string(), serde_json::json!("0.5d"));
-            fm.insert("contributes_to".to_string(), serde_json::json!([{"to": "busy-target", "weight": "Certain"}]));
+            fm.insert(
+                "contributes_to".to_string(),
+                serde_json::json!([{"to": "busy-target", "weight": "Certain"}]),
+            );
             leaf_no_deps.frontmatter = Some(serde_json::Value::Object(fm));
         }
 
@@ -5330,28 +5913,53 @@ mod tests {
         let dep_nls = make_dependent("dep-nls", "non-leaf-spike", 0.0);
         let dep_nls_child = child_of("kid-n", "dep-nls");
 
-        let store = GraphStore::build(&[
-            spike_modest, dep_modest, dep_modest_child,
-            spike_extreme, dep_extreme, dep_extreme_c1, dep_extreme_c2,
-            spike_zero, dep_certain, dep_certain_child,
-            busy_target, bt_child1, bt_child2, leaf_no_deps,
-            non_leaf_spike, nls_child, dep_nls, dep_nls_child,
-        ], &root);
+        let store = GraphStore::build(
+            &[
+                spike_modest,
+                dep_modest,
+                dep_modest_child,
+                spike_extreme,
+                dep_extreme,
+                dep_extreme_c1,
+                dep_extreme_c2,
+                spike_zero,
+                dep_certain,
+                dep_certain_child,
+                busy_target,
+                bt_child1,
+                bt_child2,
+                leaf_no_deps,
+                non_leaf_spike,
+                nls_child,
+                dep_nls,
+                dep_nls_child,
+            ],
+            &root,
+        );
 
         // Positive modest case: exact arithmetic.
         let s_modest = store.get_node("spike-modest").unwrap();
         assert_eq!(
-            s_modest.voi_value.unwrap_or(0.0), 2500.0,
+            s_modest.voi_value.unwrap_or(0.0),
+            2500.0,
             "spike unblocking an unc=0.5, dw=1.0 dependent (effort 1d) -> VoI 2500"
         );
 
         // Cap (AC-11): raw 10000 clamps to 5000.
         let s_extreme = store.get_node("spike-extreme").unwrap();
-        assert_eq!(s_extreme.voi_value.unwrap_or(0.0), 5000.0, "VoI must clamp at 5000");
+        assert_eq!(
+            s_extreme.voi_value.unwrap_or(0.0),
+            5000.0,
+            "VoI must clamp at 5000"
+        );
 
         // Zero downstream uncertainty -> 0.
         let s_zero = store.get_node("spike-zero").unwrap();
-        assert_eq!(s_zero.voi_value.unwrap_or(0.0), 0.0, "zero-uncertainty dependent -> VoI 0");
+        assert_eq!(
+            s_zero.voi_value.unwrap_or(0.0),
+            0.0,
+            "zero-uncertainty dependent -> VoI 0"
+        );
 
         // AC(b): no dependents -> ~0 VoI regardless of contributes_to target weight.
         let busy = store.get_node("busy-target").unwrap();
@@ -5368,7 +5976,11 @@ mod tests {
 
         // AC-12: non-leaf -> 0.
         let s_non_leaf = store.get_node("non-leaf-spike").unwrap();
-        assert_eq!(s_non_leaf.voi_value.unwrap_or(0.0), 0.0, "VoI must be 0 for non-leaf nodes");
+        assert_eq!(
+            s_non_leaf.voi_value.unwrap_or(0.0),
+            0.0,
+            "VoI must be 0 for non-leaf nodes"
+        );
     }
 
     #[test]
@@ -5401,7 +6013,9 @@ mod tests {
             &[],
         );
         let store = GraphStore::build(&[epic_node, task_node], Path::new("/tmp/test-pkb-proj"));
-        let node = store.get_node("task-no-proj").expect("task-no-proj should exist");
+        let node = store
+            .get_node("task-no-proj")
+            .expect("task-no-proj should exist");
         assert!(
             node.project.is_some(),
             "task with no explicit project but an ancestor with one must have project resolved"
@@ -5447,7 +6061,9 @@ mod tests {
         );
 
         let store = GraphStore::build(&[project_node, task_node], Path::new("/tmp/test-pkb-tja"));
-        let container = store.get_node("tja-951bc29c").expect("container should exist");
+        let container = store
+            .get_node("tja-951bc29c")
+            .expect("container should exist");
         assert_eq!(
             container.node_type.as_deref(),
             Some("epic"),

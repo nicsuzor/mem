@@ -207,33 +207,42 @@ pub fn format_comparison(baseline: &EvalSummary, experiment: &EvalSummary) -> St
     let _ = writeln!(
         out,
         "MRR:       {:.3} → {:.3} ({:+.3})",
-        baseline.mrr, experiment.mrr, experiment.mrr - baseline.mrr
+        baseline.mrr,
+        experiment.mrr,
+        experiment.mrr - baseline.mrr
     );
     let _ = writeln!(
         out,
         "Recall@k:  {:.3} → {:.3} ({:+.3})",
-        baseline.recall_at_k, experiment.recall_at_k, experiment.recall_at_k - baseline.recall_at_k
+        baseline.recall_at_k,
+        experiment.recall_at_k,
+        experiment.recall_at_k - baseline.recall_at_k
     );
     let _ = writeln!(
         out,
         "Precision: {:.3} → {:.3} ({:+.3})",
-        baseline.precision, experiment.precision, experiment.precision - baseline.precision
+        baseline.precision,
+        experiment.precision,
+        experiment.precision - baseline.precision
     );
     let _ = writeln!(
         out,
         "Avg score: {:.4} → {:.4} ({:+.4})",
-        baseline.avg_top_score, experiment.avg_top_score,
+        baseline.avg_top_score,
+        experiment.avg_top_score,
         experiment.avg_top_score - baseline.avg_top_score
     );
 
     fn rank_label(r: Option<usize>) -> String {
-        r.map(|r| format!("#{r}")).unwrap_or_else(|| "MISS".to_string())
+        r.map(|r| format!("#{r}"))
+            .unwrap_or_else(|| "MISS".to_string())
     }
 
     let _ = writeln!(out, "\nPer-query changes:");
     for (b, e) in baseline.query_results.iter().zip(&experiment.query_results) {
         if b.best_hit_rank != e.best_hit_rank {
-            let improved = e.best_hit_rank.unwrap_or(usize::MAX) < b.best_hit_rank.unwrap_or(usize::MAX);
+            let improved =
+                e.best_hit_rank.unwrap_or(usize::MAX) < b.best_hit_rank.unwrap_or(usize::MAX);
             let icon = if improved { "↑" } else { "↓" };
             let _ = writeln!(
                 out,
@@ -252,7 +261,11 @@ pub fn format_comparison(baseline: &EvalSummary, experiment: &EvalSummary) -> St
 mod tests {
     use super::*;
 
-    fn make_query_result(rank: Option<usize>, hits_found: usize, hits_expected: usize) -> QueryResult {
+    fn make_query_result(
+        rank: Option<usize>,
+        hits_found: usize,
+        hits_expected: usize,
+    ) -> QueryResult {
         QueryResult {
             query: format!("test query (rank={rank:?})"),
             best_hit_rank: rank,

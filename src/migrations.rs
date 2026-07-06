@@ -57,10 +57,16 @@ pub struct TargetParentReport {
 
 impl TargetParentReport {
     pub fn migrated(&self) -> usize {
-        self.changes.iter().filter(|c| c.kind == ChangeKind::Migrated).count()
+        self.changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Migrated)
+            .count()
     }
     pub fn already_linked(&self) -> usize {
-        self.changes.iter().filter(|c| c.kind == ChangeKind::AlreadyLinked).count()
+        self.changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::AlreadyLinked)
+            .count()
     }
     pub fn total(&self) -> usize {
         self.changes.len()
@@ -79,7 +85,10 @@ impl TargetParentReport {
 /// change that *would* be made.
 pub fn migrate_target_parents(pkb_root: &Path, dry_run: bool) -> Result<TargetParentReport> {
     let graph = GraphStore::build_from_directory(pkb_root);
-    let mut report = TargetParentReport { dry_run, changes: Vec::new() };
+    let mut report = TargetParentReport {
+        dry_run,
+        changes: Vec::new(),
+    };
 
     for node in graph.nodes() {
         // Skip ghost/virtual nodes that have no backing file on disk; their
@@ -87,13 +96,17 @@ pub fn migrate_target_parents(pkb_root: &Path, dry_run: bool) -> Result<TargetPa
         if node.path.as_os_str().is_empty() {
             continue;
         }
-        let Some(parent_ref) = node.parent.as_deref() else { continue };
+        let Some(parent_ref) = node.parent.as_deref() else {
+            continue;
+        };
         let parent_ref = parent_ref.trim();
         if parent_ref.is_empty() {
             continue;
         }
         // Only act when the parent resolves to a strategic target/goal node.
-        let Some(parent_node) = graph.resolve(parent_ref) else { continue };
+        let Some(parent_node) = graph.resolve(parent_ref) else {
+            continue;
+        };
         if !crate::graph::is_strategic_target(parent_node.node_type.as_deref()) {
             continue;
         }
@@ -155,7 +168,10 @@ fn apply_change(abs_path: &Path, target_id: &str, append_edge: bool) -> Result<(
             "stated_weight": MIGRATED_WEIGHT,
             "justification": MIGRATED_JUSTIFICATION,
         }));
-        updates.insert("contributes_to".to_string(), serde_json::Value::Array(edges));
+        updates.insert(
+            "contributes_to".to_string(),
+            serde_json::Value::Array(edges),
+        );
     }
 
     crate::document_crud::update_document(abs_path, updates)

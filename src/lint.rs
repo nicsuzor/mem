@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 static ID_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
 
 fn get_id_regex() -> &'static regex::Regex {
-    ID_RE.get_or_init(|| regex::Regex::new(r"(?i)^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}$").unwrap())
+    ID_RE.get_or_init(|| regex::Regex::new(r"(?i)^[a-z0-9][a-z0-9_-]*[_-][a-f0-9]{8}$").unwrap())
 }
 
 // ── Diagnostic types ─────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ const KNOWN_KEYS: &[&str] = &[
     "topic",
     "generated_by",
     "extracted",
-    "body",     // kept here so fm-unknown-key doesn't fire; fm-prohibited-body handles it
+    "body", // kept here so fm-unknown-key doesn't fire; fm-prohibited-body handles it
     "epic",
     "summary",
     "notes",
@@ -248,8 +248,14 @@ fn extract_id_prefix(id: &str) -> String {
 fn extract_id_from_filename(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_string_lossy();
     // Match patterns like "academic-8c6h05e2-cite-her-work" or "aops-core-6a4f03c0-fix-something"
+    // or new formats like "academic_8c6h05e2-cite-her-work" or "aops_core_6a4f03c0-fix-something"
     // The hash portion is alphanumeric (may contain letters beyond a-f)
-    let re = { static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); RE.get_or_init(|| regex::Regex::new(r"(?i)^([a-z][\w-]*?-[a-z0-9]{6,10})(?:-.+)?$").unwrap()) };
+    let re = {
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        RE.get_or_init(|| {
+            regex::Regex::new(r"(?i)^([a-z][\w-]*?[_-][a-z0-9]{6,10})(?:[_-].+)?$").unwrap()
+        })
+    };
     re.captures(&stem).map(|c| c[1].to_string())
 }
 
@@ -277,7 +283,13 @@ fn generate_missing_id(path: &Path, fm: &serde_json::Map<String, serde_json::Val
 }
 
 /// Lint a single file. If `fix` is true, also produce corrected content.
-pub fn lint_file(path: &Path, fix: bool, known_ids: Option<&HashSet<String>>, ancestor_map: Option<&AncestorMap>, children_set: Option<&ChildrenSet>) -> FileResult {
+pub fn lint_file(
+    path: &Path,
+    fix: bool,
+    known_ids: Option<&HashSet<String>>,
+    ancestor_map: Option<&AncestorMap>,
+    children_set: Option<&ChildrenSet>,
+) -> FileResult {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -321,7 +333,14 @@ pub fn lint_file(path: &Path, fix: bool, known_ids: Option<&HashSet<String>>, an
 
     // ── Frontmatter rules ────────────────────────────────────────────
 
-    check_frontmatter(&content, &fm_data, &mut diags, known_ids, ancestor_map, children_set);
+    check_frontmatter(
+        &content,
+        &fm_data,
+        &mut diags,
+        known_ids,
+        ancestor_map,
+        children_set,
+    );
 
     // ── Markdown body rules ──────────────────────────────────────────
 
@@ -331,7 +350,11 @@ pub fn lint_file(path: &Path, fix: bool, known_ids: Option<&HashSet<String>>, an
 
     let fixed_content = if fix && diags.iter().any(|d| d.fixable) {
         let fixed = apply_fixes(&content, &fm_data, path, ancestor_map);
-        if fixed != content { Some(fixed) } else { None }
+        if fixed != content {
+            Some(fixed)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -391,7 +414,11 @@ fn fallback_parse_frontmatter(content: &str) -> Option<serde_json::Value> {
                 let inner = &val[1..val.len() - 1];
                 let items: Vec<serde_json::Value> = inner
                     .split(',')
-                    .map(|s| serde_json::Value::String(s.trim().trim_matches(|c| c == '\'' || c == '"').to_string()))
+                    .map(|s| {
+                        serde_json::Value::String(
+                            s.trim().trim_matches(|c| c == '\'' || c == '"').to_string(),
+                        )
+                    })
                     .collect();
                 map.insert(key.clone(), serde_json::Value::Array(items));
             } else {
@@ -531,10 +558,7 @@ fn check_frontmatter(
             diags.push(Diagnostic {
                 severity: Severity::Style,
                 rule: "fm-unknown-type",
-                message: format!(
-                    "Unknown type '{}' → will fix to '{}'",
-                    t, mapped
-                ),
+                message: format!("Unknown type '{}' → will fix to '{}'", t, mapped),
                 line: None,
                 fixable: true,
             });
@@ -557,7 +581,10 @@ fn check_frontmatter(
                 diags.push(Diagnostic {
                     severity: Severity::Style,
                     rule: "fm-status-alias",
-                    message: format!("Status '{}' should be canonical '{}'", raw_status, canonical),
+                    message: format!(
+                        "Status '{}' should be canonical '{}'",
+                        raw_status, canonical
+                    ),
                     line: None,
                     fixable: true,
                 });
@@ -566,10 +593,7 @@ fn check_frontmatter(
                 diags.push(Diagnostic {
                     severity: Severity::Warning,
                     rule: "fm-unknown-status",
-                    message: format!(
-                        "Unknown status '{}' → will fix to 'inbox'",
-                        raw_status,
-                    ),
+                    message: format!("Unknown status '{}' → will fix to 'inbox'", raw_status,),
                     line: None,
                     fixable: true,
                 });
@@ -696,7 +720,10 @@ fn check_frontmatter(
             // Start from the parent: the task's own map entry mirrors its own
             // (absent) project field, so walking from the parent is equivalent
             // and avoids a pointless self-hop.
-            let start_id = fm.get("parent").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let start_id = fm
+                .get("parent")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             if let Some(parent_id) = start_id {
                 if let Some(map) = ancestor_map {
                     resolves = resolves_project(&parent_id, map);
@@ -749,10 +776,7 @@ fn check_frontmatter(
                             diags.push(Diagnostic {
                                 severity: Severity::Warning,
                                 rule: "ref-broken-dep",
-                                message: format!(
-                                    "{} reference '{}' not found in PKB",
-                                    key, ref_id
-                                ),
+                                message: format!("{} reference '{}' not found in PKB", key, ref_id),
                                 line: None,
                                 fixable: false,
                             });
@@ -828,9 +852,7 @@ fn check_frontmatter(
             let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if !fm.contains_key("parent") {
                 let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let has_children = children_set
-                    .map(|cs| cs.contains(node_id))
-                    .unwrap_or(false);
+                let has_children = children_set.map(|cs| cs.contains(node_id)).unwrap_or(false);
                 let (severity, message) = if has_children {
                     (
                         Severity::Warning,
@@ -853,7 +875,6 @@ fn check_frontmatter(
         }
     }
 }
-
 
 fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
     let lines: Vec<&str> = content.lines().collect();
@@ -944,7 +965,10 @@ fn remove_key_from_frontmatter(fm_text: &str, target_key: &str) -> String {
 
     for line in fm_text.lines() {
         if in_target {
-            if line.starts_with(' ') || line.starts_with('\t') || (is_block && line.starts_with('-')) {
+            if line.starts_with(' ')
+                || line.starts_with('\t')
+                || (is_block && line.starts_with('-'))
+            {
                 // Indented continuation of block scalar or list item — drop.
                 continue;
             } else if line.is_empty() && is_block {
@@ -957,7 +981,7 @@ fn remove_key_from_frontmatter(fm_text: &str, target_key: &str) -> String {
                 // fallthrough to check if the current line starts a new target
             }
         }
-        
+
         if !in_target {
             if line.starts_with(&target_prefix) {
                 in_target = true;
@@ -973,7 +997,12 @@ fn remove_key_from_frontmatter(fm_text: &str, target_key: &str) -> String {
 }
 
 /// Apply fixes surgically — line-level edits only, preserving key order and formatting.
-fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, ancestor_map: Option<&AncestorMap>) -> String {
+fn apply_fixes(
+    content: &str,
+    fm_data: &Option<serde_json::Value>,
+    path: &Path,
+    ancestor_map: Option<&AncestorMap>,
+) -> String {
     let mut result = content.to_string();
 
     // ── Frontmatter fixes (only when we have a valid frontmatter object) ──
@@ -1121,7 +1150,9 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, 
                     let trimmed = val.trim();
                     let is_node_ref = !trimmed.contains(' ')
                         && trimmed.contains('-')
-                        && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+                        && trimmed
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-');
                     if is_node_ref {
                         tasks.push(trimmed.to_string());
                     } else {
@@ -1294,7 +1325,6 @@ fn apply_fixes(content: &str, fm_data: &Option<serde_json::Value>, path: &Path, 
     result
 }
 
-
 // ── Batch lint engine ────────────────────────────────────────────────────
 
 /// Lint all markdown files under a PKB root directory.
@@ -1356,7 +1386,9 @@ pub fn lint_directory(
             let content = std::fs::read_to_string(p).ok()?;
             let matter = Matter::<YAML>::new();
             let parsed = matter.parse(&content);
-            let fm = parsed.data.as_ref()
+            let fm = parsed
+                .data
+                .as_ref()
                 .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
             let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
             let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
@@ -1611,14 +1643,19 @@ pub fn lint_directory(
                 let content = std::fs::read_to_string(p).ok()?;
                 let matter = Matter::<YAML>::new();
                 let parsed = matter.parse(&content);
-                let fm = parsed.data.as_ref()
+                let fm = parsed
+                    .data
+                    .as_ref()
                     .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
                 let id = fm.get("id")?.as_str()?;
                 // Goals and targets use special canonical IDs — never auto-rename
                 // them. Legacy `type: project` files (retired type) keep the
                 // exemption too: renaming their IDs would break references.
                 let node_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if !id.is_empty() && !id_re.is_match(id) && !matches!(node_type, "goal" | "target" | "project") {
+                if !id.is_empty()
+                    && !id_re.is_match(id)
+                    && !matches!(node_type, "goal" | "target" | "project")
+                {
                     let prefix = extract_id_prefix(id);
                     let new_id = crate::graph::create_id(&prefix);
                     Some((id.to_string(), new_id))
@@ -1633,7 +1670,15 @@ pub fn lint_directory(
 
     let mut results: Vec<FileResult> = files
         .par_iter()
-        .map(|p| lint_file(p, fix, known_ids.as_ref(), Some(&ancestor_map), Some(&children_set)))
+        .map(|p| {
+            lint_file(
+                p,
+                fix,
+                known_ids.as_ref(),
+                Some(&ancestor_map),
+                Some(&children_set),
+            )
+        })
         .collect();
 
     // Merge cycle + project-slug diagnostics into per-file results
@@ -1709,16 +1754,18 @@ pub fn lint_directory(
                 let content = std::fs::read_to_string(p).ok()?;
                 let matter = Matter::<YAML>::new();
                 let parsed = matter.parse(&content);
-                let fm = parsed.data.as_ref()
+                let fm = parsed
+                    .data
+                    .as_ref()
                     .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
                 let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
                 let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
                 let project = fm
-                .get("project")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from);
+                    .get("project")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
                 Some((id, (parent, project)))
             })
             .collect();
@@ -1730,7 +1777,15 @@ pub fn lint_directory(
         // Return fresh results after renames (cycle + project-slug diagnostics still apply)
         let mut results: Vec<FileResult> = files
             .par_iter()
-            .map(|p| lint_file(p, false, known_ids.as_ref(), Some(&ancestor_map), Some(&children_set)))
+            .map(|p| {
+                lint_file(
+                    p,
+                    false,
+                    known_ids.as_ref(),
+                    Some(&ancestor_map),
+                    Some(&children_set),
+                )
+            })
             .collect();
         for r in &mut results {
             if let Some(diag) = cycle_diags.get(&r.path) {
@@ -1759,18 +1814,33 @@ fn is_valid_id(id: &str) -> bool {
         && !id.contains('/')
         && !id.contains('\\')
         && !id.contains("..")
-        && id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        && id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 pub fn rename_id(pkb_root: &Path, old_id: &str, new_id: &str) -> Result<(usize, usize), String> {
     if !is_valid_id(old_id) {
-        return Err(format!("Invalid old_id '{}': must be alphanumeric/hyphens only", old_id));
+        return Err(format!(
+            "Invalid old_id '{}': must be alphanumeric/hyphens only",
+            old_id
+        ));
     }
     if !is_valid_id(new_id) {
-        return Err(format!("Invalid new_id '{}': must be alphanumeric/hyphens only", new_id));
+        return Err(format!(
+            "Invalid new_id '{}': must be alphanumeric/hyphens only",
+            new_id
+        ));
     }
     let files = pkb::scan_directory(pkb_root);
-    let reference_fields = ["parent", "depends_on", "soft_depends_on", "blocks", "soft_blocks", "supersedes"];
+    let reference_fields = [
+        "parent",
+        "depends_on",
+        "soft_depends_on",
+        "blocks",
+        "soft_blocks",
+        "supersedes",
+    ];
     let mut files_modified = 0;
     let mut refs_updated = 0;
 
@@ -1786,7 +1856,11 @@ pub fn rename_id(pkb_root: &Path, old_id: &str, new_id: &str) -> Result<(usize, 
         // Update frontmatter references
         let matter = Matter::<YAML>::new();
         let parsed = matter.parse(&content);
-        if let Some(fm_data) = parsed.data.as_ref().and_then(|d| d.deserialize::<serde_json::Value>().ok()) {
+        if let Some(fm_data) = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+        {
             if let Some(fm) = fm_data.as_object() {
                 for field in &reference_fields {
                     if let Some(val) = fm.get(*field) {
@@ -1941,8 +2015,14 @@ mod tests {
 
     #[test]
     fn fixes_task_id_to_id() {
-        let fixed = fix_str("---\ntask_id: ns-abc12345\ntitle: Test\ntype: task\nstatus: done\n---\n\nBody.\n");
-        assert!(fixed.contains("id: ns-abc12345"), "task_id should become id, got: {}", fixed);
+        let fixed = fix_str(
+            "---\ntask_id: ns-abc12345\ntitle: Test\ntype: task\nstatus: done\n---\n\nBody.\n",
+        );
+        assert!(
+            fixed.contains("id: ns-abc12345"),
+            "task_id should become id, got: {}",
+            fixed
+        );
         assert!(!fixed.contains("task_id:"), "task_id key should be removed");
     }
 
@@ -1955,47 +2035,72 @@ mod tests {
     #[test]
     fn fixes_unknown_type() {
         let fixed = fix_str("---\ntitle: Test\ntype: article\nstatus: active\n---\n\nBody.\n");
-        assert!(fixed.contains("type: reference"), "article should become reference, got: {}", fixed);
+        assert!(
+            fixed.contains("type: reference"),
+            "article should become reference, got: {}",
+            fixed
+        );
     }
 
     #[test]
     fn fixes_unknown_type_to_document() {
         let fixed = fix_str("---\ntitle: Test\ntype: bundle\nstatus: active\n---\n\nBody.\n");
-        assert!(fixed.contains("type: document"), "bundle should become document, got: {}", fixed);
+        assert!(
+            fixed.contains("type: document"),
+            "bundle should become document, got: {}",
+            fixed
+        );
     }
-
 
     #[test]
     fn goal_and_target_are_distinct_types() {
         // Goal and target are both distinct valid types.
-        let fixed_goal = fix_str("---
+        let fixed_goal = fix_str(
+            "---
 title: Test
 type: goal
 ---
 
-Body.\n");
-        assert!(fixed_goal.contains("type: goal"), "goal should not be aliased");
+Body.\n",
+        );
+        assert!(
+            fixed_goal.contains("type: goal"),
+            "goal should not be aliased"
+        );
 
-        let fixed_target = fix_str("---
+        let fixed_target = fix_str(
+            "---
 title: Test
 type: target
 ---
 
-Body.\n");
-        assert!(fixed_target.contains("type: target"), "target should not be aliased");
+Body.\n",
+        );
+        assert!(
+            fixed_target.contains("type: target"),
+            "target should not be aliased"
+        );
     }
 
     #[test]
     fn fixes_unknown_status_to_active() {
         let fixed = fix_str("---\ntitle: Test\ntype: note\nstatus: merge_ready\n---\n\nBody.\n");
         // merge_ready is now a canonical status, so it should stay as-is
-        assert!(fixed.contains("status: merge_ready"), "merge_ready should stay merge_ready (canonical status), got: {}", fixed);
+        assert!(
+            fixed.contains("status: merge_ready"),
+            "merge_ready should stay merge_ready (canonical status), got: {}",
+            fixed
+        );
     }
 
     #[test]
     fn fixes_truly_unknown_status() {
         let fixed = fix_str("---\ntitle: Test\ntype: note\nstatus: banana\n---\n\nBody.\n");
-        assert!(fixed.contains("status: inbox"), "unknown status should become inbox, got: {}", fixed);
+        assert!(
+            fixed.contains("status: inbox"),
+            "unknown status should become inbox, got: {}",
+            fixed
+        );
     }
 
     #[test]
@@ -2010,49 +2115,78 @@ Body.\n");
     fn camel_case_prefix_id_is_valid() {
         // "academicOps-b5d43955" has a camelCase prefix — must NOT trigger fm-id-format.
         // Reassigning a valid existing ID would silently break all cross-references.
-        let diags = lint_str("---\nid: academicOps-b5d43955\ntitle: Test\ntype: task\n---\n\nBody.\n");
+        let diags =
+            lint_str("---\nid: academicOps-b5d43955\ntitle: Test\ntype: task\n---\n\nBody.\n");
         let id_diag = diags.iter().find(|d| d.rule == "fm-id-format");
-        assert!(id_diag.is_none(), "academicOps-b5d43955 is a valid ID and must not trigger fm-id-format");
+        assert!(
+            id_diag.is_none(),
+            "academicOps-b5d43955 is a valid ID and must not trigger fm-id-format"
+        );
     }
 
     #[test]
     fn id_starting_with_digit_is_valid() {
         let diags = lint_str("---\nid: 123abc-b5d43955\ntitle: Test\ntype: task\n---\n\nBody.\n");
         let id_diag = diags.iter().find(|d| d.rule == "fm-id-format");
-        assert!(id_diag.is_none(), "IDs starting with a digit must not trigger fm-id-format");
+        assert!(
+            id_diag.is_none(),
+            "IDs starting with a digit must not trigger fm-id-format"
+        );
     }
 
     #[test]
     fn goal_target_and_project_ids_exempt_from_format_check() {
         // Goals, targets, and projects use canonical human-readable IDs — must NOT trigger fm-id-format.
         for node_type in &["goal", "target", "project"] {
-            let content = format!("---\nid: my-{}\ntitle: Test\ntype: {}\n---\n\nBody.\n", node_type, node_type);
+            let content = format!(
+                "---\nid: my-{}\ntitle: Test\ntype: {}\n---\n\nBody.\n",
+                node_type, node_type
+            );
             let diags = lint_str(&content);
             let id_diag = diags.iter().find(|d| d.rule == "fm-id-format");
-            assert!(id_diag.is_none(), "type:{} with non-hex ID must not trigger fm-id-format", node_type);
+            assert!(
+                id_diag.is_none(),
+                "type:{} with non-hex ID must not trigger fm-id-format",
+                node_type
+            );
         }
     }
 
     #[test]
     fn alias_key_is_known() {
         let diags = lint_str("---\ntitle: Test\ntype: note\nalias: foo\n---\n\nBody.\n");
-        assert!(!diags.iter().any(|d| d.rule == "fm-unknown-key"), "alias should be a known key");
+        assert!(
+            !diags.iter().any(|d| d.rule == "fm-unknown-key"),
+            "alias should be a known key"
+        );
     }
 
     #[test]
     fn last_modified_key_is_known() {
         let diags = lint_str("---\ntitle: Test\ntype: note\ncreated: 2026-01-01T00:00:00Z\nmodified: 2026-01-01T00:00:00Z\nlast_modified: 2026-01-01T00:00:00+10:00\n---\n\nBody.\n");
-        assert!(!diags.iter().any(|d| d.rule == "fm-unknown-key"),
+        assert!(
+            !diags.iter().any(|d| d.rule == "fm-unknown-key"),
             "last_modified should be a known key, got: {:?}",
-            diags.iter().filter(|d| d.rule == "fm-unknown-key").map(|d| &d.message).collect::<Vec<_>>());
+            diags
+                .iter()
+                .filter(|d| d.rule == "fm-unknown-key")
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn triage_keys_are_known() {
         let diags = lint_str("---\ntitle: Test\ntype: note\nprocessed: true\nprocessed_date: 2026-01-01\ntriage_action: create-task\ntriage_ref: test-12345678\n---\n\nBody.\n");
-        assert!(!diags.iter().any(|d| d.rule == "fm-unknown-key"),
+        assert!(
+            !diags.iter().any(|d| d.rule == "fm-unknown-key"),
             "triage keys should be known, got: {:?}",
-            diags.iter().filter(|d| d.rule == "fm-unknown-key").map(|d| &d.message).collect::<Vec<_>>());
+            diags
+                .iter()
+                .filter(|d| d.rule == "fm-unknown-key")
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -2069,7 +2203,9 @@ Body.\n");
         let diags = lint_str("---\nid: test-a1b2c3d4\ntitle: Dashboard: UP NEXT\ntype: task\nstatus: active\n---\n\nBody.\n");
         // Should NOT get fm-invalid or fm-parse-error — fallback handles it
         assert!(
-            !diags.iter().any(|d| d.rule == "fm-invalid" || d.rule == "fm-parse-error"),
+            !diags
+                .iter()
+                .any(|d| d.rule == "fm-invalid" || d.rule == "fm-parse-error"),
             "Should not get fm-invalid with fallback parser, got: {:?}",
             diags.iter().map(|d| d.rule).collect::<Vec<_>>()
         );
@@ -2083,7 +2219,10 @@ Body.\n");
             "Should detect body as frontmatter key, got: {:?}",
             diags.iter().map(|d| d.rule).collect::<Vec<_>>()
         );
-        let diag = diags.iter().find(|d| d.rule == "fm-prohibited-body").unwrap();
+        let diag = diags
+            .iter()
+            .find(|d| d.rule == "fm-prohibited-body")
+            .unwrap();
         assert_eq!(diag.severity, Severity::Error);
         assert!(diag.fixable);
     }
@@ -2092,10 +2231,22 @@ Body.\n");
     fn fixes_body_in_frontmatter_simple() {
         let input = "---\nid: test-a1b2c3d4\ntitle: Test\ntype: task\nstatus: active\nbody: migrated content\n---\n\nExisting body.\n";
         let fixed = fix_str(input);
-        assert!(!fixed.contains("body: migrated content"), "body key should be removed from frontmatter, got:\n{}", fixed);
-        assert!(fixed.contains("migrated content"), "body value should appear in markdown body, got:\n{}", fixed);
+        assert!(
+            !fixed.contains("body: migrated content"),
+            "body key should be removed from frontmatter, got:\n{}",
+            fixed
+        );
+        assert!(
+            fixed.contains("migrated content"),
+            "body value should appear in markdown body, got:\n{}",
+            fixed
+        );
         // Existing body content should be preserved
-        assert!(fixed.contains("Existing body."), "existing body should be preserved, got:\n{}", fixed);
+        assert!(
+            fixed.contains("Existing body."),
+            "existing body should be preserved, got:\n{}",
+            fixed
+        );
     }
 
     #[test]
@@ -2103,14 +2254,34 @@ Body.\n");
         let input = "---\nid: test-a1b2c3d4\ntitle: Test\ntype: task\nstatus: active\nbody: |-\n  # Section\n\n  Some detailed content.\n\n  More content here.\ncomplexity: multi-step\n---\n\nShort existing body.\n";
         let fixed = fix_str(input);
         // body: key removed
-        assert!(!fixed.contains("body: |-"), "body: block key should be removed, got:\n{}", fixed);
+        assert!(
+            !fixed.contains("body: |-"),
+            "body: block key should be removed, got:\n{}",
+            fixed
+        );
         // content preserved
-        assert!(fixed.contains("# Section"), "body content should be in markdown, got:\n{}", fixed);
-        assert!(fixed.contains("More content here."), "all body content preserved, got:\n{}", fixed);
+        assert!(
+            fixed.contains("# Section"),
+            "body content should be in markdown, got:\n{}",
+            fixed
+        );
+        assert!(
+            fixed.contains("More content here."),
+            "all body content preserved, got:\n{}",
+            fixed
+        );
         // other frontmatter preserved
-        assert!(fixed.contains("complexity: multi-step"), "other frontmatter keys preserved, got:\n{}", fixed);
+        assert!(
+            fixed.contains("complexity: multi-step"),
+            "other frontmatter keys preserved, got:\n{}",
+            fixed
+        );
         // existing markdown body preserved
-        assert!(fixed.contains("Short existing body."), "existing body preserved, got:\n{}", fixed);
+        assert!(
+            fixed.contains("Short existing body."),
+            "existing body preserved, got:\n{}",
+            fixed
+        );
     }
 
     #[test]
@@ -2121,17 +2292,29 @@ Body.\n");
         assert!(!fixed.contains("body: exact content"), "body key removed");
         // Should not double the content
         let count = fixed.matches("exact content").count();
-        assert_eq!(count, 1, "content should appear exactly once, got:\n{}", fixed);
+        assert_eq!(
+            count, 1,
+            "content should appear exactly once, got:\n{}",
+            fixed
+        );
     }
 
     #[test]
     fn body_key_is_prohibited_not_merely_unknown() {
         // body: should be flagged as prohibited (Error) rather than merely unknown (Style)
-        let diags = lint_str("---\nid: test-a1b2c3d4\ntitle: Test\ntype: note\nbody: foo\n---\n\nBody.\n");
-        assert!(diags.iter().any(|d| d.rule == "fm-prohibited-body"), "should get fm-prohibited-body");
+        let diags =
+            lint_str("---\nid: test-a1b2c3d4\ntitle: Test\ntype: note\nbody: foo\n---\n\nBody.\n");
+        assert!(
+            diags.iter().any(|d| d.rule == "fm-prohibited-body"),
+            "should get fm-prohibited-body"
+        );
         // Should NOT get fm-unknown-key for body — it's a known key with its own rule
-        assert!(!diags.iter().any(|d| d.rule == "fm-unknown-key" && d.message.contains("'body'")),
-            "should not get fm-unknown-key for body");
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.rule == "fm-unknown-key" && d.message.contains("'body'")),
+            "should not get fm-unknown-key for body"
+        );
     }
 
     #[test]
@@ -2153,10 +2336,8 @@ Body.\n");
         .unwrap();
 
         let (results, _summary) = lint_directory(dir.path(), false, true);
-        let all_diags: Vec<&Diagnostic> = results
-            .iter()
-            .flat_map(|r| r.diagnostics.iter())
-            .collect();
+        let all_diags: Vec<&Diagnostic> =
+            results.iter().flat_map(|r| r.diagnostics.iter()).collect();
         assert!(
             all_diags.iter().any(|d| d.rule == "parent-cycle"),
             "expected parent-cycle diagnostic, got: {:?}",
@@ -2202,42 +2383,88 @@ Body.\n");
         // Test edge-shaped blocked value (migrates to depends_on)
         let input_edge = "---\nid: test-edge\ntitle: Test\ntype: task\nstatus: active\nblocked: task-xyz123\n---\n\nBody.\n";
         let fixed_edge = fix_str(input_edge);
-        assert!(!fixed_edge.contains("blocked: task-xyz123"), "blocked key should be removed");
-        assert!(fixed_edge.contains("depends_on:\n  - task-xyz123"), "edge migrated to depends_on, got:\n{}", fixed_edge);
+        assert!(
+            !fixed_edge.contains("blocked: task-xyz123"),
+            "blocked key should be removed"
+        );
+        assert!(
+            fixed_edge.contains("depends_on:\n  - task-xyz123"),
+            "edge migrated to depends_on, got:\n{}",
+            fixed_edge
+        );
 
         // Test prose-shaped blocked value (migrates to body)
         let input_prose = "---\nid: test-prose\ntitle: Test\ntype: task\nstatus: active\nblocked: Waiting on John to finish the mockups.\n---\n\nBody.\n";
         let fixed_prose = fix_str(input_prose);
-        assert!(!fixed_prose.contains("blocked:"), "blocked key should be removed");
-        assert!(fixed_prose.contains("> **Blocked on**: Waiting on John to finish the mockups."), "prose migrated to body, got:\n{}", fixed_prose);
+        assert!(
+            !fixed_prose.contains("blocked:"),
+            "blocked key should be removed"
+        );
+        assert!(
+            fixed_prose.contains("> **Blocked on**: Waiting on John to finish the mockups."),
+            "prose migrated to body, got:\n{}",
+            fixed_prose
+        );
 
         // Test boolean flag (simply removed)
         let input_bool = "---\nid: test-bool\ntitle: Test\ntype: task\nstatus: active\nblocked: true\n---\n\nBody.\n";
         let fixed_bool = fix_str(input_bool);
-        assert!(!fixed_bool.contains("blocked:"), "blocked key should be removed");
-        assert!(!fixed_bool.contains("depends_on:"), "no depends_on for boolean flag");
-        assert!(!fixed_bool.contains("> **Blocked on**"), "no prose for boolean flag");
+        assert!(
+            !fixed_bool.contains("blocked:"),
+            "blocked key should be removed"
+        );
+        assert!(
+            !fixed_bool.contains("depends_on:"),
+            "no depends_on for boolean flag"
+        );
+        assert!(
+            !fixed_bool.contains("> **Blocked on**"),
+            "no prose for boolean flag"
+        );
 
         // Single-word prose should go to body, not depends_on (no hyphen → not a node ref)
         let input_single_word = "---\nid: test-wait\ntitle: Test\ntype: task\nstatus: active\nblocked: Waiting\n---\n\nBody.\n";
         let fixed_single_word = fix_str(input_single_word);
-        assert!(!fixed_single_word.contains("blocked:"), "blocked key should be removed");
-        assert!(!fixed_single_word.contains("depends_on:"), "single-word prose must not become depends_on");
-        assert!(fixed_single_word.contains("> **Blocked on**: Waiting"), "single-word prose migrated to body, got:\n{}", fixed_single_word);
+        assert!(
+            !fixed_single_word.contains("blocked:"),
+            "blocked key should be removed"
+        );
+        assert!(
+            !fixed_single_word.contains("depends_on:"),
+            "single-word prose must not become depends_on"
+        );
+        assert!(
+            fixed_single_word.contains("> **Blocked on**: Waiting"),
+            "single-word prose migrated to body, got:\n{}",
+            fixed_single_word
+        );
 
         // When depends_on already exists, new items must be inserted under it, not appended at end
         let input_existing_dep = "---\nid: test-merge\ntitle: Test\ntype: task\nstatus: active\ndepends_on:\n  - existing-task\nblocked: new-task-ref\n---\n\nBody.\n";
         let fixed_existing_dep = fix_str(input_existing_dep);
-        assert!(!fixed_existing_dep.contains("blocked:"), "blocked key should be removed");
+        assert!(
+            !fixed_existing_dep.contains("blocked:"),
+            "blocked key should be removed"
+        );
         // Both tasks must appear under the same depends_on: key
-        assert!(fixed_existing_dep.contains("depends_on:\n  - existing-task\n  - new-task-ref"), "merged into existing depends_on, got:\n{}", fixed_existing_dep);
+        assert!(
+            fixed_existing_dep.contains("depends_on:\n  - existing-task\n  - new-task-ref"),
+            "merged into existing depends_on, got:\n{}",
+            fixed_existing_dep
+        );
         // Must not have a second depends_on: key
-        assert_eq!(fixed_existing_dep.matches("depends_on:").count(), 1, "only one depends_on: key allowed, got:\n{}", fixed_existing_dep);
+        assert_eq!(
+            fixed_existing_dep.matches("depends_on:").count(),
+            1,
+            "only one depends_on: key allowed, got:\n{}",
+            fixed_existing_dep
+        );
     }
 
     #[test]
     fn test_missing_project_resolved_via_ancestor() {
-        let content_task = "---\nid: task-1\ntitle: Task 1\ntype: task\nstatus: ready\nparent: epic-1\n---\n";
+        let content_task =
+            "---\nid: task-1\ntitle: Task 1\ntype: task\nstatus: ready\nparent: epic-1\n---\n";
 
         // epic-1 declares an explicit project slug; task-1 inherits it.
         let mut ancestor_map = AncestorMap::new();
@@ -2247,7 +2474,10 @@ Body.\n");
         let mut diags = Vec::new();
         let matter = Matter::<YAML>::new();
         let parsed = matter.parse(content_task);
-        let fm_data = parsed.data.as_ref().and_then(|d| d.deserialize::<serde_json::Value>().ok());
+        let fm_data = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok());
 
         check_frontmatter(
             content_task,
@@ -2259,14 +2489,22 @@ Body.\n");
         );
 
         let has_warning = diags.iter().any(|d| d.rule == "fm-missing-project");
-        assert!(!has_warning, "Task 1 inherits epic-1's explicit project and must NOT trigger warning");
+        assert!(
+            !has_warning,
+            "Task 1 inherits epic-1's explicit project and must NOT trigger warning"
+        );
 
         // Reparenting under an ancestor chain with no explicit project value
-        let content_no = "---\nid: task-1\ntitle: Task 1\ntype: task\nstatus: ready\nparent: other-task\n---\n";
+        let content_no =
+            "---\nid: task-1\ntitle: Task 1\ntype: task\nstatus: ready\nparent: other-task\n---\n";
         let parsed_no = matter.parse(content_no);
-        let fm_data_no = parsed_no.data.as_ref().and_then(|d| d.deserialize::<serde_json::Value>().ok());
+        let fm_data_no = parsed_no
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok());
         let mut ancestor_map_no_project = AncestorMap::new();
-        ancestor_map_no_project.insert("task-1".to_string(), (Some("other-task".to_string()), None));
+        ancestor_map_no_project
+            .insert("task-1".to_string(), (Some("other-task".to_string()), None));
         ancestor_map_no_project.insert("other-task".to_string(), (None, None));
 
         let mut diags_no = Vec::new();
@@ -2280,7 +2518,10 @@ Body.\n");
         );
 
         let has_warning_no = diags_no.iter().any(|d| d.rule == "fm-missing-project");
-        assert!(has_warning_no, "Task 1's ancestor chain declares no project, so it must trigger warning");
+        assert!(
+            has_warning_no,
+            "Task 1's ancestor chain declares no project, so it must trigger warning"
+        );
     }
 
     #[test]
@@ -2295,7 +2536,10 @@ Body.\n");
 
         let matter = Matter::<YAML>::new();
         let parsed = matter.parse(content_task);
-        let fm_data = parsed.data.as_ref().and_then(|d| d.deserialize::<serde_json::Value>().ok());
+        let fm_data = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok());
 
         let mut diags = Vec::new();
         check_frontmatter(
@@ -2308,7 +2552,10 @@ Body.\n");
         );
 
         let has_warning = diags.iter().any(|d| d.rule == "fm-missing-project");
-        assert!(has_warning, "contributes_to must not satisfy the project requirement (parent-chain only)");
+        assert!(
+            has_warning,
+            "contributes_to must not satisfy the project requirement (parent-chain only)"
+        );
     }
 
     #[test]
@@ -2326,6 +2573,9 @@ Body.\n");
         );
         // --fix reclassifies to epic via resolve_type_alias.
         let fixed = fix_str(content);
-        assert!(fixed.contains("type: epic"), "fix should rewrite type: project → epic, got:\n{fixed}");
+        assert!(
+            fixed.contains("type: epic"),
+            "fix should rewrite type: project → epic, got:\n{fixed}"
+        );
     }
 }
