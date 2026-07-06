@@ -1886,8 +1886,9 @@ impl PkbSearchServer {
             .file_stem()
             .map(|s| {
                 let stem = s.to_string_lossy();
-                static RE: std::sync::LazyLock<regex::Regex> =
-                    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]{8}").unwrap());
+                static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+                    regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").unwrap()
+                });
                 RE.find(&stem)
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_else(|| stem.to_string())
@@ -3741,8 +3742,9 @@ impl PkbSearchServer {
         })?;
 
         // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4")
-        static ID_RE: std::sync::LazyLock<regex::Regex> =
-            std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z]+-[0-9a-f]{8}").unwrap());
+        static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").unwrap()
+        });
         let id = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -4581,7 +4583,7 @@ impl PkbSearchServer {
 
         let mut created: Vec<(String, String)> = Vec::new();
         static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"^([a-z]+-[0-9a-f]{8})").expect("valid static regex")
+            regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").expect("valid static regex")
         });
 
         let mut severity_warning = false;
