@@ -136,7 +136,8 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     // Validation
     if !crate::graph::is_valid_node_type(&fields.doc_type) {
-        anyhow::bail!("Invalid node type: {}", fields.doc_type);
+        let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
+        anyhow::bail!("Invalid node type: {}. Must be one of: {}", fields.doc_type, valid_types);
     }
     if let Some(ref status) = fields.status {
         let is_task = crate::graph::TASK_TYPES.contains(&fields.doc_type.as_str());
@@ -899,7 +900,8 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     // Validation
     let mem_type = fields.memory_type.as_deref().unwrap_or("memory");
     if !crate::graph::is_valid_node_type(mem_type) {
-        anyhow::bail!("Invalid memory type: {}", mem_type);
+        let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
+        anyhow::bail!("Invalid memory type: {}. Must be one of: {}", mem_type, valid_types);
     }
 
     let (id, filename) = match fields.id {
