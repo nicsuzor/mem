@@ -6753,7 +6753,7 @@ impl PkbSearchServer {
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
                         "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (slug or any registered alias; canonicalized on write). Optional — omitted tasks inherit the nearest ancestor's project. Builtins 'task' and 'adhoc-sessions' are always accepted." },
-                        "type": { "type": "string", "description": "Task type (default: 'task'). Also accepts: epic, bug, feature, learn, goal, target. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
+                        "type": { "type": "string", "enum": ["task", "epic", "learn", "pr", "goal", "target"], "description": "Task type (default: 'task'). Also accepts: epic, learn, pr, goal, target. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
                         "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
                         "allow_missing_parent": { "type": "boolean", "description": "Allow creating under a missing parent (logs warning). Default: false." },
                         "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." }
@@ -6789,7 +6789,7 @@ impl PkbSearchServer {
                         "id": { "type": "string", "description": "Memory ID (auto-generated if omitted)" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags for the memory" },
                         "body": { "type": "string", "description": "Markdown body content" },
-                        "memory_type": { "type": "string", "description": "Subtype: memory (default), note, insight, observation" },
+                        "memory_type": { "type": "string", "enum": ["memory", "note", "insight", "observation"], "description": "Subtype: memory (default), note, insight, observation" },
                         "source": { "type": "string", "description": "Source context (e.g. session ID)" },
                         "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
                         "supersedes": { "type": "string", "description": "ID of memory this one replaces" }
@@ -6806,7 +6806,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Document title (required)" },
-                        "type": { "type": "string", "description": "Document type (required): note, knowledge, memory, insight, observation, task, epic, goal, target, etc." },
+                        "type": { "type": "string", "enum": ["epic", "task", "learn", "pr", "template", "goal", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index"], "description": "Document type (required): note, knowledge, memory, insight, observation, task, epic, goal, target, etc." },
                         "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body" },
@@ -6941,7 +6941,7 @@ impl PkbSearchServer {
                         "before": { "type": "string", "description": "Filter: return only tasks modified on or before YYYY-MM-DD (inclusive). Tasks with no modified date are excluded." },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
-                        "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (hides closed tasks so the list shows actionable work). Ignored when an explicit `status` filter is provided." },
+                        "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (silently hides closed tasks so the list shows actionable work, which can cause state blindness if you aren't expecting it). Ignored when an explicit `status` filter is provided." },
                         "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
                     }
                 }))
@@ -11226,5 +11226,38 @@ tags:
             crate::document_crud::ADHOC_SESSIONS_ROOT_ID,
             "without session_id, task should fall back to adhoc-sessions root; parent={parent}"
         );
+    }
+
+    #[test]
+    fn test_tool_schemas_match_valid_node_types() {
+        let tools = PkbSearchServer::get_all_tools();
+        let get_tool = |name: &str| tools.iter().find(|t| t.name.as_ref() == name).unwrap();
+        let get_enum = |tool: &rmcp::model::Tool, prop: &str| -> Vec<String> {
+            tool.input_schema.get("properties").unwrap()
+                .get(prop).unwrap()
+                .get("enum").unwrap()
+                .as_array().unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        };
+
+        let create_task = get_tool("create_task");
+        let task_types = get_enum(create_task, "type");
+        for t in task_types {
+            assert!(crate::graph::is_valid_node_type(&t), "create_task schema advertises invalid type: {t}");
+        }
+
+        let create_memory = get_tool("create_memory");
+        let memory_types = get_enum(create_memory, "memory_type");
+        for t in memory_types {
+            assert!(crate::graph::is_valid_node_type(&t), "create_memory schema advertises invalid memory_type: {t}");
+        }
+
+        let create = get_tool("create");
+        let create_types = get_enum(create, "type");
+        for t in create_types {
+            assert!(crate::graph::is_valid_node_type(&t), "create schema advertises invalid type: {t}");
+        }
     }
 }

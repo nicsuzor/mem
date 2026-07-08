@@ -719,6 +719,8 @@ pub const VALID_NODE_TYPES: &[&str] = &[
     "note",
     "knowledge",
     "memory",
+    "insight",
+    "observation",
     "contact",
     "document",
     "reference",
