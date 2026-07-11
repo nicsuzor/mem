@@ -2739,8 +2739,26 @@ impl PkbSearchServer {
         let depends_on: Vec<serde_json::Value> =
             node.depends_on.iter().map(|d| resolve_ref(d)).collect();
         let blocks: Vec<serde_json::Value> = node.blocks.iter().map(|b| resolve_ref(b)).collect();
-        let children: Vec<serde_json::Value> =
-            node.children.iter().map(|c| resolve_ref(c)).collect();
+        // Children carry the claiming session/agent identity too (D1: display-only,
+        // soft — reviewer-vs-executor separation visible on reads, never enforced).
+        // This covers the common decompose_task case (child node_type "task"),
+        // distinct from the `node.subtasks` list below (node_type "subtask").
+        let children: Vec<serde_json::Value> = node
+            .children
+            .iter()
+            .map(|c| {
+                if let Some(n) = graph.get_node(c) {
+                    serde_json::json!({
+                        "id": c,
+                        "title": n.label,
+                        "status": n.status,
+                        "assignee": n.assignee,
+                    })
+                } else {
+                    serde_json::json!({ "id": c })
+                }
+            })
+            .collect();
         let closes: Vec<serde_json::Value> = node.closes.iter().map(|c| resolve_ref(c)).collect();
         let parent = node.parent.as_ref().map(|p| resolve_ref(p));
 
@@ -2754,6 +2772,9 @@ impl PkbSearchServer {
                         "id": sid,
                         "title": n.label,
                         "status": n.status,
+                        // Display-only session/agent identity (D1: soft, non-blocking —
+                        // reviewer-vs-executor separation visible on reads, never enforced).
+                        "assignee": n.assignee,
                     })
                 } else {
                     serde_json::json!({ "id": sid })
@@ -5010,8 +5031,15 @@ impl PkbSearchServer {
                         let status = child.status.as_deref().unwrap_or("-");
                         let pri = child.priority.map(|p| format!("P{p} ")).unwrap_or_default();
                         let cid = child.task_id.as_deref().unwrap_or(&child.id);
+                        // Display-only session/agent identity (D1: soft, non-blocking —
+                        // reviewer-vs-executor separation visible on reads, never enforced).
+                        let who = child
+                            .assignee
+                            .as_deref()
+                            .map(|a| format!(" (@{a})"))
+                            .unwrap_or_default();
                         output.push_str(&format!(
-                            "{indent}- `{cid}` [{status}] {pri}{}\n",
+                            "{indent}- `{cid}` [{status}] {pri}{}{who}\n",
                             child.label
                         ));
                         if recursive && !child.children.is_empty() {
@@ -8497,6 +8525,130 @@ projects:
 
         let subtask_node = graph.resolve("Subtask Sev").unwrap();
         assert_eq!(subtask_node.severity, Some(0)); // Coerced to 0
+    }
+
+    // ── epic_882b7576: soft session-identity display on subtasks (D1, display-only) ──
+
+    #[test]
+    fn test_subtask_identity_visible_on_get_task_and_children() {
+        let server = build_test_server();
+        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+
+        let parent_res = server
+            .handle_create_task(&json!({
+                "title": "Parent Epic for Identity Display",
+                "type": "epic",
+                "project": "proj-alpha",
+                "parent": "proj-alpha"
+            }))
+            .unwrap();
+        let mut parent_id = String::new();
+        for c in &parent_res.content {
+            if let Some(t) = c.raw.as_text() {
+                if t.text.trim().starts_with('{') {
+                    let v: serde_json::Value = serde_json::from_str(&t.text).unwrap();
+                    parent_id = v.get("id").unwrap().as_str().unwrap().to_string();
+                }
+            }
+        }
+        assert!(
+            !parent_id.is_empty(),
+            "parent task should have been created"
+        );
+
+        // Decompose into an executor subtask and a reviewer subtask, each
+        // claimed by a distinct session/agent identity via `assignee`.
+        let subtasks = json!([
+            { "title": "Executor Subtask", "type": "task", "assignee": "session-executor-A" },
+            { "title": "Reviewer Subtask", "type": "task", "assignee": "session-reviewer-B" }
+        ]);
+        server
+            .handle_decompose_task(&json!({
+                "parent_id": parent_id,
+                "subtasks": subtasks
+            }))
+            .unwrap();
+
+        // AC1: identity visible on get_task's child-task listing (decompose_task's
+        // default node_type "task" lands in `children`, not the separate
+        // node_type=="subtask" `subtasks` array).
+        let get_res = server.handle_get_task(&json!({"id": parent_id})).unwrap();
+        let get_text = get_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        let get_val: serde_json::Value = serde_json::from_str(&get_text).unwrap();
+        let subtask_list = get_val
+            .get("children")
+            .and_then(|s| s.as_array())
+            .expect("children array should be present");
+        assert_eq!(subtask_list.len(), 2);
+        let assignees: Vec<Option<&str>> = subtask_list
+            .iter()
+            .map(|s| s.get("assignee").and_then(|a| a.as_str()))
+            .collect();
+        assert!(
+            assignees.contains(&Some("session-executor-A")),
+            "get_task children should surface executor identity, got: {get_text}"
+        );
+        assert!(
+            assignees.contains(&Some("session-reviewer-B")),
+            "get_task children should surface reviewer identity, got: {get_text}"
+        );
+
+        // AC1 (continued): identity also visible on get_task_children listing.
+        let children_res = server
+            .handle_get_task_children(&json!({"id": parent_id}))
+            .unwrap();
+        let children_text = children_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(
+            children_text.contains("(@session-executor-A)"),
+            "get_task_children should display executor identity, got: {children_text}"
+        );
+        assert!(
+            children_text.contains("(@session-reviewer-B)"),
+            "get_task_children should display reviewer identity, got: {children_text}"
+        );
+
+        // AC2: zero blocking behaviour — a review subtask claimed by the SAME
+        // identity as the executor must still release cleanly (D1: display
+        // only, never a hard gate on identity match).
+        let reviewer_task_id = subtask_list
+            .iter()
+            .find(|s| s.get("title").and_then(|t| t.as_str()) == Some("Reviewer Subtask"))
+            .and_then(|s| s.get("id"))
+            .and_then(|i| i.as_str())
+            .unwrap()
+            .to_string();
+
+        // Re-claim the reviewer subtask under the *same* identity that owns
+        // the executor subtask, simulating a reviewer==executor collision.
+        server
+            .handle_update_task(&json!({
+                "id": reviewer_task_id,
+                "updates": { "assignee": "session-executor-A" }
+            }))
+            .unwrap();
+
+        let release_res = server.handle_release_task(&json!({
+            "id": reviewer_task_id,
+            "status": "merge_ready",
+            "summary": "same-identity release should not be blocked (D1)"
+        }));
+        assert!(
+            release_res.is_ok(),
+            "same-identity review subtask must still release cleanly under D1: {release_res:?}"
+        );
+        let release_res = release_res.unwrap();
+        assert!(
+            !release_res.is_error.unwrap_or(false),
+            "release_task should not return an error result for same-identity release"
+        );
     }
 
     #[test]
