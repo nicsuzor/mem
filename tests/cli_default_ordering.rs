@@ -120,6 +120,9 @@ fn cli_tasks_default_order_is_deterministic() {
     seed(dir.path());
     let first = ordered_ids(dir.path(), &[]);
     let second = ordered_ids(dir.path(), &[]);
-    assert_eq!(first, second, "repeated default `pkb tasks` calls must agree");
+    assert_eq!(
+        first, second,
+        "repeated default `pkb tasks` calls must agree"
+    );
     assert_eq!(first.len(), 3, "all three seeded tasks should appear");
 }

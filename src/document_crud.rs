@@ -136,7 +136,8 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     // Validation
     if !crate::graph::is_valid_node_type(&fields.doc_type) {
-        anyhow::bail!("Invalid node type: {}", fields.doc_type);
+        let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
+        anyhow::bail!("Invalid node type: {}. Must be one of: {}", fields.doc_type, valid_types);
     }
     if let Some(ref status) = fields.status {
         let is_task = crate::graph::TASK_TYPES.contains(&fields.doc_type.as_str());
@@ -162,8 +163,9 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
-            // Explicit ID: sanitize to prevent path traversal
-            let safe_id = sanitize_prefix(&explicit_id);
+            // Explicit ID: sanitize to prevent path traversal, preserving
+            // the caller's separator convention (see sanitize_explicit_id).
+            let safe_id = sanitize_explicit_id(&explicit_id);
             let filename = format!("{}.md", safe_id);
             (safe_id, filename)
         }
@@ -503,8 +505,9 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
-            // Explicit ID: sanitize to prevent path traversal
-            let safe_id = sanitize_prefix(&explicit_id);
+            // Explicit ID: sanitize to prevent path traversal, preserving
+            // the caller's separator convention (see sanitize_explicit_id).
+            let safe_id = sanitize_explicit_id(&explicit_id);
             let filename = format!("{}.md", safe_id);
             (safe_id, filename)
         }
@@ -897,7 +900,8 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     // Validation
     let mem_type = fields.memory_type.as_deref().unwrap_or("memory");
     if !crate::graph::is_valid_node_type(mem_type) {
-        anyhow::bail!("Invalid memory type: {}", mem_type);
+        let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
+        anyhow::bail!("Invalid memory type: {}. Must be one of: {}", mem_type, valid_types);
     }
 
     let (id, filename) = match fields.id {
@@ -1637,6 +1641,33 @@ pub fn sanitize_prefix(prefix: &str) -> String {
     }
 }
 
+/// Sanitize a caller-supplied, already-complete explicit ID: strip path
+/// separators and invalid characters, but preserve the caller's original
+/// hyphen/underscore separators as-is. Unlike `sanitize_prefix` (which
+/// normalizes a bare prefix fragment onto the underscore convention before
+/// `create_id` appends a hash), an explicit ID is used verbatim for the
+/// filename and must round-trip through `GraphStore::resolve` unchanged —
+/// rewriting its separators breaks lookups for any caller that already knows
+/// the ID it passed in (e.g. session epics, batch subtask IDs).
+pub fn sanitize_explicit_id(id: &str) -> String {
+    let sanitized: String = id
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .to_lowercase();
+    if sanitized.is_empty() {
+        "doc".to_string()
+    } else {
+        sanitized
+    }
+}
+
 /// Result of a bulk reparent operation on a single file.
 #[derive(Debug)]
 pub enum ReparentResult {
@@ -2154,8 +2185,8 @@ mod tests {
         let id1 = generate_id("task");
         let id2 = generate_id("task");
         // IDs include random component, just check prefix
-        assert!(id1.starts_with("task-"));
-        assert!(id2.starts_with("task-"));
+        assert!(id1.starts_with("task_"));
+        assert!(id2.starts_with("task_"));
     }
 
     #[test]
@@ -2197,7 +2228,7 @@ mod tests {
             path.file_name()
                 .unwrap()
                 .to_string_lossy()
-                .starts_with("aops-"),
+                .starts_with("aops_"),
             "filename should use project prefix: {:?}",
             path.file_name()
         );
@@ -2251,14 +2282,14 @@ mod tests {
         let path = create_task(root, fields).unwrap();
         let filename = path.file_name().unwrap().to_string_lossy().to_string();
         assert!(
-            filename.starts_with("aops-") && filename.ends_with("-foo.md"),
-            "filename must be aops-<hash>-foo.md, got {filename}"
+            filename.starts_with("aops_") && filename.ends_with("-foo.md"),
+            "filename must be aops_<hash>-foo.md, got {filename}"
         );
 
         let content = fs::read_to_string(&path).unwrap();
         // Frontmatter id must match the project-prefixed ID (which is also
         // the filename stem minus the slug).
-        let expected_id_prefix = "id: aops-";
+        let expected_id_prefix = "id: aops_";
         assert!(
             content.contains(expected_id_prefix),
             "frontmatter id must start with `aops-`: {content}"

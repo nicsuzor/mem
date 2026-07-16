@@ -49,8 +49,16 @@ fn seed_basic() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     // Register the `aops` slug so `--project aops` passes polecat.yaml validation.
     write(tmp.path(), "polecat.yaml", "projects:\n  aops: {}\n");
-    write(tmp.path(), "targets/targ-strategy.md", &target_node("targ-strategy", "Strategy"));
-    write(tmp.path(), "tasks/task-normal.md", &task_node("task-normal", "Normal", ""));
+    write(
+        tmp.path(),
+        "targets/targ-strategy.md",
+        &target_node("targ-strategy", "Strategy"),
+    );
+    write(
+        tmp.path(),
+        "tasks/task-normal.md",
+        &task_node("task-normal", "Normal", ""),
+    );
     tmp
 }
 
@@ -67,8 +75,21 @@ fn run(pkb: &Path, args: &[&str]) -> std::process::Output {
 #[test]
 fn new_rejects_target_as_parent() {
     let tmp = seed_basic();
-    let out = run(tmp.path(), &["new", "Child", "--project", "aops", "--parent", "targ-strategy"]);
-    assert!(!out.status.success(), "expected non-zero exit when parenting under a target");
+    let out = run(
+        tmp.path(),
+        &[
+            "new",
+            "Child",
+            "--project",
+            "aops",
+            "--parent",
+            "targ-strategy",
+        ],
+    );
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit when parenting under a target"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("contributes_to"),
@@ -79,7 +100,17 @@ fn new_rejects_target_as_parent() {
 #[test]
 fn new_accepts_normal_task_as_parent() {
     let tmp = seed_basic();
-    let out = run(tmp.path(), &["new", "Child", "--project", "aops", "--parent", "task-normal"]);
+    let out = run(
+        tmp.path(),
+        &[
+            "new",
+            "Child",
+            "--project",
+            "aops",
+            "--parent",
+            "task-normal",
+        ],
+    );
     assert!(
         out.status.success(),
         "parenting under a normal task must succeed; stdout={}, stderr={}",
@@ -100,12 +131,25 @@ fn reject_target_as_parent_helper() {
         "targets/goal-y.md",
         "---\nid: goal-y\ntitle: \"Y\"\ntype: goal\nstatus: active\n---\n\n# Y\n",
     );
-    write(tmp.path(), "tasks/task-ok.md", &task_node("task-ok", "OK", ""));
+    write(
+        tmp.path(),
+        "tasks/task-ok.md",
+        &task_node("task-ok", "OK", ""),
+    );
 
     let graph = GraphStore::build_from_directory(tmp.path());
-    assert!(graph.reject_target_as_parent("targ-x").is_err(), "target must be rejected");
-    assert!(graph.reject_target_as_parent("goal-y").is_err(), "goal alias must be rejected");
-    assert!(graph.reject_target_as_parent("task-ok").is_ok(), "task must be accepted");
+    assert!(
+        graph.reject_target_as_parent("targ-x").is_err(),
+        "target must be rejected"
+    );
+    assert!(
+        graph.reject_target_as_parent("goal-y").is_err(),
+        "goal alias must be rejected"
+    );
+    assert!(
+        graph.reject_target_as_parent("task-ok").is_ok(),
+        "task must be accepted"
+    );
     // An unresolvable id is not this guard's concern — caller's existence check owns it.
     assert!(graph.reject_target_as_parent("does-not-exist").is_ok());
 }
@@ -117,7 +161,15 @@ fn batch_reparent_rejects_target() {
     let tmp = seed_basic();
     let out = run(
         tmp.path(),
-        &["batch", "reparent", "--new-parent", "targ-strategy", "--ids", "task-normal", "--dry-run"],
+        &[
+            "batch",
+            "reparent",
+            "--new-parent",
+            "targ-strategy",
+            "--ids",
+            "task-normal",
+            "--dry-run",
+        ],
     );
     let combined = format!(
         "{}{}",
@@ -141,10 +193,26 @@ fn batch_reparent_rejects_target() {
 fn seed_migration() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     write(tmp.path(), "polecat.yaml", "projects:\n  aops: {}\n");
-    write(tmp.path(), "targets/targ-strategy.md", &target_node("targ-strategy", "Strategy"));
-    write(tmp.path(), "targets/targ-other.md", &target_node("targ-other", "Other"));
-    write(tmp.path(), "tasks/task-parent.md", &task_node("task-parent", "Parent", ""));
-    write(tmp.path(), "tasks/task-child.md", &task_node("task-child", "Child", "parent: targ-strategy\n"));
+    write(
+        tmp.path(),
+        "targets/targ-strategy.md",
+        &target_node("targ-strategy", "Strategy"),
+    );
+    write(
+        tmp.path(),
+        "targets/targ-other.md",
+        &target_node("targ-other", "Other"),
+    );
+    write(
+        tmp.path(),
+        "tasks/task-parent.md",
+        &task_node("task-parent", "Parent", ""),
+    );
+    write(
+        tmp.path(),
+        "tasks/task-child.md",
+        &task_node("task-child", "Child", "parent: targ-strategy\n"),
+    );
     write(
         tmp.path(),
         "tasks/task-both.md",
@@ -201,8 +269,15 @@ fn migration_dry_run_reports_without_writing() {
     let report = migrate(tmp.path(), true);
     assert!(report.dry_run);
     // task-child + task-both are the two target-parented nodes; task-legit is not.
-    assert_eq!(report.changes.len(), 2, "only target-parented nodes are touched");
-    assert!(report.changes.iter().all(|c| c.target_id == "targ-strategy"));
+    assert_eq!(
+        report.changes.len(),
+        2,
+        "only target-parented nodes are touched"
+    );
+    assert!(report
+        .changes
+        .iter()
+        .all(|c| c.target_id == "targ-strategy"));
 
     let after = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
     assert_eq!(before, after, "dry-run must not write files");
@@ -230,7 +305,11 @@ fn migration_applies_converts_parent_to_contributes_to() {
 
     // task-child: parent gone, now contributes_to the target.
     let child = graph.resolve("task-child").expect("task-child");
-    assert!(child.parent.is_none(), "parent must be removed: {:?}", child.parent);
+    assert!(
+        child.parent.is_none(),
+        "parent must be removed: {:?}",
+        child.parent
+    );
     assert!(
         child.contributes_to.iter().any(|c| c.to == "targ-strategy"),
         "task-child must contribute_to targ-strategy"
@@ -239,7 +318,11 @@ fn migration_applies_converts_parent_to_contributes_to() {
     // task-both: parent gone, exactly one edge to the target (no duplicate).
     let both = graph.resolve("task-both").expect("task-both");
     assert!(both.parent.is_none());
-    let dup = both.contributes_to.iter().filter(|c| c.to == "targ-strategy").count();
+    let dup = both
+        .contributes_to
+        .iter()
+        .filter(|c| c.to == "targ-strategy")
+        .count();
     assert_eq!(dup, 1, "idempotent merge must not duplicate the edge");
 
     // Weight still flows: the target accrues downstream_weight from its contributors.
@@ -268,5 +351,9 @@ fn migration_is_idempotent() {
 
     // Second pass: no node carries a target-parent anymore → nothing to do.
     let second = migrate(tmp.path(), false);
-    assert_eq!(second.changes.len(), 0, "re-running the migration must be a no-op");
+    assert_eq!(
+        second.changes.len(),
+        0,
+        "re-running the migration must be a no-op"
+    );
 }

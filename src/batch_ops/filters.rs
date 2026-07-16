@@ -78,18 +78,17 @@ impl FilterSet {
         // Start with candidate set
         let candidates: Vec<&GraphNode> = if let Some(ref ids) = self.ids {
             // Explicit IDs — resolve each flexibly
-            ids.iter()
-                .filter_map(|id| graph.resolve(id))
-                .collect()
+            ids.iter().filter_map(|id| graph.resolve(id)).collect()
         } else {
             // All nodes with a task_id (actionable documents)
             graph.nodes().filter(|n| n.task_id.is_some()).collect()
         };
 
         // Collect subtree IDs if needed
-        let subtree_ids: Option<HashSet<String>> = self.subtree.as_ref().map(|root_id| {
-            collect_subtree_ids(graph, root_id)
-        });
+        let subtree_ids: Option<HashSet<String>> = self
+            .subtree
+            .as_ref()
+            .map(|root_id| collect_subtree_ids(graph, root_id));
 
         let now = Utc::now().date_naive();
 
@@ -258,16 +257,13 @@ impl FilterSet {
         }
 
         if let Some(ref project) = self.project {
-            let matches_project = node
-                .project
-                .as_deref()
-                .is_some_and(|p| {
-                    if let Some(slug) = resolved_project_slug {
-                        p.eq_ignore_ascii_case(slug) || p.eq_ignore_ascii_case(project)
-                    } else {
-                        p.eq_ignore_ascii_case(project)
-                    }
-                });
+            let matches_project = node.project.as_deref().is_some_and(|p| {
+                if let Some(slug) = resolved_project_slug {
+                    p.eq_ignore_ascii_case(slug) || p.eq_ignore_ascii_case(project)
+                } else {
+                    p.eq_ignore_ascii_case(project)
+                }
+            });
 
             let include_untagged = self.include_untagged.unwrap_or(false);
             if !matches_project && !(include_untagged && node.project.is_none()) {
@@ -325,11 +321,21 @@ pub fn parse_filter_set(args: &serde_json::Value) -> FilterSet {
                     .collect()
             })
         }),
-        parent: args.get("parent").and_then(|v| v.as_str().map(String::from)),
-        subtree: args.get("subtree").and_then(|v| v.as_str().map(String::from)),
-        status: args.get("status").and_then(|v| v.as_str().map(String::from)),
-        priority: args.get("priority").and_then(|v| v.as_i64().map(|n| n as i32)),
-        priority_gte: args.get("priority_gte").and_then(|v| v.as_i64().map(|n| n as i32)),
+        parent: args
+            .get("parent")
+            .and_then(|v| v.as_str().map(String::from)),
+        subtree: args
+            .get("subtree")
+            .and_then(|v| v.as_str().map(String::from)),
+        status: args
+            .get("status")
+            .and_then(|v| v.as_str().map(String::from)),
+        priority: args
+            .get("priority")
+            .and_then(|v| v.as_i64().map(|n| n as i32)),
+        priority_gte: args
+            .get("priority_gte")
+            .and_then(|v| v.as_i64().map(|n| n as i32)),
         tags: args.get("tags").and_then(|v| {
             v.as_array().map(|arr| {
                 arr.iter()
@@ -341,12 +347,22 @@ pub fn parse_filter_set(args: &serde_json::Value) -> FilterSet {
         older_than_days: args.get("older_than_days").and_then(|v| v.as_u64()),
         stale_days: args.get("stale_days").and_then(|v| v.as_u64()),
         orphan: args.get("orphan").and_then(|v| v.as_bool()),
-        title_contains: args.get("title_contains").and_then(|v| v.as_str().map(String::from)),
-        assignee: args.get("assignee").and_then(|v| v.as_str().map(String::from)),
-        complexity: args.get("complexity").and_then(|v| v.as_str().map(String::from)),
-        project: args.get("project").and_then(|v| v.as_str().map(String::from)),
+        title_contains: args
+            .get("title_contains")
+            .and_then(|v| v.as_str().map(String::from)),
+        assignee: args
+            .get("assignee")
+            .and_then(|v| v.as_str().map(String::from)),
+        complexity: args
+            .get("complexity")
+            .and_then(|v| v.as_str().map(String::from)),
+        project: args
+            .get("project")
+            .and_then(|v| v.as_str().map(String::from)),
         include_untagged: args.get("include_untagged").and_then(|v| v.as_bool()),
-        weight_gte: args.get("weight_gte").and_then(|v| v.as_u64().map(|n| n as u32)),
+        weight_gte: args
+            .get("weight_gte")
+            .and_then(|v| v.as_u64().map(|n| n as u32)),
     }
 }
 
@@ -387,7 +403,8 @@ fn is_older_than(date_str: Option<&str>, now: NaiveDate, days: u64) -> bool {
         dt.date_naive()
     } else if let Ok(d) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
         d
-    } else if let Ok(d) = NaiveDate::parse_from_str(&date_str[..10.min(date_str.len())], "%Y-%m-%d") {
+    } else if let Ok(d) = NaiveDate::parse_from_str(&date_str[..10.min(date_str.len())], "%Y-%m-%d")
+    {
         d
     } else {
         // Can't parse date — skip this filter

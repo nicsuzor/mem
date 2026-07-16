@@ -25,8 +25,11 @@ on:
 
 jobs:
   enforcer:
-    # Reusable workflow from academicOps
-    uses: nicsuzor/academicOps/.github/workflows/agent-enforcer.yml@pipeline-v1
+    # Reusable workflow from academicOps. @dist auto-advances on every
+    # academicOps release (no manual tag step) instead of the retired
+    # pipeline-v1 static tag, which never auto-advanced and left this repo
+    # running a stale pipeline for weeks (academicOps aops_1a4b8e23).
+    uses: nicsuzor/academicOps/.github/workflows/agent-enforcer.yml@dist
     # Note: agent-enforcer.yml extracts PR info from workflow_run context if inputs are empty
     with:
       pr_number: ${{ inputs.pr_number || '' }}

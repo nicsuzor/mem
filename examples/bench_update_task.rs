@@ -58,9 +58,7 @@ async fn main() -> anyhow::Result<()> {
 
     let pkb_root = std::env::var("AOPS_PKB_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir().unwrap().join("brain")
-        });
+        .unwrap_or_else(|_| dirs::home_dir().unwrap().join("brain"));
     if !pkb_root.exists() {
         anyhow::bail!("PKB root not found: {}", pkb_root.display());
     }
@@ -117,8 +115,8 @@ async fn main() -> anyhow::Result<()> {
     let graph = Arc::new(RwLock::new(graph));
 
     // Pick a task to update
-    let target_id = std::env::var("PKB_BENCH_TARGET_TASK")
-        .unwrap_or_else(|_| "task-a4dcc039".to_string());
+    let target_id =
+        std::env::var("PKB_BENCH_TARGET_TASK").unwrap_or_else(|_| "task-a4dcc039".to_string());
 
     let server = Arc::new(mem::mcp_server::PkbSearchServer::new(
         store.clone(),
@@ -167,7 +165,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("\n=== Results (n={}, frontmatter-only update) ===", totals.len());
+    println!(
+        "\n=== Results (n={}, frontmatter-only update) ===",
+        totals.len()
+    );
     print_stats("update_task TOTAL (wall)", totals);
 
     // Wait for any queued Tier-2 background rebuild(s) to drain so we can
@@ -247,11 +248,9 @@ async fn main() -> anyhow::Result<()> {
                     });
                     let server = server.clone();
                     let t = Instant::now();
-                    let res = tokio::task::spawn_blocking(move || {
-                        server.bench_update_task(&args)
-                    })
-                    .await
-                    .expect("spawn_blocking joined");
+                    let res = tokio::task::spawn_blocking(move || server.bench_update_task(&args))
+                        .await
+                        .expect("spawn_blocking joined");
                     let elapsed = t.elapsed().as_secs_f64() * 1000.0;
                     if let Err(e) = res {
                         eprintln!("worker {w} call {i} failed: {:?}", e);

@@ -71,7 +71,9 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
     // Siblings (up to 5)
     let siblings = if let Some(ref pid) = node.parent {
         if let Some(parent) = gs.get_node(pid) {
-            parent.children.iter()
+            parent
+                .children
+                .iter()
                 .filter(|id| id.as_str() != node_id)
                 .filter_map(|id| gs.get_node(id))
                 .take(5)
@@ -91,7 +93,9 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
     };
 
     let children_total = node.children.len();
-    let children: Vec<_> = node.children.iter()
+    let children: Vec<_> = node
+        .children
+        .iter()
         .filter_map(|id| gs.get_node(id))
         .take(5)
         .map(|n| ContextNode {
@@ -103,7 +107,9 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         })
         .collect();
 
-    let depends_on: Vec<_> = node.depends_on.iter()
+    let depends_on: Vec<_> = node
+        .depends_on
+        .iter()
         .filter_map(|id| gs.get_node(id))
         .map(|n| ContextNode {
             id: n.id.clone(),
@@ -114,7 +120,9 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         })
         .collect();
 
-    let blocks: Vec<_> = node.blocks.iter()
+    let blocks: Vec<_> = node
+        .blocks
+        .iter()
         .filter_map(|id| gs.get_node(id))
         .map(|n| ContextNode {
             id: n.id.clone(),
@@ -125,7 +133,9 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         })
         .collect();
 
-    let contributes_to: Vec<_> = node.contributes_to.iter()
+    let contributes_to: Vec<_> = node
+        .contributes_to
+        .iter()
         .filter_map(|ct| ct.resolved_to.as_ref())
         .filter_map(|id| gs.get_node(id))
         .map(|n| ContextNode {
@@ -137,7 +147,9 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         })
         .collect();
 
-    let contributed_by: Vec<_> = node.contributed_by.iter()
+    let contributed_by: Vec<_> = node
+        .contributed_by
+        .iter()
         .filter_map(|id| gs.get_node(id))
         .map(|n| ContextNode {
             id: n.id.clone(),
@@ -148,7 +160,9 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         })
         .collect();
 
-    let similar_to: Vec<_> = gs.get_outgoing_edges(node_id).iter()
+    let similar_to: Vec<_> = gs
+        .get_outgoing_edges(node_id)
+        .iter()
         .filter(|e| matches!(e.edge_type, crate::graph::EdgeType::SimilarTo))
         .filter_map(|e| gs.get_node(&e.target))
         .map(|n| ContextNode {
@@ -385,7 +399,11 @@ impl Edge {
 }
 
 fn col(plain: bool, code: &str) -> &str {
-    if plain { "" } else { code }
+    if plain {
+        ""
+    } else {
+        code
+    }
 }
 
 /// Render a status tag, honouring the plain (no-ANSI) flag.
@@ -587,16 +605,13 @@ pub fn render_neighbourhood(
     }
     if !chain.is_empty() {
         chain.reverse();
-        out.push(format!(
-            "{dim_open}{}{dim_close}",
-            chain.join(" \u{203A} ")
-        ));
+        out.push(format!("{dim_open}{}{dim_close}", chain.join(" \u{203A} ")));
         out.push(String::new());
     }
 
     // ── Upstream tree (recursive depends_on / soft_depends_on) ──
-    let has_upstream = !node.depends_on.is_empty()
-        || (opts.include_soft && !node.soft_depends_on.is_empty());
+    let has_upstream =
+        !node.depends_on.is_empty() || (opts.include_soft && !node.soft_depends_on.is_empty());
     if has_upstream && opts.upstream_depth > 0 {
         out.push(format!("{bold_open}Upstream (blocks this):{bold_close}"));
         let mut visited: HashSet<String> = HashSet::new();
@@ -704,23 +719,111 @@ mod tests {
 
     fn build_graph() -> GraphStore {
         let docs = vec![
-            make_doc("tasks/epic-1.md", "Epic One", "epic", "active", "epic-1", None, &[]),
-            make_doc("tasks/task-a.md", "Task A", "task", "active", "task-a", Some("epic-1"), &["task-b"]),
-            make_doc("tasks/task-b.md", "Task B", "task", "active", "task-b", Some("epic-1"), &[]),
-            make_doc("tasks/task-c.md", "Task C", "task", "active", "task-c", None, &["task-a"]),
-            make_doc("tasks/isolated.md", "Isolated", "task", "active", "isolated", None, &[]),
+            make_doc(
+                "tasks/epic-1.md",
+                "Epic One",
+                "epic",
+                "active",
+                "epic-1",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/task-a.md",
+                "Task A",
+                "task",
+                "active",
+                "task-a",
+                Some("epic-1"),
+                &["task-b"],
+            ),
+            make_doc(
+                "tasks/task-b.md",
+                "Task B",
+                "task",
+                "active",
+                "task-b",
+                Some("epic-1"),
+                &[],
+            ),
+            make_doc(
+                "tasks/task-c.md",
+                "Task C",
+                "task",
+                "active",
+                "task-c",
+                None,
+                &["task-a"],
+            ),
+            make_doc(
+                "tasks/isolated.md",
+                "Isolated",
+                "task",
+                "active",
+                "isolated",
+                None,
+                &[],
+            ),
         ];
         GraphStore::build(&docs, Path::new("/tmp/test-pkb"))
     }
 
     fn build_graph_many_children() -> GraphStore {
         let docs = vec![
-            make_doc("tasks/parent.md", "Big Parent", "epic", "active", "big-parent", None, &[]),
-            make_doc("tasks/c1.md", "Child 1", "task", "active", "child-1", Some("big-parent"), &[]),
-            make_doc("tasks/c2.md", "Child 2", "task", "active", "child-2", Some("big-parent"), &[]),
-            make_doc("tasks/c3.md", "Child 3", "task", "active", "child-3", Some("big-parent"), &[]),
-            make_doc("tasks/c4.md", "Child 4", "task", "active", "child-4", Some("big-parent"), &[]),
-            make_doc("tasks/c5.md", "Child 5", "task", "active", "child-5", Some("big-parent"), &[]),
+            make_doc(
+                "tasks/parent.md",
+                "Big Parent",
+                "epic",
+                "active",
+                "big-parent",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/c1.md",
+                "Child 1",
+                "task",
+                "active",
+                "child-1",
+                Some("big-parent"),
+                &[],
+            ),
+            make_doc(
+                "tasks/c2.md",
+                "Child 2",
+                "task",
+                "active",
+                "child-2",
+                Some("big-parent"),
+                &[],
+            ),
+            make_doc(
+                "tasks/c3.md",
+                "Child 3",
+                "task",
+                "active",
+                "child-3",
+                Some("big-parent"),
+                &[],
+            ),
+            make_doc(
+                "tasks/c4.md",
+                "Child 4",
+                "task",
+                "active",
+                "child-4",
+                Some("big-parent"),
+                &[],
+            ),
+            make_doc(
+                "tasks/c5.md",
+                "Child 5",
+                "task",
+                "active",
+                "child-5",
+                Some("big-parent"),
+                &[],
+            ),
         ];
         GraphStore::build(&docs, Path::new("/tmp/test-pkb"))
     }
@@ -740,15 +843,35 @@ mod tests {
         let combined = lines.join("\n");
 
         // Should show parent
-        assert!(combined.contains("Epic One"), "Expected parent in output:\n{}", combined);
+        assert!(
+            combined.contains("Epic One"),
+            "Expected parent in output:\n{}",
+            combined
+        );
         // Target highlighted with star
-        assert!(combined.contains("★ Task A"), "Expected ★ Task A in output:\n{}", combined);
+        assert!(
+            combined.contains("★ Task A"),
+            "Expected ★ Task A in output:\n{}",
+            combined
+        );
         // Dependency
-        assert!(combined.contains("← Task B"), "Expected ← Task B dep in output:\n{}", combined);
+        assert!(
+            combined.contains("← Task B"),
+            "Expected ← Task B dep in output:\n{}",
+            combined
+        );
         // Blocks
-        assert!(combined.contains("→ Task C"), "Expected → Task C blocks in output:\n{}", combined);
+        assert!(
+            combined.contains("→ Task C"),
+            "Expected → Task C blocks in output:\n{}",
+            combined
+        );
         // Sibling
-        assert!(combined.contains("Task B"), "Expected sibling Task B in output:\n{}", combined);
+        assert!(
+            combined.contains("Task B"),
+            "Expected sibling Task B in output:\n{}",
+            combined
+        );
     }
 
     #[test]
@@ -757,8 +880,16 @@ mod tests {
         let lines = render_ascii_graph(&gs, "task-c");
         let combined = lines.join("\n");
 
-        assert!(combined.contains("★ Task C"), "Expected ★ Task C in output:\n{}", combined);
-        assert!(combined.contains("← Task A"), "Expected dep in output:\n{}", combined);
+        assert!(
+            combined.contains("★ Task C"),
+            "Expected ★ Task C in output:\n{}",
+            combined
+        );
+        assert!(
+            combined.contains("← Task A"),
+            "Expected dep in output:\n{}",
+            combined
+        );
     }
 
     #[test]
@@ -767,8 +898,17 @@ mod tests {
         let lines = render_ascii_graph(&gs, "isolated");
         let combined = lines.join("\n");
 
-        assert_eq!(lines.len(), 1, "Expected exactly 1 line for isolated node, got:\n{}", combined);
-        assert!(combined.contains("★ Isolated"), "Expected ★ Isolated in output:\n{}", combined);
+        assert_eq!(
+            lines.len(),
+            1,
+            "Expected exactly 1 line for isolated node, got:\n{}",
+            combined
+        );
+        assert!(
+            combined.contains("★ Isolated"),
+            "Expected ★ Isolated in output:\n{}",
+            combined
+        );
     }
 
     #[test]
@@ -778,11 +918,20 @@ mod tests {
         let combined = lines.join("\n");
 
         // Should show children section
-        assert!(combined.contains("children:"), "Expected children section:\n{}", combined);
+        assert!(
+            combined.contains("children:"),
+            "Expected children section:\n{}",
+            combined
+        );
         // Should show truncation
         // 5 children, showing up to 5 now
         let child_lines: Vec<_> = lines.iter().filter(|l| l.contains("Child")).collect();
-        assert!(child_lines.len() == 5, "Expected 5 child lines, got {}:\n{}", child_lines.len(), combined);
+        assert!(
+            child_lines.len() == 5,
+            "Expected 5 child lines, got {}:\n{}",
+            child_lines.len(),
+            combined
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -814,7 +963,10 @@ mod tests {
             fm.insert("depends_on".to_string(), serde_json::json!(depends_on));
         }
         if !soft_depends_on.is_empty() {
-            fm.insert("soft_depends_on".to_string(), serde_json::json!(soft_depends_on));
+            fm.insert(
+                "soft_depends_on".to_string(),
+                serde_json::json!(soft_depends_on),
+            );
         }
         if !blocks.is_empty() {
             fm.insert("blocks".to_string(), serde_json::json!(blocks));
@@ -843,17 +995,102 @@ mod tests {
     ///     downstream: task-mid blocks task-down1; task-down1 blocks task-down2
     fn build_chain() -> GraphStore {
         let docs = vec![
-            make_doc_full("tasks/proj.md", "Project", "project", "active", "proj-1", None, &[], &[], &[], &[]),
-            make_doc_full("tasks/epic.md", "Epic One", "epic", "active", "epic-1", Some("proj-1"), &[], &[], &[], &[]),
-            make_doc_full("tasks/up2.md", "Up Two", "task", "done", "task-up2", None, &[], &[], &[], &[]),
-            make_doc_full("tasks/up1.md", "Up One", "task", "active", "task-up1", None, &["task-up2"], &[], &[], &[]),
-            make_doc_full("tasks/soft.md", "Soft Dep", "task", "active", "task-soft", None, &[], &[], &[], &[]),
             make_doc_full(
-                "tasks/mid.md", "Mid Task", "task", "in_progress", "task-mid",
-                Some("epic-1"), &["task-up1"], &["task-soft"], &["task-down1"], &[],
+                "tasks/proj.md",
+                "Project",
+                "project",
+                "active",
+                "proj-1",
+                None,
+                &[],
+                &[],
+                &[],
+                &[],
             ),
-            make_doc_full("tasks/down1.md", "Down One", "task", "blocked", "task-down1", None, &[], &[], &["task-down2"], &[]),
-            make_doc_full("tasks/down2.md", "Down Two", "task", "active", "task-down2", None, &[], &[], &[], &[]),
+            make_doc_full(
+                "tasks/epic.md",
+                "Epic One",
+                "epic",
+                "active",
+                "epic-1",
+                Some("proj-1"),
+                &[],
+                &[],
+                &[],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/up2.md",
+                "Up Two",
+                "task",
+                "done",
+                "task-up2",
+                None,
+                &[],
+                &[],
+                &[],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/up1.md",
+                "Up One",
+                "task",
+                "active",
+                "task-up1",
+                None,
+                &["task-up2"],
+                &[],
+                &[],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/soft.md",
+                "Soft Dep",
+                "task",
+                "active",
+                "task-soft",
+                None,
+                &[],
+                &[],
+                &[],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/mid.md",
+                "Mid Task",
+                "task",
+                "in_progress",
+                "task-mid",
+                Some("epic-1"),
+                &["task-up1"],
+                &["task-soft"],
+                &["task-down1"],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/down1.md",
+                "Down One",
+                "task",
+                "blocked",
+                "task-down1",
+                None,
+                &[],
+                &[],
+                &["task-down2"],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/down2.md",
+                "Down Two",
+                "task",
+                "active",
+                "task-down2",
+                None,
+                &[],
+                &[],
+                &[],
+                &[],
+            ),
         ];
         GraphStore::build(&docs, Path::new("/tmp/test-pkb"))
     }
@@ -869,36 +1106,72 @@ mod tests {
     #[test]
     fn neighbourhood_renders_both_directions() {
         let gs = build_chain();
-        let opts = NeighbourhoodOpts { plain: true, ..Default::default() };
+        let opts = NeighbourhoodOpts {
+            plain: true,
+            ..Default::default()
+        };
         let combined = render_neighbourhood(&gs, "task-mid", &opts).join("\n");
 
         // Breadcrumb
-        assert!(combined.contains("Project \u{203A} Epic One"), "missing breadcrumb:\n{combined}");
+        assert!(
+            combined.contains("Project \u{203A} Epic One"),
+            "missing breadcrumb:\n{combined}"
+        );
         // Section headers present and ordered
         let up_pos = combined.find("Upstream").expect("upstream header");
         let down_pos = combined.find("Downstream").expect("downstream header");
-        assert!(up_pos < down_pos, "upstream must precede downstream:\n{combined}");
+        assert!(
+            up_pos < down_pos,
+            "upstream must precede downstream:\n{combined}"
+        );
         // Target highlighted
-        assert!(combined.contains("\u{2605} Mid Task"), "missing star+target:\n{combined}");
+        assert!(
+            combined.contains("\u{2605} Mid Task"),
+            "missing star+target:\n{combined}"
+        );
         // Direct upstream + transitive upstream both visible (default depth 2)
-        assert!(combined.contains("Up One"), "missing direct upstream:\n{combined}");
-        assert!(combined.contains("Up Two"), "missing transitive upstream:\n{combined}");
+        assert!(
+            combined.contains("Up One"),
+            "missing direct upstream:\n{combined}"
+        );
+        assert!(
+            combined.contains("Up Two"),
+            "missing transitive upstream:\n{combined}"
+        );
         // Direct + transitive downstream
-        assert!(combined.contains("Down One"), "missing direct downstream:\n{combined}");
-        assert!(combined.contains("Down Two"), "missing transitive downstream:\n{combined}");
+        assert!(
+            combined.contains("Down One"),
+            "missing direct downstream:\n{combined}"
+        );
+        assert!(
+            combined.contains("Down Two"),
+            "missing transitive downstream:\n{combined}"
+        );
         // Status tags inline (plain mode → bracketed)
-        assert!(combined.contains("[in_progress]"), "missing target status:\n{combined}");
-        assert!(combined.contains("[blocked]"), "missing downstream status:\n{combined}");
+        assert!(
+            combined.contains("[in_progress]"),
+            "missing target status:\n{combined}"
+        );
+        assert!(
+            combined.contains("[blocked]"),
+            "missing downstream status:\n{combined}"
+        );
     }
 
     #[test]
     fn neighbourhood_distinguishes_soft_edges() {
         let gs = build_chain();
-        let opts = NeighbourhoodOpts { plain: true, ..Default::default() };
+        let opts = NeighbourhoodOpts {
+            plain: true,
+            ..Default::default()
+        };
         let combined = render_neighbourhood(&gs, "task-mid", &opts).join("\n");
 
         // Soft dep visible by default
-        assert!(combined.contains("Soft Dep"), "expected soft dep included:\n{combined}");
+        assert!(
+            combined.contains("Soft Dep"),
+            "expected soft dep included:\n{combined}"
+        );
         // Soft tag present (label or dashed connector)
         assert!(
             combined.contains("(soft)") || combined.contains("\u{2504}\u{2504}"),
@@ -906,24 +1179,46 @@ mod tests {
         );
 
         // --no-soft → no soft dep listed
-        let opts2 = NeighbourhoodOpts { include_soft: false, plain: true, ..Default::default() };
+        let opts2 = NeighbourhoodOpts {
+            include_soft: false,
+            plain: true,
+            ..Default::default()
+        };
         let combined2 = render_neighbourhood(&gs, "task-mid", &opts2).join("\n");
-        assert!(!combined2.contains("Soft Dep"), "soft dep should be hidden:\n{combined2}");
+        assert!(
+            !combined2.contains("Soft Dep"),
+            "soft dep should be hidden:\n{combined2}"
+        );
     }
 
     #[test]
     fn neighbourhood_depth_limits_recursion() {
         let gs = build_chain();
         let opts = NeighbourhoodOpts {
-            upstream_depth: 1, downstream_depth: 1, plain: true, ..Default::default()
+            upstream_depth: 1,
+            downstream_depth: 1,
+            plain: true,
+            ..Default::default()
         };
         let combined = render_neighbourhood(&gs, "task-mid", &opts).join("\n");
 
         // Depth 1: direct deps only
-        assert!(combined.contains("Up One"), "depth-1 must include direct upstream:\n{combined}");
-        assert!(!combined.contains("Up Two"), "depth-1 must exclude transitive:\n{combined}");
-        assert!(combined.contains("Down One"), "depth-1 must include direct downstream:\n{combined}");
-        assert!(!combined.contains("Down Two"), "depth-1 must exclude transitive:\n{combined}");
+        assert!(
+            combined.contains("Up One"),
+            "depth-1 must include direct upstream:\n{combined}"
+        );
+        assert!(
+            !combined.contains("Up Two"),
+            "depth-1 must exclude transitive:\n{combined}"
+        );
+        assert!(
+            combined.contains("Down One"),
+            "depth-1 must include direct downstream:\n{combined}"
+        );
+        assert!(
+            !combined.contains("Down Two"),
+            "depth-1 must exclude transitive:\n{combined}"
+        );
     }
 
     #[test]
@@ -931,42 +1226,83 @@ mod tests {
         let gs = build_chain();
         // pkb blocks semantics: only downstream
         let opts = NeighbourhoodOpts {
-            upstream_depth: 0, downstream_depth: 3, plain: true, ..Default::default()
+            upstream_depth: 0,
+            downstream_depth: 3,
+            plain: true,
+            ..Default::default()
         };
         let combined = render_neighbourhood(&gs, "task-mid", &opts).join("\n");
-        assert!(!combined.contains("Upstream"), "upstream section must be hidden:\n{combined}");
-        assert!(combined.contains("Downstream"), "downstream section expected:\n{combined}");
-        assert!(combined.contains("Down Two"), "transitive downstream expected:\n{combined}");
+        assert!(
+            !combined.contains("Upstream"),
+            "upstream section must be hidden:\n{combined}"
+        );
+        assert!(
+            combined.contains("Downstream"),
+            "downstream section expected:\n{combined}"
+        );
+        assert!(
+            combined.contains("Down Two"),
+            "transitive downstream expected:\n{combined}"
+        );
     }
 
     #[test]
     fn neighbourhood_plain_mode_strips_ansi() {
         let gs = build_chain();
-        let opts = NeighbourhoodOpts { plain: true, ..Default::default() };
+        let opts = NeighbourhoodOpts {
+            plain: true,
+            ..Default::default()
+        };
         let combined = render_neighbourhood(&gs, "task-mid", &opts).join("\n");
-        assert!(!combined.contains("\x1b["), "plain mode must not emit ANSI:\n{combined}");
+        assert!(
+            !combined.contains("\x1b["),
+            "plain mode must not emit ANSI:\n{combined}"
+        );
     }
 
     #[test]
     fn neighbourhood_works_for_epic_with_children() {
         let gs = build_chain();
-        let opts = NeighbourhoodOpts { plain: true, ..Default::default() };
+        let opts = NeighbourhoodOpts {
+            plain: true,
+            ..Default::default()
+        };
         let combined = render_neighbourhood(&gs, "epic-1", &opts).join("\n");
 
         // Epic should show child task in its downstream tree
-        assert!(combined.contains("\u{2605} Epic One"), "missing target epic:\n{combined}");
-        assert!(combined.contains("Mid Task"), "epic should show child:\n{combined}");
-        assert!(combined.contains("(child)") || combined.contains("Downstream"),
-            "expected child section:\n{combined}");
+        assert!(
+            combined.contains("\u{2605} Epic One"),
+            "missing target epic:\n{combined}"
+        );
+        assert!(
+            combined.contains("Mid Task"),
+            "epic should show child:\n{combined}"
+        );
+        assert!(
+            combined.contains("(child)") || combined.contains("Downstream"),
+            "expected child section:\n{combined}"
+        );
     }
 
     #[test]
     fn neighbourhood_isolated_node() {
-        let docs = vec![
-            make_doc_full("tasks/lone.md", "Lonely", "task", "active", "task-lone", None, &[], &[], &[], &[]),
-        ];
+        let docs = vec![make_doc_full(
+            "tasks/lone.md",
+            "Lonely",
+            "task",
+            "active",
+            "task-lone",
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+        )];
         let gs = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
-        let opts = NeighbourhoodOpts { plain: true, ..Default::default() };
+        let opts = NeighbourhoodOpts {
+            plain: true,
+            ..Default::default()
+        };
         let combined = render_neighbourhood(&gs, "task-lone", &opts).join("\n");
         assert!(combined.contains("\u{2605} Lonely"));
         assert!(combined.contains("no dependency relationships"));

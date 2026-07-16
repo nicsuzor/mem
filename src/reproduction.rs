@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::document_crud::{update_document, create_document, DocumentFields};
+    use crate::document_crud::{create_document, update_document, DocumentFields};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -30,6 +30,9 @@ mod tests {
         let dash_count = content.matches("---").count();
         assert_eq!(dash_count, 2, "Should have exactly two '---' separators");
 
-        assert!(content.contains("title: Updated Title") || content.contains("title: \"Updated Title\""));
+        assert!(
+            content.contains("title: Updated Title")
+                || content.contains("title: \"Updated Title\"")
+        );
     }
 }

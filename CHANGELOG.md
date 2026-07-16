@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.73](https://github.com/nicsuzor/mem/compare/mem-v0.3.72...mem-v0.3.73) (2026-07-06)
+
+
+### Features
+
+* **cli:** display enhancements and GPU optimizations ([#460](https://github.com/nicsuzor/mem/issues/460)) ([7717fdc](https://github.com/nicsuzor/mem/commit/7717fdcd8e650450a964d9c5b26a53b3267a48b7))
+* **crud:** cap filename slugs at 80 chars ([#457](https://github.com/nicsuzor/mem/issues/457)) ([85ff152](https://github.com/nicsuzor/mem/commit/85ff152bf67559f2dc04995a5773f3a4f065104d))
+* **project:** collapse 'project' to one concept — polecat.yaml-validated routing slug ([3d43413](https://github.com/nicsuzor/mem/commit/3d43413969d939857cb81d9f5d97994fa4bf902c))
+* write last_modified with local timezone to yaml header of created/modified files ([#459](https://github.com/nicsuzor/mem/issues/459)) ([716ff32](https://github.com/nicsuzor/mem/commit/716ff32e035e52ba4b926cdce78de6ec1b6fd507))
+
+
+### Bug Fixes
+
+* **crud:** correct misleading parent-type list in create_task error ([9ae4f58](https://github.com/nicsuzor/mem/commit/9ae4f58b918ace14eedf7637afeab1a463990c9b))
+* **docs:** realign CORE.md module table + fix stale ACTIONABLE_TYPES doc comment ([9a8d442](https://github.com/nicsuzor/mem/commit/9a8d442e25669e2a6774fe9e0ac32770b0a3cc8b))
+* **document_crud:** remove dead 'project' match arms in create_document ([4a04c8d](https://github.com/nicsuzor/mem/commit/4a04c8dc2e3c4ab3b927eb3f788553549b8f9b68))
+* **index:** index everything via a single staleness predicate ([#455](https://github.com/nicsuzor/mem/issues/455)) ([309717e](https://github.com/nicsuzor/mem/commit/309717ed3c55fab2d73b3a08a84258b08ddbeb3f))
+* **review:** close claim_task validation gap + four Copilot findings ([c270e4a](https://github.com/nicsuzor/mem/commit/c270e4a9f24ff79e3f017e448ea03f85bcb5c6f6))
+* **tests:** polecat.yaml fixture for decompose_task_indexing (ONNX-gated in sandbox, runs in CI) ([3b3ab1c](https://github.com/nicsuzor/mem/commit/3b3ab1caa814e3eba69b17e62b526428eae79962))
+* **tests:** repair stale 'active'-status fixtures broken by the status-alias migration ([6fe249f](https://github.com/nicsuzor/mem/commit/6fe249f911242d9ad471f6b65e24a1beaea2c06f))
+
+
+### Documentation
+
+* mark dead project-type graph_stats counters; reconcile batch-graph-operations spec ([37a15d5](https://github.com/nicsuzor/mem/commit/37a15d575a5a3d94f2644593029d3b8b118677b3))
+
+
+### Miscellaneous
+
+* remove scripts/push-vectors.sh (moved to dotfiles) ([#453](https://github.com/nicsuzor/mem/issues/453)) ([27d4a1c](https://github.com/nicsuzor/mem/commit/27d4a1c410742fde144aaba81b39574e0ab9c63e))
+* saving uncommitted agent work ([#456](https://github.com/nicsuzor/mem/issues/456)) ([0c5d2f2](https://github.com/nicsuzor/mem/commit/0c5d2f2926f2188641a2be8c84cd5df76ff1bf58))
+
 ## [0.3.72](https://github.com/nicsuzor/mem/compare/mem-v0.3.71...mem-v0.3.72) (2026-06-25)
 
 

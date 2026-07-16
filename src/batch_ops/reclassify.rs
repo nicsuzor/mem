@@ -1,7 +1,7 @@
 //! `batch_reclassify` — change document type and move files.
 
-use super::{BatchContext, BatchSummary, TaskAction, TaskError};
 use super::filters::FilterSet;
+use super::{BatchContext, BatchSummary, TaskAction, TaskError};
 use crate::graph_store::GraphStore;
 use std::collections::HashMap;
 use std::path::Path;

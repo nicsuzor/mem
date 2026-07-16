@@ -952,12 +952,51 @@ async fn main() -> Result<()> {
     let pkb_root = PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root));
     let db_path = PathBuf::from(&cli.db_path);
 
-    // Disable GPU for quick interactive commands unless explicitly overridden
-    let is_batch_op = matches!(
+    // Disable GPU for quick interactive commands unless explicitly overridden.
+    // We explicitly list interactive commands here instead of whitelisting batch ops
+    // so that any new, unknown commands will safely default to using the GPU,
+    // avoiding silent massive performance regressions in heavy processing tasks.
+    let disables_gpu = matches!(
         command,
-        Commands::Reindex { .. } | Commands::BenchReindex { .. }
+        Commands::Search { .. }
+            | Commands::Add { .. }
+            | Commands::Tasks { .. }
+            | Commands::Focus { .. }
+            | Commands::Show { .. }
+            | Commands::Deps { .. }
+            | Commands::Metrics { .. }
+            | Commands::New { .. }
+            | Commands::Subtask { .. }
+            | Commands::Remember { .. }
+            | Commands::Append { .. }
+            | Commands::Delete { .. }
+            | Commands::Done { .. }
+            | Commands::Update { .. }
+            | Commands::Context { .. }
+            | Commands::Trace { .. }
+            | Commands::Orphans { .. }
+            | Commands::Graph { .. }
+            | Commands::Recall { .. }
+            | Commands::Tags { .. }
+            | Commands::Forget { .. }
+            | Commands::Memories { .. }
+            | Commands::Blocks { .. }
+            | Commands::RenameId { .. }
+            | Commands::MergeNode { .. }
+            | Commands::Lint { .. }
+            | Commands::Eval { .. }
+            | Commands::GraphStats { .. }
+            | Commands::Duplicates { .. }
+            | Commands::Stats { .. }
+            | Commands::Similarity { .. }
+            | Commands::Batch(BatchCommands::Reparent { .. })
+            | Commands::Batch(BatchCommands::Archive { .. })
+            | Commands::Batch(BatchCommands::Merge { .. })
+            | Commands::Batch(BatchCommands::CreateEpics { .. })
+            | Commands::Batch(BatchCommands::Reclassify { .. })
+            | Commands::Migrate(MigrateCommands::TargetParents { .. })
     );
-    if !is_batch_op && std::env::var("AOPS_GPU").is_err() {
+    if disables_gpu && std::env::var("AOPS_GPU").is_err() {
         std::env::set_var("AOPS_GPU", "0");
     }
 

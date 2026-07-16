@@ -80,11 +80,7 @@ fn initialize_request(id: u64) -> String {
 }
 
 fn tool_call_request(id: u64, name: &str, args: Value) -> String {
-    jsonrpc_request(
-        id,
-        "tools/call",
-        json!({"name": name, "arguments": args}),
-    )
+    jsonrpc_request(id, "tools/call", json!({"name": name, "arguments": args}))
 }
 
 /// Drive the `pkb mcp` server over stdio, one request/response at a time.
@@ -238,7 +234,7 @@ fn test_decompose_task_indexing() {
             json!({
                 "id": "task-parent"
             }),
-        )
+        ),
     ];
 
     let responses = stdio_session_sequential(pkb.path(), &messages);
@@ -246,13 +242,15 @@ fn test_decompose_task_indexing() {
     let decomp_res = &responses[1];
     assert!(
         decomp_res.get("result").is_some(),
-        "decompose_task failed: {:?}", decomp_res
+        "decompose_task failed: {:?}",
+        decomp_res
     );
 
     let get_res = &responses[2];
     assert!(
         get_res.get("result").is_some(),
-        "get_task failed: {:?}", get_res
+        "get_task failed: {:?}",
+        get_res
     );
     let text = get_res["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Subtask 1"), "task body should contain title");
@@ -260,8 +258,14 @@ fn test_decompose_task_indexing() {
     let children_res = &responses[3];
     assert!(
         children_res.get("result").is_some(),
-        "get_task_children failed: {:?}", children_res
+        "get_task_children failed: {:?}",
+        children_res
     );
-    let children_text = children_res["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(children_text.contains("task-sub1"), "children response should contain the subtask ID");
+    let children_text = children_res["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        children_text.contains("task-sub1"),
+        "children response should contain the subtask ID"
+    );
 }
