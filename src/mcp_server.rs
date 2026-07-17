@@ -1340,13 +1340,14 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
 
-        let mut output = String::new();
-        let mut count = 0;
+        // Filter to actionable, in-scope candidates first (order not yet final —
+        // store.search only sorted by raw semantic score, which has no title-match
+        // term). Re-scoring + re-sorting by title_boost below mirrors the fix in
+        // handle_pkb_search so a near-exact title match isn't buried behind
+        // higher-raw-score-but-tangential tasks (task_1542e818).
+        let mut candidates: Vec<(&crate::vectordb::SearchResult, f32)> = Vec::new();
 
         for r in &results {
-            if count >= limit {
-                break;
-            }
             let is_target = r
                 .doc_type
                 .as_deref()
@@ -1405,10 +1406,19 @@ impl PkbSearchServer {
                 }
             }
 
+            candidates.push((r, Self::task_search_score(query, r)));
+        }
+
+        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut output = String::new();
+        let mut count = 0;
+
+        for (r, score) in candidates.into_iter().take(limit) {
             count += 1;
             output.push_str(&format!(
                 "### {}. {} (score: {:.3})\n",
-                count, r.title, r.score
+                count, r.title, score
             ));
 
             // Direct ID lookup in the graph
@@ -2277,6 +2287,94 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    /// Weight applied to the overlap-coefficient ratio in [`Self::title_match_boost`].
+    /// Calibrated so a near-exact title match (overlap coefficient ~0.3-0.45
+    /// against a realistic multi-word query with title boilerplate) outscores
+    /// the existing 0.15 `type_boost` even when the type-boosted competitor has
+    /// a higher raw similarity score (see task_1542e818 for the motivating case
+    /// and derivation).
+    const TITLE_BOOST_WEIGHT: f32 = 2.0;
+
+    /// Minimal stopword list for title/query token overlap. Deliberately short —
+    /// this only needs to strip the connective words common in both task titles
+    /// and search queries, not do full NLP.
+    const TITLE_BOOST_STOPWORDS: &'static [&'static str] = &[
+        "a", "an", "and", "at", "for", "in", "is", "of", "on", "or", "the", "to", "with",
+    ];
+
+    /// Token-overlap boost rewarding queries that are a near-exact match to a
+    /// document's title. Without this, a title-level match sits in the same
+    /// score band as tangentially-related body hits (see task_1542e818) — there
+    /// was previously no title-match term in the ranking formula at all.
+    ///
+    /// Returns a boost in `[0.0, TITLE_BOOST_WEIGHT]`: the overlap coefficient
+    /// (`|query_tokens ∩ title_tokens| / min(|query_tokens|, |title_tokens|)`)
+    /// of lowercased, stopword-filtered word tokens between `query` and `title`,
+    /// scaled by `TITLE_BOOST_WEIGHT`. Composes as an additive term alongside
+    /// `boost`/`type_boost` in the existing
+    /// `score * (1.0 + boost + type_boost + title_boost)` formula.
+    ///
+    /// Overlap coefficient (not Jaccard) deliberately: task/document titles
+    /// routinely carry boilerplate irrelevant to the query — due-dates,
+    /// parenthetical codes, IDs — that inflates a Jaccard union and dilutes the
+    /// signal without being wrong. Dividing by the *smaller* token set instead
+    /// asks "is (most of) the query's content contained in the title?", which
+    /// survives that boilerplate. See task_1542e818 for the motivating case
+    /// where Jaccard proved too weak to overcome PR #406's `type_boost`.
+    fn title_match_boost(query: &str, title: &str) -> f32 {
+        fn tokens(s: &str) -> HashSet<String> {
+            s.to_ascii_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 1 && !PkbSearchServer::TITLE_BOOST_STOPWORDS.contains(w))
+                .map(|w| w.to_string())
+                .collect()
+        }
+
+        let q = tokens(query);
+        let t = tokens(title);
+        if q.is_empty() || t.is_empty() {
+            return 0.0;
+        }
+
+        let intersection = q.intersection(&t).count() as f32;
+        let smaller = q.len().min(t.len()) as f32;
+
+        (intersection / smaller) * Self::TITLE_BOOST_WEIGHT
+    }
+
+    /// `type_boost` for `search`'s type-based ranking bump (PR #406): surfaces
+    /// knowledge/memory/note/insight/observation docs over transient tasks,
+    /// absent a title match. Deliberately does not fire for tasks — see
+    /// [`Self::ranked_score`] for how it composes with `title_match_boost`.
+    fn type_boost_for(doc_type: Option<&str>) -> f32 {
+        match doc_type.map(|s| s.to_ascii_lowercase()).as_deref() {
+            Some("knowledge") | Some("memory") | Some("note") | Some("insight")
+            | Some("observation") => 0.15,
+            _ => 0.0,
+        }
+    }
+
+    /// The `search` tool's per-result ranking score: raw semantic `r.score`,
+    /// rescaled by graph-proximity `boost`, `type_boost` (knowledge/memory
+    /// surfacing, PR #406) and `title_boost` (near-exact title match,
+    /// task_1542e818), plus a small confidence nudge. Pulled out as a pure
+    /// function so both the handler and its tests share one formula.
+    fn ranked_score(query: &str, r: &crate::vectordb::SearchResult, boost: f32, confidence: f32) -> f32 {
+        let type_boost = Self::type_boost_for(r.doc_type.as_deref());
+        let title_boost = Self::title_match_boost(query, &r.title);
+        r.score * (1.0 + boost + type_boost + title_boost) + (confidence * 0.05)
+    }
+
+    /// The `task_search` tool's per-result ranking score. Simpler than
+    /// [`Self::ranked_score`]: `task_search` only ever surfaces actionable types
+    /// (tasks/epics/learn), so `type_boost` never applies here — but it shares
+    /// the same `title_boost` fix (task_1542e818), since `task_search` previously
+    /// had no title-match term either and relied entirely on `store.search`'s
+    /// pre-sort order.
+    fn task_search_score(query: &str, r: &crate::vectordb::SearchResult) -> f32 {
+        r.score * (1.0 + Self::title_match_boost(query, &r.title))
+    }
+
     fn handle_pkb_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let query = args
             .get("query")
@@ -2335,26 +2433,12 @@ impl PkbSearchServer {
                 let node_id = node.as_ref().map(|n| n.id.clone());
                 let confidence = node.as_ref().and_then(|n| n.confidence).unwrap_or(0.5) as f32;
 
-                let boost = node_id
+                let boost = *node_id
                     .as_ref()
                     .and_then(|nid| boost_map.get(nid))
                     .unwrap_or(&0.0);
 
-                let type_boost = match r
-                    .doc_type
-                    .as_deref()
-                    .map(|s| s.to_ascii_lowercase())
-                    .as_deref()
-                {
-                    Some("knowledge") | Some("memory") | Some("note") | Some("insight")
-                    | Some("observation") => 0.15,
-                    _ => 0.0,
-                };
-
-                (
-                    r,
-                    r.score * (1.0 + boost + type_boost) + (confidence * 0.05),
-                )
+                (r, Self::ranked_score(query, r, boost, confidence))
             })
             .collect();
 
@@ -10021,6 +10105,194 @@ projects:
             parsed["node_count"].as_u64().unwrap_or(0),
             2,
             "node_count must be exactly 2 (initial-task + new-task): {text}"
+        );
+    }
+}
+
+// ===========================================================================
+// task_1542e818 — title-match ranking boost
+// ===========================================================================
+
+/// Regression coverage for task_1542e818: `search`/`task_search` previously had
+/// no title-match term at all, so a near-exact title match could sit in the
+/// same tight score band as tangential body hits (or lose outright to the
+/// PR #406 `type_boost` given to knowledge/memory docs). These tests exercise
+/// the exact pure functions (`title_match_boost`, `ranked_score`,
+/// `task_search_score`) the handlers call — no ONNX/store round-trip needed,
+/// since the dummy test embedder returns zero vectors and would collapse the
+/// multiplicative formula to zero regardless of the fix.
+#[cfg(test)]
+mod title_match_ranking_tests {
+    use super::*;
+    use crate::vectordb::SearchResult;
+    use std::path::PathBuf;
+
+    fn result(title: &str, score: f32, doc_type: Option<&str>) -> SearchResult {
+        SearchResult {
+            path: PathBuf::new(),
+            title: title.to_string(),
+            score,
+            snippet: String::new(),
+            chunk_text: String::new(),
+            id: title.to_string(),
+            date: None,
+            doc_type: doc_type.map(|s| s.to_string()),
+            status: None,
+            tags: vec![],
+            confidence: None,
+        }
+    }
+
+    #[test]
+    fn title_match_boost_is_max_for_exact_match() {
+        let boost = PkbSearchServer::title_match_boost(
+            "write reference for Jo Gray",
+            "Write Reference For Jo Gray",
+        );
+        assert!(
+            (boost - PkbSearchServer::TITLE_BOOST_WEIGHT).abs() < 1e-6,
+            "case/whitespace-only differences must still score as an exact match, got {boost}"
+        );
+    }
+
+    #[test]
+    fn title_match_boost_is_zero_for_disjoint_titles() {
+        let boost = PkbSearchServer::title_match_boost(
+            "write reference for Jo Gray promotion",
+            "Quarterly infrastructure budget review",
+        );
+        assert_eq!(boost, 0.0, "completely unrelated titles must get no boost");
+    }
+
+    #[test]
+    fn title_match_boost_is_zero_when_either_side_has_no_content_words() {
+        // Only stopwords on the query side after filtering.
+        let boost = PkbSearchServer::title_match_boost("the a of", "Write Reference For Jo Gray");
+        assert_eq!(boost, 0.0);
+    }
+
+    #[test]
+    fn title_match_boost_scales_with_partial_overlap() {
+        let strong = PkbSearchServer::title_match_boost(
+            "write reference for Jo Gray promotion university of sydney",
+            "Referee report for Dr Joanne Gray promotion (Univ Sydney)",
+        );
+        let weak = PkbSearchServer::title_match_boost(
+            "write reference for Jo Gray promotion university of sydney",
+            "Jodie Siganto Paper Collaboration (2013)",
+        );
+        assert!(
+            strong > weak,
+            "a title sharing 'gray'/'promotion'/'sydney' must score higher than one sharing nothing relevant (strong={strong}, weak={weak})"
+        );
+        assert!(strong > 0.0 && strong < PkbSearchServer::TITLE_BOOST_WEIGHT);
+        assert_eq!(weak, 0.0);
+    }
+
+    /// The motivating case from task_1542e818, reconstructed from real production
+    /// evidence gathered 2026-07-17 against the live PKB MCP server (pkb 0.3.73):
+    /// for the query "write reference for Jo Gray promotion university of sydney",
+    /// `search` ranked a memory node (mem_353bbbe6, boosted by `type_boost`) at
+    /// #1 and the actionable task (task_764ea48c) at #4, behind a second,
+    /// less-precisely-titled task (task_102e721f). Raw (pre-`title_boost`) scores
+    /// below are back-solved from the live displayed scores assuming the default
+    /// confidence of 0.5: mem_353bbbe6 raw≈0.620 (displayed 0.738 incl. its 0.15
+    /// type_boost), task_764ea48c raw≈0.644 (displayed 0.669), task_102e721f
+    /// raw≈0.667 (displayed 0.692). Without `title_boost` this test fails exactly
+    /// as production did (task_764ea48c is neither #1 nor even #2).
+    #[test]
+    fn ranked_score_surfaces_near_exact_title_match_ahead_of_type_boosted_and_higher_raw_score_rivals()
+    {
+        let query = "write reference for Jo Gray promotion university of sydney";
+
+        let target = result(
+            "Referee report for Dr Joanne Gray promotion (Univ Sydney) — due COB Thu 16 Jul",
+            0.644,
+            Some("task"),
+        );
+        let type_boosted_memory = result(
+            "Referee letter draft — Dr Joanne Gray promotion to Level D (USyd)",
+            0.620,
+            Some("memory"),
+        );
+        let higher_raw_score_task = result(
+            "Support Joanne Gray USyd out-of-round promotion",
+            0.667,
+            Some("task"),
+        );
+
+        let target_score = PkbSearchServer::ranked_score(query, &target, 0.0, 0.5);
+        let memory_score = PkbSearchServer::ranked_score(query, &type_boosted_memory, 0.0, 0.5);
+        let rival_score = PkbSearchServer::ranked_score(query, &higher_raw_score_task, 0.0, 0.5);
+
+        assert!(
+            target_score > memory_score,
+            "near-exact title match (task_764ea48c, {target_score}) must outrank the type_boosted memory note ({memory_score})"
+        );
+        assert!(
+            target_score > rival_score,
+            "near-exact title match (task_764ea48c, {target_score}) must outrank the higher-raw-score-but-less-precisely-titled rival ({rival_score})"
+        );
+    }
+
+    /// PR #406's original purpose must survive this change: absent a title
+    /// match, a knowledge/memory-type doc still outranks a same-raw-score task.
+    #[test]
+    fn ranked_score_preserves_type_boost_when_no_title_match() {
+        let query = "quarterly infrastructure budget review";
+
+        let memory_doc = result("Notes on cloud spend patterns", 0.5, Some("memory"));
+        let task_doc = result("Fix the flaky deploy pipeline", 0.5, Some("task"));
+
+        let memory_score = PkbSearchServer::ranked_score(query, &memory_doc, 0.0, 0.5);
+        let task_score = PkbSearchServer::ranked_score(query, &task_doc, 0.0, 0.5);
+
+        assert!(
+            memory_score > task_score,
+            "absent any title match, type_boost must still surface the memory doc ({memory_score}) over the task ({task_score})"
+        );
+        // Exactly the pre-existing 15% multiplicative gap — confirms title_boost
+        // contributed nothing here (both titles are irrelevant to the query).
+        assert!((memory_score - task_score - 0.5 * 0.15).abs() < 1e-5);
+    }
+
+    /// `task_search` has its own scoring path (no type_boost — only actionable
+    /// types ever reach it) but shared the same missing-title-term root cause.
+    /// Confirms `task_search_score` reorders the same three candidates as
+    /// `ranked_score` does above, using task_search's live raw scores
+    /// (2026-07-17): task_102e721f 0.667, task_1542e818 0.656 (the bug-report
+    /// task itself, which quotes the query verbatim in its body and so scores
+    /// high on raw chunk similarity despite an unrelated title), task_764ea48c
+    /// 0.644. Without title_boost, task_764ea48c is buried in 3rd.
+    #[test]
+    fn task_search_score_surfaces_near_exact_title_match_first() {
+        let query = "write reference for Jo Gray promotion university of sydney";
+
+        let target = result(
+            "Referee report for Dr Joanne Gray promotion (Univ Sydney) — due COB Thu 16 Jul",
+            0.644,
+            Some("task"),
+        );
+        let higher_raw_score_rival = result(
+            "Support Joanne Gray USyd out-of-round promotion",
+            0.667,
+            Some("task"),
+        );
+        let keyword_stuffed_unrelated_title = result(
+            "PKB search ranking: no discriminative boost for exact/near-title matches",
+            0.656,
+            Some("task"),
+        );
+
+        let target_score = PkbSearchServer::task_search_score(query, &target);
+        let rival_score = PkbSearchServer::task_search_score(query, &higher_raw_score_rival);
+        let unrelated_score =
+            PkbSearchServer::task_search_score(query, &keyword_stuffed_unrelated_title);
+
+        assert!(target_score > rival_score, "{target_score} vs {rival_score}");
+        assert!(
+            target_score > unrelated_score,
+            "{target_score} vs {unrelated_score}"
         );
     }
 }
