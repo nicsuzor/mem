@@ -21,6 +21,14 @@ use std::sync::Arc;
 
 const GOAL_TYPE_ENUM: &[&str] = &["committed", "aspirational", "learning"];
 
+/// Hard ceiling on any client-supplied result-count parameter (`limit`,
+/// `max_results`, `top_n`/`n`, etc). Applied on top of each tool's own
+/// default — defaults are unchanged, this only prevents a client from
+/// requesting an unbounded/huge result set that could blow out its own
+/// context window. Tools with deliberate "0/None = unlimited" semantics
+/// (e.g. `pkb_orphans`) are exempt for the unlimited case by design.
+const MAX_RESULTS: usize = 1000;
+
 // =============================================================================
 // MCP SERVER
 // =============================================================================
@@ -206,6 +214,23 @@ impl PkbSearchServer {
             rel.to_path_buf()
         } else {
             self.pkb_root.join(rel)
+        }
+    }
+
+    /// Optionally truncate a document/task body to at most `max_bytes` bytes,
+    /// on a UTF-8-safe boundary, appending a marker noting the true size.
+    /// `max_bytes: None` (the default in every caller) is a no-op — full-body
+    /// reads are unchanged unless a caller opts in.
+    fn truncate_body(body: String, max_bytes: Option<usize>) -> String {
+        match max_bytes {
+            Some(max) if body.len() > max => {
+                let boundary = body.floor_char_boundary(max);
+                let total = body.len();
+                let mut truncated = body[..boundary].to_string();
+                truncated.push_str(&format!("\n…[truncated, {total} bytes total]"));
+                truncated
+            }
+            _ => body,
         }
     }
 
@@ -1228,6 +1253,12 @@ impl PkbSearchServer {
             data: None,
         })?;
 
+        let max_bytes = args
+            .get("max_bytes")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let content = Self::truncate_body(content, max_bytes);
+
         Ok(CallToolResult::success(vec![Content::text(format!(
             "## {}\n\n{}",
             label, content
@@ -1254,10 +1285,13 @@ impl PkbSearchServer {
             )]));
         }
 
+        // Default is "all matching" but always capped at MAX_RESULTS so a giant
+        // PKB can't blow up a client's context in one response — use `offset`
+        // to page through the rest.
         let page: Vec<_> = results
             .into_iter()
             .skip(offset)
-            .take(limit.unwrap_or(total))
+            .take(limit.unwrap_or(total).min(MAX_RESULTS))
             .collect();
         let showing = page.len();
 
@@ -1294,7 +1328,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
         let include_subtasks = args
             .get("include_subtasks")
             .and_then(|v| v.as_bool())
@@ -1521,7 +1555,7 @@ impl PkbSearchServer {
             });
         }
 
-        let n = args.get("n").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let n = (args.get("n").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
 
         let node_type = args.get("node_type").and_then(|v| v.as_str());
 
@@ -2167,7 +2201,11 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let hops = args.get("hops").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+        // Clamped to 5 — the ego subgraph grows combinatorially with hop count
+        // on a densely-linked graph, so an unbounded value could return a huge
+        // neighbourhood.
+        let hops = ((args.get("hops").and_then(|v| v.as_u64()).unwrap_or(2)) as usize).min(5);
+        let max_backlinks = (args.get("max_backlinks").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
 
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
@@ -2256,7 +2294,7 @@ impl PkbSearchServer {
             for ntype in types {
                 let entries = &backlinks[ntype];
                 output.push_str(&format!("\n**{ntype}** ({} links)\n", entries.len()));
-                for (source_node, edge_type) in entries {
+                for (source_node, edge_type) in entries.iter().take(max_backlinks) {
                     let supersedes_note = if **edge_type == crate::graph::EdgeType::Supersedes {
                         " [SUPERSEDES THIS]"
                     } else {
@@ -2265,6 +2303,12 @@ impl PkbSearchServer {
                     output.push_str(&format!(
                         "- `{}` [{:?}]{} {}\n",
                         source_node.id, edge_type, supersedes_note, source_node.label
+                    ));
+                }
+                if entries.len() > max_backlinks {
+                    output.push_str(&format!(
+                        "  …and {} more (raise `max_backlinks` to see them)\n",
+                        entries.len() - max_backlinks
                     ));
                 }
             }
@@ -2385,7 +2429,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
 
         let boost_id = args.get("boost_id").and_then(|v| v.as_str());
         let detail = args
@@ -2642,7 +2686,10 @@ impl PkbSearchServer {
             // Sort by label for consistent output
             orphans.sort_by(|a, b| a.label.cmp(&b.label));
 
-            let max = limit.unwrap_or(orphans.len());
+            let max = match limit {
+                None | Some(0) => orphans.len(),
+                Some(n) => n,
+            };
             let total = orphans.len();
             let showing = total.min(max);
 
@@ -2675,7 +2722,10 @@ impl PkbSearchServer {
         if !lint_warnings.is_empty() {
             lint_warnings.sort_by(|a, b| a.label.cmp(&b.label));
 
-            let max = limit.unwrap_or(lint_warnings.len());
+            let max = match limit {
+                None | Some(0) => lint_warnings.len(),
+                Some(n) => n,
+            };
             let total = lint_warnings.len();
             let showing = total.min(max);
 
@@ -2714,7 +2764,7 @@ impl PkbSearchServer {
             .get("threshold")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.85);
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
 
         let graph = self.graph.read();
         let store = self.store.read();
@@ -2895,6 +2945,12 @@ impl PkbSearchServer {
         } else {
             body
         };
+
+        let max_bytes = args
+            .get("max_bytes")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let body = Self::truncate_body(body, max_bytes);
 
         // Compute deadline metadata
         let today = chrono::Utc::now().date_naive();
@@ -3401,6 +3457,32 @@ impl PkbSearchServer {
             message: Cow::from(format!("Document not found: {id}")),
             data: None,
         })?;
+
+        // Optional type guard (folded in from the former `delete_memory` tool):
+        // pass type="memory" to restrict deletion to memory-type nodes (memory,
+        // note, insight, observation), or any other type string to require an
+        // exact (case-insensitive) node_type match.
+        if let Some(guard) = args.get("type").and_then(|v| v.as_str()) {
+            let node_type = node.node_type.as_deref().unwrap_or("");
+            let matches = if guard.eq_ignore_ascii_case("memory") {
+                let memory_types = ["memory", "note", "insight", "observation"];
+                memory_types
+                    .iter()
+                    .any(|mt| node_type.eq_ignore_ascii_case(mt))
+            } else {
+                node_type.eq_ignore_ascii_case(guard)
+            };
+            if !matches {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Document {id} does not match type guard '{guard}' (actual type: {:?})",
+                        node.node_type
+                    )),
+                    data: None,
+                });
+            }
+        }
 
         let abs_path = self.abs_path(&node.path);
         let label = node.label.clone();
@@ -4386,7 +4468,7 @@ impl PkbSearchServer {
                 message: Cow::from("Missing required parameter: query"),
                 data: None,
             })?;
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
         let tags: Option<Vec<String>> = args.get("tags").and_then(|v| v.as_array()).map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
@@ -4531,7 +4613,7 @@ impl PkbSearchServer {
         }
 
         let type_filter = args.get("type").and_then(|v| v.as_str());
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
 
         let store = self.store.read();
         let all = store.list_documents(None, type_filter, None, &self.pkb_root);
@@ -4569,7 +4651,7 @@ impl PkbSearchServer {
     }
 
     fn handle_list_memories(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize).min(MAX_RESULTS);
         let tags: Option<Vec<String>> = args.get("tags").and_then(|v| v.as_array()).map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
@@ -4619,45 +4701,6 @@ impl PkbSearchServer {
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
-    }
-
-    fn handle_delete_memory(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let id = args
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: id"),
-                data: None,
-            })?;
-
-        let graph = self.graph.read();
-        let node = graph.resolve(id).ok_or_else(|| McpError {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from(format!("Memory not found: {id}")),
-            data: None,
-        })?;
-
-        let memory_types = ["memory", "note", "insight", "observation"];
-        let is_memory = node
-            .node_type
-            .as_deref()
-            .map(|t| memory_types.iter().any(|mt| t.eq_ignore_ascii_case(mt)))
-            .unwrap_or(false);
-
-        if !is_memory {
-            return Err(McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(format!(
-                    "Not a memory document: {id} (type: {:?})",
-                    node.node_type
-                )),
-                data: None,
-            });
-        }
-        drop(graph);
-
-        self.handle_delete_document(args)
     }
 
     fn handle_decompose_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -5013,6 +5056,10 @@ impl PkbSearchServer {
             .get("direction")
             .and_then(|v| v.as_str())
             .unwrap_or("upstream");
+        // Bounds traversal depth so a densely-linked graph can't return an
+        // unbounded tree. MAX_RESULTS is not the right cap here (this bounds
+        // hops, not row count) so it just gets a sane ceiling of its own.
+        let max_depth = (args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(1000);
 
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
@@ -5024,9 +5071,9 @@ impl PkbSearchServer {
         let node_label = node.label.clone();
 
         let tree = if direction.eq_ignore_ascii_case("downstream") {
-            graph.blocks_tree(&node_id)
+            graph.blocks_tree_bounded(&node_id, max_depth)
         } else {
-            graph.dependency_tree(&node_id)
+            graph.dependency_tree_bounded(&node_id, max_depth)
         };
 
         if tree.is_empty() {
@@ -5076,6 +5123,11 @@ impl PkbSearchServer {
             .get("recursive")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // Caps how many child rows get *printed* when recursive=true (a deep
+        // epic subtree could otherwise dump thousands of rows). The
+        // completion summary (`total`/`done_count`) still walks the whole
+        // subtree so the counts stay accurate even when printing is capped.
+        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(200) as usize).min(MAX_RESULTS);
 
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
@@ -5099,9 +5151,11 @@ impl PkbSearchServer {
             parent_id: &str,
             recursive: bool,
             depth: usize,
+            limit: usize,
             output: &mut String,
             total: &mut usize,
             done: &mut usize,
+            printed: &mut usize,
         ) {
             if let Some(node) = graph.get_node(parent_id) {
                 for child_id in &node.children {
@@ -5111,30 +5165,35 @@ impl PkbSearchServer {
                         if is_done {
                             *done += 1;
                         }
-                        let indent = "  ".repeat(depth);
-                        let status = child.status.as_deref().unwrap_or("-");
-                        let pri = child.priority.map(|p| format!("P{p} ")).unwrap_or_default();
-                        let cid = child.task_id.as_deref().unwrap_or(&child.id);
-                        // Display-only session/agent identity (D1: soft, non-blocking —
-                        // reviewer-vs-executor separation visible on reads, never enforced).
-                        let who = child
-                            .assignee
-                            .as_deref()
-                            .map(|a| format!(" (@{a})"))
-                            .unwrap_or_default();
-                        output.push_str(&format!(
-                            "{indent}- `{cid}` [{status}] {pri}{}{who}\n",
-                            child.label
-                        ));
+                        if *printed < limit {
+                            let indent = "  ".repeat(depth);
+                            let status = child.status.as_deref().unwrap_or("-");
+                            let pri = child.priority.map(|p| format!("P{p} ")).unwrap_or_default();
+                            let cid = child.task_id.as_deref().unwrap_or(&child.id);
+                            // Display-only session/agent identity (D1: soft, non-blocking —
+                            // reviewer-vs-executor separation visible on reads, never enforced).
+                            let who = child
+                                .assignee
+                                .as_deref()
+                                .map(|a| format!(" (@{a})"))
+                                .unwrap_or_default();
+                            output.push_str(&format!(
+                                "{indent}- `{cid}` [{status}] {pri}{}{who}\n",
+                                child.label
+                            ));
+                            *printed += 1;
+                        }
                         if recursive && !child.children.is_empty() {
                             collect_children(
                                 graph,
                                 &child.id,
                                 recursive,
                                 depth + 1,
+                                limit,
                                 output,
                                 total,
                                 done,
+                                printed,
                             );
                         }
                     }
@@ -5144,16 +5203,24 @@ impl PkbSearchServer {
 
         let mut total = 0usize;
         let mut done_count = 0usize;
+        let mut printed = 0usize;
         collect_children(
             &graph,
             &node_id,
             recursive,
             0,
+            limit,
             &mut output,
             &mut total,
             &mut done_count,
+            &mut printed,
         );
 
+        if total > printed {
+            output.push_str(&format!(
+                "\n…[truncated, showing {printed} of {total} children — pass a higher `limit` to see more]\n"
+            ));
+        }
         output.push_str(&format!("\n**Summary:** {done_count}/{total} complete\n"));
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -5186,7 +5253,7 @@ impl PkbSearchServer {
                     .collect()
             })
             .unwrap_or_default();
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
         let since = args.get("since").and_then(|v| v.as_str());
         let before = args.get("before").and_then(|v| v.as_str());
         let include_subtasks = args
@@ -6272,10 +6339,11 @@ impl PkbSearchServer {
             .get("similarity_threshold")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.85);
+        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize).min(MAX_RESULTS);
 
         let graph = self.graph.read();
         let store = self.store.read();
-        let report = crate::batch_ops::duplicates::find_duplicates(
+        let mut report = crate::batch_ops::duplicates::find_duplicates(
             &graph,
             &store,
             &filters,
@@ -6286,6 +6354,11 @@ impl PkbSearchServer {
         );
         drop(graph);
         drop(store);
+
+        // Cap the number of returned clusters (output only — the O(n²) pairwise
+        // comparison above already ran; `total_clusters`/`total_duplicates` still
+        // report the true totals so a caller can tell truncation happened).
+        report.clusters.truncate(limit);
 
         let json = serde_json::to_string_pretty(&report).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -6585,7 +6658,6 @@ impl PkbSearchServer {
             "detect_weight_divergence" => self.handle_detect_weight_divergence(args),
             "search_by_tag" => self.handle_search_by_tag(args),
             "list_memories" => self.handle_list_memories(args),
-            "delete_memory" => self.handle_delete_memory(args),
             "decompose_task" => self.handle_decompose_task(args),
             "get_dependency_tree" => self.handle_get_dependency_tree(args),
             "get_task_children" => self.handle_get_task_children(args),
@@ -6701,7 +6773,7 @@ impl ServerHandler for PkbSearchServer {
     fn get_info(&self) -> ServerInfo {
         let mut instructions = String::from(
             "PKB Search — semantic search + task graph over personal knowledge base. \
-             39 tools for search, documents, tasks, and knowledge graph. \
+             A suite of tools for search, documents, tasks, and knowledge graph. \
              Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance. \
              Use get_stats to view per-tool usage telemetry.",
         );
@@ -6755,7 +6827,8 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Document ID, filename stem, title, or permalink (uses flexible resolution)" }
+                        "id": { "type": "string", "description": "Document ID, filename stem, title, or permalink (uses flexible resolution)" },
+                        "max_bytes": { "type": "integer", "description": "Optional: truncate the returned body to at most N bytes (UTF-8-safe), appending a truncation marker. Default: unset — full body is returned." }
                     },
                     "required": ["id"]
                 }))
@@ -6772,7 +6845,7 @@ impl PkbSearchServer {
                         "tag": { "type": "string", "description": "Filter by tag" },
                         "type": { "type": "string", "description": "Filter by type" },
                         "status": { "type": "string", "description": "Filter by status" },
-                        "limit": { "type": "integer", "description": "Max results (default: all)" },
+                        "limit": { "type": "integer", "description": "Max results (default: all matching, capped at 1000 — use offset to page further)" },
                         "offset": { "type": "integer", "description": "Skip first N results (default: 0)" }
                     }
                 }))
@@ -6843,7 +6916,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Requires `parent` and `project`. Supports the Birnbaum importance model via `contributes_to` and severity-based prioritization. Parent/child cycles are rejected at write time.",
+                "Create a new task markdown file with YAML frontmatter. Only `title` is required; `parent` and `project` are optional but recommended — omitted tasks inherit the nearest ancestor's project and become orphans without a parent. Supports the Birnbaum importance model via `contributes_to` and severity-based prioritization. Parent/child cycles are rejected at write time.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6852,10 +6925,10 @@ impl PkbSearchServer {
                         "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
                         "parent": { "type": "string", "description": "Parent task ID" },
                         "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See TAXONOMY §Priority Labels." },
-                        "tags": { "type": "array", "items": { "type": "string" } },
-                        "depends_on": { "type": "array", "items": { "type": "string" } },
-                        "assignee": { "type": "string" },
-                        "complexity": { "type": "string" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
+                        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of tasks that must complete before this one is unblocked" },
+                        "assignee": { "type": "string", "description": "Who is responsible for this task" },
+                        "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L')" },
                         "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w'. Parser converts to days." },
                         "consequence": { "type": "string", "description": "Narrative description of what happens if this task is not done or fails." },
                         "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes. SEV4 is lexicographic." },
@@ -6868,13 +6941,19 @@ impl PkbSearchServer {
                         "type": { "type": "string", "enum": ["task", "epic", "learn", "pr", "goal", "target"], "description": "Task type (default: 'task'). Also accepts: epic, learn, pr, goal, target. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
                         "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
                         "allow_missing_parent": { "type": "boolean", "description": "Allow creating under a missing parent (logs warning). Default: false." },
-                        "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." }
+                        "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." },
+                        "session_id": { "type": "string", "description": "Active session ID to record on the task. Falls back to $AOPS_SESSION_ID if omitted." },
+                        "issue_url": { "type": "string", "description": "External issue/ticket URL to link on the task" },
+                        "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of related follow-up tasks" },
+                        "release_summary": { "type": "string", "description": "Detailed technical summary, if creating this task as part of a release/handover" },
+                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this task contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": 3}]. Supports `inherits_from` to copy fields from a prototype edge." }
                     },
                     "required": ["title"]
                 }))
                 .unwrap(),
             )
-            .with_title("Create Task"),
+            .with_title("Create Task")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "claim_task",
                 "Instantiate a template task. When called on a `type: template` node, creates a \
@@ -6890,7 +6969,8 @@ impl PkbSearchServer {
                 }))
                 .unwrap(),
             )
-            .with_title("Claim Template"),
+            .with_title("Claim Template")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "create_memory",
                 "Create a new memory, insight, or observation. Stored in memories/ directory. Use for recording persistent knowledge or session findings.",
@@ -6910,7 +6990,8 @@ impl PkbSearchServer {
                 }))
                 .unwrap(),
             )
-            .with_title("Create Memory"),
+            .with_title("Create Memory")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "create",
                 "Generic document creation with automatic subdirectory routing (tasks/, projects/, goals/, notes/). Use when the specific specialized tool is not applicable.",
@@ -6920,14 +7001,14 @@ impl PkbSearchServer {
                         "title": { "type": "string", "description": "Document title (required)" },
                         "type": { "type": "string", "enum": ["epic", "task", "learn", "pr", "template", "goal", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index"], "description": "Document type (required): note, knowledge, memory, insight, observation, task, epic, goal, target, etc." },
                         "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
-                        "tags": { "type": "array", "items": { "type": "string" } },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                         "body": { "type": "string", "description": "Markdown body" },
                         "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Document/task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
                         "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See TAXONOMY §Priority Labels." },
                         "parent": { "type": "string", "description": "Parent document ID" },
-                        "depends_on": { "type": "array", "items": { "type": "string" } },
-                        "assignee": { "type": "string" },
-                        "complexity": { "type": "string" },
+                        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of documents that must complete before this one is unblocked" },
+                        "assignee": { "type": "string", "description": "Who is responsible for this document" },
+                        "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L')" },
                         "source": { "type": "string", "description": "Source context" },
                         "due": { "type": "string", "description": "Due date" },
                         "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
@@ -6942,7 +7023,8 @@ impl PkbSearchServer {
                 }))
                 .unwrap(),
             )
-            .with_title("Create Document"),
+            .with_title("Create Document")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "append",
                 "Append timestamped content to an existing document by ID. Use for logging progress, adding references, or updating a 'log' section. Not idempotent.",
@@ -6957,7 +7039,8 @@ impl PkbSearchServer {
                 }))
                 .unwrap(),
             )
-            .with_title("Append to Document"),
+            .with_title("Append to Document")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "update_body",
                 "Atomically rewrite the prose body of an existing document. Preserves YAML frontmatter and bumps `modified` timestamp by default. Use instead of `append` when you need full replacement rather than additive logging.",
@@ -6972,14 +7055,16 @@ impl PkbSearchServer {
                 }))
                 .unwrap(),
             )
-            .with_title("Rewrite Document Body"),
+            .with_title("Rewrite Document Body")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "delete",
                 "Permanently delete a document by ID. Removes the file from disk and the vector store index. Use with caution.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Document ID (task ID, memory ID, filename stem, or title). Uses flexible resolution." }
+                        "id": { "type": "string", "description": "Document ID (task ID, memory ID, filename stem, or title). Uses flexible resolution." },
+                        "type": { "type": "string", "description": "Optional type guard — if set, the call fails unless the resolved document's type matches. Pass 'memory' to restrict to memory-type documents (memory, note, insight, observation); any other value requires an exact (case-insensitive) node_type match." }
                     },
                     "required": ["id"]
                 }))
@@ -7002,7 +7087,8 @@ impl PkbSearchServer {
                 }))
                 .unwrap(),
             )
-            .with_title("Complete Task"),
+            .with_title("Complete Task")
+            .with_annotations(ToolAnnotations::new().read_only(false).idempotent(true)),
             Tool::new(
                 "release_task",
                 "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled, partial). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created.",
@@ -7030,7 +7116,8 @@ impl PkbSearchServer {
                 }))
                 .unwrap(),
             )
-            .with_title("Release Task"),
+            .with_title("Release Task")
+            .with_annotations(ToolAnnotations::new().read_only(false).idempotent(true)),
             Tool::new(
                 "list_tasks",
                 "List tasks with smart filtering. Results are returned in `focus_score`-descending order by default (highest-focus first) across every path — default, ready, and blocked — with a deterministic tie-break, so the top rows are the most important and repeated calls are stable; no re-sort is needed. Every row carries `status`. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
@@ -7067,7 +7154,8 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Task ID (e.g. 'framework-6b4325a1'). Also accepts filename stem or title." }
+                        "id": { "type": "string", "description": "Task ID (e.g. 'framework-6b4325a1'). Also accepts filename stem or title." },
+                        "max_bytes": { "type": "integer", "description": "Optional: truncate the returned body to at most N bytes (UTF-8-safe), appending a truncation marker. Default: unset — full body is returned." }
                     },
                     "required": ["id"]
                 }))
@@ -7138,20 +7226,6 @@ impl PkbSearchServer {
             .with_title("List Memories")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
-                "delete_memory",
-                "Permanently delete a memory document. Only works on memory-type nodes (note, insight, observation). Destructive.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Memory ID (supports flexible resolution)" }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Delete Memory")
-            .with_annotations(ToolAnnotations::new().destructive(true)),
-            Tool::new(
                 "decompose_task",
                 "Split a large task into multiple subtasks in one operation. Supports relative sibling references (e.g. '$1') for dependencies. Subtasks inherit the parent's `project` field unless explicitly overridden. Use to structure a newly defined work package.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -7163,19 +7237,19 @@ impl PkbSearchServer {
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "title": { "type": "string" },
+                                    "title": { "type": "string", "description": "Subtask title (required; must be unique among siblings for cross-referencing)" },
                                     "id": { "type": "string", "description": "Optional custom task ID" },
-                                    "priority": { "type": "integer" },
-                                    "depends_on": { "type": "array", "items": { "type": "string" } },
-                                    "tags": { "type": "array", "items": { "type": "string" } },
-                                    "assignee": { "type": "string" },
-                                    "complexity": { "type": "string" },
-                                    "body": { "type": "string" },
-                                    "stakeholder": { "type": "string" },
-                                    "waiting_since": { "type": "string" },
-                                    "consequence": { "type": "string" },
-                                    "severity": { "type": "integer" },
-                                    "goal_type": { "type": "string" },
+                                    "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P3 (Planned)." },
+                                    "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Dependency IDs. Supports positional sibling refs ('$1', '$2', ... 1-indexed into this subtasks array) and case-insensitive sibling title matches, in addition to existing task IDs." },
+                                    "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
+                                    "assignee": { "type": "string", "description": "Who is responsible for this subtask" },
+                                    "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L')" },
+                                    "body": { "type": "string", "description": "Markdown body" },
+                                    "stakeholder": { "type": "string", "description": "Who is waiting on this subtask. Drives waiting urgency in focus scoring." },
+                                    "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date). Falls back to created date if omitted." },
+                                    "consequence": { "type": "string", "description": "Narrative description of what happens if this subtask is not done or fails" },
+                                    "severity": { "type": "integer", "description": "Severity ladder (0-4); only honored for type: target subtasks, otherwise reset to 0 with a warning" },
+                                    "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning" },
                                     "project": { "type": "string", "description": "Override project field (defaults to parent's project)" }
                                 },
                                 "required": ["title"]
@@ -7187,7 +7261,8 @@ impl PkbSearchServer {
                 }))
                 .unwrap(),
             )
-            .with_title("Decompose Task"),
+            .with_title("Decompose Task")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "get_dependency_tree",
                 "Visualize the task dependency graph for a specific node. Upstream shows what the task depends on; downstream shows what it blocks.",
@@ -7195,7 +7270,8 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Task ID" },
-                        "direction": { "type": "string", "description": "Direction: 'upstream' (depends on, default) or 'downstream' (blocks)" }
+                        "direction": { "type": "string", "description": "Direction: 'upstream' (depends on, default) or 'downstream' (blocks)" },
+                        "max_depth": { "type": "integer", "description": "Maximum traversal depth in hops (default: 10)" }
                     },
                     "required": ["id"]
                 }))
@@ -7210,7 +7286,8 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Task ID" },
-                        "recursive": { "type": "boolean", "description": "Include all descendants, not just direct children (default: false)" }
+                        "recursive": { "type": "boolean", "description": "Include all descendants, not just direct children (default: false)" },
+                        "limit": { "type": "integer", "description": "Max child rows to print, most relevant when recursive=true on a deep subtree (default: 200). The completion summary still reflects the full subtree." }
                     },
                     "required": ["id"]
                 }))
@@ -7225,7 +7302,8 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Node ID, task ID, filename stem, or title" },
-                        "hops": { "type": "integer", "description": "Neighbourhood radius in hops (default: 2)" }
+                        "hops": { "type": "integer", "description": "Neighbourhood radius in hops (default: 2, clamped to a max of 5)" },
+                        "max_backlinks": { "type": "integer", "description": "Max backlinks printed per source type (default: 50)" }
                     },
                     "required": ["id"]
                 }))
@@ -7413,7 +7491,8 @@ impl PkbSearchServer {
                         "status": { "type": "string", "description": "Filter by status" },
                         "mode": { "type": "string", "description": "Detection mode: title, semantic, or both (default: both)" },
                         "title_threshold": { "type": "number", "description": "Title similarity threshold 0-1 (default: 0.7)" },
-                        "similarity_threshold": { "type": "number", "description": "Semantic similarity threshold 0-1 (default: 0.85)" }
+                        "similarity_threshold": { "type": "number", "description": "Semantic similarity threshold 0-1 (default: 0.85)" },
+                        "limit": { "type": "integer", "description": "Max duplicate clusters to return (default: 100). `total_clusters`/`total_duplicates` in the response still report the true totals." }
                     }
                 }))
                 .unwrap(),
@@ -7435,7 +7514,7 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Batch Merge Tasks")
-            .with_annotations(ToolAnnotations::new().idempotent(true)),
+            .with_annotations(ToolAnnotations::new().destructive(true).idempotent(true)),
             Tool::new(
                 "merge_node",
                 "Merge source knowledge nodes into a canonical node. Performs a deep merge of all references (wikilinks, parents, etc.) across the entire PKB. Destructive for source nodes (archived).",
@@ -7464,12 +7543,12 @@ impl PkbSearchServer {
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "title": { "type": "string" },
-                                    "id": { "type": "string" },
-                                    "priority": { "type": "integer" },
-                                    "task_ids": { "type": "array", "items": { "type": "string" } },
-                                    "depends_on": { "type": "array", "items": { "type": "string" } },
-                                    "body": { "type": "string" }
+                                    "title": { "type": "string", "description": "Epic title (required)" },
+                                    "id": { "type": "string", "description": "Optional custom epic ID (auto-generated if omitted)" },
+                                    "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical .. P4 Backlog)" },
+                                    "task_ids": { "type": "array", "items": { "type": "string" }, "description": "Existing task IDs to reparent under this new epic (required; unresolvable IDs are reported as errors, not fatal)" },
+                                    "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs the epic itself depends on" },
+                                    "body": { "type": "string", "description": "Markdown body for the epic" }
                                 },
                                 "required": ["title", "task_ids"]
                             },
@@ -7481,7 +7560,8 @@ impl PkbSearchServer {
                 }))
                 .unwrap(),
             )
-            .with_title("Batch Create Epics"),
+            .with_title("Batch Create Epics")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "batch_reclassify",
                 "Correct the type field for multiple documents and move them to their appropriate subdirectories. Idempotent.",

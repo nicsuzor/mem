@@ -287,7 +287,7 @@ It also provides **MCP prompts** to guide AI assistants through common search an
 |----------|-------|
 | **Search** | `search`, `get_document`, `list_documents`, `find_duplicates` |
 | **Tasks** | `task_search`, `list_tasks`, `get_task`, `create_task`, `create_subtask`, `update_task`, `complete_task`, `release_task`, `decompose_task`, `get_dependency_tree`, `get_task_children`, `task_summary`, `get_network_metrics`, `top_n_by_metric` |
-| **Memory** | `retrieve_memory`, `search_by_tag`, `list_memories`, `delete_memory` |
+| **Memory** | `retrieve_memory`, `search_by_tag`, `list_memories`, `delete` (pass `type: "memory"` to restrict to memory-type documents) |
 | **CRUD** | `create`, `create_memory`, `append`, `delete` |
 | **Graph** | `pkb_context`, `pkb_trace`, `pkb_orphans`, `graph_stats`, `graph_json` |
 | **Batch** | `batch_update`, `batch_reparent`, `batch_archive`, `batch_merge`, `batch_create_epics`, `batch_reclassify`, `bulk_reparent`, `merge_node` |
