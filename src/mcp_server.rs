@@ -1973,10 +1973,23 @@ impl PkbSearchServer {
         Ok(res)
     }
 
-    /// Instantiate a `type: template` task.
+    /// Claim a task node.
     ///
-    /// Creates a datestamped instance (`<slug>-<YYYYMMDD>-<HHMM>-<host>.md`) and
-    /// returns the new task via get_task. The template itself is not modified.
+    /// Routes to one of two strategies based on the resolved node's type:
+    ///   - `type: template` -> instantiate a datestamped copy (unchanged
+    ///     behavior; see `claim_template_instance` below).
+    ///   - `type: task` (or untyped, which this codebase's own conventions
+    ///     treat as `task` — see the `unwrap_or_else(|| "task".to_string())`
+    ///     prefix computation elsewhere in this file) -> claim IN PLACE: set
+    ///     `status: in_progress` (+ optional `assignee`/`session_id`), no new
+    ///     node created.
+    ///   - anything else (epic, project, goal, target, ...) -> reject.
+    ///
+    /// The in-place path restores pre-regression behavior: `claim_task` used
+    /// to work on regular task nodes before the template feature was added
+    /// as a special case; a later change tightened the type gate to reject
+    /// *all* non-template nodes instead of falling through to the original
+    /// in-place claim. See `mem_e8f3aa17` / `task_9d568b1b`.
     fn handle_claim_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
@@ -1987,6 +2000,79 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        let resolved_type = {
+            let graph = self.graph.read();
+            let node = graph.resolve(id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Task not found: {id}")),
+                data: None,
+            })?;
+            node.node_type.clone()
+        };
+
+        match resolved_type.as_deref() {
+            Some("template") => self.claim_template_instance(id),
+            None | Some("task") => self.claim_task_in_place(id, args),
+            Some(other) => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "Node '{id}' has type '{other}', not 'template' or 'task'. \
+                     claim_task only works on template or task nodes."
+                )),
+                data: None,
+            }),
+        }
+    }
+
+    /// Claim a regular `type: task` (or untyped) node IN PLACE: set
+    /// `status: in_progress`, optionally record `assignee`/`session_id`, and
+    /// return the task via get_task. No new node is created — this is
+    /// distinct from `claim_template_instance`'s datestamped-copy behavior.
+    fn claim_task_in_place(&self, id: &str, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let mut update_args = serde_json::Map::new();
+        update_args.insert("id".to_string(), JsonValue::String(id.to_string()));
+        update_args.insert(
+            "status".to_string(),
+            JsonValue::String("in_progress".to_string()),
+        );
+        if let Some(assignee) = args.get("assignee").and_then(|v| v.as_str()) {
+            update_args.insert(
+                "assignee".to_string(),
+                JsonValue::String(assignee.to_string()),
+            );
+        }
+        // session_id: arg or env $AOPS_SESSION_ID (same convention as release_task).
+        let session_id = args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| std::env::var("AOPS_SESSION_ID").ok());
+        if let Some(sid) = session_id {
+            update_args.insert("session_id".to_string(), JsonValue::String(sid));
+        }
+
+        self.handle_update_task(&JsonValue::Object(update_args))?;
+
+        // Return the claimed task via get_task, matching claim_task's
+        // established return shape (a full task, not update_task's plain
+        // confirmation string).
+        let get_args = serde_json::json!({ "id": id });
+        self.handle_get_task(&get_args).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!(
+                "claim_task set '{id}' to in_progress but the update is not yet visible in \
+                 the graph. Underlying error: {}. Retry get_task in a moment.",
+                e.message,
+            )),
+            data: None,
+        })
+    }
+
+    /// Instantiate a `type: template` task.
+    ///
+    /// Creates a datestamped instance (`<slug>-<YYYYMMDD>-<HHMM>-<host>.md`) and
+    /// returns the new task via get_task. The template itself is not modified.
+    fn claim_template_instance(&self, id: &str) -> Result<CallToolResult, McpError> {
         // Resolve the node and validate it is a template.
         let (
             template_id,
@@ -6877,14 +6963,18 @@ impl PkbSearchServer {
             .with_title("Create Task"),
             Tool::new(
                 "claim_task",
-                "Instantiate a template task. When called on a `type: template` node, creates a \
-                 datestamped instance (<slug>-<YYYYMMDD>-<HHMM>-<host>.md) and returns it via \
-                 get_task. The template is left untouched. Use for recurring workflows: daily, \
-                 reflect, handover, issue-sweep, etc.",
+                "Claim a task. On a `type: task` (or untyped) node, claims IN PLACE: sets \
+                 status: in_progress (+ optional assignee/session_id), no new node created. \
+                 On a `type: template` node, instantiates a datestamped copy \
+                 (<slug>-<YYYYMMDD>-<HHMM>-<host>.md) and returns it via get_task; the template \
+                 itself is left untouched. Use the template path for recurring workflows: \
+                 daily, reflect, handover, issue-sweep, etc.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Template task ID (must have type: template)" }
+                        "id": { "type": "string", "description": "Task ID (any type: task) or template ID (type: template)" },
+                        "assignee": { "type": "string", "description": "Who is claiming this (task-node path only, ignored for templates)." },
+                        "session_id": { "type": "string", "description": "Active session ID (task-node path only). Falls back to $AOPS_SESSION_ID if omitted." }
                     },
                     "required": ["id"]
                 }))
@@ -11389,15 +11479,133 @@ tags:
     fn claim_task_rejects_non_template() {
         let (server, _tmp) = setup_with_template();
 
-        // Try to claim a project (not a template)
+        // Try to claim an epic (not a template, not a task)
         let err = server
             .handle_claim_task(&serde_json::json!({ "id": "proj-test" }))
-            .expect_err("should fail on non-template node");
+            .expect_err("should fail on non-template, non-task node");
 
         assert!(
             err.message.contains("not 'template'"),
             "error should mention template type requirement; got: {}",
             err.message
+        );
+    }
+
+    /// Regression test for mem_e8f3aa17: `claim_task` on a regular `type:
+    /// task` node must claim it IN PLACE (status -> in_progress, no new
+    /// node) instead of rejecting it with "not 'template'". This is the
+    /// pre-template-feature claim_task behavior; a later change collapsed
+    /// it into an unconditional template-only gate.
+    #[test]
+    fn claim_task_claims_regular_task_in_place() {
+        let (server, tmp) = setup_with_template();
+
+        // Add a plain, regular task node alongside the template fixture.
+        let tasks_dir = tmp.path().join("tasks");
+        let task_content = "\
+---
+id: plain-task
+title: \"Plain Task\"
+type: task
+status: queued
+priority: 2
+parent: proj-test
+project: aops
+---
+
+## Body
+";
+        std::fs::write(tasks_dir.join("plain-task.md"), task_content).unwrap();
+        {
+            let graph = GraphStore::build_from_directory(tmp.path());
+            *server.graph.write() = graph;
+        }
+
+        let result = server
+            .handle_claim_task(&serde_json::json!({ "id": "plain-task", "assignee": "polecat" }))
+            .expect("claiming a regular task node must succeed (in-place claim)");
+
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .next()
+            .expect("result should have text content");
+
+        // Response is get_task JSON for the SAME id — no copy was created.
+        assert!(
+            text.contains("\"id\": \"plain-task\""),
+            "response should describe the same task, in place; got: {text}"
+        );
+        assert!(
+            text.contains("in_progress"),
+            "task should be moved to in_progress; got: {text}"
+        );
+
+        // No new file was created — exactly the original task file remains.
+        let task_files: Vec<_> = std::fs::read_dir(&tasks_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("plain-task"))
+            .collect();
+        assert_eq!(
+            task_files.len(),
+            1,
+            "in-place claim must not create a copy; found: {:?}",
+            task_files.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+
+        // On-disk frontmatter reflects the claim.
+        let content = std::fs::read_to_string(tasks_dir.join("plain-task.md")).unwrap();
+        assert!(
+            content.contains("status: in_progress"),
+            "on-disk status must be in_progress; got: {content}"
+        );
+        assert!(
+            content.contains("assignee: polecat"),
+            "on-disk assignee must be set from the claim call; got: {content}"
+        );
+    }
+
+    /// An untyped node (no `type:` field) is treated as a plain task
+    /// elsewhere in this codebase (see the `unwrap_or_else(|| "task")`
+    /// prefix computation) — claim_task must honor the same default and
+    /// claim it in place rather than rejecting it.
+    #[test]
+    fn claim_task_claims_untyped_node_as_task() {
+        let (server, tmp) = setup_with_template();
+
+        let tasks_dir = tmp.path().join("tasks");
+        let task_content = "\
+---
+id: untyped-task
+title: \"Untyped Task\"
+status: queued
+parent: proj-test
+project: aops
+---
+
+## Body
+";
+        std::fs::write(tasks_dir.join("untyped-task.md"), task_content).unwrap();
+        {
+            let graph = GraphStore::build_from_directory(tmp.path());
+            *server.graph.write() = graph;
+        }
+
+        let result = server
+            .handle_claim_task(&serde_json::json!({ "id": "untyped-task" }))
+            .expect("claiming an untyped node must succeed (defaults to task semantics)");
+
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .next()
+            .expect("result should have text content");
+        assert!(
+            text.contains("in_progress"),
+            "task should be moved to in_progress; got: {text}"
         );
     }
 
