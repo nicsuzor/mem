@@ -837,8 +837,17 @@ impl GraphStore {
     }
 
     /// Get the dependency tree for a node (BFS through depends_on).
-    /// Returns (node_id, depth) pairs.
+    /// Returns (node_id, depth) pairs. Unbounded depth — see
+    /// [`Self::dependency_tree_bounded`] for a depth-limited variant.
     pub fn dependency_tree(&self, id: &str) -> Vec<(String, usize)> {
+        self.dependency_tree_bounded(id, usize::MAX)
+    }
+
+    /// Get the dependency tree for a node (BFS through depends_on), stopping
+    /// once `max_depth` hops have been traversed. `max_depth == usize::MAX`
+    /// is unbounded (equivalent to [`Self::dependency_tree`]).
+    /// Returns (node_id, depth) pairs.
+    pub fn dependency_tree_bounded(&self, id: &str, max_depth: usize) -> Vec<(String, usize)> {
         let mut result = Vec::new();
         let mut visited = HashSet::new();
         let mut queue: VecDeque<(String, usize)> = VecDeque::new();
@@ -850,6 +859,9 @@ impl GraphStore {
             }
             if depth > 0 {
                 result.push((current_id.clone(), depth));
+            }
+            if depth >= max_depth {
+                continue;
             }
             if let Some(node) = self.nodes.get(&current_id) {
                 for dep_id in &node.depends_on {
@@ -863,8 +875,17 @@ impl GraphStore {
     }
 
     /// Get what this node blocks (BFS through blocks).
-    /// Returns (node_id, depth) pairs.
+    /// Returns (node_id, depth) pairs. Unbounded depth — see
+    /// [`Self::blocks_tree_bounded`] for a depth-limited variant.
     pub fn blocks_tree(&self, id: &str) -> Vec<(String, usize)> {
+        self.blocks_tree_bounded(id, usize::MAX)
+    }
+
+    /// Get what this node blocks (BFS through blocks), stopping once
+    /// `max_depth` hops have been traversed. `max_depth == usize::MAX` is
+    /// unbounded (equivalent to [`Self::blocks_tree`]).
+    /// Returns (node_id, depth) pairs.
+    pub fn blocks_tree_bounded(&self, id: &str, max_depth: usize) -> Vec<(String, usize)> {
         let mut result = Vec::new();
         let mut visited = HashSet::new();
         let mut queue: VecDeque<(String, usize)> = VecDeque::new();
@@ -876,6 +897,9 @@ impl GraphStore {
             }
             if depth > 0 {
                 result.push((current_id.clone(), depth));
+            }
+            if depth >= max_depth {
+                continue;
             }
             if let Some(node) = self.nodes.get(&current_id) {
                 for blocked_id in &node.blocks {

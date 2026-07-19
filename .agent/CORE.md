@@ -26,7 +26,7 @@ Semantic search + knowledge graph MCP server for a personal knowledge base (PKB)
 ```
 src/
   cli.rs            — main() for pkb binary (CLI + MCP server via `pkb mcp`)
-  mcp_server.rs     — MCP ServerHandler: 39 tools, dispatch, tool registrations
+  mcp_server.rs     — MCP ServerHandler: 43 tools, dispatch, tool registrations
   graph_store.rs    — GraphStore: builds/queries knowledge graph from PKB docs
   graph.rs          — GraphNode (fields include stakeholder, waiting_since), Edge, EdgeType, link resolution helpers
   graph_display.rs  — Graph rendering/display utilities
@@ -44,7 +44,7 @@ src/
   lib.rs            — Library root
 ```
 
-## MCP Tools (39)
+## MCP Tools (43)
 
 ### Search
 - `search` — hybrid semantic + graph-proximity
@@ -57,7 +57,6 @@ src/
 - `list_tasks` — list with filters; `status="ready"` and `status="blocked"` are special
 - `get_task` — frontmatter + body + relationship context
 - `create_task` — new task with frontmatter
-- `create_subtask` — subtask under a parent
 - `claim_task` — instantiate a `type: template` node; creates a datestamped instance and returns it via get_task
 - `update_task` — patch frontmatter fields
 - `complete_task` — set status=done; returns `{ok, id, status, message, neighborhood}` JSON envelope with compact graph context (see `specs/mutation-neighborhood.md`)
@@ -67,36 +66,42 @@ src/
 - `get_task_children` — direct/recursive children with completion counts
 - `get_network_metrics` — centrality metrics for a node
 - `top_n_by_metric` — top N nodes ranked by centrality metric (pagerank, betweenness, degree), with optional node_type filter
-- `task_summary` — summary statistics for tasks
+- `task_summary` — ready/blocked counts, priority breakdown of ready tasks, deadline counts (overdue/due today/due this week)
 
 ### Memory
 - `create_memory` — create memory/note
 - `retrieve_memory` — semantic search filtered to memory types
 - `search_by_tag` — find documents by tag intersection
 - `list_memories` — list memory-type documents
-- `delete_memory` — delete a memory
 
 ### Document CRUD
-- `create` — generic document creation
+- `create` — generic document creation (any doc type: notes, specs, goals, targets, contacts, etc. — not just tasks/memories)
 - `append` — timestamped append to existing doc
-- `delete` — remove doc from disk + index
+- `update_body` — atomically rewrite a document's prose body, preserving frontmatter
+- `delete` — remove doc from disk + index; optional `type` param guards deletion to a matching node type (e.g. `type: "memory"` restricts to memory/note/insight/observation, replacing the old dedicated `delete_memory` tool)
 
 ### Knowledge Graph
 - `pkb_context` — N-hop neighbourhood, backlinks, metadata
 - `pkb_trace` — shortest paths between two nodes
 - `pkb_orphans` — disconnected nodes
-- `graph_stats` — graph statistics
+- `graph_stats` — PKB health report: status/priority/type distributions, orphan counts, cycles, disconnected clusters
+- `graph_json` — export the full knowledge graph as JSON
+- `get_semantic_neighbors` — nodes semantically similar to a given node by embedding proximity
+- `detect_weight_divergence` — `contributes_to` edges with high stated weight but stale/zero source-task activity
 - `refresh_graph` — synchronously rebuild in-memory graph index from disk (no ONNX re-embed)
 
 ### Batch Operations
 - `batch_update` — bulk update frontmatter fields
 - `batch_reparent` — bulk reparent tasks
 - `batch_archive` — bulk archive documents
-- `batch_merge` — merge multiple documents
+- `batch_merge` — merge duplicate tasks into a canonical task (frontmatter/graph fields: tags, depends_on, soft_depends_on, soft_blocks, children)
+- `merge_node` — merge knowledge nodes into a canonical node across the whole PKB, including body wikilink redirection (`[[id]]`); not redundant with `batch_merge` — different reference surface
 - `batch_create_epics` — batch create epic tasks
 - `batch_reclassify` — batch reclassify document types
-- `bulk_reparent` — reparent tasks in bulk
-- `merge_node` — merge a single node into another
+
+### Server
+- `get_stats` — MCP tool usage telemetry (call counts, response bytes per tool)
+- `status` — build identity: package version, git hash, build profile
 
 ## Key Patterns
 
