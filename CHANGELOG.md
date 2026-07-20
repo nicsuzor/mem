@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.74](https://github.com/nicsuzor/mem/compare/mem-v0.3.73...mem-v0.3.74) (2026-07-19)
+
+
+### Features
+
+* **mcp:** expose enum values and states in tool schemas + errors ([5d66efe](https://github.com/nicsuzor/mem/commit/5d66efe88399648b8d545e1337d920dfa4e83930))
+* **mcp:** expose enum values and states in tool schemas + errors (mem_32f484a4) ([aa2796d](https://github.com/nicsuzor/mem/commit/aa2796d53a4852397e2ba772a0b5152f127d89ff))
+* **tasks:** display claiming session/agent identity on subtask reads ([a5cc746](https://github.com/nicsuzor/mem/commit/a5cc746d0bea7c64073f5930b1b1b0d47ec38f6c))
+* **tasks:** display session/agent identity on subtask reads (D1) ([d1d4d12](https://github.com/nicsuzor/mem/commit/d1d4d12addd517ce2e435830e3bde76508792c9e))
+
+
+### Bug Fixes
+
+* **ci:** remove dead merge-prep-cron/agent-merge-prep shims ([58cbc7d](https://github.com/nicsuzor/mem/commit/58cbc7d877f1e9960eb45e309eb8ec7befca9bd6))
+* **ci:** remove dead merge-prep-cron/agent-merge-prep shims ([2f50874](https://github.com/nicsuzor/mem/commit/2f50874512b88201dd1a1e66a60c0c118b2ab720))
+* **ci:** repoint agent-enforcer from pipeline-v1 to [@dist](https://github.com/dist) ([b43fc43](https://github.com/nicsuzor/mem/commit/b43fc4307831b5e07737ac4856df7b95bac0a915))
+* **ci:** repoint agent-enforcer from pipeline-v1 to [@dist](https://github.com/dist) ([e795dfe](https://github.com/nicsuzor/mem/commit/e795dfe45598a4b62aaa6891bf94775fedab8e9e))
+* **mcp:** restore in-place claim_task for type:task nodes (mem_e8f3aa17) ([1d0ed10](https://github.com/nicsuzor/mem/commit/1d0ed10b73a3e6896b0872865337a7ed4a1a1108))
+* **search:** boost near-exact title matches in search/task_search ranking ([94b899c](https://github.com/nicsuzor/mem/commit/94b899c94e0839dde1206942861f2f73ba1ea667))
+
 ## [0.3.73](https://github.com/nicsuzor/mem/compare/mem-v0.3.72...mem-v0.3.73) (2026-07-06)
 
 
