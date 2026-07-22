@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.75](https://github.com/nicsuzor/mem/compare/mem-v0.3.74...mem-v0.3.75) (2026-07-22)
+
+
+### Features
+
+* **release_task:** require failure reason for blocked/cancelled/review/partial ([9e0adce](https://github.com/nicsuzor/mem/commit/9e0adce1c9af5f97466d8f4d9c9e5eeae04558b6))
+
 ## [0.3.74](https://github.com/nicsuzor/mem/compare/mem-v0.3.73...mem-v0.3.74) (2026-07-19)
 
 
