@@ -234,6 +234,42 @@ impl PkbSearchServer {
         }
     }
 
+    /// Ship date for the release-task failure-reason-mandatory requirement
+    /// (task mem_a1668542; note_296e5520 §5; `specs/enforcement/evidence-contract.md`
+    /// "Cutover / grandfather policy"). Tasks whose `created` frontmatter
+    /// predates this date release under the old (optional reason/blocker)
+    /// rules — the mechanical presence check is forward-only, never
+    /// retroactive.
+    const FAILURE_REASON_REQUIRED_SINCE: &str = "2026-07-23";
+
+    /// Statuses that are a handback rather than a clean success. Releasing to
+    /// one of these requires a stated failure reason (or `blocker`, for
+    /// `blocked`) unless the task is grandfathered — see
+    /// `FAILURE_REASON_REQUIRED_SINCE`.
+    const FAILURE_HANDBACK_STATUSES: &[&str] = &["blocked", "cancelled", "review", "partial"];
+
+    /// True if `created` (an RFC3339-ish timestamp, e.g.
+    /// "2026-07-14T05:00:19+00:00") predates `FAILURE_REASON_REQUIRED_SINCE`
+    /// and should therefore be grandfathered under the old release rules.
+    /// Missing or unparseable `created` is fail-closed: NOT grandfathered.
+    fn is_grandfathered_pre_reason_requirement(created: Option<&str>) -> bool {
+        let Some(created) = created else {
+            return false;
+        };
+        if created.len() < 10 {
+            return false;
+        }
+        let Ok(created_date) = chrono::NaiveDate::parse_from_str(&created[..10], "%Y-%m-%d") else {
+            return false;
+        };
+        let Ok(ship_date) =
+            chrono::NaiveDate::parse_from_str(Self::FAILURE_REASON_REQUIRED_SINCE, "%Y-%m-%d")
+        else {
+            return false;
+        };
+        created_date < ship_date
+    }
+
     /// Validate that completion_evidence is present and non-empty.
     fn require_evidence(evidence: Option<&str>) -> Result<&str, McpError> {
         let ev = evidence.ok_or_else(|| McpError {
@@ -4301,6 +4337,38 @@ impl PkbSearchServer {
                 vec![]
             };
 
+        // Failure-reason-mandatory gate (note_296e5520 §5;
+        // specs/enforcement/evidence-contract.md "Cutover / grandfather
+        // policy"): releasing to a handback status that isn't a clean
+        // success requires a non-empty `reason` (or `blocker`, for
+        // `blocked`) — the "evidence or a stated failure reason" contract's
+        // failure-path half. Success statuses already require `summary`
+        // above, unchanged. Presence-only: no content inspection.
+        // Grandfathered tasks (created before the ship date) release under
+        // the old, optional rules.
+        if Self::FAILURE_HANDBACK_STATUSES.contains(&status)
+            && !Self::is_grandfathered_pre_reason_requirement(node.created.as_deref())
+        {
+            let has_reason = reason.map_or(false, |r| !r.trim().is_empty());
+            let has_blocker =
+                status == "blocked" && blocker.map_or(false, |b| !b.trim().is_empty());
+            if !has_reason && !has_blocker {
+                let field_hint = if status == "blocked" {
+                    "reason or blocker"
+                } else {
+                    "reason"
+                };
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Releasing \"{id}\" as \"{status}\" requires a non-empty {field_hint}. Describe why before releasing.\n\
+                         Example: release_task(id=\"{id}\", status=\"{status}\", summary=\"...\", reason=\"...\")"
+                    )),
+                    data: None,
+                });
+            }
+        }
+
         let abs_path = self.abs_path(&node.path);
         let label = node.label.clone();
         let node_id = node.id.clone();
@@ -7181,7 +7249,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false).idempotent(true)),
             Tool::new(
                 "release_task",
-                "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled, partial). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created.",
+                "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled, partial). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created. Evidence-or-failure-reason contract: `summary` is always required; releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -7191,11 +7259,11 @@ impl PkbSearchServer {
                             "enum": ["merge_ready", "done", "review", "blocked", "cancelled", "partial"],
                             "description": "Target status"
                         },
-                        "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum." },
+                        "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum. Always required." },
                         "pr_url": { "type": "string", "description": "Pull request or commit URL (recommended for merge_ready)" },
                         "branch": { "type": "string", "description": "Git branch name (optional)" },
-                        "blocker": { "type": "string", "description": "What is blocking this task (for status=blocked)" },
-                        "reason": { "type": "string", "description": "Why cancelled or needs review (for status=cancelled/review)" },
+                        "blocker": { "type": "string", "description": "What is blocking this task. Required (non-empty), together with `reason`, when status=blocked — at least one of the two must be given." },
+                        "reason": { "type": "string", "description": "Why the task didn't ship cleanly. Required (non-empty) when status is blocked/cancelled/review/partial (for status=blocked, `blocker` may be given instead)." },
                         "session_id": { "type": "string", "description": "Active session ID. Falls back to $AOPS_SESSION_ID if omitted." },
                         "issue_url": { "type": "string", "description": "External issue/ticket URL" },
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
@@ -7255,7 +7323,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "update_task",
-                "Patch metadata fields on an existing task. Pass fields either nested as `updates: {status: \"done\"}` or flat at the top level (e.g. status=\"done\"). Use for non-terminal updates (priority, tags, assignee). For state transitions (done, merge_ready), prefer release_task.",
+                "Patch metadata fields on an existing task. Pass fields either nested as `updates: {status: \"done\"}` or flat at the top level (e.g. status=\"done\"). Use for non-terminal updates (priority, tags, assignee). For state transitions (done, merge_ready, blocked, cancelled, review, partial), prefer release_task — it also enforces the evidence-or-failure-reason contract (completion_evidence for done; reason/blocker for handback statuses) that this generic patch path does not. Setting status=\"done\" here still requires a non-empty `completion_evidence` field (in updates or top-level), unchanged.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -8610,6 +8678,7 @@ projects:
                 "id": partial_id,
                 "status": "partial",
                 "summary": "Shipped a clean scope-seam slice; remainder tracked in a live follow-up.",
+                "reason": "Remainder scoped out for a follow-up task; not needed for this round-trip check.",
             }))
             .expect("release_task(status=\"partial\") must be accepted");
         let released_text = released
@@ -10150,6 +10219,189 @@ projects:
             msg.to_lowercase().contains("open child") || msg.to_lowercase().contains("children"),
             "error should mention open children; got: {msg}"
         );
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "should be INVALID_PARAMS, got: {:?}",
+            err.code
+        );
+    }
+
+    // ── mem_a1668542: release_task failure-reason-mandatory gate ───────────
+    // note_296e5520 §5 / specs/enforcement/evidence-contract.md. Releasing to
+    // a handback status (blocked/cancelled/review/partial) requires a
+    // non-empty `reason` (or `blocker`, for `blocked`), unless the task
+    // predates the ship date (grandfathered).
+
+    #[test]
+    fn test_release_task_blocked_without_reason_or_blocker_is_rejected() {
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        let err = server
+            .handle_release_task(&json!({
+                "id": "task-new",
+                "status": "blocked",
+                "summary": "Blocked with no reason given.",
+            }))
+            .expect_err("blocked with no reason/blocker must be rejected");
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "should be INVALID_PARAMS, got: {:?}",
+            err.code
+        );
+        let msg = err.message.to_lowercase();
+        assert!(
+            msg.contains("reason") && msg.contains("blocker"),
+            "error should mention reason/blocker requirement; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_release_task_blocked_with_reason_is_accepted() {
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        let res = server
+            .handle_release_task(&json!({
+                "id": "task-new",
+                "status": "blocked",
+                "summary": "Blocked, with a stated reason.",
+                "reason": "waiting on upstream API access",
+            }))
+            .expect("blocked with a non-empty reason must be accepted");
+        assert!(
+            !res.is_error.unwrap_or(false),
+            "should not be an error result: {res:?}"
+        );
+    }
+
+    #[test]
+    fn test_release_task_blocked_with_only_blocker_is_accepted() {
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        let res = server
+            .handle_release_task(&json!({
+                "id": "task-new",
+                "status": "blocked",
+                "summary": "Blocked, with only a blocker given.",
+                "blocker": "waiting on infra team to provision the box",
+            }))
+            .expect("blocked with a non-empty blocker (no reason) must be accepted");
+        assert!(
+            !res.is_error.unwrap_or(false),
+            "should not be an error result: {res:?}"
+        );
+    }
+
+    #[test]
+    fn test_release_task_cancelled_review_partial_without_reason_are_rejected() {
+        for status in ["cancelled", "review", "partial"] {
+            let (_tmp, server) = build_disk_backed_server(&[(
+                "tasks/task-new.md",
+                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+            )]);
+            let err = server
+                .handle_release_task(&json!({
+                    "id": "task-new",
+                    "status": status,
+                    "summary": format!("Releasing as {status} with no reason given."),
+                }))
+                .expect_err(&format!("{status} with no reason must be rejected"));
+            assert!(
+                matches!(err.code, ErrorCode::INVALID_PARAMS),
+                "status={status}: should be INVALID_PARAMS, got: {:?}",
+                err.code
+            );
+            assert!(
+                err.message.to_lowercase().contains("reason"),
+                "status={status}: error should mention reason requirement; got: {}",
+                err.message
+            );
+
+            // ... and accepted once a reason is given.
+            let (_tmp2, server2) = build_disk_backed_server(&[(
+                "tasks/task-new.md",
+                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+            )]);
+            let res = server2
+                .handle_release_task(&json!({
+                    "id": "task-new",
+                    "status": status,
+                    "summary": format!("Releasing as {status} with a reason."),
+                    "reason": "declared explicitly for this test",
+                }))
+                .unwrap_or_else(|e| panic!("{status} with a reason must be accepted: {e:?}"));
+            assert!(
+                !res.is_error.unwrap_or(false),
+                "status={status}: should not error: {res:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_release_task_success_status_unaffected_by_reason_gate() {
+        // merge_ready and done are not handback statuses — no reason/blocker
+        // is required, only `summary` (unchanged behavior).
+        for status in ["merge_ready", "done"] {
+            let (_tmp, server) = build_disk_backed_server(&[(
+                "tasks/task-new.md",
+                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+            )]);
+            let res = server
+                .handle_release_task(&json!({
+                    "id": "task-new",
+                    "status": status,
+                    "summary": "Shipped cleanly.",
+                }))
+                .unwrap_or_else(|e| {
+                    panic!("status={status} success path must be unaffected: {e:?}")
+                });
+            assert!(
+                !res.is_error.unwrap_or(false),
+                "status={status}: should not error: {res:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_release_task_grandfathered_task_releases_under_old_rules() {
+        // created well before the 2026-07-23 ship date — old, optional rules apply.
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-old.md",
+            "---\nid: task-old\ntitle: Old task\ntype: task\nstatus: ready\ncreated: 2026-01-01T00:00:00+00:00\n---\n\n# Old task\n",
+        )]);
+        let res = server
+            .handle_release_task(&json!({
+                "id": "task-old",
+                "status": "blocked",
+                "summary": "Grandfathered: no reason/blocker given.",
+            }))
+            .expect("grandfathered (pre-ship-date) task must release under old, optional rules");
+        assert!(
+            !res.is_error.unwrap_or(false),
+            "should not be an error result: {res:?}"
+        );
+    }
+
+    #[test]
+    fn test_release_task_missing_created_is_not_grandfathered() {
+        // No `created` frontmatter at all — fail-closed: treated as subject
+        // to the new rule, not grandfathered.
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-nocreated.md",
+            "---\nid: task-nocreated\ntitle: No created field\ntype: task\nstatus: ready\n---\n\n# No created field\n",
+        )]);
+        let err = server
+            .handle_release_task(&json!({
+                "id": "task-nocreated",
+                "status": "blocked",
+                "summary": "No created field, no reason given.",
+            }))
+            .expect_err("missing `created` must fail closed (not grandfathered)");
         assert!(
             matches!(err.code, ErrorCode::INVALID_PARAMS),
             "should be INVALID_PARAMS, got: {:?}",
