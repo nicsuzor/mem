@@ -2328,6 +2328,8 @@ impl PkbSearchServer {
         // neighbourhood.
         let hops = ((args.get("hops").and_then(|v| v.as_u64()).unwrap_or(2)) as usize).min(5);
         let max_backlinks = (args.get("max_backlinks").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
+        let max_children = (args.get("max_children").and_then(|v| v.as_u64()).unwrap_or(20) as usize).min(200);
+        let node_type_filter = args.get("node_type").and_then(|v| v.as_str()).map(|s| s.to_lowercase());
 
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
@@ -2392,14 +2394,38 @@ impl PkbSearchServer {
             output.push_str(&format!("- `{s}` — {label}\n"));
         }
         if !node.children.is_empty() {
-            output.push_str("\n### Children\n");
-            for c in &node.children {
-                let label = graph.get_node(c).map(|n| n.label.as_str()).unwrap_or("?");
-                let status = graph
-                    .get_node(c)
-                    .and_then(|n| n.status.as_deref())
-                    .unwrap_or("?");
-                output.push_str(&format!("- `{c}` [{status}] {label}\n"));
+            let filtered_children: Vec<_> = node
+                .children
+                .iter()
+                .filter(|c| {
+                    if let Some(ref target_type) = node_type_filter {
+                        if let Some(n) = graph.get_node(c) {
+                            n.node_type.as_deref().unwrap_or("").to_lowercase() == *target_type
+                        } else {
+                            false
+                        }
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
+            if !filtered_children.is_empty() {
+                output.push_str("\n### Children\n");
+                for c in filtered_children.iter().take(max_children) {
+                    let label = graph.get_node(c).map(|n| n.label.as_str()).unwrap_or("?");
+                    let status = graph
+                        .get_node(c)
+                        .and_then(|n| n.status.as_deref())
+                        .unwrap_or("?");
+                    output.push_str(&format!("- `{c}` [{status}] {label}\n"));
+                }
+                if filtered_children.len() > max_children {
+                    output.push_str(&format!(
+                        "  …and {} more (raise `max_children` to see all)\n",
+                        filtered_children.len() - max_children
+                    ));
+                }
             }
         }
         if let Some(ref p) = node.parent {
@@ -2410,37 +2436,63 @@ impl PkbSearchServer {
         // Backlinks grouped by type
         let backlinks = graph.backlinks_by_type(&node_id);
         if !backlinks.is_empty() {
-            output.push_str("\n### Backlinks (by source type)\n");
-            let mut types: Vec<_> = backlinks.keys().collect();
-            types.sort();
-            for ntype in types {
-                let entries = &backlinks[ntype];
-                output.push_str(&format!("\n**{ntype}** ({} links)\n", entries.len()));
-                for (source_node, edge_type) in entries.iter().take(max_backlinks) {
-                    let supersedes_note = if **edge_type == crate::graph::EdgeType::Supersedes {
-                        " [SUPERSEDES THIS]"
+            let mut types: Vec<_> = backlinks
+                .keys()
+                .filter(|ntype| {
+                    if let Some(ref target_type) = node_type_filter {
+                        ntype.to_lowercase() == *target_type
                     } else {
-                        ""
-                    };
-                    output.push_str(&format!(
-                        "- `{}` [{:?}]{} {}\n",
-                        source_node.id, edge_type, supersedes_note, source_node.label
-                    ));
-                }
-                if entries.len() > max_backlinks {
-                    output.push_str(&format!(
-                        "  …and {} more (raise `max_backlinks` to see them)\n",
-                        entries.len() - max_backlinks
-                    ));
+                        true
+                    }
+                })
+                .collect();
+            if !types.is_empty() {
+                output.push_str("\n### Backlinks (by source type)\n");
+                types.sort();
+                for ntype in types {
+                    let entries = &backlinks[ntype];
+                    output.push_str(&format!("\n**{ntype}** ({} links)\n", entries.len()));
+                    for (source_node, edge_type) in entries.iter().take(max_backlinks) {
+                        let supersedes_note = if **edge_type == crate::graph::EdgeType::Supersedes {
+                            " [SUPERSEDES THIS]"
+                        } else {
+                            ""
+                        };
+                        output.push_str(&format!(
+                            "- `{}` [{:?}]{} {}\n",
+                            source_node.id, edge_type, supersedes_note, source_node.label
+                        ));
+                    }
+                    if entries.len() > max_backlinks {
+                        output.push_str(&format!(
+                            "  …and {} more (raise `max_backlinks` to see them)\n",
+                            entries.len() - max_backlinks
+                        ));
+                    }
                 }
             }
         }
 
         // Ego subgraph (nearby nodes)
         let nearby = graph.ego_subgraph(&node_id, hops);
-        if !nearby.is_empty() {
+        let filtered_nearby: Vec<_> = nearby
+            .into_iter()
+            .filter(|(nid, _)| {
+                if let Some(ref target_type) = node_type_filter {
+                    if let Some(n) = graph.get_node(nid) {
+                        n.node_type.as_deref().unwrap_or("").to_lowercase() == *target_type
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
+            })
+            .collect();
+
+        if !filtered_nearby.is_empty() {
             output.push_str(&format!("\n### Nearby nodes ({hops}-hop neighbourhood)\n"));
-            let mut sorted = nearby;
+            let mut sorted = filtered_nearby;
             sorted.sort_by_key(|(_, d)| *d);
             for (nid, dist) in &sorted {
                 let n = graph.get_node(nid);
@@ -3051,28 +3103,42 @@ impl PkbSearchServer {
             parse_n(a).cmp(&parse_n(b))
         });
 
-        let body = if !subtask_nodes_sorted.is_empty() {
-            let mut checklist = String::from("\n\n## Subtasks\n\n");
-            for st in &subtask_nodes_sorted {
-                let done = crate::graph::is_completed(st.get("status").and_then(|s| s.as_str()));
-                let check = if done { "x" } else { " " };
-                let title = st
-                    .get("title")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("<untitled>");
-                let id = st.get("id").and_then(|i| i.as_str()).unwrap_or("");
-                checklist.push_str(&format!("- [{check}] **{id}**: {title}\n"));
-            }
-            format!("{body}{checklist}")
-        } else {
-            body
-        };
+        let include_body = args
+            .get("include_body")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let detail = args
+            .get("detail")
+            .and_then(|v| v.as_str())
+            .unwrap_or("full");
+        let is_summary = !include_body || detail == "summary";
 
-        let max_bytes = args
-            .get("max_bytes")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize);
-        let body = Self::truncate_body(body, max_bytes);
+        let body = if is_summary {
+            String::new()
+        } else {
+            let body = if !subtask_nodes_sorted.is_empty() {
+                let mut checklist = String::from("\n\n## Subtasks\n\n");
+                for st in &subtask_nodes_sorted {
+                    let done = crate::graph::is_completed(st.get("status").and_then(|s| s.as_str()));
+                    let check = if done { "x" } else { " " };
+                    let title = st
+                        .get("title")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("<untitled>");
+                    let id = st.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                    checklist.push_str(&format!("- [{check}] **{id}**: {title}\n"));
+                }
+                format!("{body}{checklist}")
+            } else {
+                body
+            };
+
+            let max_bytes = args
+                .get("max_bytes")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            Self::truncate_body(body, max_bytes)
+        };
 
         // Compute deadline metadata
         let today = chrono::Utc::now().date_naive();
@@ -7308,11 +7374,13 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7.",
+                "Retrieve details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). Set `include_body: false` or `detail: \"summary\"` to retrieve task status, metadata, and relationships without reading long historical session logs/body text into your token context. Set `max_bytes` to limit body length. The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Task ID (e.g. 'framework-6b4325a1'). Also accepts filename stem or title." },
+                        "include_body": { "type": "boolean", "description": "Optional: set false to omit the body text (session logs/history) and return only task metadata, status, dependencies, subtask list, and focus_score. Default: true." },
+                        "detail": { "type": "string", "enum": ["summary", "full"], "description": "Optional: 'summary' returns metadata, status, dependencies, and subtasks without body text; 'full' includes body text. Default: 'full'." },
                         "max_bytes": { "type": "integer", "description": "Optional: truncate the returned body to at most N bytes (UTF-8-safe), appending a truncation marker. Default: unset — full body is returned." }
                     },
                     "required": ["id"]
@@ -7455,13 +7523,15 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "pkb_context",
-                "Explore the knowledge neighbourhood of a node. Returns metadata, relationships, and backlinks grouped by source type. Supports flexible ID resolution.",
+                "Explore the knowledge neighbourhood of a node. Returns metadata, relationships, and backlinks grouped by source type. Set `node_type` to filter adjacent nodes/children by type, or `max_children` to cap children listed for hub/epic nodes.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Node ID, task ID, filename stem, or title" },
                         "hops": { "type": "integer", "description": "Neighbourhood radius in hops (default: 2, clamped to a max of 5)" },
-                        "max_backlinks": { "type": "integer", "description": "Max backlinks printed per source type (default: 50)" }
+                        "max_backlinks": { "type": "integer", "description": "Max backlinks printed per source type (default: 50)" },
+                        "max_children": { "type": "integer", "description": "Max child nodes printed for hub/epic nodes (default: 20, max: 200)." },
+                        "node_type": { "type": "string", "description": "Optional: filter direct children, backlinks, and nearby ego nodes by node type (e.g. 'target', 'task', 'subtask', 'memory')." }
                     },
                     "required": ["id"]
                 }))
@@ -9356,6 +9426,154 @@ projects:
                 "{key} must NOT appear at the top level in get_task response (belongs in signals)"
             );
         }
+    }
+
+    #[test]
+    fn test_get_task_include_body_false_and_detail_summary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let task_dir = root.join("tasks");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::write(
+            task_dir.join("task-summary-test.md"),
+            "---\ntitle: Summary Test Task\ntype: task\nstatus: active\nid: task-summary-test\n---\n\nLong session log history text that costs tokens.\n",
+        )
+        .unwrap();
+
+        let doc = PkbDocument {
+            path: PathBuf::from("tasks/task-summary-test.md"),
+            title: "Summary Test Task".to_string(),
+            body: "Long session log history text that costs tokens.".to_string(),
+            doc_type: Some("task".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::json!({
+                "title": "Summary Test Task",
+                "type": "task",
+                "status": "active",
+                "id": "task-summary-test",
+            })),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        };
+        let graph = GraphStore::build(&[doc], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // Test include_body: false
+        let res_no_body = server
+            .handle_get_task(&json!({"id": "task-summary-test", "include_body": false}))
+            .unwrap();
+        let text_no_body = res_no_body.content[0].raw.as_text().unwrap().text.as_str();
+        let val_no_body: serde_json::Value = serde_json::from_str(text_no_body).unwrap();
+        assert_eq!(val_no_body.get("body").and_then(|b| b.as_str()), Some(""));
+
+        // Test detail: "summary"
+        let res_summary = server
+            .handle_get_task(&json!({"id": "task-summary-test", "detail": "summary"}))
+            .unwrap();
+        let text_summary = res_summary.content[0].raw.as_text().unwrap().text.as_str();
+        let val_summary: serde_json::Value = serde_json::from_str(text_summary).unwrap();
+        assert_eq!(val_summary.get("body").and_then(|b| b.as_str()), Some(""));
+
+        // Test default include_body (full)
+        let res_full = server
+            .handle_get_task(&json!({"id": "task-summary-test"}))
+            .unwrap();
+        let text_full = res_full.content[0].raw.as_text().unwrap().text.as_str();
+        let val_full: serde_json::Value = serde_json::from_str(text_full).unwrap();
+        assert!(val_full
+            .get("body")
+            .and_then(|b| b.as_str())
+            .unwrap()
+            .contains("Long session log history text"));
+    }
+
+    #[test]
+    fn test_pkb_context_max_children_and_node_type_filtering() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let parent_doc = PkbDocument {
+            path: PathBuf::from("tasks/parent.md"),
+            title: "Parent Node".to_string(),
+            body: "Parent body".to_string(),
+            doc_type: Some("epic".to_string()),
+            status: Some("active".to_string()),
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::json!({
+                "title": "Parent Node",
+                "type": "epic",
+                "status": "active",
+                "id": "node-parent",
+            })),
+            content_hash: "hash_p".to_string(),
+            file_hash: "hash_p".to_string(),
+        };
+
+        let mut docs = vec![parent_doc];
+        for i in 1..=5 {
+            let child_doc = PkbDocument {
+                path: PathBuf::from(format!("tasks/child_{i}.md")),
+                title: format!("Child Task {i}"),
+                body: "Child body".to_string(),
+                doc_type: Some(if i == 1 {
+                    "target".to_string()
+                } else {
+                    "task".to_string()
+                }),
+                status: Some("active".to_string()),
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::json!({
+                    "title": format!("Child Task {i}"),
+                    "type": if i == 1 { "target" } else { "task" },
+                    "status": "active",
+                    "id": format!("node-child-{i}"),
+                    "parent": "node-parent",
+                })),
+                content_hash: format!("hash_c{i}"),
+                file_hash: format!("hash_c{i}"),
+            };
+            docs.push(child_doc);
+        }
+
+        let graph = GraphStore::build(&docs, root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // Test max_children capping
+        let res_capped = server
+            .handle_pkb_context(&json!({"id": "node-parent", "max_children": 2}))
+            .unwrap();
+        let text_capped = res_capped.content[0].raw.as_text().unwrap().text.as_str();
+        assert!(text_capped.contains("…and 3 more (raise `max_children` to see all)"));
+
+        // Test node_type filtering
+        let res_filtered = server
+            .handle_pkb_context(&json!({"id": "node-parent", "node_type": "target"}))
+            .unwrap();
+        let text_filtered = res_filtered.content[0].raw.as_text().unwrap().text.as_str();
+        assert!(text_filtered.contains("node-child-1"));
+        assert!(!text_filtered.contains("node-child-2"));
     }
 
     // ── Tag filtering ──
