@@ -2394,36 +2394,39 @@ impl PkbSearchServer {
             output.push_str(&format!("- `{s}` — {label}\n"));
         }
         if !node.children.is_empty() {
-            let filtered_children: Vec<_> = node
-                .children
-                .iter()
-                .filter(|c| {
-                    if let Some(ref target_type) = node_type_filter {
-                        if let Some(n) = graph.get_node(c) {
-                            n.node_type.as_deref().unwrap_or("").to_lowercase() == *target_type
-                        } else {
-                            false
-                        }
-                    } else {
-                        true
-                    }
-                })
-                .collect();
-
-            if !filtered_children.is_empty() {
-                output.push_str("\n### Children\n");
-                for c in filtered_children.iter().take(max_children) {
+            let mut shown = 0usize;
+            let mut total = 0usize;
+            let mut children_output = String::new();
+            for c in node.children.iter() {
+                let passes = if let Some(ref target_type) = node_type_filter {
+                    graph
+                        .get_node(c)
+                        .map(|n| n.node_type.as_deref().unwrap_or("").to_lowercase() == *target_type)
+                        .unwrap_or(false)
+                } else {
+                    true
+                };
+                if !passes {
+                    continue;
+                }
+                total += 1;
+                if shown < max_children {
                     let label = graph.get_node(c).map(|n| n.label.as_str()).unwrap_or("?");
                     let status = graph
                         .get_node(c)
                         .and_then(|n| n.status.as_deref())
                         .unwrap_or("?");
-                    output.push_str(&format!("- `{c}` [{status}] {label}\n"));
+                    children_output.push_str(&format!("- `{c}` [{status}] {label}\n"));
+                    shown += 1;
                 }
-                if filtered_children.len() > max_children {
+            }
+            if total > 0 {
+                output.push_str("\n### Children\n");
+                output.push_str(&children_output);
+                if total > max_children {
                     output.push_str(&format!(
                         "  …and {} more (raise `max_children` to see all)\n",
-                        filtered_children.len() - max_children
+                        total - max_children
                     ));
                 }
             }
@@ -2475,26 +2478,24 @@ impl PkbSearchServer {
 
         // Ego subgraph (nearby nodes)
         let nearby = graph.ego_subgraph(&node_id, hops);
-        let filtered_nearby: Vec<_> = nearby
+        let mut sorted_nearby: Vec<_> = nearby
             .into_iter()
             .filter(|(nid, _)| {
                 if let Some(ref target_type) = node_type_filter {
-                    if let Some(n) = graph.get_node(nid) {
-                        n.node_type.as_deref().unwrap_or("").to_lowercase() == *target_type
-                    } else {
-                        false
-                    }
+                    graph
+                        .get_node(nid)
+                        .map(|n| n.node_type.as_deref().unwrap_or("").to_lowercase() == *target_type)
+                        .unwrap_or(false)
                 } else {
                     true
                 }
             })
             .collect();
 
-        if !filtered_nearby.is_empty() {
+        if !sorted_nearby.is_empty() {
             output.push_str(&format!("\n### Nearby nodes ({hops}-hop neighbourhood)\n"));
-            let mut sorted = filtered_nearby;
-            sorted.sort_by_key(|(_, d)| *d);
-            for (nid, dist) in &sorted {
+            sorted_nearby.sort_by_key(|(_, d)| *d);
+            for (nid, dist) in &sorted_nearby {
                 let n = graph.get_node(nid);
                 let label = n.map(|n| n.label.as_str()).unwrap_or("?");
                 let status = n.and_then(|n| n.status.as_deref()).unwrap_or("-");
@@ -3111,6 +3112,16 @@ impl PkbSearchServer {
             .get("detail")
             .and_then(|v| v.as_str())
             .unwrap_or("full");
+        if detail != "full" && detail != "summary" {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: format!(
+                    "Invalid value for `detail`: {:?}. Must be \"summary\" or \"full\".",
+                    detail
+                ).into(),
+                data: None,
+            });
+        }
         let is_summary = !include_body || detail == "summary";
 
         let body = if is_summary {
