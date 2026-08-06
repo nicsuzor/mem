@@ -3112,13 +3112,14 @@ impl PkbSearchServer {
             .get("detail")
             .and_then(|v| v.as_str())
             .unwrap_or("full");
-        if detail != "full" && detail != "summary" {
+        if include_body && detail != "full" && detail != "summary" {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: format!(
                     "Invalid value for `detail`: {:?}. Must be \"summary\" or \"full\".",
                     detail
-                ).into(),
+                )
+                .into(),
                 data: None,
             });
         }
