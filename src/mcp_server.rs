@@ -234,41 +234,9 @@ impl PkbSearchServer {
         }
     }
 
-    /// Ship date for the release-task failure-reason-mandatory requirement
-    /// (task mem_a1668542; note_296e5520 §5; `specs/enforcement/evidence-contract.md`
-    /// "Cutover / grandfather policy"). Tasks whose `created` frontmatter
-    /// predates this date release under the old (optional reason/blocker)
-    /// rules — the mechanical presence check is forward-only, never
-    /// retroactive.
-    const FAILURE_REASON_REQUIRED_SINCE: &str = "2026-07-23";
-
     /// Statuses that are a handback rather than a clean success. Releasing to
-    /// one of these requires a stated failure reason (or `blocker`, for
-    /// `blocked`) unless the task is grandfathered — see
-    /// `FAILURE_REASON_REQUIRED_SINCE`.
+    /// one of these requires a stated failure reason.
     const FAILURE_HANDBACK_STATUSES: &[&str] = &["blocked", "cancelled", "review", "partial"];
-
-    /// True if `created` (an RFC3339-ish timestamp, e.g.
-    /// "2026-07-14T05:00:19+00:00") predates `FAILURE_REASON_REQUIRED_SINCE`
-    /// and should therefore be grandfathered under the old release rules.
-    /// Missing or unparseable `created` is fail-closed: NOT grandfathered.
-    fn is_grandfathered_pre_reason_requirement(created: Option<&str>) -> bool {
-        let Some(created) = created else {
-            return false;
-        };
-        if created.len() < 10 {
-            return false;
-        }
-        let Ok(created_date) = chrono::NaiveDate::parse_from_str(&created[..10], "%Y-%m-%d") else {
-            return false;
-        };
-        let Ok(ship_date) =
-            chrono::NaiveDate::parse_from_str(Self::FAILURE_REASON_REQUIRED_SINCE, "%Y-%m-%d")
-        else {
-            return false;
-        };
-        created_date < ship_date
-    }
 
     /// Validate that completion_evidence is present and non-empty.
     fn require_evidence(evidence: Option<&str>) -> Result<&str, McpError> {
@@ -4337,17 +4305,13 @@ impl PkbSearchServer {
                 vec![]
             };
 
-        // Failure-reason-mandatory gate (note_296e5520 §5;
-        // specs/enforcement/evidence-contract.md "Cutover / grandfather
-        // policy"): releasing to a handback status that isn't a clean
+        // Failure-reason-mandatory gate
+        // specs/enforcement/evidence-contract.md: releasing to a handback status that isn't a clean
         // success requires a non-empty `reason` (or `blocker`, for
         // `blocked`) — the "evidence or a stated failure reason" contract's
         // failure-path half. Success statuses already require `summary`
         // above, unchanged. Presence-only: no content inspection.
-        // Grandfathered tasks (created before the ship date) release under
-        // the old, optional rules.
         if Self::FAILURE_HANDBACK_STATUSES.contains(&status)
-            && !Self::is_grandfathered_pre_reason_requirement(node.created.as_deref())
         {
             let has_reason = reason.map_or(false, |r| !r.trim().is_empty());
             let has_blocker =
@@ -10226,11 +10190,10 @@ projects:
         );
     }
 
-    // ── mem_a1668542: release_task failure-reason-mandatory gate ───────────
-    // note_296e5520 §5 / specs/enforcement/evidence-contract.md. Releasing to
+    // ── mem_a1668542: release_task failure-reason-mandatory gate
+    //  specs/enforcement/evidence-contract.md. Releasing to
     // a handback status (blocked/cancelled/review/partial) requires a
-    // non-empty `reason` (or `blocker`, for `blocked`), unless the task
-    // predates the ship date (grandfathered).
+    // non-empty `reason` (or `blocker`, for `blocked`).
 
     #[test]
     fn test_release_task_blocked_without_reason_or_blocker_is_rejected() {
@@ -10368,29 +10331,8 @@ projects:
     }
 
     #[test]
-    fn test_release_task_grandfathered_task_releases_under_old_rules() {
-        // created well before the 2026-07-23 ship date — old, optional rules apply.
-        let (_tmp, server) = build_disk_backed_server(&[(
-            "tasks/task-old.md",
-            "---\nid: task-old\ntitle: Old task\ntype: task\nstatus: ready\ncreated: 2026-01-01T00:00:00+00:00\n---\n\n# Old task\n",
-        )]);
-        let res = server
-            .handle_release_task(&json!({
-                "id": "task-old",
-                "status": "blocked",
-                "summary": "Grandfathered: no reason/blocker given.",
-            }))
-            .expect("grandfathered (pre-ship-date) task must release under old, optional rules");
-        assert!(
-            !res.is_error.unwrap_or(false),
-            "should not be an error result: {res:?}"
-        );
-    }
-
-    #[test]
-    fn test_release_task_missing_created_is_not_grandfathered() {
-        // No `created` frontmatter at all — fail-closed: treated as subject
-        // to the new rule, not grandfathered.
+    fn test_release_task_missing_created() {
+        // No `created` frontmatter at all — fail-closed.
         let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/task-nocreated.md",
             "---\nid: task-nocreated\ntitle: No created field\ntype: task\nstatus: ready\n---\n\n# No created field\n",
@@ -10401,7 +10343,7 @@ projects:
                 "status": "blocked",
                 "summary": "No created field, no reason given.",
             }))
-            .expect_err("missing `created` must fail closed (not grandfathered)");
+            .expect_err("missing `created` must fail closed");
         assert!(
             matches!(err.code, ErrorCode::INVALID_PARAMS),
             "should be INVALID_PARAMS, got: {:?}",
