@@ -156,6 +156,10 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub consolidated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consolidated_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
     #[serde(skip_serializing_if = "is_zero_i32")]
     pub order: i32,
@@ -1231,6 +1235,8 @@ impl GraphNode {
             tags: doc.tags.clone(),
             node_type,
             status,
+            consolidated: doc.consolidated,
+            consolidated_at: doc.consolidated_at.clone(),
             priority,
             order,
             parent,

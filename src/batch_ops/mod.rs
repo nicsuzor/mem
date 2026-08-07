@@ -11,6 +11,8 @@ pub mod reparent;
 pub mod similarity;
 pub mod stats;
 pub mod update;
+pub mod consolidation;
+pub mod decay;
 
 use crate::document_crud;
 use crate::graph_store::GraphStore;

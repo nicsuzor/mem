@@ -936,6 +936,8 @@ impl PkbSearchServer {
                     chunk_embeddings: Vec::new(),
                     chunk_texts: Vec::new(),
                     body_chunks: Vec::new(),
+                    consolidated: doc.consolidated,
+                    consolidated_at: doc.consolidated_at.clone(),
                 };
                 self.store
                     .write()
@@ -6654,6 +6656,68 @@ impl PkbSearchServer {
         )]))
     }
 
+    fn handle_apply_consolidation_batch(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let seed_id = args.get("seed_id").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("Missing required parameter: seed_id"),
+            data: None,
+        })?;
+        
+        let updates_val = args.get("updates").ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("Missing required parameter: updates"),
+            data: None,
+        })?;
+        
+        let updates: std::collections::HashMap<String, std::collections::HashMap<String, JsonValue>> = serde_json::from_value(updates_val.clone()).map_err(|e| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Invalid updates format: {}", e)),
+            data: None,
+        })?;
+        
+        let graph = self.graph.read();
+        let mut ctx = crate::batch_ops::BatchContext::new(&graph, &self.pkb_root);
+        
+        let summary = crate::batch_ops::consolidation::apply_consolidation_batch(&mut ctx, seed_id, updates).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to apply consolidation batch: {}", e)),
+            data: None,
+        })?;
+        
+        drop(graph);
+        if summary.changed > 0 {
+            self.finalize_batch(&summary.modified_paths, &summary.removed_paths);
+        }
+        
+        Ok(CallToolResult::success(vec![Content::text(summary.display())]))
+    }
+
+    fn handle_get_consolidation_cluster(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let seed_id = args.get("seed_id").and_then(|v| v.as_str());
+        let max_nodes = args.get("max_nodes").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
+        let vector_top_k = args.get("vector_top_k").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
+
+        let graph = self.graph.read();
+        let store = self.store.read();
+
+        let cluster = crate::batch_ops::consolidation::get_consolidation_cluster(
+            &graph,
+            &store,
+            seed_id,
+            max_nodes,
+            vector_top_k,
+            &self.pkb_root,
+        ).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to get consolidation cluster: {}", e)),
+            data: None,
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&cluster).unwrap_or_default()
+        )]))
+    }
+
     // =========================================================================
     // CONSOLIDATED TOOLS (Progressive Disclosure)
     // =========================================================================
@@ -6797,6 +6861,8 @@ impl PkbSearchServer {
             "get_stats" => self.handle_get_stats(args),
             "status" => self.handle_status(args),
             "refresh_graph" => self.handle_refresh_graph(args),
+            "get_consolidation_cluster" => self.handle_get_consolidation_cluster(args),
+            "apply_consolidation_batch" => self.handle_apply_consolidation_batch(args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {name}")),
@@ -6920,6 +6986,33 @@ impl FactsProvider for PkbSearchServer {}
 impl PkbSearchServer {
     fn get_all_tools() -> Vec<Tool> {
         vec![
+            Tool::new(
+                "get_consolidation_cluster",
+                "Get a subgraph of related notes for a consolidation batch. Returns the seed node and top related notes based on graph proximity, vector similarity, and tag orphans.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "seed_id": { "type": "string", "description": "Optional specific seed node ID" },
+                        "max_nodes": { "type": "integer", "description": "Max nodes to return (default: 10)" },
+                        "vector_top_k": { "type": "integer", "description": "Vector nearest neighbors to consider (default: 10)" }
+                    }
+                })).unwrap()
+            ).with_title("Get Consolidation Cluster"),
+            Tool::new(
+                "apply_consolidation_batch",
+                "Applies an atomic batch mutation for a consolidation run. Updates frontmatter and body contents across multiple documents. Fails atomically if any document update fails.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "seed_id": { "type": "string", "description": "The seed node ID being consolidated" },
+                        "updates": { 
+                            "type": "object", 
+                            "description": "Map of node ID to frontmatter modifications and/or 'body' replacement." 
+                        }
+                    },
+                    "required": ["seed_id", "updates"]
+                })).unwrap()
+            ).with_title("Apply Consolidation Batch"),
             Tool::new(
                 "search",
                 "Hybrid semantic + graph-proximity search across the personal knowledge base. Use this for general discovery and finding related knowledge. Supports proximity boosting.",

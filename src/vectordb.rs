@@ -54,6 +54,12 @@ pub struct DocumentEntry {
     /// Document date (from frontmatter)
     #[serde(default)]
     pub date: Option<String>,
+    /// Whether this document has been consolidated by the LLM sleep cycle
+    #[serde(default)]
+    pub consolidated: Option<bool>,
+    /// When this document was last consolidated (RFC3339)
+    #[serde(default)]
+    pub consolidated_at: Option<String>,
     /// Last modified timestamp (RFC3339 or YYYY-MM-DD, from frontmatter `modified:`).
     /// Note: `#[serde(default)]` applies to text formats only; bincode is positional so
     /// adding this field mid-struct breaks existing bincode files. `load_or_create` handles
@@ -113,6 +119,8 @@ pub struct MetadataPatch {
     pub status: Option<String>,
     pub tags: Vec<String>,
     pub date: Option<String>,
+    pub consolidated: Option<bool>,
+    pub consolidated_at: Option<String>,
     pub modified: Option<String>,
     pub confidence: Option<f64>,
     pub file_hash: String,
@@ -309,6 +317,8 @@ impl VectorStore {
             status: doc.status.clone(),
             tags: doc.tags.clone(),
             date,
+            consolidated: doc.consolidated,
+            consolidated_at: doc.consolidated_at.clone(),
             modified: doc.modified.clone(),
             confidence,
             file_hash: doc.file_hash.clone(),
@@ -365,6 +375,8 @@ impl VectorStore {
                     status: doc.status.clone(),
                     tags: doc.tags.clone(),
                     date,
+                    consolidated: doc.consolidated,
+                    consolidated_at: doc.consolidated_at.clone(),
                     modified: doc.modified.clone(),
                     confidence,
                     file_hash: doc.file_hash.clone(),
@@ -405,6 +417,8 @@ impl VectorStore {
             tags: doc.tags.clone(),
             id: canonical_id,
             date,
+            consolidated: doc.consolidated,
+            consolidated_at: doc.consolidated_at.clone(),
             modified: doc.modified.clone(),
             confidence,
             content_hash: Some(incoming_body_hash.clone()),
@@ -433,6 +447,8 @@ impl VectorStore {
                     entry.status = patch.status;
                     entry.tags = patch.tags;
                     entry.date = patch.date;
+                    entry.consolidated = patch.consolidated;
+                    entry.consolidated_at = patch.consolidated_at;
                     entry.modified = patch.modified;
                     entry.confidence = patch.confidence;
                     entry.file_hash = Some(patch.file_hash);
@@ -485,6 +501,8 @@ impl VectorStore {
             tags: doc.tags.clone(),
             id: canonical_id.clone(),
             date,
+            consolidated: doc.consolidated,
+            consolidated_at: doc.consolidated_at.clone(),
             modified: doc.modified.clone(),
             confidence,
             content_hash: Some(body_hash.clone()),
