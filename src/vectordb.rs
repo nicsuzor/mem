@@ -141,6 +141,40 @@ pub enum PreparedUpsert {
     Full(Box<DocumentEntry>),
 }
 
+#[derive(Deserialize)]
+struct OldVectorStore {
+    documents: HashMap<String, OldDocumentEntry>,
+    dimension: usize,
+}
+
+#[derive(Deserialize)]
+struct OldDocumentEntry {
+    #[serde(with = "path_serde")]
+    path: PathBuf,
+    title: String,
+    doc_type: Option<String>,
+    status: Option<String>,
+    tags: Vec<String>,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    modified: Option<String>,
+    #[serde(default)]
+    confidence: Option<f64>,
+    #[serde(default)]
+    content_hash: Option<String>,
+    #[serde(default)]
+    file_hash: Option<String>,
+    #[serde(default)]
+    body_hash: Option<String>,
+    chunk_embeddings: Vec<Vec<f32>>,
+    chunk_texts: Vec<String>,
+    #[serde(default)]
+    body_chunks: Vec<String>,
+}
+
 /// Persistent vector store
 #[derive(Serialize, Deserialize)]
 pub struct VectorStore {
@@ -209,8 +243,45 @@ impl VectorStore {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to deserialize vector store: {e}. Creating new.");
-                    Ok(Self::new(dimension))
+                    tracing::info!("Failed to deserialize vector store as new schema ({e}). Attempting legacy migration...");
+                    if let Ok(old_store) = bincode::deserialize::<OldVectorStore>(&data) {
+                        tracing::info!(
+                            "Successfully migrated vector DB from legacy format. Salvaged {} documents.",
+                            old_store.documents.len()
+                        );
+                        let mut new_store = Self::new(old_store.dimension);
+                        for (key, old_entry) in old_store.documents {
+                            new_store.documents.insert(
+                                key,
+                                DocumentEntry {
+                                    path: old_entry.path,
+                                    title: old_entry.title,
+                                    doc_type: old_entry.doc_type,
+                                    status: old_entry.status,
+                                    tags: old_entry.tags,
+                                    id: old_entry.id,
+                                    date: old_entry.date,
+                                    consolidated: None, // New fields initialized
+                                    consolidated_at: None, // New fields initialized
+                                    modified: old_entry.modified,
+                                    confidence: old_entry.confidence,
+                                    content_hash: old_entry.content_hash,
+                                    file_hash: old_entry.file_hash,
+                                    body_hash: old_entry.body_hash,
+                                    chunk_embeddings: old_entry.chunk_embeddings,
+                                    chunk_texts: old_entry.chunk_texts,
+                                    body_chunks: old_entry.body_chunks,
+                                },
+                            );
+                        }
+                        
+                        // Optionally persist right away so we don't pay migration cost repeatedly
+                        // (Though it will be overwritten gracefully during any graph build)
+                        return Ok(new_store);
+                    } else {
+                        tracing::warn!("Failed to deserialize vector store entirely: {e}. Creating new.");
+                        Ok(Self::new(dimension))
+                    }
                 }
             }
         } else {
