@@ -1009,7 +1009,7 @@ fn find_node_file(pkb_root: &Path, node_id: &str) -> Option<PathBuf> {
     }
 
     // Slow path: scan the PKB and match by frontmatter id or filename stem.
-    for path in crate::pkb::scan_directory_all(pkb_root) {
+    for path in crate::pkb::scan_directory(pkb_root) {
         // Match by stem prefix (e.g. "task-abc123-some-title.md" -> "task-abc123")
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
             if stem == node_id || stem.starts_with(&format!("{}-", node_id)) {
