@@ -239,7 +239,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         }
 
         // Priority
-        let priority = node.priority.unwrap_or(2);
+        let priority = node.priority.unwrap_or(4);
         *priority_distribution
             .entry(priority.to_string())
             .or_insert(0) += 1;
@@ -397,6 +397,8 @@ mod tests {
             body: String::new(),
             doc_type: Some(doc_type.to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),

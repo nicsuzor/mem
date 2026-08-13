@@ -54,11 +54,16 @@ pub struct DocumentEntry {
     /// Document date (from frontmatter)
     #[serde(default)]
     pub date: Option<String>,
+    /// Whether this document has been consolidated by the LLM sleep cycle
+    #[serde(default)]
+    pub consolidated: Option<bool>,
+    /// When this document was last consolidated (RFC3339)
+    #[serde(default)]
+    pub consolidated_at: Option<String>,
     /// Last modified timestamp (RFC3339 or YYYY-MM-DD, from frontmatter `modified:`).
     /// Note: `#[serde(default)]` applies to text formats only; bincode is positional so
-    /// adding this field mid-struct breaks existing bincode files. `load_or_create` handles
-    /// the resulting `DecodeError` gracefully by discarding the old file and creating a fresh
-    /// store (one-time full reindex on first upgrade).
+    /// adding or reordering fields breaks existing bincode files. `load_or_create` handles
+    /// legacy stores via [`OldVectorStore`] fallback, salvaging existing embeddings without re-indexing.
     #[serde(default)]
     pub modified: Option<String>,
     /// Confidence level (0.0 - 1.0)
@@ -113,6 +118,8 @@ pub struct MetadataPatch {
     pub status: Option<String>,
     pub tags: Vec<String>,
     pub date: Option<String>,
+    pub consolidated: Option<bool>,
+    pub consolidated_at: Option<String>,
     pub modified: Option<String>,
     pub confidence: Option<f64>,
     pub file_hash: String,
@@ -131,6 +138,50 @@ pub enum PreparedUpsert {
     MetadataOnly(MetadataPatch),
     /// Body changed (or no prior entry) — replace the whole entry.
     Full(Box<DocumentEntry>),
+}
+
+/// Legacy vector store snapshot used for 1-step backwards compatibility migration.
+///
+/// **Schema Migration Protocol**:
+/// Because `bincode` is a positional binary format, adding, removing, or reordering fields in
+/// [`DocumentEntry`] breaks binary deserialization of existing vector stores on disk.
+///
+/// When making a breaking structural change to [`DocumentEntry`]:
+/// 1. `OldDocumentEntry` must snapshot the **previous** `DocumentEntry` schema before your change.
+/// 2. `VectorStore::load_or_create` will fail the primary [`VectorStore`] deserialization and fall back
+///    to `OldVectorStore`, mapping salvaged fields into the new `DocumentEntry` schema.
+#[derive(Deserialize)]
+struct OldVectorStore {
+    documents: HashMap<String, OldDocumentEntry>,
+    dimension: usize,
+}
+
+#[derive(Deserialize)]
+struct OldDocumentEntry {
+    #[serde(with = "path_serde")]
+    path: PathBuf,
+    title: String,
+    doc_type: Option<String>,
+    status: Option<String>,
+    tags: Vec<String>,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    modified: Option<String>,
+    #[serde(default)]
+    confidence: Option<f64>,
+    #[serde(default)]
+    content_hash: Option<String>,
+    #[serde(default)]
+    file_hash: Option<String>,
+    #[serde(default)]
+    body_hash: Option<String>,
+    chunk_embeddings: Vec<Vec<f32>>,
+    chunk_texts: Vec<String>,
+    #[serde(default)]
+    body_chunks: Vec<String>,
 }
 
 /// Persistent vector store
@@ -201,8 +252,45 @@ impl VectorStore {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to deserialize vector store: {e}. Creating new.");
-                    Ok(Self::new(dimension))
+                    tracing::info!("Failed to deserialize vector store as new schema ({e}). Attempting legacy migration...");
+                    if let Ok(old_store) = bincode::deserialize::<OldVectorStore>(&data) {
+                        tracing::info!(
+                            "Successfully migrated vector DB from legacy format. Salvaged {} documents.",
+                            old_store.documents.len()
+                        );
+                        let mut new_store = Self::new(old_store.dimension);
+                        for (key, old_entry) in old_store.documents {
+                            new_store.documents.insert(
+                                key,
+                                DocumentEntry {
+                                    path: old_entry.path,
+                                    title: old_entry.title,
+                                    doc_type: old_entry.doc_type,
+                                    status: old_entry.status,
+                                    tags: old_entry.tags,
+                                    id: old_entry.id,
+                                    date: old_entry.date,
+                                    consolidated: None, // New fields initialized
+                                    consolidated_at: None, // New fields initialized
+                                    modified: old_entry.modified,
+                                    confidence: old_entry.confidence,
+                                    content_hash: old_entry.content_hash,
+                                    file_hash: old_entry.file_hash,
+                                    body_hash: old_entry.body_hash,
+                                    chunk_embeddings: old_entry.chunk_embeddings,
+                                    chunk_texts: old_entry.chunk_texts,
+                                    body_chunks: old_entry.body_chunks,
+                                },
+                            );
+                        }
+                        
+                        // Optionally persist right away so we don't pay migration cost repeatedly
+                        // (Though it will be overwritten gracefully during any graph build)
+                        return Ok(new_store);
+                    } else {
+                        tracing::warn!("Failed to deserialize vector store entirely: {e}. Creating new.");
+                        Ok(Self::new(dimension))
+                    }
                 }
             }
         } else {
@@ -309,6 +397,8 @@ impl VectorStore {
             status: doc.status.clone(),
             tags: doc.tags.clone(),
             date,
+            consolidated: doc.consolidated,
+            consolidated_at: doc.consolidated_at.clone(),
             modified: doc.modified.clone(),
             confidence,
             file_hash: doc.file_hash.clone(),
@@ -365,6 +455,8 @@ impl VectorStore {
                     status: doc.status.clone(),
                     tags: doc.tags.clone(),
                     date,
+                    consolidated: doc.consolidated,
+                    consolidated_at: doc.consolidated_at.clone(),
                     modified: doc.modified.clone(),
                     confidence,
                     file_hash: doc.file_hash.clone(),
@@ -405,6 +497,8 @@ impl VectorStore {
             tags: doc.tags.clone(),
             id: canonical_id,
             date,
+            consolidated: doc.consolidated,
+            consolidated_at: doc.consolidated_at.clone(),
             modified: doc.modified.clone(),
             confidence,
             content_hash: Some(incoming_body_hash.clone()),
@@ -433,6 +527,8 @@ impl VectorStore {
                     entry.status = patch.status;
                     entry.tags = patch.tags;
                     entry.date = patch.date;
+                    entry.consolidated = patch.consolidated;
+                    entry.consolidated_at = patch.consolidated_at;
                     entry.modified = patch.modified;
                     entry.confidence = patch.confidence;
                     entry.file_hash = Some(patch.file_hash);
@@ -485,6 +581,8 @@ impl VectorStore {
             tags: doc.tags.clone(),
             id: canonical_id.clone(),
             date,
+            consolidated: doc.consolidated,
+            consolidated_at: doc.consolidated_at.clone(),
             modified: doc.modified.clone(),
             confidence,
             content_hash: Some(body_hash.clone()),
@@ -756,6 +854,8 @@ mod tests {
                 .map(String::from)
                 .unwrap_or_else(|| "fallback".to_string()),
             date: None,
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             confidence,
             content_hash: Some("test_hash_123".to_string()),
@@ -1213,6 +1313,8 @@ mod tests {
             body: "Some body text".to_string(),
             doc_type: Some("note".to_string()),
             status: None,
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec!["test".to_string()],
             frontmatter: None,
@@ -1252,6 +1354,8 @@ mod tests {
                 body: "Body A".to_string(),
                 doc_type: None,
                 status: None,
+                consolidated: None,
+                consolidated_at: None,
                 modified: None,
                 tags: vec![],
                 frontmatter: None,
@@ -1274,6 +1378,8 @@ mod tests {
                 body: "Body B".to_string(),
                 doc_type: None,
                 status: None,
+                consolidated: None,
+                consolidated_at: None,
                 modified: None,
                 tags: vec![],
                 frontmatter: None,
@@ -1318,6 +1424,8 @@ mod tests {
                 tags: vec!["old".to_string()],
                 id: "cheap-meta".to_string(),
                 date: None,
+                consolidated: None,
+                consolidated_at: None,
                 modified: None,
                 confidence: None,
                 content_hash: Some(body_hash.clone()),
@@ -1336,6 +1444,8 @@ mod tests {
             tags: vec!["fresh".to_string()],
             doc_type: Some("task".to_string()),
             status: Some("done".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             body: body.clone(),
             content_hash: body_hash.clone(),
@@ -1394,6 +1504,8 @@ mod tests {
                 tags: vec![],
                 id: "body-change".to_string(),
                 date: None,
+                consolidated: None,
+                consolidated_at: None,
                 modified: None,
                 confidence: None,
                 content_hash: Some(old_body_hash.clone()),
@@ -1412,6 +1524,8 @@ mod tests {
             tags: vec![],
             doc_type: None,
             status: None,
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             body: new_body.to_string(),
             content_hash: new_body_hash,

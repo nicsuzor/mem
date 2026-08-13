@@ -818,17 +818,6 @@ impl Embedder {
             config.tokenizer_path = models_dir.join("tokenizer.json");
         }
 
-        let max_sess = max_sessions_cpu();
-        if gpu_available() {
-            tracing::info!(
-                "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, GPU/CUDA mode, batch size {})",
-                Self::MAX_BATCH_GPU,
-            );
-        } else {
-            tracing::info!(
-                "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, up to {max_sess} sessions × {THREADS_PER_SESSION} threads)"
-            );
-        }
         Ok(Self {
             config,
             pool: OnceLock::new(),
@@ -837,6 +826,23 @@ impl Embedder {
             override_batch_size: 0,
             is_dummy: false,
         })
+    }
+
+    /// Log the configuration and effective parallelism (reflecting any overrides).
+    pub fn log_info(&self) {
+        if self.is_dummy {
+            return;
+        }
+        let (sessions, threads, batch_size) = self.effective_config();
+        if gpu_available() {
+            tracing::info!(
+                "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, GPU/CUDA mode, batch size {batch_size})"
+            );
+        } else {
+            tracing::info!(
+                "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, up to {sessions} sessions × {threads} threads, batch size {batch_size})"
+            );
+        }
     }
 
     /// Create a dummy embedder that returns zero vectors (for testing).

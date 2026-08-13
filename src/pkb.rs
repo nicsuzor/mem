@@ -23,6 +23,10 @@ pub struct PkbDocument {
     pub doc_type: Option<String>,
     /// Document status
     pub status: Option<String>,
+    /// Whether this document has been consolidated by the LLM sleep cycle
+    pub consolidated: Option<bool>,
+    /// When this document was last consolidated (RFC3339)
+    pub consolidated_at: Option<String>,
     /// Last modified time (RFC3339)
     pub modified: Option<String>,
     /// Full body content (without frontmatter)
@@ -168,6 +172,14 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         .as_ref()
         .and_then(|fm| fm.get("status").and_then(|v| v.as_str()).map(String::from));
 
+    let consolidated = fm_data
+        .as_ref()
+        .and_then(|fm| fm.get("consolidated").and_then(|v| v.as_bool()));
+
+    let consolidated_at = fm_data
+        .as_ref()
+        .and_then(|fm| fm.get("consolidated_at").and_then(|v| v.as_str()).map(String::from));
+
     let body = result.content.trim().to_string();
     let content_hash = compute_content_hash(body.as_bytes());
 
@@ -177,6 +189,8 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         tags,
         doc_type,
         status,
+        consolidated,
+        consolidated_at,
         modified,
         body,
         content_hash,

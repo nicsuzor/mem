@@ -517,6 +517,10 @@ enum Commands {
     #[command(subcommand)]
     Batch(BatchCommands),
 
+    /// Background maintenance operations
+    #[command(subcommand)]
+    Maintenance(MaintenanceCommands),
+
     /// One-shot data migrations over the PKB
     #[command(subcommand)]
     Migrate(MigrateCommands),
@@ -605,7 +609,20 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
-enum BatchCommands {
+pub enum MaintenanceCommands {
+    /// Run exponential decay on edge weights
+    Decay {
+        /// Decay constant lambda (default: 0.05)
+        #[arg(long, default_value_t = 0.05)]
+        lambda: f64,
+        /// Show what would change without saving
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BatchCommands {
     /// Update frontmatter fields across multiple tasks
     Update {
         /// Set a field: key=value (repeatable)
@@ -995,6 +1012,7 @@ async fn main() -> Result<()> {
             | Commands::Batch(BatchCommands::CreateEpics { .. })
             | Commands::Batch(BatchCommands::Reclassify { .. })
             | Commands::Migrate(MigrateCommands::TargetParents { .. })
+            | Commands::Maintenance(MaintenanceCommands::Decay { .. })
     );
     if disables_gpu && std::env::var("AOPS_GPU").is_err() {
         std::env::set_var("AOPS_GPU", "0");
@@ -1007,6 +1025,7 @@ async fn main() -> Result<()> {
             | Commands::BenchReindex { .. }
             | Commands::Add { .. }
             | Commands::Forget { .. }
+            | Commands::Maintenance { .. }
     );
 
     let mut _index_lock = if needs_exclusive_lock {
@@ -1075,6 +1094,7 @@ async fn main() -> Result<()> {
         if let Some((s, t, b)) = overrides {
             e = e.with_overrides(s, t, b);
         }
+        e.log_info();
         let e = Arc::new(e);
         let s = load_store(&db_path, e.dimension())?;
         (Some(e), Some(s))
@@ -1310,7 +1330,7 @@ async fn main() -> Result<()> {
                             b.downstream_weight
                                 .partial_cmp(&a.downstream_weight)
                                 .unwrap_or(std::cmp::Ordering::Equal)
-                                .then(a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2)))
+                                .then(a.priority.unwrap_or(4).cmp(&b.priority.unwrap_or(4)))
                         });
                     }
                     "due" => {
@@ -1322,7 +1342,7 @@ async fn main() -> Result<()> {
                     }
                     "priority" => {
                         tasks.sort_by(|a, b| {
-                            a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2)).then(
+                            a.priority.unwrap_or(4).cmp(&b.priority.unwrap_or(4)).then(
                                 b.downstream_weight
                                     .partial_cmp(&a.downstream_weight)
                                     .unwrap_or(std::cmp::Ordering::Equal),
@@ -1362,7 +1382,7 @@ async fn main() -> Result<()> {
                 println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
 
                 for task in &tasks {
-                    let pri = task.priority.unwrap_or(2);
+                    let pri = task.priority.unwrap_or(4);
                     let color = pri_color(pri);
                     let weight = if task.downstream_weight > 0.0 {
                         format!("{:.1}", task.downstream_weight)
@@ -1443,7 +1463,7 @@ async fn main() -> Result<()> {
                             (false, false) => a
                                 .priority
                                 .unwrap_or(2)
-                                .cmp(&b.priority.unwrap_or(2))
+                                .cmp(&b.priority.unwrap_or(4))
                                 .then(
                                     b.downstream_weight
                                         .partial_cmp(&a.downstream_weight)
@@ -1814,7 +1834,7 @@ async fn main() -> Result<()> {
                             println!(
                                 "  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
                                 trunc(&node.label, 35),
-                                node.priority.unwrap_or(2),
+                                node.priority.unwrap_or(4),
                                 node.downstream_weight,
                                 exposure,
                                 p,
@@ -3021,6 +3041,27 @@ async fn main() -> Result<()> {
             handle_batch_command(batch_cmd, &graph, &pkb_root)?;
         }
 
+        Commands::Maintenance(maintenance_cmd) => {
+            let graph = load_graph(&pkb_root, &db_path, None);
+            let mut ctx = mem::batch_ops::BatchContext::new(&graph, &pkb_root);
+            
+            match maintenance_cmd {
+                MaintenanceCommands::Decay { lambda, dry_run } => {
+                    let summary = mem::batch_ops::decay::run_decay(&mut ctx, lambda, dry_run)?;
+                    if !dry_run && summary.changed > 0 {
+                        println!("Applied edge weight decay to {} nodes.", summary.changed);
+                        
+                        // Force graph sync. Because `update_task` inside `run_decay` does NOT automatically
+                        // trigger a graph rebuild when run via CLI in a short-lived process, we do it
+                        // implicitly by re-indexing or relying on the persistent store updating.
+                        // However, since we mutated files, the background watcher or next `pkb` run
+                        // will pick it up and trigger graph re-calc.
+                    }
+                    println!("{}", summary.display());
+                }
+            }
+        }
+
         Commands::Migrate(migrate_cmd) => {
             handle_migrate_command(migrate_cmd, &pkb_root)?;
         }
@@ -4045,7 +4086,7 @@ fn select_focus_picks<'a>(tasks: &[&'a graph::GraphNode], max: usize) -> Vec<&'a
     let mut scored: Vec<(&graph::GraphNode, i64)> = tasks
         .iter()
         .map(|&t| {
-            let pri = t.priority.unwrap_or(2);
+            let pri = t.priority.unwrap_or(4);
             let mut score: i64 = match pri {
                 0 => 10000,
                 1 => 5000,
@@ -4102,7 +4143,7 @@ fn select_focus_picks<'a>(tasks: &[&'a graph::GraphNode], max: usize) -> Vec<&'a
 }
 
 fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
-    let pri = task.priority.unwrap_or(2);
+    let pri = task.priority.unwrap_or(4);
     let color = pri_color(pri);
     let exposure = if task.stakeholder_exposure { "!" } else { " " };
 
@@ -4198,7 +4239,7 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
     let total = tasks.len();
     let urgent = tasks
         .iter()
-        .filter(|t| t.priority.unwrap_or(2) <= 1)
+        .filter(|t| t.priority.unwrap_or(4) <= 1)
         .count();
     let with_due = tasks.iter().filter(|t| t.due.is_some()).count();
     let overdue_count = {
