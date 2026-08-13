@@ -1094,6 +1094,7 @@ async fn main() -> Result<()> {
         if let Some((s, t, b)) = overrides {
             e = e.with_overrides(s, t, b);
         }
+        e.log_info();
         let e = Arc::new(e);
         let s = load_store(&db_path, e.dimension())?;
         (Some(e), Some(s))
