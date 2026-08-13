@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.75](https://github.com/nicsuzor/mem/compare/mem-v0.3.74...mem-v0.3.75) (2026-08-13)
+
+
+### Features
+
+* **release_task:** require failure reason for blocked/cancelled/review/partial ([9e0adce](https://github.com/nicsuzor/mem/commit/9e0adce1c9af5f97466d8f4d9c9e5eeae04558b6))
+
+
+### Bug Fixes
+
+* **embeddings:** defer startup logging to log_info so CLI overrides are reflected ([bcf61b0](https://github.com/nicsuzor/mem/commit/bcf61b0ab94cf5cca99e8d34b05db536076538dc))
+* update test document initializers and tool annotations for decay branch ([5ae89c4](https://github.com/nicsuzor/mem/commit/5ae89c423252d0552e1b358667d3c0e864cd50e2))
+
+
+### Documentation
+
+* document OldVectorStore migration protocol in vectordb ([9d20ad7](https://github.com/nicsuzor/mem/commit/9d20ad7dd648b3056b89a685429c7f7279993f52))
+
 ## [0.3.74](https://github.com/nicsuzor/mem/compare/mem-v0.3.73...mem-v0.3.74) (2026-07-19)
 
 
