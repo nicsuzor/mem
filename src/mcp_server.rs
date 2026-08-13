@@ -3095,8 +3095,8 @@ impl PkbSearchServer {
             "contributes_to": contributes_to,
             "contributed_by": node.contributed_by,
             "follow_up_tasks": node.follow_up_tasks,
-            "priority": node.priority.unwrap_or(2),
-            "effective_priority": node.effective_priority.unwrap_or(node.priority.unwrap_or(2)),
+            "priority": node.priority.unwrap_or(4),
+            "effective_priority": node.effective_priority.unwrap_or(node.priority.unwrap_or(4)),
             "focus_score": node.focus_score,
             "blocked": graph.is_blocked(&node.id),
             "signals": {
@@ -5605,8 +5605,8 @@ impl PkbSearchServer {
                         "id": t.task_id.as_deref().unwrap_or(&t.id),
                         "title": t.label,
                         "status": t.status.as_deref().unwrap_or("unknown"),
-                        "priority": t.priority.unwrap_or(2),
-                        "effective_priority": t.effective_priority.unwrap_or(t.priority.unwrap_or(2)),
+                        "priority": t.priority.unwrap_or(4),
+                        "effective_priority": t.effective_priority.unwrap_or(t.priority.unwrap_or(4)),
                         "focus_score": t.focus_score,
                         "blocked": graph.is_blocked(&t.id),
                         "signals": {
@@ -5734,7 +5734,7 @@ impl PkbSearchServer {
                     i + 1,
                     id,
                     t.status.as_deref().unwrap_or("-"),
-                    t.priority.unwrap_or(2),
+                    t.priority.unwrap_or(4),
                     weight,
                     crit,
                     urg,
@@ -5751,7 +5751,7 @@ impl PkbSearchServer {
             );
             for (i, t) in tasks.iter().enumerate() {
                 let id = t.task_id.as_deref().unwrap_or(&t.id);
-                let pri = t.priority.unwrap_or(2);
+                let pri = t.priority.unwrap_or(4);
                 let status_str = t.status.as_deref().unwrap_or("-");
                 out.push_str(&format!(
                     "| {} | {} | {} | {} | {} |\n",
@@ -6398,7 +6398,7 @@ impl PkbSearchServer {
         let mut by_priority: std::collections::HashMap<i32, usize> =
             std::collections::HashMap::new();
         for task in &ready {
-            let p = task.priority.unwrap_or(2);
+            let p = task.priority.unwrap_or(4);
             *by_priority.entry(p).or_insert(0) += 1;
         }
 

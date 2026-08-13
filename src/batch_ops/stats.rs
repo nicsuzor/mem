@@ -239,7 +239,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         }
 
         // Priority
-        let priority = node.priority.unwrap_or(2);
+        let priority = node.priority.unwrap_or(4);
         *priority_distribution
             .entry(priority.to_string())
             .or_insert(0) += 1;

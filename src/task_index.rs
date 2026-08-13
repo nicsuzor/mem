@@ -96,7 +96,7 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
                 title: node.label.clone(),
                 task_type: node.node_type.clone().unwrap_or_else(|| "task".to_string()),
                 status: node.status.clone().unwrap_or_else(|| "inbox".to_string()),
-                priority: node.priority.unwrap_or(2),
+                priority: node.priority.unwrap_or(4),
                 order: node.order,
                 parent: node.parent.clone(),
                 children: node.children.clone(),

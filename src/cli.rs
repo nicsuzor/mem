@@ -1329,7 +1329,7 @@ async fn main() -> Result<()> {
                             b.downstream_weight
                                 .partial_cmp(&a.downstream_weight)
                                 .unwrap_or(std::cmp::Ordering::Equal)
-                                .then(a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2)))
+                                .then(a.priority.unwrap_or(4).cmp(&b.priority.unwrap_or(4)))
                         });
                     }
                     "due" => {
@@ -1341,7 +1341,7 @@ async fn main() -> Result<()> {
                     }
                     "priority" => {
                         tasks.sort_by(|a, b| {
-                            a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2)).then(
+                            a.priority.unwrap_or(4).cmp(&b.priority.unwrap_or(4)).then(
                                 b.downstream_weight
                                     .partial_cmp(&a.downstream_weight)
                                     .unwrap_or(std::cmp::Ordering::Equal),
@@ -1381,7 +1381,7 @@ async fn main() -> Result<()> {
                 println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
 
                 for task in &tasks {
-                    let pri = task.priority.unwrap_or(2);
+                    let pri = task.priority.unwrap_or(4);
                     let color = pri_color(pri);
                     let weight = if task.downstream_weight > 0.0 {
                         format!("{:.1}", task.downstream_weight)
@@ -1462,7 +1462,7 @@ async fn main() -> Result<()> {
                             (false, false) => a
                                 .priority
                                 .unwrap_or(2)
-                                .cmp(&b.priority.unwrap_or(2))
+                                .cmp(&b.priority.unwrap_or(4))
                                 .then(
                                     b.downstream_weight
                                         .partial_cmp(&a.downstream_weight)
@@ -1833,7 +1833,7 @@ async fn main() -> Result<()> {
                             println!(
                                 "  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
                                 trunc(&node.label, 35),
-                                node.priority.unwrap_or(2),
+                                node.priority.unwrap_or(4),
                                 node.downstream_weight,
                                 exposure,
                                 p,
@@ -4085,7 +4085,7 @@ fn select_focus_picks<'a>(tasks: &[&'a graph::GraphNode], max: usize) -> Vec<&'a
     let mut scored: Vec<(&graph::GraphNode, i64)> = tasks
         .iter()
         .map(|&t| {
-            let pri = t.priority.unwrap_or(2);
+            let pri = t.priority.unwrap_or(4);
             let mut score: i64 = match pri {
                 0 => 10000,
                 1 => 5000,
@@ -4142,7 +4142,7 @@ fn select_focus_picks<'a>(tasks: &[&'a graph::GraphNode], max: usize) -> Vec<&'a
 }
 
 fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
-    let pri = task.priority.unwrap_or(2);
+    let pri = task.priority.unwrap_or(4);
     let color = pri_color(pri);
     let exposure = if task.stakeholder_exposure { "!" } else { " " };
 
@@ -4238,7 +4238,7 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
     let total = tasks.len();
     let urgent = tasks
         .iter()
-        .filter(|t| t.priority.unwrap_or(2) <= 1)
+        .filter(|t| t.priority.unwrap_or(4) <= 1)
         .count();
     let with_due = tasks.iter().filter(|t| t.due.is_some()).count();
     let overdue_count = {

@@ -820,7 +820,7 @@ impl GraphStore {
                 .partial_cmp(&a.urgency)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(b.severity.unwrap_or(0).cmp(&a.severity.unwrap_or(0)))
-                .then(a.priority.unwrap_or(2).cmp(&b.priority.unwrap_or(2)))
+                .then(a.priority.unwrap_or(4).cmp(&b.priority.unwrap_or(4)))
                 .then(
                     b.downstream_weight
                         .partial_cmp(&a.downstream_weight)
@@ -1537,7 +1537,7 @@ impl GraphStore {
                 continue;
             }
 
-            let pri = node.priority.unwrap_or(2);
+            let pri = node.priority.unwrap_or(4);
             let sev = node.severity.unwrap_or(0);
             let mut score: i64 = match pri {
                 0 => 10000,
@@ -2423,7 +2423,7 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
             .map(|s| excluded.contains(s))
             .unwrap_or(true)
         {
-            let pw = match n.priority.unwrap_or(2) {
+            let pw = match n.priority.unwrap_or(4) {
                 0 => 5.0,
                 1 => 3.0,
                 2 => 2.0,
@@ -2562,7 +2562,7 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
         })
         .collect();
 
-    let priorities: Vec<i32> = nodes.iter().map(|n| n.priority.unwrap_or(2)).collect();
+    let priorities: Vec<i32> = nodes.iter().map(|n| n.priority.unwrap_or(4)).collect();
 
     let status_completed: Vec<bool> = nodes
         .iter()
@@ -3081,7 +3081,7 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
             .then(
                 na.effective_priority
                     .unwrap_or(2)
-                    .cmp(&nb.effective_priority.unwrap_or(2)),
+                    .cmp(&nb.effective_priority.unwrap_or(4)),
             )
             .then(
                 nb.downstream_weight
