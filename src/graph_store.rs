@@ -3489,6 +3489,8 @@ mod tests {
             body: String::new(),
             doc_type: Some(doc_type.to_string()),
             status: Some(status.to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
@@ -3512,6 +3514,8 @@ mod tests {
             body: body.to_string(),
             doc_type: Some("memory".to_string()),
             status: None,
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
@@ -3683,6 +3687,8 @@ mod tests {
             body: String::new(),
             doc_type: Some("goal".to_string()),
             status: None,
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(goal_fm)),
@@ -3705,6 +3711,8 @@ mod tests {
             body: String::new(),
             doc_type: Some("task".to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(task_fm)),
@@ -3815,6 +3823,8 @@ mod tests {
                 body: String::new(),
                 doc_type: Some("task".to_string()),
                 status: Some(status.to_string()),
+                consolidated: None,
+                consolidated_at: None,
                 modified: None,
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
@@ -4546,6 +4556,8 @@ mod tests {
             body: String::new(),
             doc_type: Some("task".to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
@@ -5001,6 +5013,8 @@ mod tests {
                 body: String::new(),
                 doc_type: fm.get("type").and_then(|v| v.as_str()).map(String::from),
                 status: Some("active".to_string()),
+                consolidated: None,
+                consolidated_at: None,
                 modified: None,
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
@@ -5085,6 +5099,8 @@ mod tests {
                 body: String::new(),
                 doc_type: Some("task".to_string()),
                 status: Some("ready".to_string()),
+                consolidated: None,
+                consolidated_at: None,
                 modified: None,
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
@@ -5142,6 +5158,8 @@ mod tests {
                 body: String::new(),
                 doc_type: Some("task".to_string()),
                 status: Some(status.to_string()),
+                consolidated: None,
+                consolidated_at: None,
                 modified: None,
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
@@ -5282,6 +5300,8 @@ mod tests {
                 body: String::new(),
                 doc_type: Some("task".to_string()),
                 status: Some("ready".to_string()),
+                consolidated: None,
+                consolidated_at: None,
                 modified,
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
@@ -5484,6 +5504,8 @@ mod tests {
                 body: String::new(),
                 doc_type: Some("task".to_string()),
                 status: Some("ready".to_string()),
+                consolidated: None,
+                consolidated_at: None,
                 modified: None,
                 tags: vec![],
                 frontmatter: Some(serde_json::Value::Object(fm)),
@@ -5851,7 +5873,7 @@ mod tests {
                 d
             };
         let child_of = |id: &str, parent: &str| -> crate::pkb::PkbDocument {
-            make_doc(
+            let mut d = make_doc(
                 &format!("tasks/{id}.md"),
                 id,
                 "task",
@@ -5859,7 +5881,11 @@ mod tests {
                 id,
                 Some(parent),
                 &[],
-            )
+            );
+            let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("priority".to_string(), serde_json::json!(2));
+            d.frontmatter = Some(serde_json::Value::Object(fm));
+            d
         };
 
         // --- Positive (modest): spike unblocks a dependent with uncertainty 0.5,
@@ -6021,6 +6047,8 @@ mod tests {
             body: String::new(),
             doc_type: Some("epic".to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm_epic)),
@@ -6067,6 +6095,8 @@ mod tests {
             body: String::new(),
             doc_type: Some("project".to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm_proj)),

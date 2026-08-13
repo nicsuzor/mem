@@ -1314,6 +1314,8 @@ mod target_prototype_tests {
             tags: vec![],
             doc_type: fm.get("type").and_then(|v| v.as_str()).map(String::from),
             status: None,
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             body: "Body text.".to_string(),
             content_hash: "h".to_string(),

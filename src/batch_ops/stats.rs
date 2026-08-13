@@ -397,6 +397,8 @@ mod tests {
             body: String::new(),
             doc_type: Some(doc_type.to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),

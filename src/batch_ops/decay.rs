@@ -87,9 +87,9 @@ mod tests {
     #[test]
     fn test_decay_logic() {
         // Just testing the math logic loosely
-        let base_weight = 1.0;
-        let lambda = 0.05;
-        let days_elapsed = 10.0;
+        let base_weight: f64 = 1.0;
+        let lambda: f64 = 0.05;
+        let days_elapsed: f64 = 10.0;
         
         let new_weight = base_weight * (-lambda * days_elapsed).exp();
         assert!(new_weight < base_weight);

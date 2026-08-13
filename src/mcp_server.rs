@@ -6997,7 +6997,9 @@ impl PkbSearchServer {
                         "vector_top_k": { "type": "integer", "description": "Vector nearest neighbors to consider (default: 10)" }
                     }
                 })).unwrap()
-            ).with_title("Get Consolidation Cluster"),
+            )
+            .with_title("Get Consolidation Cluster")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "apply_consolidation_batch",
                 "Applies an atomic batch mutation for a consolidation run. Updates frontmatter and body contents across multiple documents. Fails atomically if any document update fails.",
@@ -7012,7 +7014,9 @@ impl PkbSearchServer {
                     },
                     "required": ["seed_id", "updates"]
                 })).unwrap()
-            ).with_title("Apply Consolidation Batch"),
+            )
+            .with_title("Apply Consolidation Batch")
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(true)),
             Tool::new(
                 "search",
                 "Hybrid semantic + graph-proximity search across the personal knowledge base. Use this for general discovery and finding related knowledge. Supports proximity boosting.",
@@ -7873,6 +7877,8 @@ mod tests {
             body: String::new(),
             doc_type: Some(doc_type.to_string()),
             status: Some(status.to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
@@ -7913,6 +7919,8 @@ mod tests {
             body: String::new(),
             doc_type: Some(doc_type.to_string()),
             status: Some(status.to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
@@ -7936,6 +7944,8 @@ mod tests {
             body: String::new(),
             doc_type: Some("epic".to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
@@ -9354,6 +9364,8 @@ projects:
             body: "Body.".to_string(),
             doc_type: Some("task".to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::json!({
@@ -9432,6 +9444,8 @@ projects:
             body: String::new(),
             doc_type: Some("task".to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: tags.iter().map(|s| s.to_string()).collect(),
             frontmatter: Some(serde_json::Value::Object(fm)),
@@ -9671,6 +9685,8 @@ projects:
             body: String::new(),
             doc_type: Some("task".to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: modified.map(String::from),
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
@@ -11326,6 +11342,8 @@ mod tier_rebuild_tests {
             body: String::new(),
             doc_type: Some("task".to_string()),
             status: Some(status.to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(serde_json::Value::Object(fm)),
@@ -11358,6 +11376,8 @@ mod tier_rebuild_tests {
                 body: String::new(),
                 doc_type: Some("target".to_string()),
                 status: Some("active".to_string()),
+                consolidated: None,
+                consolidated_at: None,
                 modified: None,
                 tags: vec![],
                 frontmatter: Some(json!({
@@ -11414,6 +11434,8 @@ mod tier_rebuild_tests {
             body: String::new(),
             doc_type: Some("task".to_string()),
             status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
             modified: None,
             tags: vec![],
             frontmatter: Some(json!({
