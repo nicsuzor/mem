@@ -206,41 +206,23 @@ pub fn parse_file_relative(path: &Path, pkb_root: &Path) -> Option<PkbDocument> 
     Some(doc)
 }
 
-/// Scan a directory for ALL markdown files (ignoring .gitignore).
+/// Scan a directory for markdown files, respecting .gitignore and ignore rules.
 ///
-/// Used by graph building to capture all tasks regardless of git status.
+/// Deprecated: prefer [`scan_directory`]. Retained for backward compatibility.
 pub fn scan_directory_all(root: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    let walker = WalkBuilder::new(root)
-        .hidden(false)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false)
-        .build();
-
-    for entry in walker.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "md" {
-                    paths.push(path.to_path_buf());
-                }
-            }
-        }
-    }
-
-    paths
+    scan_directory(root)
 }
 
-/// Scan a directory for markdown files, respecting .gitignore
+/// Scan a directory for markdown files, respecting .gitignore, .ignore, and hidden files/dirs.
 pub fn scan_directory(root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     let walker = WalkBuilder::new(root)
-        .hidden(true) // skip hidden dirs like .git, .obsidian
+        .hidden(true) // skip hidden dirs like .git, .obsidian, .worktrees
         .git_ignore(true)
         .git_global(true)
+        .git_exclude(true)
+        .ignore(true)
         .filter_entry(|entry| {
             let name = entry.file_name().to_string_lossy();
             // Skip common non-content directories
@@ -307,4 +289,45 @@ mod tests {
             compute_content_hash(b"hello\nthere\n"),
         );
     }
+
+    #[test]
+    fn scan_directory_respects_gitignore_and_hidden_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // Create .git directory so WalkBuilder recognizes git repo boundary
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+
+        // Create a root gitignore excluding `.worktrees/` and `ignored.md`
+        std::fs::write(root.join(".gitignore"), ".worktrees/\nignored.md\n").unwrap();
+
+        // Create standard files
+        std::fs::write(root.join("doc1.md"), "---\nid: doc1\n---\n").unwrap();
+
+        // Create ignored file at root
+        std::fs::write(root.join("ignored.md"), "---\nid: ignored\n---\n").unwrap();
+
+        // Create shadow worktree directory (gitignored & hidden)
+        let shadow_dir = root.join(".worktrees").join("effect");
+        std::fs::create_dir_all(&shadow_dir).unwrap();
+        std::fs::write(shadow_dir.join("tpl_daily.md"), "---\nid: tpl_daily\n---\n").unwrap();
+
+        let scanned = scan_directory(root);
+        let filenames: Vec<String> = scanned
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+
+        assert!(filenames.contains(&"doc1.md".to_string()));
+        assert!(!filenames.contains(&"ignored.md".to_string()));
+        assert!(!filenames.contains(&"tpl_daily.md".to_string()));
+
+        let scanned_all = scan_directory_all(root);
+        let filenames_all: Vec<String> = scanned_all
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(filenames, filenames_all);
+    }
 }
+

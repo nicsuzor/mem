@@ -307,7 +307,7 @@ impl PkbSearchServer {
             elapsed_ms = _t_snap.elapsed().as_secs_f64() * 1000.0
         );
 
-        let files = crate::pkb::scan_directory_all(&self.pkb_root);
+        let files = crate::pkb::scan_directory(&self.pkb_root);
         let docs: Vec<crate::pkb::PkbDocument> = files
             .par_iter()
             .filter_map(|p| crate::pkb::parse_file_relative(p, &self.pkb_root))
@@ -9135,7 +9135,7 @@ projects:
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, contents).unwrap();
         }
-        let docs: Vec<PkbDocument> = crate::pkb::scan_directory_all(&root)
+        let docs: Vec<PkbDocument> = crate::pkb::scan_directory(&root)
             .iter()
             .filter_map(|p| crate::pkb::parse_file_relative(p, &root))
             .collect();
@@ -11751,7 +11751,7 @@ tags:
         )
         .unwrap();
 
-        let docs = crate::pkb::scan_directory_all(root)
+        let docs = crate::pkb::scan_directory(root)
             .iter()
             .filter_map(|p| crate::pkb::parse_file_relative(p, root))
             .collect::<Vec<_>>();

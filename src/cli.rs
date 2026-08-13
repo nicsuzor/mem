@@ -856,7 +856,7 @@ fn load_graph(
     opt_store: Option<&vectordb::VectorStore>,
 ) -> graph_store::GraphStore {
     use rayon::prelude::*;
-    let files = crate::pkb::scan_directory_all(pkb_root);
+    let files = crate::pkb::scan_directory(pkb_root);
     let docs: Vec<crate::pkb::PkbDocument> = files
         .par_iter()
         .filter_map(|p| crate::pkb::parse_file_relative(p, pkb_root))

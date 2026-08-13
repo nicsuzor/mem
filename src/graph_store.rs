@@ -135,7 +135,7 @@ impl GraphStore {
 
     /// Build from a directory: scan, parse (with relative paths), build graph.
     pub fn build_from_directory(root: &Path) -> Self {
-        let files = crate::pkb::scan_directory_all(root);
+        let files = crate::pkb::scan_directory(root);
         let docs: Vec<PkbDocument> = files
             .par_iter()
             .filter_map(|p| crate::pkb::parse_file_relative(p, root))
