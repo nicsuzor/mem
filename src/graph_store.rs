@@ -809,11 +809,62 @@ impl GraphStore {
         nodes.sort_by(|a, b| Self::focus_cmp(a, b));
     }
 
+    /// Returns all open actionable tasks (type in [`ACTIONABLE_TYPES`] and not completed/archived).
     pub fn all_tasks(&self) -> Vec<&GraphNode> {
+        self.actionable_tasks(false)
+    }
+
+    /// Returns actionable tasks (type in [`ACTIONABLE_TYPES`]), optionally including completed/archived tasks.
+    pub fn actionable_tasks(&self, include_done: bool) -> Vec<&GraphNode> {
         let mut tasks: Vec<&GraphNode> = self
             .nodes
             .values()
-            .filter(|n| n.task_id.is_some())
+            .filter(|n| {
+                let is_actionable = n
+                    .node_type
+                    .as_deref()
+                    .map(|t| ACTIONABLE_TYPES.contains(&t))
+                    .unwrap_or(false);
+                if !is_actionable {
+                    return false;
+                }
+                if !include_done && crate::graph::is_completed(n.status.as_deref()) {
+                    return false;
+                }
+                true
+            })
+            .collect();
+        tasks.sort_by(|a, b| {
+            b.urgency
+                .partial_cmp(&a.urgency)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.severity.unwrap_or(0).cmp(&a.severity.unwrap_or(0)))
+                .then(a.priority.unwrap_or(4).cmp(&b.priority.unwrap_or(4)))
+                .then(
+                    b.downstream_weight
+                        .partial_cmp(&a.downstream_weight)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(a.order.cmp(&b.order))
+                .then(a.label.cmp(&b.label))
+        });
+        tasks
+    }
+
+    /// Returns all nodes that carry a task ID, optionally including completed/archived nodes.
+    pub fn all_nodes_with_id(&self, include_done: bool) -> Vec<&GraphNode> {
+        let mut tasks: Vec<&GraphNode> = self
+            .nodes
+            .values()
+            .filter(|n| {
+                if n.task_id.is_none() {
+                    return false;
+                }
+                if !include_done && crate::graph::is_completed(n.status.as_deref()) {
+                    return false;
+                }
+                true
+            })
             .collect();
         tasks.sort_by(|a, b| {
             b.urgency
@@ -4171,6 +4222,32 @@ mod tests {
         // Edges: task-a->task-b (depends_on), task-c->task-a (depends_on),
         //        task-a->epic-1 (parent), task-b->epic-1 (parent)
         assert!(graph.edge_count() >= 4);
+    }
+
+    #[test]
+    fn test_all_tasks_filters_non_actionable_and_completed() {
+        let docs = vec![
+            make_doc("tasks/task-open.md", "Open Task", "task", "ready", "task-open", None, &[]),
+            make_doc("tasks/task-done.md", "Done Task", "task", "done", "task-done", None, &[]),
+            make_doc("tasks/task-archived.md", "Archived Task", "task", "archived", "task-archived", None, &[]),
+            make_doc("notes/note-1.md", "Random Note", "note", "inbox", "note-1", None, &[]),
+        ];
+        let root = Path::new("/tmp/test-pkb");
+        let graph = GraphStore::build(&docs, root);
+
+        let open_tasks = graph.all_tasks();
+        assert_eq!(open_tasks.len(), 1);
+        assert_eq!(open_tasks[0].id, "task-open");
+
+        let all_actionable = graph.actionable_tasks(true);
+        assert_eq!(all_actionable.len(), 3);
+        assert!(all_actionable.iter().any(|n| n.id == "task-open"));
+        assert!(all_actionable.iter().any(|n| n.id == "task-done"));
+        assert!(all_actionable.iter().any(|n| n.id == "task-archived"));
+        assert!(!all_actionable.iter().any(|n| n.id == "note-1"));
+
+        let all_nodes = graph.all_nodes_with_id(true);
+        assert_eq!(all_nodes.len(), 4);
     }
 
     // ── ready/blocked classification ──

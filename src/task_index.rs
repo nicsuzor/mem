@@ -82,6 +82,14 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
             Some(id) => id.clone(),
             None => continue,
         };
+        let is_actionable = node
+            .node_type
+            .as_deref()
+            .map(|t| crate::graph_store::ACTIONABLE_TYPES.contains(&t))
+            .unwrap_or(false);
+        if !is_actionable {
+            continue;
+        }
 
         let rel_path = node
             .path
