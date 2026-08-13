@@ -62,9 +62,8 @@ pub struct DocumentEntry {
     pub consolidated_at: Option<String>,
     /// Last modified timestamp (RFC3339 or YYYY-MM-DD, from frontmatter `modified:`).
     /// Note: `#[serde(default)]` applies to text formats only; bincode is positional so
-    /// adding this field mid-struct breaks existing bincode files. `load_or_create` handles
-    /// the resulting `DecodeError` gracefully by discarding the old file and creating a fresh
-    /// store (one-time full reindex on first upgrade).
+    /// adding or reordering fields breaks existing bincode files. `load_or_create` handles
+    /// legacy stores via [`OldVectorStore`] fallback, salvaging existing embeddings without re-indexing.
     #[serde(default)]
     pub modified: Option<String>,
     /// Confidence level (0.0 - 1.0)
@@ -141,6 +140,16 @@ pub enum PreparedUpsert {
     Full(Box<DocumentEntry>),
 }
 
+/// Legacy vector store snapshot used for 1-step backwards compatibility migration.
+///
+/// **Schema Migration Protocol**:
+/// Because `bincode` is a positional binary format, adding, removing, or reordering fields in
+/// [`DocumentEntry`] breaks binary deserialization of existing vector stores on disk.
+///
+/// When making a breaking structural change to [`DocumentEntry`]:
+/// 1. `OldDocumentEntry` must snapshot the **previous** `DocumentEntry` schema before your change.
+/// 2. `VectorStore::load_or_create` will fail the primary [`VectorStore`] deserialization and fall back
+///    to `OldVectorStore`, mapping salvaged fields into the new `DocumentEntry` schema.
 #[derive(Deserialize)]
 struct OldVectorStore {
     documents: HashMap<String, OldDocumentEntry>,
