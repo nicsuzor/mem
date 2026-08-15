@@ -301,6 +301,7 @@ enum Commands {
         id: String,
 
         /// Content to append
+        #[arg(allow_hyphen_values = true)]
         content: Vec<String>,
 
         /// Target section heading (e.g. "Log", "References")
@@ -2071,7 +2072,24 @@ async fn main() -> Result<()> {
                     match document_crud::append_to_document(&path, &content_str, section.as_deref())
                     {
                         Ok(()) => {
-                            println!("Appended to: {} ({})", node.label, id);
+                            let byte_count = content_str.len();
+                            let first_line = content_str
+                                .lines()
+                                .find(|l| !l.trim().is_empty())
+                                .unwrap_or("")
+                                .trim();
+                            let last_line = content_str
+                                .lines()
+                                .rev()
+                                .find(|l| !l.trim().is_empty())
+                                .unwrap_or("")
+                                .trim();
+                            let first_disp = truncate_snippet(first_line, 40);
+                            let last_disp = truncate_snippet(last_line, 40);
+                            println!(
+                                "Appended to: {} ({}) [{} bytes | first: {:?} | last: {:?}]",
+                                node.label, id, byte_count, first_disp, last_disp
+                            );
                         }
                         Err(e) => {
                             eprintln!("Error: {e}");
