@@ -849,7 +849,6 @@ fn check_frontmatter(
         // A node with children (scope > 0) but no parent is likely a structural gap.
         // A standalone leaf with no parent is valid under the information-theoretic model.
         if node_type == "task" || node_type == "epic" {
-            let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if !fm.contains_key("parent") {
                 let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let has_children = children_set.map(|cs| cs.contains(node_id)).unwrap_or(false);
@@ -1001,7 +1000,7 @@ fn apply_fixes(
     content: &str,
     fm_data: &Option<serde_json::Value>,
     path: &Path,
-    ancestor_map: Option<&AncestorMap>,
+    _ancestor_map: Option<&AncestorMap>,
 ) -> String {
     let mut result = content.to_string();
 
