@@ -85,7 +85,7 @@ impl Bench {
             fs::write(tasks_dir.join(format!("{id}.md")), body).unwrap();
         }
 
-        let files = mem::pkb::scan_directory_all(&pkb_root);
+        let files = mem::pkb::scan_directory(&pkb_root);
         let docs: Vec<_> = files
             .iter()
             .filter_map(|p| mem::pkb::parse_file_relative(p, &pkb_root))

@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build initial graph
     let t0 = Instant::now();
-    let files = mem::pkb::scan_directory_all(&pkb_root);
+    let files = mem::pkb::scan_directory(&pkb_root);
     let docs: Vec<mem::pkb::PkbDocument> = files
         .iter()
         .filter_map(|p| mem::pkb::parse_file_relative(p, &pkb_root))

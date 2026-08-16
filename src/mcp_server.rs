@@ -307,7 +307,7 @@ impl PkbSearchServer {
             elapsed_ms = _t_snap.elapsed().as_secs_f64() * 1000.0
         );
 
-        let files = crate::pkb::scan_directory_all(&self.pkb_root);
+        let files = crate::pkb::scan_directory(&self.pkb_root);
         let docs: Vec<crate::pkb::PkbDocument> = files
             .par_iter()
             .filter_map(|p| crate::pkb::parse_file_relative(p, &self.pkb_root))
@@ -5405,12 +5405,26 @@ impl PkbSearchServer {
             .map(|s| s.eq_ignore_ascii_case("blocked"))
             .unwrap_or(false);
 
+        // Hide terminal tasks by default unless explicitly requested via status or include_done
+        let is_explicit_closed_status = status
+            .map(|s| {
+                let canonical = crate::graph::resolve_status_alias(s);
+                canonical == "done" || canonical == "cancelled"
+            })
+            .unwrap_or(false);
+        let query_include_done = include_done || is_explicit_closed_status;
+
+        let base_nodes: Vec<&crate::graph::GraphNode> = if doc_type.is_some() {
+            graph.all_nodes_with_id(query_include_done)
+        } else {
+            graph.actionable_tasks(query_include_done)
+        };
+
         let mut tasks: Vec<_> = if is_ready {
             // Use graph.ready_tasks() for the ready filter
             let ready_ids: std::collections::HashSet<String> =
                 graph.ready_tasks().iter().map(|n| n.id.clone()).collect();
-            graph
-                .all_tasks()
+            base_nodes
                 .into_iter()
                 .filter(|t| ready_ids.contains(&t.id))
                 .collect()
@@ -5418,13 +5432,12 @@ impl PkbSearchServer {
             // Use graph.blocked_tasks() for the blocked filter
             let blocked_ids: std::collections::HashSet<String> =
                 graph.blocked_tasks().iter().map(|n| n.id.clone()).collect();
-            graph
-                .all_tasks()
+            base_nodes
                 .into_iter()
                 .filter(|t| blocked_ids.contains(&t.id))
                 .collect()
         } else {
-            let mut all: Vec<_> = graph.all_tasks().into_iter().collect();
+            let mut all: Vec<_> = base_nodes.into_iter().collect();
             if let Some(s) = status {
                 let s_canonical = crate::graph::resolve_status_alias(s);
                 all.retain(|t| {
@@ -5436,14 +5449,6 @@ impl PkbSearchServer {
             }
             all
         };
-
-        // Hide terminal tasks by default unless explicitly requested via status or include_done
-        let is_explicit_closed_status = status
-            .map(|s| {
-                let canonical = crate::graph::resolve_status_alias(s);
-                canonical == "done" || canonical == "cancelled"
-            })
-            .unwrap_or(false);
 
         if !include_done && !is_explicit_closed_status {
             tasks.retain(|t| {
@@ -9135,7 +9140,7 @@ projects:
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, contents).unwrap();
         }
-        let docs: Vec<PkbDocument> = crate::pkb::scan_directory_all(&root)
+        let docs: Vec<PkbDocument> = crate::pkb::scan_directory(&root)
             .iter()
             .filter_map(|p| crate::pkb::parse_file_relative(p, &root))
             .collect();
@@ -11751,7 +11756,7 @@ tags:
         )
         .unwrap();
 
-        let docs = crate::pkb::scan_directory_all(root)
+        let docs = crate::pkb::scan_directory(root)
             .iter()
             .filter_map(|p| crate::pkb::parse_file_relative(p, root))
             .collect::<Vec<_>>();
