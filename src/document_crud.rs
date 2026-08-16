@@ -1510,7 +1510,12 @@ pub fn append_to_document(path: &Path, content: &str, section: Option<&str>) -> 
     let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
-    let timestamped = format!("\n**{}** — {}\n", now, content);
+    let trimmed_content = content.trim();
+    let formatted_block = if trimmed_content.is_empty() {
+        format!("**{}**", now)
+    } else {
+        format!("**{}**\n\n{}", now, trimmed_content)
+    };
 
     let body = result.content.clone();
 
@@ -1523,26 +1528,35 @@ pub fn append_to_document(path: &Path, content: &str, section: Option<&str>) -> 
             let rest = &body[after_heading..];
             if let Some(next_heading) = rest.find("\n## ") {
                 let insert_pos = after_heading + next_heading;
-                format!(
-                    "{}{}{}",
-                    &body[..insert_pos],
-                    timestamped,
-                    &body[insert_pos..]
-                )
+                let before_part = body[..insert_pos].trim_end();
+                let after_part = body[insert_pos..].trim_start_matches('\n');
+                format!("{}\n\n{}\n\n{}", before_part, formatted_block, after_part)
             } else {
                 // No next heading — append to end
                 let trimmed = body.trim_end();
-                format!("{}{}\n", trimmed, timestamped)
+                if trimmed.is_empty() {
+                    formatted_block
+                } else {
+                    format!("{}\n\n{}", trimmed, formatted_block)
+                }
             }
         } else {
             // Section not found — create it and append
             let trimmed = body.trim_end();
-            format!("{}\n\n## {}\n{}\n", trimmed, heading, timestamped)
+            if trimmed.is_empty() {
+                format!("## {}\n\n{}", heading, formatted_block)
+            } else {
+                format!("{}\n\n## {}\n\n{}", trimmed, heading, formatted_block)
+            }
         }
     } else {
         // No section — append to end of body
         let trimmed = body.trim_end();
-        format!("{}{}\n", trimmed, timestamped)
+        if trimmed.is_empty() {
+            formatted_block
+        } else {
+            format!("{}\n\n{}", trimmed, formatted_block)
+        }
     };
 
     let new_content = format!("---\n{}---\n\n{}\n", yaml, new_body.trim());
@@ -3262,7 +3276,120 @@ mod tests {
             "second call must not modify the file"
         );
     }
+
+    #[test]
+    fn test_append_heading_preserves_column_0_and_blank_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("test_node.md");
+        std::fs::write(
+            &file_path,
+            "---\nid: test-123\ntitle: Test Node\n---\n\n# Existing Heading\n\nSome body text.\n",
+        )
+        .unwrap();
+
+        append_to_document(&file_path, "## New Section\n\nAppended body content.", None).unwrap();
+
+        let readback = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            readback.contains("Some body text.\n\n**"),
+            "Expected blank line before timestamp block, but got:\n{}",
+            readback
+        );
+        assert!(
+            readback.contains("\n\n## New Section\n\nAppended body content."),
+            "Expected heading to be at column 0 and properly spaced, but got:\n{}",
+            readback
+        );
+        assert!(
+            !readback.contains("— ## New Section"),
+            "Heading should not be fused to timestamp"
+        );
+    }
+
+    #[test]
+    fn test_append_list_item_preserves_column_0() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("test_list.md");
+        std::fs::write(
+            &file_path,
+            "---\nid: test-list\ntitle: Test List\n---\n\nInitial content.\n",
+        )
+        .unwrap();
+
+        append_to_document(&file_path, "- Item one\n- Item two", None).unwrap();
+
+        let readback = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            readback.contains("Initial content.\n\n**"),
+            "Expected blank line before timestamp block, but got:\n{}",
+            readback
+        );
+        assert!(
+            readback.contains("\n\n- Item one\n- Item two"),
+            "Expected list item to be at column 0 with proper spacing, but got:\n{}",
+            readback
+        );
+        assert!(
+            !readback.contains("— - Item one"),
+            "List item should not be fused to timestamp"
+        );
+    }
+
+    #[test]
+    fn test_append_plain_prose_preserves_column_0() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("test_prose.md");
+        std::fs::write(
+            &file_path,
+            "---\nid: test-prose\ntitle: Test Prose\n---\n\nInitial paragraph.\n",
+        )
+        .unwrap();
+
+        append_to_document(&file_path, "Plain prose appended block.", None).unwrap();
+
+        let readback = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            readback.contains("Initial paragraph.\n\n**"),
+            "Expected blank line before timestamp block, but got:\n{}",
+            readback
+        );
+        assert!(
+            readback.contains("\n\nPlain prose appended block."),
+            "Expected prose to be at column 0 with proper spacing, but got:\n{}",
+            readback
+        );
+        assert!(
+            !readback.contains("— Plain prose"),
+            "Prose should not be fused to timestamp with a dash"
+        );
+    }
+
+    #[test]
+    fn test_append_with_section_preserves_spacing_and_heading() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("test_section.md");
+        std::fs::write(
+            &file_path,
+            "---\nid: test-sec\ntitle: Test Sec\n---\n\n# Doc Title\n\n## Log\n\n**2026-08-01 10:00 UTC**\n\nOld log\n\n## Next\n\nNext content\n",
+        )
+        .unwrap();
+
+        append_to_document(&file_path, "## Subheading\n\nLog text", Some("Log")).unwrap();
+
+        let readback = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            readback.contains("Old log\n\n**"),
+            "Expected blank line between old log and new timestamp, but got:\n{}",
+            readback
+        );
+        assert!(
+            readback.contains("\n\n## Subheading\n\nLog text\n\n## Next"),
+            "Expected subheading at column 0 and blank line before ## Next, but got:\n{}",
+            readback
+        );
+    }
 }
+
 
 // ── Merge node ────────────────────────────────────────────────────────────
 
