@@ -6338,7 +6338,7 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    fn handle_graph_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub fn handle_graph_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let node_id = args.get("node_id").and_then(|v| v.as_str());
         let hops = args
             .get("hops")
@@ -6355,7 +6355,7 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    fn handle_diff_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub fn handle_diff_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let canvas_str = args
             .get("canvas")
             .and_then(|v| v.as_str())
@@ -6401,7 +6401,7 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    fn handle_sync_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub fn handle_sync_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let canvas_str = args
             .get("canvas")
             .and_then(|v| v.as_str())

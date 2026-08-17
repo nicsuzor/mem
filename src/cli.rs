@@ -3427,9 +3427,9 @@ async fn main() -> Result<()> {
                     axum::Router::new().route("/mcp", axum::routing::any_service(mcp_service));
 
                 let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
-                eprintln!("   Starting MCP HTTP/SSE server on http://{addr}/mcp");
-
                 let listener = tokio::net::TcpListener::bind(addr).await?;
+                let bound_addr = listener.local_addr()?;
+                eprintln!("   Starting MCP HTTP/SSE server on http://{bound_addr}/mcp");
                 axum::serve(listener, app)
                     .with_graceful_shutdown(async move { ct.cancelled().await })
                     .await?;
