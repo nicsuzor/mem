@@ -16,6 +16,11 @@ path = "src/lib.rs"
 name = "pkb"
 path = "src/cli.rs"
 
+[[bin]]
+name = "excalidraw-view"
+path = "src/bin/excalidraw_view.rs"
+
+
 
 [dependencies]
 # MCP Protocol

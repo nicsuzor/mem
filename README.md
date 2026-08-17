@@ -267,6 +267,28 @@ The formula lives in `compute_urgency` and `compute_focus_scores` in `src/graph_
 | `pkb graph [--format json\|graphml\|mcp-index\|all] [--output path]` | Export the knowledge graph |
 | `pkb stats [--sort count\|bytes\|latency\|errors]` | Show MCP tool usage telemetry |
 
+### Excalidraw Tooling (`excalidraw-view`)
+
+A high-performance CLI companion binary for inspecting, diffing, mutating, and validating Excalidraw whiteboard files (`.excalidraw` and `.excalidrawlib`):
+
+| Command | Description |
+|---------|-------------|
+| `excalidraw-view <file> [summary\|map\|nodes\|edges]` | Token-cheap projections of whiteboard scenes and diagrams |
+| `excalidraw-view <file1> struct-diff <file2>` | Pure semantic structural diff of nodes and edges without coordinate jitter |
+| `excalidraw-view <file> add-node --text "T" --at X,Y` | Add container shape with bound, centered text |
+| `excalidraw-view <file> connect --from A --to B [--label L]` | Create 2-bound directed arrow with optional label |
+| `excalidraw-view <file> fit <id> "New Text"` | Symmetrical center-expanded text resize |
+| `excalidraw-view <file> move-elem <id> [--by DX,DY]` | Translate node, bound text, and connected arrow endpoints |
+| `excalidraw-view <file> delete-elem <id> [--cascade-arrows]` | Delete node and clean up bindings / cascaded arrows |
+| `excalidraw-view <file> batch <changes.json \| ->` | Execute atomic transactional mutation batch |
+| `excalidraw-view <file> check` | Verify structural integrity, index ordering, and bindings |
+| `excalidraw-view <file> overlap` | Audit AABB box collisions and element overlaps |
+| `excalidraw-view <file> arrows-check` | Audit 2D arrow-segment box intersections |
+| `excalidraw-view <file> theme apply <theme>` | Apply standardized styling and semantic color roles |
+
+For technical architecture and invariants, see the [Excalidraw Tooling Specification](file:///workspace/specs/excalidraw-tooling.md).  
+For LLM coding agent patterns and copy-paste templates, see the [Excalidraw Agent Guide](file:///workspace/references/EXCALIDRAW_AGENT_GUIDE.md).
+
 ## MCP Tools
 
 The `pkb` binary exposes 39 tools over MCP stdio transport. Any MCP-compatible client can use them.
