@@ -675,6 +675,10 @@ pub enum ExcalidrawCommands {
         /// Preview changes without modifying files on disk
         #[arg(long)]
         dry_run: bool,
+
+        /// Synchronize dependency edge removals by removing target from depends_on in frontmatter
+        #[arg(long)]
+        sync_edge_removals: bool,
     },
 }
 
@@ -3879,6 +3883,7 @@ fn handle_excalidraw_command(
             canvas_path,
             base,
             dry_run,
+            sync_edge_removals,
         } => {
             let mut gs = load_graph(pkb_root, db_path, None);
             let canvas_str = std::fs::read_to_string(&canvas_path).with_context(|| {
@@ -3901,7 +3906,7 @@ fn handle_excalidraw_command(
                 println!("=== Dry Run: Visual Canvas Sync ===");
                 print_diff_summary(&diff);
             } else {
-                let report = excalidraw::sync_canvas(pkb_root, &mut gs, &diff)?;
+                let report = excalidraw::sync_canvas(pkb_root, &mut gs, &diff, sync_edge_removals)?;
                 println!("=== Visual Canvas Sync Complete ===");
                 if !report.created_nodes.is_empty() {
                     println!("Created {} new document(s):", report.created_nodes.len());

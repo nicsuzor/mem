@@ -17,9 +17,9 @@ use mem::graph::{Edge, EdgeType, GraphNode};
 use mem::graph_store::GraphStore;
 use mem::mcp_server::PkbSearchServer;
 use mem::vectordb::VectorStore;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -267,7 +267,7 @@ fn test_non_destructive_canvas_removal() {
     );
 
     // Perform synchronization
-    let _report = sync_canvas(ws.path(), &mut gs, &diff).expect("sync canvas");
+    let _report = sync_canvas(ws.path(), &mut gs, &diff, false).expect("sync canvas");
 
     // CRITICAL ASSERTION: The markdown file on disk must NOT be deleted!
     assert!(
@@ -414,7 +414,7 @@ fn test_safe_arrow_typing_and_typed_prefixes() {
 
     // Apply sync and verify disk updates
     let diff = diff_canvas(None, &gs, &canvas).expect("diff");
-    let report = sync_canvas(ws.path(), &mut gs, &diff).expect("sync");
+    let report = sync_canvas(ws.path(), &mut gs, &diff, false).expect("sync");
     assert!(report.updated_edges > 0);
 
     // Verify task-t1 frontmatter on disk now has depends_on task-t3
@@ -653,7 +653,7 @@ fn test_global_cycle_rejection() {
         edge_type: EdgeType::DependsOn,
     });
 
-    let report = sync_canvas(ws.path(), &mut gs, &diff).expect("sync");
+    let report = sync_canvas(ws.path(), &mut gs, &diff, false).expect("sync");
     assert_eq!(report.rejected_cycles.len(), 1, "Must report rejected cycle");
     assert!(report.rejected_cycles[0].contains("cycle detected"));
 }
@@ -719,7 +719,7 @@ fn test_clipboard_duplicate_id_handling() {
     let diff = diff_canvas(None, &gs, &canvas).expect("diff");
     assert_eq!(diff.added_nodes.len(), 1, "Duplicate card must become AddedNodeMutation");
 
-    let report = sync_canvas(ws.path(), &mut gs, &diff).expect("sync");
+    let report = sync_canvas(ws.path(), &mut gs, &diff, false).expect("sync");
     assert_eq!(report.created_nodes.len(), 1);
 
     let (new_id, new_path) = &report.created_nodes[0];
@@ -746,6 +746,8 @@ fn test_cli_excalidraw_and_graph_execution() {
     // 1. `pkb graph --format excalidraw`
     let excal_out = out_dir.join("graph.excalidraw");
     let status = Command::new(&pkb)
+        .env("ACA_DATA", ws.path().to_str().unwrap())
+        .env("AOPS_OFFLINE", "1")
         .args([
             "--pkb-root",
             ws.path().to_str().unwrap(),
@@ -768,6 +770,8 @@ fn test_cli_excalidraw_and_graph_execution() {
     // 2. `pkb graph --format json`
     let json_out = out_dir.join("graph.json");
     let status = Command::new(&pkb)
+        .env("ACA_DATA", ws.path().to_str().unwrap())
+        .env("AOPS_OFFLINE", "1")
         .args([
             "--pkb-root",
             ws.path().to_str().unwrap(),
@@ -787,6 +791,8 @@ fn test_cli_excalidraw_and_graph_execution() {
     // 3. `pkb graph --format graphml`
     let graphml_out = out_dir.join("graph.graphml");
     let status = Command::new(&pkb)
+        .env("ACA_DATA", ws.path().to_str().unwrap())
+        .env("AOPS_OFFLINE", "1")
         .args([
             "--pkb-root",
             ws.path().to_str().unwrap(),
@@ -806,6 +812,8 @@ fn test_cli_excalidraw_and_graph_execution() {
     // 4. `pkb excalidraw export`
     let export_out = out_dir.join("export.excalidraw");
     let status = Command::new(&pkb)
+        .env("ACA_DATA", ws.path().to_str().unwrap())
+        .env("AOPS_OFFLINE", "1")
         .args([
             "--pkb-root",
             ws.path().to_str().unwrap(),
@@ -826,6 +834,8 @@ fn test_cli_excalidraw_and_graph_execution() {
 
     // 5. `pkb excalidraw diff`
     let output = Command::new(&pkb)
+        .env("ACA_DATA", ws.path().to_str().unwrap())
+        .env("AOPS_OFFLINE", "1")
         .args([
             "--pkb-root",
             ws.path().to_str().unwrap(),
@@ -845,6 +855,8 @@ fn test_cli_excalidraw_and_graph_execution() {
 
     // 6. `pkb excalidraw sync --dry-run`
     let status = Command::new(&pkb)
+        .env("ACA_DATA", ws.path().to_str().unwrap())
+        .env("AOPS_OFFLINE", "1")
         .args([
             "--pkb-root",
             ws.path().to_str().unwrap(),
@@ -995,7 +1007,7 @@ fn test_adversarial_and_corrupted_canvas_inputs() {
     assert_eq!(canvas.cards.len(), 0, "Unbound shapes without PKB metadata must not become cards");
     assert_eq!(canvas.annotations.len(), 2, "Doodles and unbound shapes must be preserved in annotations");
 
-    // 4. Dangling arrow without start or end bindings
+    // 4. Dangling arrow without start or end bindings -> classified into annotations
     let dangling_arrow = ExcalidrawElement {
         id: "dangling-1".to_string(),
         element_type: "arrow".to_string(),
@@ -1007,8 +1019,235 @@ fn test_adversarial_and_corrupted_canvas_inputs() {
     let mut file2 = ExcalidrawFile::default();
     file2.elements.push(dangling_arrow);
     let canvas2 = CanvasReader::parse_file(file2);
-    assert_eq!(canvas2.arrows.len(), 1);
-    assert_eq!(canvas2.arrows[0].source_node_id, None);
-    assert_eq!(canvas2.arrows[0].target_node_id, None);
-    assert_eq!(canvas2.arrows[0].edge_type, EdgeType::Link);
+    assert_eq!(canvas2.arrows.len(), 0, "Unbound arrows must not be treated as graph edges");
+    assert_eq!(canvas2.annotations.len(), 1, "Unbound arrows must be preserved in annotations");
+}
+
+// ===========================================================================
+// Test 11: Non-PKB Connector Arrows Survive Canvas Sync
+// ===========================================================================
+
+#[test]
+fn test_unlinked_non_pkb_arrows_survive_sync() {
+    let ws = create_test_pkb_workspace();
+    let gs = GraphStore::build_from_directory(ws.path());
+
+    // Export graph to canvas
+    let excal_json = gs.output_excalidraw(None, 2).expect("export excalidraw");
+    let mut file: ExcalidrawFile = serde_json::from_str(&excal_json).unwrap();
+
+    // 1. Add an unlinked floating arrow (no bindings)
+    let mut floating_arrow = ExcalidrawElement::default();
+    floating_arrow.id = "floating-arr-1".to_string();
+    floating_arrow.element_type = "arrow".to_string();
+    floating_arrow.x = 500.0;
+    floating_arrow.y = 500.0;
+    floating_arrow.points = Some(vec![[0.0, 0.0], [100.0, 100.0]]);
+    floating_arrow.stroke_color = "#e03131".to_string();
+
+    // 2. Add a non-PKB sticky note shape
+    let mut sticky_note = ExcalidrawElement::default();
+    sticky_note.id = "sticky-note-1".to_string();
+    sticky_note.element_type = "rectangle".to_string();
+    sticky_note.x = 650.0;
+    sticky_note.y = 500.0;
+    sticky_note.width = 120.0;
+    sticky_note.height = 80.0;
+
+    // 3. Add an arrow partially bound (from task-t1 card to the non-PKB sticky note)
+    let mut partial_arrow = ExcalidrawElement::default();
+    partial_arrow.id = "partial-arr-1".to_string();
+    partial_arrow.element_type = "arrow".to_string();
+    partial_arrow.start_binding = Some(PointBinding {
+        element_id: "card-task-t1".to_string(),
+        focus: 0.0,
+        gap: 1.0,
+        fixed_point: None,
+    });
+    partial_arrow.end_binding = Some(PointBinding {
+        element_id: "sticky-note-1".to_string(),
+        focus: 0.0,
+        gap: 1.0,
+        fixed_point: None,
+    });
+
+    file.elements.push(floating_arrow);
+    file.elements.push(sticky_note);
+    file.elements.push(partial_arrow);
+
+    // Parse canvas
+    let canvas = CanvasReader::parse_file(file.clone());
+
+    // Both floating arrow, sticky note, and partial arrow must be classified as annotations
+    let ann_ids: Vec<&str> = canvas.annotations.iter().map(|a| a.id.as_str()).collect();
+    assert!(ann_ids.contains(&"floating-arr-1"));
+    assert!(ann_ids.contains(&"sticky-note-1"));
+    assert!(ann_ids.contains(&"partial-arr-1"));
+
+    // Merge with live graph
+    let target_node_ids = vec!["epic-core".to_string(), "task-t1".to_string(), "task-t2".to_string()];
+    let merged = merge_canvas_with_live(&file, &gs, &target_node_ids).expect("merge");
+
+    // Assert all user annotations survive in merged output elements
+    let merged_elem_ids: Vec<&str> = merged.elements.iter().map(|e| e.id.as_str()).collect();
+    assert!(merged_elem_ids.contains(&"floating-arr-1"), "Floating arrow must survive merge");
+    assert!(merged_elem_ids.contains(&"sticky-note-1"), "Sticky note must survive merge");
+    assert!(merged_elem_ids.contains(&"partial-arr-1"), "Partial arrow must survive merge");
+}
+
+// ===========================================================================
+// Test 12: Asymmetric Dependency Removal (`--sync-edge-removals`)
+// ===========================================================================
+
+#[test]
+fn test_sync_edge_removals_flag_e2e() {
+    let ws = create_test_pkb_workspace();
+
+    // Prepare task with multiple dependency formats: bare ID, wikilink, and filename path
+    let task_path = ws.path().join("tasks/task-dep-test.md");
+    fs::write(
+        &task_path,
+        "---\n\
+         id: task-dep-test\n\
+         title: \"Dependency Removal Test\"\n\
+         type: task\n\
+         status: ready\n\
+         priority: 1\n\
+         project: testproj\n\
+         depends_on:\n\
+           - task-t1\n\
+           - '[[task-t2]]'\n\
+           - tasks/task-t3.md\n\
+         ---\n\n# Dep Test\n",
+    )
+    .unwrap();
+
+    let mut gs = GraphStore::build_from_directory(ws.path());
+
+    // Construct diff with removed dependency edges
+    let mut diff = GraphDiff::default();
+    diff.removed_edges.push(EdgeMutation {
+        source: "task-dep-test".to_string(),
+        target: "task-t1".to_string(),
+        edge_type: EdgeType::DependsOn,
+    });
+    diff.removed_edges.push(EdgeMutation {
+        source: "task-dep-test".to_string(),
+        target: "task-t2".to_string(),
+        edge_type: EdgeType::DependsOn,
+    });
+
+    // Case 1: sync_edge_removals = false (default) -> frontmatter must NOT be modified
+    let report_false = sync_canvas(ws.path(), &mut gs, &diff, false).expect("sync false");
+    assert_eq!(report_false.updated_edges, 0);
+    let content_preserved = fs::read_to_string(&task_path).unwrap();
+    assert!(content_preserved.contains("task-t1"), "task-t1 must be preserved when sync_edge_removals=false");
+    assert!(content_preserved.contains("task-t2"), "task-t2 must be preserved when sync_edge_removals=false");
+    assert!(content_preserved.contains("tasks/task-t3.md"));
+
+    // Case 2: sync_edge_removals = true -> bare ID and wikilink are stripped
+    let report_true = sync_canvas(ws.path(), &mut gs, &diff, true).expect("sync true");
+    assert_eq!(report_true.updated_edges, 2);
+    let content_stripped = fs::read_to_string(&task_path).unwrap();
+    assert!(!content_stripped.contains("task-t1"), "task-t1 must be removed when sync_edge_removals=true");
+    assert!(!content_stripped.contains("task-t2"), "task-t2 must be removed when sync_edge_removals=true");
+    assert!(content_stripped.contains("tasks/task-t3.md"), "tasks/task-t3.md must remain untouched");
+
+    // Case 3: remove filename path reference tasks/task-t3.md
+    let mut diff_t3 = GraphDiff::default();
+    diff_t3.removed_edges.push(EdgeMutation {
+        source: "task-dep-test".to_string(),
+        target: "task-t3".to_string(),
+        edge_type: EdgeType::DependsOn,
+    });
+    let report_t3 = sync_canvas(ws.path(), &mut gs, &diff_t3, true).expect("sync t3");
+    assert_eq!(report_t3.updated_edges, 1);
+    let content_t3 = fs::read_to_string(&task_path).unwrap();
+    assert!(!content_t3.contains("tasks/task-t3.md"), "tasks/task-t3.md must be removed");
+}
+
+// ===========================================================================
+// Test 13: Preserve Custom Card Styling
+// ===========================================================================
+
+#[test]
+fn test_preserve_custom_card_styling_e2e() {
+    let ws = create_test_pkb_workspace();
+    let mut gs = GraphStore::build_from_directory(ws.path());
+
+    // Export graph to canvas
+    let excal_json = gs.output_excalidraw(None, 2).expect("export excalidraw");
+    let mut file: ExcalidrawFile = serde_json::from_str(&excal_json).unwrap();
+
+    // Customize card for task-t1
+    let custom_bg = "#fab005";
+    let custom_stroke = "#e67700";
+    let custom_stroke_width = 4.0;
+    let custom_roughness = 2.0;
+
+    for elem in &mut file.elements {
+        let is_t1_card = elem
+            .custom_data
+            .as_ref()
+            .and_then(|c| c.pkb.as_ref())
+            .and_then(|p| p.node_id.as_deref())
+            == Some("task-t1");
+
+        if is_t1_card {
+            elem.background_color = custom_bg.to_string();
+            elem.stroke_color = custom_stroke.to_string();
+            elem.stroke_width = custom_stroke_width;
+            elem.roughness = custom_roughness;
+        }
+    }
+
+    // 1. Merge when status is unchanged (ready == ready)
+    let merged_unchanged = merge_canvas_with_live(&file, &gs, &["task-t1".to_string()]).expect("merge unchanged");
+    let t1_card = merged_unchanged
+        .elements
+        .iter()
+        .find(|e| {
+            e.custom_data
+                .as_ref()
+                .and_then(|c| c.pkb.as_ref())
+                .and_then(|p| p.node_id.as_deref())
+                == Some("task-t1")
+                && e.element_type == "rectangle"
+        })
+        .expect("t1 card in merged");
+
+    assert_eq!(t1_card.background_color, custom_bg, "Custom background must be preserved");
+    assert_eq!(t1_card.stroke_color, custom_stroke, "Custom stroke color must be preserved");
+    assert_eq!(t1_card.stroke_width, custom_stroke_width, "Custom stroke width must be preserved");
+    assert_eq!(t1_card.roughness, custom_roughness, "Custom roughness must be preserved");
+
+    // 2. Update task-t1 status in live graph to "done"
+    let mut node_t1 = gs.get_node("task-t1").unwrap().clone();
+    node_t1.status = Some("done".to_string());
+    gs.replace_node(node_t1);
+
+    // Merge when status changed -> must apply new done status color palette
+    let merged_changed = merge_canvas_with_live(&file, &gs, &["task-t1".to_string()]).expect("merge changed");
+    let t1_card_changed = merged_changed
+        .elements
+        .iter()
+        .find(|e| {
+            e.custom_data
+                .as_ref()
+                .and_then(|c| c.pkb.as_ref())
+                .and_then(|p| p.node_id.as_deref())
+                == Some("task-t1")
+                && e.element_type == "rectangle"
+        })
+        .expect("t1 card in changed merge");
+
+    let done_palette = node_color_style(Some("done"), Some("task"));
+    assert_eq!(
+        t1_card_changed.background_color, done_palette.bg_color,
+        "Background color must update to done palette on status transition"
+    );
+    assert_eq!(
+        t1_card_changed.stroke_color, done_palette.stroke_color,
+        "Stroke color must update to done palette on status transition"
+    );
 }

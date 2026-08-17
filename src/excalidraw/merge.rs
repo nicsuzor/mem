@@ -8,7 +8,7 @@
 
 use crate::document_crud;
 use crate::excalidraw::diff::GraphDiff;
-use crate::excalidraw::reader::CanvasReader;
+use crate::excalidraw::reader::{CanvasCard, CanvasReader};
 use crate::excalidraw::schema::*;
 use crate::graph::{EdgeType, GraphNode};
 use crate::graph_store::GraphStore;
@@ -174,8 +174,10 @@ pub fn merge_live_into_canvas(
     let mut existing_positions: HashMap<String, (f64, f64)> = HashMap::new();
     let mut occupied_boxes: Vec<[f64; 4]> = Vec::new();
 
+    let mut canvas_card_map: HashMap<String, CanvasCard> = HashMap::new();
     for card in &parsed_canvas.cards {
         if let Some(ref nid) = card.node_id {
+            canvas_card_map.insert(nid.clone(), card.clone());
             existing_card_map.insert(nid.clone(), card.raw_card_element.clone());
             if let Some(ref bt) = card.bound_text_element {
                 existing_text_map.insert(nid.clone(), bt.clone());
@@ -218,11 +220,29 @@ pub fn merge_live_into_canvas(
             let card_id = existing_card.id.clone();
             card_elem_map.insert(nid.clone(), card_id.clone());
 
-            // If live node has updated status, refresh color if user hasn't explicitly customized
+            let canvas_card = canvas_card_map.get(nid);
+            let canvas_status = canvas_card.and_then(|c| c.status.as_deref());
+            let live_status = live_node.and_then(|ln| ln.status.as_deref());
+
+            let status_unchanged = match (canvas_status, live_status) {
+                (Some(cs), Some(ls)) => cs.eq_ignore_ascii_case(ls),
+                (None, None) => true,
+                _ => false,
+            };
+
             if let Some(ln) = live_node {
-                let color_style = node_color_style(ln.status.as_deref(), ln.node_type.as_deref());
-                existing_card.background_color = color_style.bg_color.to_string();
-                existing_card.stroke_color = color_style.stroke_color.to_string();
+                if !status_unchanged {
+                    // Status changed: apply the new status palette color
+                    let color_style = node_color_style(ln.status.as_deref(), ln.node_type.as_deref());
+                    existing_card.background_color = color_style.bg_color.to_string();
+                    existing_card.stroke_color = color_style.stroke_color.to_string();
+                    if let Some(ref mut cd) = existing_card.custom_data {
+                        if let Some(ref mut pkb) = cd.pkb {
+                            pkb.status = ln.status.clone();
+                        }
+                    }
+                }
+                // If status is unchanged, preserve user's custom background_color, stroke_color, stroke_width, roughness
             }
 
             elements_out.push(existing_card);
@@ -390,6 +410,7 @@ pub fn sync_diff_to_disk(
     pkb_root: &Path,
     gs: &mut GraphStore,
     diff: &GraphDiff,
+    sync_edge_removals: bool,
 ) -> Result<SyncReport> {
     let mut report = SyncReport::default();
 
@@ -554,6 +575,75 @@ pub fn sync_diff_to_disk(
         }
     }
 
+    // 4. Process Edge Removals (if opt-in enabled)
+    if sync_edge_removals {
+        for edge in &diff.removed_edges {
+            if edge.edge_type != EdgeType::DependsOn {
+                continue;
+            }
+
+            if let Some(source_node) = gs.get_node(&edge.source) {
+                let file_path = if source_node.path.is_absolute() {
+                    source_node.path.clone()
+                } else {
+                    pkb_root.join(&source_node.path)
+                };
+
+                let existing_deps: Vec<String> = if let Ok(content) = std::fs::read_to_string(&file_path) {
+                    let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+                    let result = matter.parse(&content);
+                    result
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+                        .and_then(|v| v.get("depends_on").cloned())
+                        .and_then(|v| {
+                            if let Some(arr) = v.as_array() {
+                                Some(
+                                    arr.iter()
+                                        .filter_map(|x| x.as_str().map(String::from))
+                                        .collect(),
+                                )
+                            } else if let Some(s) = v.as_str() {
+                                Some(vec![s.to_string()])
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| source_node.depends_on.clone())
+                } else {
+                    source_node.depends_on.clone()
+                };
+
+                let new_deps: Vec<String> = existing_deps
+                    .into_iter()
+                    .filter(|d| {
+                        let trimmed = d.trim();
+                        let unbracketed = trimmed.trim_matches(&['[', ']'][..]).trim();
+                        let target_md = format!("{}.md", edge.target);
+                        !(trimmed == edge.target
+                            || unbracketed == edge.target
+                            || trimmed == target_md
+                            || trimmed.ends_with(&format!("{}.md", edge.target))
+                            || trimmed.ends_with(&format!("/{}", target_md)))
+                    })
+                    .collect();
+
+                let mut updates = HashMap::new();
+                updates.insert("depends_on".to_string(), serde_json::json!(new_deps));
+
+                if let Err(e) = document_crud::update_document(&file_path, updates) {
+                    report.warnings.push(format!(
+                        "Failed to remove dependency edge for node '{}': {e}",
+                        edge.source
+                    ));
+                } else {
+                    report.updated_edges += 1;
+                }
+            }
+        }
+    }
+
     Ok(report)
 }
 
@@ -614,7 +704,7 @@ mod tests {
             y: 100.0,
         });
 
-        let report = sync_diff_to_disk(pkb_root, &mut gs, &diff).expect("sync to disk");
+        let report = sync_diff_to_disk(pkb_root, &mut gs, &diff, false).expect("sync to disk");
         assert_eq!(report.created_nodes.len(), 1, "Must report 1 created task");
 
         let (_, file_path) = &report.created_nodes[0];
@@ -622,5 +712,117 @@ mod tests {
         let content = std::fs::read_to_string(file_path).unwrap();
         assert!(content.contains("Newly Created Task"));
         assert!(content.contains("ready"));
+    }
+
+    #[test]
+    fn test_sync_edge_removals_flag_behavior() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = temp_dir.path();
+
+        let task_file = pkb_root.join("task-a.md");
+        std::fs::write(
+            &task_file,
+            "---\nid: task-a\ntitle: Task A\ntype: task\nstatus: ready\ndepends_on:\n  - task-b\n  - '[[task-c]]'\n  - tasks/task-d.md\n---\n# Task A\n",
+        )
+        .unwrap();
+
+        let mut gs = GraphStore::build(&[], pkb_root);
+        let mut node_a = GraphNode::default();
+        node_a.id = "task-a".to_string();
+        node_a.path = PathBuf::from("task-a.md");
+        node_a.depends_on = vec!["task-b".to_string(), "task-c".to_string(), "task-d".to_string()];
+        gs.replace_node(node_a);
+
+        let mut diff = GraphDiff::default();
+        diff.removed_edges.push(crate::excalidraw::diff::EdgeMutation {
+            source: "task-a".to_string(),
+            target: "task-b".to_string(),
+            edge_type: EdgeType::DependsOn,
+        });
+        diff.removed_edges.push(crate::excalidraw::diff::EdgeMutation {
+            source: "task-a".to_string(),
+            target: "task-c".to_string(),
+            edge_type: EdgeType::DependsOn,
+        });
+
+        // 1. sync_edge_removals = false (default) -> frontmatter depends_on must remain untouched
+        let report = sync_diff_to_disk(pkb_root, &mut gs, &diff, false).unwrap();
+        assert_eq!(report.updated_edges, 0);
+        let content = std::fs::read_to_string(&task_file).unwrap();
+        assert!(content.contains("task-b"));
+        assert!(content.contains("task-c"));
+
+        // 2. sync_edge_removals = true -> frontmatter depends_on must strip bare ID and wikilink
+        let report = sync_diff_to_disk(pkb_root, &mut gs, &diff, true).unwrap();
+        assert_eq!(report.updated_edges, 2);
+        let content_after = std::fs::read_to_string(&task_file).unwrap();
+        assert!(!content_after.contains("task-b"));
+        assert!(!content_after.contains("task-c"));
+        assert!(content_after.contains("task-d.md"));
+
+        // 3. Remove filename reference tasks/task-d.md
+        let mut diff_d = GraphDiff::default();
+        diff_d.removed_edges.push(crate::excalidraw::diff::EdgeMutation {
+            source: "task-a".to_string(),
+            target: "task-d".to_string(),
+            edge_type: EdgeType::DependsOn,
+        });
+        let report_d = sync_diff_to_disk(pkb_root, &mut gs, &diff_d, true).unwrap();
+        assert_eq!(report_d.updated_edges, 1);
+        let content_d = std::fs::read_to_string(&task_file).unwrap();
+        assert!(!content_d.contains("task-d.md"));
+    }
+
+    #[test]
+    fn test_merge_preserves_custom_card_styling_when_status_unchanged() {
+        let mut file = ExcalidrawFile::default();
+        let mut card = ExcalidrawElement::default();
+        card.id = "card-task-1".to_string();
+        card.element_type = "rectangle".to_string();
+        card.background_color = "#ff00ff".to_string();
+        card.stroke_color = "#00ff00".to_string();
+        card.stroke_width = 3.0;
+        card.roughness = 2.0;
+        card.custom_data = Some(CustomData {
+            pkb: Some(PkbCustomData {
+                node_id: Some("task-1".to_string()),
+                status: Some("ready".to_string()),
+                node_type: Some("task".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        file.elements.push(card);
+
+        let mut gs = GraphStore::build(&[], Path::new("/tmp"));
+        let mut node = GraphNode::default();
+        node.id = "task-1".to_string();
+        node.label = "Task 1".to_string();
+        node.node_type = Some("task".to_string());
+        node.status = Some("ready".to_string());
+        gs.replace_node(node);
+
+        // Status unchanged: custom styling preserved
+        let merged = merge_live_into_canvas(&file, &gs, &["task-1".to_string()]);
+        let merged_card = merged.elements.iter().find(|e| e.id == "card-task-1").unwrap();
+        assert_eq!(merged_card.background_color, "#ff00ff");
+        assert_eq!(merged_card.stroke_color, "#00ff00");
+        assert_eq!(merged_card.stroke_width, 3.0);
+        assert_eq!(merged_card.roughness, 2.0);
+
+        // Status changed: status palette applied
+        let mut gs_updated = GraphStore::build(&[], Path::new("/tmp"));
+        let mut node_done = GraphNode::default();
+        node_done.id = "task-1".to_string();
+        node_done.label = "Task 1".to_string();
+        node_done.node_type = Some("task".to_string());
+        node_done.status = Some("done".to_string());
+        gs_updated.replace_node(node_done);
+
+        let merged2 = merge_live_into_canvas(&file, &gs_updated, &["task-1".to_string()]);
+        let merged_card2 = merged2.elements.iter().find(|e| e.id == "card-task-1").unwrap();
+        let done_style = node_color_style(Some("done"), Some("task"));
+        assert_eq!(merged_card2.background_color, done_style.bg_color);
+        assert_eq!(merged_card2.stroke_color, done_style.stroke_color);
     }
 }

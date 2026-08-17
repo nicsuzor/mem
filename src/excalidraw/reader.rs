@@ -314,6 +314,11 @@ impl CanvasReader {
             let source_node_id = start_elem_id.as_ref().and_then(|id| elem_to_node_id.get(id).cloned());
             let target_node_id = end_elem_id.as_ref().and_then(|id| elem_to_node_id.get(id).cloned());
 
+            if source_node_id.is_none() || target_node_id.is_none() {
+                user_annotations.push(arrow_elem);
+                continue;
+            }
+
             let label = arrow_elem
                 .text
                 .clone()
@@ -510,16 +515,66 @@ mod tests {
 
     #[test]
     fn test_safe_arrow_typing_default_link() {
-        let mut file = ExcalidrawFile::default();
-        let mut arrow = ExcalidrawElement::default();
-        arrow.id = "arrow-1".to_string();
-        arrow.element_type = "arrow".to_string();
-        arrow.text = Some("user annotation arrow".to_string());
-        file.elements.push(arrow);
+        // 1. Unlinked arrow without bindings -> classified into annotations
+        let mut file_unlinked = ExcalidrawFile::default();
+        let mut arrow_unlinked = ExcalidrawElement::default();
+        arrow_unlinked.id = "arrow-unlinked".to_string();
+        arrow_unlinked.element_type = "arrow".to_string();
+        arrow_unlinked.text = Some("user annotation arrow".to_string());
+        file_unlinked.elements.push(arrow_unlinked);
 
-        let model = CanvasReader::parse_file(file);
-        assert_eq!(model.arrows.len(), 1);
-        assert_eq!(model.arrows[0].edge_type, EdgeType::Link);
+        let model_unlinked = CanvasReader::parse_file(file_unlinked);
+        assert_eq!(model_unlinked.arrows.len(), 0);
+        assert_eq!(model_unlinked.annotations.len(), 1);
+
+        // 2. Bound arrow between PKB nodes without typed prefix -> defaults safely to EdgeType::Link
+        let mut file_bound = ExcalidrawFile::default();
+        let mut card1 = ExcalidrawElement::default();
+        card1.id = "elem-t1".to_string();
+        card1.element_type = "rectangle".to_string();
+        card1.custom_data = Some(CustomData {
+            pkb: Some(PkbCustomData {
+                node_id: Some("task-t1".to_string()),
+                ..Default::default()
+            }),
+            extra: HashMap::new(),
+        });
+
+        let mut card2 = ExcalidrawElement::default();
+        card2.id = "elem-t2".to_string();
+        card2.element_type = "rectangle".to_string();
+        card2.custom_data = Some(CustomData {
+            pkb: Some(PkbCustomData {
+                node_id: Some("task-t2".to_string()),
+                ..Default::default()
+            }),
+            extra: HashMap::new(),
+        });
+
+        let mut arrow_bound = ExcalidrawElement::default();
+        arrow_bound.id = "arrow-bound".to_string();
+        arrow_bound.element_type = "arrow".to_string();
+        arrow_bound.start_binding = Some(PointBinding {
+            element_id: "elem-t1".to_string(),
+            focus: 0.0,
+            gap: 1.0,
+            fixed_point: None,
+        });
+        arrow_bound.end_binding = Some(PointBinding {
+            element_id: "elem-t2".to_string(),
+            focus: 0.0,
+            gap: 1.0,
+            fixed_point: None,
+        });
+        arrow_bound.text = Some("plain user link".to_string());
+
+        file_bound.elements.push(card1);
+        file_bound.elements.push(card2);
+        file_bound.elements.push(arrow_bound);
+
+        let model_bound = CanvasReader::parse_file(file_bound);
+        assert_eq!(model_bound.arrows.len(), 1);
+        assert_eq!(model_bound.arrows[0].edge_type, EdgeType::Link);
     }
 
     #[test]
@@ -561,10 +616,48 @@ mod tests {
 
         for (label, expected_type) in prefixes {
             let mut file = ExcalidrawFile::default();
+
+            let mut card1 = ExcalidrawElement::default();
+            card1.id = "elem-src".to_string();
+            card1.element_type = "rectangle".to_string();
+            card1.custom_data = Some(CustomData {
+                pkb: Some(PkbCustomData {
+                    node_id: Some("task-src".to_string()),
+                    ..Default::default()
+                }),
+                extra: HashMap::new(),
+            });
+
+            let mut card2 = ExcalidrawElement::default();
+            card2.id = "elem-tgt".to_string();
+            card2.element_type = "rectangle".to_string();
+            card2.custom_data = Some(CustomData {
+                pkb: Some(PkbCustomData {
+                    node_id: Some("task-tgt".to_string()),
+                    ..Default::default()
+                }),
+                extra: HashMap::new(),
+            });
+
             let mut arrow = ExcalidrawElement::default();
             arrow.id = "arrow-test".to_string();
             arrow.element_type = "arrow".to_string();
+            arrow.start_binding = Some(PointBinding {
+                element_id: "elem-src".to_string(),
+                focus: 0.0,
+                gap: 1.0,
+                fixed_point: None,
+            });
+            arrow.end_binding = Some(PointBinding {
+                element_id: "elem-tgt".to_string(),
+                focus: 0.0,
+                gap: 1.0,
+                fixed_point: None,
+            });
             arrow.text = Some(label.to_string());
+
+            file.elements.push(card1);
+            file.elements.push(card2);
             file.elements.push(arrow);
 
             let model = CanvasReader::parse_file(file);

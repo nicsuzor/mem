@@ -6416,6 +6416,11 @@ impl PkbSearchServer {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let sync_edge_removals = args
+            .get("sync_edge_removals")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let canvas = crate::excalidraw::parse_canvas(canvas_str).map_err(|e| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Failed to parse canvas JSON: {e}")),
@@ -6465,7 +6470,7 @@ impl PkbSearchServer {
 
         let report = {
             let mut graph = self.graph.write();
-            crate::excalidraw::sync_canvas(&self.pkb_root, &mut graph, &diff).map_err(|e| {
+            crate::excalidraw::sync_canvas(&self.pkb_root, &mut graph, &diff, sync_edge_removals).map_err(|e| {
                 McpError {
                     code: ErrorCode::INTERNAL_ERROR,
                     message: Cow::from(format!("Failed to sync canvas to disk: {e}")),
@@ -7901,7 +7906,8 @@ impl PkbSearchServer {
                     "properties": {
                         "canvas": { "type": "string", "description": "Excalidraw JSON string representation of the canvas" },
                         "base": { "type": "string", "description": "Optional base snapshot JSON string for 3-way diff" },
-                        "dry_run": { "type": "boolean", "description": "Preview modifications without writing to disk (default: false)" }
+                        "dry_run": { "type": "boolean", "description": "Preview modifications without writing to disk (default: false)" },
+                        "sync_edge_removals": { "type": "boolean", "description": "If true, removes deleted dependency edges from frontmatter depends_on (default: false)" }
                     },
                     "required": ["canvas"]
                 }))

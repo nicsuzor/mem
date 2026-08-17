@@ -107,8 +107,9 @@ pub fn sync_canvas(
     pkb_root: &Path,
     gs: &mut GraphStore,
     diff: &GraphDiff,
+    sync_edge_removals: bool,
 ) -> Result<SyncReport> {
-    sync_diff_to_disk(pkb_root, gs, diff)
+    sync_diff_to_disk(pkb_root, gs, diff, sync_edge_removals)
 }
 
 /// Merge live graph state into an existing Excalidraw file preserving user $(x, y)$ positions.
