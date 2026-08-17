@@ -6,7 +6,9 @@
 - **`CHANGELOG.md`**: Release history (release-please managed)
 - **`INVENTORY.md`**: Inventory of repo components
 - **`references/TAXONOMY.md`**: Canonical definitions for PKB/work-management concepts
+- **`references/EXCALIDRAW_AGENT_GUIDE.md`**: Token-efficient Excalidraw manipulation guide and recipes for LLM agents
 - **`specs/`**: Specifications (SSoT) — approved current-state design intent
+- **`specs/excalidraw-tooling.md`**: Excalidraw tooling specification (`src/bin/excalidraw_view.rs`)
 - **`specs/pkb-server-spec.md`**: PKB MCP server specification
 - **`specs/pkb-type-taxonomy.md`**: Document/node type taxonomy
 - **`specs/work-management.md`**: Task and work-management model
