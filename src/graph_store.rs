@@ -1573,6 +1573,11 @@ impl GraphStore {
         std::fs::write(&graphml_path, self.output_graphml())?;
         written.push(graphml_path);
 
+        // Excalidraw
+        let excalidraw_path = format!("{base}.excalidraw");
+        std::fs::write(&excalidraw_path, self.output_excalidraw(None, 1)?)?;
+        written.push(excalidraw_path);
+
         Ok(written)
     }
 
@@ -1779,6 +1784,21 @@ impl GraphStore {
         Ok(serde_json::to_string_pretty(&graph)?)
     }
 
+    /// Export graph or ego network to Excalidraw JSON canvas format.
+    /// If `focus_id` is provided, exports an ego-network with given `hops`.
+    /// Otherwise exports all nodes.
+    pub fn output_excalidraw(&self, focus_id: Option<&str>, hops: usize) -> Result<String> {
+        let file = if let Some(focus) = focus_id {
+            let resolved_id = self.resolve(focus).map(|n| n.id.as_str()).unwrap_or(focus);
+            crate::excalidraw::export_ego_network(self, resolved_id, hops, None)?
+        } else {
+            let mut all_ids: Vec<String> = self.nodes.keys().cloned().collect();
+            all_ids.sort();
+            crate::excalidraw::export_subgraph(self, &all_ids, None)?
+        };
+        Ok(serde_json::to_string_pretty(&file)?)
+    }
+
     pub fn output_graphml(&self) -> String {
         let mut nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
         nodes.sort_by(|a, b| a.label.cmp(&b.label));
@@ -1874,6 +1894,7 @@ impl GraphStore {
 ///
 /// 1.0 if modified today, decaying exponentially with exp(-days / 30).
 /// Clamps to 0.0 at or after 90 days.
+#[allow(dead_code)]
 fn recency_signal(modified: &DateTime<Utc>, now: &DateTime<Utc>) -> f64 {
     const MS_PER_DAY: f64 = 86_400_000.0;
     let duration = now.signed_duration_since(*modified);
@@ -6206,5 +6227,50 @@ mod tests {
             Some("tja"),
             "child inherits the container's explicit project value"
         );
+    }
+
+    #[test]
+    fn test_output_excalidraw_and_output_all_files() {
+        let doc1 = make_doc(
+            "tasks/task-a.md",
+            "Task A",
+            "task",
+            "ready",
+            "task-a",
+            None,
+            &["task-b"],
+        );
+        let doc2 = make_doc(
+            "tasks/task-b.md",
+            "Task B",
+            "task",
+            "inbox",
+            "task-b",
+            None,
+            &[],
+        );
+
+        let gs = GraphStore::build(&[doc1, doc2], Path::new("/tmp"));
+
+        // Test output_excalidraw with ego focus
+        let ex_ego = gs.output_excalidraw(Some("task-a"), 1).expect("output ego excalidraw");
+        assert!(ex_ego.contains("Task A"), "ego excalidraw contains Task A");
+
+        // Test output_excalidraw without focus (all nodes)
+        let ex_all = gs.output_excalidraw(None, 1).expect("output all excalidraw");
+        assert!(ex_all.contains("Task A"), "all excalidraw contains Task A");
+        assert!(ex_all.contains("Task B"), "all excalidraw contains Task B");
+
+        // Test output_all_files writes .excalidraw alongside .json and .graphml
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("export_test");
+        let written = gs.output_all_files(base.to_str().unwrap()).expect("output all files");
+        assert_eq!(written.len(), 3);
+        assert!(written.iter().any(|p| p.ends_with(".json")));
+        assert!(written.iter().any(|p| p.ends_with(".graphml")));
+        assert!(written.iter().any(|p| p.ends_with(".excalidraw")));
+        for p in &written {
+            assert!(std::path::Path::new(p).exists(), "file must exist: {p}");
+        }
     }
 }

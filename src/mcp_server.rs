@@ -701,6 +701,7 @@ impl PkbSearchServer {
     /// Resolve an absolute PKB path back to the relative key used in the
     /// vector store. Falls back to the input path if it isn't under
     /// `pkb_root` (defensive).
+    #[allow(dead_code)]
     fn rel_key_for(&self, abs: &Path) -> String {
         abs.strip_prefix(&self.pkb_root)
             .unwrap_or(abs)
@@ -1932,7 +1933,6 @@ impl PkbSearchServer {
             }
         }
 
-        let warnings: Vec<String> = Vec::new();
 
         let t_total = std::time::Instant::now();
 
@@ -6338,6 +6338,178 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    pub fn handle_graph_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let node_id = args.get("node_id").and_then(|v| v.as_str());
+        let hops = args
+            .get("hops")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(2) as usize;
+
+        let graph = self.graph.read();
+        let json = graph.output_excalidraw(node_id, hops).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to export Excalidraw graph: {e}")),
+            data: None,
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    pub fn handle_diff_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let canvas_str = args
+            .get("canvas")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: canvas"),
+                data: None,
+            })?;
+
+        let canvas = crate::excalidraw::parse_canvas(canvas_str).map_err(|e| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Failed to parse canvas JSON: {e}")),
+            data: None,
+        })?;
+
+        let base_snapshot = if let Some(base_str) = args.get("base").and_then(|v| v.as_str()) {
+            Some(
+                crate::excalidraw::parse_base_snapshot(base_str).map_err(|e| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!("Failed to parse base snapshot: {e}")),
+                    data: None,
+                })?,
+            )
+        } else {
+            None
+        };
+
+        let graph = self.graph.read();
+        let diff = crate::excalidraw::diff_canvas(base_snapshot.as_ref(), &graph, &canvas).map_err(|e| {
+            McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to compute diff: {e}")),
+                data: None,
+            }
+        })?;
+
+        let json = serde_json::to_string_pretty(&diff).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to serialize diff: {e}")),
+            data: None,
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    pub fn handle_sync_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let canvas_str = args
+            .get("canvas")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: canvas"),
+                data: None,
+            })?;
+
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let sync_edge_removals = args
+            .get("sync_edge_removals")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let canvas = crate::excalidraw::parse_canvas(canvas_str).map_err(|e| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Failed to parse canvas JSON: {e}")),
+            data: None,
+        })?;
+
+        let base_snapshot = if let Some(base_str) = args.get("base").and_then(|v| v.as_str()) {
+            Some(
+                crate::excalidraw::parse_base_snapshot(base_str).map_err(|e| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!("Failed to parse base snapshot: {e}")),
+                    data: None,
+                })?,
+            )
+        } else {
+            None
+        };
+
+        let diff = {
+            let graph = self.graph.read();
+            crate::excalidraw::diff_canvas(base_snapshot.as_ref(), &graph, &canvas).map_err(|e| {
+                McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from(format!("Failed to compute diff: {e}")),
+                    data: None,
+                }
+            })?
+        };
+
+        if dry_run {
+            let res = serde_json::json!({
+                "dry_run": true,
+                "diff": diff,
+                "message": format!(
+                    "Dry run: {} added nodes, {} updated nodes, {} canvas-only removals, {} added edges, {} removed edges, {} conflicts",
+                    diff.added_nodes.len(),
+                    diff.updated_nodes.len(),
+                    diff.removed_from_canvas.len(),
+                    diff.added_edges.len(),
+                    diff.removed_edges.len(),
+                    diff.conflicts.len(),
+                ),
+            });
+            let json = serde_json::to_string_pretty(&res).unwrap_or_default();
+            return Ok(CallToolResult::success(vec![Content::text(json)]));
+        }
+
+        let report = {
+            let mut graph = self.graph.write();
+            crate::excalidraw::sync_canvas(&self.pkb_root, &mut graph, &diff, sync_edge_removals).map_err(|e| {
+                McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from(format!("Failed to sync canvas to disk: {e}")),
+                    data: None,
+                }
+            })?
+        };
+
+        // Update vector store and schedule background graph rebuild
+        for (_id, path) in &report.created_nodes {
+            if let Some(doc) = crate::pkb::parse_file_relative(path, &self.pkb_root) {
+                self.try_upsert_document(&doc);
+            }
+        }
+        for id in &report.updated_nodes {
+            if let Some(node) = self.graph.read().get_node(id) {
+                let path = self.pkb_root.join(&node.path);
+                if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+                    self.try_upsert_document(&doc);
+                }
+            }
+        }
+        self.schedule_graph_rebuild();
+
+        let res = serde_json::json!({
+            "success": true,
+            "created_nodes": report.created_nodes.iter().map(|(id, path)| {
+                serde_json::json!({ "id": id, "path": path.to_string_lossy() })
+            }).collect::<Vec<_>>(),
+            "updated_nodes": report.updated_nodes,
+            "updated_edges": report.updated_edges,
+            "rejected_cycles": report.rejected_cycles,
+            "warnings": report.warnings,
+        });
+
+        let json = serde_json::to_string_pretty(&res).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
     fn handle_graph_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
         let graph = self.graph.read();
         let stats = crate::batch_ops::stats::graph_stats(&graph);
@@ -6857,6 +7029,9 @@ impl PkbSearchServer {
             "batch_archive" => self.handle_batch_archive(args),
             "graph_stats" => self.handle_graph_stats(args),
             "graph_json" => self.handle_graph_json(args),
+            "graph_excalidraw" => self.handle_graph_excalidraw(args),
+            "diff_excalidraw" => self.handle_diff_excalidraw(args),
+            "sync_excalidraw" => self.handle_sync_excalidraw(args),
             "task_summary" => self.handle_task_summary(args),
             "find_duplicates" => self.handle_find_duplicates(args),
             "batch_merge" => self.handle_batch_merge(args),
@@ -7694,6 +7869,52 @@ impl PkbSearchServer {
             )
             .with_title("Knowledge Graph JSON")
             .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "graph_excalidraw",
+                "Generates an Excalidraw JSON diagram for an ego neighborhood around node_id or the full knowledge graph. Returns valid Excalidraw V2 JSON.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "node_id": { "type": "string", "description": "Focus node ID, filename, or title (uses flexible resolution). If omitted, exports the entire graph." },
+                        "hops": { "type": "integer", "description": "Neighborhood depth in hops (1 to 5, default: 2)" }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("Export Graph to Excalidraw")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "diff_excalidraw",
+                "Parses an Excalidraw JSON string and returns a structured diff against live PKB. Identifies added/updated/removed nodes, edge mutations, and visual styling changes.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "canvas": { "type": "string", "description": "Excalidraw JSON string representation of the canvas" },
+                        "base": { "type": "string", "description": "Optional base snapshot JSON string for 3-way conflict detection" }
+                    },
+                    "required": ["canvas"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Diff Excalidraw Canvas")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "sync_excalidraw",
+                "Applies non-destructive modifications from Excalidraw JSON back to PKB markdown files. Safely handles card additions, frontmatter updates, and edge connections.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "canvas": { "type": "string", "description": "Excalidraw JSON string representation of the canvas" },
+                        "base": { "type": "string", "description": "Optional base snapshot JSON string for 3-way diff" },
+                        "dry_run": { "type": "boolean", "description": "Preview modifications without writing to disk (default: false)" },
+                        "sync_edge_removals": { "type": "boolean", "description": "If true, removes deleted dependency edges from frontmatter depends_on (default: false)" }
+                    },
+                    "required": ["canvas"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Sync Excalidraw Canvas to PKB")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "task_summary",
                 "Get high-level dashboard metrics: counts of 'ready' vs 'blocked' tasks, and priority breakdowns. Use for situational awareness.",
@@ -12285,5 +12506,89 @@ project: aops
         for t in create_types {
             assert!(crate::graph::is_valid_node_type(&t), "create schema advertises invalid type: {t}");
         }
+    }
+
+    #[test]
+    fn test_all_tools_synchronized_with_dispatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let tools = PkbSearchServer::get_all_tools();
+        assert!(tools.iter().any(|t| t.name.as_ref() == "graph_excalidraw"));
+        assert!(tools.iter().any(|t| t.name.as_ref() == "diff_excalidraw"));
+        assert!(tools.iter().any(|t| t.name.as_ref() == "sync_excalidraw"));
+
+        // Verify that every single tool registered in get_all_tools has a dispatch arm
+        for tool in &tools {
+            let res = server.dispatch_tool_sync(tool.name.as_ref(), &serde_json::json!({}));
+            if let Err(ref e) = res {
+                assert_ne!(
+                    e.code,
+                    rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+                    "Tool '{}' is registered in list_tools but missing from dispatch_tool_sync!",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_excalidraw_mcp_tools_flow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        // Seed initial task file
+        let task_file = root.join("tasks").join("task-init.md");
+        std::fs::write(
+            &task_file,
+            "---\nid: task-init\ntitle: Initial Task\ntype: task\nstatus: ready\n---\n\nInitial task body.",
+        ).unwrap();
+
+        let doc = crate::pkb::parse_file_relative(&task_file, root).unwrap();
+        let graph = GraphStore::build(&[doc], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // 1. Test graph_excalidraw
+        let res = server.handle_graph_excalidraw(&serde_json::json!({
+            "node_id": "task-init",
+            "hops": 1
+        })).expect("graph_excalidraw should succeed");
+        let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+        assert!(text.contains("Initial Task"), "diagram JSON should contain Initial Task");
+
+        // 2. Test diff_excalidraw
+        let diff_res = server.handle_diff_excalidraw(&serde_json::json!({
+            "canvas": text
+        })).expect("diff_excalidraw should succeed");
+        let diff_text: String = diff_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+        let diff: crate::excalidraw::GraphDiff = serde_json::from_str(&diff_text).expect("valid diff json");
+        assert!(diff.is_empty(), "clean canvas diff should be empty");
+
+        // 3. Test sync_excalidraw dry_run
+        let sync_dry_res = server.handle_sync_excalidraw(&serde_json::json!({
+            "canvas": text,
+            "dry_run": true
+        })).expect("sync dry_run should succeed");
+        let dry_text: String = sync_dry_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+        assert!(dry_text.contains("Dry run"), "dry run response mentions dry run");
     }
 }

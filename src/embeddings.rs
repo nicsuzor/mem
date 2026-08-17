@@ -289,6 +289,7 @@ fn download_onnx_runtime() -> Result<PathBuf> {
     let resp = ureq::get(url)
         .call()
         .with_context(|| format!("Failed to download {variant_label} from {url}"))?;
+    #[allow(unused_mut)]
     let mut reader = resp.into_reader();
 
     let mut found_main = false;

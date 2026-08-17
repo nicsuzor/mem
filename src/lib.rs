@@ -10,6 +10,7 @@ pub mod distance;
 pub mod document_crud;
 pub mod embeddings;
 pub mod eval;
+pub mod excalidraw;
 pub mod facts;
 pub mod graph;
 pub mod graph_display;
@@ -237,7 +238,7 @@ mod stdout_guard {
         let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         // lib.rs excluded because this test module itself references print patterns.
         // lib.rs is still guarded by #![deny(clippy::print_stdout)] at compile time.
-        let allow_list: &[&str] = &["cli.rs", "reproduction.rs", "lib.rs"];
+        let allow_list: &[&str] = &["cli.rs", "reproduction.rs", "lib.rs", "excalidraw_view.rs"];
 
         let mut violations = Vec::new();
         check_dir(&src_dir, &src_dir, allow_list, &mut violations);

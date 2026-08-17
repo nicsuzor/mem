@@ -23,7 +23,7 @@ mod tests {
         update_document(&path, updates).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        println!("Content after update:\n{}", content);
+        tracing::info!("Content after update:\n{}", content);
 
         assert!(content.starts_with("---\n"));
         // Check for double dashes
