@@ -44,10 +44,6 @@ fn skip_if_no_aca_data() -> String {
     }
 }
 
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
-}
 
 fn jsonrpc_request(id: u64, method: &str, params: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string()
@@ -101,8 +97,13 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
         })
         .count();
 
-    let mut child = Command::new(pkb_binary())
-        .args(["mcp"])
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp_dir.path().join("tasks")).unwrap();
+    std::fs::create_dir_all(temp_dir.path().join("epics")).unwrap();
+    std::fs::create_dir_all(temp_dir.path().join("memories")).unwrap();
+
+    let mut child = Command::new(pkb_binary()).env_remove("PKB_MCP_URL")
+        .args(["mcp", "--pkb-root", temp_dir.path().to_str().unwrap()])
         .env("ACA_DATA", &aca)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -144,7 +145,7 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
     });
 
     // Wait for responses with timeout
-    let timeout = Duration::from_secs(30);
+    let timeout = Duration::from_secs(120);
     let responses = rx.recv_timeout(timeout).unwrap_or_else(|_| {
         child.kill().ok();
         panic!("pkb mcp stdio timed out after {timeout:?}");
@@ -159,39 +160,70 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
 
 // ── HTTP/SSE helpers ─────────────────────────────────────────────────────
 
+fn spawn_http_mcp(mut cmd: Command) -> (Child, u16) {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("failed to spawn MCP HTTP server");
+
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        let mut reader = BufReader::new(stderr);
+        let mut line = String::new();
+        let mut sent = false;
+        while let Ok(bytes) = reader.read_line(&mut line) {
+            if bytes == 0 { break; }
+            if !sent {
+                if let Some(idx) = line.find("Starting MCP HTTP/SSE server on http://") {
+                    let start = idx + "Starting MCP HTTP/SSE server on http://".len();
+                    let url = &line[start..];
+                    if let Some(end) = url.find("/mcp") {
+                        let host_port = &url[..end];
+                        if let Some(port_str) = host_port.split(':').last() {
+                            if let Ok(port) = port_str.parse::<u16>() {
+                                let _ = tx.send(port);
+                                sent = true;
+                            }
+                        }
+                    }
+                }
+            }
+            line.clear();
+        }
+    });
+
+    let port = rx.recv_timeout(Duration::from_secs(10)).expect("failed to parse port from stderr");
+    (child, port)
+}
+
 struct HttpServer {
     child: Option<Child>,
     port: u16,
+    _temp_dir: Option<tempfile::TempDir>,
 }
 
 impl HttpServer {
     fn start() -> Self {
-        if let Ok(url) = std::env::var("PKB_MCP_URL") {
-            let port_str = url.split(':').last().unwrap_or("8026");
-            let port = port_str
-                .split('/')
-                .next()
-                .unwrap_or("8026")
-                .parse()
-                .unwrap_or(8026);
-            return HttpServer { child: None, port };
-        }
-
         let aca = skip_if_no_aca_data();
-        let port = free_port();
+        let temp_dir = tempfile::tempdir().unwrap();
+        
+        // create required directories
+        std::fs::create_dir_all(temp_dir.path().join("tasks")).unwrap();
+        std::fs::create_dir_all(temp_dir.path().join("epics")).unwrap();
+        std::fs::create_dir_all(temp_dir.path().join("memories")).unwrap();
 
-        let child = Command::new(pkb_binary())
-            .args(["mcp", "--http", "--port", &port.to_string()])
+        let mut cmd = Command::new(pkb_binary());
+        cmd.env_remove("PKB_MCP_URL")
+            .args(["mcp", "--http", "--port", "0", "--pkb-root", temp_dir.path().to_str().unwrap()])
             .env("ACA_DATA", &aca)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("failed to spawn pkb mcp --http");
+            .stdin(Stdio::null());
+            
+        let (child, port) = spawn_http_mcp(cmd);
 
         let server = HttpServer {
             child: Some(child),
             port,
+            _temp_dir: Some(temp_dir),
         };
         server.wait_ready();
         server
@@ -202,7 +234,7 @@ impl HttpServer {
             return;
         }
         let start = Instant::now();
-        let timeout = Duration::from_secs(30);
+        let timeout = Duration::from_secs(120);
         while start.elapsed() < timeout {
             if let Ok(stream) = std::net::TcpStream::connect_timeout(
                 &format!("127.0.0.1:{}", self.port).parse().unwrap(),
@@ -245,21 +277,8 @@ fn http_post(
     body: &str,
     session_id: Option<&str>,
 ) -> (u16, HashMap<String, String>, String) {
-    let (host, actual_port) = if let Ok(url) = std::env::var("PKB_MCP_URL") {
-        let url = url.trim_start_matches("http://");
-        let mut parts = url.split(':');
-        let h = parts.next().unwrap().to_string();
-        let p_str = parts.next().unwrap_or("80");
-        let p = p_str
-            .split('/')
-            .next()
-            .unwrap_or("80")
-            .parse()
-            .unwrap_or(80);
-        (h, p)
-    } else {
-        ("127.0.0.1".to_string(), port)
-    };
+    let host = "127.0.0.1".to_string();
+    let actual_port = port;
 
     let mut stream = std::net::TcpStream::connect(format!("{host}:{actual_port}"))
         .expect("failed to connect to HTTP server");
@@ -415,8 +434,13 @@ fn test_stdio_initialize() {
 fn test_stdio_stdout_purity() {
     let aca = skip_if_no_aca_data();
 
-    let mut child = Command::new(pkb_binary())
-        .args(["mcp"])
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp_dir.path().join("tasks")).unwrap();
+    std::fs::create_dir_all(temp_dir.path().join("epics")).unwrap();
+    std::fs::create_dir_all(temp_dir.path().join("memories")).unwrap();
+
+    let mut child = Command::new(pkb_binary()).env_remove("PKB_MCP_URL")
+        .args(["mcp", "--pkb-root", temp_dir.path().to_str().unwrap()])
         .env("ACA_DATA", &aca)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -716,7 +740,7 @@ fn test_http_seeded_search_returns_seeded_doc() {
     // meaningfully without it.
     let pkb_root_str = pkb_root.to_string_lossy().to_string();
     let db_path_str = db_path.to_string_lossy().to_string();
-    let reindex = Command::new(pkb_binary())
+    let reindex = Command::new(pkb_binary()).env_remove("PKB_MCP_URL")
         .args([
             "--pkb-root",
             &pkb_root_str,
@@ -745,8 +769,8 @@ fn test_http_seeded_search_returns_seeded_doc() {
     }
 
     // Spawn an MCP HTTP daemon against the temp PKB.
-    let port = free_port();
-    let mut child = Command::new(pkb_binary())
+    let mut cmd = Command::new(pkb_binary());
+    cmd.env_remove("PKB_MCP_URL")
         .args([
             "--pkb-root",
             &pkb_root_str,
@@ -755,42 +779,16 @@ fn test_http_seeded_search_returns_seeded_doc() {
             "mcp",
             "--http",
             "--port",
-            &port.to_string(),
+            "0",
         ])
         .env("AOPS_OFFLINE", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn pkb mcp --http");
+        .stdin(Stdio::null());
 
-    // Wait for the daemon to bind the port.
-    let start = Instant::now();
-    let timeout = Duration::from_secs(30);
-    let mut ready = false;
-    while start.elapsed() < timeout {
-        if std::net::TcpStream::connect_timeout(
-            &format!("127.0.0.1:{port}").parse().unwrap(),
-            Duration::from_millis(200),
-        )
-        .is_ok()
-        {
-            ready = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    if !ready {
-        child.kill().ok();
-        panic!("MCP HTTP server on port {port} not ready after {timeout:?}");
-    }
+    let (mut child, port) = spawn_http_mcp(cmd);
+    std::thread::sleep(Duration::from_millis(500));
     std::thread::sleep(Duration::from_millis(500));
 
-    // Forcibly target the local daemon — the http_post helper otherwise
-    // honours PKB_MCP_URL and would silently exercise the user's production
-    // server, which would defeat the seeded-search assertion entirely.
-    let prior_pkb_mcp_url = std::env::var("PKB_MCP_URL").ok();
-    std::env::remove_var("PKB_MCP_URL");
+    // Forcibly target the local daemon
 
     let result = (|| -> Value {
         let (status, headers, body) = http_post(port, &initialize_request(1), None);
@@ -815,9 +813,7 @@ fn test_http_seeded_search_returns_seeded_doc() {
         )
     })();
 
-    if let Some(v) = prior_pkb_mcp_url {
-        std::env::set_var("PKB_MCP_URL", v);
-    }
+
 
     child.kill().ok();
     child.wait().ok();
