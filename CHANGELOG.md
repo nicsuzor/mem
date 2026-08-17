@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.76](https://github.com/nicsuzor/mem/compare/mem-v0.3.75...mem-v0.3.76) (2026-08-17)
+
+
+### Features
+
+* **excalidraw:** add excalidraw-view Rust binary, CRUD/diff tooling, spec and LLM agent guide ([e9bce7c](https://github.com/nicsuzor/mem/commit/e9bce7cd530c688ff06e3f3eed3cf20f8403d3f4))
+* **excalidraw:** add excalidraw-view Rust binary, CRUD/diff tooling, spec and LLM agent guide ([5dc19b4](https://github.com/nicsuzor/mem/commit/5dc19b4eb131b2ddae3419691571563b031ae11a))
+
+
+### Bug Fixes
+
+* **cli:** prevent append timestamp fusion and echo appended payload summary (aops_c37992c1) ([16e5d02](https://github.com/nicsuzor/mem/commit/16e5d02e9f6c6060422316b59c7a77f849763672))
+* **cli:** prevent append timestamp fusion and echo appended payload summary (aops_c37992c1) ([4a2742d](https://github.com/nicsuzor/mem/commit/4a2742d5dbb751a72b99549237cb5c73f7d46688))
+* **excalidraw:** preserve non-pkb arrows, add --sync-edge-removals, preserve custom card styling ([aba3b2a](https://github.com/nicsuzor/mem/commit/aba3b2a45c1678776ca59a716759082bec774c0a))
+* **excalidraw:** resolve test drift and concurrency ([350d3d5](https://github.com/nicsuzor/mem/commit/350d3d56e01e82fdec2dbc31ba668acab3e2e35f))
+* **excalidraw:** resolve test drift and concurrency ([1c34091](https://github.com/nicsuzor/mem/commit/1c340912b5ae10400942cf393e957db9c8be21fd))
+
 ## [0.3.75](https://github.com/nicsuzor/mem/compare/mem-v0.3.74...mem-v0.3.75) (2026-08-13)
 
 
