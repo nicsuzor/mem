@@ -525,6 +525,9 @@ enum Commands {
     #[command(subcommand)]
     Batch(BatchCommands),
 
+    /// Excalidraw visual canvas operations (export, diff, sync)
+    #[command(subcommand)]
+    Excalidraw(ExcalidrawCommands),
 
     /// Background maintenance operations
     #[command(subcommand)]
@@ -627,6 +630,55 @@ pub enum MaintenanceCommands {
         /// Show what would change without saving
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ExcalidrawCommands {
+    /// Export graph or ego-network to an Excalidraw JSON canvas
+    Export {
+        /// Destination file path for Excalidraw JSON canvas
+        output_path: PathBuf,
+
+        /// Focus node ID for ego network layout (omit to export entire graph)
+        #[arg(short, long)]
+        focus: Option<String>,
+
+        /// Number of hops for ego network layout (default: 2)
+        #[arg(short = 'H', long, default_value_t = 2)]
+        hops: usize,
+    },
+
+    /// Compute 3-way diff between canvas and live PKB
+    Diff {
+        /// Path to modified Excalidraw JSON canvas
+        canvas_path: PathBuf,
+
+        /// Optional base snapshot path for 3-way diff
+        #[arg(short, long)]
+        base: Option<PathBuf>,
+
+        /// Output raw JSON diff instead of human-readable summary
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Apply visual mutations from Excalidraw canvas to PKB markdown files
+    Sync {
+        /// Path to modified Excalidraw JSON canvas
+        canvas_path: PathBuf,
+
+        /// Optional base snapshot path for 3-way diff
+        #[arg(short, long)]
+        base: Option<PathBuf>,
+
+        /// Preview changes without modifying files on disk
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Synchronize dependency edge removals by removing target from depends_on in frontmatter
+        #[arg(long)]
+        sync_edge_removals: bool,
     },
 }
 
@@ -1002,6 +1054,7 @@ async fn main() -> Result<()> {
             | Commands::Trace { .. }
             | Commands::Orphans { .. }
             | Commands::Graph { .. }
+            | Commands::Excalidraw { .. }
             | Commands::Recall { .. }
             | Commands::Tags { .. }
             | Commands::Forget { .. }
@@ -3073,6 +3126,9 @@ async fn main() -> Result<()> {
             handle_batch_command(batch_cmd, &graph, &pkb_root)?;
         }
 
+        Commands::Excalidraw(excalidraw_cmd) => {
+            handle_excalidraw_command(excalidraw_cmd, &pkb_root, &db_path)?;
+        }
 
         Commands::Maintenance(maintenance_cmd) => {
             let graph = load_graph(&pkb_root, &db_path, None);
@@ -3676,6 +3732,220 @@ fn handle_batch_command(
     Ok(())
 }
 
+fn print_diff_summary(diff: &excalidraw::GraphDiff) {
+    if diff.is_empty() {
+        println!("No changes detected between canvas and live PKB.");
+        return;
+    }
+    if !diff.added_nodes.is_empty() {
+        println!("Added Nodes ({}):", diff.added_nodes.len());
+        for n in &diff.added_nodes {
+            println!(
+                "  + [{}] {} (type: {}, status: {}{})",
+                n.temp_id,
+                n.title,
+                n.node_type,
+                n.status,
+                n.parent
+                    .as_deref()
+                    .map(|p| format!(", parent: {p}"))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    if !diff.updated_nodes.is_empty() {
+        println!("Updated Nodes ({}):", diff.updated_nodes.len());
+        for u in &diff.updated_nodes {
+            let mut changes = Vec::new();
+            if let Some(ref t) = u.title {
+                changes.push(format!("title: \"{t}\""));
+            }
+            if let Some(ref s) = u.status {
+                changes.push(format!("status: {s}"));
+            }
+            if let Some(ref p) = u.priority {
+                changes.push(format!("priority: {:?}", p));
+            }
+            if let Some(ref p) = u.parent {
+                changes.push(format!("parent: {:?}", p));
+            }
+            if let Some(ref tags) = u.tags {
+                changes.push(format!("tags: {:?}", tags));
+            }
+            println!("  * {} [{}]", u.node_id, changes.join(", "));
+        }
+    }
+    if !diff.removed_from_canvas.is_empty() {
+        println!(
+            "Removed From Canvas ({} - non-destructive, markdown documents retained on disk):",
+            diff.removed_from_canvas.len()
+        );
+        for id in &diff.removed_from_canvas {
+            println!("  - {}", id);
+        }
+    }
+    if !diff.added_edges.is_empty() {
+        println!("Added Edges ({}):", diff.added_edges.len());
+        for e in &diff.added_edges {
+            println!("  + {} -> {} ({:?})", e.source, e.target, e.edge_type);
+        }
+    }
+    if !diff.removed_edges.is_empty() {
+        println!("Removed Edges ({}):", diff.removed_edges.len());
+        for e in &diff.removed_edges {
+            println!("  - {} -> {} ({:?})", e.source, e.target, e.edge_type);
+        }
+    }
+    if !diff.retargeted_edges.is_empty() {
+        println!("Retargeted Edges ({}):", diff.retargeted_edges.len());
+        for r in &diff.retargeted_edges {
+            println!(
+                "  ~ {:?}: ({} -> {}) => ({} -> {})",
+                r.edge_type, r.old_source, r.old_target, r.new_source, r.new_target
+            );
+        }
+    }
+    if !diff.visual_mutations.is_empty() {
+        println!(
+            "Visual / Layout Modifications ({} nodes):",
+            diff.visual_mutations.len()
+        );
+        for v in &diff.visual_mutations {
+            println!(
+                "  ~ {} at ({:.0}, {:.0}) [{}x{}]",
+                v.node_id, v.x, v.y, v.width, v.height
+            );
+        }
+    }
+    if !diff.conflicts.is_empty() {
+        println!("Conflicts ({}):", diff.conflicts.len());
+        for c in &diff.conflicts {
+            println!(
+                "  ! {} field '{}': base={:?}, live={:?}, canvas={:?}",
+                c.node_id, c.field, c.base_value, c.live_value, c.canvas_value
+            );
+        }
+    }
+}
+
+fn handle_excalidraw_command(
+    cmd: ExcalidrawCommands,
+    pkb_root: &std::path::Path,
+    db_path: &std::path::Path,
+) -> Result<()> {
+    match cmd {
+        ExcalidrawCommands::Export {
+            output_path,
+            focus,
+            hops,
+        } => {
+            let gs = load_graph(pkb_root, db_path, None);
+            let (content, n_nodes, n_edges) = gs.output_excalidraw(focus.as_deref(), hops)?;
+            std::fs::write(&output_path, content)?;
+            println!(
+                "Exported Excalidraw canvas ({} nodes, {} edges) -> {}",
+                n_nodes,
+                n_edges,
+                output_path.display()
+            );
+        }
+        ExcalidrawCommands::Diff {
+            canvas_path,
+            base,
+            json,
+        } => {
+            let gs = load_graph(pkb_root, db_path, None);
+            let canvas_str = std::fs::read_to_string(&canvas_path).with_context(|| {
+                format!("Failed to read canvas file: {}", canvas_path.display())
+            })?;
+            let canvas = excalidraw::parse_canvas(&canvas_str)?;
+
+            let base_snapshot = if let Some(base_p) = base {
+                let base_str = std::fs::read_to_string(&base_p).with_context(|| {
+                    format!("Failed to read base snapshot file: {}", base_p.display())
+                })?;
+                Some(excalidraw::parse_base_snapshot(&base_str)?)
+            } else {
+                None
+            };
+
+            let diff = excalidraw::diff_canvas(base_snapshot.as_ref(), &gs, &canvas)?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&diff)?);
+            } else {
+                print_diff_summary(&diff);
+            }
+        }
+        ExcalidrawCommands::Sync {
+            canvas_path,
+            base,
+            dry_run,
+            sync_edge_removals,
+        } => {
+            let mut gs = load_graph(pkb_root, db_path, None);
+            let canvas_str = std::fs::read_to_string(&canvas_path).with_context(|| {
+                format!("Failed to read canvas file: {}", canvas_path.display())
+            })?;
+            let canvas = excalidraw::parse_canvas(&canvas_str)?;
+
+            let base_snapshot = if let Some(base_p) = base {
+                let base_str = std::fs::read_to_string(&base_p).with_context(|| {
+                    format!("Failed to read base snapshot file: {}", base_p.display())
+                })?;
+                Some(excalidraw::parse_base_snapshot(&base_str)?)
+            } else {
+                None
+            };
+
+            let diff = excalidraw::diff_canvas(base_snapshot.as_ref(), &gs, &canvas)?;
+
+            if dry_run {
+                println!("=== Dry Run: Visual Canvas Sync ===");
+                print_diff_summary(&diff);
+            } else {
+                let report = excalidraw::sync_canvas(pkb_root, &mut gs, &diff, sync_edge_removals)?;
+                println!("=== Visual Canvas Sync Complete ===");
+                if !report.created_nodes.is_empty() {
+                    println!("Created {} new document(s):", report.created_nodes.len());
+                    for (id, path) in &report.created_nodes {
+                        println!("  + {} -> {}", id, path.display());
+                    }
+                }
+                if !report.updated_nodes.is_empty() {
+                    println!("Updated {} document(s):", report.updated_nodes.len());
+                    for id in &report.updated_nodes {
+                        println!("  * {}", id);
+                    }
+                }
+                if report.updated_edges > 0 {
+                    println!("Updated {} edge(s)", report.updated_edges);
+                }
+                if !report.rejected_cycles.is_empty() {
+                    eprintln!(
+                        "Rejected {} edge(s) that would form cycles:",
+                        report.rejected_cycles.len()
+                    );
+                    for cycle in &report.rejected_cycles {
+                        eprintln!("  ! {}", cycle);
+                    }
+                }
+                if !report.warnings.is_empty() {
+                    for w in &report.warnings {
+                        eprintln!("Warning: {}", w);
+                    }
+                }
+                if report.created_nodes.is_empty()
+                    && report.updated_nodes.is_empty()
+                    && report.updated_edges == 0
+                {
+                    println!("No changes to synchronize.");
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 fn index_pkb(
     pkb_root: &std::path::Path,

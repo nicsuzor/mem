@@ -28,15 +28,6 @@ use tempfile::TempDir;
 // Test Helpers
 // ===========================================================================
 
-fn pkb_excalidraw_binary() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let release = manifest.join("target/release/pkb-excalidraw");
-    if release.exists() {
-        return release;
-    }
-    manifest.join("target/debug/pkb-excalidraw")
-}
-
 fn pkb_binary() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let release = manifest.join("target/release/pkb");
@@ -748,26 +739,30 @@ fn test_clipboard_duplicate_id_handling() {
 fn test_cli_excalidraw_and_graph_execution() {
     let ws = create_test_pkb_workspace();
     let pkb = pkb_binary();
-    let pkb_excal = pkb_excalidraw_binary();
     let db_path = ws.path().join("pkb_vectors.bin");
 
     let out_dir = ws.path().join("cli_out");
     fs::create_dir_all(&out_dir).unwrap();
 
-    // 1. `pkb-excalidraw export`
+    // 1. `pkb graph --format excalidraw`
     let excal_out = out_dir.join("graph.excalidraw");
-    let status = Command::new(&pkb_excal)
+    let status = Command::new(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
-            "export",
-            excal_out.to_str().unwrap(),
             "--pkb-root",
             ws.path().to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "graph",
+            "--format",
+            "excalidraw",
+            "--output",
+            excal_out.to_str().unwrap(),
         ])
         .status()
-        .expect("run pkb-excalidraw export");
-    assert!(status.success(), "pkb-excalidraw export must exit 0");
+        .expect("run pkb graph excalidraw");
+    assert!(status.success(), "pkb graph excalidraw must exit 0");
     assert!(excal_out.exists());
     let excal_content = fs::read_to_string(&excal_out).unwrap();
     let parsed: ExcalidrawFile = serde_json::from_str(&excal_content).expect("valid excal JSON");
@@ -817,18 +812,21 @@ fn test_cli_excalidraw_and_graph_execution() {
 
     // 4. `pkb excalidraw export`
     let export_out = out_dir.join("export.excalidraw");
-    let status = Command::new(&pkb_excal)
+    let status = Command::new(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
+            "--pkb-root",
+            ws.path().to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "excalidraw",
             "export",
             export_out.to_str().unwrap(),
             "--focus",
             "epic-core",
             "--hops",
             "2",
-            "--pkb-root",
-            ws.path().to_str().unwrap(),
         ])
         .status()
         .expect("run pkb excalidraw export");
@@ -836,15 +834,18 @@ fn test_cli_excalidraw_and_graph_execution() {
     assert!(export_out.exists());
 
     // 5. `pkb excalidraw diff`
-    let output = Command::new(&pkb_excal)
+    let output = Command::new(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
+            "--pkb-root",
+            ws.path().to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "excalidraw",
             "diff",
             export_out.to_str().unwrap(),
             "--json",
-            "--pkb-root",
-            ws.path().to_str().unwrap(),
         ])
         .output()
         .expect("run pkb excalidraw diff");
@@ -854,19 +855,218 @@ fn test_cli_excalidraw_and_graph_execution() {
     assert!(diff.is_empty());
 
     // 6. `pkb excalidraw sync --dry-run`
-    let status = Command::new(&pkb_excal)
+    let status = Command::new(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
-            "sync",
-            export_out.to_str().unwrap(),
             "--pkb-root",
             ws.path().to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "excalidraw",
+            "sync",
+            export_out.to_str().unwrap(),
             "--dry-run",
         ])
         .status()
         .expect("run pkb excalidraw sync dry-run");
     assert!(status.success());
+}
+
+// ===========================================================================
+// Test 8b: Root resolution and --dry-run write-safety of `pkb excalidraw`
+// ===========================================================================
+
+/// Snapshot every markdown file under `root` as (relative path, contents).
+fn snapshot_markdown(root: &std::path::Path) -> Vec<(PathBuf, String)> {
+    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(PathBuf, String)>) {
+        for entry in fs::read_dir(dir).expect("read_dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                let rel = path.strip_prefix(root).unwrap().to_path_buf();
+                out.push((rel, fs::read_to_string(&path).expect("read md")));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
+}
+
+/// `pkb excalidraw sync --dry-run` must report the diff and leave every file on
+/// disk byte-identical. Guards the regression where `dry_run` was parsed but
+/// never branched on, so the preview flag still wrote to disk.
+#[test]
+fn test_cli_excalidraw_sync_dry_run_writes_nothing() {
+    let ws = create_test_pkb_workspace();
+    let out_dir = tempfile::tempdir().expect("create out tempdir");
+    let pkb = pkb_binary();
+    let db_path = ws.path().join("pkb_vectors.bin");
+
+    // Export the live graph to a canvas.
+    let canvas_path = out_dir.path().join("canvas.excalidraw");
+    let status = Command::new(&pkb)
+        .env("ACA_DATA", ws.path().to_str().unwrap())
+        .env("AOPS_OFFLINE", "1")
+        .args([
+            "--pkb-root",
+            ws.path().to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "excalidraw",
+            "export",
+            canvas_path.to_str().unwrap(),
+        ])
+        .status()
+        .expect("run pkb excalidraw export");
+    assert!(status.success(), "pkb excalidraw export must exit 0");
+
+    // Add an unmanaged card, which a real sync would materialise as a new document.
+    let mut file: ExcalidrawFile =
+        serde_json::from_str(&fs::read_to_string(&canvas_path).unwrap()).expect("parse canvas");
+    let mut new_card = ExcalidrawElement::default();
+    new_card.id = "elem-brand-new".to_string();
+    new_card.element_type = "rectangle".to_string();
+    new_card.x = 4000.0;
+    new_card.y = 4000.0;
+    new_card.width = 200.0;
+    new_card.height = 100.0;
+    new_card.bound_elements = Some(vec![BoundElement {
+        id: "text-brand-new".to_string(),
+        element_type: "text".to_string(),
+    }]);
+    let mut new_text = ExcalidrawElement::default();
+    new_text.id = "text-brand-new".to_string();
+    new_text.element_type = "text".to_string();
+    new_text.container_id = Some("elem-brand-new".to_string());
+    new_text.text = Some("Freshly Drawn Task".to_string());
+    new_text.original_text = Some("Freshly Drawn Task".to_string());
+    file.elements.push(new_card);
+    file.elements.push(new_text);
+    fs::write(&canvas_path, serde_json::to_string_pretty(&file).unwrap()).unwrap();
+
+    let before = snapshot_markdown(ws.path());
+
+    let status = Command::new(&pkb)
+        .env("ACA_DATA", ws.path().to_str().unwrap())
+        .env("AOPS_OFFLINE", "1")
+        .args([
+            "--pkb-root",
+            ws.path().to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "excalidraw",
+            "sync",
+            canvas_path.to_str().unwrap(),
+            "--dry-run",
+        ])
+        .status()
+        .expect("run pkb excalidraw sync --dry-run");
+    assert!(status.success(), "dry-run sync must exit 0");
+
+    let after_dry_run = snapshot_markdown(ws.path());
+    assert_eq!(
+        before, after_dry_run,
+        "--dry-run must not create, delete, or modify any file on disk"
+    );
+
+    // The same sync without --dry-run must write, proving the assertion above is
+    // not vacuously true because the canvas held no pending changes.
+    let status = Command::new(&pkb)
+        .env("ACA_DATA", ws.path().to_str().unwrap())
+        .env("AOPS_OFFLINE", "1")
+        .args([
+            "--pkb-root",
+            ws.path().to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "excalidraw",
+            "sync",
+            canvas_path.to_str().unwrap(),
+        ])
+        .status()
+        .expect("run pkb excalidraw sync");
+    assert!(status.success(), "sync must exit 0");
+
+    let after_sync = snapshot_markdown(ws.path());
+    assert_ne!(
+        before, after_sync,
+        "sync without --dry-run must write the pending canvas change to disk"
+    );
+}
+
+/// With no `--pkb-root` flag, the root must resolve from `ACA_DATA`. Guards the
+/// regression where the exporter carried a hardcoded default root and silently
+/// scanned a directory that had nothing to do with the caller's PKB.
+#[test]
+fn test_cli_excalidraw_export_resolves_root_from_env() {
+    let ws = create_test_pkb_workspace();
+    let out_dir = tempfile::tempdir().expect("create out tempdir");
+    let pkb = pkb_binary();
+
+    let export_out = out_dir.path().join("env_root.excalidraw");
+    let output = Command::new(&pkb)
+        .env("ACA_DATA", ws.path().to_str().unwrap())
+        .env("AOPS_OFFLINE", "1")
+        .args([
+            "excalidraw",
+            "export",
+            export_out.to_str().unwrap(),
+            "--focus",
+            "epic-core",
+            "--hops",
+            "2",
+        ])
+        .output()
+        .expect("run pkb excalidraw export without --pkb-root");
+    assert!(
+        output.status.success(),
+        "export must exit 0 with root resolved from ACA_DATA: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = fs::read_to_string(&export_out).expect("exported canvas exists");
+    let parsed: ExcalidrawFile = serde_json::from_str(&content).expect("valid excal JSON");
+    assert!(
+        !parsed.elements.is_empty(),
+        "canvas exported from the ACA_DATA root must not be empty"
+    );
+    assert!(
+        content.contains("Core Infrastructure"),
+        "canvas must contain nodes from the ACA_DATA root, not some other directory"
+    );
+}
+
+/// No root anywhere — no flag, no `ACA_DATA` — must fail loudly rather than fall
+/// back to a default path.
+#[test]
+fn test_cli_excalidraw_export_requires_a_root() {
+    let out_dir = tempfile::tempdir().expect("create out tempdir");
+    let pkb = pkb_binary();
+
+    let export_out = out_dir.path().join("no_root.excalidraw");
+    let output = Command::new(&pkb)
+        .env_remove("ACA_DATA")
+        .env("AOPS_OFFLINE", "1")
+        .args(["excalidraw", "export", export_out.to_str().unwrap()])
+        .output()
+        .expect("run pkb excalidraw export without a root");
+
+    assert!(
+        !output.status.success(),
+        "export must fail when no PKB root is specified"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("ACA_DATA"),
+        "failure must name the missing ACA_DATA variable"
+    );
+    assert!(
+        !export_out.exists(),
+        "no canvas may be written when the root is unresolved"
+    );
 }
 
 // ===========================================================================

@@ -17,10 +17,6 @@ name = "pkb"
 path = "src/cli.rs"
 
 [[bin]]
-name = "pkb-excalidraw"
-path = "src/bin/pkb-excalidraw.rs"
-
-[[bin]]
 name = "excalidraw-view"
 path = "src/bin/excalidraw_view.rs"
 
