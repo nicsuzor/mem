@@ -44,20 +44,52 @@ impl Default for LayoutConfig {
 
 /// Extract an ego-network (1 to 5 hops) around a focus node from the [`GraphStore`].
 pub fn extract_ego_subgraph(
-    gs: &GraphStore,
+    gs: &crate::graph_store::GraphStore,
     focus_id: &str,
     hops: usize,
-) -> (Vec<GraphNode>, Vec<Edge>) {
+) -> (Vec<crate::graph::GraphNode>, Vec<crate::graph::Edge>) {
     let hops = hops.clamp(1, 5);
 
-    // Collect reachable node IDs via BFS
-    let mut node_ids: HashSet<String> = HashSet::new();
+    // Collect reachable node IDs via BFS over structural edges only
+    let mut node_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    let max_nodes = 100;
+    
     if gs.get_node(focus_id).is_some() {
         node_ids.insert(focus_id.to_string());
+        queue.push_back((focus_id.to_string(), 0));
     }
 
-    for (nid, _) in gs.ego_subgraph(focus_id, hops) {
-        node_ids.insert(nid);
+    while let Some((current, depth)) = queue.pop_front() {
+        if depth >= hops {
+            continue;
+        }
+        for edge in gs.edges() {
+            if !matches!(
+                edge.edge_type,
+                crate::graph::EdgeType::Parent
+                    | crate::graph::EdgeType::DependsOn
+                    | crate::graph::EdgeType::SoftDependsOn
+                    | crate::graph::EdgeType::ContributesTo
+                    | crate::graph::EdgeType::Supersedes
+                    | crate::graph::EdgeType::Closes
+            ) {
+                continue;
+            }
+            
+            let neighbor = if edge.source == current {
+                &edge.target
+            } else if edge.target == current {
+                &edge.source
+            } else {
+                continue;
+            };
+
+            if node_ids.len() < max_nodes && !node_ids.contains(neighbor) {
+                node_ids.insert(neighbor.clone());
+                queue.push_back((neighbor.clone(), depth + 1));
+            }
+        }
     }
 
     let mut nodes = Vec::with_capacity(node_ids.len());
@@ -76,6 +108,7 @@ pub fn extract_ego_subgraph(
 
     (nodes, edges)
 }
+
 
 // ===========================================================================
 // Sugiyama Layout Implementation

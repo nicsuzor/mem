@@ -2593,15 +2593,13 @@ async fn main() -> Result<()> {
                     }
                 }
                 "excalidraw" => {
-                    let content = gs.output_excalidraw(focus.as_deref(), hops)?;
+                    let (content, n_nodes, n_edges) = gs.output_excalidraw(focus.as_deref(), hops)?;
                     match output {
                         Some(path) => {
                             std::fs::write(&path, &content)?;
                             println!(
                                 "Excalidraw graph: {} nodes, {} edges -> {}",
-                                gs.node_count(),
-                                gs.edge_count(),
-                                path
+                                n_nodes, n_edges, path
                             );
                         }
                         None => print!("{content}"),
@@ -3860,12 +3858,12 @@ fn handle_excalidraw_command(
             hops,
         } => {
             let gs = load_graph(pkb_root, db_path, None);
-            let content = gs.output_excalidraw(focus.as_deref(), hops)?;
+            let (content, n_nodes, n_edges) = gs.output_excalidraw(focus.as_deref(), hops)?;
             std::fs::write(&output_path, content)?;
             println!(
                 "Exported Excalidraw canvas ({} nodes, {} edges) -> {}",
-                gs.node_count(),
-                gs.edge_count(),
+                n_nodes,
+                n_edges,
                 output_path.display()
             );
         }
