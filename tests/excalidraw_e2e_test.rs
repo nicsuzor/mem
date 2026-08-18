@@ -28,6 +28,15 @@ use tempfile::TempDir;
 // Test Helpers
 // ===========================================================================
 
+fn pkb_excalidraw_binary() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let release = manifest.join("target/release/pkb-excalidraw");
+    if release.exists() {
+        return release;
+    }
+    manifest.join("target/debug/pkb-excalidraw")
+}
+
 fn pkb_binary() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let release = manifest.join("target/release/pkb");
@@ -132,6 +141,7 @@ fn create_test_pkb_workspace() -> TempDir {
          status: active\n\
          priority: 1\n\
          project: testproj\n\
+         parent: epic-core\n\
          ---\n\n# Release V1\n",
     )
     .unwrap();
@@ -145,6 +155,7 @@ fn create_test_pkb_workspace() -> TempDir {
          type: area\n\
          status: active\n\
          project: infra\n\
+         parent: epic-core\n\
          ---\n\n# Platform Engineering\n",
     )
     .unwrap();
@@ -162,8 +173,7 @@ fn test_roundtrip_fidelity() {
     let gs = GraphStore::build_from_directory(ws.path());
 
     // Export entire graph to Excalidraw scene
-    let excal_json = gs
-        .output_excalidraw(None, 2)
+    let (excal_json, _, _) = gs.output_excalidraw(None, 2)
         .expect("export excalidraw JSON");
     let excal_file: ExcalidrawFile =
         serde_json::from_str(&excal_json).expect("deserialize ExcalidrawFile");
@@ -234,7 +244,7 @@ fn test_non_destructive_canvas_removal() {
     assert!(target_file_path.exists(), "task-t2 must exist initially on disk");
 
     // Export graph to canvas
-    let excal_json = gs.output_excalidraw(None, 2).expect("export excalidraw");
+    let (excal_json, _, _) = gs.output_excalidraw(None, 2).expect("export excalidraw");
     let mut excal_file: ExcalidrawFile = serde_json::from_str(&excal_json).unwrap();
     let base_snapshot = BaseSnapshot::from_file(&excal_file);
 
@@ -738,30 +748,26 @@ fn test_clipboard_duplicate_id_handling() {
 fn test_cli_excalidraw_and_graph_execution() {
     let ws = create_test_pkb_workspace();
     let pkb = pkb_binary();
+    let pkb_excal = pkb_excalidraw_binary();
     let db_path = ws.path().join("pkb_vectors.bin");
 
     let out_dir = ws.path().join("cli_out");
     fs::create_dir_all(&out_dir).unwrap();
 
-    // 1. `pkb graph --format excalidraw`
+    // 1. `pkb-excalidraw export`
     let excal_out = out_dir.join("graph.excalidraw");
-    let status = Command::new(&pkb)
+    let status = Command::new(&pkb_excal)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
+            "export",
+            excal_out.to_str().unwrap(),
             "--pkb-root",
             ws.path().to_str().unwrap(),
-            "--db-path",
-            db_path.to_str().unwrap(),
-            "graph",
-            "--format",
-            "excalidraw",
-            "--output",
-            excal_out.to_str().unwrap(),
         ])
         .status()
-        .expect("run pkb graph excalidraw");
-    assert!(status.success(), "pkb graph excalidraw must exit 0");
+        .expect("run pkb-excalidraw export");
+    assert!(status.success(), "pkb-excalidraw export must exit 0");
     assert!(excal_out.exists());
     let excal_content = fs::read_to_string(&excal_out).unwrap();
     let parsed: ExcalidrawFile = serde_json::from_str(&excal_content).expect("valid excal JSON");
@@ -811,21 +817,18 @@ fn test_cli_excalidraw_and_graph_execution() {
 
     // 4. `pkb excalidraw export`
     let export_out = out_dir.join("export.excalidraw");
-    let status = Command::new(&pkb)
+    let status = Command::new(&pkb_excal)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
-            "--pkb-root",
-            ws.path().to_str().unwrap(),
-            "--db-path",
-            db_path.to_str().unwrap(),
-            "excalidraw",
             "export",
             export_out.to_str().unwrap(),
             "--focus",
             "epic-core",
             "--hops",
             "2",
+            "--pkb-root",
+            ws.path().to_str().unwrap(),
         ])
         .status()
         .expect("run pkb excalidraw export");
@@ -833,18 +836,15 @@ fn test_cli_excalidraw_and_graph_execution() {
     assert!(export_out.exists());
 
     // 5. `pkb excalidraw diff`
-    let output = Command::new(&pkb)
+    let output = Command::new(&pkb_excal)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
-            "--pkb-root",
-            ws.path().to_str().unwrap(),
-            "--db-path",
-            db_path.to_str().unwrap(),
-            "excalidraw",
             "diff",
             export_out.to_str().unwrap(),
             "--json",
+            "--pkb-root",
+            ws.path().to_str().unwrap(),
         ])
         .output()
         .expect("run pkb excalidraw diff");
@@ -854,17 +854,14 @@ fn test_cli_excalidraw_and_graph_execution() {
     assert!(diff.is_empty());
 
     // 6. `pkb excalidraw sync --dry-run`
-    let status = Command::new(&pkb)
+    let status = Command::new(&pkb_excal)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
-            "--pkb-root",
-            ws.path().to_str().unwrap(),
-            "--db-path",
-            db_path.to_str().unwrap(),
-            "excalidraw",
             "sync",
             export_out.to_str().unwrap(),
+            "--pkb-root",
+            ws.path().to_str().unwrap(),
             "--dry-run",
         ])
         .status()
@@ -1033,7 +1030,7 @@ fn test_unlinked_non_pkb_arrows_survive_sync() {
     let gs = GraphStore::build_from_directory(ws.path());
 
     // Export graph to canvas
-    let excal_json = gs.output_excalidraw(None, 2).expect("export excalidraw");
+    let (excal_json, _, _) = gs.output_excalidraw(None, 2).expect("export excalidraw");
     let mut file: ExcalidrawFile = serde_json::from_str(&excal_json).unwrap();
 
     // 1. Add an unlinked floating arrow (no bindings)
@@ -1176,7 +1173,7 @@ fn test_preserve_custom_card_styling_e2e() {
     let mut gs = GraphStore::build_from_directory(ws.path());
 
     // Export graph to canvas
-    let excal_json = gs.output_excalidraw(None, 2).expect("export excalidraw");
+    let (excal_json, _, _) = gs.output_excalidraw(None, 2).expect("export excalidraw");
     let mut file: ExcalidrawFile = serde_json::from_str(&excal_json).unwrap();
 
     // Customize card for task-t1

@@ -1575,7 +1575,7 @@ impl GraphStore {
 
         // Excalidraw
         let excalidraw_path = format!("{base}.excalidraw");
-        std::fs::write(&excalidraw_path, self.output_excalidraw(None, 1)?)?;
+        std::fs::write(&excalidraw_path, self.output_excalidraw(None, 1)?.0)?;
         written.push(excalidraw_path);
 
         Ok(written)
@@ -1787,16 +1787,37 @@ impl GraphStore {
     /// Export graph or ego network to Excalidraw JSON canvas format.
     /// If `focus_id` is provided, exports an ego-network with given `hops`.
     /// Otherwise exports all nodes.
-    pub fn output_excalidraw(&self, focus_id: Option<&str>, hops: usize) -> Result<String> {
-        let file = if let Some(focus) = focus_id {
+    pub fn output_excalidraw(&self, focus_id: Option<&str>, hops: usize) -> Result<(String, usize, usize)> {
+        let (file, node_count, edge_count) = if let Some(focus) = focus_id {
             let resolved_id = self.resolve(focus).map(|n| n.id.as_str()).unwrap_or(focus);
-            crate::excalidraw::export_ego_network(self, resolved_id, hops, None)?
+            let file = crate::excalidraw::export_ego_network(self, resolved_id, hops, None)?;
+            let (nodes, edges) = crate::excalidraw::extract_ego_subgraph(self, resolved_id, hops);
+            (file, nodes.len(), edges.len())
         } else {
-            let mut all_ids: Vec<String> = self.nodes.keys().cloned().collect();
+            // Default to highest focus tasks tree instead of entire graph
+            let focus_roots = self.focus_picks(10);
+            
+            let mut node_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for root in &focus_roots {
+                let (sub_nodes, _) = crate::excalidraw::extract_ego_subgraph(self, root, hops);
+                for n in sub_nodes {
+                    node_ids.insert(n.id);
+                }
+            }
+            let mut all_ids: Vec<String> = node_ids.into_iter().collect();
             all_ids.sort();
-            crate::excalidraw::export_subgraph(self, &all_ids, None)?
+            let file = crate::excalidraw::export_subgraph(self, &all_ids, None)?;
+            
+            let mut edge_count = 0;
+            let node_set: std::collections::HashSet<_> = all_ids.iter().cloned().collect();
+            for edge in self.edges() {
+                if node_set.contains(&edge.source) && node_set.contains(&edge.target) {
+                    edge_count += 1;
+                }
+            }
+            (file, all_ids.len(), edge_count)
         };
-        Ok(serde_json::to_string_pretty(&file)?)
+        Ok((serde_json::to_string_pretty(&file)?, node_count, edge_count))
     }
 
     pub fn output_graphml(&self) -> String {
@@ -6244,7 +6265,7 @@ mod tests {
             "tasks/task-b.md",
             "Task B",
             "task",
-            "inbox",
+            "ready",
             "task-b",
             None,
             &[],
@@ -6253,11 +6274,11 @@ mod tests {
         let gs = GraphStore::build(&[doc1, doc2], Path::new("/tmp"));
 
         // Test output_excalidraw with ego focus
-        let ex_ego = gs.output_excalidraw(Some("task-a"), 1).expect("output ego excalidraw");
+        let (ex_ego, _, _) = gs.output_excalidraw(Some("task-a"), 1).expect("output ego excalidraw");
         assert!(ex_ego.contains("Task A"), "ego excalidraw contains Task A");
 
         // Test output_excalidraw without focus (all nodes)
-        let ex_all = gs.output_excalidraw(None, 1).expect("output all excalidraw");
+        let (ex_all, _, _) = gs.output_excalidraw(None, 1).expect("output all excalidraw");
         assert!(ex_all.contains("Task A"), "all excalidraw contains Task A");
         assert!(ex_all.contains("Task B"), "all excalidraw contains Task B");
 

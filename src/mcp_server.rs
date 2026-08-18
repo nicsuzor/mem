@@ -6346,7 +6346,7 @@ impl PkbSearchServer {
             .unwrap_or(2) as usize;
 
         let graph = self.graph.read();
-        let json = graph.output_excalidraw(node_id, hops).map_err(|e| McpError {
+        let (json, _, _) = graph.output_excalidraw(node_id, hops).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to export Excalidraw graph: {e}")),
             data: None,
