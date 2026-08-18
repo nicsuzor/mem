@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.77](https://github.com/nicsuzor/mem/compare/mem-v0.3.76...mem-v0.3.77) (2026-08-18)
+
+
+### Bug Fixes
+
+* **excalidraw:** extract logic to pkb-excalidraw binary, adjust defaults ([7bed99c](https://github.com/nicsuzor/mem/commit/7bed99c53b88f5917d6043a219576b645e3b783b))
+* **excalidraw:** restore excalidraw as an in-core `pkb` subcommand ([36cad92](https://github.com/nicsuzor/mem/commit/36cad9255271650e417c5dfee4ff09b4254e2125))
+* **excalidraw:** restore excalidraw as an in-core `pkb` subcommand ([d769828](https://github.com/nicsuzor/mem/commit/d7698280883a6b6e959ce82c6d1c4f8766c6c0db))
+
 ## [0.3.76](https://github.com/nicsuzor/mem/compare/mem-v0.3.75...mem-v0.3.76) (2026-08-17)
 
 
