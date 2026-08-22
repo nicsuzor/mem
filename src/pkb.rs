@@ -133,14 +133,6 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
     let file_hash = compute_content_hash(&content_bytes);
     let content = String::from_utf8(content_bytes).ok()?;
 
-    let modified = std::fs::metadata(path)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .map(|t| {
-            let dt: chrono::DateTime<chrono::Utc> = t.into();
-            dt.to_rfc3339()
-        });
-
     let matter = Matter::<YAML>::new();
     let result = matter.parse(&content);
 
@@ -179,6 +171,10 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
     let consolidated_at = fm_data
         .as_ref()
         .and_then(|fm| fm.get("consolidated_at").and_then(|v| v.as_str()).map(String::from));
+
+    let modified = fm_data
+        .as_ref()
+        .and_then(|fm| fm.get("modified").and_then(|v| v.as_str()).map(String::from));
 
     let body = result.content.trim().to_string();
     let content_hash = compute_content_hash(body.as_bytes());
@@ -328,6 +324,37 @@ mod tests {
             .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
             .collect();
         assert_eq!(filenames, filenames_all);
+    }
+
+    #[test]
+    fn test_parse_file_reads_frontmatter_modified_not_disk_mtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_with_fm = temp.path().join("with_fm.md");
+        std::fs::write(
+            &file_with_fm,
+            "---\nid: doc-with-fm\ntitle: Has Modified\nmodified: 2026-01-15T00:00:00Z\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let doc1 = parse_file(&file_with_fm).expect("parse file with frontmatter modified");
+        assert_eq!(
+            doc1.modified.as_deref(),
+            Some("2026-01-15T00:00:00Z"),
+            "doc.modified must come from frontmatter modified field, not filesystem mtime"
+        );
+
+        let file_without_fm = temp.path().join("without_fm.md");
+        std::fs::write(
+            &file_without_fm,
+            "---\nid: doc-without-fm\ntitle: No Modified\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let doc2 = parse_file(&file_without_fm).expect("parse file without frontmatter modified");
+        assert_eq!(
+            doc2.modified, None,
+            "doc with no frontmatter modified must have doc.modified == None"
+        );
     }
 }
 

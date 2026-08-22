@@ -7205,8 +7205,8 @@ impl PkbSearchServer {
                     "properties": {
                         "query": { "type": "string", "description": "Natural language search query" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "since": { "type": "string", "description": "Filter: date >= YYYY-MM-DD" },
-                        "before": { "type": "string", "description": "Filter: date <= YYYY-MM-DD" },
+                        "since": { "type": "string", "description": "Filter: return only results modified on or after YYYY-MM-DD (inclusive). Documents with no modified date are excluded." },
+                        "before": { "type": "string", "description": "Filter: return only results modified on or before YYYY-MM-DD (inclusive). Documents with no modified date are excluded." },
                         "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
                         "detail": { "type": "string", "description": "Result detail level: 'snippet' (300 chars), 'chunk' (full matching chunk, default), 'full' (entire document)", "enum": ["snippet", "chunk", "full"], "default": "chunk" }
                     },
@@ -7256,8 +7256,8 @@ impl PkbSearchServer {
                     "properties": {
                         "query": { "type": "string", "description": "Query to search tasks" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "since": { "type": "string", "description": "Filter: date >= YYYY-MM-DD" },
-                        "before": { "type": "string", "description": "Filter: date <= YYYY-MM-DD" },
+                        "since": { "type": "string", "description": "Filter: return only tasks modified on or after YYYY-MM-DD (inclusive). Tasks with no modified date are excluded." },
+                        "before": { "type": "string", "description": "Filter: return only tasks modified on or before YYYY-MM-DD (inclusive). Tasks with no modified date are excluded." },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false." },
                         "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (hides closed tasks so search returns actionable work)." },
                         "type": { "type": "string", "description": "Filter by task type. Single value (e.g. 'epic') or comma-separated list (e.g. 'epic,feature'). Recognised actionable types: epic, task, learn. Default: all actionable types." }
@@ -10084,6 +10084,192 @@ projects:
             schema.contains("\"before\""),
             "list_tasks schema must include 'before'; got: {schema}"
         );
+    }
+
+    #[test]
+    fn test_list_tasks_filters_on_frontmatter_modified_not_disk_mtime() {
+        // AC1: A task whose frontmatter `modified:` (2026-01-15) differs from its
+        // on-disk filesystem mtime (today, e.g. 2026-08-22).
+        // A query with date strictly between the two (2026-06-01):
+        // - `since="2026-06-01"` must NOT match (frontmatter 2026-01-15 < 2026-06-01).
+        //   Buggy code reading disk mtime (2026-08-22) would erroneously match.
+        // - `before="2026-06-01"` MUST match (frontmatter 2026-01-15 <= 2026-06-01).
+        //   Buggy code reading disk mtime (2026-08-22) would erroneously exclude it.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let tasks_dir = root.join("tasks");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+
+        let task_path = tasks_dir.join("task-stale.md");
+        std::fs::write(
+            &task_path,
+            "---\n\
+             id: task-stale\n\
+             title: Stale Task\n\
+             type: task\n\
+             status: ready\n\
+             modified: 2026-01-15T00:00:00Z\n\
+             ---\n\n\
+             # Stale Task Body\n",
+        )
+        .unwrap();
+
+        let docs: Vec<PkbDocument> = crate::pkb::scan_directory_all(root)
+            .into_iter()
+            .filter_map(|p| crate::pkb::parse_file_relative(&p, root))
+            .collect();
+
+        let graph = GraphStore::build(&docs, root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // 1. `since="2026-06-01"` must return ZERO tasks.
+        let result_since = server
+            .handle_list_tasks(
+                &json!({"since": "2026-06-01", "include_done": true, "format": "json"}),
+            )
+            .unwrap();
+        let tasks_since = extract_task_objects(&result_since);
+        assert!(
+            tasks_since.is_empty(),
+            "since=2026-06-01 must return 0 tasks for frontmatter modified 2026-01-15; got: {:?}",
+            tasks_since
+        );
+
+        // 2. `before="2026-06-01"` must return task-stale with its frontmatter modified date.
+        let result_before = server
+            .handle_list_tasks(
+                &json!({"before": "2026-06-01", "include_done": true, "format": "json"}),
+            )
+            .unwrap();
+        let tasks_before = extract_task_objects(&result_before);
+        assert_eq!(
+            tasks_before.len(),
+            1,
+            "before=2026-06-01 must match task-stale (frontmatter modified 2026-01-15); got: {:?}",
+            tasks_before
+        );
+        let returned_modified = tasks_before[0]
+            .get("modified")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(
+            returned_modified, "2026-01-15T00:00:00Z",
+            "returned modified timestamp must match frontmatter modified date"
+        );
+    }
+
+    #[test]
+    fn test_contract_holds_differing_vintage_sampling() {
+        // AC3: 3 sampled node IDs of differing vintage.
+        // Verifies list_tasks, task_search, and search date filtering and modified field preservation.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let tasks_dir = root.join("tasks");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+
+        let v1_mod = "2024-03-10T12:00:00Z";
+        let v2_mod = "2025-07-20T08:30:00Z";
+        let v3_mod = "2026-02-14T15:45:00Z";
+
+        std::fs::write(
+            tasks_dir.join("task-v1.md"),
+            format!("---\nid: task-v1\ntitle: Vintage 2024 Task\ntype: task\nstatus: ready\nmodified: {v1_mod}\n---\n\nBody 2024 vintage.\n"),
+        ).unwrap();
+
+        std::fs::write(
+            tasks_dir.join("task-v2.md"),
+            format!("---\nid: task-v2\ntitle: Vintage 2025 Task\ntype: task\nstatus: ready\nmodified: {v2_mod}\n---\n\nBody 2025 vintage.\n"),
+        ).unwrap();
+
+        std::fs::write(
+            tasks_dir.join("task-v3.md"),
+            format!("---\nid: task-v3\ntitle: Vintage 2026 Task\ntype: task\nstatus: ready\nmodified: {v3_mod}\n---\n\nBody 2026 vintage.\n"),
+        ).unwrap();
+
+        let docs: Vec<PkbDocument> = crate::pkb::scan_directory_all(root)
+            .into_iter()
+            .filter_map(|p| crate::pkb::parse_file_relative(&p, root))
+            .collect();
+
+        let graph = GraphStore::build(&docs, root);
+        let mut store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        for doc in &docs {
+            let emb = vec![vec![1.0, 0.0, 0.0]];
+            let chunks = vec![doc.body.clone()];
+            store.insert_precomputed(doc, chunks, emb);
+        }
+        let db = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // 1. list_tasks side-by-side verification
+        let res_all = server
+            .handle_list_tasks(&json!({"include_done": true, "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&res_all);
+        assert_eq!(tasks.len(), 3);
+
+        let t1 = tasks.iter().find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-v1")).unwrap();
+        assert_eq!(t1.get("modified").and_then(|v| v.as_str()), Some(v1_mod));
+
+        let t2 = tasks.iter().find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-v2")).unwrap();
+        assert_eq!(t2.get("modified").and_then(|v| v.as_str()), Some(v2_mod));
+
+        let t3 = tasks.iter().find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-v3")).unwrap();
+        assert_eq!(t3.get("modified").and_then(|v| v.as_str()), Some(v3_mod));
+
+        // 2. list_tasks(since=D) returns node iff frontmatter modified >= D
+        // since="2025-01-01" -> matches task-v2 (2025-07-20) and task-v3 (2026-02-14), excludes task-v1 (2024-03-10)
+        let res_since_2025 = server
+            .handle_list_tasks(&json!({"since": "2025-01-01", "include_done": true, "format": "json"}))
+            .unwrap();
+        let tasks_2025 = extract_task_objects(&res_since_2025);
+        let ids_2025: Vec<&str> = tasks_2025.iter().filter_map(|t| t.get("id").and_then(|v| v.as_str())).collect();
+        assert_eq!(ids_2025.len(), 2);
+        assert!(ids_2025.contains(&"task-v2"));
+        assert!(ids_2025.contains(&"task-v3"));
+        assert!(!ids_2025.contains(&"task-v1"));
+
+        // since="2026-01-01" -> matches only task-v3
+        let res_since_2026 = server
+            .handle_list_tasks(&json!({"since": "2026-01-01", "include_done": true, "format": "json"}))
+            .unwrap();
+        let tasks_2026 = extract_task_objects(&res_since_2026);
+        let ids_2026: Vec<&str> = tasks_2026.iter().filter_map(|t| t.get("id").and_then(|v| v.as_str())).collect();
+        assert_eq!(ids_2026, vec!["task-v3"]);
+
+        // 3. search with since / before date filters
+        let s_res = server
+            .handle_pkb_search(&json!({"query": "vintage", "since": "2025-01-01", "before": "2025-12-31"}))
+            .unwrap();
+        let s_text = format!("{:?}", s_res);
+        assert!(s_text.contains("task-v2"));
+        assert!(!s_text.contains("task-v1"));
+        assert!(!s_text.contains("task-v3"));
+
+        // 4. task_search with since / before date filters
+        let ts_res = server
+            .handle_task_search(&json!({"query": "vintage", "since": "2026-01-01", "include_done": true}))
+            .unwrap();
+        let ts_text = format!("{:?}", ts_res);
+        assert!(ts_text.contains("task-v3"));
+        assert!(!ts_text.contains("task-v1"));
+        assert!(!ts_text.contains("task-v2"));
     }
 
     // ── Parent referential integrity (task-89b2af87) ───────────────────────
