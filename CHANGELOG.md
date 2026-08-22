@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.78](https://github.com/nicsuzor/mem/compare/mem-v0.3.77...mem-v0.3.78) (2026-08-22)
+
+
+### Bug Fixes
+
+* **pkb:** read modified timestamp from frontmatter rather than filesystem mtime ([c8d0a30](https://github.com/nicsuzor/mem/commit/c8d0a3045f81acc35ccd92069be5441f22e2149a))
+* **pkb:** read modified timestamp from frontmatter rather than filesystem mtime ([11b9877](https://github.com/nicsuzor/mem/commit/11b9877517cececd4c9f5c2aed400bf748eb6dd0))
+
 ## [0.3.77](https://github.com/nicsuzor/mem/compare/mem-v0.3.76...mem-v0.3.77) (2026-08-18)
 
 
