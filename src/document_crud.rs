@@ -3322,6 +3322,62 @@ mod tests {
         );
     }
 
+    /// `merge_node` must not report a redirect it could not write.
+    ///
+    /// The write was `let _ = std::fs::write(...)`, so an IO failure was
+    /// discarded while `files_updated` / `refs_redirected` still incremented and
+    /// the call returned `Ok`. A caller had no way to tell a refused write from a
+    /// completed one.
+    #[test]
+    fn merge_node_fails_loudly_when_a_reference_rewrite_cannot_be_written() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        for (name, id) in [("canon.md", "canon-1"), ("src.md", "src-1")] {
+            fs::write(
+                root.join("tasks").join(name),
+                format!("---\nid: {id}\ntitle: {id}\ntype: task\nstatus: ready\n---\n\nBody.\n"),
+            )
+            .unwrap();
+        }
+        // Carries a wikilink to the source, so merge_node must rewrite it.
+        let referrer = root.join("tasks/ref.md");
+        fs::write(
+            &referrer,
+            "---\nid: ref-1\ntitle: Referrer\ntype: task\nstatus: ready\n---\n\nSee [[src-1]].\n",
+        )
+        .unwrap();
+
+        // Readable (so the scan finds the reference) but not writable.
+        fs::set_permissions(&referrer, fs::Permissions::from_mode(0o444)).unwrap();
+        if fs::write(&referrer, "probe").is_ok() {
+            // Running with privileges that ignore the mode bit (e.g. root); the
+            // fixture cannot create the condition under test, so assert nothing
+            // rather than pass vacuously.
+            eprintln!("skipped: this user can write a 0444 file");
+            return;
+        }
+
+        let result = merge_node(root, &["src-1".to_string()], "canon-1", false);
+
+        assert!(
+            result.is_err(),
+            "merge_node reported success for a rewrite it could not write: {:?}",
+            result.map(|s| (s.files_updated, s.refs_redirected))
+        );
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("failed to redirect references"),
+            "error must name what failed, got: {msg}"
+        );
+
+        fs::set_permissions(&referrer, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
     #[test]
     fn extract_raw_frontmatter_handles_block_and_no_block() {
         // Well-formed block: returns the inner YAML, sans delimiters.
@@ -3638,7 +3694,18 @@ pub fn merge_node(
 
         if modified {
             if !dry_run {
-                let _ = std::fs::write(file_path, &new_content);
+                // Propagate, never discard. `let _ =` here swallowed every IO
+                // error and the counters below still ran, so a merge that wrote
+                // nothing reported files updated and references redirected. A
+                // caller cannot tell a refused write from a completed one, which
+                // is the same "asserts an outcome it never checked" failure this
+                // whole change is about.
+                std::fs::write(file_path, &new_content).with_context(|| {
+                    format!(
+                        "merge_node: failed to redirect references in {}",
+                        file_path.display()
+                    )
+                })?;
                 modified_paths.push(file_path.clone());
             }
             files_updated += 1;
