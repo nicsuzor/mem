@@ -6309,18 +6309,22 @@ impl PkbSearchServer {
             self.finalize_batch(&summary.modified_paths, &[]);
         }
 
-        let mut msg = format!(
-            "merge_node{}: {} files updated, {} references redirected, {} node(s) archived{}",
-            if dry_run { " (dry run)" } else { "" },
-            summary.files_updated,
-            summary.refs_redirected,
-            summary.nodes_archived,
-            if dry_run {
-                " — no changes written"
-            } else {
-                ""
-            },
-        );
+        // Dry-run counters describe changes that did NOT happen. Report them in
+        // the conditional, matching `pkb merge-node --dry-run`; the indicative
+        // ("1 node(s) archived") reads as a completed write and has already been
+        // mistaken for one.
+        let mut msg = if dry_run {
+            format!(
+                "merge_node (dry run): {} file(s) would be updated, {} reference(s) would be \
+                 redirected, {} node(s) would be archived — nothing was written",
+                summary.files_updated, summary.refs_redirected, summary.nodes_archived,
+            )
+        } else {
+            format!(
+                "merge_node: {} files updated, {} references redirected, {} node(s) archived",
+                summary.files_updated, summary.refs_redirected, summary.nodes_archived,
+            )
+        };
         if dry_run {
             msg = format!("{}{}", DRY_RUN_WARNING, msg);
         }
@@ -11416,7 +11420,7 @@ mod batch_finalize_tests {
     }
 
     #[test]
-    fn test_batch_dry_run_warning_message() {
+    fn test_batch_and_merge_dry_run_write_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pkb_root = dir.path();
         let server = build_disk_server(pkb_root);
@@ -11435,6 +11439,26 @@ mod batch_finalize_tests {
             let mut graph = server.graph.write();
             *graph = GraphStore::build_from_directory(pkb_root);
         }
+
+        // A dry run must leave every byte on disk untouched. Asserting only on the
+        // response text passes even when the write happens — that is exactly how a
+        // dry-run regression shipped before (see the `--dry-run` sync defect).
+        let snapshot = |root: &std::path::Path| -> Vec<(std::path::PathBuf, String)> {
+            let mut files = crate::pkb::scan_directory(root);
+            files.sort();
+            files
+                .into_iter()
+                .map(|p| {
+                    let body = std::fs::read_to_string(&p).unwrap_or_default();
+                    (p, body)
+                })
+                .collect()
+        };
+        let before = snapshot(pkb_root);
+        assert!(
+            !before.is_empty(),
+            "snapshot helper found no files — the disk assertions below would be vacuous"
+        );
 
         // Run batch update as dry-run
         let args = json!({
@@ -11456,6 +11480,11 @@ mod batch_finalize_tests {
             text.contains("\"dry_run\": true"),
             "expected dry_run: true in JSON: {text}"
         );
+        assert_eq!(
+            snapshot(pkb_root),
+            before,
+            "batch_update dry run modified files on disk"
+        );
 
         // Run merge_node as dry-run
         let merge_args = json!({
@@ -11472,6 +11501,22 @@ mod batch_finalize_tests {
         assert!(
             merge_text.contains("Pass dry_run=false to execute"),
             "expected dry-run warning in: {merge_text}"
+        );
+        assert_eq!(
+            snapshot(pkb_root),
+            before,
+            "merge_node dry run modified files on disk"
+        );
+        // The counters describe changes that did not happen, so they must not read
+        // as completed writes.
+        assert!(
+            merge_text.contains("would be archived"),
+            "dry-run counters must be phrased in the conditional: {merge_text}"
+        );
+        let src = std::fs::read_to_string(pkb_root.join("t2.md")).expect("t2.md");
+        assert!(
+            !src.contains("superseded_by"),
+            "merge_node dry run archived the source node: {src}"
         );
     }
 }
