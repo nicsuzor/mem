@@ -255,9 +255,75 @@ impl GraphStore {
                 resolved
             };
             path_to_id.insert(abs_path.clone(), n.id.clone());
-            for key in &n.permalinks {
-                id_map.insert(key.clone(), abs_path.clone());
+        }
+
+        // Register lookup keys in two passes, authoritative first.
+        //
+        // A single pass let a key derived from one file's *name* overwrite the
+        // key another file claims as its *id*, because both kinds were registered
+        // in file-scan order with last-write-wins. That is how a stored reference
+        // came to resolve to a node that did not own the string: `personal.md`
+        // (id `personal-66647271`) claimed the derived key `personal`, and any
+        // `parent: personal` bound to it. Two passes make an exact `id:` or
+        // explicit `permalink:` unconditionally beat every derived key, so a
+        // reference can only ever bind to a derived key when no node claims that
+        // string as its identity at all.
+        //
+        // Within a pass, ties are broken by node id rather than by scan order, so
+        // repeated rebuilds of the same tree always agree. Previously the winner
+        // depended on directory-walk order, which is why one string could resolve
+        // differently at different call sites.
+        let mut key_owner: HashMap<String, String> = HashMap::with_capacity(nodes.len() * 2);
+        let mut ambiguous_keys: Vec<(String, String, String)> = Vec::new();
+        for authoritative in [true, false] {
+            let mut claims: Vec<(&str, &str, &str)> = Vec::new();
+            for n in nodes.iter() {
+                if n.path.as_os_str().is_empty() {
+                    continue;
+                }
+                let abs_path = match n.canonical_abs_path {
+                    Some(ref p) => p.as_str(),
+                    None => continue,
+                };
+                let keys = if authoritative {
+                    &n.permalinks
+                } else {
+                    &n.weak_keys
+                };
+                for key in keys {
+                    claims.push((key.as_str(), n.id.as_str(), abs_path));
+                }
             }
+            // Deterministic winner for same-tier collisions: lowest node id.
+            claims.sort_unstable();
+            for (key, owner_id, abs_path) in claims {
+                match key_owner.get(key) {
+                    // Already claimed in this same pass — a genuine ambiguity.
+                    Some(prev) if authoritative && prev != owner_id => {
+                        ambiguous_keys.push((
+                            key.to_string(),
+                            prev.clone(),
+                            owner_id.to_string(),
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        key_owner.insert(key.to_string(), owner_id.to_string());
+                        id_map.insert(key.to_string(), abs_path.to_string());
+                    }
+                }
+            }
+        }
+        if !ambiguous_keys.is_empty() {
+            // Not fatal: the graph still builds and resolution is deterministic.
+            // But two nodes claiming one identity means references to that string
+            // are guesses, so say so rather than picking one in silence.
+            tracing::warn!(
+                target: "graph::identity",
+                count = ambiguous_keys.len(),
+                sample = ?ambiguous_keys.iter().take(10).collect::<Vec<_>>(),
+                "identity keys claimed by more than one node; references to these strings are ambiguous"
+            );
         }
         tracing::debug!(
             target: "perf::graph_rebuild",
@@ -681,6 +747,13 @@ impl GraphStore {
         // removed — they may collide on rename, but the background rebuild
         // will rebuild the full map. Stale keys resolving to a missing id
         // are handled by `resolve()` (it returns None on lookup miss).
+        //
+        // Authoritative keys (own id, task id, explicit permalink) overwrite
+        // whatever held the key. Derived keys (filename stem, scraped id-prefix,
+        // title) must not: this path runs on every single-node write, and letting
+        // a newly-written file's *name* seize a key that is another node's *id*
+        // reintroduces the shadowing bug one node at a time, between full
+        // rebuilds. Mirrors the tier order in `build_resolution_map`.
         let id_lower = new_node.id.to_lowercase();
         self.resolution_map
             .insert(id_lower.clone(), new_node.id.clone());
@@ -688,17 +761,26 @@ impl GraphStore {
             self.resolution_map
                 .insert(tid.to_lowercase(), new_node.id.clone());
         }
-        if let Some(stem) = new_node.path.file_stem() {
-            self.resolution_map
-                .insert(stem.to_string_lossy().to_lowercase(), new_node.id.clone());
-        }
         for pl in &new_node.permalinks {
             self.resolution_map.insert(pl.clone(), new_node.id.clone());
         }
-        let label_lower = new_node.label.to_lowercase();
-        if !label_lower.is_empty() {
-            self.resolution_map.insert(label_lower, new_node.id.clone());
+
+        let claim_weak = |map: &mut HashMap<String, String>, key: String| {
+            if key.is_empty() {
+                return;
+            }
+            map.entry(key).or_insert_with(|| new_node.id.clone());
+        };
+        for wk in &new_node.weak_keys {
+            claim_weak(&mut self.resolution_map, wk.clone());
         }
+        if let Some(stem) = new_node.path.file_stem() {
+            claim_weak(
+                &mut self.resolution_map,
+                stem.to_string_lossy().to_lowercase(),
+            );
+        }
+        claim_weak(&mut self.resolution_map, new_node.label.to_lowercase());
 
         self.nodes.insert(new_node.id.clone(), new_node);
     }
@@ -3356,33 +3438,47 @@ fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
 /// - filename stem from node.path
 /// - node.label (title)
 fn build_resolution_map(nodes: &HashMap<String, GraphNode>) -> HashMap<String, String> {
+    // Registered in strict authority order, and deterministically within each
+    // tier. Iterating the node HashMap directly meant the winner of a contested
+    // key changed between rebuilds of an unchanged tree — the same lookup string
+    // could resolve to different nodes at different moments. Sorting by node id
+    // inside each tier removes that nondeterminism.
+    //
+    // Tier order matters as much as determinism: a node's own `id` must outrank
+    // another node's filename or title, or a lookup binds to whichever node
+    // merely *looks* like the string being asked for.
     let mut map: HashMap<String, String> = HashMap::new();
-    for (_, node) in nodes {
-        let id = &node.id;
+    let mut ordered: Vec<&GraphNode> = nodes.values().collect();
+    ordered.sort_unstable_by(|a, b| a.id.cmp(&b.id));
 
-        // Canonical ID (lowercase)
-        map.entry(id.to_lowercase()).or_insert_with(|| id.clone());
-
-        // Task ID
+    // Tier 0 — the node's own id, and the identity keys it claims in frontmatter.
+    for node in &ordered {
+        map.entry(node.id.to_lowercase())
+            .or_insert_with(|| node.id.clone());
         if let Some(ref tid) = node.task_id {
-            map.entry(tid.to_lowercase()).or_insert_with(|| id.clone());
+            map.entry(tid.to_lowercase())
+                .or_insert_with(|| node.id.clone());
         }
-
-        // Filename stem
+        for pl in &node.permalinks {
+            map.entry(pl.clone()).or_insert_with(|| node.id.clone());
+        }
+    }
+    // Tier 1 — keys derived from the file's name (stem, scraped id-prefix).
+    for node in &ordered {
+        for wk in &node.weak_keys {
+            map.entry(wk.clone()).or_insert_with(|| node.id.clone());
+        }
         if let Some(stem) = node.path.file_stem() {
             map.entry(stem.to_string_lossy().to_lowercase())
-                .or_insert_with(|| id.clone());
+                .or_insert_with(|| node.id.clone());
         }
-
-        // Permalinks (includes task ID prefix, explicit permalink, and explicit ID)
-        for pl in &node.permalinks {
-            map.entry(pl.clone()).or_insert_with(|| id.clone());
-        }
-
-        // Title / label
+    }
+    // Tier 2 — human-facing title. Weakest: titles are prose, freely duplicated,
+    // and never an identity claim.
+    for node in &ordered {
         let label_key = node.label.to_lowercase();
         if !label_key.is_empty() {
-            map.entry(label_key).or_insert_with(|| id.clone());
+            map.entry(label_key).or_insert_with(|| node.id.clone());
         }
     }
     map
@@ -4100,6 +4196,205 @@ mod tests {
     fn test_resolve_nonexistent() {
         let graph = build_test_graph();
         assert!(graph.resolve("ghost").is_none());
+    }
+
+    // ── identity precedence: a derived key must never shadow a real id ──
+    //
+    // Regression coverage for aops-9461748b. Each case below binds a stored
+    // reference to the wrong node on the pre-fix resolver, because filename
+    // stems and the scraped id-prefix shared one flat, last-write-wins namespace
+    // with frontmatter ids.
+
+    /// Reproduction 2, verbatim: a file named `personal.md` whose id is
+    /// `personal-66647271` claims the derived key `personal`, while a *different*
+    /// node genuinely has `id: personal`. `parent: personal` must reach the node
+    /// that owns the id, not the node that owns the filename.
+    #[test]
+    fn test_exact_id_beats_another_nodes_filename_stem() {
+        let docs = vec![
+            // Genuinely owns the id "personal".
+            make_doc("roots/personal-root.md", "Personal Root", "epic", "ready", "personal", None, &[]),
+            // Filename stem "personal" — a derived claim on that string. Listed
+            // AFTER the id owner on purpose: last-write-wins is what let the
+            // derived key seize the string in the live incident.
+            make_doc(
+                "personal/personal.md",
+                "Personal — projects, home and life",
+                "epic",
+                "ready",
+                "personal-66647271",
+                None,
+                &[],
+            ),
+            make_doc(
+                "projects/proj-04dcf372-life-admin.md",
+                "Handle life admin",
+                "epic",
+                "ready",
+                "proj-04dcf372",
+                Some("personal"),
+                &[],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        assert_eq!(
+            graph.resolve("personal").map(|n| n.id.as_str()),
+            Some("personal"),
+            "the string `personal` must resolve to the node whose id IS `personal`, \
+             not to the node that merely lives in a file called personal.md"
+        );
+        let child = graph.resolve("proj-04dcf372").expect("child node missing");
+        assert_eq!(
+            child.parent.as_deref(),
+            Some("personal"),
+            "`parent: personal` must bind to the id owner; binding it to \
+             personal-66647271 is the duplicate-ancestry defect"
+        );
+    }
+
+    /// Reproduction 1, verbatim: `epic-a0523a25` is a strict string prefix of
+    /// `epic-a0523a25-20260531-2153`. The dated instance's filename synthesises
+    /// the key `epic-a0523a25` via TASK_ID_PREFIX_RE. The short id must still win.
+    #[test]
+    fn test_exact_id_beats_scraped_id_prefix_of_a_longer_id() {
+        let docs = vec![
+            make_doc(
+                "tasks/epic-a0523a25-systematically-triage-issues.md",
+                "Issue sweep",
+                "epic",
+                "ready",
+                "epic-a0523a25",
+                None,
+                &[],
+            ),
+            // Registered AFTER the id owner: its filename scrapes the key
+            // `epic-a0523a25`, and last-write-wins handed it the string.
+            make_doc(
+                "tasks/epic-a0523a25-20260531-2153-issue-sweep.md",
+                "Issue sweep (dated instance)",
+                "epic",
+                "ready",
+                "epic-a0523a25-20260531-2153",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/child-1.md",
+                "A real child",
+                "task",
+                "ready",
+                "child-1",
+                Some("epic-a0523a25"),
+                &[],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        assert_eq!(
+            graph.resolve("epic-a0523a25").map(|n| n.id.as_str()),
+            Some("epic-a0523a25"),
+            "a strict prefix of a longer id must resolve to the node that owns it exactly"
+        );
+        let dated = graph
+            .resolve("epic-a0523a25-20260531-2153")
+            .expect("dated instance missing");
+        assert!(
+            !dated.children.iter().any(|c| c == "child-1"),
+            "child-1 declares parent epic-a0523a25; attributing it to the dated \
+             instance is the phantom-children defect"
+        );
+        let short = graph.resolve("epic-a0523a25").unwrap();
+        assert!(
+            short.children.iter().any(|c| c == "child-1"),
+            "the real child must land on the node it actually names"
+        );
+    }
+
+    /// The collision is symmetric — it must not depend on which node the
+    /// directory walk reaches first. Same fixture, reversed input order.
+    #[test]
+    fn test_identity_precedence_is_independent_of_scan_order() {
+        let mk = || {
+            vec![
+                make_doc("personal/personal.md", "Personal", "epic", "ready", "personal-66647271", None, &[]),
+                make_doc("roots/personal-root.md", "Personal Root", "epic", "ready", "personal", None, &[]),
+            ]
+        };
+        let forward = mk();
+        let mut reversed = mk();
+        reversed.reverse();
+
+        for (label, mut docs) in [("forward", forward), ("reversed", reversed)] {
+            // A child whose stored `parent: personal` must bind the same way in
+            // both orders. Edge building goes through the lookup map, so this —
+            // unlike `resolve()`, which short-circuits on an exact id hit —
+            // actually exercises the contested namespace.
+            docs.push(make_doc(
+                "projects/child.md", "Child", "epic", "ready", "child-1", Some("personal"), &[],
+            ));
+            let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+            assert_eq!(
+                graph.resolve("child-1").and_then(|n| n.parent.clone()).as_deref(),
+                Some("personal"),
+                "scan order `{label}` changed which node `parent: personal` bound to"
+            );
+        }
+    }
+
+    /// A derived key with no id owner still resolves — the fix restricts
+    /// precedence, it does not withdraw filename-stem lookup. This guards the
+    /// established `parent: <project-root-filename>` shorthand from regressing.
+    #[test]
+    fn test_filename_stem_still_resolves_when_no_node_claims_the_id() {
+        let docs = vec![make_doc(
+            "personal/personal.md",
+            "Personal",
+            "epic",
+            "ready",
+            "personal-66647271",
+            None,
+            &[],
+        )];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        assert_eq!(
+            graph.resolve("personal").map(|n| n.id.as_str()),
+            Some("personal-66647271"),
+            "with no node claiming the id `personal`, the filename stem must still resolve"
+        );
+    }
+
+
+
+    /// `parent_raw` preserves what the file says even when `parent` is rewritten
+    /// to the resolved id. This is the field the write paths compare against.
+    #[test]
+    fn test_parent_raw_preserves_the_stored_string() {
+        let docs = vec![
+            make_doc("personal/personal.md", "Personal", "epic", "ready", "personal-66647271", None, &[]),
+            make_doc(
+                "projects/proj-04dcf372-life-admin.md",
+                "Handle life admin",
+                "epic",
+                "ready",
+                "proj-04dcf372",
+                Some("personal"),
+                &[],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let child = graph.resolve("proj-04dcf372").unwrap();
+        assert_eq!(
+            child.parent.as_deref(),
+            Some("personal-66647271"),
+            "resolved parent is the canonical id"
+        );
+        assert_eq!(
+            child.parent_raw.as_deref(),
+            Some("personal"),
+            "parent_raw must still hold the unnormalised string that is on disk — \
+             without it no write path can tell the file needs repairing"
+        );
     }
 
     // ── parent_chain_to ──

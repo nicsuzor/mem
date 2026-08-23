@@ -3219,6 +3219,109 @@ mod tests {
         );
     }
 
+    /// Regression for mem_39360d7e Instance 4: `update_task` silently dropped
+    /// `parent` whenever the stored reference already *resolved* to the requested
+    /// node — which is exactly the case a repair call is trying to fix.
+    ///
+    /// Fixture reproduces the live residue on `proj-04dcf372`: frontmatter says
+    /// `parent: personal`, which resolves to `personal-66647271` only because a
+    /// file called `personal.md` happens to hold that id. Asking for the
+    /// canonical id must be a real change, not a no-op.
+    #[test]
+    fn update_parent_is_not_a_noop_when_only_the_resolved_value_matches() {
+        use crate::graph_store::GraphStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("personal")).unwrap();
+        fs::create_dir_all(root.join("projects")).unwrap();
+
+        let root_path = root.join("personal/personal.md");
+        fs::write(
+            &root_path,
+            "---\nid: personal-66647271\ntitle: Personal\ntype: epic\nstatus: ready\n---\n\nRoot.\n",
+        )
+        .unwrap();
+        let child_path = root.join("projects/proj-04dcf372-life-admin.md");
+        fs::write(
+            &child_path,
+            "---\nid: proj-04dcf372\ntitle: Handle life admin\ntype: epic\nstatus: ready\nparent: personal\n---\n\nChild.\n",
+        )
+        .unwrap();
+
+        let docs: Vec<_> = [&root_path, &child_path]
+            .iter()
+            .map(|p| crate::pkb::parse_file(p).expect("parse fixture"))
+            .collect();
+        let graph = GraphStore::build(&docs, root);
+        let node = graph.resolve("proj-04dcf372").expect("child in graph");
+
+        // Precondition: this is the masking situation, not a plain mismatch.
+        assert_eq!(
+            node.parent.as_deref(),
+            Some("personal-66647271"),
+            "precondition: the stored value resolves to the canonical node"
+        );
+        assert_eq!(
+            node.parent_raw.as_deref(),
+            Some("personal"),
+            "precondition: but the file still stores the unnormalised string"
+        );
+
+        let mut updates_map = serde_json::Map::new();
+        updates_map.insert(
+            "parent".to_string(),
+            serde_json::json!("personal-66647271"),
+        );
+        let effective = expand_special_update_keys(node, &updates_map).unwrap();
+
+        assert!(
+            effective.contains_key("parent"),
+            "parent must survive into the writer; dropping it here is what let \
+             update_task return `Task updated` while leaving `parent: personal` \
+             on disk: {effective:?}"
+        );
+
+        update_document(&child_path, effective).unwrap();
+        let after = fs::read_to_string(&child_path).unwrap();
+        assert!(
+            after.contains("parent: personal-66647271"),
+            "the repaired parent must be on disk after the write: {after}"
+        );
+    }
+
+    /// The no-op guard must still hold when the file already stores the exact
+    /// value — otherwise every write bumps `modified` for nothing.
+    #[test]
+    fn update_parent_is_still_a_noop_when_the_stored_string_already_matches() {
+        use crate::graph::GraphNode;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("projects")).unwrap();
+        let p = root.join("projects/child.md");
+        fs::write(
+            &p,
+            "---\nid: child-1\ntitle: Child\ntype: epic\nstatus: ready\nparent: personal-66647271\n---\n\nChild.\n",
+        )
+        .unwrap();
+
+        let doc = crate::pkb::parse_file(&p).expect("parse fixture");
+        let node = GraphNode::from_pkb_document(&doc);
+        let mut updates_map = serde_json::Map::new();
+        updates_map.insert(
+            "parent".to_string(),
+            serde_json::json!("personal-66647271"),
+        );
+        let effective = expand_special_update_keys(&node, &updates_map).unwrap();
+        assert!(
+            !effective.contains_key("parent"),
+            "an identical stored value is a genuine no-op: {effective:?}"
+        );
+    }
+
     #[test]
     fn extract_raw_frontmatter_handles_block_and_no_block() {
         // Well-formed block: returns the inner YAML, sans delimiters.
@@ -3607,7 +3710,9 @@ pub fn expand_special_update_keys(
                 "priority" => node.priority.is_none(),
                 "assignee" => node.assignee.is_none(),
                 "complexity" => node.complexity.is_none(),
-                "parent" => node.parent.is_none(),
+                // As below: the stored value, not the resolved one. A node whose
+                // `parent:` fails to resolve still HAS a parent line to remove.
+                "parent" => node.parent_raw.is_none(),
                 _ => false,
             }
         } else {
@@ -3616,7 +3721,16 @@ pub fn expand_special_update_keys(
                 "priority" => node.priority == value.as_i64().map(|v| v as i32),
                 "assignee" => node.assignee.as_deref() == value.as_str(),
                 "complexity" => node.complexity.as_deref() == value.as_str(),
-                "parent" => node.parent.as_deref() == value.as_str(),
+                // Compare what the FILE says, not what the graph resolved it to.
+                // `node.parent` is rewritten to a canonical id during graph
+                // build, so comparing against it declared a reparent a no-op
+                // whenever the stored string merely *resolved* to the requested
+                // node — including when it resolved there by accident, via a
+                // filename stem or a scraped id-prefix. The key was then dropped
+                // from the update while the write still went ahead and bumped
+                // `modified`, so the caller got "Task updated" and an unchanged
+                // edge. The stored string is the only thing a write can change.
+                "parent" => node.parent_raw.as_deref() == value.as_str(),
                 _ => false,
             }
         };

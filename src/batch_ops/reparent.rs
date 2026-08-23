@@ -77,8 +77,16 @@ pub fn batch_reparent(
             }
         };
 
-        // Skip if already under this parent (idempotent)
-        if node.parent.as_deref() == Some(&canonical_parent_id) {
+        // Skip only when the FILE already stores exactly this canonical id.
+        //
+        // Comparing the resolved `node.parent` instead made this tool unable to
+        // do the one repair it is most needed for: a stored reference that
+        // resolves to the right node by accident (a filename stem, a scraped
+        // id-prefix) resolves *equal* to the requested parent, so the node was
+        // reported "already under" it and skipped — while the unnormalised
+        // string stayed on disk, one rename away from binding somewhere else.
+        // Normalising such a value is a real change, so it must not be skipped.
+        if node.parent_raw.as_deref() == Some(canonical_parent_id.as_str()) {
             summary.skipped += 1;
             summary.tasks.push(TaskAction {
                 id: id.clone(),
