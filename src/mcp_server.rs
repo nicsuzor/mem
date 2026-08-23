@@ -11419,6 +11419,34 @@ mod batch_finalize_tests {
         }
     }
 
+    use crate::batch_ops::tree_snapshot;
+
+    fn response_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .collect::<String>()
+    }
+
+    /// Three linked tasks under `test-project`: `t3` carries a wikilink to `t2`,
+    /// so a merge with `t2` as the source has both a reference to redirect and a
+    /// node to archive — i.e. real writes to decline.
+    fn seed_linked_tasks(pkb_root: &Path, server: &PkbSearchServer) {
+        for (id, body) in [("t1", ""), ("t2", ""), ("t3", "See [[t2]].\n")] {
+            std::fs::write(
+                pkb_root.join(format!("{id}.md")),
+                format!(
+                    "---\nid: {id}\ntitle: Task {id}\ntype: task\nstatus: active\n\
+                     parent: test-project\n---\n\n{body}"
+                ),
+            )
+            .unwrap();
+        }
+        let mut graph = server.graph.write();
+        *graph = GraphStore::build_from_directory(pkb_root);
+    }
+
     #[test]
     fn test_batch_and_merge_dry_run_write_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -11443,18 +11471,7 @@ mod batch_finalize_tests {
         // A dry run must leave every byte on disk untouched. Asserting only on the
         // response text passes even when the write happens — that is exactly how a
         // dry-run regression shipped before (see the `--dry-run` sync defect).
-        let snapshot = |root: &std::path::Path| -> Vec<(std::path::PathBuf, String)> {
-            let mut files = crate::pkb::scan_directory(root);
-            files.sort();
-            files
-                .into_iter()
-                .map(|p| {
-                    let body = std::fs::read_to_string(&p).unwrap_or_default();
-                    (p, body)
-                })
-                .collect()
-        };
-        let before = snapshot(pkb_root);
+        let before = tree_snapshot(pkb_root);
         assert!(
             !before.is_empty(),
             "snapshot helper found no files — the disk assertions below would be vacuous"
@@ -11481,7 +11498,7 @@ mod batch_finalize_tests {
             "expected dry_run: true in JSON: {text}"
         );
         assert_eq!(
-            snapshot(pkb_root),
+            tree_snapshot(pkb_root),
             before,
             "batch_update dry run modified files on disk"
         );
@@ -11503,7 +11520,7 @@ mod batch_finalize_tests {
             "expected dry-run warning in: {merge_text}"
         );
         assert_eq!(
-            snapshot(pkb_root),
+            tree_snapshot(pkb_root),
             before,
             "merge_node dry run modified files on disk"
         );
@@ -11518,6 +11535,119 @@ mod batch_finalize_tests {
             !src.contains("superseded_by"),
             "merge_node dry run archived the source node: {src}"
         );
+    }
+
+    /// Every MCP handler that takes a `dry_run` parameter, driven through both
+    /// branches on its own fixture.
+    ///
+    /// Each case asserts two things, and the second is what makes the first
+    /// worth anything:
+    ///
+    /// 1. with `dry_run: true`, every byte under the PKB root is unchanged;
+    /// 2. the *same call* with `dry_run: false` changes something.
+    ///
+    /// Without (2) a dry-run test passes trivially whenever the operation
+    /// matched nothing — and a test that cannot tell "declined to write" from
+    /// "had nothing to write" cannot tell either of them from "wrote". That was
+    /// the gap: the response text said no write had happened, and nothing
+    /// checked. Response text is asserted here too, but only after disk.
+    #[test]
+    fn test_every_dry_run_gated_handler_writes_nothing() {
+        type Handler = fn(&PkbSearchServer, &JsonValue) -> Result<CallToolResult, McpError>;
+
+        // (label, handler, args without `dry_run`, substring the dry-run response must carry)
+        let cases: Vec<(&str, Handler, JsonValue, &str)> = vec![
+            (
+                "batch_update",
+                PkbSearchServer::handle_batch_update,
+                json!({ "ids": ["t1", "t2"], "updates": { "status": "blocked" } }),
+                "\"dry_run\": true",
+            ),
+            (
+                "batch_archive",
+                PkbSearchServer::handle_batch_archive,
+                json!({ "ids": ["t1", "t2"], "reason": "dry-run cover" }),
+                "\"dry_run\": true",
+            ),
+            (
+                "batch_reparent",
+                PkbSearchServer::handle_batch_reparent,
+                json!({ "ids": ["t2"], "new_parent": "t1" }),
+                "\"dry_run\": true",
+            ),
+            (
+                "batch_reclassify",
+                PkbSearchServer::handle_batch_reclassify,
+                json!({ "ids": ["t2"], "new_type": "note" }),
+                "\"dry_run\": true",
+            ),
+            (
+                "batch_merge",
+                PkbSearchServer::handle_batch_merge,
+                json!({ "canonical": "t1", "merge_ids": ["t2"] }),
+                "\"dry_run\": true",
+            ),
+            (
+                "batch_create_epics",
+                PkbSearchServer::handle_batch_create_epics,
+                json!({
+                    "parent": "test-project",
+                    "epics": [{ "title": "Epic E", "task_ids": ["t1", "t2"] }]
+                }),
+                "\"dry_run\": true",
+            ),
+            (
+                "merge_node",
+                PkbSearchServer::handle_merge_node,
+                json!({ "canonical_id": "t1", "source_ids": ["t2"] }),
+                "nothing was written",
+            ),
+        ];
+
+        for (label, handler, base, marker) in cases {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let pkb_root = dir.path();
+            let server = build_disk_server(pkb_root);
+            seed_linked_tasks(pkb_root, &server);
+
+            let before = tree_snapshot(pkb_root);
+            assert!(
+                before.len() >= 4,
+                "{label}: fixture is missing files, so the disk assertions below \
+                 would be vacuous; snapshot held {}",
+                before.len()
+            );
+
+            let mut dry_args = base.clone();
+            dry_args["dry_run"] = json!(true);
+            let dry = handler(&server, &dry_args)
+                .unwrap_or_else(|e| panic!("{label} dry run returned an error: {e:?}"));
+
+            assert_eq!(
+                tree_snapshot(pkb_root),
+                before,
+                "{label} with dry_run=true modified files on disk"
+            );
+
+            let dry_text = response_text(&dry);
+            assert!(
+                dry_text.contains(marker),
+                "{label} dry-run response is missing {marker:?}: {dry_text}"
+            );
+
+            // Vacuity guard: prove the operation had a write to decline.
+            let mut live_args = base;
+            live_args["dry_run"] = json!(false);
+            handler(&server, &live_args)
+                .unwrap_or_else(|e| panic!("{label} live run returned an error: {e:?}"));
+
+            assert_ne!(
+                tree_snapshot(pkb_root),
+                before,
+                "{label} wrote nothing even with dry_run=false — the dry_run=true \
+                 assertion above proved nothing about the gate"
+            );
+        }
     }
 }
 
