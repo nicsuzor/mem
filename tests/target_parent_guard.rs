@@ -264,7 +264,7 @@ fn migrate(pkb: &Path, dry_run: bool) -> Report {
 #[test]
 fn migration_dry_run_reports_without_writing() {
     let tmp = seed_migration();
-    let before = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
+    let before = tree_snapshot(tmp.path());
 
     let report = migrate(tmp.path(), true);
     assert!(report.dry_run);
@@ -279,8 +279,46 @@ fn migration_dry_run_reports_without_writing() {
         .iter()
         .all(|c| c.target_id == "targ-strategy"));
 
-    let after = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
-    assert_eq!(before, after, "dry-run must not write files");
+    assert_eq!(
+        tree_snapshot(tmp.path()),
+        before,
+        "dry run modified files on disk"
+    );
+
+    // Vacuity guard: the same migration, executed, has to write something —
+    // otherwise the assertion above would pass on a migration that matched
+    // nothing just as readily as on one that correctly declined to write.
+    migrate(tmp.path(), false);
+    assert_ne!(
+        tree_snapshot(tmp.path()),
+        before,
+        "migration wrote nothing even without --dry-run — the dry-run assertion \
+         above proved nothing about the gate"
+    );
+}
+
+/// Every byte under `root`, keyed by path relative to it. Comparing whole trees
+/// rather than the one document a test expects to be touched is the difference
+/// between "the write I predicted did not happen" and "no write happened".
+fn tree_snapshot(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    fn walk(
+        dir: &Path,
+        root: &Path,
+        out: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    ) {
+        for entry in std::fs::read_dir(dir).expect("read_dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else {
+                let rel = path.strip_prefix(root).unwrap().to_path_buf();
+                out.insert(rel, std::fs::read(&path).expect("read file"));
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(root, root, &mut out);
+    out
 }
 
 #[test]
