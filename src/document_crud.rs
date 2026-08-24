@@ -1461,11 +1461,30 @@ pub fn rewrite_body(
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Could not get parent directory for {}", path.display()))?;
     // Write to a temp file in the same directory, then rename for atomicity.
-    let tmp_path = dir.join(format!(".rewrite_body_{}.tmp", std::process::id()));
+    //
+    // The temp name must be unique per *call*, not per process. The MCP server
+    // serves concurrent requests on threads of a single process, so a pid-only
+    // name collides whenever two calls target different files in the same
+    // directory: both derive the same temp path, and one document ends up
+    // holding the other's complete content, frontmatter included. Disambiguate
+    // by target file name and a monotonic counter as well as pid.
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let target_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unnamed");
+    let tmp_path = dir.join(format!(
+        ".rewrite_body_{}_{}_{}.tmp",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        target_name
+    ));
     std::fs::write(&tmp_path, new_content.as_bytes())
         .with_context(|| format!("Failed to write temp file {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, path)
-        .with_context(|| format!("Failed to rename temp file to {}", path.display()))?;
+    // Unique temp names are never recycled, so a failed rename would leave the
+    // file behind permanently. Clean it up before propagating the error.
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e)
+            .with_context(|| format!("Failed to rename temp file to {}", path.display()));
+    }
 
     Ok(RewriteBodyResult {
         body_chars_before,
@@ -2646,6 +2665,79 @@ mod tests {
     // =====================================================================
     // rewrite_body tests (mem-40a736d0)
     // =====================================================================
+
+    /// Deliberate collision test for the `rewrite_body` temp-path race.
+    ///
+    /// Concurrent `rewrite_body` calls on DIFFERENT files in the SAME directory
+    /// must not clobber one another. With a pid-only temp name, every thread of
+    /// the one MCP server process derives an identical temp path, so a document
+    /// can end up holding another document's complete content, frontmatter
+    /// included. `~/brain/tasks/` holds >2,300 files in a single directory, so
+    /// every batch item shares this namespace.
+    ///
+    /// This test is expected to FAIL against a pid-only temp name.
+    #[test]
+    fn rewrite_body_concurrent_same_dir_does_not_swap_content() {
+        use std::sync::{Arc, Barrier};
+
+        const THREADS: usize = 8;
+        const ROUNDS: usize = 25;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tasks");
+        fs::create_dir_all(&dir).unwrap();
+
+        for round in 0..ROUNDS {
+            // One distinct file per thread, all in a single directory.
+            let paths: Vec<_> = (0..THREADS)
+                .map(|i| {
+                    let p = dir.join(format!("node_{i}.md"));
+                    fs::write(&p, format!("---\nid: node_{i}\n---\n\nseed\n")).unwrap();
+                    p
+                })
+                .collect();
+
+            let barrier = Arc::new(Barrier::new(THREADS));
+            let mut handles = Vec::new();
+            for i in 0..THREADS {
+                let p = paths[i].clone();
+                let b = Arc::clone(&barrier);
+                handles.push(std::thread::spawn(move || {
+                    let body = format!("## body of node {i} round {round}\n");
+                    b.wait(); // maximise overlap on the temp-path write
+                    rewrite_body(&p, &body, true).unwrap();
+                }));
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+
+            for i in 0..THREADS {
+                let got = fs::read_to_string(&paths[i]).unwrap();
+                assert!(
+                    got.contains(&format!("body of node {i} round {round}")),
+                    "round {round}: node_{i}.md does not hold its own body — \
+                     concurrent rewrite_body swapped document content.\nActual:\n{got}"
+                );
+                assert!(
+                    got.contains(&format!("id: node_{i}")),
+                    "round {round}: node_{i}.md carries another node's frontmatter \
+                     identity.\nActual:\n{got}"
+                );
+            }
+
+            let leftovers: Vec<_> = fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.starts_with(".rewrite_body_"))
+                .collect();
+            assert!(
+                leftovers.is_empty(),
+                "round {round}: temp files left behind: {leftovers:?}"
+            );
+        }
+    }
 
     #[test]
     fn rewrite_body_roundtrip_equality() {
