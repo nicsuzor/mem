@@ -499,6 +499,55 @@ pub fn atomic_save(file_path: &str, doc: &mut Value) -> Result<(), String> {
 // CRUD Mutations
 // ============================================================================
 
+
+pub fn mutate_update_node(
+    doc: &mut Value,
+    target_id: &str,
+    angle: Option<f64>,
+    roughness: Option<f64>,
+    fill_style: Option<&str>,
+    preset: Option<&str>,
+) -> Result<(), String> {
+    let mut style = None;
+    if let Some(p) = preset {
+        style = Some(mem::excalidraw::schema::node_preset_style(p));
+    }
+
+    let elements = doc.get_mut("elements")
+        .and_then(|v| v.as_array_mut())
+        .ok_or("no elements array")?;
+
+    for elem in elements.iter_mut() {
+        if elem.get("id").and_then(|v| v.as_str()) == Some(target_id) {
+            if let Some(a) = angle {
+                elem["angle"] = serde_json::json!(a);
+            }
+            if let Some(r) = roughness {
+                elem["roughness"] = serde_json::json!(r);
+            }
+            if let Some(fs) = fill_style {
+                elem["fillStyle"] = serde_json::json!(fs);
+            }
+            if let Some(s) = &style {
+                elem["strokeColor"] = serde_json::json!(s.stroke_color);
+                elem["backgroundColor"] = serde_json::json!(s.bg_color);
+                elem["fillStyle"] = serde_json::json!(s.fill_style);
+                elem["strokeStyle"] = serde_json::json!(s.stroke_style);
+                elem["opacity"] = serde_json::json!(s.opacity);
+                elem["roundness"] = serde_json::json!({ "type": 3 });
+                // We also adjust roughness for the presets
+                if preset == Some("zone") {
+                    elem["roughness"] = serde_json::json!(1.0);
+                } else {
+                    elem["roughness"] = serde_json::json!(2.0);
+                }
+            }
+            break;
+        }
+    }
+    Ok(())
+}
+
 pub fn mutate_add_node(
     doc: &mut Value,
     elem_type: &str,
@@ -2907,6 +2956,62 @@ fn main() {
 
             cmd_item(&doc, selector, &after, at);
         }
+        
+        "update-node" => {
+            let mut opts = extra_args;
+            let mut target_id = "".to_string();
+            let mut angle: Option<f64> = None;
+            let mut roughness: Option<f64> = None;
+            let mut fill_style: Option<String> = None;
+            let mut preset: Option<String> = None;
+
+            while !opts.is_empty() {
+                let flag = &opts[0];
+                opts = &opts[1..];
+                if flag == "--id" && !opts.is_empty() {
+                    target_id = opts[0].clone();
+                    opts = &opts[1..];
+                } else if flag == "--angle" && !opts.is_empty() {
+                    angle = opts[0].parse::<f64>().ok();
+                    opts = &opts[1..];
+                } else if flag == "--roughness" && !opts.is_empty() {
+                    roughness = opts[0].parse::<f64>().ok();
+                    opts = &opts[1..];
+                } else if flag == "--fill-style" && !opts.is_empty() {
+                    fill_style = Some(opts[0].clone());
+                    opts = &opts[1..];
+                } else if flag == "--preset" && !opts.is_empty() {
+                    preset = Some(opts[0].clone());
+                    opts = &opts[1..];
+                } else {
+                    eprintln!("unrecognised argument: {flag}");
+                    std::process::exit(1);
+                }
+            }
+
+            if target_id.is_empty() {
+                eprintln!("--id is required for update-node");
+                std::process::exit(1);
+            }
+
+            if let Err(e) = mutate_update_node(
+                &mut doc,
+                &target_id,
+                angle,
+                roughness,
+                fill_style.as_deref(),
+                preset.as_deref(),
+            ) {
+                eprintln!("error updating node: {e}");
+                std::process::exit(1);
+            }
+            if let Err(e) = atomic_save(file_path, &mut doc) {
+                eprintln!("error saving: {e}");
+                std::process::exit(1);
+            }
+            println!("OK: updated node {}", target_id);
+        }
+
         "add-node" => {
             let mut opts = extra_args;
             let mut elem_type = "rectangle".to_string();
@@ -3216,6 +3321,20 @@ fn main() {
             for (idx, mut_obj) in changes_arr.iter().enumerate() {
                 let action = mut_obj.get("action").and_then(|v| v.as_str()).unwrap_or("");
                 match action {
+                    
+                    "update-node" | "update_node" => {
+                        let target_id = mut_obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let angle = mut_obj.get("angle").and_then(|v| v.as_f64());
+                        let roughness = mut_obj.get("roughness").and_then(|v| v.as_f64());
+                        let fill_style = mut_obj.get("fill_style").or_else(|| mut_obj.get("fillStyle")).and_then(|v| v.as_str());
+                        let preset = mut_obj.get("preset").and_then(|v| v.as_str());
+
+                        if let Err(e) = mutate_update_node(&mut doc, target_id, angle, roughness, fill_style, preset) {
+                            eprintln!("batch mutation #{idx} (update-node) failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+
                     "add-node" | "add_node" => {
                         let elem_type = mut_obj.get("type").and_then(|v| v.as_str()).unwrap_or("rectangle");
                         let text = mut_obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
