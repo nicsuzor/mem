@@ -2131,9 +2131,13 @@ async fn main() -> Result<()> {
             match gs.resolve(&id) {
                 Some(node) => {
                     let path = abs_node_path(&node.path, &pkb_root);
-                    match document_crud::append_to_document(&path, &content_str, section.as_deref())
-                    {
-                        Ok(()) => {
+                    match document_crud::append_to_document(
+                        &path,
+                        &content_str,
+                        section.as_deref(),
+                        None,
+                    ) {
+                        Ok(_) => {
                             let byte_count = content_str.len();
                             let first_line = content_str
                                 .lines()

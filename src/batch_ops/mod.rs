@@ -180,7 +180,7 @@ impl<'a> BatchContext<'a> {
             .context(format!("Node not found: {node_id}"))?;
 
         let abs_path = self.abs_path(&node.path);
-        document_crud::append_to_document(&abs_path, content, None)?;
+        document_crud::append_to_document(&abs_path, content, None, None)?;
         self.modified_paths.push(abs_path);
         Ok(())
     }

@@ -1395,10 +1395,39 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
 }
 
 /// Result of a `rewrite_body` operation — body char counts before and after.
+#[derive(Debug)]
 pub struct RewriteBodyResult {
     pub body_chars_before: usize,
     pub body_chars_after: usize,
+    /// The `modified` timestamp written by this call. Callers that want CAS
+    /// protection on a follow-up write should pass this back as
+    /// `expected_modified`.
+    pub modified: String,
 }
+
+/// A write was rejected because the on-disk `modified` timestamp no longer
+/// matches the snapshot the caller read — i.e. someone else wrote this node
+/// since the caller's own read. This is a stale-snapshot rejection, not a
+/// generic I/O failure: the caller must re-read the node and merge before
+/// retrying, not blindly retry the same write.
+#[derive(Debug)]
+pub struct StaleWrite {
+    pub expected_modified: String,
+    pub actual_modified: String,
+}
+
+impl std::fmt::Display for StaleWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "stale write rejected: expected modified={}, found modified={} — \
+             the document changed since your read; re-read and merge before retrying",
+            self.expected_modified, self.actual_modified
+        )
+    }
+}
+
+impl std::error::Error for StaleWrite {}
 
 /// Atomically rewrite the prose body of an existing document.
 ///
@@ -1410,11 +1439,20 @@ pub struct RewriteBodyResult {
 /// verbatim — useful for scratch documents or when the caller controls the full
 /// content.
 ///
+/// `expected_modified`: optional compare-and-swap precondition. When `Some`,
+/// the write is rejected with a [`StaleWrite`] error (and never touches disk)
+/// unless the document's current `modified` frontmatter value matches exactly.
+/// This is how a caller that read the document earlier protects its own write
+/// against a lost update — the write path is otherwise last-write-wins.
+/// `None` preserves today's unconditional-overwrite behaviour, so existing
+/// single-writer callers are unaffected.
+///
 /// Returns body character counts (before and after) for observability.
 pub fn rewrite_body(
     path: &Path,
     new_body: &str,
     preserve_frontmatter: bool,
+    expected_modified: Option<&str>,
 ) -> Result<RewriteBodyResult> {
     use gray_matter::engine::YAML;
     use gray_matter::Matter;
@@ -1424,11 +1462,13 @@ pub fn rewrite_body(
 
     let trimmed_body = new_body.trim_end_matches('\n');
 
-    let (new_content, body_chars_before, body_chars_after) = if !preserve_frontmatter {
+    let (new_content, body_chars_before, body_chars_after, modified) = if !preserve_frontmatter {
+        // No frontmatter to key a precondition off in this mode — CAS is
+        // meaningless here, same as today's behaviour.
         let body_chars_before = file_content.len();
         let new_content = format!("{}\n", trimmed_body);
         let body_chars_after = new_content.len();
-        (new_content, body_chars_before, body_chars_after)
+        (new_content, body_chars_before, body_chars_after, String::new())
     } else {
         let matter = Matter::<YAML>::new();
         let parsed = matter.parse(&file_content);
@@ -1442,9 +1482,21 @@ pub fn rewrite_body(
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default();
 
+        if let Some(expected) = expected_modified {
+            let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
+            if actual != expected {
+                return Err(StaleWrite {
+                    expected_modified: expected.to_string(),
+                    actual_modified: actual.to_string(),
+                }
+                .into());
+            }
+        }
+
+        let new_modified = chrono::Utc::now().to_rfc3339();
         fm.insert(
             "modified".to_string(),
-            serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+            serde_json::Value::String(new_modified.clone()),
         );
         fm.insert(
             "last_modified".to_string(),
@@ -1454,7 +1506,7 @@ pub fn rewrite_body(
         let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
         let body_chars_after = trimmed_body.len();
         let new_content = format!("---\n{}---\n\n{}\n", yaml, trimmed_body);
-        (new_content, body_chars_before, body_chars_after)
+        (new_content, body_chars_before, body_chars_after, new_modified)
     };
 
     let dir = path
@@ -1489,6 +1541,7 @@ pub fn rewrite_body(
     Ok(RewriteBodyResult {
         body_chars_before,
         body_chars_after,
+        modified,
     })
 }
 
@@ -1499,7 +1552,19 @@ pub fn rewrite_body(
 /// - If no section: appends to end of body.
 /// - Auto-updates `modified` timestamp in frontmatter.
 /// - Content is timestamped: `\n\n**{UTC datetime}** — {content}\n`
-pub fn append_to_document(path: &Path, content: &str, section: Option<&str>) -> Result<()> {
+///
+/// `expected_modified`: optional compare-and-swap precondition, same contract
+/// as [`rewrite_body`] — when `Some`, rejects with [`StaleWrite`] (no write to
+/// disk) unless it matches the document's current `modified` value. `None`
+/// preserves unconditional-append behaviour.
+///
+/// Returns the new `modified` timestamp on success.
+pub fn append_to_document(
+    path: &Path,
+    content: &str,
+    section: Option<&str>,
+    expected_modified: Option<&str>,
+) -> Result<String> {
     use gray_matter::engine::YAML;
     use gray_matter::Matter;
 
@@ -1517,9 +1582,21 @@ pub fn append_to_document(path: &Path, content: &str, section: Option<&str>) -> 
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
 
+    if let Some(expected) = expected_modified {
+        let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
+        if actual != expected {
+            return Err(StaleWrite {
+                expected_modified: expected.to_string(),
+                actual_modified: actual.to_string(),
+            }
+            .into());
+        }
+    }
+
+    let new_modified = chrono::Utc::now().to_rfc3339();
     fm.insert(
         "modified".to_string(),
-        serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+        serde_json::Value::String(new_modified.clone()),
     );
     fm.insert(
         "last_modified".to_string(),
@@ -1582,7 +1659,7 @@ pub fn append_to_document(path: &Path, content: &str, section: Option<&str>) -> 
     std::fs::write(path, &new_content)
         .with_context(|| format!("Failed to write: {}", path.display()))?;
 
-    Ok(())
+    Ok(new_modified)
 }
 
 /// Delete a document file from disk.
@@ -2705,7 +2782,7 @@ mod tests {
                 handles.push(std::thread::spawn(move || {
                     let body = format!("## body of node {i} round {round}\n");
                     b.wait(); // maximise overlap on the temp-path write
-                    rewrite_body(&p, &body, true).unwrap();
+                    rewrite_body(&p, &body, true, None).unwrap();
                 }));
             }
             for h in handles {
@@ -2756,7 +2833,7 @@ mod tests {
         let path = create_task(root, fields).unwrap();
 
         let new_body = "## Rewritten\n\nNew content here.\n";
-        rewrite_body(&path, new_body, true).unwrap();
+        rewrite_body(&path, new_body, true, None).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
         let after_fm = content.split("---\n\n").nth(1).unwrap_or("");
@@ -2782,7 +2859,7 @@ mod tests {
         };
         let path = create_task(root, fields).unwrap();
 
-        rewrite_body(&path, "## New body\n", true).unwrap();
+        rewrite_body(&path, "## New body\n", true, None).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
         let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
@@ -2833,10 +2910,10 @@ mod tests {
         let path = create_task(root, fields).unwrap();
 
         // Rewrite twice with the same body — should not error and body should be identical.
-        let r1 = rewrite_body(&path, body, true).unwrap();
+        let r1 = rewrite_body(&path, body, true, None).unwrap();
         let content_after_first = fs::read_to_string(&path).unwrap();
 
-        let r2 = rewrite_body(&path, body, true).unwrap();
+        let r2 = rewrite_body(&path, body, true, None).unwrap();
         let content_after_second = fs::read_to_string(&path).unwrap();
 
         // Body size is stable across rewrites.
@@ -2858,7 +2935,7 @@ mod tests {
     #[test]
     fn rewrite_body_rejects_nonexistent_path() {
         let path = std::path::Path::new("/tmp/does_not_exist_mem40a736d0_xyz.md");
-        let result = rewrite_body(path, "# body", true);
+        let result = rewrite_body(path, "# body", true, None);
         assert!(result.is_err(), "must error when file does not exist");
     }
 
@@ -2869,7 +2946,7 @@ mod tests {
         fs::write(&path, "---\nid: scratch\n---\n\n# Old\n").unwrap();
 
         let new_body = "# Completely new content\n";
-        rewrite_body(&path, new_body, false).unwrap();
+        rewrite_body(&path, new_body, false, None).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
         assert_eq!(
@@ -2879,6 +2956,264 @@ mod tests {
         assert!(
             !content.contains("---"),
             "frontmatter should be gone when preserve_frontmatter=false"
+        );
+    }
+
+    // =====================================================================
+    // Compare-and-swap / stale-write tests (mem_189264cc, mem_45c5d3c9)
+    //
+    // Reproduces the 2026-08-15 and 2026-08-19 incidents: a writer holding an
+    // earlier read of a node overwrites everything a second writer wrote in
+    // between, and BOTH callers were told `ok: true`. The fix is a
+    // compare-and-swap precondition keyed on the `modified` frontmatter
+    // value, not a mutex — the incidents were minutes apart, far outside any
+    // lock window.
+    // =====================================================================
+
+    /// Read the `modified` frontmatter value straight off disk, the way a
+    /// caller's own earlier `get_document`/`get_task` read would have seen it.
+    fn read_modified(path: &std::path::Path) -> String {
+        use gray_matter::engine::YAML;
+        use gray_matter::Matter;
+        let content = fs::read_to_string(path).unwrap();
+        let matter = Matter::<YAML>::new();
+        let parsed = matter.parse(&content);
+        parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+            .and_then(|v| v.get("modified").and_then(|m| m.as_str()).map(str::to_string))
+            .expect("document must carry a modified timestamp")
+    }
+
+    /// The 2026-08-15 incident, reproduced: two writers read the same node,
+    /// writer A writes first, writer B — still holding its now-stale
+    /// `modified` snapshot — tries to write second. Without a CAS precondition
+    /// this silently discards writer A's content and both calls report
+    /// success. With the fix, writer B's stale write must be REJECTED with a
+    /// `StaleWrite` error, and writer A's content must survive on disk.
+    ///
+    /// This is the actual defect behaviour under test — not a `TypeError` or
+    /// a vacuous assertion: before the fix, this test fails because
+    /// `rewrite_body` accepts every write unconditionally and writer B's call
+    /// returns `Ok`, silently destroying writer A's section.
+    #[test]
+    fn rewrite_body_stale_write_rejected_preserves_first_writers_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "CAS race test".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("mem".to_string()),
+            body: Some("## Original\n\nSeed content.\n".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+
+        // Both writers "read" the node at the same starting snapshot.
+        let snapshot = read_modified(&path);
+
+        // Writer A writes first (its own earlier read matched the snapshot).
+        rewrite_body(
+            &path,
+            "## Permission Model and the Isolation Boundary\n\nWriter A's section.\n",
+            true,
+            Some(&snapshot),
+        )
+        .unwrap();
+
+        // Writer B is still holding the pre-writer-A snapshot — a stale read,
+        // exactly as in the 2026-08-15 incident (~2 minutes apart, no lock
+        // window involved). Its write must be rejected, not silently applied.
+        let result = rewrite_body(
+            &path,
+            "## Print timeout: emitted on only one of three prompt branches\n\nWriter B's section.\n",
+            true,
+            Some(&snapshot),
+        );
+
+        assert!(
+            result.is_err(),
+            "writer B's stale write must be rejected, not silently applied"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.downcast_ref::<StaleWrite>().is_some(),
+            "rejection must be a StaleWrite, distinguishable from any other failure; got: {err:?}"
+        );
+
+        // The failure carries enough information to re-read and merge.
+        let stale = err.downcast_ref::<StaleWrite>().unwrap();
+        assert_eq!(stale.expected_modified, snapshot);
+        assert_ne!(stale.actual_modified, snapshot);
+
+        // Writer A's content must not have been destroyed.
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("Permission Model and the Isolation Boundary"),
+            "writer A's section must survive writer B's rejected stale write.\nActual:\n{on_disk}"
+        );
+        assert!(
+            !on_disk.contains("Print timeout"),
+            "writer B's content must NOT have been applied — the write was rejected.\nActual:\n{on_disk}"
+        );
+    }
+
+    /// Non-regression (mem_45c5d3c9 AC5): when the caller's snapshot DOES
+    /// match current state, the CAS-guarded write must succeed exactly like
+    /// today's unconditional write.
+    #[test]
+    fn rewrite_body_expected_modified_matching_snapshot_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "CAS happy path".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("mem".to_string()),
+            body: Some("## Original\n".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        let snapshot = read_modified(&path);
+
+        let result = rewrite_body(&path, "## Updated\n", true, Some(&snapshot)).unwrap();
+        assert_ne!(
+            result.modified, snapshot,
+            "a successful write must bump modified to a new value"
+        );
+
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("## Updated"));
+    }
+
+    /// Non-regression (mem_45c5d3c9 AC5): existing single-writer callers that
+    /// never pass `expected_modified` must be completely unaffected — the
+    /// precondition is opt-in.
+    #[test]
+    fn rewrite_body_without_expected_modified_remains_unconditional() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "No CAS requested".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("mem".to_string()),
+            body: Some("## Original\n".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+
+        // Two sequential writes with no expected_modified — both must succeed,
+        // exactly like every caller today.
+        rewrite_body(&path, "## First rewrite\n", true, None).unwrap();
+        rewrite_body(&path, "## Second rewrite\n", true, None).unwrap();
+
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("## Second rewrite"));
+    }
+
+    /// The `update_task` append channel (mem_189264cc's second incident,
+    /// 2026-07-21 on `task_d2b581fb`): an addendum verified stored by
+    /// read-back was silently gone after a later, non-overlapping write.
+    /// `append_to_document` backs both the generic `append` tool and task
+    /// addenda, so the same CAS guard must protect it.
+    #[test]
+    fn append_to_document_stale_write_rejected_preserves_first_writers_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Append CAS race test".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("mem".to_string()),
+            body: Some("## Log\n".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+        let snapshot = read_modified(&path);
+
+        // Writer A's addendum lands first.
+        append_to_document(&path, "Writer A's addendum.", None, Some(&snapshot)).unwrap();
+
+        // Writer B is still holding the pre-writer-A snapshot.
+        let result =
+            append_to_document(&path, "Writer B's addendum.", None, Some(&snapshot));
+
+        assert!(
+            result.is_err(),
+            "writer B's stale append must be rejected, not silently applied"
+        );
+        assert!(result
+            .unwrap_err()
+            .downcast_ref::<StaleWrite>()
+            .is_some());
+
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("Writer A's addendum."),
+            "writer A's addendum must survive writer B's rejected stale write.\nActual:\n{on_disk}"
+        );
+        assert!(
+            !on_disk.contains("Writer B's addendum."),
+            "writer B's content must NOT have been applied.\nActual:\n{on_disk}"
+        );
+    }
+
+    /// mem_189264cc acceptance criterion: "Concurrent append + update to the
+    /// same node preserves both mutations, or fails loudly." One writer
+    /// appends (bumping `modified`); a second writer, holding a pre-append
+    /// snapshot, then tries a full-body `update_body`. The append's mutation
+    /// must survive and the stale `update_body` must fail loudly — it must
+    /// NOT silently clobber the appended content.
+    #[test]
+    fn concurrent_append_and_update_body_same_node_fails_loudly_and_preserves_append() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Append+update race test".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("mem".to_string()),
+            body: Some("## Original\n\nBase content.\n".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+
+        // Both writers read the same starting snapshot.
+        let snapshot = read_modified(&path);
+
+        // Writer 1 appends — this is the mutation that must survive.
+        append_to_document(&path, "Appended note.", None, None).unwrap();
+
+        // Writer 2, still holding the pre-append snapshot, attempts a full
+        // body rewrite. Must fail loudly rather than silently drop the append.
+        let result = rewrite_body(&path, "## Replaced entirely\n", true, Some(&snapshot));
+        assert!(
+            result.is_err(),
+            "update_body against a stale snapshot must fail loudly, not silently discard the concurrent append"
+        );
+        assert!(result.unwrap_err().downcast_ref::<StaleWrite>().is_some());
+
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("Appended note."),
+            "the append's mutation must be preserved.\nActual:\n{on_disk}"
+        );
+        assert!(
+            !on_disk.contains("Replaced entirely"),
+            "the stale update_body must not have been applied.\nActual:\n{on_disk}"
         );
     }
 
@@ -3538,7 +3873,7 @@ mod tests {
         )
         .unwrap();
 
-        append_to_document(&file_path, "## New Section\n\nAppended body content.", None).unwrap();
+        append_to_document(&file_path, "## New Section\n\nAppended body content.", None, None).unwrap();
 
         let readback = std::fs::read_to_string(&file_path).unwrap();
         assert!(
@@ -3567,7 +3902,7 @@ mod tests {
         )
         .unwrap();
 
-        append_to_document(&file_path, "- Item one\n- Item two", None).unwrap();
+        append_to_document(&file_path, "- Item one\n- Item two", None, None).unwrap();
 
         let readback = std::fs::read_to_string(&file_path).unwrap();
         assert!(
@@ -3596,7 +3931,7 @@ mod tests {
         )
         .unwrap();
 
-        append_to_document(&file_path, "Plain prose appended block.", None).unwrap();
+        append_to_document(&file_path, "Plain prose appended block.", None, None).unwrap();
 
         let readback = std::fs::read_to_string(&file_path).unwrap();
         assert!(
@@ -3625,7 +3960,7 @@ mod tests {
         )
         .unwrap();
 
-        append_to_document(&file_path, "## Subheading\n\nLog text", Some("Log")).unwrap();
+        append_to_document(&file_path, "## Subheading\n\nLog text", Some("Log"), None).unwrap();
 
         let readback = std::fs::read_to_string(&file_path).unwrap();
         assert!(
