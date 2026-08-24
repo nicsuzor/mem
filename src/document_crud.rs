@@ -3311,6 +3311,165 @@ mod tests {
         );
     }
 
+    /// Regression for mem_39360d7e Instance 4: `update_task` silently dropped
+    /// `parent` whenever the stored reference already *resolved* to the requested
+    /// node — which is exactly the case a repair call is trying to fix.
+    ///
+    /// Fixture reproduces the live residue on `proj-04dcf372`: frontmatter says
+    /// `parent: personal`, which resolves to `personal-66647271` only because a
+    /// file called `personal.md` happens to hold that id. Asking for the
+    /// canonical id must be a real change, not a no-op.
+    #[test]
+    fn update_parent_is_not_a_noop_when_only_the_resolved_value_matches() {
+        use crate::graph_store::GraphStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("personal")).unwrap();
+        fs::create_dir_all(root.join("projects")).unwrap();
+
+        let root_path = root.join("personal/personal.md");
+        fs::write(
+            &root_path,
+            "---\nid: personal-66647271\ntitle: Personal\ntype: epic\nstatus: ready\n---\n\nRoot.\n",
+        )
+        .unwrap();
+        let child_path = root.join("projects/proj-04dcf372-life-admin.md");
+        fs::write(
+            &child_path,
+            "---\nid: proj-04dcf372\ntitle: Handle life admin\ntype: epic\nstatus: ready\nparent: personal\n---\n\nChild.\n",
+        )
+        .unwrap();
+
+        let docs: Vec<_> = [&root_path, &child_path]
+            .iter()
+            .map(|p| crate::pkb::parse_file(p).expect("parse fixture"))
+            .collect();
+        let graph = GraphStore::build(&docs, root);
+        let node = graph.resolve("proj-04dcf372").expect("child in graph");
+
+        // Precondition: this is the masking situation, not a plain mismatch.
+        assert_eq!(
+            node.parent.as_deref(),
+            Some("personal-66647271"),
+            "precondition: the stored value resolves to the canonical node"
+        );
+        assert_eq!(
+            node.parent_raw.as_deref(),
+            Some("personal"),
+            "precondition: but the file still stores the unnormalised string"
+        );
+
+        let mut updates_map = serde_json::Map::new();
+        updates_map.insert(
+            "parent".to_string(),
+            serde_json::json!("personal-66647271"),
+        );
+        let effective = expand_special_update_keys(node, &updates_map).unwrap();
+
+        assert!(
+            effective.contains_key("parent"),
+            "parent must survive into the writer; dropping it here is what let \
+             update_task return `Task updated` while leaving `parent: personal` \
+             on disk: {effective:?}"
+        );
+
+        update_document(&child_path, effective).unwrap();
+        let after = fs::read_to_string(&child_path).unwrap();
+        assert!(
+            after.contains("parent: personal-66647271"),
+            "the repaired parent must be on disk after the write: {after}"
+        );
+    }
+
+    /// The no-op guard must still hold when the file already stores the exact
+    /// value — otherwise every write bumps `modified` for nothing.
+    #[test]
+    fn update_parent_is_still_a_noop_when_the_stored_string_already_matches() {
+        use crate::graph::GraphNode;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("projects")).unwrap();
+        let p = root.join("projects/child.md");
+        fs::write(
+            &p,
+            "---\nid: child-1\ntitle: Child\ntype: epic\nstatus: ready\nparent: personal-66647271\n---\n\nChild.\n",
+        )
+        .unwrap();
+
+        let doc = crate::pkb::parse_file(&p).expect("parse fixture");
+        let node = GraphNode::from_pkb_document(&doc);
+        let mut updates_map = serde_json::Map::new();
+        updates_map.insert(
+            "parent".to_string(),
+            serde_json::json!("personal-66647271"),
+        );
+        let effective = expand_special_update_keys(&node, &updates_map).unwrap();
+        assert!(
+            !effective.contains_key("parent"),
+            "an identical stored value is a genuine no-op: {effective:?}"
+        );
+    }
+
+    /// `merge_node` must not report a redirect it could not write.
+    ///
+    /// The write was `let _ = std::fs::write(...)`, so an IO failure was
+    /// discarded while `files_updated` / `refs_redirected` still incremented and
+    /// the call returned `Ok`. A caller had no way to tell a refused write from a
+    /// completed one.
+    #[test]
+    fn merge_node_fails_loudly_when_a_reference_rewrite_cannot_be_written() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        for (name, id) in [("canon.md", "canon-1"), ("src.md", "src-1")] {
+            fs::write(
+                root.join("tasks").join(name),
+                format!("---\nid: {id}\ntitle: {id}\ntype: task\nstatus: ready\n---\n\nBody.\n"),
+            )
+            .unwrap();
+        }
+        // Carries a wikilink to the source, so merge_node must rewrite it.
+        let referrer = root.join("tasks/ref.md");
+        fs::write(
+            &referrer,
+            "---\nid: ref-1\ntitle: Referrer\ntype: task\nstatus: ready\n---\n\nSee [[src-1]].\n",
+        )
+        .unwrap();
+
+        // Readable (so the scan finds the reference) but not writable.
+        fs::set_permissions(&referrer, fs::Permissions::from_mode(0o444)).unwrap();
+        if fs::write(&referrer, "probe").is_ok() {
+            // Running with privileges that ignore the mode bit (e.g. root); the
+            // fixture cannot create the condition under test, so assert nothing
+            // rather than pass vacuously.
+            eprintln!("skipped: this user can write a 0444 file");
+            return;
+        }
+
+        let result = merge_node(root, &["src-1".to_string()], "canon-1", false);
+
+        assert!(
+            result.is_err(),
+            "merge_node reported success for a rewrite it could not write: {:?}",
+            result.map(|s| (s.files_updated, s.refs_redirected))
+        );
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("failed to redirect references"),
+            "error must name what failed, got: {msg}"
+        );
+
+        fs::set_permissions(&referrer, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
     #[test]
     fn extract_raw_frontmatter_handles_block_and_no_block() {
         // Well-formed block: returns the inner YAML, sans delimiters.
@@ -3627,7 +3786,18 @@ pub fn merge_node(
 
         if modified {
             if !dry_run {
-                let _ = std::fs::write(file_path, &new_content);
+                // Propagate, never discard. `let _ =` here swallowed every IO
+                // error and the counters below still ran, so a merge that wrote
+                // nothing reported files updated and references redirected. A
+                // caller cannot tell a refused write from a completed one, which
+                // is the same "asserts an outcome it never checked" failure this
+                // whole change is about.
+                std::fs::write(file_path, &new_content).with_context(|| {
+                    format!(
+                        "merge_node: failed to redirect references in {}",
+                        file_path.display()
+                    )
+                })?;
                 modified_paths.push(file_path.clone());
             }
             files_updated += 1;
@@ -3699,7 +3869,9 @@ pub fn expand_special_update_keys(
                 "priority" => node.priority.is_none(),
                 "assignee" => node.assignee.is_none(),
                 "complexity" => node.complexity.is_none(),
-                "parent" => node.parent.is_none(),
+                // As below: the stored value, not the resolved one. A node whose
+                // `parent:` fails to resolve still HAS a parent line to remove.
+                "parent" => node.parent_raw.is_none(),
                 _ => false,
             }
         } else {
@@ -3708,7 +3880,16 @@ pub fn expand_special_update_keys(
                 "priority" => node.priority == value.as_i64().map(|v| v as i32),
                 "assignee" => node.assignee.as_deref() == value.as_str(),
                 "complexity" => node.complexity.as_deref() == value.as_str(),
-                "parent" => node.parent.as_deref() == value.as_str(),
+                // Compare what the FILE says, not what the graph resolved it to.
+                // `node.parent` is rewritten to a canonical id during graph
+                // build, so comparing against it declared a reparent a no-op
+                // whenever the stored string merely *resolved* to the requested
+                // node — including when it resolved there by accident, via a
+                // filename stem or a scraped id-prefix. The key was then dropped
+                // from the update while the write still went ahead and bumped
+                // `modified`, so the caller got "Task updated" and an unchanged
+                // edge. The stored string is the only thing a write can change.
+                "parent" => node.parent_raw.as_deref() == value.as_str(),
                 _ => false,
             }
         };

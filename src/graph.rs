@@ -163,8 +163,25 @@ pub struct GraphNode {
     pub priority: Option<i32>,
     #[serde(skip_serializing_if = "is_zero_i32")]
     pub order: i32,
+    /// Parent, **as resolved against the graph**. `compute_inverses` overwrites
+    /// this with the canonical id of whatever node the stored reference resolved
+    /// to, so it is NOT what is written in the file. Never compare it against a
+    /// caller-supplied value to decide whether a write is needed — use
+    /// [`GraphNode::parent_raw`] for that (see `parent_raw`'s docs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// Parent exactly as stored in frontmatter, before any resolution.
+    ///
+    /// `parent` is rewritten to a canonical node id during graph build, which
+    /// makes it useless for answering "does the file already say this?". A
+    /// reference that resolves to the right node *by accident* — via a filename
+    /// stem or a derived id-prefix rather than an exact id — is indistinguishable
+    /// from a correct one once resolved. Write paths that skipped a reparent
+    /// because the *resolved* parent already matched therefore silently declined
+    /// to normalise the stored string, and reported success. Compare against this
+    /// field instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_raw: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub closes: Vec<String>,
     /// Eager-materialised ancestors computed against the PKB graph
@@ -240,9 +257,17 @@ pub struct GraphNode {
     /// Raw wikilinks/md links from body (not serialized — used only during build)
     #[serde(skip)]
     pub raw_links: Vec<String>,
-    /// Resolution keys: filename stem, permalink, frontmatter id (not serialized)
+    /// Authoritative resolution keys the document claims as its own identity:
+    /// frontmatter `id:` and an explicit `permalink:`. Always win over
+    /// [`GraphNode::weak_keys`]. (not serialized)
     #[serde(skip)]
     pub permalinks: Vec<String>,
+    /// Derived resolution keys, inferred from the file's location rather than
+    /// claimed by it: the filename stem and the id-prefix scraped from it. These
+    /// collide by construction, so they are only ever consulted after every
+    /// node's authoritative keys have been registered. (not serialized)
+    #[serde(skip)]
+    pub weak_keys: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus_score: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1141,11 +1166,23 @@ impl GraphNode {
             None => (vec![], vec![], vec![], vec![], vec![], vec![]),
         };
 
-        // Build permalinks for link resolution
+        // Build lookup keys for link/reference resolution, split by authority.
+        //
+        // `permalinks` holds keys the document CLAIMS as its own identity —
+        // frontmatter `id:` and an explicit `permalink:`. `weak_keys` holds keys
+        // merely DERIVED from where the file happens to sit on disk — its
+        // filename stem, and the id-prefix pattern scraped out of that stem.
+        //
+        // The split exists because derived keys collide by construction: every
+        // `epic-abc123-*.md` file synthesises the key `epic-abc123`, which may be
+        // another node's exact id, and a file named `personal.md` claims the key
+        // `personal` regardless of what its id is. Flattening both kinds into one
+        // namespace let a derived key shadow a real id, so a stored reference
+        // silently bound to a node that did not own it. Consumers must therefore
+        // consult `permalinks` for every node before falling back to `weak_keys`
+        // — see `graph_store::build_lookup_maps` and `build_resolution_map`.
         let mut permalinks = Vec::new();
-        if let Some(stem) = doc.path.file_stem() {
-            permalinks.push(stem.to_string_lossy().to_lowercase());
-        }
+        let mut weak_keys = Vec::new();
         if let Some(ref f) = fm {
             if let Some(pl) = f.get("permalink").and_then(|v| v.as_str()) {
                 permalinks.push(pl.trim().to_lowercase());
@@ -1154,15 +1191,19 @@ impl GraphNode {
                 permalinks.push(fid.trim().to_lowercase());
             }
         }
-        // Task ID prefix pattern (e.g. "aops-123" from "aops-123-do-something.md")
         if let Some(stem) = doc.path.file_stem() {
             let stem_str = stem.to_string_lossy();
+            weak_keys.push(stem_str.to_lowercase());
+            // Task ID prefix pattern (e.g. "aops-123" from "aops-123-do-something.md")
             if let Some(cap) = TASK_ID_PREFIX_RE.captures(&stem_str) {
                 if let Some(m) = cap.get(1) {
-                    permalinks.push(m.as_str().to_lowercase());
+                    weak_keys.push(m.as_str().to_lowercase());
                 }
             }
         }
+        weak_keys.retain(|k| !permalinks.contains(k));
+        deduplicate_vec(&mut permalinks);
+        deduplicate_vec(&mut weak_keys);
 
         // Extract links from body content
         let raw_links = parse_links(&doc.body);
@@ -1239,6 +1280,7 @@ impl GraphNode {
             consolidated_at: doc.consolidated_at.clone(),
             priority,
             order,
+            parent_raw: parent.clone(),
             parent,
             closes,
             target_ancestors: Vec::new(),
@@ -1273,6 +1315,7 @@ impl GraphNode {
             leaf,
             raw_links,
             permalinks,
+            weak_keys,
             status_group: sg,
             task_id,
             downstream_weight: 0.0,
