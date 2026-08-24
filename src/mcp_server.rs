@@ -274,13 +274,13 @@ impl PkbSearchServer {
         } else {
             format!("\n\n## Completion Evidence\n\n{}\n", evidence.trim())
         };
-        crate::document_crud::append_to_document(path, &evidence_block, None).map_err(|e| {
-            McpError {
+        crate::document_crud::append_to_document(path, &evidence_block, None, None)
+            .map(|_| ())
+            .map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!("Failed to append evidence: {e}")),
                 data: None,
-            }
-        })
+            })
     }
 
     fn args_to_value(args: Option<JsonObject>) -> JsonValue {
@@ -3373,6 +3373,34 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
+    /// Convert a `document_crud` write error into an `McpError`, giving a
+    /// stale-write (CAS precondition failure) a distinct, structured shape so
+    /// a caller can tell "your snapshot is stale, re-read and merge" apart
+    /// from any other write failure — see `document_crud::StaleWrite`.
+    fn write_error_to_mcp(action: &str, e: anyhow::Error) -> McpError {
+        if let Some(stale) = e.downcast_ref::<crate::document_crud::StaleWrite>() {
+            return McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "Stale write rejected: the document changed since your read \
+                     (expected_modified={}, current modified={}). Re-read the \
+                     document and merge your changes before retrying.",
+                    stale.expected_modified, stale.actual_modified
+                )),
+                data: Some(serde_json::json!({
+                    "error_type": "stale_write",
+                    "expected_modified": stale.expected_modified,
+                    "actual_modified": stale.actual_modified,
+                })),
+            };
+        }
+        McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to {action}: {e}")),
+            data: None,
+        }
+    }
+
     fn handle_append_to_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         if args.get("path").is_some() {
             return Err(McpError {
@@ -3403,6 +3431,7 @@ impl PkbSearchServer {
             })?;
 
         let section = args.get("section").and_then(|v| v.as_str());
+        let expected_modified = args.get("expected_modified").and_then(|v| v.as_str());
 
         // Resolve ID to path via graph
         let graph = self.graph.read();
@@ -3419,13 +3448,9 @@ impl PkbSearchServer {
         let t_total = std::time::Instant::now();
 
         let t = std::time::Instant::now();
-        crate::document_crud::append_to_document(&abs_path, content, section).map_err(|e| {
-            McpError {
-                code: ErrorCode::INTERNAL_ERROR,
-                message: Cow::from(format!("Failed to append: {e}")),
-                data: None,
-            }
-        })?;
+        let new_modified =
+            crate::document_crud::append_to_document(&abs_path, content, section, expected_modified)
+                .map_err(|e| Self::write_error_to_mcp("append", e))?;
         let elapsed_write = t.elapsed();
         tracing::debug!(target: "perf::append_to_document", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
@@ -3460,8 +3485,8 @@ impl PkbSearchServer {
             .map(|s| format!(" under ## {s}"))
             .unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Appended to: {} (`{}`){section_msg}",
-            label, id
+            "Appended to: {} (`{}`){section_msg}\nmodified: {}",
+            label, id, new_modified
         ))]))
     }
 
@@ -3489,6 +3514,8 @@ impl PkbSearchServer {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
+        let expected_modified = args.get("expected_modified").and_then(|v| v.as_str());
+
         let (abs_path, label) = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
@@ -3499,12 +3526,13 @@ impl PkbSearchServer {
             (self.abs_path(&node.path), node.label.clone())
         };
 
-        let result = crate::document_crud::rewrite_body(&abs_path, new_body, preserve_frontmatter)
-            .map_err(|e| McpError {
-                code: ErrorCode::INTERNAL_ERROR,
-                message: Cow::from(format!("Failed to rewrite body: {e}")),
-                data: None,
-            })?;
+        let result = crate::document_crud::rewrite_body(
+            &abs_path,
+            new_body,
+            preserve_frontmatter,
+            expected_modified,
+        )
+        .map_err(|e| Self::write_error_to_mcp("rewrite body", e))?;
 
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
             self.rebuild_graph_for_pkb_document(&doc);
@@ -3523,7 +3551,8 @@ impl PkbSearchServer {
             "title": label,
             "body_chars_before": result.body_chars_before,
             "body_chars_after": result.body_chars_after,
-            "preserve_frontmatter": preserve_frontmatter
+            "preserve_frontmatter": preserve_frontmatter,
+            "modified": result.modified
         });
         let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -4490,7 +4519,7 @@ impl PkbSearchServer {
         }
         evidence_block.push('\n');
 
-        crate::document_crud::append_to_document(&abs_path, &evidence_block, None).map_err(
+        crate::document_crud::append_to_document(&abs_path, &evidence_block, None, None).map_err(
             |e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!("Failed to append release evidence: {e}")),
@@ -7426,13 +7455,14 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "append",
-                "Append timestamped content to an existing document by ID. Use for logging progress, adding references, or updating a 'log' section. Not idempotent.",
+                "Append timestamped content to an existing document by ID. Use for logging progress, adding references, or updating a 'log' section. Not idempotent. The write path is otherwise last-write-wins: pass `expected_modified` (the `modified` value from your last read of this document) to get a compare-and-swap guard — the call is rejected with error_type `stale_write` if the document changed since your read, instead of silently discarding the other writer's change.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
                         "content": { "type": "string", "description": "Content to append (will be timestamped)" },
-                        "section": { "type": "string", "description": "Optional target section heading (e.g. 'Log', 'References'). Creates section if not found." }
+                        "section": { "type": "string", "description": "Optional target section heading (e.g. 'Log', 'References'). Creates section if not found." },
+                        "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
                     },
                     "required": ["id", "content"]
                 }))
@@ -7442,13 +7472,14 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "update_body",
-                "Atomically rewrite the prose body of an existing document. Preserves YAML frontmatter and bumps `modified` timestamp by default. Use instead of `append` when you need full replacement rather than additive logging.",
+                "Atomically rewrite the prose body of an existing document. Preserves YAML frontmatter and bumps `modified` timestamp by default. Use instead of `append` when you need full replacement rather than additive logging. The write path is otherwise last-write-wins: pass `expected_modified` (the `modified` value from your last read of this document) to get a compare-and-swap guard — the call is rejected with error_type `stale_write` if the document changed since your read, instead of silently discarding the other writer's change.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
                         "new_body": { "type": "string", "description": "New markdown body content (full replacement — not appended)" },
-                        "preserve_frontmatter": { "type": "boolean", "description": "Keep YAML frontmatter and bump modified timestamp (default: true). Set false only when replacing scratch documents with no meaningful frontmatter." }
+                        "preserve_frontmatter": { "type": "boolean", "description": "Keep YAML frontmatter and bump modified timestamp (default: true). Set false only when replacing scratch documents with no meaningful frontmatter." },
+                        "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
                     },
                     "required": ["id", "new_body"]
                 }))
