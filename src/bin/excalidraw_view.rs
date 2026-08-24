@@ -517,8 +517,27 @@ pub fn mutate_update_node(
         .and_then(|v| v.as_array_mut())
         .ok_or("no elements array")?;
 
+    let mut found = false;
     for elem in elements.iter_mut() {
         if elem.get("id").and_then(|v| v.as_str()) == Some(target_id) {
+            found = true;
+            
+            // Apply preset properties FIRST
+            if let Some(s) = &style {
+                elem["strokeColor"] = serde_json::json!(s.stroke_color);
+                elem["backgroundColor"] = serde_json::json!(s.bg_color);
+                elem["fillStyle"] = serde_json::json!(s.fill_style);
+                elem["strokeStyle"] = serde_json::json!(s.stroke_style);
+                elem["opacity"] = serde_json::json!(s.opacity);
+                elem["roundness"] = serde_json::json!({ "type": 3 });
+                if preset == Some("zone") {
+                    elem["roughness"] = serde_json::json!(1.0);
+                } else {
+                    elem["roughness"] = serde_json::json!(2.0);
+                }
+            }
+
+            // Apply explicit arguments SECOND (overriding presets if passed)
             if let Some(a) = angle {
                 elem["angle"] = serde_json::json!(a);
             }
@@ -528,25 +547,18 @@ pub fn mutate_update_node(
             if let Some(fs) = fill_style {
                 elem["fillStyle"] = serde_json::json!(fs);
             }
-            if let Some(s) = &style {
-                elem["strokeColor"] = serde_json::json!(s.stroke_color);
-                elem["backgroundColor"] = serde_json::json!(s.bg_color);
-                elem["fillStyle"] = serde_json::json!(s.fill_style);
-                elem["strokeStyle"] = serde_json::json!(s.stroke_style);
-                elem["opacity"] = serde_json::json!(s.opacity);
-                elem["roundness"] = serde_json::json!({ "type": 3 });
-                // We also adjust roughness for the presets
-                if preset == Some("zone") {
-                    elem["roughness"] = serde_json::json!(1.0);
-                } else {
-                    elem["roughness"] = serde_json::json!(2.0);
-                }
-            }
+            
             break;
         }
     }
+    
+    if !found {
+        return Err(format!("node {} not found", target_id));
+    }
+    
     Ok(())
 }
+
 
 pub fn mutate_add_node(
     doc: &mut Value,
