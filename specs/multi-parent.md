@@ -263,7 +263,7 @@ Implemented as `compute_focus_scores` in `mem/src/graph_store.rs` (companion: `c
 focus_score =
     priority_base
   + severity_bonus
-  + deadline_score (× consequence multiplier if set)
+  + deadline_score
   + age_staleness_bonus (P2+ only)
   + downstream_weight × 10
   + stakeholder_waiting_bonus
@@ -275,12 +275,12 @@ focus_score =
 |-----------|-------|-------|
 | `priority_base` | 0 / 5 000 / 10 000 | P0 = 10 000, P1 = 5 000, P2+ = 0 |
 | `severity_bonus` | 0 / 5 000 / 10 000 / 20 000 / 100 000 | SEV0–4. Lexicographic at SEV4. |
-| `deadline_score` | 0 – 12 000 | Overdue: 8 000 + min(days × 200, 4 000). Tight (effort ≥ days_until): 6 000. Near-tight: linear interp 2 000–6 000. ≤30 days: 1 000. `× 1.5` if `consequence` set. |
+| `deadline_score` | 0 – 12 000 | Overdue: 8 000 + min(days × 200, 4 000). Tight (effort ≥ days_until): 6 000. Near-tight: linear interp 2 000–6 000. ≤30 days: 1 000. `consequence` is explanatory prose and applies **no** multiplier — stakes reach a task via target `severity` through `contributes_to`. |
 | `age_staleness_bonus` | 0 – 200 | min(days_since_created, 200), P2+ only. Prevents old low-priority items being buried. |
-| `downstream_weight × 10` | 0 – ∞ | downstream_weight float × 10 to land in same magnitude as base scores. |
+| `downstream_weight × 10` | 0 – ∞ | downstream_weight float × 10 to land in same magnitude as base scores. Not a count of dependents — see §2.2 and TAXONOMY.md §criticality. |
 | `stakeholder_waiting_bonus` | 0 / 2 000 – 8 000 | When `stakeholder` set: 2 000 + min(days × 200, 6 000). Anchor: `waiting_since` ?? `created`. **When a hard `due` already fired a positive `deadline_score`, only the +2 000 base applies** — the per-day growth is suppressed so deadline lateness is not counted twice (the ramp's distinct job is the no-formal-deadline "I promised" case; [[mem-830588f3]]). |
 | `urgency_term` | 0 – 10 000+ | `round(node.urgency)`. SEV4-committed contribution drives this to 10 000+. |
-| `voi_term` | 0 – 5 000 | `round(node.voi_value)`. Value-of-information premium for a leaf task that **unblocks a downstream cone** (tasks that `depends_on` it); keyed off dependents, not `contributes_to` targets ([[mem-830588f3]]). Capped at 5 000 to stay below the SEV4-committed urgency floor (AC-11); zero for non-leaf nodes (AC-12). |
+| `voi_term` | 0 – 5 000 | `round(node.voi_value)`. Value-of-information premium for a leaf task that **unblocks a downstream cone** (tasks that `depends_on` it, and what lies beyond them); keyed off dependents, not `contributes_to` targets ([[mem-830588f3]]). Accumulated by the same deduped cone walk as `downstream_weight`, so a subtree reachable from two dependents counts once. Capped at 5 000 to stay below the SEV4-committed urgency floor (AC-11); zero for non-leaf nodes (AC-12). |
 
 `urgency_term` composes additively because `S_lex × W_edge × f(Slack)` produces values in the same integer-magnitude scale as the other terms (~0.001 to 10 000+). The lexicographic-override property survives: a SEV4-committed contribution with `Slack ≤ 0` pushes `urgency_term` past every non-SEV4 task's combined score, mirroring `severity_bonus = 100 000` for the target itself.
 
@@ -288,17 +288,23 @@ focus_score =
 
 ```
 voi_value = K_voi · leaf(x) · dep_resolution_ratio(x)
-          · Σ_{d ∈ dependents(x)} uncertainty(d) × downstream_weight(d)
-          / max(effort_days(x), 0.5)
+          · sum_downstream(x)
+          / max(effort_days(x), VOI_EFFORT_NEUTRAL_DAYS)
+
+sum_downstream(x) = Σ over DISTINCT t ∈ unblocking_cone(x) of
+                      (1 / depth(t)) × base_weight(t) × edge_factor(t) × uncertainty(t)
 ```
 
 - `leaf(x)` and `uncertainty(d)` are the computed properties defined in TAXONOMY.md §Core Computed Properties. `leaf` gates the term to actionable nodes — a node with `leaf = false` scores `voi_value = 0` (AC-12), so undecomposed epics never accumulate VoI.
-- **`dependents(x)` is the Σ-domain: the set of tasks that `depends_on` x — the downstream cone x *unblocks* — materialised as `x.blocks` by `compute_inverses` (a `DependsOn` edge `d → x` yields `x.blocks ∋ d`).** This is the **information channel**: completing `x` resolves uncertainty that lets that downstream work proceed. VoI deliberately does **NOT** range over `contributes_to` targets. A pure deliverable wired to a busy, slightly-uncertain target (e.g. a peer review feeding a "review obligations" target) resolves no downstream uncertainty for the user's own work; its importance is already carried by the **severity/criticality channel** (target `severity` reaching the task through `contributes_to`). Keying VoI off the *target's* `downstream_weight` re-counted that same importance and made every deliverable inherit near-cap VoI — the defect fixed in [[mem-830588f3]].
+- **`cone(x)` is the Σ-domain: the set of nodes reachable downstream from x — the tasks that `depends_on` x (materialised as `x.blocks` by `compute_inverses`; a `DependsOn` edge `d → x` yields `x.blocks ∋ d`) and everything reachable beyond them.** It is walked ONCE, deduped: a node reachable by several routes is counted a single time, at its shortest discovery depth. The direct dependents are themselves part of the sum — unblocking a valuable leaf is worth something even when that leaf leads nowhere further. This is the **information channel**: completing `x` resolves uncertainty that lets that downstream work proceed. VoI deliberately does **NOT** range over `contributes_to` targets. A pure deliverable wired to a busy, slightly-uncertain target (e.g. a peer review feeding a "review obligations" target) resolves no downstream uncertainty for the user's own work; its importance is already carried by the **severity/criticality channel** (target `severity` reaching the task through `contributes_to`). Keying VoI off the *target's* `downstream_weight` re-counted that same importance and made every deliverable inherit near-cap VoI — the defect fixed in [[mem-830588f3]].
 - `dep_resolution_ratio(x)` keys on **x's own `depends_on`** (fraction of its upstream dependencies resolved) — *upstream readiness*. A still-blocked `x` cannot realise its VoI yet, so the premium is discounted. This is the **opposite dependency direction** from the Σ-sum (which ranges over x's *dependents*, downstream); the two directions are kept distinct and never conflated.
 - Edge weight is **1**: `depends_on`/`blocks` are hard binary dependency edges with no verbal-scale weight (unlike `contributes_to`, which carries a Renooij-Witteman weight). The old formula's per-edge Birnbaum `edge_weight(x→d)` term is therefore dropped from the dependent-sum.
-- `downstream_weight(d)` is the dependent's existing structural-importance field (TAXONOMY.md §criticality) — the size of the cone that `d` (and so, transitively, `x`) unblocks.
-- `/ max(effort_days(x), 0.5)` is the cost normalization (information-gap-ratio form, kb-9230ba76 §5): it prevents a long probe from outranking a short one with the same downstream uncertainty.
-- `K_voi` is a calibration constant (config field) chosen so `voi_value` typically remains ≤ 5 000, with a hard clamp at 5 000 (AC-11) to guarantee it stays below the SEV4-committed urgency floor of 10 000, preserving the lexicographic override (AC-3).
+- `base_weight(t)`, `edge_factor(t)` and the `1/depth(t)` decay are exactly those used by `downstream_weight` (TAXONOMY.md §criticality); the two metrics share one walk implementation (`walk_cone`) and differ in the per-node accumulator (VoI additionally multiplies by `uncertainty(t)`) and in the edge channel they traverse.
+- **Edge channel.** `downstream_weight` walks the *structural* channel — `blocks` 1.0, `soft_blocks` 0.3, parent→child 0.5, and the reverse `contributes_to` edge — because a target legitimately carries the weight of the contributors riding on it. VoI walks the *unblocking* channel only: `blocks`, `soft_blocks`, parent→child. The reverse `contributes_to` edge is excluded because a target's contributors are not unblocked by the target; counting them would re-import the severity/criticality that `contributes_to` already carries ([[mem-830588f3]]). Concretely: a target accumulates `downstream_weight` from its contributors and scores no VoI from them.
+- `uncertainty(t)` is read from **each visited node**, not from the direct dependent it was reached through. Attributing a shared node's uncertainty to whichever dependent's traversal reached it first would depend on unpinned adjacency order; reading it per node is order-independent and is what VoI means — the uncertainty resolved across the cone that x unlocks.
+- **Bound.** For x whose sole successor is y, `sum_downstream(x) ≤ base_weight(y)·uncertainty(y) + sum_downstream(y)`: the value of a node that unlocks an epic can never exceed the epic's own value plus everything the epic leads to. The `1/depth` decay is what makes this hold — every term shared between x's cone and y's cone is scaled by `d/(d+1) < 1` — and it holds only because each node is counted once.
+- `/ max(effort_days(x), VOI_EFFORT_NEUTRAL_DAYS)` is the cost normalization (information-gap-ratio form, kb-9230ba76 §5): it prevents a long probe from outranking a short one with the same downstream uncertainty. `VOI_EFFORT_NEUTRAL_DAYS` (3 days) is **both** the default for unestimated work and the floor on the divisor, and the two are required to be the same constant. Were they to differ, the presence of an `effort` estimate would move the score by itself: `parse_effort_days` ceils every sub-day estimate to 1 day, so a lower floor than the default would let `effort: 1h` divide by less than an unestimated task does and inflate a task that had not changed. Because the two are equal, **an `effort` estimate can only ever lower VoI**, and only when it genuinely exceeds the neutral point. Effort is self-reported and ungoverned, so optimistic self-report earns nothing while honest largeness is still discounted. Two consequences follow and are intended: all estimates at or below 3 days are equivalent for VoI (effort is inert below the neutral point), and no estimate can raise a task above where it would sit unestimated.
+- `K_voi` is a calibration constant (`pub const K_VOI: f64 = 5000.0` in `graph_store.rs`, not a config field) chosen so `voi_value` typically remains ≤ 5 000, with a hard clamp at 5 000 (AC-11) to guarantee it stays below the SEV4-committed urgency floor of 10 000, preserving the lexicographic override (AC-3).
 
 The term reduces to 0 when `x` has **no dependents** (no task `depends_on` x), keeping backwards compatibility (AC-9): a graph with no dependency topology scores `voi_value = 0` everywhere, the legacy behaviour. `voi_value` is surfaced on metadata for filter/debug only; ranking is always via `focus_score`. Canonical definitions of the inputs `uncertainty` and `downstream_weight` live in TAXONOMY.md §Core Computed Properties.
 
@@ -306,7 +312,7 @@ The term reduces to 0 when `x` has **no dependents** (no task `depends_on` x), k
 
 `compute_urgency` MUST run before `compute_focus_scores` during graph build. Verified by current pipeline.
 
-`compute_voi_term` MUST run **after** `compute_inverses` (which materialises `x.blocks` — the dependents that form the VoI Σ-domain) **and after** `compute_downstream_metrics` — it consumes each dependent's `downstream_weight` and `uncertainty`, plus `leaf` and `dep_resolution_ratio` — and **before** `compute_focus_scores`, which sums `voi_term` into the composite. The Phase 1 dependency chain is therefore `compute_inverses` → `compute_downstream_metrics` → `compute_uncertainty` → `compute_voi_term` → `compute_focus_scores`; `compute_urgency` likewise runs before `compute_focus_scores`.
+`compute_voi_term` MUST run **after** `compute_inverses` (which materialises `x.blocks` — the dependents that form the VoI Σ-domain) **and after** `compute_uncertainty` — it consumes every cone node's `uncertainty`, plus `leaf` and `dep_resolution_ratio` — and **before** `compute_focus_scores`, which sums `voi_term` into the composite. The Phase 1 dependency chain is therefore `compute_inverses` → `compute_downstream_metrics` → `compute_uncertainty` → `compute_voi_term` → `compute_focus_scores`; `compute_urgency` likewise runs before `compute_focus_scores`.
 
 Scores are stored on `GraphNode.urgency`, `GraphNode.voi_value`, and `GraphNode.focus_score`, recomputed on every full rebuild (~300ms). No TTL cache needed at current scale.
 
@@ -346,10 +352,13 @@ The retired `task-focus-scoring` spec listed five "deferred" signals. After 2026
 
 ### Code
 
-- `compute_focus_scores` — `mem/src/graph_store.rs:914`
-- `compute_urgency` — `mem/src/graph_store.rs:1902`
-- `downstream_weight` BFS — `mem/src/graph_store.rs:1347-1470`
-- Ready-list sort — `mem/src/graph_store.rs:1663-1676`
+Cite by function name — line anchors drift.
+
+- `compute_focus_scores` — `mem/src/graph_store.rs`
+- `compute_urgency` — `mem/src/graph_store.rs`
+- Shared cone walk (`walk_cone`, `build_cone_adjacency`, `compute_cone_base_weights`) — `mem/src/graph_store.rs`
+- `compute_downstream_metrics` and `compute_voi_term` — `mem/src/graph_store.rs`
+- Ready-list sort (`sort_by_focus` / `focus_cmp`) — `mem/src/graph_store.rs`
 
 ### Research briefs
 
