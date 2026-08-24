@@ -23,6 +23,7 @@ pub struct LayoutConfig {
     pub horizontal_gap: f64,
     pub vertical_gap: f64,
     pub include_frames: bool,
+    pub layout_type: String,
 }
 
 impl Default for LayoutConfig {
@@ -34,6 +35,7 @@ impl Default for LayoutConfig {
             horizontal_gap: 120.0,
             vertical_gap: 48.0,
             include_frames: true,
+            layout_type: "sugiyama".to_string(),
         }
     }
 }
@@ -463,12 +465,63 @@ fn truncate_title(s: &str, max_len: usize) -> String {
 }
 
 /// Generate a complete [`ExcalidrawFile`] from a list of nodes and edges with Sugiyama layout.
+
+pub fn compute_radial_layout(
+    nodes: &[GraphNode],
+    edges: &[Edge],
+    config: &LayoutConfig,
+) -> HashMap<String, (f64, f64)> {
+    let mut positions = HashMap::new();
+    if nodes.is_empty() {
+        return positions;
+    }
+    
+    // Find the node with the highest degree (central hub)
+    let mut degrees = HashMap::new();
+    for edge in edges {
+        *degrees.entry(edge.source.clone()).or_insert(0) += 1;
+        *degrees.entry(edge.target.clone()).or_insert(0) += 1;
+    }
+    
+    let center_id = nodes.iter()
+        .max_by_key(|n| degrees.get(&n.id).unwrap_or(&0))
+        .map(|n| n.id.clone())
+        .unwrap_or_else(|| nodes[0].id.clone());
+        
+    let center_x = 0.0;
+    let center_y = 0.0;
+    positions.insert(center_id.clone(), (center_x, center_y));
+    
+    // Place all other nodes in a circle
+    let other_nodes: Vec<_> = nodes.iter().filter(|n| n.id != center_id).collect();
+    if other_nodes.is_empty() {
+        return positions;
+    }
+    
+    let count = other_nodes.len() as f64;
+    let radius = config.card_width * 1.5 + (count * 20.0); // scale radius by count
+    
+    for (i, node) in other_nodes.iter().enumerate() {
+        let angle = (i as f64 / count) * std::f64::consts::TAU;
+        let x = center_x + radius * angle.cos();
+        let y = center_y + radius * angle.sin();
+        positions.insert(node.id.clone(), (x, y));
+    }
+    
+    positions
+}
+
+
 pub fn generate_excalidraw_scene(
     nodes: &[GraphNode],
     edges: &[Edge],
     config: &LayoutConfig,
 ) -> ExcalidrawFile {
-    let positions = compute_sugiyama_layout(nodes, edges, config);
+    let positions = if config.layout_type.as_str() == "radial" {
+        compute_radial_layout(nodes, edges, config)
+    } else {
+        compute_sugiyama_layout(nodes, edges, config)
+    };
 
     let mut elements: Vec<ExcalidrawElement> = Vec::new();
     let mut card_elem_map: HashMap<String, String> = HashMap::new(); // node_id -> card_element_id

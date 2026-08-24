@@ -509,6 +509,10 @@ pub fn mutate_add_node(
     color: Option<&str>,
     theme: Option<&Theme>,
     custom_id: Option<&str>,
+    angle: Option<f64>,
+    roughness: Option<f64>,
+    fill_style: Option<&str>,
+    preset: Option<&str>,
 ) -> Result<(String, String), String> {
     let max_idx = max_index_of(doc);
     let minted = mint_indices(&max_idx, 2)?;
@@ -543,13 +547,32 @@ pub fn mutate_add_node(
     let default_theme = Theme::default_retro();
     let th_ref = theme.unwrap_or(&default_theme);
 
-    let bg_color = if let Some(c) = color {
-        c.to_string()
+
+    let mut bg_color = "transparent".to_string();
+    let mut applied_stroke_color = th_ref.stroke_color.clone();
+    let mut applied_fill_style = th_ref.fill_style.clone();
+    let mut applied_roughness = th_ref.roughness as f64;
+
+    if let Some(p) = preset {
+        let style = mem::excalidraw::schema::node_preset_style(p);
+        bg_color = style.bg_color.to_string();
+        applied_stroke_color = style.stroke_color.to_string();
+        applied_fill_style = style.fill_style.to_string();
+        if p == "sticky" { applied_roughness = 2.0; }
+    } else if let Some(c) = color {
+        bg_color = c.to_string();
     } else if let Some(r) = role {
-        th_ref.color_for_role(r).unwrap_or_else(|| "transparent".to_string())
-    } else {
-        "transparent".to_string()
-    };
+        bg_color = th_ref.color_for_role(r).unwrap_or_else(|| "transparent".to_string());
+    }
+    
+    if let Some(fs) = fill_style {
+        applied_fill_style = fs.to_string();
+    }
+    if let Some(r) = roughness {
+        applied_roughness = r;
+    }
+    let applied_angle = angle.unwrap_or(0.0);
+
 
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -569,13 +592,13 @@ pub fn mutate_add_node(
         "y": y,
         "width": bw,
         "height": bh,
-        "angle": 0,
-        "strokeColor": th_ref.stroke_color,
+        "angle": applied_angle,
+        "strokeColor": applied_stroke_color,
         "backgroundColor": bg_color,
-        "fillStyle": th_ref.fill_style,
+        "fillStyle": applied_fill_style,
         "strokeWidth": 2,
         "strokeStyle": "solid",
-        "roughness": th_ref.roughness,
+        "roughness": applied_roughness,
         "opacity": 100,
         "groupIds": [],
         "frameId": null,
@@ -722,6 +745,8 @@ pub fn mutate_connect(
     to_id: &str,
     label_opt: Option<&str>,
     color: Option<&str>,
+    curved: Option<bool>,
+    stroke_style: Option<&str>,
 ) -> Result<String, String> {
     let els = live(doc);
     let from_elem = els
@@ -835,13 +860,13 @@ pub fn mutate_connect(
         "backgroundColor": "transparent",
         "fillStyle": "hachure",
         "strokeWidth": 2,
-        "strokeStyle": "solid",
+        "strokeStyle": stroke_style.unwrap_or("solid"),
         "roughness": 2,
         "opacity": 100,
         "groupIds": [],
         "frameId": null,
         "index": arrow_index,
-        "roundness": { "type": 2 },
+        "roundness": if curved.unwrap_or(false) { serde_json::json!({ "type": 3 }) } else { serde_json::json!({ "type": 2 }) },
         "seed": seed1,
         "version": 1,
         "versionNonce": nonce1,
@@ -2891,6 +2916,10 @@ fn main() {
             let mut role: Option<String> = None;
             let mut color: Option<String> = None;
             let mut custom_id: Option<String> = None;
+            let mut angle: Option<f64> = None;
+            let mut roughness: Option<f64> = None;
+            let mut fill_style: Option<String> = None;
+            let mut preset: Option<String> = None;
 
             while !opts.is_empty() {
                 let flag = &opts[0];
@@ -2926,6 +2955,18 @@ fn main() {
                 } else if flag == "--id" && !opts.is_empty() {
                     custom_id = Some(opts[0].clone());
                     opts = &opts[1..];
+                } else if flag == "--angle" && !opts.is_empty() {
+                    angle = opts[0].parse().ok();
+                    opts = &opts[1..];
+                } else if flag == "--roughness" && !opts.is_empty() {
+                    roughness = opts[0].parse().ok();
+                    opts = &opts[1..];
+                } else if flag == "--fill-style" && !opts.is_empty() {
+                    fill_style = Some(opts[0].clone());
+                    opts = &opts[1..];
+                } else if flag == "--preset" && !opts.is_empty() {
+                    preset = Some(opts[0].clone());
+                    opts = &opts[1..];
                 }
             }
 
@@ -2939,6 +2980,10 @@ fn main() {
                 color.as_deref(),
                 None,
                 custom_id.as_deref(),
+                angle,
+                roughness,
+                fill_style.as_deref(),
+                preset.as_deref(),
             ) {
                 Ok((sid, tid)) => {
                     if let Err(e) = atomic_save(file_path, &mut doc) {
@@ -3004,6 +3049,8 @@ fn main() {
             let mut to_id = "".to_string();
             let mut label: Option<String> = None;
             let mut color: Option<String> = None;
+            let mut curved: Option<bool> = None;
+            let mut stroke_style: Option<String> = None;
 
             while !opts.is_empty() {
                 let flag = &opts[0];
@@ -3020,6 +3067,11 @@ fn main() {
                 } else if flag == "--color" && !opts.is_empty() {
                     color = Some(opts[0].clone());
                     opts = &opts[1..];
+                } else if flag == "--curved" {
+                    curved = Some(true);
+                } else if flag == "--stroke-style" && !opts.is_empty() {
+                    stroke_style = Some(opts[0].clone());
+                    opts = &opts[1..];
                 }
             }
 
@@ -3028,7 +3080,7 @@ fn main() {
                 process::exit(1);
             }
 
-            match mutate_connect(&mut doc, &from_id, &to_id, label.as_deref(), color.as_deref()) {
+            match mutate_connect(&mut doc, &from_id, &to_id, label.as_deref(), color.as_deref(), curved, stroke_style.as_deref()) {
                 Ok(aid) => {
                     if let Err(e) = atomic_save(file_path, &mut doc) {
                         eprintln!("error saving file: {e}");
@@ -3184,8 +3236,12 @@ fn main() {
                         let role = mut_obj.get("role").and_then(|v| v.as_str());
                         let color = mut_obj.get("color").and_then(|v| v.as_str());
                         let custom_id = mut_obj.get("id").and_then(|v| v.as_str());
+                        let angle = mut_obj.get("angle").and_then(|v| v.as_f64());
+                        let roughness = mut_obj.get("roughness").and_then(|v| v.as_f64());
+                        let fill_style = mut_obj.get("fill_style").or_else(|| mut_obj.get("fillStyle")).and_then(|v| v.as_str());
+                        let preset = mut_obj.get("preset").and_then(|v| v.as_str());
 
-                        if let Err(e) = mutate_add_node(&mut doc, elem_type, text, at, size, role, color, None, custom_id) {
+                        if let Err(e) = mutate_add_node(&mut doc, elem_type, text, at, size, role, color, None, custom_id, angle, roughness, fill_style, preset) {
                             eprintln!("batch mutation #{idx} (add-node) failed: {e}");
                             process::exit(1);
                         }
@@ -3212,8 +3268,10 @@ fn main() {
                         let to_id = mut_obj.get("to").and_then(|v| v.as_str()).unwrap_or("");
                         let label = mut_obj.get("label").and_then(|v| v.as_str());
                         let color = mut_obj.get("color").and_then(|v| v.as_str());
+                        let curved = mut_obj.get("curved").and_then(|v| v.as_bool());
+                        let stroke_style = mut_obj.get("stroke_style").or_else(|| mut_obj.get("strokeStyle")).and_then(|v| v.as_str());
 
-                        if let Err(e) = mutate_connect(&mut doc, from_id, to_id, label, color) {
+                        if let Err(e) = mutate_connect(&mut doc, from_id, to_id, label, color, curved, stroke_style) {
                             eprintln!("batch mutation #{idx} (connect) failed: {e}");
                             process::exit(1);
                         }

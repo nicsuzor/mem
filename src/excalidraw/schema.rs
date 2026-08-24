@@ -60,6 +60,18 @@ impl ElementColorStyle {
 }
 
 /// Returns the visual styling for a node given its status and type.
+
+/// Returns visual styling presets for a node based on its preset string.
+pub fn node_preset_style(preset: &str) -> ElementColorStyle {
+    match preset.to_lowercase().as_str() {
+        "hero" => ElementColorStyle::new("#fff3bf", "#f59f00", "solid", "solid", 100),
+        "sticky" => ElementColorStyle::new("#fff9db", "#f08c00", "solid", "hachure", 100),
+        "zone" => ElementColorStyle::new("#edf2ff", "#4c6ef5", "dashed", "solid", 30),
+        "badge" => ElementColorStyle::new("#1a1a1a", "#1a1a1a", "solid", "solid", 100),
+        _ => ElementColorStyle::new("#f1f3f5", "#868e96", "solid", "solid", 100), // fallback
+    }
+}
+
 pub fn node_color_style(status: Option<&str>, node_type: Option<&str>) -> ElementColorStyle {
     let t = node_type.unwrap_or("task").to_lowercase();
     let s = status.unwrap_or("inbox").to_lowercase();
