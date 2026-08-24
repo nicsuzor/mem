@@ -62,8 +62,49 @@ impl ElementColorStyle {
 /// Returns the visual styling for a node given its status and type.
 
 /// Returns visual styling presets for a node based on its preset string.
+use std::path::PathBuf;
+use std::fs;
+
+#[derive(Deserialize)]
+struct ThemeConfig {
+    presets: std::collections::HashMap<String, PresetConfig>,
+}
+
+#[derive(Deserialize)]
+struct PresetConfig {
+    bg_color: String,
+    stroke_color: String,
+    stroke_style: String,
+    fill_style: String,
+    opacity: i64,
+}
+
 pub fn node_preset_style(preset: &str) -> ElementColorStyle {
-    match preset.to_lowercase().as_str() {
+    let p = preset.to_lowercase();
+    
+    let config_path = std::env::var("EXCALIDRAW_THEME_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_default()
+                .join(".gemini/config/excalidraw_theme.json")
+        });
+
+    if let Ok(config_str) = fs::read_to_string(&config_path) {
+        if let Ok(config) = serde_json::from_str::<ThemeConfig>(&config_str) {
+            if let Some(cfg) = config.presets.get(&p) {
+                return ElementColorStyle::new(
+                    Box::leak(cfg.bg_color.clone().into_boxed_str()),
+                    Box::leak(cfg.stroke_color.clone().into_boxed_str()),
+                    Box::leak(cfg.stroke_style.clone().into_boxed_str()),
+                    Box::leak(cfg.fill_style.clone().into_boxed_str()),
+                    cfg.opacity as i32,
+                );
+            }
+        }
+    }
+
+    match p.as_str() {
         "hero" => ElementColorStyle::new("#fff3bf", "#f59f00", "solid", "solid", 100),
         "sticky" => ElementColorStyle::new("#fff9db", "#f08c00", "solid", "hachure", 100),
         "zone" => ElementColorStyle::new("#edf2ff", "#4c6ef5", "dashed", "solid", 30),
@@ -71,6 +112,7 @@ pub fn node_preset_style(preset: &str) -> ElementColorStyle {
         _ => ElementColorStyle::new("#f1f3f5", "#868e96", "solid", "solid", 100), // fallback
     }
 }
+
 
 pub fn node_color_style(status: Option<&str>, node_type: Option<&str>) -> ElementColorStyle {
     let t = node_type.unwrap_or("task").to_lowercase();
