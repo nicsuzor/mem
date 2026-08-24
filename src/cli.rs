@@ -4406,66 +4406,23 @@ fn format_complexity(complexity: &str) -> String {
     format!("{}[{complexity}]{}", colors::DIM, colors::RESET)
 }
 
+/// Pick the top `max` focus tasks.
+///
+/// Ranking delegates to the canonical scorer: `focus_score` is computed once by
+/// `GraphStore::compute_focus_scores` during the graph build, and the ordering
+/// here uses the same `GraphStore::sort_by_focus` comparator that the tree view
+/// (and the MCP `list_tasks` handler) uses. There is one focus scorer.
+///
+/// This function previously carried a second, divergent implementation — older
+/// deadline bands, no severity, no urgency, no VoI, and no suppression of the
+/// stakeholder/deadline double-count — which meant the "Today's Focus" block and
+/// the task tree rendered immediately below it could disagree about the same
+/// tasks within a single `pkb tasks` render.
 fn select_focus_picks<'a>(tasks: &[&'a graph::GraphNode], max: usize) -> Vec<&'a graph::GraphNode> {
-    let today = chrono::Utc::now().date_naive();
-
-    let mut scored: Vec<(&graph::GraphNode, i64)> = tasks
-        .iter()
-        .map(|&t| {
-            let pri = t.priority.unwrap_or(4);
-            let mut score: i64 = match pri {
-                0 => 10000,
-                1 => 5000,
-                _ => 0,
-            };
-
-            if let Some(ref due) = t.due {
-                let len = std::cmp::min(10, due.len());
-                if let Ok(due_date) = chrono::NaiveDate::parse_from_str(&due[..len], "%Y-%m-%d") {
-                    let days_until = (due_date - today).num_days();
-                    if days_until < 0 {
-                        score += 8000;
-                    } else if days_until <= 7 {
-                        score += 3000 + (7 - days_until) * 100;
-                    } else if days_until <= 30 {
-                        score += 1000;
-                    }
-                }
-            }
-
-            if pri >= 2 {
-                if let Some(days) = days_since_created(t.created.as_deref()) {
-                    score += std::cmp::min(days, 200);
-                }
-            }
-
-            score += (t.downstream_weight * 10.0) as i64;
-
-            // Stakeholder waiting urgency
-            if t.stakeholder.is_some() {
-                let anchor = t.waiting_since.as_ref().or(t.created.as_ref());
-                if let Some(anchor_str) = anchor {
-                    let len = std::cmp::min(10, anchor_str.len());
-                    if let Ok(anchor_date) = chrono::NaiveDate::parse_from_str(
-                        &anchor_str[..anchor_str.floor_char_boundary(len)],
-                        "%Y-%m-%d",
-                    ) {
-                        let days = (today - anchor_date).num_days().max(0);
-                        score += 2000 + std::cmp::min(days * 200, 6000);
-                    } else {
-                        score += 2000;
-                    }
-                } else {
-                    score += 2000;
-                }
-            }
-
-            (t, score)
-        })
-        .collect();
-
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-    scored.into_iter().take(max).map(|(t, _)| t).collect()
+    let mut ranked: Vec<&'a graph::GraphNode> = tasks.to_vec();
+    graph_store::GraphStore::sort_by_focus(&mut ranked);
+    ranked.truncate(max);
+    ranked
 }
 
 fn format_task_line(task: &graph::GraphNode, width: usize) -> String {

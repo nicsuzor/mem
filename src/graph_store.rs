@@ -37,6 +37,25 @@ pub const DEFAULT_DIVERGENCE_THRESHOLD_DAYS: i64 = 14;
 pub const DIVERGENCE_WEIGHT_THRESHOLD: f64 = 0.75;
 pub const K_VOI: f64 = 5000.0;
 
+/// Neutral effort, in days, for the VoI cost normalisation — used as BOTH the
+/// default when a task carries no `effort` estimate AND the floor on the
+/// divisor.
+///
+/// The two must be the same number. When they differ, the estimate itself moves
+/// the score: the previous code defaulted unestimated work to 3 days but floored
+/// the divisor at 0.5, and `parse_effort_days` ceils every sub-day estimate to 1
+/// day — so writing `effort: 1h` on a task tripled its VoI without changing any
+/// of the work. (The 0.5 floor was unreachable: the parser's ceil means any
+/// positive estimate is >= 1, so only a literal `0d`/`0h` could reach it.)
+///
+/// With one constant for both, adding or removing an `effort` estimate can never
+/// *raise* VoI — it can only lower it, and only when the estimate is genuinely
+/// larger than the neutral point. Effort is self-reported and ungoverned, so
+/// optimistic self-report earns nothing while honest largeness is still
+/// discounted, preserving the information-gap-ratio intent (a long probe must
+/// not outrank a short one with the same downstream uncertainty).
+pub const VOI_EFFORT_NEUTRAL_DAYS: f64 = 3.0;
+
 /// Result of a stated-vs-revealed weight divergence check.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WeightDivergence {
@@ -2577,18 +2596,21 @@ fn dfs_push_if_active(
     }
 }
 
-/// Compute downstream_weight and stakeholder_exposure via BFS through
-/// blocks/soft_blocks. Mirrors the logic from fast-indexer main.rs.
-fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
+/// Maximum BFS expansion depth for a downstream cone walk.
+///
+/// Nodes discovered *at* this depth still contribute; they are simply not
+/// expanded further. Guards against pathological chains and cycles blowing up
+/// the per-node walk.
+const MAX_CONE_DEPTH: usize = 20;
+
+/// Per-node base weight used by every cone accumulation:
+/// `priority multiplier × due multiplier`.
+///
+/// Completed/cancelled nodes and nodes with no status at all contribute 0 —
+/// finished work exerts no downstream pull. Returns `(base_weights, has_due)`.
+fn compute_cone_base_weights(nodes: &[GraphNode]) -> (Vec<f64>, Vec<bool>) {
     let excluded: HashSet<&str> = graph::COMPLETED_STATUSES.iter().copied().collect();
 
-    let id_to_idx: HashMap<String, usize> = nodes
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.id.clone(), i))
-        .collect();
-
-    // Pre-compute base weights and has_due flag
     let mut base_weights = vec![0.0; nodes.len()];
     let mut has_due = vec![false; nodes.len()];
     for (i, n) in nodes.iter().enumerate() {
@@ -2612,14 +2634,49 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
             }
         }
     }
+    (base_weights, has_due)
+}
 
-    // Pre-build adjacency lists with indices.
-    // contributes_to uses only the reverse edge (target → source). This lets a
-    // target node's BFS accumulate downstream_weight from its contributors, mirroring
-    // how a parent accumulates weight from its children. The forward edge (source →
-    // target) is intentionally omitted: including it would let BFS from source-A reach
-    // sibling source-B via the target's reverse entries, incorrectly inflating A's
-    // downstream_weight with B's base weight ("sibling contributor leakage").
+/// Which edge classes a cone walk traverses.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ConeChannel {
+    /// Everything that carries structural importance downstream: `blocks`,
+    /// `soft_blocks`, parent→child, and the reverse `contributes_to` edge. Used
+    /// by `downstream_weight`, where a target legitimately accumulates weight
+    /// from the contributors riding on it.
+    Structural,
+    /// Only what completing a node lets *proceed*: `blocks`, `soft_blocks`,
+    /// parent→child. Used by VoI.
+    ///
+    /// The reverse `contributes_to` edge is excluded here on purpose. A target's
+    /// contributors are not unblocked by the target — they *advance* it — so
+    /// counting them as VoI conflates the information channel with the
+    /// severity/criticality channel that `contributes_to` already carries. That
+    /// conflation is the defect fixed in mem-830588f3; the old term avoided it
+    /// at depth 1 (it summed over `blocks` only) but leaked it at depth >= 2,
+    /// because it multiplied by each dependent's full structural
+    /// `downstream_weight`. Measured on the live PKB, including the edge changes
+    /// nothing for actionable ready tasks and inflates ~25 non-actionable
+    /// target/goal container nodes by up to the full K_VOI clamp.
+    Unblocking,
+}
+
+/// Build the directed adjacency shared by every downstream cone walk.
+///
+/// Edge factors: `blocks` 1.0, `soft_blocks` 0.3, parent→child 0.5, and (for
+/// [`ConeChannel::Structural`] only) `contributes_to` at its verbal-scale weight.
+///
+/// contributes_to uses only the reverse edge (target → source). This lets a
+/// target node's walk accumulate from its contributors, mirroring how a parent
+/// accumulates from its children. The forward edge (source → target) is
+/// intentionally omitted: including it would let a walk from source-A reach
+/// sibling source-B via the target's reverse entries, incorrectly inflating A's
+/// cone with B's base weight ("sibling contributor leakage").
+fn build_cone_adjacency(
+    nodes: &[GraphNode],
+    id_to_idx: &HashMap<String, usize>,
+    channel: ConeChannel,
+) -> Vec<Vec<(usize, f64)>> {
     let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); nodes.len()];
     for (source_idx, n) in nodes.iter().enumerate() {
         for bid in &n.blocks {
@@ -2637,60 +2694,121 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
                 adj[source_idx].push((idx, 0.5));
             }
         }
-        for ct in &n.contributes_to {
-            if let Some(resolved) = &ct.resolved_to {
-                if let Some(&target_idx) = id_to_idx.get(resolved) {
-                    let w = ct.numeric_weight();
-                    // Reverse only: target's BFS reaches source so the target
-                    // accumulates downstream_weight from its contributors.
-                    adj[target_idx].push((source_idx, w));
+        if channel == ConeChannel::Structural {
+            for ct in &n.contributes_to {
+                if let Some(resolved) = &ct.resolved_to {
+                    if let Some(&target_idx) = id_to_idx.get(resolved) {
+                        let w = ct.numeric_weight();
+                        // Reverse only: target's walk reaches source so the target
+                        // accumulates from its contributors.
+                        adj[target_idx].push((source_idx, w));
+                    }
                 }
             }
         }
     }
+    adj
+}
 
-    let num_nodes = nodes.len();
-    let mut visited = vec![false; num_nodes];
+/// The single deduped BFS over the downstream cone. **Every** cone metric goes
+/// through this function so that dedup, depth decay, edge factors and the depth
+/// cap cannot drift apart between metrics — they differ only in the per-node
+/// accumulator supplied by the caller.
+///
+/// Walks outward from `start` through `adj`, visiting each reachable node **at
+/// most once** (first discovery wins, marked on enqueue), and invokes
+/// `visit(idx, depth, edge_factor)` exactly once per distinct visited node.
+/// `depth` is BFS discovery depth (1 for direct successors); `edge_factor` is
+/// the product of edge factors along the discovery path. `start` itself is
+/// marked visited and never visited by the callback, so a cycle back to `start`
+/// cannot double-count it.
+///
+/// The dedup is what enforces Nic's bound — a node reachable by two different
+/// routes is counted once, so unlocking a fan-out cannot be worth more than the
+/// union of what it unlocks. `visited` and `queue` are caller-owned scratch
+/// buffers, reused across starts to keep the per-node walk allocation-free.
+fn walk_cone<F>(
+    start: usize,
+    adj: &[Vec<(usize, f64)>],
+    visited: &mut [bool],
+    queue: &mut VecDeque<(usize, usize, f64)>,
+    mut visit: F,
+) where
+    F: FnMut(usize, usize, f64),
+{
+    visited.fill(false);
+    visited[start] = true;
+    queue.clear();
+
+    for &(neighbor_idx, factor) in &adj[start] {
+        bfs_enqueue(neighbor_idx, 1, factor, visited, queue);
+    }
+
+    while let Some((tid, depth, edge_factor)) = queue.pop_front() {
+        visit(tid, depth, edge_factor);
+
+        if depth < MAX_CONE_DEPTH {
+            for &(neighbor_idx, factor) in &adj[tid] {
+                bfs_enqueue(
+                    neighbor_idx,
+                    depth + 1,
+                    edge_factor * factor,
+                    visited,
+                    queue,
+                );
+            }
+        }
+    }
+}
+
+/// Compute downstream_weight and stakeholder_exposure via the shared cone walk.
+///
+/// `downstream_weight` is **not** a count of dependents. It is the depth-decayed,
+/// edge-factor-discounted sum of base weights over the distinct nodes reachable
+/// downstream:
+///
+/// ```text
+/// downstream_weight(x) = Σ over distinct t ∈ cone(x) of
+///                          (1 / depth(t)) × base_weight(t) × edge_factor(t)
+/// ```
+///
+/// Rounded to 2dp.
+fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
+    let id_to_idx: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    let (base_weights, has_due) = compute_cone_base_weights(nodes);
+    let adj = build_cone_adjacency(nodes, &id_to_idx, ConeChannel::Structural);
+
+    let mut visited = vec![false; nodes.len()];
     let mut queue = VecDeque::new();
 
-    for start_idx in 0..num_nodes {
+    for (start_idx, node) in nodes.iter_mut().enumerate() {
         let mut total_weight: f64 = 0.0;
         let mut stakeholder_found = false;
 
-        visited.fill(false);
-        visited[start_idx] = true;
-        queue.clear();
-
-        for &(neighbor_idx, factor) in &adj[start_idx] {
-            bfs_enqueue(neighbor_idx, 1, factor, &mut visited, &mut queue);
-        }
-
-        while let Some((tid, depth, edge_factor)) = queue.pop_front() {
-            let bw = base_weights[tid];
-            if bw > 0.0 {
-                let depth_decay = 1.0 / (depth as f64);
-                total_weight += depth_decay * bw * edge_factor;
-            }
-            if has_due[tid] {
-                stakeholder_found = true;
-            }
-
-            if depth < 20 {
-                for &(neighbor_idx, factor) in &adj[tid] {
-                    bfs_enqueue(
-                        neighbor_idx,
-                        depth + 1,
-                        edge_factor * factor,
-                        &mut visited,
-                        &mut queue,
-                    );
+        walk_cone(
+            start_idx,
+            &adj,
+            &mut visited,
+            &mut queue,
+            |tid, depth, edge_factor| {
+                let bw = base_weights[tid];
+                if bw > 0.0 {
+                    let depth_decay = 1.0 / (depth as f64);
+                    total_weight += depth_decay * bw * edge_factor;
                 }
-            }
-        }
+                if has_due[tid] {
+                    stakeholder_found = true;
+                }
+            },
+        );
 
-        nodes[start_idx].downstream_weight = (total_weight * 100.0).round() / 100.0;
-        nodes[start_idx].stakeholder_exposure =
-            stakeholder_found || nodes[start_idx].stakeholder.is_some();
+        node.downstream_weight = (total_weight * 100.0).round() / 100.0;
+        node.stakeholder_exposure = stakeholder_found || node.stakeholder.is_some();
     }
 }
 
@@ -2782,28 +2900,62 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
 /// Compute Value of Information (VoI) term for each node.
 ///
 /// Formula: VoI(x) = K_voi * is_leaf(x) * dep_resolution_ratio(x)
-///                   * Σ_{d ∈ dependents(x)} uncertainty(d) * downstream_weight(d)
-///                   / max(effort_days(x), 0.5)
+///                   * sum_downstream(x)
+///                   / max(effort_days(x), VOI_EFFORT_NEUTRAL_DAYS)
+///
+/// where `sum_downstream` is accumulated by the **same deduped cone walk** that
+/// produces `downstream_weight` (`walk_cone`), differing only in the per-node
+/// accumulator — it additionally weights each node by that node's own
+/// uncertainty:
+///
+/// ```text
+/// sum_downstream(x) = Σ over distinct t ∈ cone(x) of
+///                       (1 / depth(t)) × base_weight(t) × edge_factor(t) × uncertainty(t)
+/// ```
 ///
 /// VoI rewards uncertainty-resolving work (spikes/probes) that *unblocks a
-/// downstream cone*. The Σ-domain is therefore the set of **dependents** of `x`
-/// — tasks that `depends_on` x (materialised as `x.blocks` via `compute_inverses`)
-/// — i.e. the information channel: doing x lets that downstream work proceed.
+/// downstream cone*. The domain is therefore the cone reachable from `x` — the
+/// information channel: doing x lets that downstream work proceed.
 ///
-/// This deliberately does NOT key off `contributes_to` targets. A pure
-/// deliverable wired to a busy, slightly-uncertain target resolves no
-/// uncertainty for downstream work and must score ~0 VoI; its importance is
-/// already carried by the severity/criticality channel (target severity reaching
-/// the task through `contributes_to`). Keying off `contributes_to.downstream_weight`
-/// re-counted that same importance (mem-830588f3).
+/// Two properties of this shape are load-bearing:
+///
+/// - **Dedup.** A subtree reachable from two of x's dependents is counted
+///   **once**. Summing each dependent's precomputed `downstream_weight` scalar
+///   instead (the previous shape) counted such a subtree once per dependent,
+///   because each dependent's weight was deduped only within its own walk. That
+///   broke the governing bound: *the value of a node that unlocks an epic can
+///   never exceed the epic's own value plus everything the epic leads to.* The
+///   `1/depth` decay is what enforces that bound, and it only holds if each node
+///   is counted once.
+/// - **Depth-1 inclusion.** The direct dependents themselves are part of the
+///   sum. The previous shape multiplied by the dependent's *cone*, which
+///   excludes the dependent — so a task whose dependents were all leaves
+///   (`downstream_weight == 0`) scored VoI 0 no matter how valuable those leaves
+///   were. Unblocking a valuable leaf is worth something.
+///
+/// Uncertainty is read from **each visited node**, not from the direct
+/// dependent. That is order-independent (attributing a shared node to whichever
+/// dependent's BFS reached it first would depend on unpinned adjacency order)
+/// and is what VoI is supposed to mean: the uncertainty you resolve across the
+/// cone you unlock.
+///
+/// This deliberately does NOT key off `contributes_to` targets in the forward
+/// direction. A pure deliverable wired to a busy, slightly-uncertain target
+/// resolves no uncertainty for downstream work and must score ~0 VoI; its
+/// importance is already carried by the severity/criticality channel (target
+/// severity reaching the task through `contributes_to`). Keying off
+/// `contributes_to.downstream_weight` re-counted that same importance
+/// (mem-830588f3). `build_cone_adjacency` adds only the reverse edge, so a node
+/// that merely *contributes to* a target gains nothing from it here.
 ///
 /// Two distinct dependency directions, never conflated:
 /// - `dep_resolution_ratio` keys on **x's own `depends_on`** (upstream readiness:
 ///   how much of what x waits on is resolved). A blocked x cannot realise its VoI yet.
-/// - the Σ-sum keys on **x's dependents** (`x.blocks`, downstream: what waits on x).
+/// - the cone walk keys on **x's dependents** (`x.blocks`, downstream: what waits on x)
+///   and what lies beyond them.
 ///
-/// Edge weight is 1.0: `depends_on`/`blocks` are hard binary dependencies with no
-/// verbal-scale weight (unlike `contributes_to`).
+/// Edge weight for `depends_on`/`blocks` is 1.0: they are hard binary
+/// dependencies with no verbal-scale weight (unlike `contributes_to`).
 fn compute_voi_term(nodes: &mut [GraphNode]) {
     let id_to_idx: HashMap<String, usize> = nodes
         .iter()
@@ -2811,7 +2963,13 @@ fn compute_voi_term(nodes: &mut [GraphNode]) {
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
+    let (base_weights, _has_due) = compute_cone_base_weights(nodes);
+    let adj = build_cone_adjacency(nodes, &id_to_idx, ConeChannel::Unblocking);
+    let uncertainties: Vec<f64> = nodes.iter().map(|n| n.uncertainty).collect();
+
     let mut voi_values: Vec<Option<f64>> = vec![None; nodes.len()];
+    let mut visited = vec![false; nodes.len()];
+    let mut queue = VecDeque::new();
 
     for i in 0..nodes.len() {
         let node = &nodes[i];
@@ -2835,22 +2993,32 @@ fn compute_voi_term(nodes: &mut [GraphNode]) {
             dep_resolution_ratio = resolved_deps as f64 / total_deps as f64;
         }
 
-        // Downstream cone: sum over the tasks that depend on x (x.blocks). With no
-        // dependents the sum is 0 → VoI = 0 (legacy zero-condition, re-keyed AC-9).
+        // Downstream cone: one deduped walk from x. With no dependents the cone is
+        // empty and the sum is 0 → VoI = 0 (legacy zero-condition, re-keyed AC-9).
         let mut sum_downstream = 0.0;
-        for dep_id in &node.blocks {
-            if let Some(&d_idx) = id_to_idx.get(dep_id) {
-                let dependent = &nodes[d_idx];
-                sum_downstream += dependent.uncertainty * dependent.downstream_weight;
-            }
-        }
+        walk_cone(
+            i,
+            &adj,
+            &mut visited,
+            &mut queue,
+            |tid, depth, edge_factor| {
+                let bw = base_weights[tid];
+                if bw > 0.0 {
+                    let depth_decay = 1.0 / (depth as f64);
+                    sum_downstream += depth_decay * bw * edge_factor * uncertainties[tid];
+                }
+            },
+        );
 
+        // Default and floor are the same constant, so an `effort` estimate can
+        // only ever discount VoI, never inflate it. See VOI_EFFORT_NEUTRAL_DAYS.
         let effort_days = node
             .effort
             .as_deref()
             .and_then(crate::graph::parse_effort_days)
-            .unwrap_or(3) as f64;
-        let effort_norm = effort_days.max(0.5);
+            .map(|d| d as f64)
+            .unwrap_or(VOI_EFFORT_NEUTRAL_DAYS);
+        let effort_norm = effort_days.max(VOI_EFFORT_NEUTRAL_DAYS);
 
         let voi = K_VOI * 1.0 * dep_resolution_ratio * sum_downstream / effort_norm;
         voi_values[i] = Some(voi.min(K_VOI));
@@ -6301,25 +6469,52 @@ mod tests {
             d.frontmatter = Some(serde_json::Value::Object(fm));
             d
         };
+        // Set an explicit frontmatter field on an already-built fixture doc.
+        let with_fm = |mut d: crate::pkb::PkbDocument, k: &str, v: serde_json::Value| {
+            let mut fm = d.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert(k.to_string(), v);
+            d.frontmatter = Some(serde_json::Value::Object(fm));
+            d
+        };
 
         // --- Positive (modest): spike unblocks a dependent with uncertainty 0.5,
         //     downstream_weight 1.0 (one child), effort 1d.
-        //     VoI = 5000 * 1.0(dep_ratio) * (0.5 * 1.0) / max(1,0.5) = 2500.
+        //     The cone walk sums over DISTINCT reachable nodes, each weighted by its
+        //     OWN uncertainty, and includes the depth-1 dependent itself:
+        //       dep-modest @d1: (1/1) * base 0.5 * factor 1.0 * unc 0.5      = 0.25
+        //       kid-m      @d2: (1/2) * base 2.0 * factor 0.5 * unc 0.40     = 0.20
+        //     sum = 0.45 -> VoI = 5000 * 1.0(dep_ratio) * 0.45 / max(1, 3) = 750.
+        //     (effort 1d is below the neutral point, so the divisor floors at 3 —
+        //      a small estimate earns no bonus; see VOI_EFFORT_NEUTRAL_DAYS.)
         let spike_modest = make_spike("spike-modest", "1d");
         let dep_modest = make_dependent("dep-modest", "spike-modest", 0.5);
         let dep_modest_child = child_of("kid-m", "dep-modest");
 
-        // --- Cap: dependent uncertainty 1.0, downstream_weight 2.0 (two children),
-        //     spike effort 1d. Raw = 5000 * (1.0 * 2.0) / 1.0 = 10000 -> clamped 5000.
+        // --- Cap: dependent uncertainty 1.0 and P0 (base_weight 5.0), two children,
+        //     spike effort 1d.
+        //       dep-extreme @d1: (1/1) * base 5.0 * factor 1.0 * unc 1.0  = 5.0
+        //       kid-e1/e2  @d2: (1/2) * base 2.0 * factor 0.5 * unc 0.40  = 0.2 each
+        //     sum = 5.4 -> raw 5000 * 5.4 / 3 = 9000 -> clamped to 5000.
         let spike_extreme = make_spike("spike-extreme", "1d");
-        let dep_extreme = make_dependent("dep-extreme", "spike-extreme", 0.0);
+        let dep_extreme = with_fm(
+            make_dependent("dep-extreme", "spike-extreme", 0.0),
+            "priority",
+            serde_json::json!(0),
+        );
         let dep_extreme_c1 = child_of("kid-e1", "dep-extreme");
         let dep_extreme_c2 = child_of("kid-e2", "dep-extreme");
 
-        // --- Zero uncertainty: dependent confidence 1.0 (uncertainty 0) -> VoI 0.
+        // --- Zero uncertainty: the ENTIRE cone is certain -> VoI 0. Uncertainty is
+        //     now read per visited node, so the child must be certain too; a certain
+        //     dependent with an uncertain child legitimately carries VoI (there is
+        //     still information to resolve downstream).
         let spike_zero = make_spike("spike-zero", "1d");
         let dep_certain = make_dependent("dep-certain", "spike-zero", 1.0);
-        let dep_certain_child = child_of("kid-c", "dep-certain");
+        let dep_certain_child = with_fm(
+            child_of("kid-c", "dep-certain"),
+            "confidence",
+            serde_json::json!(1.0),
+        );
 
         // --- AC(b): a leaf wired via contributes_to to a busy, uncertain target,
         //     with NO dependents, must score ~0 VoI regardless of the target's
@@ -6405,8 +6600,10 @@ mod tests {
         let s_modest = store.get_node("spike-modest").unwrap();
         assert_eq!(
             s_modest.voi_value.unwrap_or(0.0),
-            2500.0,
-            "spike unblocking an unc=0.5, dw=1.0 dependent (effort 1d) -> VoI 2500"
+            750.0,
+            "spike unblocking an unc=0.5 dependent (effort 1d) -> VoI 750: the \
+             depth-1 dependent (0.25) plus its depth-2 child (0.20), each at its own \
+             uncertainty, over the neutral effort divisor 3"
         );
 
         // Cap (AC-11): raw 10000 clamps to 5000.
@@ -6422,7 +6619,7 @@ mod tests {
         assert_eq!(
             s_zero.voi_value.unwrap_or(0.0),
             0.0,
-            "zero-uncertainty dependent -> VoI 0"
+            "a cone with zero uncertainty everywhere -> VoI 0"
         );
 
         // AC(b): no dependents -> ~0 VoI regardless of contributes_to target weight.
@@ -6444,6 +6641,628 @@ mod tests {
             s_non_leaf.voi_value.unwrap_or(0.0),
             0.0,
             "VoI must be 0 for non-leaf nodes"
+        );
+    }
+
+
+    // ── Cone-walk invariants ────────────────────────────────────────────────
+    //
+    // These exercise the shared `walk_cone` that both `downstream_weight` and the
+    // VoI `sum_downstream` consume. They are built from `GraphNode`s directly
+    // rather than through the document pipeline so the arithmetic is exact and
+    // the topology is unambiguous.
+
+    /// Effort carried by every cone fixture node. Chosen large enough that the
+    /// raw `sum_downstream` stays well under the `K_VOI` clamp and so remains
+    /// readable back out of `voi_value` (see `voi_sum_of`).
+    const CONE_EFFORT_DAYS: f64 = 10.0;
+
+    /// Build a task node with an explicit base weight and uncertainty.
+    /// `priority` drives `base_weight` (P0:5, P1:3, P2:2, P3:1, else 0.5).
+    fn cone_node(id: &str, priority: i32, uncertainty: f64) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            status: Some("active".to_string()),
+            priority: Some(priority),
+            uncertainty,
+            leaf: true,
+            effort: Some("10d".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// Wire `from` -> `to` as a hard `blocks` edge (edge factor 1.0), which is
+    /// what `depends_on` materialises to via `compute_inverses`.
+    fn cone_blocks(nodes: &mut [GraphNode], from: &str, to: &str) {
+        let ti = nodes.iter().position(|n| n.id == to).expect("target exists");
+        nodes[ti].depends_on.push(from.to_string());
+        let fi = nodes
+            .iter()
+            .position(|n| n.id == from)
+            .expect("source exists");
+        nodes[fi].blocks.push(to.to_string());
+    }
+
+    fn cone_get<'a>(nodes: &'a [GraphNode], id: &str) -> &'a GraphNode {
+        nodes.iter().find(|n| n.id == id).expect("node exists")
+    }
+
+    /// Recover the raw `sum_downstream` from a node's published `voi_value`.
+    /// Valid only while the value is below the clamp; fixtures are sized to stay
+    /// under it. `voi = K_VOI * dep_ratio * sum / effort_norm`, and these fixtures
+    /// use effort 1d (norm 1.0) with no unresolved `depends_on` (ratio 1.0).
+    fn voi_sum_of(node: &GraphNode) -> f64 {
+        let v = node.voi_value.unwrap_or(0.0);
+        assert!(
+            v < K_VOI,
+            "fixture must stay below the VoI clamp to be readable, got {v}"
+        );
+        v * CONE_EFFORT_DAYS / K_VOI
+    }
+
+    /// THE dedup property, asserted at the source: `walk_cone` must invoke its
+    /// callback **at most once per node**, on any topology — including diamonds
+    /// (two routes to one node) and cycles (a route back to the start).
+    ///
+    /// This is the invariant the old VoI term violated. It summed each direct
+    /// dependent's precomputed `downstream_weight`, and those scalars were each
+    /// deduped only within their own walk — so a subtree reachable from two
+    /// dependents was added once per dependent.
+    #[test]
+    fn test_walk_cone_visits_each_node_at_most_once() {
+        // a -> b, a -> c, b -> d, c -> d  (diamond)
+        // d -> a                          (cycle back to the start)
+        // c -> e, e -> b                  (cross edge, second route into b)
+        let mut nodes = vec![
+            cone_node("a", 3, 0.5),
+            cone_node("b", 3, 0.5),
+            cone_node("c", 3, 0.5),
+            cone_node("d", 3, 0.5),
+            cone_node("e", 3, 0.5),
+        ];
+        for (f, t) in [
+            ("a", "b"),
+            ("a", "c"),
+            ("b", "d"),
+            ("c", "d"),
+            ("d", "a"),
+            ("c", "e"),
+            ("e", "b"),
+        ] {
+            cone_blocks(&mut nodes, f, t);
+        }
+
+        let id_to_idx: HashMap<String, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.clone(), i))
+            .collect();
+        let adj = build_cone_adjacency(&nodes, &id_to_idx, ConeChannel::Structural);
+        let mut visited = vec![false; nodes.len()];
+        let mut queue = VecDeque::new();
+
+        for (start, start_node) in nodes.iter().enumerate() {
+            let mut seen: Vec<usize> = Vec::new();
+            walk_cone(start, &adj, &mut visited, &mut queue, |tid, _d, _f| {
+                seen.push(tid)
+            });
+
+            let mut sorted = seen.clone();
+            sorted.sort_unstable();
+            let before = sorted.len();
+            sorted.dedup();
+            assert_eq!(
+                before,
+                sorted.len(),
+                "walk_cone from {} visited a node twice: {:?}",
+                start_node.id,
+                seen
+            );
+            assert!(
+                !seen.contains(&start),
+                "walk_cone from {} visited its own start node (cycle re-entry)",
+                start_node.id
+            );
+        }
+    }
+
+    /// Diamond: A blocks B and C; B and C both block D. D must be counted ONCE.
+    ///
+    /// base_weight is 1.0 for every node (P3, no due); every edge is `blocks`
+    /// (factor 1.0); every uncertainty is 0.5.
+    ///
+    ///   downstream_weight(A) = B@d1 (1/1 × 1.0) + C@d1 (1/1 × 1.0) + D@d2 (1/2 × 1.0)
+    ///                        = 1.0 + 1.0 + 0.5 = 2.5
+    ///   sum_downstream(A)    = each of the above × that node's own uncertainty 0.5
+    ///                        = 0.5 + 0.5 + 0.25 = 1.25
+    ///
+    /// Double-counting D would give 3.0 and 1.5 respectively.
+    #[test]
+    fn test_cone_walk_dedups_shared_subtree_in_diamond() {
+        let mut nodes = vec![
+            cone_node("dia-a", 3, 0.5),
+            cone_node("dia-b", 3, 0.5),
+            cone_node("dia-c", 3, 0.5),
+            cone_node("dia-d", 3, 0.5),
+        ];
+        for (f, t) in [
+            ("dia-a", "dia-b"),
+            ("dia-a", "dia-c"),
+            ("dia-b", "dia-d"),
+            ("dia-c", "dia-d"),
+        ] {
+            cone_blocks(&mut nodes, f, t);
+        }
+
+        compute_downstream_metrics(&mut nodes);
+        compute_voi_term(&mut nodes);
+
+        let a = cone_get(&nodes, "dia-a");
+        let b = cone_get(&nodes, "dia-b");
+        let d = cone_get(&nodes, "dia-d");
+
+        assert_eq!(d.downstream_weight, 0.0, "D is a sink");
+        assert_eq!(b.downstream_weight, 1.0, "B reaches only D at depth 1");
+        assert_eq!(
+            a.downstream_weight, 2.5,
+            "shared node D must be counted once (double-counted would be 3.0)"
+        );
+        assert!(
+            (voi_sum_of(a) - 1.25).abs() < 1e-9,
+            "VoI sum must dedup D (double-counted would be 1.5), got {}",
+            voi_sum_of(a)
+        );
+    }
+
+    /// Control for the diamond: same fan-out, same node count, but the two
+    /// dependents' cones are DISJOINT (B->D, C->E rather than both -> D).
+    ///
+    /// The disjoint graph must score strictly higher, and by exactly the one
+    /// depth-2 term that the diamond shares (1/2 × 1.0 = 0.5 for
+    /// downstream_weight, × uncertainty 0.5 = 0.25 for the VoI sum). Together
+    /// with the diamond test this pins the dedup: identical shape, and the only
+    /// difference in the numbers is the single shared node.
+    #[test]
+    fn test_multi_dependent_disjoint_cones_are_additive() {
+        let mut nodes = vec![
+            cone_node("dis-a", 3, 0.5),
+            cone_node("dis-b", 3, 0.5),
+            cone_node("dis-c", 3, 0.5),
+            cone_node("dis-d", 3, 0.5),
+            cone_node("dis-e", 3, 0.5),
+        ];
+        for (f, t) in [
+            ("dis-a", "dis-b"),
+            ("dis-a", "dis-c"),
+            ("dis-b", "dis-d"),
+            ("dis-c", "dis-e"),
+        ] {
+            cone_blocks(&mut nodes, f, t);
+        }
+
+        compute_downstream_metrics(&mut nodes);
+        compute_voi_term(&mut nodes);
+
+        let a = cone_get(&nodes, "dis-a");
+        assert_eq!(
+            a.downstream_weight, 3.0,
+            "two disjoint depth-2 tails: 1.0 + 1.0 + 0.5 + 0.5"
+        );
+        assert!(
+            (voi_sum_of(a) - 1.5).abs() < 1e-9,
+            "disjoint VoI sum = 0.5 + 0.5 + 0.25 + 0.25, got {}",
+            voi_sum_of(a)
+        );
+
+        // The diamond (shared tail) must be exactly one depth-2 term lower.
+        let mut shared = vec![
+            cone_node("dia2-a", 3, 0.5),
+            cone_node("dia2-b", 3, 0.5),
+            cone_node("dia2-c", 3, 0.5),
+            cone_node("dia2-d", 3, 0.5),
+        ];
+        for (f, t) in [
+            ("dia2-a", "dia2-b"),
+            ("dia2-a", "dia2-c"),
+            ("dia2-b", "dia2-d"),
+            ("dia2-c", "dia2-d"),
+        ] {
+            cone_blocks(&mut shared, f, t);
+        }
+        compute_downstream_metrics(&mut shared);
+        compute_voi_term(&mut shared);
+        let sa = cone_get(&shared, "dia2-a");
+
+        assert_eq!(
+            a.downstream_weight - sa.downstream_weight,
+            0.5,
+            "sharing one depth-2 node must remove exactly one 1/2 × 1.0 term"
+        );
+        assert!(
+            (voi_sum_of(a) - voi_sum_of(sa) - 0.25).abs() < 1e-9,
+            "sharing one depth-2 node must remove exactly one 1/2 × 1.0 × 0.5 term"
+        );
+    }
+
+    /// Second defect, isolated: unblocking a *leaf* dependent must be worth
+    /// something.
+    ///
+    /// The previous term was `Σ_{d ∈ dependents} uncertainty(d) × downstream_weight(d)`
+    /// — it multiplied by the dependent's CONE, which excludes the dependent
+    /// itself. So a task whose dependents are all leaves (`downstream_weight ==
+    /// 0`) scored VoI 0 however valuable those leaves were.
+    ///
+    /// This fixture removes every other explanation: X is a leaf (passes the leaf
+    /// gate), X has no `depends_on` (so `dep_resolution_ratio` is 1.0, not 0),
+    /// and Y carries real base weight and real uncertainty. The only thing that
+    /// can zero the term is the excluded depth-1 node.
+    ///
+    ///   sum_downstream(X) = Y@d1 (1/1 × base 1.0 × factor 1.0 × unc 0.5) = 0.5
+    ///   voi(X) = 5000 × 1.0 × 0.5 / 10 (effort) = 250
+    #[test]
+    fn test_voi_credits_unblocking_a_leaf_dependent() {
+        let mut nodes = vec![cone_node("leafdep-x", 3, 0.5), cone_node("leafdep-y", 3, 0.5)];
+        cone_blocks(&mut nodes, "leafdep-x", "leafdep-y");
+
+        compute_downstream_metrics(&mut nodes);
+        compute_voi_term(&mut nodes);
+
+        let x = cone_get(&nodes, "leafdep-x");
+        let y = cone_get(&nodes, "leafdep-y");
+
+        // Preconditions that make this a clean isolation of the defect.
+        assert_eq!(
+            y.downstream_weight, 0.0,
+            "Y must be a true leaf with an empty cone for this test to isolate the defect"
+        );
+        assert!(x.leaf, "X must pass the leaf gate");
+        assert!(
+            x.depends_on.is_empty(),
+            "X must have no unresolved deps, so dep_resolution_ratio is 1.0, not 0"
+        );
+
+        assert_eq!(
+            x.voi_value.unwrap_or(0.0),
+            250.0,
+            "unblocking a valuable leaf must carry VoI; the previous term scored this 0 \
+             because it multiplied by the dependent's cone rather than including the \
+             dependent itself"
+        );
+    }
+
+
+    /// Quantifies the defect this change fixes, on one fixture, in both shapes.
+    ///
+    /// Topology — a diamond with a heavy shared tail:
+    ///   A -> B, A -> C, B -> D, C -> D, D -> E, E -> F
+    /// B, C, D are P3 (base_weight 1.0); E, F are P0 (base_weight 5.0);
+    /// every node has uncertainty 0.5 and every edge is `blocks` (factor 1.0).
+    ///
+    /// The LEGACY term was `Σ_{d ∈ x.blocks} uncertainty(d) × downstream_weight(d)`.
+    /// `downstream_weight` dedups only within its OWN walk, so the entire shared
+    /// tail {D, E, F} sits inside both dw(B) and dw(C) and was added twice:
+    ///
+    ///   legacy_sum(A) = 0.5 × dw(B) + 0.5 × dw(C) = 0.5 × 5.17 × 2 = 5.17
+    ///
+    /// The deduped cone walk counts each distinct node once, with decay by its
+    /// own discovery depth from A:
+    ///
+    ///   B@d1 1/1 × 1.0 × 0.5 = 0.5      C@d1 1/1 × 1.0 × 0.5 = 0.5
+    ///   D@d2 1/2 × 1.0 × 0.5 = 0.25     E@d3 1/3 × 5.0 × 0.5 = 0.8333…
+    ///   F@d4 1/4 × 5.0 × 0.5 = 0.625
+    ///   new_sum(A) = 2.7083…
+    ///
+    /// i.e. the legacy term overstated this node by ~1.9×. Note the legacy shape
+    /// also omitted B and C themselves (it multiplied by each dependent's cone,
+    /// which excludes the dependent) — the two defects partially cancel on a
+    /// shallow diamond, which is exactly why neither showed up as an obviously
+    /// wrong number.
+    #[test]
+    fn test_legacy_voi_double_counted_a_shared_subtree() {
+        let mut nodes = vec![
+            cone_node("deep-a", 3, 0.5),
+            cone_node("deep-b", 3, 0.5),
+            cone_node("deep-c", 3, 0.5),
+            cone_node("deep-d", 3, 0.5),
+            cone_node("deep-e", 0, 0.5),
+            cone_node("deep-f", 0, 0.5),
+        ];
+        for (f, t) in [
+            ("deep-a", "deep-b"),
+            ("deep-a", "deep-c"),
+            ("deep-b", "deep-d"),
+            ("deep-c", "deep-d"),
+            ("deep-d", "deep-e"),
+            ("deep-e", "deep-f"),
+        ] {
+            cone_blocks(&mut nodes, f, t);
+        }
+
+        compute_downstream_metrics(&mut nodes);
+        compute_voi_term(&mut nodes);
+
+        let a = cone_get(&nodes, "deep-a");
+        let b = cone_get(&nodes, "deep-b");
+        let c = cone_get(&nodes, "deep-c");
+
+        // downstream_weight is unchanged by this refactor — it already deduped.
+        assert_eq!(b.downstream_weight, 5.17, "dw(B) = 1.0 + 2.5 + 1.667");
+        assert_eq!(a.downstream_weight, 5.42, "dw(A) = 1.0 + 1.0 + 0.5 + 1.667 + 1.25");
+
+        // Reconstruct exactly what the legacy term computed, from the same
+        // (unchanged) downstream_weight values it read.
+        let legacy_sum: f64 = [b, c]
+            .iter()
+            .map(|d| d.uncertainty * d.downstream_weight)
+            .sum();
+        assert!(
+            (legacy_sum - 5.17).abs() < 1e-9,
+            "legacy sum should be 5.17, got {legacy_sum}"
+        );
+
+        let new_sum = voi_sum_of(a);
+        assert!(
+            (new_sum - 2.708_333_333_333_333).abs() < 1e-9,
+            "deduped cone sum should be 2.7083…, got {new_sum}"
+        );
+
+        assert!(
+            legacy_sum > new_sum * 1.9,
+            "the legacy term overstated this node by ~1.9x: legacy {legacy_sum} vs new {new_sum}"
+        );
+
+        // The governing bound itself is asserted over generated DAGs in
+        // `test_unlock_valuation_is_bounded_by_the_thing_unlocked`. It cannot be
+        // read off `voi_value` here: B and C each have an unresolved `depends_on`
+        // (on A), so their `dep_resolution_ratio` is 0 and their published
+        // `voi_value` is 0 regardless of the cone beneath them. That gate is
+        // pre-existing and unchanged by this fix.
+    }
+
+    /// VoI walks only the unblocking channel; `downstream_weight` walks the
+    /// structural one.
+    ///
+    /// A target accumulates `downstream_weight` from the contributors riding on
+    /// it (reverse `contributes_to` edge) — that is its structural importance.
+    /// It must NOT accumulate VoI from them: contributors are not unblocked by
+    /// the target, so counting them would re-import the severity/criticality
+    /// that `contributes_to` already carries (the mem-830588f3 defect). The old
+    /// term avoided this at depth 1 but leaked it at depth >= 2 by multiplying
+    /// through each dependent's structural `downstream_weight`.
+    #[test]
+    fn test_voi_ignores_contributes_to_contributors() {
+        let mut target = cone_node("chan-target", 3, 0.5);
+        let mut contributor = cone_node("chan-contrib", 0, 0.5);
+        contributor.contributes_to = vec![crate::graph::ContributesTo {
+            to: "chan-target".to_string(),
+            stated_weight: "Certain".to_string(),
+            justification: String::new(),
+            current_weight: None,
+            resolved_to: Some("chan-target".to_string()),
+            inherits_from: None,
+            brier_history: Vec::new(),
+            last_interacted: None,
+            anomaly_flag: false,
+        }];
+        let mut nodes = vec![target.clone(), contributor];
+
+        compute_downstream_metrics(&mut nodes);
+        compute_voi_term(&mut nodes);
+
+        let t = cone_get(&nodes, "chan-target");
+        assert_eq!(
+            t.downstream_weight, 5.0,
+            "structural channel: the target carries its P0 contributor's base weight \
+             (1/1 x 5.0 x 1.0)"
+        );
+        assert_eq!(
+            t.voi_value.unwrap_or(-1.0),
+            0.0,
+            "unblocking channel: the target unblocks nothing, so VoI is 0 however much \
+             contributes_to weight rides on it"
+        );
+
+        // Sanity: the same target DOES earn VoI once something actually depends on it.
+        target.id = "chan-target2".to_string();
+        let mut nodes2 = vec![target, cone_node("chan-dependent", 3, 0.5)];
+        cone_blocks(&mut nodes2, "chan-target2", "chan-dependent");
+        compute_downstream_metrics(&mut nodes2);
+        compute_voi_term(&mut nodes2);
+        assert!(
+            cone_get(&nodes2, "chan-target2").voi_value.unwrap_or(0.0) > 0.0,
+            "a real dependent must still produce VoI"
+        );
+    }
+
+    /// Writing an `effort` estimate must never RAISE a task's VoI.
+    ///
+    /// `VOI_EFFORT_NEUTRAL_DAYS` is both the default for unestimated work and the
+    /// floor on the divisor, so the two cannot drift apart. Previously they did:
+    /// the default was 3 days but the floor was 0.5, and `parse_effort_days`
+    /// ceils every sub-day estimate to 1 day — so adding `effort: 1h` to a task
+    /// divided by 1 instead of 3 and tripled its score, with no change to the
+    /// work. Observed live on `brain_8e7dcf7a`: voi_value 1437.5 -> 4312.5 across
+    /// an edit that only added `effort: "1h"`.
+    ///
+    /// Estimates at or below the neutral point are all equivalent; estimates
+    /// above it discount VoI proportionally.
+    #[test]
+    fn test_effort_estimate_never_inflates_voi() {
+        // X unblocks Y; only X's `effort` varies between runs.
+        let voi_for = |effort: Option<&str>| -> f64 {
+            let mut nodes = vec![cone_node("eff-x", 3, 0.5), cone_node("eff-y", 3, 0.5)];
+            nodes[0].effort = effort.map(|e| e.to_string());
+            cone_blocks(&mut nodes, "eff-x", "eff-y");
+            compute_downstream_metrics(&mut nodes);
+            compute_voi_term(&mut nodes);
+            cone_get(&nodes, "eff-x").voi_value.unwrap_or(0.0)
+        };
+
+        // sum_downstream = Y@d1 (1/1 × base 1.0 × factor 1.0 × unc 0.5) = 0.5
+        // baseline (no estimate) = 5000 × 0.5 / 3 = 833.33…
+        let unestimated = voi_for(None);
+        assert!(
+            (unestimated - 5000.0 * 0.5 / VOI_EFFORT_NEUTRAL_DAYS).abs() < 1e-9,
+            "unestimated must divide by the neutral point, got {unestimated}"
+        );
+
+        // Every sub-neutral estimate must be EQUAL to unestimated, never higher.
+        for e in ["1h", "2h", "4h", "8h", "0.5d", "1d", "2d", "3d"] {
+            let v = voi_for(Some(e));
+            assert!(
+                (v - unestimated).abs() < 1e-9,
+                "effort {e:?} changed VoI from {unestimated} to {v}; an estimate at or                  below the neutral point must not move the score"
+            );
+        }
+
+        // Estimates above the neutral point still discount, proportionally.
+        let week = voi_for(Some("1w")); // 7 days
+        assert!(
+            (week - 5000.0 * 0.5 / 7.0).abs() < 1e-9,
+            "a genuinely large estimate must still discount VoI, got {week}"
+        );
+        assert!(
+            week < unestimated,
+            "1w must score below the neutral point: {week} vs {unestimated}"
+        );
+    }
+
+    /// Nic's principle as a property test, over generated DAGs:
+    ///
+    ///   **the value of a node that unlocks an epic can't be greater than the
+    ///   epic's value alone** — i.e. for X whose sole successor is Y,
+    ///
+    ///       valuation(X) <= base_weight(Y) + valuation(Y)
+    ///
+    /// Unlocking something is worth at most that thing plus everything it leads
+    /// to. It is the `1/depth` decay that makes this true: every term shared
+    /// between X's cone and Y's cone is scaled by d/(d+1) < 1 in X's walk. The
+    /// bound only holds if each node is counted ONCE, which is why this is the
+    /// right property to pin the dedup with.
+    ///
+    /// Asserted for both cone metrics: `downstream_weight` (weight = base_weight)
+    /// and the VoI `sum_downstream` (weight = base_weight × uncertainty).
+    ///
+    /// Restricted to single-successor X because that is the case the principle
+    /// speaks to; where X unlocks several things it is legitimately worth more
+    /// than any one of them. Graphs are generated over a fixed topological order
+    /// so they are acyclic, with a deterministic LCG so failures reproduce.
+    #[test]
+    fn test_unlock_valuation_is_bounded_by_the_thing_unlocked() {
+        // Deterministic LCG (numerical recipes constants) — no external dep.
+        let mut seed: u64 = 0x5EED_1234_ABCD_0001;
+        let mut next = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 16) as u32
+        };
+
+        let priorities = [0i32, 1, 2, 3, 4];
+        let mut checked = 0usize;
+
+        for case in 0..300 {
+            let n = 3 + (next() as usize % 10); // 3..=12 nodes
+            let mut nodes: Vec<GraphNode> = (0..n)
+                .map(|i| {
+                    let p = priorities[next() as usize % priorities.len()];
+                    // uncertainty in [0,1] at 1/16 granularity
+                    let u = (next() % 17) as f64 / 16.0;
+                    let mut node = cone_node(&format!("c{case}-n{i}"), p, u);
+                    // ~1 in 5 nodes carries a due date (base_weight × 2)
+                    if next() % 5 == 0 {
+                        node.due = Some("2030-01-01".to_string());
+                    }
+                    node
+                })
+                .collect();
+
+            // Edges only from lower index to higher index => acyclic.
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    if next() % 4 == 0 {
+                        let (f, t) = (nodes[i].id.clone(), nodes[j].id.clone());
+                        cone_blocks(&mut nodes, &f, &t);
+                    }
+                }
+            }
+
+            let (base_weights, _) = compute_cone_base_weights(&nodes);
+            let id_to_idx: HashMap<String, usize> = nodes
+                .iter()
+                .enumerate()
+                .map(|(i, node)| (node.id.clone(), i))
+                .collect();
+            let adj = build_cone_adjacency(&nodes, &id_to_idx, ConeChannel::Structural);
+            let mut visited = vec![false; nodes.len()];
+            let mut queue = VecDeque::new();
+
+            // The two valuations, taken straight off the shared walk. Reading them
+            // here rather than off `voi_value` keeps the property about the cone
+            // valuation itself, un-confounded by the separate multipliers
+            // `compute_voi_term` applies afterwards (dep_resolution_ratio, effort
+            // normalisation, and the K_VOI clamp).
+            let mut dw_sum = vec![0.0f64; nodes.len()];
+            let mut voi_sum = vec![0.0f64; nodes.len()];
+            for start in 0..nodes.len() {
+                let (mut d, mut v) = (0.0f64, 0.0f64);
+                walk_cone(start, &adj, &mut visited, &mut queue, |tid, depth, factor| {
+                    let bw = base_weights[tid];
+                    if bw > 0.0 {
+                        let term = (1.0 / depth as f64) * bw * factor;
+                        d += term;
+                        v += term * nodes[tid].uncertainty;
+                    }
+                });
+                dw_sum[start] = d;
+                voi_sum[start] = v;
+            }
+
+            compute_downstream_metrics(&mut nodes);
+
+            for (xi, node) in nodes.iter().enumerate() {
+                // The walk really is what the published field reports (2dp rounded).
+                assert!(
+                    (node.downstream_weight - (dw_sum[xi] * 100.0).round() / 100.0).abs() < 1e-9,
+                    "downstream_weight({}) = {} does not match the shared cone walk {}",
+                    node.id,
+                    node.downstream_weight,
+                    dw_sum[xi]
+                );
+
+                // Sole successor, reached by a hard `blocks` edge (factor 1.0).
+                if node.blocks.len() != 1 || !node.soft_blocks.is_empty() {
+                    continue;
+                }
+                let yi = id_to_idx[&node.blocks[0]];
+                let base_y = base_weights[yi];
+
+                assert!(
+                    dw_sum[xi] <= base_y + dw_sum[yi] + 1e-9,
+                    "downstream bound violated: dw({}) = {} > base({}) {} + dw {}",
+                    node.id,
+                    dw_sum[xi],
+                    nodes[yi].id,
+                    base_y,
+                    dw_sum[yi]
+                );
+
+                assert!(
+                    voi_sum[xi] <= base_y * nodes[yi].uncertainty + voi_sum[yi] + 1e-9,
+                    "VoI bound violated: sum({}) = {} > base({}) {} × unc {} + sum {}",
+                    node.id,
+                    voi_sum[xi],
+                    nodes[yi].id,
+                    base_y,
+                    nodes[yi].uncertainty,
+                    voi_sum[yi]
+                );
+
+                checked += 1;
+            }
+        }
+
+        assert!(
+            checked >= 50,
+            "property test degenerate: only {checked} single-successor nodes exercised"
         );
     }
 

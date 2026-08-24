@@ -75,7 +75,7 @@ Every node carries three core computed properties that drive both label assignme
 
 **How computed**: Normalized composite of:
 
-- `downstream_weight` (internal input): count of nodes that depend (transitively) on this one completing — fed into `criticality`, not surfaced as a user-facing scalar
+- `downstream_weight` (internal input): the depth-decayed, edge-factor-discounted sum of base weights over the **distinct** nodes reachable downstream — `Σ (1/depth) × base_weight × edge_factor`, where `base_weight` is a priority multiplier (P0:5, P1:3, P2:2, P3:1, else 0.5) doubled when `due` is set and zeroed for completed work, and `edge_factor` is the product along the path (`blocks` 1.0, `soft_blocks` 0.3, parent→child 0.5, `contributes_to` at its verbal-scale weight, reverse direction only). It is **not** a count, and it walks more than `depends_on`. Each reachable node is counted once however many routes reach it. Fed into `criticality`, and surfaced in the MCP `signals` payload for filter/debug use
 - `pagerank`: structural influence in the dependency graph
 - `stakeholder_exposure`: explicit priority/stakeholder signals
 
@@ -87,7 +87,7 @@ Every node carries three core computed properties that drive both label assignme
 
 **What it measures**: Value-of-information premium — how much resolving this node's downstream uncertainty would improve later ranking decisions. Range: `0–5,000`.
 
-**How computed**: Via the `voi_term` formula in `specs/multi-parent.md` §2.2. Consumes the `uncertainty`, `downstream_weight`, and `leaf` properties defined above. Gated to leaf nodes (`leaf = false` ⇒ `voi_value = 0`) and capped at 5,000 to stay below the SEV4-committed lexicographic floor.
+**How computed**: Via the `voi_term` formula in `specs/multi-parent.md` §2.2. A single deduped cone walk from the node — the same traversal that produces `downstream_weight`, but restricted to the unblocking channel (`blocks`/`soft_blocks`/children, no reverse `contributes_to`) and weighting each visited node by its own `uncertainty`. Each node in the cone is counted once however many routes reach it, so unlocking a fan-out can never be worth more than the union of what it unlocks. Consumes the `uncertainty` and `leaf` properties defined above. Gated to leaf nodes (`leaf = false` ⇒ `voi_value = 0`) and capped at 5,000 to stay below the SEV4-committed lexicographic floor.
 
 **What it tells you**: Whether an uncertainty-resolving task (spike, probe, prototype) deserves ranking credit it would otherwise be denied by a purely exploitative signal. Surfaced for filter/debug only — ranking always goes through `focus_score`, which sums `voi_value` as one additive term.
 

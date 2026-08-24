@@ -153,7 +153,7 @@ The knowledge graph has seven edge types. Some are derived from frontmatter, oth
 
 ## Focus Scoring
 
-Tasks are ranked by one composite integer, **`focus_score`** — the sum of priority, severity, deadline pressure, age, structural blast radius, stakeholder waiting time, and urgency (target propagation). Sort by it; ignore the components unless you're debugging a ranking.
+Tasks are ranked by one composite integer, **`focus_score`** — the sum of priority, severity, deadline pressure, age, structural blast radius, stakeholder waiting time, urgency (target propagation), and a value-of-information premium. Sort by it; ignore the components unless you're debugging a ranking.
 
 For deadline-bound obligations that aren't tasks themselves (ARC submissions, contract signings, anything you must not fail), declare a **target node** and link contributing tasks to it:
 
@@ -216,13 +216,14 @@ Non-linearity defeats the spacing and centring biases that corrupt linear scales
 |------|-------|---------|
 | `priority_base` | 0 / 5 000 / 10 000 | P0 = 10 000, P1 = 5 000, P2+ = 0 |
 | `severity_bonus` | 0 – 100 000 | SEV0–4 on the task itself; SEV4 lexicographic |
-| `deadline_score` | 0 – 12 000 | Overdue / tight / near-tight; ×1.5 if `consequence` set |
+| `deadline_score` | 0 – 12 000 | Overdue / tight / near-tight. `consequence` applies no multiplier — stakes reach a task via target `severity` |
 | `age_staleness_bonus` | 0 – 200 | P2+ only; min(days_since_created, 200) |
-| `downstream_weight × 10` | 0 – ∞ | Structural blast radius from `parent` / `depends_on` BFS |
+| `downstream_weight × 10` | 0 – ∞ | Structural blast radius: depth-decayed, edge-weighted sum of base weights over the **distinct** nodes reachable via `blocks` / `soft_blocks` / children / reverse `contributes_to` — not a count |
 | `stakeholder_waiting_bonus` | 0 / 2 000 – 8 000 | When `stakeholder` set; +200/day |
 | `urgency_term` | 0 – 10 000+ | `round(node.urgency)` — target propagation |
+| `voi_term` | 0 – 5 000 | `round(node.voi_value)` — value-of-information premium for a leaf task that unblocks an uncertain cone; 0 for non-leaf nodes |
 
-The formula lives in `compute_urgency` and `compute_focus_scores` in `src/graph_store.rs`. Prototype nodes (for recurring obligations like peer review) and the deferred calibration ritual extend the model — see the source for current behaviour.
+The formula lives in `compute_urgency`, `compute_voi_term` and `compute_focus_scores` in `src/graph_store.rs`; `downstream_weight` and the VoI sum are both accumulated by the shared `walk_cone` traversal. Prototype nodes (for recurring obligations like peer review) and the deferred calibration ritual extend the model — see the source for current behaviour.
 
 ## CLI Commands
 
