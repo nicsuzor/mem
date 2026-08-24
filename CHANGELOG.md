@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.79](https://github.com/nicsuzor/mem/compare/mem-v0.3.78...mem-v0.3.79) (2026-08-24)
+
+
+### Bug Fixes
+
+* **document_crud:** stop concurrent rewrite_body swapping document content ([31b2115](https://github.com/nicsuzor/mem/commit/31b2115409e023620407efbd8c0257ff34f0d016))
+* **document_crud:** stop concurrent rewrite_body swapping document content ([8b96bae](https://github.com/nicsuzor/mem/commit/8b96baeb9878b1151a0d1c6e552b0400f970e79d))
+* **pkb:** give claimed identity precedence over derived lookup keys ([c2be950](https://github.com/nicsuzor/mem/commit/c2be9505a7cc09c56fae68fa6d75e88a57cc1ff4))
+* **pkb:** give claimed identity precedence over derived lookup keys ([8e0b963](https://github.com/nicsuzor/mem/commit/8e0b963a7d0dd4b05766ff12b6c49f256a3e9c60))
+* **pkb:** merge_node must not report a redirect it could not write ([4b80a9e](https://github.com/nicsuzor/mem/commit/4b80a9e998128c73ad2cabe9c9c330553c6424ba))
+
 ## [0.3.78](https://github.com/nicsuzor/mem/compare/mem-v0.3.77...mem-v0.3.78) (2026-08-22)
 
 
