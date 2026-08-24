@@ -61,7 +61,7 @@ Every node carries three core computed properties that drive both label assignme
 
 **How computed**: Composite signal from:
 
-- `has_children`: decomposed nodes have lower uncertainty than undecomposed equivalents at the same scope (high-scope nodes may still remain above task thresholds even when decomposed)
+- `has_children`: having children *raises* uncertainty by a flat `+0.15` — an undecomposed node's scope is not yet resolved, so the parent of a subtree is treated as less specified than a leaf, not more. (Decomposition lowers the uncertainty of the resulting *leaves*; it does not lower the parent's.)
 - `has_acceptance_criteria`: explicit success criteria reduce uncertainty
 - `dep_resolution_ratio`: fraction of dependencies that are resolved
 - `body_length`: fuller description signals more specified intent
@@ -75,7 +75,7 @@ Every node carries three core computed properties that drive both label assignme
 
 **How computed**: Normalized composite of:
 
-- `downstream_weight` (internal input): the depth-decayed, edge-factor-discounted sum of base weights over the **distinct** nodes reachable downstream — `Σ (1/depth) × base_weight × edge_factor`, where `base_weight` is a priority multiplier (P0:5, P1:3, P2:2, P3:1, else 0.5) doubled when `due` is set and zeroed for completed work, and `edge_factor` is the product along the path (`blocks` 1.0, `soft_blocks` 0.3, parent→child 0.5, `contributes_to` at its verbal-scale weight, reverse direction only). It is **not** a count, and it walks more than `depends_on`. Each reachable node is counted once however many routes reach it. Fed into `criticality`, and surfaced in the MCP `signals` payload for filter/debug use
+- `downstream_weight` (internal input): the depth-decayed, edge-factor-discounted sum of base weights over the **distinct** nodes reachable downstream — `Σ (1/depth) × base_weight × edge_factor`, where `base_weight` is a priority multiplier (P0:5, P1:3, P2:2, P3:1, else 0.5) doubled when `due` is set and zeroed for completed work, and `edge_factor` is the product along the path (`blocks` 1.0, `soft_blocks` 0.3, parent→child 0.5, `contributes_to` at its verbal-scale weight, reverse direction only). It is **not** a count, and it walks more than `depends_on`. Each reachable node is counted once however many routes reach it. Fed into `criticality`, and **surfaced to callers**: `get_task` returns it under `signals.downstream_weight` and `get_network_metrics` returns it as a top-level field. Use it for filtering and debugging, never as the headline ranking signal
 - `pagerank`: structural influence in the dependency graph
 - `stakeholder_exposure`: explicit priority/stakeholder signals
 
@@ -94,7 +94,7 @@ Every node carries three core computed properties that drive both label assignme
 ### depth and leaf
 
 - **depth**: Distance from root (parent chain walk). Advisory — does not determine label.
-- **leaf**: Boolean. True when the node has no children AND uncertainty is low. A structural indicator of decomposition completeness — not sufficient for execution readiness (which also requires resolved DependsOn edges).
+- **leaf**: Boolean. True exactly when the node has no children (`node.leaf = node.children.is_empty()`). Uncertainty is **not** consulted and cannot be: `leaf` is assigned in `compute_inverses`, which runs before `compute_uncertainty`. A structural indicator of decomposition completeness — not sufficient for execution readiness (which also requires resolved DependsOn edges).
 
 ---
 
@@ -303,7 +303,7 @@ If A blocks B and B blocks A, the decomposition is wrong. Restructure — either
 
 ### 4. Ready means all blockers resolved
 
-A task is only ready when its uncertainty is low AND all DependsOn edges point to completed nodes. "Leaf" is not sufficient.
+A task is ready when every one of its DependsOn edges points to a completed node, it is not transitively downstream of anything blocked, its status is not `blocked`, it is a leaf, its status is `ready`/`queued` (or `inbox` with acceptance criteria), and its type is claimable. "Leaf" alone is not sufficient. Uncertainty is **not** part of the predicate — `classify_tasks` never consults it.
 
 ### 5. The hierarchy provides context
 
