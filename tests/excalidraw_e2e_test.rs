@@ -878,15 +878,15 @@ fn test_cli_excalidraw_and_graph_execution() {
 // ===========================================================================
 
 /// Snapshot every markdown file under `root` as (relative path, contents).
-fn snapshot_markdown(root: &std::path::Path) -> Vec<(PathBuf, String)> {
-    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(PathBuf, String)>) {
+fn snapshot_tree(root: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
         for entry in fs::read_dir(dir).expect("read_dir").flatten() {
             let path = entry.path();
             if path.is_dir() {
                 walk(&path, root, out);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            } else {
                 let rel = path.strip_prefix(root).unwrap().to_path_buf();
-                out.push((rel, fs::read_to_string(&path).expect("read md")));
+                out.push((rel, fs::read(&path).expect("read file")));
             }
         }
     }
@@ -948,7 +948,7 @@ fn test_cli_excalidraw_sync_dry_run_writes_nothing() {
     file.elements.push(new_text);
     fs::write(&canvas_path, serde_json::to_string_pretty(&file).unwrap()).unwrap();
 
-    let before = snapshot_markdown(ws.path());
+    let before = snapshot_tree(ws.path());
 
     let status = Command::new(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
@@ -967,7 +967,7 @@ fn test_cli_excalidraw_sync_dry_run_writes_nothing() {
         .expect("run pkb excalidraw sync --dry-run");
     assert!(status.success(), "dry-run sync must exit 0");
 
-    let after_dry_run = snapshot_markdown(ws.path());
+    let after_dry_run = snapshot_tree(ws.path());
     assert_eq!(
         before, after_dry_run,
         "--dry-run must not create, delete, or modify any file on disk"
@@ -991,7 +991,7 @@ fn test_cli_excalidraw_sync_dry_run_writes_nothing() {
         .expect("run pkb excalidraw sync");
     assert!(status.success(), "sync must exit 0");
 
-    let after_sync = snapshot_markdown(ws.path());
+    let after_sync = snapshot_tree(ws.path());
     assert_ne!(
         before, after_sync,
         "sync without --dry-run must write the pending canvas change to disk"
@@ -1162,6 +1162,90 @@ fn test_mcp_excalidraw_tool_endpoints() {
     let sync_text = res_sync.content[0].as_text().unwrap();
     assert!(sync_text.text.contains("\"success\": true"));
     assert!(sync_text.text.contains("\"created_nodes\""));
+}
+
+/// The MCP `sync_excalidraw` handler with `dry_run: true` must leave every byte
+/// under the PKB root untouched.
+///
+/// Step 4 of `test_mcp_excalidraw_tool_endpoints` above syncs a *clean* canvas,
+/// whose diff is empty — so it establishes nothing about the gate: an empty diff
+/// writes nothing whether or not `dry_run` is honoured, and its only assertion is
+/// on the response text anyway. Here the handler is handed a canvas carrying an
+/// unmanaged card, and the point is made in two steps: the dry run changes
+/// nothing on disk, and the identical call with `dry_run: false` does. The second
+/// is what makes the first mean anything.
+#[test]
+fn test_mcp_sync_excalidraw_dry_run_writes_nothing() {
+    let ws = create_test_pkb_workspace();
+    let db_path = ws.path().join("pkb_vectors.bin");
+    let store = Arc::new(parking_lot::RwLock::new(VectorStore::new(1024)));
+    let graph = Arc::new(parking_lot::RwLock::new(GraphStore::build_from_directory(
+        ws.path(),
+    )));
+    let server = PkbSearchServer::new(
+        store,
+        Arc::new(mem::embeddings::Embedder::new_dummy()),
+        ws.path().to_path_buf(),
+        db_path,
+        graph,
+    );
+
+    let res = server
+        .handle_graph_excalidraw(&json!({}))
+        .expect("graph_excalidraw full");
+    let mut file: ExcalidrawFile = serde_json::from_str(&res.content[0].as_text().unwrap().text)
+        .expect("valid full scene JSON");
+
+    // An unmanaged card, which a real sync materialises as a new document.
+    let mut new_card = ExcalidrawElement::default();
+    new_card.id = "elem-dry-run-probe".to_string();
+    new_card.element_type = "rectangle".to_string();
+    new_card.x = 4000.0;
+    new_card.y = 4000.0;
+    new_card.width = CARD_WIDTH;
+    new_card.height = CARD_HEIGHT;
+    new_card.bound_elements = Some(vec![BoundElement {
+        id: "elem-dry-run-probe-text".to_string(),
+        element_type: "text".to_string(),
+    }]);
+    let mut new_text = ExcalidrawElement::default();
+    new_text.id = "elem-dry-run-probe-text".to_string();
+    new_text.element_type = "text".to_string();
+    new_text.container_id = Some("elem-dry-run-probe".to_string());
+    new_text.text = Some("[READY \u{b7} P1] Dry Run Probe Task".to_string());
+    file.elements.push(new_card);
+    file.elements.push(new_text);
+    let canvas = serde_json::to_string(&file).expect("serialize canvas");
+
+    let before = snapshot_tree(ws.path());
+    assert!(
+        !before.is_empty(),
+        "workspace snapshot is empty — the assertions below would be vacuous"
+    );
+
+    let dry = server
+        .handle_sync_excalidraw(&json!({ "canvas": canvas, "dry_run": true }))
+        .expect("sync_excalidraw dry_run");
+    assert_eq!(
+        snapshot_tree(ws.path()),
+        before,
+        "sync_excalidraw dry run modified files on disk"
+    );
+    assert!(
+        dry.content[0].as_text().unwrap().text.contains("Dry run"),
+        "dry-run response must say so"
+    );
+
+    // Vacuity guard: the same canvas, executed, has to write something.
+    server
+        .handle_sync_excalidraw(&json!({ "canvas": canvas, "dry_run": false }))
+        .expect("sync_excalidraw execute");
+    assert_ne!(
+        snapshot_tree(ws.path()),
+        before,
+        "sync_excalidraw wrote nothing even with dry_run=false — the dry_run=true \
+         assertion above proved nothing about the gate"
+    );
 }
 
 // ===========================================================================

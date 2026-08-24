@@ -2042,14 +2042,29 @@ mod tests {
         write_md(&subdir, "a.md", "id: a-123\ntitle: A\n");
         write_md(&subdir, "b.md", "id: b-456\ntitle: B\n");
 
+        let before = crate::batch_ops::tree_snapshot(root);
+
         let results = bulk_reparent(root, "archive", "parent-001", true).unwrap();
         assert_eq!(results.len(), 2);
         assert!(matches!(results[0], ReparentResult::Updated(_)));
         assert!(matches!(results[1], ReparentResult::Updated(_)));
 
-        // Dry run: files should NOT be modified
-        let content = fs::read_to_string(subdir.join("a.md")).unwrap();
-        assert!(!content.contains("parent: parent-001"));
+        // A dry run must leave every byte alone, not merely the one field in the
+        // one file the test happened to look at.
+        assert_eq!(
+            crate::batch_ops::tree_snapshot(root),
+            before,
+            "bulk_reparent dry run modified files on disk"
+        );
+
+        // Vacuity guard: the same call, executed, has to write.
+        bulk_reparent(root, "archive", "parent-001", false).unwrap();
+        assert_ne!(
+            crate::batch_ops::tree_snapshot(root),
+            before,
+            "bulk_reparent wrote nothing with dry_run=false — the assertion above \
+             proved nothing about the gate"
+        );
     }
 
     #[test]

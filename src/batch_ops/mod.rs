@@ -43,6 +43,35 @@ pub struct TaskError {
     pub error: String,
 }
 
+/// Every byte under `root`, keyed by path relative to it — including the
+/// non-markdown sidecars, index files and dotfiles that `pkb::scan_directory`
+/// filters out. A dry run that leaves only the `.md` files alone is still a dry
+/// run that wrote, so the dry-run tests compare whole trees rather than the
+/// documents they happen to expect to be touched.
+#[cfg(test)]
+pub(crate) fn tree_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    fn walk(dir: &Path, root: &Path, out: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                out.insert(
+                    path.strip_prefix(root).unwrap_or(&path).to_path_buf(),
+                    bytes,
+                );
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(root, root, &mut out);
+    out
+}
+
 /// Summary returned by all batch operations.
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchSummary {
