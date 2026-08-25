@@ -192,7 +192,18 @@ impl DiffEngine {
 
         // 1. Process Cards on Canvas
         for card in &canvas.cards {
-            if card.is_new || card.node_id.is_none() {
+            // Last-resort identity: a generator that names each rectangle after
+            // the node it draws (the natural convention, and what our own
+            // exporter should do) leaves the id recoverable from the element id
+            // alone. Only accept it when it resolves to a live node, so a card
+            // hand-drawn in Excalidraw — whose element id is a random nanoid —
+            // is still correctly reported as an addition.
+            let recovered = card.node_id.clone().or_else(|| {
+                live.get_node(&card.element_id)
+                    .map(|_| card.element_id.clone())
+            });
+
+            if recovered.is_none() {
                 // New node added to canvas
                 diff.added_nodes.push(AddedNodeMutation {
                     temp_id: card.element_id.clone(),
@@ -208,7 +219,7 @@ impl DiffEngine {
                 continue;
             }
 
-            let node_id = card.node_id.as_ref().unwrap().clone();
+            let node_id = recovered.expect("recovered id checked above");
             canvas_node_ids.insert(node_id.clone());
 
             let live_node = live.get_node(&node_id);
@@ -664,5 +675,62 @@ mod tests {
         assert_eq!(diff.removed_edges[0].edge_type, EdgeType::DependsOn);
         assert_eq!(diff.added_edges.len(), 1);
         assert_eq!(diff.added_edges[0].edge_type, EdgeType::ContributesTo);
+    }
+
+    /// A generator that names each rectangle after the node it draws leaves the
+    /// identity recoverable from the element id. Without this the whole canvas
+    /// diffs as additions and sync would propose duplicating the graph.
+    #[test]
+    fn element_id_recovers_identity_when_it_resolves_to_a_live_node() {
+        fn card(element_id: &str, title: &str) -> crate::excalidraw::reader::CanvasCard {
+            crate::excalidraw::reader::CanvasCard {
+                element_id: element_id.to_string(),
+                node_id: None,          // no customData, and no id in the card text
+                title: title.to_string(),
+                node_type: None,
+                status: None,
+                priority: None,
+                parent: None,
+                tags: vec![],
+                frame_id: None,
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+                stroke_color: String::new(),
+                background_color: String::new(),
+                custom_data: None,
+                raw_card_element: Default::default(),
+                bound_text_element: None,
+                is_new: true,
+                is_duplicate: false,
+            }
+        }
+
+        let mut gs = GraphStore::build(&[], std::path::Path::new("/tmp"));
+        let mut n = GraphNode::default();
+        n.id = "task-48234949".to_string();
+        n.label = "Finish LED strip above sink".to_string();
+        gs.replace_node(n);
+
+        let canvas = CanvasModel {
+            cards: vec![
+                card("task-48234949", "Finish LED strip above sink"), // named after its node
+                card("Xk3p9qZr", "Something brand new"),              // hand-drawn nanoid
+            ],
+            arrows: vec![],
+            frames: vec![],
+            annotations: vec![],
+            duplicate_ids: vec![],
+            raw_file: Default::default(),
+        };
+
+        let diff = DiffEngine::compute_diff(None, &gs, &canvas);
+        assert_eq!(
+            diff.added_nodes.len(),
+            1,
+            "only the genuinely new card is an addition"
+        );
+        assert_eq!(diff.added_nodes[0].temp_id, "Xk3p9qZr");
     }
 }

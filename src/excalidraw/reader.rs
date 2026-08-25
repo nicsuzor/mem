@@ -108,6 +108,12 @@ impl CanvasReader {
 
         // Reverse map from bound text ID -> container ID
         let mut bound_to_container: HashMap<String, String> = HashMap::new();
+        // container id -> the text id the container itself declares as its label.
+        // A canvas may carry several texts claiming one container via containerId
+        // (agent-written files routinely do). Excalidraw honours exactly one bound
+        // label, so this is the authoritative choice; without it the last text
+        // parsed wins and a card is titled by whatever marker happened to sort last.
+        let mut declared_label: HashMap<String, String> = HashMap::new();
 
         for elem in &file.elements {
             if elem.is_deleted {
@@ -119,6 +125,9 @@ impl CanvasReader {
                 for b in bounds {
                     if b.element_type == "text" {
                         bound_to_container.insert(b.id.clone(), elem.id.clone());
+                        declared_label
+                            .entry(elem.id.clone())
+                            .or_insert_with(|| b.id.clone());
                     }
                 }
             }
@@ -170,7 +179,19 @@ impl CanvasReader {
                 .or_else(|| bound_to_container.get(&text_elem.id).cloned());
 
             if let Some(cid) = container_id {
-                text_by_container.insert(cid, text_elem);
+                let is_declared = declared_label.get(&cid) == Some(&text_elem.id);
+                match text_by_container.entry(cid) {
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        // only the container's declared label may displace an
+                        // incumbent; otherwise keep the first, never the last
+                        if is_declared {
+                            e.insert(text_elem);
+                        }
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(text_elem);
+                    }
+                }
             } else {
                 unattached_texts.push(text_elem);
             }
@@ -238,7 +259,12 @@ impl CanvasReader {
                 node_id.clone().unwrap_or_else(|| "Untitled".to_string())
             };
 
-            let is_new = custom_pkb.map_or(true, |p| p.node_id.is_none());
+            // A card is new only when no node id could be recovered by ANY route.
+            // Keying this off customData alone reported every card on a
+            // hand-written canvas as an addition, even when the id was recovered
+            // from the card text — which made diff useless and made sync propose
+            // duplicating the entire graph.
+            let is_new = node_id.is_none();
 
             if let Some(ref nid) = node_id {
                 elem_to_node_id.insert(card_elem.id.clone(), nid.clone());
@@ -688,5 +714,52 @@ mod tests {
         assert_eq!(model.annotations.len(), 2, "Must preserve both freehand doodle and sticky note");
         assert!(model.annotations.iter().any(|e| e.id == "doodle-1"));
         assert!(model.annotations.iter().any(|e| e.id == "sticky-note-1"));
+    }
+
+    /// A hand-written canvas carries several texts bound to one card. Only the
+    /// text the card declares in boundElements with type "text" is its label;
+    /// the rest are markers. Before the fix the last text parsed won, and cards
+    /// were titled by whatever marker sorted last.
+    #[test]
+    fn declared_label_wins_over_other_texts_claiming_the_same_container() {
+        let json = r#"{"type":"excalidraw","version":2,"elements":[
+          {"type":"rectangle","id":"targ_4e2cc92a","x":0,"y":0,"width":300,"height":80,
+           "boundElements":[{"id":"lbl","type":"text"},{"id":"marker","type":"nested"}]},
+          {"type":"text","id":"marker","x":10,"y":60,"width":50,"height":14,
+           "containerId":"targ_4e2cc92a","text":"* LSL","originalText":"* LSL"},
+          {"type":"text","id":"lbl","x":10,"y":10,"width":200,"height":24,
+           "containerId":"targ_4e2cc92a","text":"Enjoy your long service leave",
+           "originalText":"Enjoy your long service leave"}
+        ]}"#;
+        let file: crate::excalidraw::schema::ExcalidrawFile = serde_json::from_str(json).expect("deser");
+        let canvas = CanvasReader::parse_file(file);
+        assert_eq!(canvas.cards.len(), 1);
+        assert_eq!(
+            canvas.cards[0].title, "Enjoy your long service leave",
+            "card must be titled by its declared bound label, not by a marker text"
+        );
+    }
+
+    /// A card whose element id is recoverable as a node id is an existing node,
+    /// not an addition. Keying `is_new` off customData alone reported every card
+    /// on a hand-written canvas as new, which made diff useless and would have
+    /// made sync propose duplicating the whole graph.
+    #[test]
+    fn card_with_recoverable_id_is_not_reported_as_new() {
+        let json = r#"{"type":"excalidraw","version":2,"elements":[
+          {"type":"rectangle","id":"r1","x":0,"y":0,"width":300,"height":80,
+           "boundElements":[{"id":"t1","type":"text"}]},
+          {"type":"text","id":"t1","x":10,"y":10,"width":200,"height":24,
+           "containerId":"r1","text":"Finish LED strip\ntask-48234949",
+           "originalText":"Finish LED strip\ntask-48234949"}
+        ]}"#;
+        let file: crate::excalidraw::schema::ExcalidrawFile = serde_json::from_str(json).expect("deser");
+        let canvas = CanvasReader::parse_file(file);
+        assert_eq!(canvas.cards.len(), 1);
+        assert_eq!(canvas.cards[0].node_id.as_deref(), Some("task-48234949"));
+        assert!(
+            !canvas.cards[0].is_new,
+            "a card whose node id was recovered from its text is not a new node"
+        );
     }
 }
