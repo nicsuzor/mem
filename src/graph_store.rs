@@ -1736,10 +1736,9 @@ impl GraphStore {
                         } else if ratio > 0.5 {
                             // linear interpolation: 0.5 -> 2000, 1.0 -> 6000
                             2000 + ((ratio - 0.5) * 8000.0) as i64
-                        } else if days_until <= 30 {
-                            1000
                         } else {
-                            0
+                            // continuous linear interpolation: 0.0 -> 0, 0.5 -> 2000 (replaces 30d cliff)
+                            (ratio * 4000.0) as i64
                         }
                     };
 
@@ -3201,13 +3200,14 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
         }
 
         let slack = min_slacks[i];
-        // f(Slack): piecewise-exponential with ε=0.001 floor (spec §3.1)
-        let f_s = if slack > SAFE_HORIZON {
-            0.001 // negligible; beyond safe horizon
-        } else if slack > 0.0 {
-            (k * (SAFE_HORIZON - slack)).exp()
+        // f(Slack): continuous monotonic curve across the horizon (spec §3.1, Phase 0a / D1, D2).
+        // For slack > 0: exponential ramp (k * (30 - slack)).exp(), with smooth decay beyond 30
+        // floored at ε = 0.001 (reached at slack = 120).
+        // For slack <= 0 (overdue or at deadline): maximum ramp multiplier 10.0 (full S_lex unlocked).
+        let f_s = if slack > 0.0 {
+            (k * (SAFE_HORIZON - slack)).exp().max(0.001)
         } else {
-            1.0 // overdue or at deadline: unlock full S_lex (spec §3.1)
+            10.0
         };
         // Apply committed SEV4 guard at final site too (spec §1.3):
         // overdue committed SEV4 stays at constant 10000, not unbounded.
@@ -3413,7 +3413,7 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
     }
 
     // Sort ready by urgency DESC, then severity DESC, then effective_priority (propagated),
-    // then downstream_weight DESC, then order, then title
+    // then downstream_weight DESC, then order, then title, then id (total order)
     ready.sort_by(|a, b| {
         let na = nodes.get(a).unwrap();
         let nb = nodes.get(b).unwrap();
@@ -3423,7 +3423,7 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
             .then(nb.severity.unwrap_or(0).cmp(&na.severity.unwrap_or(0)))
             .then(
                 na.effective_priority
-                    .unwrap_or(2)
+                    .unwrap_or(4)
                     .cmp(&nb.effective_priority.unwrap_or(4)),
             )
             .then(
@@ -3433,6 +3433,7 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
             )
             .then(na.order.cmp(&nb.order))
             .then(na.label.cmp(&nb.label))
+            .then(a.cmp(b))
     });
 
     // Roots: tasks with no parent or parent not in index
@@ -5170,7 +5171,8 @@ mod tests {
         let in_2w = today + chrono::Duration::days(14);
         let in_4w = today + chrono::Duration::days(28);
 
-        // Scenario 1: Corporate card (effort=1d, due in 7d): ratio=1/7=0.14, +1000
+        // Scenario 1: Corporate card (effort=1d, due in 7d): ratio=1/7=0.142857.
+        // Under continuous linear interpolation (ratio * 4000.0), score is 571 (was flat 1000 under broken 30d cliff).
         let mut node1 = GraphNode::default();
         node1.due = Some(in_7d.format("%Y-%m-%d").to_string());
         node1.effort = Some("1d".to_string());
@@ -5208,7 +5210,7 @@ mod tests {
         GraphStore::compute_focus_scores(&mut nodes);
 
         // Verify scores
-        assert_eq!(nodes[0].focus_score.unwrap(), 1000);
+        assert_eq!(nodes[0].focus_score.unwrap(), 571);
         assert_eq!(nodes[1].focus_score.unwrap(), 6000);
         assert!(
             nodes[2].focus_score.unwrap() >= 3900 && nodes[2].focus_score.unwrap() <= 4100,
@@ -7408,4 +7410,230 @@ mod tests {
             assert!(std::path::Path::new(p).exists(), "file must exist: {p}");
         }
     }
+
+    // ── Phase 0a Defect Tests (D1, D2, D3) ──
+
+    #[test]
+    fn test_phase0a_d1_urgency_monotonic_in_lateness() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+
+        // 1. Direct due date on task (severity = 3)
+        // Test a range of slacks from far future down to overdue
+        let slack_offsets = [10, 5, 2, 1, 0, -1, -2, -5, -10];
+        let mut prev_urgency = 0.0;
+
+        for &days in &slack_offsets {
+            let mut node = GraphNode::default();
+            node.id = format!("task-due-{days}");
+            node.status = Some("active".to_string());
+            node.severity = Some(3);
+            node.effort = Some("0d".to_string()); // effort 0 so slack = days_until
+            node.due = Some((today + chrono::Duration::days(days)).format("%Y-%m-%d").to_string());
+
+            let mut nodes = vec![node];
+            compute_urgency(&mut nodes);
+            let urgency = nodes[0].urgency;
+
+            assert!(
+                urgency >= prev_urgency,
+                "Monotonicity violation at days={days}: urgency {urgency} < prev_urgency {prev_urgency}"
+            );
+            prev_urgency = urgency;
+        }
+
+        // 2. Inherited urgency through dependency cone:
+        // Blocker has no due date; Target has due date that moves from due tomorrow -> today -> overdue.
+        let mut prev_inherited_urgency = 0.0;
+        for &days in &[2, 1, 0, -1, -2] {
+            let mut blocker = GraphNode::default();
+            blocker.id = "blocker".to_string();
+            blocker.status = Some("active".to_string());
+            blocker.blocks = vec!["target".to_string()];
+            blocker.leaf = true;
+
+            let mut target = GraphNode::default();
+            target.id = "target".to_string();
+            target.status = Some("active".to_string());
+            target.severity = Some(3);
+            target.effort = Some("0d".to_string());
+            target.due = Some((today + chrono::Duration::days(days)).format("%Y-%m-%d").to_string());
+
+            let mut nodes = vec![blocker, target];
+            compute_urgency(&mut nodes);
+
+            let inherited = nodes[0].urgency;
+            assert!(
+                inherited >= prev_inherited_urgency,
+                "Inherited monotonicity violation at days={days}: inherited urgency {inherited} < prev {prev_inherited_urgency}"
+            );
+            prev_inherited_urgency = inherited;
+        }
+    }
+
+    #[test]
+    fn test_phase0a_d2_urgency_and_deadline_continuous_across_horizon() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+
+        // 1. Urgency f(slack) continuity across the 30-day horizon
+        // Slack = 31 vs Slack = 30 (effort = 0)
+        let mut node_31 = GraphNode::default();
+        node_31.id = "node-31".to_string();
+        node_31.status = Some("active".to_string());
+        node_31.severity = Some(2);
+        node_31.effort = Some("0d".to_string());
+        node_31.due = Some((today + chrono::Duration::days(31)).format("%Y-%m-%d").to_string());
+
+        let mut node_30 = GraphNode::default();
+        node_30.id = "node-30".to_string();
+        node_30.status = Some("active".to_string());
+        node_30.severity = Some(2);
+        node_30.effort = Some("0d".to_string());
+        node_30.due = Some((today + chrono::Duration::days(30)).format("%Y-%m-%d").to_string());
+
+        let mut nodes = vec![node_31, node_30];
+        compute_urgency(&mut nodes);
+
+        let u_31 = nodes[0].urgency;
+        let u_30 = nodes[1].urgency;
+
+        // Ratio of urgency across a 1-day step at the 30-day horizon must be small (e.g. < 1.5x),
+        // not a 1000x jump (0.001 -> 1.0).
+        let ratio = u_30 / u_31;
+        assert!(
+            ratio < 1.5,
+            "Discontinuity at 30-day horizon in f(slack): u_30={u_30}, u_31={u_31}, ratio={ratio} (expected < 1.5)"
+        );
+
+        // 2. Additive deadline score continuity across days_until = 30
+        let mut node_d31 = GraphNode::default();
+        node_d31.id = "d31".to_string();
+        node_d31.effort = Some("1d".to_string());
+        node_d31.due = Some((today + chrono::Duration::days(31)).format("%Y-%m-%d").to_string());
+
+        let mut node_d30 = GraphNode::default();
+        node_d30.id = "d30".to_string();
+        node_d30.effort = Some("1d".to_string());
+        node_d30.due = Some((today + chrono::Duration::days(30)).format("%Y-%m-%d").to_string());
+
+        let mut d_nodes = vec![node_d31, node_d30];
+        GraphStore::compute_focus_scores(&mut d_nodes);
+
+        let score_31 = d_nodes[0].focus_score.unwrap();
+        let score_30 = d_nodes[1].focus_score.unwrap();
+        let diff = (score_30 - score_31).abs();
+
+        assert!(
+            diff < 100,
+            "Discontinuity at 30-day horizon in deadline score: score_30={score_30}, score_31={score_31}, diff={diff} (expected < 100)"
+        );
+    }
+
+    #[test]
+    fn test_phase0a_d3_ready_queue_comparator_total_order() {
+        use crate::graph::GraphNode;
+
+        // Comparator as implemented in ready.sort_by
+        let ready_cmp = |na: &GraphNode, nb: &GraphNode, a: &str, b: &str| {
+            nb.urgency
+                .partial_cmp(&na.urgency)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(nb.severity.unwrap_or(0).cmp(&na.severity.unwrap_or(0)))
+                .then(
+                    na.effective_priority
+                        .unwrap_or(4)
+                        .cmp(&nb.effective_priority.unwrap_or(4)),
+                )
+                .then(
+                    nb.downstream_weight
+                        .partial_cmp(&na.downstream_weight)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(na.order.cmp(&nb.order))
+                .then(na.label.cmp(&nb.label))
+                .then(a.cmp(b))
+        };
+
+        // 1. Both-None effective_priority case (the exact case that failed under unwrap_or(2) vs unwrap_or(4))
+        let mut na = GraphNode::default();
+        na.id = "task-none-1".to_string();
+        na.effective_priority = None;
+
+        let mut nb = GraphNode::default();
+        nb.id = "task-none-2".to_string();
+        nb.effective_priority = None;
+
+        let cmp_ab = ready_cmp(&na, &nb, &na.id, &nb.id);
+        let cmp_ba = ready_cmp(&nb, &na, &nb.id, &na.id);
+
+        assert_eq!(
+            cmp_ab,
+            cmp_ba.reverse(),
+            "Antisymmetry violation on both-None: cmp(a, b)={cmp_ab:?}, cmp(b, a)={cmp_ba:?}"
+        );
+        assert_ne!(
+            cmp_ab,
+            std::cmp::Ordering::Equal,
+            "Total order must break ties on unique ID"
+        );
+
+        // 2. Transitivity test across a triple of nodes with None, Some(3), Some(1)
+        let mut nc = GraphNode::default();
+        nc.id = "task-none-3".to_string();
+        nc.effective_priority = Some(1);
+
+        let nodes = vec![
+            ("task-none-1", na),
+            ("task-none-2", nb),
+            ("task-none-3", nc),
+        ];
+
+        for (id_a, n_a) in &nodes {
+            for (id_b, n_b) in &nodes {
+                let ab = ready_cmp(n_a, n_b, id_a, id_b);
+                let ba = ready_cmp(n_b, n_a, id_b, id_a);
+                assert_eq!(ab, ba.reverse(), "Antisymmetry must hold for all pairs");
+
+                for (id_c, n_c) in &nodes {
+                    let bc = ready_cmp(n_b, n_c, id_b, id_c);
+                    let ac = ready_cmp(n_a, n_c, id_a, id_c);
+                    if ab != std::cmp::Ordering::Greater && bc != std::cmp::Ordering::Greater {
+                        assert!(
+                            ac != std::cmp::Ordering::Greater,
+                            "Transitivity violation: a <= b and b <= c but a > c"
+                        );
+                    }
+                }
+            }
+        }
+
+        // 3. Integration test: GraphStore::build sorts ready queue without panic
+        let doc1 = make_doc(
+            "tasks/task-none-1.md",
+            "Task None 1",
+            "task",
+            "ready",
+            "task-none-1",
+            None,
+            &[],
+        );
+        let doc2 = make_doc(
+            "tasks/task-none-2.md",
+            "Task None 2",
+            "task",
+            "ready",
+            "task-none-2",
+            None,
+            &[],
+        );
+        let gs = GraphStore::build(&[doc1, doc2], Path::new("/tmp"));
+        assert_eq!(gs.ready.len(), 2);
+    }
 }
+
+
