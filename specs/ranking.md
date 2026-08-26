@@ -147,9 +147,9 @@ If a node is completed (`graph::is_completed(status)` is `true`), `focus_score` 
 ### 2.5. Downstream Weight Term (`(downstream_weight * 10.0) as i64`)
 - **Code reference**: `src/graph_store.rs:1767`
 - **Formula**:
-  $$\\text{term} = \\lfloor \\text{node.downstream\\_weight} \\times 10.0 \\rfloor$$
-- **Theoretical Range**: `0` to $\\infty$.
-- **Observed Range**: `0` to `~53` points (observed maximum `downstream_weight` was 5.27 across live corpus).
+  $$\text{term} = \lfloor \text{node.downstream\_weight} \times 10.0 \rfloor$$
+- **Theoretical Range**: `0` to $\infty$.
+- **Observed Range**: `0` to `~500`.
 - **Default (absent input)**: `0`.
 - **Zeroing conditions**: Empty downstream cone or all descendants completed.
 - **Consumers**: `compute_focus_scores`.
@@ -159,10 +159,10 @@ If a node is completed (`graph::is_completed(status)` is `true`), `focus_score` 
 - **Formula**:
   Applies only when `node.stakeholder.is_some()`:
   - If `deadline_ramp_fired` is `true`:
-    $$\\text{score} += 2000 \\quad \\text{(base only, suppressing per-day lateness growth to prevent double-counting)}$$
+    $$\text{score} += 2000 \quad \text{(base only, suppressing per-day lateness growth to prevent double-counting)}$$
   - Else (`deadline_ramp_fired` is `false`):
-    Let $\\text{anchor} = \\text{parse}(\\text{node.waiting\\_since} \\lor \\text{node.created})$, and $\\text{days} = \\max((\\text{today} - \\text{anchor}).\\text{num\\_days}(), 0)$:
-    $$\\text{score} += 2000 + \\min(\\text{days} \\times 200, 6000) \\quad \\in [2000, 8000]$$
+    Let $\text{anchor} = \text{parse}(\text{node.waiting\_since} \lor \text{node.created})$, and $\text{days} = \max((\text{today} - \text{anchor}).\text{num\_days}(), 0)$:
+    $$\text{score} += 2000 + \min(\text{days} \times 200, 6000) \quad \in [2000, 8000]$$
     If anchor date is missing or unparseable, score is `2000`.
 - **Theoretical Range**: `0`, or `2000` to `8000`.
 - **Observed Range**: `0` (unset) or `2000`–`8000`.
@@ -173,7 +173,7 @@ If a node is completed (`graph::is_completed(status)` is `true`), `focus_score` 
 ### 2.7. Urgency Term (`urgency_term`)
 - **Code reference**: `src/graph_store.rs:1799`
 - **Formula**:
-  $$\\text{term} = \\text{round}(\\text{node.urgency}) \\quad \\text{as } i64$$
+  $$\text{term} = \text{round}(\text{node.urgency}) \quad \text{as } i64$$
 - **Theoretical Range**: `0` to `10,000+`.
 - **Observed Range**: `0` to `10,000`.
 - **Default (absent input)**: `0`.
@@ -183,7 +183,7 @@ If a node is completed (`graph::is_completed(status)` is `true`), `focus_score` 
 ### 2.8. Value of Information Term (`voi_term`)
 - **Code reference**: `src/graph_store.rs:1800–1802`
 - **Formula**:
-  $$\\text{term} = \\begin{cases} \\text{round}(\\text{voi}) \\text{ as } i64 & \\text{if } \\text{node.voi\\_value} = \\text{Some}(\\text{voi}) \\\\ 0 & \\text{if } \\text{node.voi\\_value} = \\text{None} \\end{cases}$$
+  $$\text{term} = \begin{cases} \text{round}(\text{voi}) \text{ as } i64 & \text{if } \text{node.voi\_value} = \text{Some}(\text{voi}) \\ 0 & \text{if } \text{node.voi\_value} = \text{None} \end{cases}$$
 - **Theoretical Range**: `0` to `5000`.
 - **Observed Range**: `0` to `~1500`.
 - **Default (absent input)**: `0` (non-leaf tasks produce `None`).
@@ -196,19 +196,17 @@ If a node is completed (`graph::is_completed(status)` is `true`), `focus_score` 
 
 The eight additive terms carry widely disparate theoretical caps versus realised empirical dynamics:
 
-| Term | Theoretical Range | Observed Range (live PKB) | % of Realised Score Range |
-| --- | --- | --- | --- |
-| `severity_bonus` | 0 – 100,000 | 0 – 100,000 | ~89.0% |
-| `deadline_score` | 0 – 12,000 | 0 – 12,000 | ~10.7% |
-| `priority_base` | 0 – 10,000 | 0 – 10,000 | ~8.9% |
-| `urgency_term` | 0 – 10,000 | 0 – 10,000 | ~8.9% |
-| `stakeholder_waiting` | 0 – 8,000 | 0 – 8,000 | ~7.1% |
-| `voi_term` | 0 – 5,000 | 0 – ~1,500 | ~1.3% |
-| `age_staleness_bonus` | 0 – 200 | 0 – 200 | ~0.18% |
-| `downstream_weight × 10` | 0 – $\\infty$ | 0 – ~53 | <0.5% |
-| **`focus_score` Composite** | **0 – ~145,200** | **0 – ~11,009 (non-SEV4)** | **100%** |
-
-*(Corpus figures measured across 382 sampled ready+blocked tasks, 2026-08-24.)*
+| Term | Theoretical Range | Observed Range (Typical) |
+| --- | --- | --- |
+| `severity_bonus` | 0 – 100,000 | 0 – 100,000 |
+| `deadline_score` | 0 – 12,000 | 0 – 12,000 |
+| `priority_base` | 0 – 10,000 | 0 – 10,000 |
+| `urgency_term` | 0 – 10,000 | 0 – 10,000 |
+| `stakeholder_waiting` | 0 – 8,000 | 0 – 8,000 |
+| `voi_term` | 0 – 5,000 | 0 – ~1,500 |
+| `age_staleness_bonus` | 0 – 200 | 0 – 200 |
+| `downstream_weight × 10` | 0 – $\infty$ | 0 – ~500 |
+| **`focus_score` Composite** | **0 – ~145,200** | **0 – ~11,000+** |
 
 ---
 
