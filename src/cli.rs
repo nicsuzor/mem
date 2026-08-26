@@ -64,6 +64,10 @@ enum Commands {
         #[arg(short = 'n', long, default_value_t = 5)]
         limit: usize,
 
+        /// Filter by document type (e.g. 'task', 'template', 'note', '!task', or comma-separated)
+        #[arg(short = 'T', long = "type")]
+        doc_type: Option<String>,
+
         /// Show full snippets (not truncated)
         #[arg(short, long)]
         full: bool,
@@ -75,6 +79,30 @@ enum Commands {
         /// Only show documents with date <= YYYY-MM-DD
         #[arg(long)]
         before: Option<String>,
+    },
+
+    /// List documents with optional filters (type, tag, status)
+    #[command(alias = "docs", alias = "list")]
+    Documents {
+        /// Filter by document type (e.g. task, template, note, memory, !task)
+        #[arg(short = 'T', long = "type")]
+        doc_type: Option<String>,
+
+        /// Filter by tag
+        #[arg(short = 't', long = "tag")]
+        tag: Option<String>,
+
+        /// Filter by status
+        #[arg(short = 's', long = "status")]
+        status: Option<String>,
+
+        /// Maximum number of documents to return
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+
+        /// Offset for pagination
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
     },
 
     /// Add a file to the index
@@ -1038,6 +1066,7 @@ async fn main() -> Result<()> {
     let disables_gpu = matches!(
         command,
         Commands::Search { .. }
+            | Commands::Documents { .. }
             | Commands::Add { .. }
             | Commands::Tasks { .. }
             | Commands::Focus { .. }
@@ -1124,7 +1153,8 @@ async fn main() -> Result<()> {
     // Some commands need the store but not the embedder
     let needs_store_only = matches!(
         command,
-        Commands::Tags { .. }
+        Commands::Documents { .. }
+            | Commands::Tags { .. }
             | Commands::Memories { .. }
             | Commands::Forget { .. }
             | Commands::Duplicates { .. }
@@ -1172,6 +1202,7 @@ async fn main() -> Result<()> {
         Commands::Search {
             query,
             limit,
+            doc_type,
             full,
             since,
             before,
@@ -1191,6 +1222,7 @@ async fn main() -> Result<()> {
                 &pkb_root,
                 since.as_deref(),
                 before.as_deref(),
+                doc_type.as_deref(),
             );
 
             if results.is_empty() {
@@ -1207,6 +1239,10 @@ async fn main() -> Result<()> {
                 } else {
                     format!("  [{}]", result.tags.join(", "))
                 };
+                let type_badge = match result.doc_type.as_deref() {
+                    Some(t) => format!(" \x1b[33m[{t}]\x1b[0m"),
+                    None => " \x1b[2m[untyped]\x1b[0m".to_string(),
+                };
 
                 // Show ID prominently if available
                 let id_str = result.id.as_str();
@@ -1215,7 +1251,7 @@ async fn main() -> Result<()> {
                 }
 
                 println!(
-                    "  \x1b[1;36m{}.\x1b[0m \x1b[1m{}\x1b[0m {score_bar}{tags}",
+                    "  \x1b[1;36m{}.\x1b[0m \x1b[1m{}\x1b[0m{type_badge} {score_bar}{tags}",
                     i + 1,
                     result.title,
                 );
@@ -1244,6 +1280,53 @@ async fn main() -> Result<()> {
             // Navigation hint
             if !first_id.is_empty() {
                 println!("  \x1b[2mTip: pkb task {first_id}  — show full details\x1b[0m");
+            }
+        }
+
+        Commands::Documents {
+            doc_type,
+            tag,
+            status,
+            limit,
+            offset,
+        } => {
+            let store = store.as_ref().unwrap();
+            let results = store.read().list_documents(
+                tag.as_deref(),
+                doc_type.as_deref(),
+                status.as_deref(),
+                &pkb_root,
+            );
+            let total = results.len();
+            if total == 0 {
+                println!("No documents found matching filters.");
+                return Ok(());
+            }
+
+            let page: Vec<_> = results
+                .into_iter()
+                .skip(offset)
+                .take(limit.unwrap_or(total))
+                .collect();
+            let showing = page.len();
+
+            println!(
+                "\x1b[1m{total} documents found\x1b[0m (showing {showing}, offset {offset})\n"
+            );
+
+            for r in &page {
+                let id = &r.id;
+                let type_str = r
+                    .doc_type
+                    .as_deref()
+                    .map(|t| format!(" \x1b[33m[{t}]\x1b[0m"))
+                    .unwrap_or_default();
+                let tags_str = if !r.tags.is_empty() {
+                    format!(" \x1b[2m({})\x1b[0m", r.tags.join(", "))
+                } else {
+                    String::new()
+                };
+                println!("  - \x1b[1m{}\x1b[0m{type_str}{tags_str} — \x1b[36m`{}`\x1b[0m", r.title, id);
             }
         }
 
@@ -2630,7 +2713,7 @@ async fn main() -> Result<()> {
             let query_embedding = embedder.encode(&query_text)?;
             let results = store
                 .read()
-                .search(&query_embedding, limit * 3, &pkb_root, None, None);
+                .search(&query_embedding, limit * 3, &pkb_root, None, None, None);
 
             let memory_types = ["memory", "note", "insight", "observation"];
             let mut count = 0;
