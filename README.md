@@ -146,7 +146,7 @@ The knowledge graph has seven edge types. Some are derived from frontmatter, oth
 | `soft_depends_on` | `soft_depends_on:` list | ❌ | ✅ | Informational ordering |
 | `link` | `[[wikilinks]]` and markdown links in body | ❌ | ❌ | Cross-references; counted as backlinks |
 | `supersedes` | `supersedes:` frontmatter | ❌ | ❌ | This node replaces the target |
-| `contributes_to` | `contributes_to:` list with verbal weights | ❌ | ✅ | Strategic priority (Birnbaum importance with Renooij-Witteman terms) |
+| `contributes_to` | `contributes_to:` list with verbal weights | ❌ | ✅ | Strategic priority (verbal contribution weights with Renooij-Witteman terms) |
 | `similar_to` | Computed from BGE-M3 embeddings (cosine ≥ 0.85) | ❌ | ❌ | Auto-discovered semantic similarity; appears in `pkb_context` and `pkb_trace` |
 
 `similar_to` edges are materialised when the graph is built with the vector store available (e.g. via the MCP server). They participate in pathfinding (`pkb_trace`) and context display (`pkb_context`) but are deliberately excluded from blocking analysis and ready/blocked classification — semantic similarity is informational, not causal.
@@ -196,7 +196,7 @@ SEV0–3 are compensatory (standard scalar math). **SEV4 + `goal_type: committed
 
 ### Weight scale (Renooij-Witteman)
 
-`contributes_to.weight` accepts only verbal terms — raw decimals are rejected at parse time. Weights mean **Birnbaum importance** (probability that missing this task guarantees target failure), not "percent contribution":
+`contributes_to.weight` accepts only verbal terms — raw decimals are rejected at parse time. Weights represent a **verbal contribution-weight scale** (Renooij-Witteman elicitation anchors), not "percent contribution":
 
 | Term | Anchor | Reading |
 |------|--------|---------|
