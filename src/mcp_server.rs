@@ -3416,6 +3416,19 @@ impl PkbSearchServer {
                 })),
             };
         }
+        if let Some(not_found) = e.downcast_ref::<crate::document_crud::SelectorNotFound>() {
+            return McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "Observation selector not found: {:?} — selector matched no lines in the document",
+                    not_found.0
+                )),
+                data: Some(serde_json::json!({
+                    "error_type": "selector_not_found",
+                    "selector": not_found.0,
+                })),
+            };
+        }
         McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to {action}: {e}")),
@@ -3574,6 +3587,171 @@ impl PkbSearchServer {
             "body_chars_before": result.body_chars_before,
             "body_chars_after": result.body_chars_after,
             "preserve_frontmatter": preserve_frontmatter,
+            "modified": result.modified
+        });
+        let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to serialize response: {e}")),
+            data: None,
+        })?;
+        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+    }
+
+    fn handle_add_observations(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let lines = args
+            .get("lines")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: lines (must be an array of strings)"),
+                data: None,
+            })?;
+
+        let lines_vec: Vec<String> = lines
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from("Each item in 'lines' must be a string"),
+                        data: None,
+                    })
+            })
+            .collect::<Result<Vec<String>, McpError>>()?;
+
+        let section = args.get("section").and_then(|v| v.as_str());
+        let timestamped = args
+            .get("timestamped")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let expected_modified = args.get("expected_modified").and_then(|v| v.as_str());
+
+        let (abs_path, label) = {
+            let graph = self.graph.read();
+            let node = graph.resolve(id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Document not found: {id}")),
+                data: None,
+            })?;
+            (self.abs_path(&node.path), node.label.clone())
+        };
+
+        let result = crate::document_crud::add_observations(
+            &abs_path,
+            &lines_vec,
+            section,
+            timestamped,
+            expected_modified,
+        )
+        .map_err(|e| Self::write_error_to_mcp("add observations", e))?;
+
+        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
+            self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                abs_path
+            );
+            self.rebuild_graph();
+        }
+
+        let response_payload = serde_json::json!({
+            "ok": true,
+            "id": id,
+            "title": label,
+            "added_count": result.added_count,
+            "body_chars_before": result.body_chars_before,
+            "body_chars_after": result.body_chars_after,
+            "modified": result.modified
+        });
+        let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to serialize response: {e}")),
+            data: None,
+        })?;
+        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+    }
+
+    fn handle_delete_observations(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let selectors = args
+            .get("selectors")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: selectors (must be an array of strings)"),
+                data: None,
+            })?;
+
+        let selectors_vec: Vec<String> = selectors
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from("Each item in 'selectors' must be a string"),
+                        data: None,
+                    })
+            })
+            .collect::<Result<Vec<String>, McpError>>()?;
+
+        let expected_modified = args.get("expected_modified").and_then(|v| v.as_str());
+
+        let (abs_path, label) = {
+            let graph = self.graph.read();
+            let node = graph.resolve(id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Document not found: {id}")),
+                data: None,
+            })?;
+            (self.abs_path(&node.path), node.label.clone())
+        };
+
+        let result = crate::document_crud::delete_observations(
+            &abs_path,
+            &selectors_vec,
+            expected_modified,
+        )
+        .map_err(|e| Self::write_error_to_mcp("delete observations", e))?;
+
+        if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
+            self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                abs_path
+            );
+            self.rebuild_graph();
+        }
+
+        let response_payload = serde_json::json!({
+            "ok": true,
+            "id": id,
+            "title": label,
+            "deleted_count": result.deleted_count,
+            "body_chars_before": result.body_chars_before,
+            "body_chars_after": result.body_chars_after,
             "modified": result.modified
         });
         let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
@@ -7100,6 +7278,8 @@ impl PkbSearchServer {
             "create_memory" => self.handle_create_memory(args),
             "create" => self.handle_create_document(args),
             "append" => self.handle_append_to_document(args),
+            "add_observations" => self.handle_add_observations(args),
+            "delete_observations" => self.handle_delete_observations(args),
             "update_body" => self.handle_update_body(args),
             "delete" => self.handle_delete_document(args),
             "complete_task" => self.handle_complete_task(args),
@@ -7535,6 +7715,48 @@ impl PkbSearchServer {
             )
             .with_title("Append to Document")
             .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
+                "add_observations",
+                "Insert one or more single-line observations (bulleted; optionally timestamped) into a document body under an optional section heading. Atomically preserves all other body content without reformatting. The write path supports compare-and-swap via `expected_modified`: if the document's current `modified` value no longer matches, the call fails with error_type `stale_write`.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
+                        "lines": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "One or more single-line observations to insert"
+                        },
+                        "section": { "type": "string", "description": "Optional target section heading (e.g. 'Observations', 'Log'). Appends to section if found, or creates section if not found. If omitted, appends to the end of the document body." },
+                        "timestamped": { "type": "boolean", "description": "Optional: prefix each observation with a UTC timestamp (default: false)" },
+                        "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If current `modified` does not match, returns error_type `stale_write`." }
+                    },
+                    "required": ["id", "lines"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Add Observations")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
+                "delete_observations",
+                "Delete one or more single-line observations from a document body by exact content match (matching the bullet line or the observation text). Atomically preserves all other body content without reformatting. A selector matching no lines returns an error naming it — no silent success. Supports compare-and-swap via `expected_modified`.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
+                        "selectors": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "One or more selectors to match and remove lines"
+                        },
+                        "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If current `modified` does not match, returns error_type `stale_write`." }
+                    },
+                    "required": ["id", "selectors"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Delete Observations")
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(true)),
             Tool::new(
                 "update_body",
                 "Atomically rewrite the prose body of an existing document. Preserves YAML frontmatter and bumps `modified` timestamp by default. Use instead of `append` when you need full replacement rather than additive logging. The write path is otherwise last-write-wins: pass `expected_modified` (the `modified` value from your last read of this document) to get a compare-and-swap guard — the call is rejected with error_type `stale_write` if the document changed since your read, instead of silently discarding the other writer's change.",
@@ -11088,6 +11310,113 @@ projects:
             "node_count must be exactly 2 (initial-task + new-task): {text}"
         );
     }
+
+    #[test]
+    fn test_mcp_add_and_delete_observations() {
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/test-task.md",
+            "---\nid: test-task\nmodified: '2026-08-01T00:00:00Z'\ntitle: Test Task\ntype: task\nstatus: in_progress\n---\n\n# Header\n\n## Observations\n- obs 1\n",
+        )]);
+
+        // 1. Add observations via MCP dispatch
+        let add_res = server
+            .dispatch_tool_sync(
+                "add_observations",
+                &json!({
+                    "id": "test-task",
+                    "lines": ["obs 2", "- obs 3"],
+                    "section": "Observations",
+                    "expected_modified": "2026-08-01T00:00:00Z"
+                }),
+            )
+            .expect("add_observations must succeed");
+
+        let add_text: String = add_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        let add_json: serde_json::Value = serde_json::from_str(&add_text).unwrap();
+        assert_eq!(add_json["ok"], true);
+        assert_eq!(add_json["added_count"], 2);
+        let new_mod = add_json["modified"].as_str().unwrap();
+
+        let disk_content = std::fs::read_to_string(tmp.path().join("tasks/test-task.md")).unwrap();
+        assert!(disk_content.contains("- obs 1\n- obs 2\n- obs 3"));
+
+        // 2. Delete observation via MCP dispatch
+        let del_res = server
+            .dispatch_tool_sync(
+                "delete_observations",
+                &json!({
+                    "id": "test-task",
+                    "selectors": ["obs 2"],
+                    "expected_modified": new_mod
+                }),
+            )
+            .expect("delete_observations must succeed");
+
+        let del_text: String = del_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        let del_json: serde_json::Value = serde_json::from_str(&del_text).unwrap();
+        assert_eq!(del_json["ok"], true);
+        assert_eq!(del_json["deleted_count"], 1);
+
+        let final_disk = std::fs::read_to_string(tmp.path().join("tasks/test-task.md")).unwrap();
+        assert!(final_disk.contains("- obs 1\n- obs 3"));
+        assert!(!final_disk.contains("obs 2"));
+    }
+
+    #[test]
+    fn test_mcp_delete_observations_not_found() {
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/test-task.md",
+            "---\nid: test-task\ntitle: Test Task\ntype: task\nstatus: in_progress\n---\n\n# Header\n\n## Observations\n- obs 1\n",
+        )]);
+
+        let err = server
+            .dispatch_tool_sync(
+                "delete_observations",
+                &json!({
+                    "id": "test-task",
+                    "selectors": ["nonexistent"]
+                }),
+            )
+            .unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("nonexistent"));
+        let data = err.data.unwrap();
+        assert_eq!(data["error_type"], "selector_not_found");
+        assert_eq!(data["selector"], "nonexistent");
+    }
+
+    #[test]
+    fn test_mcp_observations_stale_write() {
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/test-task.md",
+            "---\nid: test-task\nmodified: '2026-08-01T00:00:00Z'\ntitle: Test Task\ntype: task\nstatus: in_progress\n---\n\n## Observations\n",
+        )]);
+
+        let err = server
+            .dispatch_tool_sync(
+                "add_observations",
+                &json!({
+                    "id": "test-task",
+                    "lines": ["obs 1"],
+                    "expected_modified": "2026-07-01T00:00:00Z"
+                }),
+            )
+            .unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("Stale write rejected"));
+        let data = err.data.unwrap();
+        assert_eq!(data["error_type"], "stale_write");
+    }
 }
 
 // ===========================================================================
@@ -11311,6 +11640,8 @@ mod annotation_tests {
                 // I'll check that if it's NOT one of those known write tools, it should probably have a hint.
                 let is_known_write = [
                     "append",
+                    "add_observations",
+                    "delete_observations",
                     "claim_task",
                     "complete_task",
                     "release_task",
