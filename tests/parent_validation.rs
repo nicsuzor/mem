@@ -6,21 +6,57 @@
 //!   * `--allow-missing-parent` downgrades the rejection to a warning.
 //!   * `pkb new --parent <existing>` succeeds.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
+/// Configure a `Command` with a kernel-level backstop (`PR_SET_PDEATHSIG` on Linux)
+/// so that the child process is automatically terminated by the kernel if the
+/// parent harness process dies abnormally (e.g. SIGKILL, OOM, panic abort, CI timeout).
+fn kill_on_parent_death(cmd: &mut Command) -> &mut Command {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            let parent_pid = libc::getppid();
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent_pid {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
+fn pkb_command(pkb: &Path) -> Command {
+    let mut cmd = Command::new(pkb);
+    kill_on_parent_death(&mut cmd);
+    cmd
+}
+
 fn pkb_binary() -> PathBuf {
-    // Mirror tests/mcp_integration.rs binary lookup
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let release = manifest.join("target/release/pkb");
-    if release.exists() {
-        return release;
-    }
     let debug = manifest.join("target/debug/pkb");
-    if debug.exists() {
-        return debug;
+    match (
+        release.metadata().and_then(|m| m.modified()),
+        debug.metadata().and_then(|m| m.modified()),
+    ) {
+        (Ok(rel_time), Ok(dbg_time)) => {
+            if rel_time >= dbg_time {
+                release
+            } else {
+                debug
+            }
+        }
+        (Ok(_), Err(_)) => release,
+        (Err(_), Ok(_)) => debug,
+        (Err(_), Err(_)) => PathBuf::from("pkb"),
     }
-    PathBuf::from("pkb")
 }
 
 /// Seed a PKB tempdir with a single project node so `--parent` can resolve
@@ -56,7 +92,7 @@ fn seed_pkb() -> tempfile::TempDir {
 #[test]
 fn pkb_new_rejects_nonexistent_parent() {
     let pkb = seed_pkb();
-    let out = Command::new(pkb_binary())
+    let out = pkb_command(&pkb_binary())
         .args([
             "new",
             "Sample title",
@@ -98,7 +134,7 @@ fn pkb_new_rejects_nonexistent_parent() {
 #[test]
 fn pkb_new_with_allow_missing_parent_proceeds_with_warning() {
     let pkb = seed_pkb();
-    let out = Command::new(pkb_binary())
+    let out = pkb_command(&pkb_binary())
         .args([
             "new",
             "Sample title",
@@ -149,7 +185,7 @@ fn pkb_new_with_allow_missing_parent_proceeds_with_warning() {
 #[test]
 fn pkb_new_with_existing_parent_succeeds() {
     let pkb = seed_pkb();
-    let out = Command::new(pkb_binary())
+    let out = pkb_command(&pkb_binary())
         .args([
             "new",
             "Sample title",

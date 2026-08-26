@@ -15,15 +15,48 @@ use std::process::Command;
 
 use mem::graph_store::GraphStore;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
+/// Configure a `Command` with a kernel-level backstop (`PR_SET_PDEATHSIG` on Linux)
+/// so that the child process is automatically terminated by the kernel if the
+/// parent harness process dies abnormally (e.g. SIGKILL, OOM, panic abort, CI timeout).
+fn kill_on_parent_death(cmd: &mut Command) -> &mut Command {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            let parent_pid = libc::getppid();
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent_pid {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
 fn pkb_binary() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for rel in ["target/release/pkb", "target/debug/pkb"] {
-        let p = manifest.join(rel);
-        if p.exists() {
-            return p;
+    let release = manifest.join("target/release/pkb");
+    let debug = manifest.join("target/debug/pkb");
+    match (
+        release.metadata().and_then(|m| m.modified()),
+        debug.metadata().and_then(|m| m.modified()),
+    ) {
+        (Ok(rel_time), Ok(dbg_time)) => {
+            if rel_time >= dbg_time {
+                release
+            } else {
+                debug
+            }
         }
+        (Ok(_), Err(_)) => release,
+        (Err(_), Ok(_)) => debug,
+        (Err(_), Err(_)) => PathBuf::from("pkb"),
     }
-    PathBuf::from("pkb")
 }
 
 fn write(dir: &Path, rel: &str, content: &str) {
@@ -63,8 +96,9 @@ fn seed_basic() -> tempfile::TempDir {
 }
 
 fn run(pkb: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(pkb_binary())
-        .args(args)
+    let mut cmd = Command::new(pkb_binary());
+    kill_on_parent_death(&mut cmd);
+    cmd.args(args)
         .env("ACA_DATA", pkb)
         .output()
         .expect("failed to spawn pkb")

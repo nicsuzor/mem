@@ -7,6 +7,29 @@
 
 use std::process::Command;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
+/// Configure a `Command` with a kernel-level backstop (`PR_SET_PDEATHSIG` on Linux)
+/// so that the child process is automatically terminated by the kernel if the
+/// parent harness process dies abnormally (e.g. SIGKILL, OOM, panic abort, CI timeout).
+fn kill_on_parent_death(cmd: &mut Command) -> &mut Command {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            let parent_pid = libc::getppid();
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent_pid {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
 /// Seed a temp PKB whose focus_score ordering DIVERGES from priority ordering:
 ///   - t-hi   : priority 0          → focus_score 10000
 ///   - t-mid  : priority 1          → focus_score  5000
@@ -50,7 +73,9 @@ fn ordered_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
     ];
     args.extend(extra.iter().map(|s| s.to_string()));
 
-    let out = Command::new(env!("CARGO_BIN_EXE_pkb"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_pkb"));
+    kill_on_parent_death(&mut cmd);
+    let out = cmd
         .args(&args)
         .env("AOPS_OFFLINE", "1")
         // default_value_t = default_pkb_root() is evaluated eagerly at parse

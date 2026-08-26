@@ -14,20 +14,51 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+/// Configure a `Command` with a kernel-level backstop (`PR_SET_PDEATHSIG` on Linux)
+/// so that the child process is automatically terminated by the kernel if the
+/// parent harness process dies abnormally (e.g. SIGKILL, OOM, panic abort, CI timeout).
+fn kill_on_parent_death(cmd: &mut Command) -> &mut Command {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            let parent_pid = libc::getppid();
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Guard against the race where the parent died before prctl was called
+            if libc::getppid() != parent_pid {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
 fn pkb_binary() -> PathBuf {
-    // Prefer release build, fall back to debug
-    let release = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/pkb");
-    if release.exists() {
-        return release;
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let release = manifest.join("target/release/pkb");
+    let debug = manifest.join("target/debug/pkb");
+    match (
+        release.metadata().and_then(|m| m.modified()),
+        debug.metadata().and_then(|m| m.modified()),
+    ) {
+        (Ok(rel_time), Ok(dbg_time)) => {
+            if rel_time >= dbg_time {
+                release
+            } else {
+                debug
+            }
+        }
+        (Ok(_), Err(_)) => release,
+        (Err(_), Ok(_)) => debug,
+        (Err(_), Err(_)) => PathBuf::from("pkb"),
     }
-    let debug = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/pkb");
-    if debug.exists() {
-        return debug;
-    }
-    // Fall back to PATH
-    PathBuf::from("pkb")
 }
 
 fn aca_data() -> Option<String> {
@@ -102,7 +133,10 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
     std::fs::create_dir_all(temp_dir.path().join("epics")).unwrap();
     std::fs::create_dir_all(temp_dir.path().join("memories")).unwrap();
 
-    let mut child = Command::new(pkb_binary()).env_remove("PKB_MCP_URL")
+    let mut cmd = Command::new(pkb_binary());
+    kill_on_parent_death(&mut cmd);
+    let mut child = cmd
+        .env_remove("PKB_MCP_URL")
         .args(["mcp", "--pkb-root", temp_dir.path().to_str().unwrap()])
         .env("ACA_DATA", &aca)
         .stdin(Stdio::piped())
@@ -161,6 +195,7 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
 // ── HTTP/SSE helpers ─────────────────────────────────────────────────────
 
 fn spawn_http_mcp(mut cmd: Command) -> (Child, u16) {
+    kill_on_parent_death(&mut cmd);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("failed to spawn MCP HTTP server");
 
@@ -439,7 +474,10 @@ fn test_stdio_stdout_purity() {
     std::fs::create_dir_all(temp_dir.path().join("epics")).unwrap();
     std::fs::create_dir_all(temp_dir.path().join("memories")).unwrap();
 
-    let mut child = Command::new(pkb_binary()).env_remove("PKB_MCP_URL")
+    let mut cmd = Command::new(pkb_binary());
+    kill_on_parent_death(&mut cmd);
+    let mut child = cmd
+        .env_remove("PKB_MCP_URL")
         .args(["mcp", "--pkb-root", temp_dir.path().to_str().unwrap()])
         .env("ACA_DATA", &aca)
         .stdin(Stdio::piped())
@@ -740,7 +778,10 @@ fn test_http_seeded_search_returns_seeded_doc() {
     // meaningfully without it.
     let pkb_root_str = pkb_root.to_string_lossy().to_string();
     let db_path_str = db_path.to_string_lossy().to_string();
-    let reindex = Command::new(pkb_binary()).env_remove("PKB_MCP_URL")
+    let mut cmd = Command::new(pkb_binary());
+    kill_on_parent_death(&mut cmd);
+    let reindex = cmd
+        .env_remove("PKB_MCP_URL")
         .args([
             "--pkb-root",
             &pkb_root_str,
@@ -877,3 +918,114 @@ fn test_http_concurrent_sessions() {
         "concurrent sessions got the same session ID!"
     );
 }
+
+#[test]
+fn test_harness_sigkill_reaps_child_server() {
+    if std::env::var("__TEST_HARNESS_HELPER").is_ok() {
+        let server = HttpServer::start();
+        let child_pid = server.child.as_ref().map(|c| c.id()).expect("child process id");
+        let root = server._temp_dir.as_ref().unwrap().path().to_str().unwrap().to_string();
+        println!("HARNESS_STARTED:PID={child_pid}:ROOT={root}");
+        std::io::stdout().flush().unwrap();
+        // Park this thread so Drop is never called naturally.
+        // The test runner will send SIGKILL to this process.
+        std::thread::park();
+        return;
+    }
+
+    let aca = skip_if_no_aca_data();
+    let current_exe = std::env::current_exe().expect("current test binary path");
+
+    let mut harness_cmd = Command::new(current_exe);
+    harness_cmd
+        .args(["--exact", "test_harness_sigkill_reaps_child_server", "--nocapture"])
+        .env("__TEST_HARNESS_HELPER", "1")
+        .env("ACA_DATA", &aca)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut harness_child = harness_cmd.spawn().expect("failed to spawn harness helper process");
+    let harness_stdout = harness_child.stdout.take().unwrap();
+    let reader = std::io::BufReader::new(harness_stdout);
+
+    let mut child_pid: Option<u32> = None;
+    let mut pkb_root: Option<String> = None;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if let Some(rest) = line.strip_prefix("HARNESS_STARTED:") {
+            let parts: Vec<&str> = rest.split(':').collect();
+            for part in parts {
+                if let Some(pid_str) = part.strip_prefix("PID=") {
+                    child_pid = pid_str.parse().ok();
+                } else if let Some(root_str) = part.strip_prefix("ROOT=") {
+                    pkb_root = Some(root_str.to_string());
+                }
+            }
+            if child_pid.is_some() && pkb_root.is_some() {
+                break;
+            }
+        }
+    }
+
+    let child_pid = child_pid.expect("failed to read child PID from harness");
+    let pkb_root = pkb_root.expect("failed to read pkb-root from harness");
+    let harness_pid = harness_child.id();
+
+    // Verify child is alive before killing harness
+    #[cfg(unix)]
+    {
+        let res = unsafe { libc::kill(child_pid as libc::pid_t, 0) };
+        assert_eq!(res, 0, "child server process {child_pid} should be alive before killing harness");
+    }
+
+    // Abruptly SIGKILL the harness process (simulating abnormal death / OOM / timeout)
+    #[cfg(unix)]
+    {
+        unsafe {
+            libc::kill(harness_pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        harness_child.kill().ok();
+    }
+    let _ = harness_child.wait();
+
+    // Give kernel a moment to deliver PDEATHSIG
+    std::thread::sleep(Duration::from_millis(400));
+
+    // Check if child server process survived
+    #[cfg(unix)]
+    {
+        let is_alive = unsafe {
+            if libc::kill(child_pid as libc::pid_t, 0) == 0 {
+                // Process exists. Check if it is a zombie (Z) or actively running
+                if let Ok(stat) = std::fs::read_to_string(format!("/proc/{child_pid}/stat")) {
+                    let state = stat.split_whitespace().nth(2).unwrap_or("");
+                    state != "Z"
+                } else {
+                    true
+                }
+            } else {
+                false
+            }
+        };
+
+        if is_alive {
+            // Clean up the leaked child so test run does not leave orphans
+            unsafe {
+                libc::kill(child_pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+
+        assert!(
+            !is_alive,
+            "Child pkb server (PID {child_pid}, root {pkb_root}) SURVIVED abnormal death (SIGKILL) of parent harness (PID {harness_pid})!"
+        );
+    }
+}
+

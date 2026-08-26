@@ -19,26 +19,63 @@ use mem::mcp_server::PkbSearchServer;
 use mem::vectordb::VectorStore;
 use serde_json::json;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use tempfile::TempDir;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 // ===========================================================================
 // Test Helpers
 // ===========================================================================
 
+/// Configure a `Command` with a kernel-level backstop (`PR_SET_PDEATHSIG` on Linux)
+/// so that the child process is automatically terminated by the kernel if the
+/// parent harness process dies abnormally (e.g. SIGKILL, OOM, panic abort, CI timeout).
+fn kill_on_parent_death(cmd: &mut Command) -> &mut Command {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            let parent_pid = libc::getppid();
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent_pid {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
+fn pkb_command(pkb: &Path) -> Command {
+    let mut cmd = Command::new(pkb);
+    kill_on_parent_death(&mut cmd);
+    cmd
+}
+
 fn pkb_binary() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let release = manifest.join("target/release/pkb");
-    if release.exists() {
-        return release;
-    }
     let debug = manifest.join("target/debug/pkb");
-    if debug.exists() {
-        return debug;
+    match (
+        release.metadata().and_then(|m| m.modified()),
+        debug.metadata().and_then(|m| m.modified()),
+    ) {
+        (Ok(rel_time), Ok(dbg_time)) => {
+            if rel_time >= dbg_time {
+                release
+            } else {
+                debug
+            }
+        }
+        (Ok(_), Err(_)) => release,
+        (Err(_), Ok(_)) => debug,
+        (Err(_), Err(_)) => PathBuf::from("pkb"),
     }
-    PathBuf::from("pkb")
 }
 
 /// Create a temporary PKB workspace populated with markdown files.
@@ -746,7 +783,7 @@ fn test_cli_excalidraw_and_graph_execution() {
 
     // 1. `pkb graph --format excalidraw`
     let excal_out = out_dir.join("graph.excalidraw");
-    let status = Command::new(&pkb)
+    let status = pkb_command(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
@@ -770,7 +807,7 @@ fn test_cli_excalidraw_and_graph_execution() {
 
     // 2. `pkb graph --format json`
     let json_out = out_dir.join("graph.json");
-    let status = Command::new(&pkb)
+    let status = pkb_command(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
@@ -791,7 +828,7 @@ fn test_cli_excalidraw_and_graph_execution() {
 
     // 3. `pkb graph --format graphml`
     let graphml_out = out_dir.join("graph.graphml");
-    let status = Command::new(&pkb)
+    let status = pkb_command(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
@@ -812,7 +849,7 @@ fn test_cli_excalidraw_and_graph_execution() {
 
     // 4. `pkb excalidraw export`
     let export_out = out_dir.join("export.excalidraw");
-    let status = Command::new(&pkb)
+    let status = pkb_command(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
@@ -834,7 +871,7 @@ fn test_cli_excalidraw_and_graph_execution() {
     assert!(export_out.exists());
 
     // 5. `pkb excalidraw diff`
-    let output = Command::new(&pkb)
+    let output = pkb_command(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
@@ -855,7 +892,7 @@ fn test_cli_excalidraw_and_graph_execution() {
     assert!(diff.is_empty());
 
     // 6. `pkb excalidraw sync --dry-run`
-    let status = Command::new(&pkb)
+    let status = pkb_command(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
@@ -908,7 +945,7 @@ fn test_cli_excalidraw_sync_dry_run_writes_nothing() {
 
     // Export the live graph to a canvas.
     let canvas_path = out_dir.path().join("canvas.excalidraw");
-    let status = Command::new(&pkb)
+    let status = pkb_command(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
@@ -950,7 +987,7 @@ fn test_cli_excalidraw_sync_dry_run_writes_nothing() {
 
     let before = snapshot_tree(ws.path());
 
-    let status = Command::new(&pkb)
+    let status = pkb_command(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
@@ -975,7 +1012,7 @@ fn test_cli_excalidraw_sync_dry_run_writes_nothing() {
 
     // The same sync without --dry-run must write, proving the assertion above is
     // not vacuously true because the canvas held no pending changes.
-    let status = Command::new(&pkb)
+    let status = pkb_command(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
@@ -1008,7 +1045,7 @@ fn test_cli_excalidraw_export_resolves_root_from_env() {
     let pkb = pkb_binary();
 
     let export_out = out_dir.path().join("env_root.excalidraw");
-    let output = Command::new(&pkb)
+    let output = pkb_command(&pkb)
         .env("ACA_DATA", ws.path().to_str().unwrap())
         .env("AOPS_OFFLINE", "1")
         .args([
@@ -1048,7 +1085,7 @@ fn test_cli_excalidraw_export_requires_a_root() {
     let pkb = pkb_binary();
 
     let export_out = out_dir.path().join("no_root.excalidraw");
-    let output = Command::new(&pkb)
+    let output = pkb_command(&pkb)
         .env_remove("ACA_DATA")
         .env("AOPS_OFFLINE", "1")
         .args(["excalidraw", "export", export_out.to_str().unwrap()])

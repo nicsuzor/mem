@@ -8,20 +8,57 @@
 //! 4. CLI stdout reports byte count, first line, and last line.
 //! 5. Verification is performed by reading the file back from disk.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
+/// Configure a `Command` with a kernel-level backstop (`PR_SET_PDEATHSIG` on Linux)
+/// so that the child process is automatically terminated by the kernel if the
+/// parent harness process dies abnormally (e.g. SIGKILL, OOM, panic abort, CI timeout).
+fn kill_on_parent_death(cmd: &mut Command) -> &mut Command {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            let parent_pid = libc::getppid();
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent_pid {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
+fn pkb_command(pkb: &Path) -> Command {
+    let mut cmd = Command::new(pkb);
+    kill_on_parent_death(&mut cmd);
+    cmd
+}
 
 fn pkb_binary() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let release = manifest.join("target/release/pkb");
-    if release.exists() {
-        return release;
-    }
     let debug = manifest.join("target/debug/pkb");
-    if debug.exists() {
-        return debug;
+    match (
+        release.metadata().and_then(|m| m.modified()),
+        debug.metadata().and_then(|m| m.modified()),
+    ) {
+        (Ok(rel_time), Ok(dbg_time)) => {
+            if rel_time >= dbg_time {
+                release
+            } else {
+                debug
+            }
+        }
+        (Ok(_), Err(_)) => release,
+        (Err(_), Ok(_)) => debug,
+        (Err(_), Err(_)) => PathBuf::from("pkb"),
     }
-    PathBuf::from("pkb")
 }
 
 fn seed_pkb_with_task() -> (tempfile::TempDir, PathBuf) {
@@ -53,7 +90,7 @@ fn test_cli_append_heading_preserves_column_0_and_blank_line() {
     let pkb = pkb_binary();
 
     let payload = "## X\n\nbody text";
-    let out = Command::new(&pkb)
+    let out = pkb_command(&pkb)
         .env("ACA_DATA", tmp.path())
         .args(["append", "task-append-probe", payload])
         .output()
@@ -108,7 +145,7 @@ fn test_cli_append_list_item_and_plain_prose_sequential() {
 
     // Append list item
     let list_payload = "- list item alpha\n- list item beta";
-    let out1 = Command::new(&pkb)
+    let out1 = pkb_command(&pkb)
         .env("ACA_DATA", tmp.path())
         .args(["append", "task-append-probe", list_payload])
         .output()
@@ -119,7 +156,7 @@ fn test_cli_append_list_item_and_plain_prose_sequential() {
 
     // Append prose
     let prose_payload = "Plain prose paragraph text.";
-    let out2 = Command::new(&pkb)
+    let out2 = pkb_command(&pkb)
         .env("ACA_DATA", tmp.path())
         .args(["append", "task-append-probe", prose_payload])
         .output()
@@ -163,7 +200,7 @@ fn test_cli_append_with_section() {
     let pkb = pkb_binary();
 
     let payload = "## Subheading In Log\n\nDetail line.";
-    let out = Command::new(&pkb)
+    let out = pkb_command(&pkb)
         .env("ACA_DATA", tmp.path())
         .args(["append", "task-append-probe", "--section", "Log", payload])
         .output()

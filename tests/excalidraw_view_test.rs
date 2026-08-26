@@ -3,8 +3,33 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use tempfile::NamedTempFile;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
+/// Configure a `Command` with a kernel-level backstop (`PR_SET_PDEATHSIG` on Linux)
+/// so that the child process is automatically terminated by the kernel if the
+/// parent harness process dies abnormally (e.g. SIGKILL, OOM, panic abort, CI timeout).
+fn kill_on_parent_death(cmd: &mut Command) -> &mut Command {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            let parent_pid = libc::getppid();
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent_pid {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
 fn run_bin(args: &[&str]) -> (i32, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_excalidraw-view"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_excalidraw-view"));
+    kill_on_parent_death(&mut cmd);
+    let output = cmd
         .args(args)
         .output()
         .expect("Failed to execute excalidraw-view binary");
@@ -15,7 +40,9 @@ fn run_bin(args: &[&str]) -> (i32, String, String) {
 }
 
 fn run_bin_stdin(args: &[&str], input: &str) -> (i32, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_excalidraw-view"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_excalidraw-view"));
+    kill_on_parent_death(&mut cmd);
+    let mut child = cmd
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
