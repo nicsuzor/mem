@@ -79,7 +79,7 @@ impl PkbSearchServer {
                     data: None,
                 })?;
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
-                    "What's connected to '{}'? Please use 'pkb_context' to see its parents, children, and neighbours in the knowledge graph.",
+                    "What's connected to '{}'? Please use 'get_task' or 'get_document' to see its relationships in the knowledge graph.",
                     id
                 ))]))
             }

@@ -81,7 +81,6 @@ src/
 - `delete` — remove doc from disk + index; optional `type` param guards deletion to a matching node type (e.g. `type: "memory"` restricts to memory/note/insight/observation, replacing the old dedicated `delete_memory` tool)
 
 ### Knowledge Graph
-- `pkb_context` — N-hop neighbourhood, backlinks, metadata
 - `pkb_trace` — shortest paths between two nodes
 - `pkb_orphans` — disconnected nodes
 - `graph_stats` — PKB health report: status/priority/type distributions, orphan counts, cycles, disconnected clusters

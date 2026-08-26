@@ -233,6 +233,11 @@ impl PkbSearchServer {
     pub fn bench_get_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.handle_get_document(args)
     }
+    #[doc(hidden)]
+    pub fn bench_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_pkb_search(args)
+    }
+
 
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
     /// Full rebuild of the graph store from disk (for batch operations).
@@ -1182,6 +1187,7 @@ impl PkbSearchServer {
             "add_observations" => self.handle_add_observations(args),
             "delete_observations" => self.handle_delete_observations(args),
             "update_body" => self.handle_update_body(args),
+            "edit_body" | "edit" => self.handle_edit_body(args),
             "delete" => self.handle_delete_document(args),
             "complete_task" => self.handle_complete_task(args),
             "release_task" => self.handle_release_task(args),
@@ -1195,7 +1201,6 @@ impl PkbSearchServer {
             "decompose_task" => self.handle_decompose_task(args),
             "get_dependency_tree" => self.handle_get_dependency_tree(args),
             "get_task_children" => self.handle_get_task_children(args),
-            "pkb_context" => self.handle_pkb_context(args),
             "pkb_trace" => self.handle_pkb_trace(args),
             "pkb_orphans" => self.handle_pkb_orphans(args),
             "get_semantic_neighbors" => self.handle_get_semantic_neighbors(args),
