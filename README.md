@@ -313,7 +313,7 @@ It also provides **MCP prompts** to guide AI assistants through common search an
 | **Memory** | `retrieve_memory`, `search_by_tag`, `list_memories`, `delete` (pass `type: "memory"` to restrict to memory-type documents) |
 | **CRUD** | `create`, `create_memory`, `append`, `delete` |
 | **Graph** | `pkb_context`, `pkb_trace`, `pkb_orphans`, `graph_stats`, `graph_json` |
-| **Batch** | `batch_update`, `batch_reparent`, `batch_archive`, `batch_merge`, `batch_create_epics`, `batch_reclassify`, `bulk_reparent`, `merge_node` |
+| **Batch** | `batch_update`, `batch_reparent`, `batch_archive`, `batch_merge`, `batch_create_epics`, `batch_reclassify`, `merge_node` |
 | **System** | `get_stats` |
 
 ## Architecture

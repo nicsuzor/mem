@@ -41,10 +41,10 @@ The [pkb-server spec](pkb-server-spec.md) targets **18 tools**. The server curre
 | Category | Tools |
 |----------|-------|
 | Original 18 (spec-aligned) | search, task_search, get_document, list_documents, list_tasks, get_task, get_network_metrics, create_task, update_task, complete_task, create (doc), create_memory, append, delete, pkb_context, pkb_trace, pkb_orphans, graph_stats |
-| Added since spec | create_subtask, release_task, decompose_task, find_duplicates, get_dependency_tree, get_task_children, task_summary, claim_task, batch_update, batch_reparent, batch_archive, batch_merge, batch_create_epics, batch_reclassify, bulk_reparent, merge_node, delete_memory, retrieve_memory, search_by_tag, list_memories |
+| Added since spec | create_subtask, release_task, decompose_task, find_duplicates, get_dependency_tree, get_task_children, task_summary, claim_task, batch_update, batch_reparent, batch_archive, batch_merge, batch_create_epics, batch_reclassify, merge_node, retrieve_memory, search_by_tag, list_memories *(historical: delete_memory was removed in PR #467 and folded into delete; bulk_reparent is a library/CLI function and was never exposed over MCP)* |
 | Consolidated wrappers | create_document, manage_task, pkb_explore, pkb_batch, pkb_stats, pkb_tool_help |
 
-The 21 post-spec additions are legitimate capability growth. The 6 consolidation wrappers are redundant meta-tools that re-expose sub-surfaces under new names.
+The post-spec additions reflect capability growth (with delete_memory subsequently folded into delete, and bulk_reparent existing as a library function rather than MCP tool). The 6 consolidation wrappers are redundant meta-tools that re-expose sub-surfaces under new names.
 
 ---
 
@@ -143,19 +143,19 @@ Criteria rated P (pass) / W (warn) / F (fail):
 
 **Source**: `src/mcp_server.rs:2617-2681`, `src/document_crud.rs:1112-1178`
 
-### delete / delete_memory
+### delete (formerly delete / delete_memory)
 
 | Criterion | Rating | Notes |
 |-----------|--------|-------|
 | Predictable | W | No orphan check — children and inbound references left dangling silently |
 | Idempotent | W | Deleting already-deleted: graph.resolve() fails → INVALID_PARAMS — not an explicit "not found" |
 | Fail-fast | W | No check for incoming references or open children |
-| Schema clarity | P | Single required param: id |
+| Schema clarity | P | Single required param: id (with optional `type` filter) |
 | Ergonomic defaults | N/A | Destructive op — no defaults needed |
 
-**delete_memory** adds type check (must be note/insight/observation) — better than plain delete.
+*Historical note*: The former standalone **delete_memory** tool added a type check (must be note/insight/observation). PR #467 removed `delete_memory` from the MCP surface and folded its type guard directly into `delete` as an optional `type` parameter (`src/mcp_server/handlers_document.rs:849`).
 
-**Source**: `src/mcp_server.rs:2683-2723`, `src/document_crud.rs:1183-1198`
+**Source**: `src/mcp_server/handlers_document.rs:849`, `src/document_crud.rs:1183-1198`
 
 ### batch_update
 
@@ -181,14 +181,14 @@ Criteria rated P (pass) / W (warn) / F (fail):
 
 Contrast with batch_update (dry_run=false) and merge_node (dry_run=false). **batch_archive should be the model for all bulk destructive operations.**
 
-### bulk_reparent (legacy)
+### bulk_reparent (legacy library/CLI function — not an MCP tool)
 
 | Criterion | Rating | Notes |
 |-----------|--------|-------|
 | Predictable | W | Glob/path pattern semantics unclear vs batch_reparent's filter semantics |
 | Idempotent | P | Reparenting already-correct parent is a no-op |
 | Fail-fast | P | dry_run=true default |
-| Schema clarity | W | Overlaps with batch_reparent; unclear when to use which |
+| Schema clarity | W | Overlaps with batch_reparent; exists in Rust library (`src/document_crud.rs:2572`) and CLI, not registered on MCP surface |
 | Ergonomic defaults | P | dry_run=true default |
 
 ---
@@ -249,7 +249,7 @@ Contrast with batch_update (dry_run=false) and merge_node (dry_run=false). **bat
 | batch_update | false |
 | batch_reparent | false |
 | batch_archive | **true** |
-| bulk_reparent | true |
+| bulk_reparent (library-only) | true |
 | merge_node | false |
 | batch_merge | false |
 
@@ -272,9 +272,9 @@ Agents must branch on tool choice to parse results. A uniform envelope would red
 
 `create_document`, `manage_task`, `pkb_explore`, `pkb_batch`, `pkb_stats`, `pkb_tool_help` re-expose existing tools under different names. This creates two parallel surfaces that must be kept in sync — a maintenance burden with no capability gain.
 
-### bulk_reparent vs batch_reparent overlap
+### bulk_reparent vs batch_reparent overlap (library vs MCP)
 
-Both reparent tasks. `bulk_reparent` uses glob/path patterns; `batch_reparent` uses structured filters. No documented guidance on when to use which. Legacy comment in source.
+Both reparent tasks. `bulk_reparent` is a Rust library/CLI function (`src/document_crud.rs:2572`) using glob/path patterns; `batch_reparent` is the exposed MCP batch tool using structured filters. `bulk_reparent` is not registered on the MCP surface. Legacy comment in source.
 
 ### decompose_task vs create_subtask vs create_task
 
