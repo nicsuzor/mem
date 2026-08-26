@@ -1399,7 +1399,7 @@ impl PkbSearchServer {
         } else {
             limit * 3
         };
-        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root, since, before);
+        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root, since, before, None);
 
         let graph = self.graph.read();
 
@@ -1843,7 +1843,7 @@ impl PkbSearchServer {
                     Ok(query_embedding) => {
                         let candidates = {
                             let store = self.store.read();
-                            store.search(&query_embedding, 50, &self.pkb_root, None, None)
+                            store.search(&query_embedding, 50, &self.pkb_root, None, None, None)
                         };
                         let mut suggestions: Vec<serde_json::Value> = Vec::new();
                         for r in candidates {
@@ -2559,10 +2559,22 @@ impl PkbSearchServer {
 
         let since = args.get("since").and_then(|v| v.as_str());
         let before = args.get("before").and_then(|v| v.as_str());
+        let doc_type = args.get("type").and_then(|v| v.as_str());
 
         let store = self.store.read();
-        let fetch_limit = limit * 2;
-        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root, since, before);
+        let fetch_limit = if doc_type.is_some() {
+            limit * 10
+        } else {
+            limit * 2
+        };
+        let results = store.search(
+            &query_embedding,
+            fetch_limit,
+            &self.pkb_root,
+            since,
+            before,
+            doc_type,
+        );
 
         // Build proximity boost map if boost_id provided
         let boost_map: std::collections::HashMap<String, f32> = if let Some(bid) = boost_id {
@@ -2626,6 +2638,12 @@ impl PkbSearchServer {
             let display_id = node
                 .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
                 .unwrap_or(&r.id);
+            let node_type = r
+                .doc_type
+                .as_deref()
+                .or_else(|| node.and_then(|n| n.node_type.as_deref()))
+                .unwrap_or("untyped");
+            let is_task = crate::graph::TASK_TYPES.contains(&node_type);
 
             output.push_str(&format!(
                 "### {}. {} (score: {:.3})\n",
@@ -2634,17 +2652,15 @@ impl PkbSearchServer {
                 score
             ));
             output.push_str(&format!("**ID:** `{display_id}`\n"));
-            // Project the node's status into every hit (AC2). Search returns mixed
-            // doc types; task/graph nodes carry a status that callers rely on to tell
-            // open work from closed — omitting it let a `done` task read as "open".
-            if let Some(status) = node.and_then(|n| n.status.as_deref()) {
-                output.push_str(&format!("**Status:** {status}\n"));
+            output.push_str(&format!("**Type:** {node_type}\n"));
+            // Only actionable task nodes carry actionable task status (AC3 / aops_9d3be3b3)
+            if is_task {
+                if let Some(status) = node.and_then(|n| n.status.as_deref()) {
+                    output.push_str(&format!("**Status:** {status}\n"));
+                }
             }
             if let Some(project) = node.and_then(|n| n.project.as_deref()) {
                 output.push_str(&format!("**Project:** {project}\n"));
-            }
-            if let Some(ref dt) = r.doc_type {
-                output.push_str(&format!("**Type:** {dt}\n"));
             }
             if !r.tags.is_empty() {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
@@ -4131,7 +4147,7 @@ impl PkbSearchServer {
         let candidates = self
             .store
             .read()
-            .search(&embedding, 50, &self.pkb_root, None, None);
+            .search(&embedding, 50, &self.pkb_root, None, None, None);
 
         for candidate in &candidates {
             if candidate.score < CONFIDENCE_THRESHOLD {
@@ -4831,7 +4847,7 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let results = store.search(&query_embedding, limit * 3, &self.pkb_root, None, None);
+        let results = store.search(&query_embedding, limit * 3, &self.pkb_root, None, None, None);
 
         let graph = self.graph.read();
 
@@ -7479,6 +7495,7 @@ impl PkbSearchServer {
                     "properties": {
                         "query": { "type": "string", "description": "Natural language search query" },
                         "limit": { "type": "integer", "description": "Max results (default: 10)" },
+                        "type": { "type": "string", "description": "Filter by document type (e.g. 'task', 'template', 'note', '!task' to exclude tasks, or comma-separated list 'task,epic')" },
                         "since": { "type": "string", "description": "Filter: return only results modified on or after YYYY-MM-DD (inclusive). Documents with no modified date are excluded." },
                         "before": { "type": "string", "description": "Filter: return only results modified on or before YYYY-MM-DD (inclusive). Documents with no modified date are excluded." },
                         "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
@@ -12240,7 +12257,7 @@ mod search_status_projection_tests {
             Arc::new(RwLock::new(graph)),
         );
 
-        // Create searchable tasks (non-empty body so they get chunk embeddings).
+        // Create searchable tasks
         for (title, body) in [
             (
                 "Alpha widget task",
@@ -12260,6 +12277,32 @@ mod search_status_projection_tests {
                 }))
                 .expect("create_task");
         }
+
+        // Create a non-task note document (with status: ready in frontmatter to test status suppression)
+        let note_path = pkb_root.join("notes").join("widget-note.md");
+        std::fs::create_dir_all(note_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &note_path,
+            "---\nid: note-widget-1\ntitle: \"Widget architecture note\"\ntype: note\nstatus: ready\ntags:\n  - widget\n---\n\nThis note documents the widget architecture and retrieval subsystem.",
+        ).unwrap();
+
+        // Create a template document
+        let tmpl_path = pkb_root.join("templates").join("widget-tmpl.md");
+        std::fs::create_dir_all(tmpl_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &tmpl_path,
+            "---\nid: tmpl-widget-1\ntitle: \"Widget creation template\"\ntype: template\ntags:\n  - widget\n---\n\nTemplate for creating widget subsystem retrieval components.",
+        ).unwrap();
+
+        // Insert into vector store & graph
+        let note_doc = crate::pkb::parse_file(&note_path).unwrap();
+        let tmpl_doc = crate::pkb::parse_file(&tmpl_path).unwrap();
+        let emb = server.embedder.encode_query("widget architecture note retrieval").unwrap();
+        server.store.write().insert_precomputed(&note_doc, vec![note_doc.body.clone()], vec![emb.clone()]);
+        server.store.write().insert_precomputed(&tmpl_doc, vec![tmpl_doc.body.clone()], vec![emb]);
+        server.graph.write().replace_node(crate::graph::GraphNode::from_pkb_document(&note_doc));
+        server.graph.write().replace_node(crate::graph::GraphNode::from_pkb_document(&tmpl_doc));
+
         server
     }
 
@@ -12304,7 +12347,7 @@ mod search_status_projection_tests {
         let server = build_seeded_server(dir.path());
 
         let result = server
-            .handle_pkb_search(&serde_json::json!({"query": "widget retrieval", "limit": 5}))
+            .handle_pkb_search(&serde_json::json!({"query": "widget retrieval", "type": "task", "limit": 5}))
             .expect("search");
         let text = result_text(&result);
 
@@ -12312,11 +12355,102 @@ mod search_status_projection_tests {
             !text.contains("No results found"),
             "seeded tasks should surface in search; got: {text}"
         );
-        // The seeded task nodes carry status=inbox by default — it must be projected.
+        // The seeded task nodes carry status=inbox by default — it must be projected for tasks.
         assert!(
             text.contains("**Status:**"),
-            "search must project status for task/node hits. Text:\n{text}"
+            "search must project status for task hits. Text:\n{text}"
         );
+    }
+
+    #[test]
+    fn test_search_type_filter_task_only_returns_no_non_tasks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+
+        let result = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "task", "limit": 10}))
+            .expect("search");
+        let text = result_text(&result);
+
+        assert!(!text.contains("No results found"));
+        assert!(text.contains("**Type:** task"));
+        assert!(!text.contains("**Type:** note"), "task-only search must not return note");
+        assert!(!text.contains("**Type:** template"), "task-only search must not return template");
+    }
+
+    #[test]
+    fn test_search_type_filter_negation_excludes_tasks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+
+        let result = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "!task", "limit": 10}))
+            .expect("search");
+        let text = result_text(&result);
+
+        assert!(!text.contains("No results found"));
+        assert!(!text.contains("**Type:** task"), "!task search must exclude tasks");
+        assert!(text.contains("**Type:** note") || text.contains("**Type:** template"));
+    }
+
+    #[test]
+    fn test_search_type_filter_template_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+
+        let result = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "template", "limit": 10}))
+            .expect("search");
+        let text = result_text(&result);
+
+        assert!(!text.contains("No results found"));
+        assert!(text.contains("**Type:** template"));
+        assert!(!text.contains("**Type:** task"));
+        assert!(!text.contains("**Type:** note"));
+    }
+
+    #[test]
+    fn test_search_type_filter_unknown_type_returns_no_results() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+
+        let result = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "nonexistent_xyz", "limit": 10}))
+            .expect("search");
+        let text = result_text(&result);
+
+        assert!(text.contains("No results found."));
+    }
+
+    #[test]
+    fn test_search_without_type_filter_returns_all_types() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+
+        let result = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "limit": 10}))
+            .expect("search");
+        let text = result_text(&result);
+
+        assert!(!text.contains("No results found"));
+        assert!(text.contains("**Type:** task"));
+        assert!(text.contains("**Type:** note"));
+        assert!(text.contains("**Type:** template"));
+    }
+
+    #[test]
+    fn test_search_unambiguous_type_label_and_non_task_status_suppression() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+
+        let result = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget architecture note", "type": "note", "limit": 5}))
+            .expect("search");
+        let text = result_text(&result);
+
+        assert!(text.contains("**Type:** note"), "hit must be unambiguously labelled as note");
+        // note-widget-1 had status: ready in frontmatter, but must NOT present **Status:** in search results (AC3 / aops_9d3be3b3)
+        assert!(!text.contains("**Status:**"), "non-task note must not present actionable task status: {text}");
     }
 }
 

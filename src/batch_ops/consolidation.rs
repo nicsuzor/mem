@@ -84,7 +84,7 @@ pub fn get_consolidation_cluster(
     }
 
     if let Some(emb) = seed_embedding {
-        let results = vector_store.search(&emb, vector_top_k, pkb_root, None, None);
+        let results = vector_store.search(&emb, vector_top_k, pkb_root, None, None, None);
         for res in results {
             if res.id != seed_node.id {
                 let score = candidate_scores.entry(res.id.clone()).or_insert(0.0);
