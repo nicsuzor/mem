@@ -1201,7 +1201,6 @@ impl PkbSearchServer {
             "decompose_task" => self.handle_decompose_task(args),
             "get_dependency_tree" => self.handle_get_dependency_tree(args),
             "get_task_children" => self.handle_get_task_children(args),
-            "pkb_context" => self.handle_pkb_context(args),
             "pkb_trace" => self.handle_pkb_trace(args),
             "pkb_orphans" => self.handle_pkb_orphans(args),
             "get_semantic_neighbors" => self.handle_get_semantic_neighbors(args),
