@@ -1182,6 +1182,7 @@ impl PkbSearchServer {
             "add_observations" => self.handle_add_observations(args),
             "delete_observations" => self.handle_delete_observations(args),
             "update_body" => self.handle_update_body(args),
+            "edit_body" | "edit" => self.handle_edit_body(args),
             "delete" => self.handle_delete_document(args),
             "complete_task" => self.handle_complete_task(args),
             "release_task" => self.handle_release_task(args),

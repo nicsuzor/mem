@@ -404,6 +404,16 @@ impl PkbSearchServer {
                 })),
             };
         }
+        if let Some(diff_err) = e.downcast_ref::<crate::udiff::UdiffError>() {
+            return McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("diff_application_failed: {diff_err}")),
+                data: Some(serde_json::json!({
+                    "error_type": "diff_application_failed",
+                    "details": diff_err.to_string(),
+                })),
+            };
+        }
         McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to {action}: {e}")),
@@ -561,6 +571,88 @@ impl PkbSearchServer {
             "title": label,
             "body_chars_before": result.body_chars_before,
             "body_chars_after": result.body_chars_after,
+            "preserve_frontmatter": preserve_frontmatter,
+            "modified": result.modified
+        });
+        let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to serialize response: {e}")),
+            data: None,
+        })?;
+        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+    }
+
+    pub(crate) fn handle_edit_body(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let diff = args
+            .get("diff")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: diff"),
+                data: None,
+            })?;
+
+        let preserve_frontmatter = args
+            .get("preserve_frontmatter")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let expected_modified = args.get("expected_modified").and_then(|v| v.as_str());
+
+        let (abs_path, label) = {
+            let graph = self.graph.read();
+            let node = graph.resolve(id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Document not found: {id}")),
+                data: None,
+            })?;
+            (self.abs_path(&node.path), node.label.clone())
+        };
+
+        let result = crate::document_crud::edit_body(
+            &abs_path,
+            diff,
+            preserve_frontmatter,
+            expected_modified,
+            dry_run,
+        )
+        .map_err(|e| Self::write_error_to_mcp("edit body", e))?;
+
+        if !dry_run {
+            if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+                self.rebuild_graph_for_pkb_document(&doc);
+                self.try_upsert_document(&doc);
+            } else {
+                tracing::warn!(
+                    "Incremental parse failed for {:?}, doing full rebuild",
+                    abs_path
+                );
+                self.rebuild_graph();
+            }
+        }
+
+        let response_payload = serde_json::json!({
+            "ok": true,
+            "id": id,
+            "title": label,
+            "dry_run": dry_run,
+            "body_chars_before": result.body_chars_before,
+            "body_chars_after": result.body_chars_after,
+            "hunks_applied": result.hunks_applied,
             "preserve_frontmatter": preserve_frontmatter,
             "modified": result.modified
         });

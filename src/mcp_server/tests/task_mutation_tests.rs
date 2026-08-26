@@ -1296,3 +1296,72 @@ use super::*;
         let data = err.data.unwrap();
         assert_eq!(data["error_type"], "stale_write");
     }
+
+    #[test]
+    fn test_edit_body_mcp_flow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let task_file = root.join("tasks").join("task-target.md");
+        std::fs::write(
+            &task_file,
+            "---\nid: task-target\nmodified: '2026-01-01T00:00:00Z'\ntitle: Target Task\ntype: task\nstatus: inbox\n---\n\nFirst line.\nSecond line.\nThird line.\n",
+        ).unwrap();
+
+        let doc = crate::pkb::parse_file_relative(&task_file, root).unwrap();
+        let graph = GraphStore::build(&[doc], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // 1. Dry run
+        let dry_diff = "```diff\n@@ ... @@\n-Second line.\n+Changed second line.\n```";
+        let dry_res = server.dispatch_tool_sync("edit_body", &serde_json::json!({
+            "id": "task-target",
+            "diff": dry_diff,
+            "dry_run": true,
+            "expected_modified": "2026-01-01T00:00:00Z"
+        })).expect("dry run should succeed");
+        let dry_text: String = dry_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+        assert!(dry_text.contains("\"dry_run\":true"));
+        let disk_text = std::fs::read_to_string(&task_file).unwrap();
+        assert!(disk_text.contains("Second line."));
+
+        // 2. Real application via "edit_body"
+        let real_diff = "```diff\n@@ ... @@\n-Second line.\n+Replaced second line.\n```";
+        let res = server.dispatch_tool_sync("edit_body", &serde_json::json!({
+            "id": "task-target",
+            "diff": real_diff,
+            "expected_modified": "2026-01-01T00:00:00Z"
+        })).expect("real edit should succeed");
+        let res_text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+        assert!(res_text.contains("\"ok\":true"));
+        let updated_disk = std::fs::read_to_string(&task_file).unwrap();
+        assert!(updated_disk.contains("Replaced second line."));
+        assert!(!updated_disk.contains("Second line."));
+        assert!(updated_disk.contains("status: inbox"));
+
+        // 3. Stale write rejection
+        let stale_diff = "```diff\n@@ ... @@\n-Third line.\n+Stale third line.\n```";
+        let stale_res = server.dispatch_tool_sync("edit_body", &serde_json::json!({
+            "id": "task-target",
+            "diff": stale_diff,
+            "expected_modified": "2026-01-01T00:00:00Z"
+        }));
+        assert!(stale_res.is_err());
+
+        // 4. Non-matching diff failure
+        let nomatch_diff = "```diff\n@@ ... @@\n-Nonexistent line.\n+Failure line.\n```";
+        let nomatch_res = server.dispatch_tool_sync("edit_body", &serde_json::json!({
+            "id": "task-target",
+            "diff": nomatch_diff
+        }));
+        assert!(nomatch_res.is_err());
+    }

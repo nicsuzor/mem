@@ -349,6 +349,24 @@ impl PkbSearchServer {
             .with_title("Rewrite Document Body")
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
+                "edit_body",
+                "Apply one or more unified-diff hunks to the body of an existing document (Aider-compatible format). Preserves YAML frontmatter and updates modified timestamp by default. Supports fallback matching strategies (whitespace tolerance, relative indentation, context shrinking) when a hunk does not match verbatim. Use expected_modified to enforce a compare-and-swap (CAS) check against concurrent updates.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
+                        "diff": { "type": "string", "description": "Unified-diff hunks to apply to the body (standard git-style hunk format or markdown ```diff block)" },
+                        "preserve_frontmatter": { "type": "boolean", "description": "Keep YAML frontmatter and bump modified timestamp (default: true). Set false only when editing scratch documents with no meaningful frontmatter." },
+                        "dry_run": { "type": "boolean", "description": "If true, validates and previews the diff application without writing to disk (default: false)" },
+                        "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
+                    },
+                    "required": ["id", "diff"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Edit Document Body (Unified Diff)")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
                 "delete",
                 "Permanently delete a document by ID. Removes the file from disk and the vector store index. Use with caution.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -1000,6 +1018,8 @@ mod annotation_tests {
                     "release_task",
                     "update_task",
                     "update_body",
+                    "edit_body",
+                    "edit",
                     "batch_update",
                     "batch_reparent",
                     "batch_merge",
