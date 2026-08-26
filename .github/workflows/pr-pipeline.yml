@@ -40,7 +40,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check
-      - run: cargo test
+      - run: cargo test --no-fail-fast
       - name: Inventory Lint
         run: ./scripts/inventory.py --lint
       - run: cargo build --release
