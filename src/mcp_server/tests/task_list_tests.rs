@@ -707,3 +707,211 @@ use super::*;
         }
     }
 
+    // ── has_superseded_by filter on list_tasks (mem_6cda18bf) ──────────────
+
+    #[test]
+    fn test_list_tasks_schema_includes_has_superseded_by_parameter() {
+        let tools = PkbSearchServer::get_all_tools();
+        let list_tasks_tool = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "list_tasks")
+            .expect("list_tasks tool should exist");
+        let schema = serde_json::to_string(&list_tasks_tool.input_schema).unwrap();
+        assert!(
+            schema.contains("\"has_superseded_by\""),
+            "list_tasks schema should include 'has_superseded_by' parameter, got: {}",
+            schema
+        );
+        let schema_val: serde_json::Value = serde_json::from_str(&schema).unwrap();
+        let prop = schema_val
+            .get("properties")
+            .and_then(|p| p.get("has_superseded_by"))
+            .expect("properties.has_superseded_by must exist");
+        assert_eq!(
+            prop.get("type").and_then(|t| t.as_str()),
+            Some("boolean"),
+            "has_superseded_by must have type: boolean"
+        );
+    }
+
+    #[test]
+    fn test_list_tasks_has_superseded_by_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // 1. Task with superseded_by at an OPEN status (ready)
+        let mut fm_open = serde_json::Map::new();
+        fm_open.insert("title".to_string(), json!("Open Superseded Task"));
+        fm_open.insert("type".to_string(), json!("task"));
+        fm_open.insert("status".to_string(), json!("ready"));
+        fm_open.insert("id".to_string(), json!("task-open-superseded"));
+        fm_open.insert("superseded_by".to_string(), json!("task-canonical-1"));
+        let doc_open = PkbDocument {
+            path: PathBuf::from("tasks/task-open-superseded.md"),
+            title: "Open Superseded Task".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_open)),
+            content_hash: "h1".to_string(),
+            file_hash: "h1".to_string(),
+        };
+
+        // 2. Task with superseded_by at a CLOSED status (done)
+        let mut fm_closed = serde_json::Map::new();
+        fm_closed.insert("title".to_string(), json!("Closed Superseded Task"));
+        fm_closed.insert("type".to_string(), json!("task"));
+        fm_closed.insert("status".to_string(), json!("done"));
+        fm_closed.insert("id".to_string(), json!("task-closed-superseded"));
+        fm_closed.insert("superseded_by".to_string(), json!("task-canonical-2"));
+        let doc_closed = PkbDocument {
+            path: PathBuf::from("tasks/task-closed-superseded.md"),
+            title: "Closed Superseded Task".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("done".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_closed)),
+            content_hash: "h2".to_string(),
+            file_hash: "h2".to_string(),
+        };
+
+        // 3. Task with superseded_by absent at an OPEN status
+        let mut fm_normal = serde_json::Map::new();
+        fm_normal.insert("title".to_string(), json!("Normal Open Task"));
+        fm_normal.insert("type".to_string(), json!("task"));
+        fm_normal.insert("status".to_string(), json!("ready"));
+        fm_normal.insert("id".to_string(), json!("task-normal-open"));
+        let doc_normal = PkbDocument {
+            path: PathBuf::from("tasks/task-normal-open.md"),
+            title: "Normal Open Task".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_normal)),
+            content_hash: "h3".to_string(),
+            file_hash: "h3".to_string(),
+        };
+
+        let graph = GraphStore::build(&[doc_open, doc_closed, doc_normal], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // A. Filter has_superseded_by: true (default include_done=false)
+        // Must return ONLY task-open-superseded (1 task), excluding closed and absent
+        let res_filtered_json = server
+            .handle_list_tasks(&json!({"has_superseded_by": true, "format": "json"}))
+            .unwrap();
+        let json_tasks = extract_task_objects(&res_filtered_json);
+        assert_eq!(
+            json_tasks.len(),
+            1,
+            "has_superseded_by: true should return exactly 1 open task, got {:?}",
+            json_tasks
+        );
+        let t0 = &json_tasks[0];
+        assert_eq!(t0.get("id").and_then(|v| v.as_str()), Some("task-open-superseded"));
+        // AC2: returned row carries its superseded_by value
+        assert_eq!(
+            t0.get("superseded_by").and_then(|v| v.as_str()),
+            Some("task-canonical-1"),
+            "returned task row must carry superseded_by value"
+        );
+
+        // B. Filter has_superseded_by: true with include_done: true
+        // Must return both open and closed tasks with superseded_by (2 tasks)
+        let res_with_done = server
+            .handle_list_tasks(&json!({"has_superseded_by": true, "include_done": true, "format": "json"}))
+            .unwrap();
+        let done_tasks = extract_task_objects(&res_with_done);
+        assert_eq!(
+            done_tasks.len(),
+            2,
+            "has_superseded_by: true with include_done should return 2 tasks"
+        );
+
+        // C. Filter has_superseded_by: false
+        // Must return task-normal-open (1 task)
+        let res_not_superseded = server
+            .handle_list_tasks(&json!({"has_superseded_by": false, "format": "json"}))
+            .unwrap();
+        let normal_tasks = extract_task_objects(&res_not_superseded);
+        assert_eq!(
+            normal_tasks.len(),
+            1,
+            "has_superseded_by: false should return 1 normal task"
+        );
+        assert_eq!(
+            normal_tasks[0].get("id").and_then(|v| v.as_str()),
+            Some("task-normal-open")
+        );
+
+        // D. Empty result set: query for non-existent condition
+        let res_empty = server
+            .handle_list_tasks(&json!({"has_superseded_by": true, "project": "nonexistent", "format": "json"}))
+            .unwrap();
+        let text_empty = res_empty.content[0].raw.as_text().unwrap().text.as_str();
+        assert!(
+            text_empty.contains("No tasks found matching filters.") || text_empty.contains("\"total\": 0"),
+            "empty result set must be reported cleanly, got: {}",
+            text_empty
+        );
+
+        // E. Markdown format with has_superseded_by: true includes Superseded By column
+        let res_filtered_md = server
+            .handle_list_tasks(&json!({"has_superseded_by": true, "format": "markdown"}))
+            .unwrap();
+        let md_text = res_filtered_md.content[0].raw.as_text().unwrap().text.as_str();
+        assert!(
+            md_text.contains("Superseded By"),
+            "markdown table must contain 'Superseded By' header when filtered, got: {}",
+            md_text
+        );
+        assert!(
+            md_text.contains("task-canonical-1"),
+            "markdown table must contain 'task-canonical-1', got: {}",
+            md_text
+        );
+
+        // F. AC3: Unfiltered query does NOT include superseded_by and has unmodified default columns
+        let res_unfiltered_md = server
+            .handle_list_tasks(&json!({"format": "markdown"}))
+            .unwrap();
+        let unf_md_text = res_unfiltered_md.content[0].raw.as_text().unwrap().text.as_str();
+        assert!(
+            !unf_md_text.contains("Superseded By"),
+            "unfiltered markdown must NOT contain 'Superseded By' column"
+        );
+
+        let res_unfiltered_json = server
+            .handle_list_tasks(&json!({"format": "json"}))
+            .unwrap();
+        let unf_json_tasks = extract_task_objects(&res_unfiltered_json);
+        for task in unf_json_tasks {
+            assert!(
+                task.get("superseded_by").is_none(),
+                "unfiltered json task rows must NOT contain 'superseded_by' key"
+            );
+        }
+    }
+
+

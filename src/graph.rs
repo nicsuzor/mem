@@ -249,6 +249,8 @@ pub struct GraphNode {
     pub confidence: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
     #[serde(skip_serializing_if = "is_zero_i32")]
     pub depth: i32,
     #[serde(skip_serializing_if = "is_zero_i32")]
@@ -1150,6 +1152,11 @@ impl GraphNode {
                 .and_then(|v| v.as_str())
                 .map(String::from)
         });
+        let superseded_by = fm.as_ref().and_then(|f| {
+            f.get("superseded_by")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
 
         let word_count = doc.body.split_whitespace().count() as i32;
         let has_acceptance_criteria = detect_acceptance_criteria(&doc.body);
@@ -1310,6 +1317,7 @@ impl GraphNode {
             source,
             confidence,
             supersedes,
+            superseded_by,
             depth,
             word_count,
             leaf,
