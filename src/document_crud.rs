@@ -1981,7 +1981,7 @@ pub fn edit_body(
     if !preserve_frontmatter {
         let body_chars_before = file_content.len();
         let diff_res = crate::udiff::apply_diff(&file_content, diff)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .map_err(anyhow::Error::from)?;
         let new_content = diff_res.new_content;
         let body_chars_after = new_content.len();
 
@@ -2021,7 +2021,7 @@ pub fn edit_body(
     }
 
     let diff_res = crate::udiff::apply_diff(&parsed.content, diff)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(anyhow::Error::from)?;
 
     let trimmed_body = diff_res.new_content.trim_end_matches('\n');
     let body_chars_after = trimmed_body.len();
@@ -2692,6 +2692,53 @@ mod tests {
         let diff = "```diff\n@@ ... @@\n-Nonexistent line\n+Mutated body text.\n```";
         let err = edit_body(&path, diff, true, None, false).unwrap_err();
         assert!(err.to_string().contains("UnifiedDiffNoMatch"));
+
+        let disk_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(disk_content, initial);
+    }
+
+    #[test]
+    fn test_edit_body_not_unique_fails_and_leaves_disk_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        let initial = "---\nid: test-doc\nmodified: '2026-01-01T00:00:00Z'\ntitle: Test\n---\n\nrepeat line\nrepeat line\nrepeat line\n";
+        fs::write(&path, initial).unwrap();
+
+        let diff = "```diff\n@@ ... @@\n-repeat line\n+changed line\n```";
+        let err = edit_body(&path, diff, true, None, false).unwrap_err();
+        assert!(err.to_string().contains("UnifiedDiffNotUnique"));
+
+        let disk_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(disk_content, initial);
+    }
+
+    #[test]
+    fn test_edit_body_no_hunks_found_fails_and_leaves_disk_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        let initial = "---\nid: test-doc\nmodified: '2026-01-01T00:00:00Z'\ntitle: Test\n---\n\nInitial body text.\n";
+        fs::write(&path, initial).unwrap();
+
+        let diff = "This is not a diff at all";
+        let err = edit_body(&path, diff, true, None, false).unwrap_err();
+        assert!(err.to_string().contains("No valid diff hunks found"));
+
+        let disk_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(disk_content, initial);
+    }
+
+    #[test]
+    fn test_edit_body_multi_hunk_partial_failure_leaves_disk_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        let initial = "---\nid: test-doc\nmodified: '2026-01-01T00:00:00Z'\ntitle: Test\n---\n\nLine 1\nLine 2\nLine 3\n";
+        fs::write(&path, initial).unwrap();
+
+        // First hunk matches Line 1, but second hunk does not match Nonexistent
+        let diff = "```diff\n@@ ... @@\n-Line 1\n+Updated 1\n@@ ... @@\n-Nonexistent\n+Updated 2\n```";
+        let err = edit_body(&path, diff, true, None, false).unwrap_err();
+        assert!(err.to_string().contains("UnifiedDiffNoMatch"));
+        assert!(err.to_string().contains("hunk 2 of 2"));
 
         let disk_content = fs::read_to_string(&path).unwrap();
         assert_eq!(disk_content, initial);

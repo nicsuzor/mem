@@ -1355,7 +1355,8 @@ use super::*;
             "diff": stale_diff,
             "expected_modified": "2026-01-01T00:00:00Z"
         }));
-        assert!(stale_res.is_err());
+        let stale_err = stale_res.unwrap_err();
+        assert!(stale_err.message.contains("Stale write rejected"));
 
         // 4. Non-matching diff failure
         let nomatch_diff = "```diff\n@@ ... @@\n-Nonexistent line.\n+Failure line.\n```";
@@ -1363,5 +1364,6 @@ use super::*;
             "id": "task-target",
             "diff": nomatch_diff
         }));
-        assert!(nomatch_res.is_err());
+        let nomatch_err = nomatch_res.unwrap_err();
+        assert!(nomatch_err.message.contains("diff_application_failed"));
     }
