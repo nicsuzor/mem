@@ -233,6 +233,11 @@ impl PkbSearchServer {
     pub fn bench_get_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.handle_get_document(args)
     }
+    #[doc(hidden)]
+    pub fn bench_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_pkb_search(args)
+    }
+
 
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
     /// Full rebuild of the graph store from disk (for batch operations).
