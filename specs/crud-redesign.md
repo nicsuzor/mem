@@ -81,7 +81,7 @@ These are structural changes to the tool surface. **Do not implement without pau
 
 Change `batch_update`, `batch_reparent`, `merge_node`, and `batch_merge` to default `dry_run=true`.
 
-**Rationale**: `batch_archive` and `bulk_reparent` already default to true. Inconsistency creates operational risk. The downside is one extra explicit parameter for callers who want live execution, which is a small cost for preventing accidental bulk mutations.
+**Rationale**: `batch_archive` and `bulk_reparent` (in library) already default to true. Inconsistency creates operational risk. The downside is one extra explicit parameter for callers who want live execution, which is a small cost for preventing accidental bulk mutations.
 
 **Migration**: Callers currently relying on `dry_run=false` default for `batch_update` must add `dry_run: false` explicitly. Update all known call sites in academicOps and plugins.
 
@@ -130,7 +130,7 @@ Remove `create_document`, `manage_task`, `pkb_explore`, `pkb_batch`, `pkb_stats`
 
 ### S4: Retire bulk_reparent in favour of batch_reparent
 
-**Status**: shipped in #394 (commit 6a2a842)
+**Status**: shipped in #394 (commit 6a2a842) *(Note: bulk_reparent exists in `src/document_crud.rs` for library/CLI use and was never exposed as an MCP tool)*
 
 `bulk_reparent` (glob/path pattern) is a legacy operation predating `batch_reparent` (structured filters). Remove it.
 
@@ -152,7 +152,7 @@ Once Bug Fix 1 is shipped, update the `update_task` tool description to explicit
 
 ## Tool Inventory After Redesign
 
-Target: 42 tools (down from 50; 18 core spec + task_search, find_duplicates, release_task, decompose_task, get_dependency_tree, get_task_children, task_summary, claim_task, batch_*, delete_memory, retrieve_memory, search_by_tag, list_memories, get_semantic_neighbors, update_body, detect_weight_divergence, graph_json, get_stats, status).
+Target: 42 tools (down from 50; 18 core spec + task_search, find_duplicates, release_task, decompose_task, get_dependency_tree, get_task_children, task_summary, claim_task, batch_*, retrieve_memory, search_by_tag, list_memories, get_semantic_neighbors, update_body, detect_weight_divergence, graph_json, get_stats, status; note: delete_memory was removed in PR #467 and folded into delete).
 
 | # | Tool | Change |
 |---|------|--------|
@@ -173,7 +173,7 @@ Target: 42 tools (down from 50; 18 core spec + task_search, find_duplicates, rel
 | 15 | create_memory | keep |
 | 16 | append | keep (non-idempotent — document clearly) |
 | 17 | delete | keep + document orphan risk |
-| 18 | delete_memory | keep |
+| 18 | delete_memory | **removed in PR #467** (folded into `delete` via optional `type` parameter) |
 | 19 | retrieve_memory / search_by_tag / list_memories | keep |
 | 20 | pkb_context | keep |
 | 21 | pkb_trace | keep |
@@ -198,7 +198,7 @@ Target: 42 tools (down from 50; 18 core spec + task_search, find_duplicates, rel
 | — | pkb_batch | **remove** (S3) |
 | — | pkb_stats | **remove** (S3) |
 | — | pkb_tool_help | **remove** (S3) |
-| — | bulk_reparent | **remove** (S4) |
+| — | bulk_reparent | **remove** (S4; library-only, never on MCP surface) |
 
 Net: 42 tools (from 50). The deletions are consolidation wins; the remaining tools gain correctness.
 
@@ -216,9 +216,9 @@ Update `batch_update` and `update_task` tool descriptions to document special ke
 
 ### Phase 2: Surface reduction (needs sign-off first)
 
-Remove wrapper tools (S3), bulk_reparent (S4), create_subtask (S5).
+Remove wrapper tools (S3), bulk_reparent (S4; library function), create_subtask (S5).
 
-**Caller audit needed**: Search academicOps and plugins for calls to: `create_document`, `manage_task`, `pkb_explore`, `pkb_batch`, `pkb_stats`, `pkb_tool_help`, `bulk_reparent`, `create_subtask`. Update each call site before removing the tools.
+**Caller audit needed**: Search academicOps and plugins for calls to: `create_document`, `manage_task`, `pkb_explore`, `pkb_batch`, `pkb_stats`, `pkb_tool_help`, `bulk_reparent` (library), `create_subtask`. Update each call site before removing the tools.
 
 ### Caller audit — completed
 
