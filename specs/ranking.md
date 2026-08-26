@@ -4,7 +4,7 @@ title: "PKB Ranking & Prioritisation Specification"
 type: spec
 status: approved
 created: 2026-08-25
-pinned_commit: 41d82fee29479346a81275a8b12d8166c249b627
+pinned_commit: d187656ca69e16b85d75b1726ec031d43429883a
 tags:
   - ranking
   - focus-score
@@ -16,7 +16,7 @@ tags:
 
 # PKB Ranking & Prioritisation Specification
 
-This document is the canonical specification for task prioritisation, focus scoring, graph centrality metrics, and queue ordering in `mem`. It describes the ranking machinery **as it actually ships at commit `41d82fee29479346a81275a8b12d8166c249b627`**.
+This document is the canonical specification for task prioritisation, focus scoring, graph centrality metrics, and queue ordering in `mem`. It describes the ranking machinery **as it actually ships at commit `d187656ca69e16b85d75b1726ec031d43429883a`**.
 
 Per `.agents/CORE.md`, this specification documents approved current state only.
 
@@ -255,13 +255,13 @@ In addition to `focus_score`, `mem` computes several topological and network mea
   - Urgency Propagation: Urgency propagates backward from blocked tasks to blockers over BFS paths up to depth 20:
     - `blocks`: factor $1.0$
     - `soft_blocks`: factor $0.3$
-    - `children` (parent $\to$ child): factor $0.5$
+    - `children` (parent $\\to$ child): factor $0.5$
     - `contributes_to`: verbal weight anchor ($0.00$ to $1.00$)
-    Propagated values: $\text{propagated\_s\_lex}(x) = \max(S_{\text{lex}}(x), \max_{\text{paths}} S_{\text{lex}}(t) \times \text{path\_factor})$, and $\text{min\_slack}(x) = \min(\text{slack}(x), \min_{t} \text{slack}(t))$.
-  - Piecewise-Exponential Slack Function $f(\text{Slack})$ ($\text{SAFE\_HORIZON} = 30.0$, $k = \frac{\ln(10)}{30.0}$):
-    $$f(\text{slack}) = \begin{cases} 0.001 & \text{if } \text{slack} > 30.0 \\ e^{k(30.0 - \text{slack})} & \text{if } 0.0 < \text{slack} \le 30.0 \\ 10.0 & \text{if } \text{slack} \le 0.0 \end{cases}$$
-  - Guard: If committed SEV4 and $\text{slack} \le 0.0$, urgency is clamped to exactly $10000.0$.
-  - Completed nodes have $\text{urgency} = 0.0$.
+    Propagated values: $\\text{propagated\\_s\\_lex}(x) = \\max(S_{\\text{lex}}(x), \\max_{\\text{paths}} S_{\\text{lex}}(t) \\times \\text{path\\_factor})$, and $\\text{min\\_slack}(x) = \\min(\\text{slack}(x), \\min_{t} \\text{slack}(t))$.
+  - Piecewise-Exponential Slack Function $f(\\text{Slack})$ ($\\text{SAFE\\_HORIZON} = 30.0$, $k = \\frac{\\ln(10)}{30.0}$):
+    $$f(\\text{slack}) = \\begin{cases} 0.001 & \\text{if } \\text{slack} > 30.0 \\\\ e^{k(30.0 - \\text{slack})} & \\text{if } 0.0 < \\text{slack} \\le 30.0 \\\\ 10.0 & \\text{if } \\text{slack} \\le 0.0 \\end{cases}$$
+  - Guard: If committed SEV4 and $\\text{slack} \\le 0.0$, urgency is clamped to exactly $10000.0$.
+  - Completed nodes have $\\text{urgency} = 0.0$.
 - **Theoretical Range**: $0.0$ to $10,000.0$.
 - **Consumers**: `compute_focus_scores`, `focus_picks`, `get_task` / `list_tasks` signals.
 
@@ -379,7 +379,7 @@ A task is placed in the `ready` list if and only if:
 A task is `blocked` if:
 1. Its type is in `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`), and
 2. Either:
-   a. It has $\ge 1$ unmet `depends_on` dependency whose status is not completed, OR
+   a. It has $\\ge 1$ unmet `depends_on` dependency whose status is not completed, OR
    b. Its own status is `"blocked"`, OR
    c. It is reachable via downstream propagation through `blocks` edges from any directly blocked task.
 
