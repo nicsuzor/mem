@@ -146,10 +146,10 @@ The knowledge graph has seven edge types. Some are derived from frontmatter, oth
 | `soft_depends_on` | `soft_depends_on:` list | ❌ | ✅ | Informational ordering |
 | `link` | `[[wikilinks]]` and markdown links in body | ❌ | ❌ | Cross-references; counted as backlinks |
 | `supersedes` | `supersedes:` frontmatter | ❌ | ❌ | This node replaces the target |
-| `contributes_to` | `contributes_to:` list with verbal weights | ❌ | ✅ | Strategic priority (Birnbaum importance with Renooij-Witteman terms) |
-| `similar_to` | Computed from BGE-M3 embeddings (cosine ≥ 0.85) | ❌ | ❌ | Auto-discovered semantic similarity; appears in `pkb_context` and `pkb_trace` |
+| `contributes_to` | `contributes_to:` list with verbal weights | ❌ | ✅ | Strategic priority (verbal contribution weights with Renooij-Witteman terms) |
+| `similar_to` | Computed from BGE-M3 embeddings (cosine ≥ 0.85) | ❌ | ❌ | Auto-discovered semantic similarity; appears in `pkb_trace` |
 
-`similar_to` edges are materialised when the graph is built with the vector store available (e.g. via the MCP server). They participate in pathfinding (`pkb_trace`) and context display (`pkb_context`) but are deliberately excluded from blocking analysis and ready/blocked classification — semantic similarity is informational, not causal.
+`similar_to` edges are materialised when the graph is built with the vector store available (e.g. via the MCP server). They participate in pathfinding (`pkb_trace`) but are deliberately excluded from blocking analysis and ready/blocked classification — semantic similarity is informational, not causal.
 
 ## Focus Scoring
 
@@ -196,7 +196,7 @@ SEV0–3 are compensatory (standard scalar math). **SEV4 + `goal_type: committed
 
 ### Weight scale (Renooij-Witteman)
 
-`contributes_to.weight` accepts only verbal terms — raw decimals are rejected at parse time. Weights mean **Birnbaum importance** (probability that missing this task guarantees target failure), not "percent contribution":
+`contributes_to.weight` accepts only verbal terms — raw decimals are rejected at parse time. Weights represent a **verbal contribution-weight scale** (Renooij-Witteman elicitation anchors), not "percent contribution":
 
 | Term | Anchor | Reading |
 |------|--------|---------|
@@ -301,7 +301,7 @@ It also provides **MCP prompts** to guide AI assistants through common search an
 |--------|-------------|----------|
 | `find-task` | "How do I find a task about X?" | Demonstrates `task_search` then `get_task` |
 | `explore-topic` | "What do we know about X?" | Demonstrates `search` then `get_document` |
-| `navigate-graph` | "What's connected to X?" | Demonstrates `pkb_context` for relationships |
+| `navigate-graph` | "What's connected to X?" | Demonstrates `get_task` / `get_document` for relationships |
 | `find-by-tag` | "Show me everything tagged X" | Demonstrates `search_by_tag` usage |
 
 ### Tools
@@ -312,8 +312,8 @@ It also provides **MCP prompts** to guide AI assistants through common search an
 | **Tasks** | `task_search`, `list_tasks`, `get_task`, `create_task`, `create_subtask`, `update_task`, `complete_task`, `release_task`, `decompose_task`, `get_dependency_tree`, `get_task_children`, `task_summary`, `get_network_metrics`, `top_n_by_metric` |
 | **Memory** | `retrieve_memory`, `search_by_tag`, `list_memories`, `delete` (pass `type: "memory"` to restrict to memory-type documents) |
 | **CRUD** | `create`, `create_memory`, `append`, `delete` |
-| **Graph** | `pkb_context`, `pkb_trace`, `pkb_orphans`, `graph_stats`, `graph_json` |
-| **Batch** | `batch_update`, `batch_reparent`, `batch_archive`, `batch_merge`, `batch_create_epics`, `batch_reclassify`, `bulk_reparent`, `merge_node` |
+| **Graph** | `pkb_trace`, `pkb_orphans`, `graph_stats`, `graph_json` |
+| **Batch** | `batch_update`, `batch_reparent`, `batch_archive`, `batch_merge`, `batch_create_epics`, `batch_reclassify`, `merge_node` |
 | **System** | `get_stats` |
 
 ## Architecture
