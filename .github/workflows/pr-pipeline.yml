@@ -3,6 +3,9 @@ name: "PR Review Pipeline"
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
+  push:
+    branches:
+      - feature/mem-api-modernise
 
 jobs:
   # ─── Step 0: Initialize ──────────────────────────────────────────
