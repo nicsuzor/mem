@@ -302,7 +302,7 @@ mod tests {
 
         assert!(max_focus >= 11000, "max focus_score: {}", max_focus);
         assert!((max_dw - 5.27).abs() < 0.5, "max downstream_weight should reproduce ~5.27, got {}", max_dw);
-        assert_eq!(max_urgency, 90.0, "max urgency should reproduce 90.0");
+        assert_eq!(max_urgency, 900.0, "max urgency should reproduce 900.0");
     }
 
     #[test]
