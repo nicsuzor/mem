@@ -11,7 +11,7 @@ use std::sync::Arc;
 use super::{PkbSearchServer, GOAL_TYPE_ENUM};
 
 impl PkbSearchServer {
-    pub(crate) fn get_all_tools() -> Vec<Tool> {
+    pub fn get_all_tools() -> Vec<Tool> {
         vec![
             Tool::new(
                 "get_consolidation_cluster",
@@ -29,7 +29,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "apply_consolidation_batch",
-                "Applies an atomic batch mutation for a consolidation run. Updates frontmatter and body contents across multiple documents. Fails atomically if any document update fails.",
+                "Applies a batch mutation for a consolidation run across multiple documents with pre-flight checks, atomic per-file writes, and verified rollback on failure.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -37,6 +37,10 @@ impl PkbSearchServer {
                         "updates": { 
                             "type": "object", 
                             "description": "Map of node ID to frontmatter modifications and/or 'body' replacement." 
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "Preview only (default: true — must explicitly set false to execute)"
                         }
                     },
                     "required": ["seed_id", "updates"]
@@ -159,7 +163,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Only `title` is required; `parent` and `project` are optional but recommended — omitted tasks inherit the nearest ancestor's project and become orphans without a parent. Supports the Birnbaum importance model via `contributes_to` and severity-based prioritization. Parent/child cycles are rejected at write time.",
+                "Create a new task markdown file with YAML frontmatter. Only `title` is required; `parent` and `project` are optional but recommended — omitted tasks inherit the nearest ancestor's project and become orphans without a parent. Supports the verbal contribution-weight scale via `contributes_to` and severity-based prioritization. Parent/child cycles are rejected at write time.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -167,7 +171,7 @@ impl PkbSearchServer {
                         "task_title": { "type": "string", "description": "Alias for title" },
                         "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
                         "parent": { "type": "string", "description": "Parent task ID" },
-                        "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See TAXONOMY §Priority Labels." },
+                        "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See specs/ranking.md §2.1 and §4.6." },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                         "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of tasks that must complete before this one is unblocked" },
                         "assignee": { "type": "string", "description": "Who is responsible for this task" },
@@ -189,7 +193,7 @@ impl PkbSearchServer {
                         "issue_url": { "type": "string", "description": "External issue/ticket URL to link on the task" },
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of related follow-up tasks" },
                         "release_summary": { "type": "string", "description": "Detailed technical summary, if creating this task as part of a release/handover" },
-                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this task contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": 3}]. Supports `inherits_from` to copy fields from a prototype edge." }
+                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this task contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": \"expected\"}]. Supports `inherits_from` to copy fields from a prototype edge." }
                     },
                     "required": ["title"]
                 }))
@@ -251,7 +255,7 @@ impl PkbSearchServer {
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                         "body": { "type": "string", "description": "Markdown body" },
                         "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Document/task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
-                        "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See TAXONOMY §Priority Labels." },
+                        "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See specs/ranking.md §2.1 and §4.6." },
                         "parent": { "type": "string", "description": "Parent document ID" },
                         "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of documents that must complete before this one is unblocked" },
                         "assignee": { "type": "string", "description": "Who is responsible for this document" },
@@ -349,6 +353,24 @@ impl PkbSearchServer {
             .with_title("Rewrite Document Body")
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
+                "edit_body",
+                "Apply one or more unified-diff hunks to the body of an existing document (Aider-compatible format). Preserves YAML frontmatter and updates modified timestamp by default. Supports fallback matching strategies (whitespace tolerance, relative indentation, context shrinking) when a hunk does not match verbatim. Use expected_modified to enforce a compare-and-swap (CAS) check against concurrent updates.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
+                        "diff": { "type": "string", "description": "Unified-diff hunks to apply to the body (standard git-style hunk format or markdown ```diff block)" },
+                        "preserve_frontmatter": { "type": "boolean", "description": "Keep YAML frontmatter and bump modified timestamp (default: true). Set false only when editing scratch documents with no meaningful frontmatter." },
+                        "dry_run": { "type": "boolean", "description": "If true, validates and previews the diff application without writing to disk (default: false)" },
+                        "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
+                    },
+                    "required": ["id", "diff"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Edit Document Body (Unified Diff)")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
                 "delete",
                 "Permanently delete a document by ID. Removes the file from disk and the vector store index. Use with caution.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -411,7 +433,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false).idempotent(true)),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering. Results are returned in `focus_score`-descending order by default (highest-focus first) across every path — default, ready, and blocked — with a deterministic tie-break, so the top rows are the most important and repeated calls are stable; no re-sort is needed. Every row carries `status`. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
+                "List tasks with smart filtering. Results are returned in `focus_score`-descending order by default (highest-focus first) across every path — default, ready, and blocked — with a deterministic tie-break, so the top rows are the most important and repeated calls are stable; no re-sort is needed. Every row carries `status`. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining priority, severity, deadline urgency, age/staleness, downstream weight, stakeholder waiting urgency, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md. Use status='ready' for actionable leaf tasks or status='blocked' to see blockers.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -441,7 +463,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric, combining priority, severity, deadline urgency, age/staleness, and downstream weight. Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See projects/aops/specs/pkb/multi-parent.md §7.",
+                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric, combining priority, severity, deadline urgency, age/staleness, downstream weight, stakeholder waiting urgency, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -984,6 +1006,8 @@ mod annotation_tests {
                     "release_task",
                     "update_task",
                     "update_body",
+                    "edit_body",
+                    "edit",
                     "batch_update",
                     "batch_reparent",
                     "batch_merge",
