@@ -1,8 +1,7 @@
 //! Ground Truth Probe for PKB Read Latency and Payload Bulk (H1-H4)
 //!
 //! Investigates and settles four hypotheses:
-//! - H1: Read latency breakdown (ONNX inference, vector scan, graph ops, MCP formatting)
-//!       and reconciliation against epic's reported 14.4s p50.
+//! - H1: Read latency breakdown (ONNX inference, vector scan, graph ops, MCP formatting).
 //! - H2: `get_task` payload anatomy (unconditional null fields, duplicate frontmatter, unbounded children).
 //! - H3: Index lag vs opaque ID semantic retrieval failure.
 //! - H4: `list_tasks` truncation and whether true total is known at truncation point.
@@ -91,6 +90,7 @@ struct TestEnv {
     store: Arc<RwLock<VectorStore>>,
     embedder: Arc<Embedder>,
     graph: Arc<RwLock<GraphStore>>,
+    is_real_embedder: bool,
 }
 
 impl TestEnv {
@@ -150,13 +150,23 @@ impl TestEnv {
 
         let graph = GraphStore::build(&docs, &pkb_root);
 
-        let dim = if use_dummy_embedder { 3 } else { 1024 };
-        let mut store = VectorStore::new(dim);
-        let embedder = if use_dummy_embedder {
-            Embedder::new_dummy()
+        let (embedder, is_real_embedder) = if use_dummy_embedder {
+            (Embedder::new_dummy(), false)
         } else {
-            Embedder::new().unwrap_or_else(|_| Embedder::new_dummy())
+            match Embedder::new() {
+                Ok(emb) => (emb, true),
+                Err(e) => {
+                    eprintln!("\n********************************************************************************");
+                    eprintln!("WARNING: Failed to initialize real ONNX embedder ({e}).");
+                    eprintln!("Falling back to dummy embedder (zero vectors). Timings will NOT reflect ONNX inference.");
+                    eprintln!("********************************************************************************\n");
+                    (Embedder::new_dummy(), false)
+                }
+            }
         };
+
+        let dim = if is_real_embedder { 1024 } else { 3 };
+        let mut store = VectorStore::new(dim);
 
         // Populate vector store with synthetic vectors so vector search operates on full store of 1000 items
         for doc in &docs {
@@ -182,22 +192,32 @@ impl TestEnv {
             store: store_lock,
             embedder: embedder_arc,
             graph: graph_lock,
+            is_real_embedder,
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PROBE H1: Read Latency Breakdown & Reconciliation
+// PROBE H1: Read Latency Breakdown
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn probe_h1() {
     println!("\n================================================================================");
-    println!("PROBE H1: Read Latency Breakdown & Epic Gap Reconciliation");
+    println!("PROBE H1: Read Latency Breakdown");
     println!("================================================================================");
 
     let n_tasks = 1000;
     println!("Building synthetic PKB with {n_tasks} documents...");
     let env = TestEnv::new(n_tasks, false);
+
+    if !env.is_real_embedder {
+        println!("\n********************************************************************************");
+        println!("WARNING: Real ONNX embedder is UNAVAILABLE on this host.");
+        println!("Refusing to report H1 ONNX query embedding timings (stub embedder was used).");
+        println!("Run on a host with ONNX runtime and models downloaded to measure real H1 latency.");
+        println!("********************************************************************************\n");
+        return;
+    }
 
     let query = "Benchmark task performance and indexing";
     let iters = 50;
@@ -288,16 +308,6 @@ fn probe_h1() {
         fmt_dur(t_total.mean()), fmt_dur(t_total.percentile(0.50)),
         fmt_dur(t_total.percentile(0.95)), fmt_dur(t_total.percentile(0.99)), fmt_dur(t_total.max()));
     println!("--------------------------------------------------------------------------------");
-
-    println!("\nReconciliation with Parent Epic (mem_d20dd7f3 14.4s p50 / 62s p90):");
-    println!("- Server in-process warm execution for search is dominated by ONNX inference ({}),", fmt_dur(t_embed.mean()));
-    println!("  while vector scan ({}) and graph ops ({}) are sub-millisecond.", fmt_dur(t_vector.mean()), fmt_dur(t_graph.mean()));
-    println!("- Root cause for client-observed 14.4s p50 / 62s p90 in the parent epic:");
-    println!("  1. Model initialization / download cold-start (takes seconds to minutes on fresh boots).");
-    println!("  2. Read/Write lock contention: prior versions of the server performed full-store");
-    println!("     re-serialization and synchronous embedding holding global write locks during document writes,");
-    println!("     causing concurrent search queries to block behind multi-second write operations.");
-    println!("  3. Client-side HTTP/stdio queueing and agent framework timeouts during burst writes.");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -415,6 +425,7 @@ fn probe_h3() {
     let search_res = env.server.bench_search(&json!({ "query": target_id, "limit": 5 })).unwrap();
     let text = extract_text(&search_res);
     println!("   - MCP Search output excerpt: {}", text.lines().next().unwrap_or(""));
+    println!("   - Note: Synthetic store uses uniform vectors; semantic ranking quality is NOT tested here.");
 
     // 3. New Node Indexing Lifecycle: Synchronous Metadata vs Asynchronous Vector Embed
     println!("\n3. Testing New-Node Insertion Lifecycle:");
@@ -458,9 +469,9 @@ fn probe_h3() {
         if !in_vector_after { "INDEXED" } else { "PENDING" });
     drop(store);
 
-    println!("\nVerdict for H3: CONFIRMED");
-    println!("- ID-matching failure in semantic search is a representation limit of vector embeddings on opaque strings.");
-    println!("- Index lag on new nodes is due to asynchronous deferred ONNX embedding queue (embed_pending).");
+    println!("\nVerdict for H3:");
+    println!("- Index lag lifecycle: CONFIRMED (GraphStore patches synchronously with 0 ms lag; VectorStore update is deferred/asynchronous via needs_update queue).");
+    println!("- Opaque ID representation limit: UNTESTED (the probe uses synthetic uniform vectors where ranking is meaningless by construction).");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -500,10 +511,10 @@ fn probe_h4() {
     println!("   - 'showing' field: {:?}", showing_field);
     println!("   - tasks array len: {:?}", tasks_arr.map(|a| a.len()));
 
-    println!("\n3. Code Analysis (src/mcp_server/handlers_task.rs:1090-1135):");
-    println!("   - Line 1090: `let total = tasks.len();` captures exact count of matching tasks.");
-    println!("   - Line 1091: `tasks.truncate(limit);` truncates the vector in place.");
-    println!("   - Line 1131: `\"total\": total` exposes the full count in JSON mode.");
+    println!("\n3. Code Analysis (`handle_list_tasks` in `src/mcp_server/handlers_task.rs`):");
+    println!("   - `let total = tasks.len();` captures exact count of matching tasks.");
+    println!("   - `tasks.truncate(limit);` truncates the vector in place.");
+    println!("   - `\"total\": total` exposes the full count in JSON mode.");
     println!("   - Truthful truncation requires no additional query pass; total is already in memory.");
 
     println!("\nVerdict for H4: CONFIRMED (True total is known in-memory at truncation point).");
@@ -519,3 +530,4 @@ fn main() {
     println!("PROBE RUN COMPLETE: All H1-H4 probes finished successfully.");
     println!("================================================================================\n");
 }
+
