@@ -5,7 +5,7 @@ use crate::pkb;
 use crate::vectordb::VectorStore;
 use crate::batch_ops::{BatchContext, BatchSummary, TaskAction};
 use anyhow::{Context, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use serde_json::Value as JsonValue;
 
@@ -146,7 +146,7 @@ pub fn get_consolidation_cluster(
     }))
 }
 
-/// Applies a consolidation batch atomically.
+/// Applies a consolidation batch across multiple documents with pre-flight checks, atomic per-file writes, and verified rollback on failure.
 pub fn apply_consolidation_batch(
     ctx: &mut BatchContext,
     seed_id: &str,
@@ -166,7 +166,7 @@ pub fn apply_consolidation_batch(
     // Pre-flight snapshotting across all target nodes.
     // Every node must exist in the graph and its file must be readable on disk.
     // Any gap aborts before ANY write is performed.
-    let mut snapshots = HashMap::new();
+    let mut snapshots = BTreeMap::new();
     for (node_id, _) in &sorted_updates {
         let node = ctx
             .graph
@@ -223,7 +223,7 @@ pub fn apply_consolidation_batch(
             // Rollback with verified disk restore
             let mut failed_restores = Vec::new();
             for (path, original_content) in &snapshots {
-                if let Err(write_err) = std::fs::write(path, original_content) {
+                if let Err(write_err) = document_crud::atomic_write_file(path, original_content, "consolidation_rollback") {
                     failed_restores.push(format!("{}: {}", path.display(), write_err));
                     continue;
                 }
@@ -466,5 +466,85 @@ mod tests {
         let tree1 = run_failing_batch();
         let tree2 = run_failing_batch();
         assert_eq!(tree1, tree2, "two runs of identical failing batch must produce identical trees");
+    }
+
+    #[test]
+    fn test_consolidation_rollback_failure_enumerates_all_failed_files() {
+        let (dir, _graph) = setup_test_pkb();
+        let pkb_root = dir.path();
+
+        // Create subdirectories for target-3 and target-4
+        let sub1 = pkb_root.join("sub1");
+        let sub2 = pkb_root.join("sub2");
+        std::fs::create_dir(&sub1).unwrap();
+        std::fs::create_dir(&sub2).unwrap();
+
+        let target3_path = sub1.join("target3.md");
+        std::fs::write(
+            &target3_path,
+            "---\nid: target-3\ntitle: Target Document 3\ntype: task\nstatus: ready\n---\n\n# Target 3\n",
+        )
+        .unwrap();
+
+        let target4_path = sub2.join("target4.md");
+        std::fs::write(
+            &target4_path,
+            "---\nid: target-4\ntitle: Target Document 4\ntype: task\nstatus: ready\n---\n\n# Target 4\n",
+        )
+        .unwrap();
+
+        // Rebuild graph to include all valid targets
+        let graph = GraphStore::build_from_directory(pkb_root);
+
+        // Induce corrupt frontmatter (duplicate key) in target-2 so update_document fails on it
+        let target2_path = pkb_root.join("target2.md");
+        std::fs::write(
+            &target2_path,
+            "---\nid: target-2\ntitle: Target Document 2\ntitle: Duplicate Title Conflict\ntype: task\nstatus: ready\n---\n\n# Target 2\n",
+        )
+        .unwrap();
+
+        // Make sub1 and sub2 directories read-only so atomic_write_file cannot write temp files during rollback
+        std::fs::set_permissions(&sub1, std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::set_permissions(&sub2, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let mut updates = HashMap::new();
+        let mut t1_upd = HashMap::new();
+        t1_upd.insert("priority".to_string(), JsonValue::Number(1.into()));
+        updates.insert("target-1".to_string(), t1_upd);
+
+        let mut t2_upd = HashMap::new();
+        t2_upd.insert("priority".to_string(), JsonValue::Number(1.into()));
+        updates.insert("target-2".to_string(), t2_upd);
+
+        let mut t3_upd = HashMap::new();
+        t3_upd.insert("priority".to_string(), JsonValue::Number(1.into()));
+        updates.insert("target-3".to_string(), t3_upd);
+
+        let mut t4_upd = HashMap::new();
+        t4_upd.insert("priority".to_string(), JsonValue::Number(1.into()));
+        updates.insert("target-4".to_string(), t4_upd);
+
+        let mut ctx = BatchContext::new(&graph, pkb_root);
+        let err = apply_consolidation_batch(&mut ctx, "seed-1", updates, false)
+            .expect_err("batch should fail and report failed rollback");
+
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("Rollback FAILED for files:"),
+            "error should indicate rollback failure: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("target3.md"),
+            "error must enumerate target3.md in rollback failures: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("target4.md"),
+            "error must enumerate target4.md in rollback failures: {err_msg}"
+        );
+
+        // Restore permissions for cleanup
+        std::fs::set_permissions(&sub1, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&sub2, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
