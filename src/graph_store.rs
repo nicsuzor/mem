@@ -3364,6 +3364,14 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
         if node.task_id.is_none() {
             continue;
         }
+        let is_actionable = node
+            .node_type
+            .as_deref()
+            .map(|t| ACTIONABLE_TYPES.contains(&t))
+            .unwrap_or(false);
+        if !is_actionable {
+            continue;
+        }
         let status = node.status.as_deref().unwrap_or("inbox");
         if graph::is_completed(Some(status)) {
             continue;
@@ -3438,7 +3446,13 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
     // Roots: tasks with no parent or parent not in index
     let roots: Vec<String> = nodes
         .iter()
-        .filter(|(_, n)| n.task_id.is_some())
+        .filter(|(_, n)| {
+            n.task_id.is_some()
+                && n.node_type
+                    .as_deref()
+                    .map(|t| ACTIONABLE_TYPES.contains(&t))
+                    .unwrap_or(false)
+        })
         .filter(|(_, n)| match &n.parent {
             None => true,
             Some(pid) => !nodes.contains_key(pid),

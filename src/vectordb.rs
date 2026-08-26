@@ -193,6 +193,64 @@ pub struct VectorStore {
     dimension: usize,
 }
 
+/// Helper to check if a document's doc_type matches an optional type filter string.
+///
+/// Supports:
+/// - Single type: e.g. `"task"`, `"template"`, `"note"`
+/// - Comma-separated positive types: e.g. `"task,epic"`
+/// - Negated types (prefixed with `!`): e.g. `"!task"`, `"!task,!epic"`
+/// - Case-insensitive matching
+pub fn matches_type_filter(doc_type: Option<&str>, filter: Option<&str>) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    let filter = filter.trim();
+    if filter.is_empty() {
+        return true;
+    }
+
+    let mut pos_types = Vec::new();
+    let mut neg_types = Vec::new();
+
+    for part in filter.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(negated) = trimmed.strip_prefix('!') {
+            let neg_clean = negated.trim();
+            if !neg_clean.is_empty() {
+                neg_types.push(neg_clean);
+            }
+        } else {
+            pos_types.push(trimmed);
+        }
+    }
+
+    if pos_types.is_empty() && neg_types.is_empty() {
+        return true;
+    }
+
+    // Check negations first: if doc_type matches any negated type, exclude it
+    if !neg_types.is_empty() {
+        if let Some(dt) = doc_type {
+            if neg_types.iter().any(|n| dt.eq_ignore_ascii_case(n)) {
+                return false;
+            }
+        }
+    }
+
+    // If positive types are specified, doc_type must match at least one positive type
+    if !pos_types.is_empty() {
+        match doc_type {
+            Some(dt) => pos_types.iter().any(|p| dt.eq_ignore_ascii_case(p)),
+            None => false,
+        }
+    } else {
+        true
+    }
+}
+
 impl VectorStore {
     pub fn new(dimension: usize) -> Self {
         Self {
@@ -628,11 +686,17 @@ impl VectorStore {
         pkb_root: &Path,
         since: Option<&str>,
         before: Option<&str>,
+        type_filter: Option<&str>,
     ) -> Vec<SearchResult> {
         // Build candidate list: for each document, use max similarity across chunks
         let mut results: Vec<SearchResult> = Vec::new();
 
         for entry in self.documents.values() {
+            // Filter by document type
+            if !matches_type_filter(entry.doc_type.as_deref(), type_filter) {
+                continue;
+            }
+
             // Filter by modified date. RFC3339 timestamps start with YYYY-MM-DD so
             // the first 10 chars compare correctly against YYYY-MM-DD filter params.
             // Entries with no modified date are excluded when any date filter is active.
@@ -735,11 +799,8 @@ impl VectorStore {
                     continue;
                 }
             }
-            if let Some(dt) = type_filter {
-                match &entry.doc_type {
-                    Some(t) if t.eq_ignore_ascii_case(dt) => {}
-                    _ => continue,
-                }
+            if !matches_type_filter(entry.doc_type.as_deref(), type_filter) {
+                continue;
             }
             if let Some(st) = status_filter {
                 match &entry.status {
@@ -999,7 +1060,7 @@ mod tests {
         let store = build_test_store();
         let root = Path::new("/pkb");
         // Query vector aligned with [1,0,0] should match the task entry
-        let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None);
+        let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None, None);
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "Fix the bug");
         assert!((results[0].score - 1.0).abs() < 0.01);
@@ -1009,7 +1070,7 @@ mod tests {
     fn test_search_respects_limit() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[0.5, 0.5, 0.5], 2, root, None, None);
+        let results = store.search(&[0.5, 0.5, 0.5], 2, root, None, None, None);
         assert_eq!(results.len(), 2);
     }
 
@@ -1017,7 +1078,7 @@ mod tests {
     fn test_search_sorted_by_score_descending() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[0.5, 0.5, 0.0], 10, root, None, None);
+        let results = store.search(&[0.5, 0.5, 0.0], 10, root, None, None, None);
         for i in 1..results.len() {
             assert!(results[i - 1].score >= results[i].score);
         }
@@ -1027,8 +1088,76 @@ mod tests {
     fn test_search_empty_store() {
         let store = VectorStore::new(3);
         let root = Path::new("/pkb");
-        let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None);
+        let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None, None);
         assert!(results.is_empty());
+    }
+
+    // ── type filter tests ──
+
+    #[test]
+    fn test_matches_type_filter_logic() {
+        assert!(matches_type_filter(Some("task"), None));
+        assert!(matches_type_filter(Some("task"), Some("")));
+        assert!(matches_type_filter(Some("task"), Some("task")));
+        assert!(matches_type_filter(Some("Task"), Some("task")));
+        assert!(matches_type_filter(Some("task"), Some("TASK")));
+        assert!(!matches_type_filter(Some("note"), Some("task")));
+        assert!(!matches_type_filter(None, Some("task")));
+
+        // Comma-separated positive
+        assert!(matches_type_filter(Some("task"), Some("task,epic")));
+        assert!(matches_type_filter(Some("epic"), Some("task,epic")));
+        assert!(!matches_type_filter(Some("note"), Some("task,epic")));
+
+        // Negation
+        assert!(!matches_type_filter(Some("task"), Some("!task")));
+        assert!(matches_type_filter(Some("note"), Some("!task")));
+        assert!(matches_type_filter(Some("template"), Some("!task")));
+        assert!(matches_type_filter(None, Some("!task")));
+
+        // Multi-negation
+        assert!(!matches_type_filter(Some("task"), Some("!task,!epic")));
+        assert!(!matches_type_filter(Some("epic"), Some("!task,!epic")));
+        assert!(matches_type_filter(Some("note"), Some("!task,!epic")));
+    }
+
+    #[test]
+    fn test_search_filter_by_type_task_only() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        // Store contains 1 task, 1 note, 1 memory
+        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, Some("task"));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].doc_type.as_deref(), Some("task"));
+        assert_eq!(results[0].title, "Fix the bug");
+    }
+
+    #[test]
+    fn test_search_filter_by_type_negation_excludes_tasks() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        // !task should return note and memory, excluding task
+        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, Some("!task"));
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert_ne!(r.doc_type.as_deref(), Some("task"));
+        }
+    }
+
+    #[test]
+    fn test_search_filter_by_unknown_type_returns_empty() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, Some("nonexistent_type"));
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_without_type_filter_returns_all_matches() {
+        let store = build_test_store();
+        let root = Path::new("/pkb");
+        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, None);
+        assert_eq!(results.len(), 3);
     }
 
     // ── search date filters (since/before on modified) ──
@@ -1101,6 +1230,7 @@ mod tests {
             Path::new("/pkb"),
             None,
             Some("2020-01-01"),
+            None,
         );
         // Only the 2019 entry qualifies (modified <= 2020-01-01), but that's pre-2020 so it's in.
         // Actually 2019-06-01 <= 2020-01-01 so it should appear.
@@ -1126,6 +1256,7 @@ mod tests {
             Path::new("/pkb"),
             None,
             Some("2018-01-01"),
+            None,
         );
         assert!(
             results.is_empty(),
@@ -1144,6 +1275,7 @@ mod tests {
             Path::new("/pkb"),
             Some("2030-01-01"),
             None,
+            None,
         );
         assert!(
             results.is_empty(),
@@ -1157,8 +1289,8 @@ mod tests {
         // Wide range includes all dated entries; narrow range must be a strict subset.
         let store = build_dated_store();
         let root = Path::new("/pkb");
-        let wide = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2000-01-01"), None);
-        let narrow = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2024-01-01"), None);
+        let wide = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2000-01-01"), None, None);
+        let narrow = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2024-01-01"), None, None);
         assert!(
             narrow.len() < wide.len(),
             "narrowing since must reduce result count: wide={} narrow={}",
@@ -1176,6 +1308,7 @@ mod tests {
             10,
             Path::new("/pkb"),
             Some("2000-01-01"),
+            None,
             None,
         );
         let titles: Vec<_> = results.iter().map(|r| r.title.as_str()).collect();
@@ -1324,14 +1457,14 @@ mod tests {
         store.insert_precomputed(&doc, vec!["chunk1".to_string()], vec![vec![1.0, 0.0, 0.0]]);
         assert_eq!(store.len(), 1);
         let root = Path::new("/pkb");
-        let results = store.search(&[1.0, 0.0, 0.0], 1, root, None, None);
+        let results = store.search(&[1.0, 0.0, 0.0], 1, root, None, None, None);
         assert_eq!(results[0].title, "Test Doc");
     }
     #[test]
     fn test_search_uses_chunk_texts_for_snippets() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[1.0, 0.0, 0.0], 1, root, None, None);
+        let results = store.search(&[1.0, 0.0, 0.0], 1, root, None, None, None);
         assert!(results[0].snippet.contains("body of"));
     }
 
