@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.80](https://github.com/nicsuzor/mem/compare/mem-v0.3.79...mem-v0.3.80) (2026-08-26)
+
+
+### Features
+
+* **crud:** enforce strict frontmatter scalar length limits and atomic writes ([40f7591](https://github.com/nicsuzor/mem/commit/40f75917b624955d42e147e0858b548090e208c9))
+* **crud:** enforce strict frontmatter scalar length validation and atomic writes ([20adf7f](https://github.com/nicsuzor/mem/commit/20adf7fb648605c8bc86dd5a303577b57c96f5d9))
+* **excalidraw:** add update-node primitive to CLI ([d27f663](https://github.com/nicsuzor/mem/commit/d27f6630397d59b201b99fce20f0da31298c16d9))
+* **excalidraw:** apply aesthetic graph layout engine fixes and update diagram agent skill ([f5dab34](https://github.com/nicsuzor/mem/commit/f5dab347fcd298dac10d87eab4ea36d33c49901a))
+* **excalidraw:** dynamic external theme config resolution ([deb8004](https://github.com/nicsuzor/mem/commit/deb80044da6ff3cc11ece1b94035fa5a2807a487))
+* **mcp:** add has_superseded_by filter to list_tasks ([b412caf](https://github.com/nicsuzor/mem/commit/b412cafec5d698034e6c6416cdbad34b990e10ce))
+* **mcp:** add has_superseded_by filter to list_tasks ([e2ae5e3](https://github.com/nicsuzor/mem/commit/e2ae5e361c9ce126d8d5fe567a0429cb550a63dd))
+* **mcp:** add observations CRUD tools with CAS and loud deletion ([546099d](https://github.com/nicsuzor/mem/commit/546099d5c419c6f4fff088d082fba121cfb192fd))
+* **mcp:** add observations CRUD tools with CAS and loud deletion ([dad4e98](https://github.com/nicsuzor/mem/commit/dad4e9857d10fe40bc8246ccf034390fcffc7bf5))
+* **mcp:** distinguish tasks from other nodes in search and retrieval ([d257ee5](https://github.com/nicsuzor/mem/commit/d257ee5b4259e0671a29d9650282d7d96ea7dc8d))
+* **mcp:** remove pkb_context MCP tool ([d8b18b5](https://github.com/nicsuzor/mem/commit/d8b18b5333e9f000a95d3c73e63df28424fb8a25))
+* **mcp:** remove pkb_context MCP tool ([45ae4d3](https://github.com/nicsuzor/mem/commit/45ae4d3022865aae5179a69cc0d3a53e5084a28f))
+* **mcp:** report live operational diagnostics in status() ([da5bd54](https://github.com/nicsuzor/mem/commit/da5bd54eef6eeeba35d1a709a8e3bcd8100965c2))
+* **mcp:** report operational diagnostics in status() ([341eb7e](https://github.com/nicsuzor/mem/commit/341eb7e33aa7072c1677e47955f693a03d4a9081))
+* **probe:** add reproducible ground-truth probe for H1-H4 latency and payload bulk ([84a1b94](https://github.com/nicsuzor/mem/commit/84a1b94c25b059705cbfb0ee90375460f142b317))
+* **probe:** add reproducible ground-truth probe for H1-H4 latency and payload bulk ([d4845ee](https://github.com/nicsuzor/mem/commit/d4845ee35d62e571a422d7226720ec797ad8c58b))
+* **ranking:** add frozen corpus fixture and regression harness (Phase 0c) ([c813189](https://github.com/nicsuzor/mem/commit/c81318930ad38d542c427fc34fd981f8c94ed6f0))
+* **ranking:** add frozen corpus fixture and regression harness (Phase 0c) ([fd9e903](https://github.com/nicsuzor/mem/commit/fd9e903e5d224d9da92c5a0925661a307b128cbc))
+* **search:** add type filtering and document listing parity with status scoping ([f37e49c](https://github.com/nicsuzor/mem/commit/f37e49ce0a05e8716ee2d9776ba692b770093299))
+* **udiff:** implement Aider-compatible unified-diff editing API for PKB document bodies ([88ef9a2](https://github.com/nicsuzor/mem/commit/88ef9a2832a25d308537f94861ae4a39dc153097))
+* **udiff:** implement Aider-compatible unified-diff editing API for PKB document bodies ([32d7f94](https://github.com/nicsuzor/mem/commit/32d7f94962e57f8860a18b330aece7d69438b19e))
+
+
+### Bug Fixes
+
+* **batch_ops:** preserve authored frontmatter keys in run_decay ([3f65c55](https://github.com/nicsuzor/mem/commit/3f65c554efc9c4e2a164d87d4e57494393d7d1fd))
+* **batch_ops:** preserve authored frontmatter keys in run_decay ([cc5ff56](https://github.com/nicsuzor/mem/commit/cc5ff5602edc31c6e94fbbff1903bc829758f0d8))
+* **batch:** implement genuine atomicity, verified rollback, and dry_run for apply_consolidation_batch ([68ff05a](https://github.com/nicsuzor/mem/commit/68ff05abcc0bb297d788f5a154b26f6d7d387c0f))
+* **batch:** wire atomic writes for document updates and calibrate apply_consolidation_batch guarantees ([6b52c97](https://github.com/nicsuzor/mem/commit/6b52c97568d43e83312198457ea3a16b1774abd1))
+* **batch:** wire atomic_write_file, calibrate batch consolidation schema guarantees, and add rollback failure enumeration test ([e201c76](https://github.com/nicsuzor/mem/commit/e201c76b69738e72b1f5ef5512453a54b3fbedcd))
+* **excalidraw:** resolve strategic review findings (memory, precedence, schemas) ([1ee69e3](https://github.com/nicsuzor/mem/commit/1ee69e3f195fe43098d45734fcb02c37922d98ee))
+* **excalidraw:** suppress untitled placeholder renames and preserve secondary container texts ([db69cdd](https://github.com/nicsuzor/mem/commit/db69cdde45db4657fd6212b0fececcb3773087e9))
+* **mcp:** merge_node dry-run report reads as a completed write; no dry-run test checked disk ([391aa0e](https://github.com/nicsuzor/mem/commit/391aa0e703aeae09a4c7329160a10bb087b98b88))
+* **pkb:** reject stale writes on update_body and append instead of last-write-wins ([3a3eb69](https://github.com/nicsuzor/mem/commit/3a3eb69ee734f98aa7203380942f5c72c97b3550))
+* **pkb:** reject stale writes on update_body and append instead of last-write-wins ([fe7cfdb](https://github.com/nicsuzor/mem/commit/fe7cfdb2907cff6e13835ae35fcfd28548e93809))
+* **probe:** scope claims to measured evidence and make ONNX fallback loud ([3ac18b8](https://github.com/nicsuzor/mem/commit/3ac18b8ddf1dfb2ad139317a66e5d2a90decd689))
+* **ranking:** commit the corpus generator, unfreeze the spec pin, fix spec LaTeX ([dd3c12b](https://github.com/nicsuzor/mem/commit/dd3c12bbd5a8dbe3fc2934d91db94d2b133e1745))
+* **ranking:** commit the corpus generator, unfreeze the spec pin, fix spec LaTeX escaping ([1acdf5a](https://github.com/nicsuzor/mem/commit/1acdf5af41dcccb01ede5702e5f868a4fa299737))
+* **ranking:** regenerate frozen corpus fixture and align specs/ranking.md §4.3 with 10.0 overdue multiplier ([d187656](https://github.com/nicsuzor/mem/commit/d187656ca69e16b85d75b1726ec031d43429883a))
+* **ranking:** regenerate frozen corpus fixture and align specs/ranking.md §4.3 with 10.0 overdue multiplier ([58409e5](https://github.com/nicsuzor/mem/commit/58409e502cd773871f2dd13458ef134814c2aa5a))
+* **scoring:** dedupe the VoI cone walk and neutralise the effort divisor ([98eed4a](https://github.com/nicsuzor/mem/commit/98eed4afd2463180265da28cedd3be2baa75a7e1))
+* **scoring:** restore monotonic urgency curve and total ready-queue order ([c1f057e](https://github.com/nicsuzor/mem/commit/c1f057e6b18bddab3e6137032a172b730365dc47))
+* **scoring:** restore monotonic urgency curve and total ready-queue order (Phase 0a) ([34fa45b](https://github.com/nicsuzor/mem/commit/34fa45bcbe4399efda483e7ca35aabea48e0eb0a))
+
+
+### Code Refactoring
+
+* **mcp:** split mcp_server.rs into modules (no behaviour change) ([61192f7](https://github.com/nicsuzor/mem/commit/61192f7901979b218d02af4c5fc67f3b044b3fdc))
+
+
+### Documentation
+
+* clean up stale MCP tool references (delete_memory, bulk_reparent) ([861ccd9](https://github.com/nicsuzor/mem/commit/861ccd9d4aae7fa91c4122ade7fb417bb32c7749))
+* clean up stale MCP tool references (delete_memory, bulk_reparent) ([3834684](https://github.com/nicsuzor/mem/commit/3834684eeda5468419bfb5a4399a2a57f6595be7))
+* **ranking:** author specs/ranking.md and repair agent-facing schema surfaces (Phase 0b) ([587cd5b](https://github.com/nicsuzor/mem/commit/587cd5b19a02e363ae4b6df687e33d4d8c2ec337))
+* **ranking:** author specs/ranking.md and repair agent-facing schema surfaces (Phase 0b) ([c544287](https://github.com/nicsuzor/mem/commit/c54428724746cc5c96fe42aff55bfbf1fd4c207e))
+* **specs:** add CLI/MCP surface convergence and tool reduction strategy ([478e69f](https://github.com/nicsuzor/mem/commit/478e69fa2318de0cf75b39379341b8a3f80846fd))
+* **specs:** CLI/MCP surface convergence & tool reduction strategy ([e656ef0](https://github.com/nicsuzor/mem/commit/e656ef00fa470155bdf2d1da0115f9b165f3927c))
+* **taxonomy:** correct four verified errors in TAXONOMY.md ([2acf994](https://github.com/nicsuzor/mem/commit/2acf994b8b96408c68f4565cf5cb2e877a41a78d))
+
+
+### Tests
+
+* **document_crud:** use eprintln! in performance test to satisfy stdout_guard ([07d6faf](https://github.com/nicsuzor/mem/commit/07d6faf8a950fa03c2760a7fec305d10b8b70c7d))
+* **mcp:** isolate integration tests with synthetic fixture and raise tight timeouts ([1a53042](https://github.com/nicsuzor/mem/commit/1a53042e97e1e69565f070097351488a547c39b3))
+* **mcp:** isolate integration tests with synthetic fixture and raise tight timeouts ([9996107](https://github.com/nicsuzor/mem/commit/99961071faf5c1e6b16bf09a1a3e422cf78de953))
+* **udiff:** add failure path tests and preserve UdiffError downcasting ([3189ff7](https://github.com/nicsuzor/mem/commit/3189ff78359d5b81cf7ae9ac7dedb08035abd2a9))
+
+
+### Miscellaneous
+
+* **ranking:** remove frozen ranking corpus and test harness ([55f6196](https://github.com/nicsuzor/mem/commit/55f6196e6e73fb91b94182708f2c7ca12fee52ab))
+* **ranking:** remove frozen ranking corpus, regression harness, and generator ([94e6a40](https://github.com/nicsuzor/mem/commit/94e6a40d9ae455efd85f65441d063fe6c19dcafb))
+
 ## [0.3.79](https://github.com/nicsuzor/mem/compare/mem-v0.3.78...mem-v0.3.79) (2026-08-24)
 
 
