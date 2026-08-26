@@ -1388,8 +1388,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         .unwrap_or_else(|| result.content.trim());
 
     let new_content = format!("---\n{}---\n\n{}\n", yaml, body);
-    std::fs::write(path, &new_content)
-        .with_context(|| format!("Failed to write: {}", path.display()))?;
+    atomic_write_file(path, &new_content, "update_document")?;
 
     Ok(())
 }

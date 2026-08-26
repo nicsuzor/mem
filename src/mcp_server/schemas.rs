@@ -29,7 +29,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "apply_consolidation_batch",
-                "Applies an atomic batch mutation for a consolidation run. Updates frontmatter and body contents across multiple documents. Fails atomically if any document update fails.",
+                "Applies a batch mutation for a consolidation run across multiple documents with pre-flight checks, atomic per-file writes, and verified rollback on failure.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -37,6 +37,10 @@ impl PkbSearchServer {
                         "updates": { 
                             "type": "object", 
                             "description": "Map of node ID to frontmatter modifications and/or 'body' replacement." 
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "Preview only (default: true — must explicitly set false to execute)"
                         }
                     },
                     "required": ["seed_id", "updates"]
