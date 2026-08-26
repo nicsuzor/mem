@@ -232,7 +232,11 @@ impl DiffEngine {
                 let mut tags_update = None;
 
                 // Title check
-                if !card.title.is_empty() && card.title != ln.label && card.title != node_id {
+                if !card.title.is_empty()
+                    && card.title != ln.label
+                    && card.title != node_id
+                    && card.title != "Untitled"
+                {
                     // Check for 3-way conflict
                     if let Some(base_snap) = base {
                         if let Some(bn) = base_snap.nodes.get(&node_id) {
@@ -732,5 +736,105 @@ mod tests {
             "only the genuinely new card is an addition"
         );
         assert_eq!(diff.added_nodes[0].temp_id, "Xk3p9qZr");
+    }
+
+    /// When a card's identity is recovered via element_id without bound text,
+    /// reader sets title to "Untitled". DiffEngine must NOT propose updating
+    /// the live node's title to "Untitled".
+    #[test]
+    fn element_id_recovery_without_title_does_not_overwrite_live_label_with_untitled() {
+        let mut gs = GraphStore::build(&[], std::path::Path::new("/tmp"));
+        let mut n = GraphNode::default();
+        n.id = "task-12345678".to_string();
+        n.label = "Important Existing Task".to_string();
+        gs.replace_node(n);
+
+        let canvas = CanvasModel {
+            cards: vec![crate::excalidraw::reader::CanvasCard {
+                element_id: "task-12345678".to_string(),
+                node_id: None,
+                title: "Untitled".to_string(), // placeholder from reader
+                node_type: None,
+                status: None,
+                priority: None,
+                parent: None,
+                tags: vec![],
+                frame_id: None,
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+                stroke_color: String::new(),
+                background_color: String::new(),
+                custom_data: None,
+                raw_card_element: Default::default(),
+                bound_text_element: None,
+                is_new: true,
+                is_duplicate: false,
+            }],
+            arrows: vec![],
+            frames: vec![],
+            annotations: vec![],
+            duplicate_ids: vec![],
+            raw_file: Default::default(),
+        };
+
+        let diff = DiffEngine::compute_diff(None, &gs, &canvas);
+        assert!(
+            diff.added_nodes.is_empty(),
+            "element_id matches live node, so not an addition"
+        );
+        assert!(
+            diff.updated_nodes.is_empty(),
+            "placeholder Untitled must not update live node title"
+        );
+    }
+
+    /// When a card's identity is recovered via element_id AND it has genuine
+    /// bound text with a new title, DiffEngine SHOULD propose a title update.
+    #[test]
+    fn element_id_recovery_with_custom_title_updates_label() {
+        let mut gs = GraphStore::build(&[], std::path::Path::new("/tmp"));
+        let mut n = GraphNode::default();
+        n.id = "task-12345678".to_string();
+        n.label = "Old Title".to_string();
+        gs.replace_node(n);
+
+        let canvas = CanvasModel {
+            cards: vec![crate::excalidraw::reader::CanvasCard {
+                element_id: "task-12345678".to_string(),
+                node_id: None,
+                title: "Updated Node Title".to_string(),
+                node_type: None,
+                status: None,
+                priority: None,
+                parent: None,
+                tags: vec![],
+                frame_id: None,
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+                stroke_color: String::new(),
+                background_color: String::new(),
+                custom_data: None,
+                raw_card_element: Default::default(),
+                bound_text_element: None,
+                is_new: true,
+                is_duplicate: false,
+            }],
+            arrows: vec![],
+            frames: vec![],
+            annotations: vec![],
+            duplicate_ids: vec![],
+            raw_file: Default::default(),
+        };
+
+        let diff = DiffEngine::compute_diff(None, &gs, &canvas);
+        assert_eq!(diff.updated_nodes.len(), 1);
+        assert_eq!(
+            diff.updated_nodes[0].title.as_deref(),
+            Some("Updated Node Title")
+        );
     }
 }

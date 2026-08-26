@@ -183,9 +183,13 @@ impl CanvasReader {
                 match text_by_container.entry(cid) {
                     std::collections::hash_map::Entry::Occupied(mut e) => {
                         // only the container's declared label may displace an
-                        // incumbent; otherwise keep the first, never the last
+                        // incumbent; otherwise keep the first, never the last.
+                        // Non-selected texts are preserved as annotations.
                         if is_declared {
-                            e.insert(text_elem);
+                            let displaced = e.insert(text_elem);
+                            unattached_texts.push(displaced);
+                        } else {
+                            unattached_texts.push(text_elem);
                         }
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
@@ -737,6 +741,10 @@ mod tests {
         assert_eq!(
             canvas.cards[0].title, "Enjoy your long service leave",
             "card must be titled by its declared bound label, not by a marker text"
+        );
+        assert!(
+            canvas.annotations.iter().any(|e| e.id == "marker"),
+            "non-winning container text must be preserved in annotations"
         );
     }
 
