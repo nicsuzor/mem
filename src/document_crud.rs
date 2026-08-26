@@ -134,6 +134,36 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         }
     }
 
+    let max_len = max_frontmatter_scalar_len();
+    validate_str_scalar("title", &fields.title, max_len)?;
+    if let Some(ref s) = fields.assignee {
+        validate_str_scalar("assignee", s, max_len)?;
+    }
+    if let Some(ref s) = fields.complexity {
+        validate_str_scalar("complexity", s, max_len)?;
+    }
+    if let Some(ref s) = fields.source {
+        validate_str_scalar("source", s, max_len)?;
+    }
+    if let Some(ref s) = fields.supersedes {
+        validate_str_scalar("supersedes", s, max_len)?;
+    }
+    if let Some(ref s) = fields.stakeholder {
+        validate_str_scalar("stakeholder", s, max_len)?;
+    }
+    if let Some(ref s) = fields.waiting_since {
+        validate_str_scalar("waiting_since", s, max_len)?;
+    }
+    if let Some(ref s) = fields.due {
+        validate_str_scalar("due", s, max_len)?;
+    }
+    for tag in &fields.tags {
+        validate_str_scalar("tags", tag, max_len)?;
+    }
+    for dep in &fields.depends_on {
+        validate_str_scalar("depends_on", dep, max_len)?;
+    }
+
     // Validation
     if !crate::graph::is_valid_node_type(&fields.doc_type) {
         let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
@@ -319,7 +349,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     fm.push_str(&body);
     fm.push('\n');
 
-    std::fs::write(&path, &fm)
+    atomic_write(&path, fm.as_bytes())
         .with_context(|| format!("Failed to write file: {}", path.display()))?;
 
     Ok(path)
@@ -344,6 +374,9 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
     if fields.parent_id.is_empty() {
         anyhow::bail!("parent_id cannot be empty");
     }
+
+    let max_len = max_frontmatter_scalar_len();
+    validate_str_scalar("title", &fields.title, max_len)?;
 
     let tasks_dir = root.join("tasks");
     let dir = if tasks_dir.is_dir() {
@@ -401,7 +434,7 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
     fm.push_str(&body);
     fm.push('\n');
 
-    std::fs::write(&path, &fm)
+    atomic_write(&path, fm.as_bytes())
         .with_context(|| format!("Failed to write sub-task file: {}", path.display()))?;
 
     Ok(path)
@@ -466,6 +499,51 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     }
 
     // Validation
+    let max_len = max_frontmatter_scalar_len();
+    validate_str_scalar("title", &fields.title, max_len)?;
+    if let Some(ref s) = fields.assignee {
+        validate_str_scalar("assignee", s, max_len)?;
+    }
+    if let Some(ref s) = fields.complexity {
+        validate_str_scalar("complexity", s, max_len)?;
+    }
+    if let Some(ref s) = fields.effort {
+        validate_str_scalar("effort", s, max_len)?;
+    }
+    if let Some(ref s) = fields.consequence {
+        validate_str_scalar("consequence", s, max_len)?;
+    }
+    if let Some(ref s) = fields.stakeholder {
+        validate_str_scalar("stakeholder", s, max_len)?;
+    }
+    if let Some(ref s) = fields.waiting_since {
+        validate_str_scalar("waiting_since", s, max_len)?;
+    }
+    if let Some(ref s) = fields.due {
+        validate_str_scalar("due", s, max_len)?;
+    }
+    if let Some(ref s) = fields.project {
+        validate_str_scalar("project", s, max_len)?;
+    }
+    if let Some(ref s) = fields.session_id {
+        validate_str_scalar("session_id", s, max_len)?;
+    }
+    if let Some(ref s) = fields.issue_url {
+        validate_str_scalar("issue_url", s, max_len)?;
+    }
+    if let Some(ref s) = fields.release_summary {
+        validate_str_scalar("release_summary", s, max_len)?;
+    }
+    for tag in &fields.tags {
+        validate_str_scalar("tags", tag, max_len)?;
+    }
+    for dep in &fields.depends_on {
+        validate_str_scalar("depends_on", dep, max_len)?;
+    }
+    for fut in &fields.follow_up_tasks {
+        validate_str_scalar("follow_up_tasks", fut, max_len)?;
+    }
+
     if let Some(ref t) = fields.task_type {
         if !crate::graph::is_valid_node_type(t) {
             anyhow::bail!("Invalid task type: {}", t);
@@ -678,7 +756,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     fm.push_str(&body);
     fm.push('\n');
 
-    std::fs::write(&path, &fm)
+    atomic_write(&path, fm.as_bytes())
         .with_context(|| format!("Failed to write task file: {}", path.display()))?;
 
     Ok(path)
@@ -725,6 +803,31 @@ pub struct TemplateInstanceFields {
 /// `id`, `status: inbox`, `created`, `modified`, and a `template_id` back-reference.
 /// The template file is not modified.
 pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> Result<PathBuf> {
+    let max_len = max_frontmatter_scalar_len();
+    validate_str_scalar("template_title", &fields.template_title, max_len)?;
+    validate_str_scalar("template_id", &fields.template_id, max_len)?;
+    if let Some(ref s) = fields.assignee {
+        validate_str_scalar("assignee", s, max_len)?;
+    }
+    if let Some(ref s) = fields.consequence {
+        validate_str_scalar("consequence", s, max_len)?;
+    }
+    if let Some(ref s) = fields.stakeholder {
+        validate_str_scalar("stakeholder", s, max_len)?;
+    }
+    if let Some(ref s) = fields.project {
+        validate_str_scalar("project", s, max_len)?;
+    }
+    if let Some(ref s) = fields.parent {
+        validate_str_scalar("parent", s, max_len)?;
+    }
+    for tag in &fields.tags {
+        validate_str_scalar("tags", tag, max_len)?;
+    }
+    for dep in &fields.depends_on {
+        validate_str_scalar("depends_on", dep, max_len)?;
+    }
+
     // Validate + canonicalize the inherited project slug against polecat.yaml,
     // same as every other path that writes an explicit `project:` value. A
     // template whose slug was deregistered/renamed must fail here rather than
@@ -880,7 +983,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
         fm.push('\n');
     }
 
-    std::fs::write(&path, &fm)
+    atomic_write(&path, fm.as_bytes())
         .with_context(|| format!("Failed to write instance file: {}", path.display()))?;
 
     Ok(path)
@@ -895,6 +998,21 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
         if !(0.0..=1.0).contains(&c) {
             anyhow::bail!("confidence must be between 0.0 and 1.0, got {}", c);
         }
+    }
+
+    let max_len = max_frontmatter_scalar_len();
+    validate_str_scalar("title", &fields.title, max_len)?;
+    if let Some(ref s) = fields.memory_type {
+        validate_str_scalar("memory_type", s, max_len)?;
+    }
+    if let Some(ref s) = fields.source {
+        validate_str_scalar("source", s, max_len)?;
+    }
+    if let Some(ref s) = fields.supersedes {
+        validate_str_scalar("supersedes", s, max_len)?;
+    }
+    for tag in &fields.tags {
+        validate_str_scalar("tags", tag, max_len)?;
     }
 
     // Validation
@@ -980,7 +1098,7 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     fm.push_str(&body);
     fm.push('\n');
 
-    std::fs::write(&path, &fm)
+    atomic_write(&path, fm.as_bytes())
         .with_context(|| format!("Failed to write memory file: {}", path.display()))?;
 
     Ok(path)
@@ -1122,6 +1240,80 @@ fn materialise_one_edge(pkb_root: &Path, edge: serde_json::Value) -> serde_json:
     }
 
     serde_json::Value::Object(obj)
+}
+
+/// Default maximum character length for scalar string values in frontmatter.
+/// Frontmatter is reserved for concise metadata (e.g. status, tags, dates, IDs);
+/// long prose and multi-paragraph content belongs in the markdown document body.
+pub const DEFAULT_MAX_FRONTMATTER_SCALAR_LEN: usize = 500;
+
+/// Return the active maximum character length for scalar string values in frontmatter.
+/// Reads from the `MEM_MAX_FRONTMATTER_SCALAR_LEN` environment variable if set,
+/// falling back to [`DEFAULT_MAX_FRONTMATTER_SCALAR_LEN`].
+pub fn max_frontmatter_scalar_len() -> usize {
+    std::env::var("MEM_MAX_FRONTMATTER_SCALAR_LEN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_FRONTMATTER_SCALAR_LEN)
+}
+
+/// Validate that a single scalar string field does not exceed `max_len`.
+/// Returns an error explicitly directing longer prose to the markdown body.
+pub fn validate_str_scalar(field_name: &str, s: &str, max_len: usize) -> Result<()> {
+    let char_count = s.chars().count();
+    if char_count > max_len {
+        anyhow::bail!(
+            "Frontmatter field '{}' value is too long ({} characters, maximum is {}). \
+             Frontmatter is reserved for concise metadata; write longer prose to the document body.",
+            field_name,
+            char_count,
+            max_len
+        );
+    }
+    Ok(())
+}
+
+/// Recursively validate that all scalar strings in a JSON value do not exceed `max_len`.
+/// Returns a descriptive error directing longer prose to the markdown body if exceeded.
+pub fn validate_scalar_lengths(key: &str, val: &serde_json::Value, max_len: usize) -> Result<()> {
+    match val {
+        serde_json::Value::String(s) => validate_str_scalar(key, s, max_len)?,
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                validate_scalar_lengths(key, item, max_len)?;
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (sub_k, item) in map {
+                validate_scalar_lengths(&format!("{}.{}", key, sub_k), item, max_len)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Atomically write bytes to a file path via a temporary file in the same directory.
+pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Could not get parent directory for {}", path.display()))?;
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let target_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unnamed");
+    let tmp_path = dir.join(format!(
+        ".tmp_write_{}_{}_{}.tmp",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        target_name
+    ));
+    std::fs::write(&tmp_path, content)
+        .with_context(|| format!("Failed to write temp file {}", tmp_path.display()))?;
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e)
+            .with_context(|| format!("Failed to rename temp file to {}", path.display()));
+    }
+    Ok(())
 }
 
 /// Keys that belong in the markdown body, not YAML frontmatter.
@@ -1293,6 +1485,9 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
             continue;
         }
 
+        // Validate scalar lengths for all frontmatter fields
+        validate_scalar_lengths(&key, &value, max_frontmatter_scalar_len())?;
+
         // Validation for updated fields
         match key.as_str() {
             "blocked" => {
@@ -1388,7 +1583,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         .unwrap_or_else(|| result.content.trim());
 
     let new_content = format!("---\n{}---\n\n{}\n", yaml, body);
-    std::fs::write(path, &new_content)
+    atomic_write(path, new_content.as_bytes())
         .with_context(|| format!("Failed to write: {}", path.display()))?;
 
     Ok(())
@@ -1656,7 +1851,7 @@ pub fn append_to_document(
     };
 
     let new_content = format!("---\n{}---\n\n{}\n", yaml, new_body.trim());
-    std::fs::write(path, &new_content)
+    atomic_write(path, new_content.as_bytes())
         .with_context(|| format!("Failed to write: {}", path.display()))?;
 
     Ok(new_modified)
@@ -3989,6 +4184,181 @@ mod tests {
             readback
         );
     }
+
+    #[test]
+    fn test_update_document_rejects_prose_length_scalar_strings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-prose.md");
+        std::fs::write(
+            &path,
+            "---\nid: task-prose1\ntitle: Short Title\ntype: task\nstatus: ready\n---\n\n# Body\n",
+        )
+        .unwrap();
+
+        // 501 characters string
+        let long_str = "a".repeat(501);
+        let mut updates = HashMap::new();
+        updates.insert("consequence".to_string(), serde_json::json!(long_str));
+        let res = update_document(&path, updates);
+        assert!(res.is_err(), "must reject string > 500 chars");
+        let err_msg = res.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("consequence") && err_msg.contains("body"),
+            "error must identify field and direct content to body: {err_msg}"
+        );
+
+        // Verify file is untouched
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("consequence"), "file must not be modified on rejection");
+    }
+
+    #[test]
+    fn test_update_document_allows_strings_within_threshold() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-short.md");
+        std::fs::write(
+            &path,
+            "---\nid: task-short1\ntitle: Short Title\ntype: task\nstatus: ready\n---\n\n# Body\n",
+        )
+        .unwrap();
+
+        // Exactly 500 characters string
+        let valid_str = "a".repeat(500);
+        let mut updates = HashMap::new();
+        updates.insert("consequence".to_string(), serde_json::json!(valid_str));
+        let res = update_document(&path, updates);
+        assert!(res.is_ok(), "500 chars should be accepted");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains(&valid_str), "consequence should be written");
+    }
+
+    #[test]
+    fn test_update_document_rejects_long_strings_in_arrays() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-arr.md");
+        std::fs::write(
+            &path,
+            "---\nid: task-arr1\ntitle: Short Title\ntype: task\nstatus: ready\n---\n\n# Body\n",
+        )
+        .unwrap();
+
+        let long_str = "t".repeat(501);
+        let mut updates = HashMap::new();
+        updates.insert("tags".to_string(), serde_json::json!(["short_tag", long_str]));
+        let res = update_document(&path, updates);
+        assert!(res.is_err(), "must reject array containing scalar > 500 chars");
+        let err_msg = res.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("tags") && err_msg.contains("body"),
+            "error must identify field and direct content to body: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_update_document_tunable_threshold_via_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-env.md");
+        std::fs::write(
+            &path,
+            "---\nid: task-env1\ntitle: Short Title\ntype: task\nstatus: ready\n---\n\n# Body\n",
+        )
+        .unwrap();
+
+        // With env var set to 100
+        std::env::set_var("MEM_MAX_FRONTMATTER_SCALAR_LEN", "100");
+        let str_150 = "x".repeat(150);
+        let mut updates = HashMap::new();
+        updates.insert("consequence".to_string(), serde_json::json!(str_150));
+        let res = update_document(&path, updates);
+        std::env::remove_var("MEM_MAX_FRONTMATTER_SCALAR_LEN");
+
+        assert!(res.is_err(), "must reject when exceeding tuned threshold (100)");
+        let err_msg = res.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("maximum is 100"),
+            "error must mention configured maximum: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_update_document_preserves_custom_unrecognised_keys_at_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-custom.md");
+        std::fs::write(
+            &path,
+            "---\nid: task-custom1\ntitle: Custom Task\ntype: task\nstatus: ready\ncustom_user_key: 12345\nanother_field: \"preserved string\"\n---\n\n# Body\n",
+        )
+        .unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("status".to_string(), serde_json::json!("in_progress"));
+        update_document(&path, updates).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("status: in_progress"));
+        assert!(after.contains("custom_user_key: 12345"), "custom_user_key must be preserved unmodified: {after}");
+        assert!(after.contains("another_field: preserved string") || after.contains("another_field: \"preserved string\""), "another_field must be preserved: {after}");
+    }
+
+    #[test]
+    fn test_create_task_rejects_long_prose_scalars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let long_consequence = "c".repeat(501);
+        let fields = TaskFields {
+            title: "Task with huge consequence".into(),
+            parent: Some("task-root".into()),
+            project: Some("aops".into()),
+            consequence: Some(long_consequence),
+            ..Default::default()
+        };
+        let res = create_task(root, fields);
+        assert!(res.is_err(), "create_task must reject consequence > 500 chars");
+        let err_msg = res.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("consequence") && err_msg.contains("body"),
+            "error must direct to body: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_yaml_escape_double_quoted_escapes_properly() {
+        let input = "Line 1\nLine 2\r\n\"Quoted\" \\ Backslash";
+        let escaped = yaml_escape_double_quoted(input);
+        assert_eq!(escaped, "Line 1\\nLine 2\\r\\n\\\"Quoted\\\" \\\\ Backslash");
+    }
+
+    #[test]
+    fn test_frontmatter_editing_performance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-perf.md");
+        std::fs::write(
+            &path,
+            "---\nid: task-perf1\ntitle: Performance Test\ntype: task\nstatus: ready\npriority: 2\n---\n\n# Large Body Section\n\nThis is a body section with multiple paragraphs.\n",
+        )
+        .unwrap();
+
+        let iterations = 50;
+        let start = std::time::Instant::now();
+        for i in 0..iterations {
+            let mut updates = HashMap::new();
+            let new_status = if i % 2 == 0 { "in_progress" } else { "ready" };
+            updates.insert("status".to_string(), serde_json::json!(new_status));
+            updates.insert("priority".to_string(), serde_json::json!((i % 4) as i64));
+            update_document(&path, updates).unwrap();
+        }
+        let total_elapsed = start.elapsed();
+        let avg_micros = total_elapsed.as_micros() as f64 / iterations as f64;
+        let avg_ms = avg_micros / 1000.0;
+
+        // Frontmatter update with atomic write and parsing should be well under 5ms per write
+        assert!(avg_ms < 5.0, "average frontmatter update took {avg_ms:.3}ms (> 5ms)");
+        println!("PERF: update_document average duration: {avg_ms:.3}ms ({avg_micros:.1}µs) across {iterations} iterations");
+    }
 }
 
 
@@ -4390,3 +4760,4 @@ pub fn expand_special_update_keys(
 
     Ok(effective)
 }
+
