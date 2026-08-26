@@ -1950,6 +1950,131 @@ pub fn delete_observations(
 /// `None` preserves today's unconditional-overwrite behaviour, so existing
 /// single-writer callers are unaffected.
 ///
+/// Result of an `edit_body` operation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EditBodyResult {
+    pub body_chars_before: usize,
+    pub body_chars_after: usize,
+    pub modified: String,
+    pub hunks_applied: usize,
+}
+
+/// Apply unified-diff hunks to the body of an existing document (Aider-compatible).
+///
+/// Preserves YAML frontmatter and updates the `modified` and `last_modified`
+/// timestamps. Supports optional CAS precondition via `expected_modified` and
+/// non-destructive validation via `dry_run`.
+pub fn edit_body(
+    path: &Path,
+    diff: &str,
+    preserve_frontmatter: bool,
+    expected_modified: Option<&str>,
+    dry_run: bool,
+) -> Result<EditBodyResult> {
+    use gray_matter::engine::YAML;
+    use gray_matter::Matter;
+
+    let file_content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read: {}", path.display()))?;
+
+    if !preserve_frontmatter {
+        let body_chars_before = file_content.len();
+        let diff_res = crate::udiff::apply_diff(&file_content, diff)
+            .map_err(anyhow::Error::from)?;
+        let new_content = diff_res.new_content;
+        let body_chars_after = new_content.len();
+
+        if !dry_run {
+            atomic_write_file(path, &new_content, "edit_body")?;
+        }
+
+        return Ok(EditBodyResult {
+            body_chars_before,
+            body_chars_after,
+            modified: String::new(),
+            hunks_applied: diff_res.hunks_applied,
+        });
+    }
+
+    let matter = Matter::<YAML>::new();
+    let parsed = matter.parse(&file_content);
+
+    let body_chars_before = parsed.content.len();
+
+    let mut fm: serde_json::Map<String, serde_json::Value> = parsed
+        .data
+        .as_ref()
+        .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+
+    if let Some(expected) = expected_modified {
+        let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
+        if actual != expected {
+            return Err(StaleWrite {
+                expected_modified: expected.to_string(),
+                actual_modified: actual.to_string(),
+            }
+            .into());
+        }
+    }
+
+    let diff_res = crate::udiff::apply_diff(&parsed.content, diff)
+        .map_err(anyhow::Error::from)?;
+
+    let trimmed_body = diff_res.new_content.trim_end_matches('\n');
+    let body_chars_after = trimmed_body.len();
+
+    if dry_run {
+        let current_modified = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        return Ok(EditBodyResult {
+            body_chars_before,
+            body_chars_after,
+            modified: current_modified,
+            hunks_applied: diff_res.hunks_applied,
+        });
+    }
+
+    let new_modified = chrono::Utc::now().to_rfc3339();
+    fm.insert(
+        "modified".to_string(),
+        serde_json::Value::String(new_modified.clone()),
+    );
+    fm.insert(
+        "last_modified".to_string(),
+        serde_json::Value::String(chrono::Local::now().to_rfc3339()),
+    );
+
+    let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
+    let new_content = if trimmed_body.is_empty() {
+        format!("---\n{}---\n", yaml)
+    } else {
+        format!("---\n{}---\n\n{}\n", yaml, trimmed_body)
+    };
+
+    atomic_write_file(path, &new_content, "edit_body")?;
+
+    Ok(EditBodyResult {
+        body_chars_before,
+        body_chars_after,
+        modified: new_modified,
+        hunks_applied: diff_res.hunks_applied,
+    })
+}
+
+/// Rewrite the entire body of an existing document.
+///
+/// Preserves YAML frontmatter by default. If `preserve_frontmatter` is true,
+/// updates `modified` and `last_modified` in frontmatter.
+///
+/// `expected_modified`: optional compare-and-swap precondition. When `Some`,
+/// the write is rejected with [`StaleWrite`] (and nothing is written to disk)
+/// if the document's current `modified` value does not match `expected_modified`.
+/// This is how a caller that read the document earlier protects its own write
+/// against a lost update — the write path is otherwise last-write-wins.
+/// `None` preserves today's unconditional-overwrite behaviour, so existing
+/// single-writer callers are unaffected.
+///
 /// Returns body character counts (before and after) for observability.
 pub fn rewrite_body(
     path: &Path,
@@ -2012,34 +2137,7 @@ pub fn rewrite_body(
         (new_content, body_chars_before, body_chars_after, new_modified)
     };
 
-    let dir = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Could not get parent directory for {}", path.display()))?;
-    // Write to a temp file in the same directory, then rename for atomicity.
-    //
-    // The temp name must be unique per *call*, not per process. The MCP server
-    // serves concurrent requests on threads of a single process, so a pid-only
-    // name collides whenever two calls target different files in the same
-    // directory: both derive the same temp path, and one document ends up
-    // holding the other's complete content, frontmatter included. Disambiguate
-    // by target file name and a monotonic counter as well as pid.
-    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let target_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unnamed");
-    let tmp_path = dir.join(format!(
-        ".rewrite_body_{}_{}_{}.tmp",
-        std::process::id(),
-        TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        target_name
-    ));
-    std::fs::write(&tmp_path, new_content.as_bytes())
-        .with_context(|| format!("Failed to write temp file {}", tmp_path.display()))?;
-    // Unique temp names are never recycled, so a failed rename would leave the
-    // file behind permanently. Clean it up before propagating the error.
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e)
-            .with_context(|| format!("Failed to rename temp file to {}", path.display()));
-    }
+    atomic_write_file(path, &new_content, "rewrite_body")?;
 
     Ok(RewriteBodyResult {
         body_chars_before,
@@ -2159,8 +2257,7 @@ pub fn append_to_document(
     };
 
     let new_content = format!("---\n{}---\n\n{}\n", yaml, new_body.trim());
-    std::fs::write(path, &new_content)
-        .with_context(|| format!("Failed to write: {}", path.display()))?;
+    atomic_write_file(path, &new_content, "append_to_document")?;
 
     Ok(new_modified)
 }
@@ -2532,6 +2629,118 @@ mod tests {
     fn write_md(dir: &Path, name: &str, frontmatter: &str) {
         let path = dir.join(name);
         fs::write(&path, format!("---\n{}---\n\n# Body\n", frontmatter)).unwrap();
+    }
+
+    #[test]
+    fn test_edit_body_basic_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        let initial = "---\nid: test-doc\nmodified: '2026-01-01T00:00:00Z'\ntitle: Test\n---\n\nInitial body text.\nSecond line.\n";
+        fs::write(&path, initial).unwrap();
+
+        let diff = "```diff\n@@ ... @@\n-Second line.\n+Updated second line.\n```";
+        let res = edit_body(&path, diff, true, Some("2026-01-01T00:00:00Z"), false).unwrap();
+        assert_eq!(res.hunks_applied, 1);
+        assert_ne!(res.modified, "2026-01-01T00:00:00Z");
+
+        let disk_content = fs::read_to_string(&path).unwrap();
+        assert!(disk_content.contains("Updated second line."));
+        assert!(!disk_content.contains("Second line."));
+        assert!(disk_content.contains("title: Test"));
+        assert!(disk_content.contains("id: test-doc"));
+    }
+
+    #[test]
+    fn test_edit_body_dry_run_leaves_disk_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        let initial = "---\nid: test-doc\nmodified: '2026-01-01T00:00:00Z'\ntitle: Test\n---\n\nInitial body text.\n";
+        fs::write(&path, initial).unwrap();
+
+        let diff = "```diff\n@@ ... @@\n-Initial body text.\n+Mutated body text.\n```";
+        let res = edit_body(&path, diff, true, Some("2026-01-01T00:00:00Z"), true).unwrap();
+        assert_eq!(res.hunks_applied, 1);
+        assert_eq!(res.modified, "2026-01-01T00:00:00Z");
+
+        let disk_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(disk_content, initial);
+    }
+
+    #[test]
+    fn test_edit_body_cas_stale_write_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        let initial = "---\nid: test-doc\nmodified: '2026-01-01T00:00:00Z'\ntitle: Test\n---\n\nInitial body text.\n";
+        fs::write(&path, initial).unwrap();
+
+        let diff = "```diff\n@@ ... @@\n-Initial body text.\n+Mutated body text.\n```";
+        let err = edit_body(&path, diff, true, Some("2026-01-02T00:00:00Z"), false).unwrap_err();
+        assert!(err.to_string().contains("StaleWrite") || err.is::<StaleWrite>());
+
+        let disk_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(disk_content, initial);
+    }
+
+    #[test]
+    fn test_edit_body_no_match_fails_and_leaves_disk_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        let initial = "---\nid: test-doc\nmodified: '2026-01-01T00:00:00Z'\ntitle: Test\n---\n\nInitial body text.\n";
+        fs::write(&path, initial).unwrap();
+
+        let diff = "```diff\n@@ ... @@\n-Nonexistent line\n+Mutated body text.\n```";
+        let err = edit_body(&path, diff, true, None, false).unwrap_err();
+        assert!(err.to_string().contains("UnifiedDiffNoMatch"));
+
+        let disk_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(disk_content, initial);
+    }
+
+    #[test]
+    fn test_edit_body_not_unique_fails_and_leaves_disk_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        let initial = "---\nid: test-doc\nmodified: '2026-01-01T00:00:00Z'\ntitle: Test\n---\n\nrepeat line\nrepeat line\nrepeat line\n";
+        fs::write(&path, initial).unwrap();
+
+        let diff = "```diff\n@@ ... @@\n-repeat line\n+changed line\n```";
+        let err = edit_body(&path, diff, true, None, false).unwrap_err();
+        assert!(err.to_string().contains("UnifiedDiffNotUnique"));
+
+        let disk_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(disk_content, initial);
+    }
+
+    #[test]
+    fn test_edit_body_no_hunks_found_fails_and_leaves_disk_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        let initial = "---\nid: test-doc\nmodified: '2026-01-01T00:00:00Z'\ntitle: Test\n---\n\nInitial body text.\n";
+        fs::write(&path, initial).unwrap();
+
+        let diff = "This is not a diff at all";
+        let err = edit_body(&path, diff, true, None, false).unwrap_err();
+        assert!(err.to_string().contains("No valid diff hunks found"));
+
+        let disk_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(disk_content, initial);
+    }
+
+    #[test]
+    fn test_edit_body_multi_hunk_partial_failure_leaves_disk_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        let initial = "---\nid: test-doc\nmodified: '2026-01-01T00:00:00Z'\ntitle: Test\n---\n\nLine 1\nLine 2\nLine 3\n";
+        fs::write(&path, initial).unwrap();
+
+        // First hunk matches Line 1, but second hunk does not match Nonexistent
+        let diff = "```diff\n@@ ... @@\n-Line 1\n+Updated 1\n@@ ... @@\n-Nonexistent\n+Updated 2\n```";
+        let err = edit_body(&path, diff, true, None, false).unwrap_err();
+        assert!(err.to_string().contains("UnifiedDiffNoMatch"));
+        assert!(err.to_string().contains("hunk 2 of 2"));
+
+        let disk_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(disk_content, initial);
     }
 
     #[test]
