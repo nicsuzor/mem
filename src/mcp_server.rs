@@ -33,6 +33,12 @@ const MAX_RESULTS: usize = 1000;
 // MCP SERVER
 // =============================================================================
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ReindexStatus {
+    pub timestamp: String,
+    pub outcome: String,
+}
+
 #[derive(Clone)]
 pub struct PkbSearchServer {
     store: Arc<RwLock<VectorStore>>,
@@ -106,6 +112,8 @@ pub struct PkbSearchServer {
     embed_pending: Arc<Mutex<HashMap<String, crate::pkb::PkbDocument>>>,
     /// Single-worker gate for the embed queue (mirrors `graph_rebuild_pending`).
     embed_worker_running: Arc<std::sync::atomic::AtomicBool>,
+    /// Last reindex timestamp and outcome.
+    last_reindex: Arc<RwLock<ReindexStatus>>,
 }
 
 const DRY_RUN_WARNING: &str = "DRY RUN — no files modified. Pass dry_run=false to execute.\n\n";
@@ -138,6 +146,10 @@ impl PkbSearchServer {
             tier2_executions: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             embed_pending: Arc::new(Mutex::new(HashMap::new())),
             embed_worker_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            last_reindex: Arc::new(RwLock::new(ReindexStatus {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                outcome: "ok".to_string(),
+            })),
         }
     }
 
@@ -315,6 +327,10 @@ impl PkbSearchServer {
 
         let new_graph = GraphStore::build_with_embeddings(&docs, &self.pkb_root, &snapshot);
         *self.graph.write() = new_graph;
+        *self.last_reindex.write() = ReindexStatus {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            outcome: "ok".to_string(),
+        };
     }
 
     /// Synchronous fast path after a single file changed.
@@ -445,6 +461,7 @@ impl PkbSearchServer {
         let dirty = self.graph_rebuild_dirty.clone();
         let patched = self.patched_during_rebuild.clone();
         let executions = self.tier2_executions.clone();
+        let last_reindex = self.last_reindex.clone();
         #[cfg(test)]
         let sleep_ms = self.tier2_sleep_ms.clone();
 
@@ -523,6 +540,11 @@ impl PkbSearchServer {
             drop(g);
             let n_merged = initial_patched.len() + late.len();
             let _ = reclassified;
+
+            *last_reindex.write() = ReindexStatus {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                outcome: "ok".to_string(),
+            };
 
             executions.fetch_add(1, Ordering::Relaxed);
             tracing::debug!(
@@ -6801,11 +6823,50 @@ impl PkbSearchServer {
     }
 
     fn handle_status(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let node_count = self.graph.read().node_count();
+        let vector_count = self.store.read().len();
+        let last_reindex = self.last_reindex.read().clone();
+        let embed_pending_count = self.embed_pending.lock().len();
+        let deferred_paths_count = self.deferred_paths.lock().len();
+        let queue_depth = embed_pending_count + deferred_paths_count;
+        let index_locked = !self.index_lock_available();
+        let external_lock_held = self.external_lock_held();
+        let save_in_flight = self.save_in_flight.load(Ordering::Relaxed);
+        let embed_worker_running = self.embed_worker_running.load(Ordering::Relaxed);
+        let graph_rebuild_pending = self.graph_rebuild_pending.load(Ordering::Relaxed)
+            || self.graph_rebuild_dirty.load(Ordering::Relaxed);
+        let stale_docs = crate::check_index_staleness(&self.pkb_root, &self.store);
+        let is_fresh = stale_docs == 0;
+
         let info = serde_json::json!({
             "name": env!("CARGO_PKG_NAME"),
             "version": env!("CARGO_PKG_VERSION"),
             "git_hash": env!("BUILD_GIT_HASH"),
             "build_profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+            "index": {
+                "document_count": node_count,
+                "vector_count": vector_count,
+                "last_reindex": {
+                    "timestamp": last_reindex.timestamp,
+                    "outcome": last_reindex.outcome,
+                }
+            },
+            "queue": {
+                "depth": queue_depth,
+                "embed_pending": embed_pending_count,
+                "deferred_paths": deferred_paths_count,
+            },
+            "write_state": {
+                "index_locked": index_locked,
+                "external_lock_held": external_lock_held,
+                "save_in_flight": save_in_flight,
+                "embed_worker_running": embed_worker_running,
+                "graph_rebuild_pending": graph_rebuild_pending,
+            },
+            "freshness": {
+                "is_fresh": is_fresh,
+                "stale_documents": stale_docs,
+            }
         });
         let json = serde_json::to_string_pretty(&info).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -7026,7 +7087,7 @@ impl PkbSearchServer {
         }
     }
 
-    fn dispatch_tool_sync(&self, name: &str, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub fn dispatch_tool_sync(&self, name: &str, args: &JsonValue) -> Result<CallToolResult, McpError> {
         match name {
             "search" => self.handle_pkb_search(args),
             "get_document" => self.handle_get_document(args),
@@ -8074,14 +8135,14 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "status",
-                "Report mem build identity: package version, embedded git describe, and build profile. Use to confirm which binary is running.",
+                "Report server operational diagnostics and build identity: document count, last reindex timestamp and outcome, reindex/upsert queue depth, write locks / in-flight operations, and vector-store freshness.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {}
                 }))
                 .unwrap(),
             )
-            .with_title("Build Status")
+            .with_title("Server Status & Diagnostics")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "refresh_graph",
@@ -12982,5 +13043,174 @@ project: aops
         })).expect("sync dry_run should succeed");
         let dry_text: String = sync_dry_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
         assert!(dry_text.contains("Dry run"), "dry run response mentions dry run");
+    }
+
+    #[test]
+    fn test_status_reports_build_and_operational_diagnostics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let task_file = root.join("tasks").join("task-1.md");
+        std::fs::write(
+            &task_file,
+            "---\nid: task-1\ntitle: Task One\ntype: task\nstatus: ready\n---\n\nTask body.",
+        )
+        .unwrap();
+
+        let doc = crate::pkb::parse_file_relative(&task_file, root).unwrap();
+        let graph = GraphStore::build(&[doc], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let res = server
+            .handle_status(&serde_json::json!({}))
+            .expect("status should succeed");
+        let text: String = res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid status JSON");
+
+        // 1. Build identity
+        assert_eq!(parsed["name"], env!("CARGO_PKG_NAME"));
+        assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
+        assert!(parsed.get("git_hash").is_some());
+        assert!(parsed.get("build_profile").is_some());
+
+        // 2. Index state
+        assert_eq!(parsed["index"]["document_count"], 1);
+        assert_eq!(parsed["index"]["vector_count"], 0);
+        assert_eq!(parsed["index"]["last_reindex"]["outcome"], "ok");
+        assert!(parsed["index"]["last_reindex"]["timestamp"].is_string());
+
+        // 3. Queue state
+        assert_eq!(parsed["queue"]["depth"], 0);
+        assert_eq!(parsed["queue"]["embed_pending"], 0);
+        assert_eq!(parsed["queue"]["deferred_paths"], 0);
+
+        // 4. Write state
+        assert_eq!(parsed["write_state"]["index_locked"], false);
+        assert_eq!(parsed["write_state"]["external_lock_held"], false);
+        assert_eq!(parsed["write_state"]["save_in_flight"], false);
+        assert_eq!(parsed["write_state"]["embed_worker_running"], false);
+        assert_eq!(parsed["write_state"]["graph_rebuild_pending"], false);
+
+        // 5. Freshness
+        assert_eq!(parsed["freshness"]["is_fresh"], false);
+        assert_eq!(parsed["freshness"]["stale_documents"], 1);
+    }
+
+    #[test]
+    fn test_status_values_are_live_on_state_mutations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let task1_file = root.join("tasks").join("task-1.md");
+        std::fs::write(
+            &task1_file,
+            "---\nid: task-1\ntitle: Task One\ntype: task\nstatus: ready\n---\n\nTask body.",
+        )
+        .unwrap();
+
+        let doc1 = crate::pkb::parse_file_relative(&task1_file, root).unwrap();
+        let graph = GraphStore::build(&[doc1], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db.bin");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path.clone(),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // Helper to query status JSON
+        let get_status = || -> serde_json::Value {
+            let res = server
+                .handle_status(&serde_json::json!({}))
+                .expect("status call succeeds");
+            let text: String = res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
+            serde_json::from_str(&text).expect("valid status json")
+        };
+
+        // Initially 1 doc on disk, 0 in vector store -> 1 stale doc
+        let s0 = get_status();
+        assert_eq!(s0["index"]["document_count"], 1);
+        assert_eq!(s0["freshness"]["stale_documents"], 1);
+        assert_eq!(s0["freshness"]["is_fresh"], false);
+
+        // Mutation 1: Write a second document to disk -> immediately live in freshness
+        let task2_file = root.join("tasks").join("task-2.md");
+        std::fs::write(
+            &task2_file,
+            "---\nid: task-2\ntitle: Task Two\ntype: task\nstatus: ready\n---\n\nTask two body.",
+        )
+        .unwrap();
+
+        let s1 = get_status();
+        assert_eq!(s1["freshness"]["stale_documents"], 2);
+        assert_eq!(s1["freshness"]["is_fresh"], false);
+
+        // Mutation 2: Refresh graph index -> immediately reflects updated document_count and last_reindex timestamp
+        let initial_reindex_ts = s1["index"]["last_reindex"]["timestamp"].as_str().unwrap().to_string();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        server
+            .handle_refresh_graph(&serde_json::json!({}))
+            .expect("refresh_graph succeeds");
+
+        let s2 = get_status();
+        assert_eq!(s2["index"]["document_count"], 2);
+        assert_ne!(
+            s2["index"]["last_reindex"]["timestamp"].as_str().unwrap(),
+            initial_reindex_ts,
+            "last_reindex timestamp should update on refresh_graph"
+        );
+
+        // Mutation 3: Insert into embed_pending queue -> immediately live in queue diagnostics
+        let doc2 = crate::pkb::parse_file_relative(&task2_file, root).unwrap();
+        server.embed_pending.lock().insert("tasks/task-2.md".to_string(), doc2);
+
+        let s3 = get_status();
+        assert_eq!(s3["queue"]["depth"], 1);
+        assert_eq!(s3["queue"]["embed_pending"], 1);
+
+        // Mutation 4: Acquire cross-process file lock -> immediately live in write_state
+        {
+            let mut file_lock = VectorStore::acquire_lock(&db_path).expect("lock file creates");
+            let _guard = file_lock.write().expect("lock acquired");
+
+            let s4 = get_status();
+            assert_eq!(s4["write_state"]["index_locked"], true);
+            assert_eq!(s4["write_state"]["external_lock_held"], true);
+        }
+
+        // Lock released -> immediately false
+        let s5 = get_status();
+        assert_eq!(s5["write_state"]["index_locked"], false);
+        assert_eq!(s5["write_state"]["external_lock_held"], false);
+
+        // Mutation 5: In-flight write states reflect live atomic flags
+        server.save_in_flight.store(true, Ordering::SeqCst);
+        let s6 = get_status();
+        assert_eq!(s6["write_state"]["save_in_flight"], true);
+
+        server.save_in_flight.store(false, Ordering::SeqCst);
+        let s7 = get_status();
+        assert_eq!(s7["write_state"]["save_in_flight"], false);
     }
 }
