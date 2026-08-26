@@ -813,21 +813,32 @@ impl PkbSearchServer {
             data: None,
         })?;
         
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
         let graph = self.graph.read();
         let mut ctx = crate::batch_ops::BatchContext::new(&graph, &self.pkb_root);
         
-        let summary = crate::batch_ops::consolidation::apply_consolidation_batch(&mut ctx, seed_id, updates).map_err(|e| McpError {
+        let summary = crate::batch_ops::consolidation::apply_consolidation_batch(&mut ctx, seed_id, updates, dry_run).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to apply consolidation batch: {}", e)),
             data: None,
         })?;
         
         drop(graph);
-        if summary.changed > 0 {
+        if !dry_run && summary.changed > 0 {
             self.finalize_batch(&summary.modified_paths, &summary.removed_paths);
         }
         
-        Ok(CallToolResult::success(vec![Content::text(summary.display())]))
+        let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
+        if dry_run {
+            let msg = format!("{}{}", DRY_RUN_WARNING, json);
+            Ok(CallToolResult::success(vec![Content::text(msg)]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(json)]))
+        }
     }
 
     pub(crate) fn handle_get_consolidation_cluster(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -1171,6 +1182,12 @@ mod batch_finalize_tests {
                 PkbSearchServer::handle_merge_node,
                 json!({ "canonical_id": "t1", "source_ids": ["t2"] }),
                 "nothing was written",
+            ),
+            (
+                "apply_consolidation_batch",
+                PkbSearchServer::handle_apply_consolidation_batch,
+                json!({ "seed_id": "t1", "updates": { "t1": { "status": "done" }, "t2": { "status": "blocked" } } }),
+                "\"dry_run\": true",
             ),
         ];
 

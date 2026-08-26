@@ -37,6 +37,10 @@ impl PkbSearchServer {
                         "updates": { 
                             "type": "object", 
                             "description": "Map of node ID to frontmatter modifications and/or 'body' replacement." 
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "Preview only (default: true — must explicitly set false to execute)"
                         }
                     },
                     "required": ["seed_id", "updates"]
