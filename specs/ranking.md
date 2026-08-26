@@ -255,13 +255,13 @@ In addition to `focus_score`, `mem` computes several topological and network mea
   - Urgency Propagation: Urgency propagates backward from blocked tasks to blockers over BFS paths up to depth 20:
     - `blocks`: factor $1.0$
     - `soft_blocks`: factor $0.3$
-    - `children` (parent $\\to$ child): factor $0.5$
+    - `children` (parent $\to$ child): factor $0.5$
     - `contributes_to`: verbal weight anchor ($0.00$ to $1.00$)
-    Propagated values: $\\text{propagated\\_s\\_lex}(x) = \\max(S_{\\text{lex}}(x), \\max_{\\text{paths}} S_{\\text{lex}}(t) \\times \\text{path\\_factor})$, and $\\text{min\\_slack}(x) = \\min(\\text{slack}(x), \\min_{t} \\text{slack}(t))$.
-  - Piecewise-Exponential Slack Function $f(\\text{Slack})$ ($\\text{SAFE\\_HORIZON} = 30.0$, $k = \\frac{\\ln(10)}{30.0}$):
-    $$f(\\text{slack}) = \\begin{cases} 0.001 & \\text{if } \\text{slack} > 30.0 \\\\ e^{k(30.0 - \\text{slack})} & \\text{if } 0.0 < \\text{slack} \\le 30.0 \\\\ 1.0 & \\text{if } \\text{slack} \\le 0.0 \\end{cases}$$
-  - Guard: If committed SEV4 and $\\text{slack} \\le 0.0$, urgency is clamped to exactly $10000.0$.
-  - Completed nodes have $\\text{urgency} = 0.0$.
+    Propagated values: $\text{propagated\_s\_lex}(x) = \max(S_{\text{lex}}(x), \max_{\text{paths}} S_{\text{lex}}(t) \times \text{path\_factor})$, and $\text{min\_slack}(x) = \min(\text{slack}(x), \min_{t} \text{slack}(t))$.
+  - Piecewise-Exponential Slack Function $f(\text{Slack})$ ($\text{SAFE\_HORIZON} = 30.0$, $k = \frac{\ln(10)}{30.0}$):
+    $$f(\text{slack}) = \begin{cases} 0.001 & \text{if } \text{slack} > 30.0 \\ e^{k(30.0 - \text{slack})} & \text{if } 0.0 < \text{slack} \le 30.0 \\ 10.0 & \text{if } \text{slack} \le 0.0 \end{cases}$$
+  - Guard: If committed SEV4 and $\text{slack} \le 0.0$, urgency is clamped to exactly $10000.0$.
+  - Completed nodes have $\text{urgency} = 0.0$.
 - **Theoretical Range**: $0.0$ to $10,000.0$.
 - **Consumers**: `compute_focus_scores`, `focus_picks`, `get_task` / `list_tasks` signals.
 
@@ -366,7 +366,7 @@ The `contributes_to.weight` (or `stated_weight`) field implements a **verbal con
 
 ## 8. Task Classification and Queue Predicates
 
-`GraphStore::classify_tasks` (`src/graph_store.rs:3351–3450`) partitions tasks into `ready`, `blocked`, and `roots`:
+`GraphStore::classify_tasks` (`src/graph_store.rs:3351–3450`) partitions tasks into `ready`, `blocked`, and `roots`. To prevent non-actionable documentation/spec nodes from polluting actionable queues, classification is restricted to `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`):
 
 ### 8.1. Ready Predicate
 A task is placed in the `ready` list if and only if:
@@ -377,11 +377,16 @@ A task is placed in the `ready` list if and only if:
 
 ### 8.2. Blocked Predicate
 A task is `blocked` if:
-1. It has $\\ge 1$ unmet `depends_on` dependency whose status is not completed, OR
-2. Its own status is `"blocked"`, OR
-3. It is reachable via downstream propagation through `blocks` edges from any directly blocked task.
+1. Its type is in `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`), and
+2. Either:
+   a. It has $\ge 1$ unmet `depends_on` dependency whose status is not completed, OR
+   b. Its own status is `"blocked"`, OR
+   c. It is reachable via downstream propagation through `blocks` edges from any directly blocked task.
 
-### 8.3. Canonical Sort Order (`focus_cmp`)
+### 8.3. Roots Predicate
+Roots are defined as tasks with no parent or whose parent is not in the index, restricted to `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`).
+
+### 8.4. Canonical Sort Order (`focus_cmp`)
 All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) use the single canonical comparator `GraphStore::focus_cmp` (`src/graph_store.rs:895–906`):
 1. `focus_score` **DESC** (unscored nodes sort last)
 2. `effective_priority` **ASC** (P0 before P1 before P2)
