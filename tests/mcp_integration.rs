@@ -3,13 +3,13 @@
 //! These tests spawn the `pkb` binary as a child process and exercise the
 //! MCP JSON-RPC protocol over both stdio and HTTP/SSE transports.
 //!
-//! Requires `ACA_DATA` to point at a PKB directory with indexed documents.
-//! Skips gracefully if not available.
+//! Uses an isolated synthetic fixture PKB (`create_test_pkb`) to verify protocol
+//! behavior, session lifecycle, tool calls, and error handling without coupling
+//! to external real-scale `ACA_DATA` directories.
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -30,20 +30,26 @@ fn pkb_binary() -> PathBuf {
     PathBuf::from("pkb")
 }
 
-fn aca_data() -> Option<String> {
-    std::env::var("ACA_DATA").ok()
-}
+/// Create an isolated, synthetic fixture PKB for integration testing.
+///
+/// This eliminates any runtime dependency on a large real-scale `$ACA_DATA` directory
+/// (which can span thousands of documents and cause tens of seconds of startup delay/timeouts).
+/// The synthetic fixture provides valid tasks, epics, and memories subdirectories along with
+/// a temporary vector database path, ensuring fast, deterministic, and isolated MCP test runs.
+fn create_test_pkb() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let temp_dir = tempfile::tempdir().expect("failed to create tempdir for test PKB");
+    let pkb_root = temp_dir.path().to_path_buf();
+    std::fs::create_dir_all(pkb_root.join("tasks")).expect("create tasks dir");
+    std::fs::create_dir_all(pkb_root.join("epics")).expect("create epics dir");
+    std::fs::create_dir_all(pkb_root.join("memories")).expect("create memories dir");
 
-fn skip_if_no_aca_data() -> String {
-    match aca_data() {
-        Some(d) => d,
-        None => {
-            eprintln!("SKIP: ACA_DATA not set");
-            std::process::exit(0);
-        }
-    }
-}
+    // Seed a sample task so task/graph queries return non-empty data if inspected
+    let sample_task = "---\nid: task-test-01\ntitle: Sample Integration Task\ntype: task\nstatus: ready\npriority: 2\n---\n\nSample test body.";
+    std::fs::write(pkb_root.join("tasks").join("task-test-01.md"), sample_task).expect("write sample task");
 
+    let db_path = pkb_root.join("test_vectors.bin");
+    (temp_dir, pkb_root, db_path)
+}
 
 fn jsonrpc_request(id: u64, method: &str, params: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string()
@@ -80,7 +86,7 @@ fn tools_list_request(id: u64) -> String {
 /// Writes all messages to stdin, closes stdin to signal EOF, then reads
 /// stdout lines until the expected number of responses arrive or timeout.
 fn stdio_session(messages: &[String]) -> Vec<Value> {
-    let aca = skip_if_no_aca_data();
+    let (_temp_dir, pkb_root, db_path) = create_test_pkb();
     let mut input = String::new();
     for msg in messages {
         input.push_str(msg);
@@ -97,14 +103,16 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
         })
         .count();
 
-    let temp_dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(temp_dir.path().join("tasks")).unwrap();
-    std::fs::create_dir_all(temp_dir.path().join("epics")).unwrap();
-    std::fs::create_dir_all(temp_dir.path().join("memories")).unwrap();
-
-    let mut child = Command::new(pkb_binary()).env_remove("PKB_MCP_URL")
-        .args(["mcp", "--pkb-root", temp_dir.path().to_str().unwrap()])
-        .env("ACA_DATA", &aca)
+    let mut child = Command::new(pkb_binary())
+        .env_remove("PKB_MCP_URL")
+        .args([
+            "--pkb-root",
+            pkb_root.to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "mcp",
+        ])
+        .env("ACA_DATA", pkb_root.to_str().unwrap())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -144,7 +152,7 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
         tx.send(responses).ok();
     });
 
-    // Wait for responses with timeout
+    // Wait for responses with timeout (120s upper bound for debug/heavy load)
     let timeout = Duration::from_secs(120);
     let responses = rx.recv_timeout(timeout).unwrap_or_else(|_| {
         child.kill().ok();
@@ -192,7 +200,13 @@ fn spawn_http_mcp(mut cmd: Command) -> (Child, u16) {
         }
     });
 
-    let port = rx.recv_timeout(Duration::from_secs(10)).expect("failed to parse port from stderr");
+    // Raised from 10s to 60s to accommodate cold ONNX runtime initialization and loaded CI environments
+    let startup_timeout = std::env::var("MCP_TEST_STARTUP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(60));
+    let port = rx.recv_timeout(startup_timeout).expect("failed to parse port from stderr");
     (child, port)
 }
 
@@ -204,20 +218,23 @@ struct HttpServer {
 
 impl HttpServer {
     fn start() -> Self {
-        let aca = skip_if_no_aca_data();
-        let temp_dir = tempfile::tempdir().unwrap();
-        
-        // create required directories
-        std::fs::create_dir_all(temp_dir.path().join("tasks")).unwrap();
-        std::fs::create_dir_all(temp_dir.path().join("epics")).unwrap();
-        std::fs::create_dir_all(temp_dir.path().join("memories")).unwrap();
+        let (temp_dir, pkb_root, db_path) = create_test_pkb();
 
         let mut cmd = Command::new(pkb_binary());
         cmd.env_remove("PKB_MCP_URL")
-            .args(["mcp", "--http", "--port", "0", "--pkb-root", temp_dir.path().to_str().unwrap()])
-            .env("ACA_DATA", &aca)
+            .args([
+                "--pkb-root",
+                pkb_root.to_str().unwrap(),
+                "--db-path",
+                db_path.to_str().unwrap(),
+                "mcp",
+                "--http",
+                "--port",
+                "0",
+            ])
+            .env("ACA_DATA", pkb_root.to_str().unwrap())
             .stdin(Stdio::null());
-            
+
         let (child, port) = spawn_http_mcp(cmd);
 
         let server = HttpServer {
@@ -282,8 +299,9 @@ fn http_post(
 
     let mut stream = std::net::TcpStream::connect(format!("{host}:{actual_port}"))
         .expect("failed to connect to HTTP server");
+    // Raised from 15s to 30s to provide generous headroom under heavy CI load
     stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
 
     let mut request = format!(
@@ -432,33 +450,39 @@ fn test_stdio_initialize() {
 
 #[test]
 fn test_stdio_stdout_purity() {
-    let aca = skip_if_no_aca_data();
+    let (_temp_dir, pkb_root, db_path) = create_test_pkb();
 
-    let temp_dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(temp_dir.path().join("tasks")).unwrap();
-    std::fs::create_dir_all(temp_dir.path().join("epics")).unwrap();
-    std::fs::create_dir_all(temp_dir.path().join("memories")).unwrap();
-
-    let mut child = Command::new(pkb_binary()).env_remove("PKB_MCP_URL")
-        .args(["mcp", "--pkb-root", temp_dir.path().to_str().unwrap()])
-        .env("ACA_DATA", &aca)
+    let mut child = Command::new(pkb_binary())
+        .env_remove("PKB_MCP_URL")
+        .args([
+            "--pkb-root",
+            pkb_root.to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "mcp",
+        ])
+        .env("ACA_DATA", pkb_root.to_str().unwrap())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn pkb mcp");
 
+    // Write initialize request then immediately drop stdin (EOF)
+    // The server processes the initialize request, emits the response, sees EOF, and exits cleanly.
     {
-        let stdin = child.stdin.as_mut().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
         writeln!(stdin, "{}", initialize_request(1)).unwrap();
+        stdin.flush().unwrap();
     }
 
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(30) {
+    let timeout = Duration::from_secs(30);
+    while start.elapsed() < timeout {
         if let Ok(Some(_)) = child.try_wait() {
             break;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(50));
     }
     child.kill().ok();
     child.wait().ok();
@@ -785,8 +809,19 @@ fn test_http_seeded_search_returns_seeded_doc() {
         .stdin(Stdio::null());
 
     let (mut child, port) = spawn_http_mcp(cmd);
-    std::thread::sleep(Duration::from_millis(500));
-    std::thread::sleep(Duration::from_millis(500));
+    let start = Instant::now();
+    let timeout = Duration::from_secs(60);
+    while start.elapsed() < timeout {
+        if let Ok(stream) = std::net::TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(200),
+        ) {
+            drop(stream);
+            std::thread::sleep(Duration::from_millis(200));
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // Forcibly target the local daemon
 
