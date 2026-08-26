@@ -426,6 +426,7 @@ impl PkbSearchServer {
                         "complexity": { "type": "string", "description": "Filter by complexity (e.g. 'low', 'medium', 'high')" },
                         "weight_gte": { "type": "integer", "description": "Filter to tasks with downstream weight ≥ N" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags. A task matches iff every requested tag is present in its frontmatter `tags` array (AND, case-insensitive)." },
+                        "has_superseded_by": { "type": "boolean", "description": "Filter by presence of `superseded_by` frontmatter. When true, returns only tasks where `superseded_by` is set; when false, returns only tasks where it is absent. When this filter is active, returned rows (both markdown and JSON) include the `superseded_by` target value. Default: unset (no filter applied)." },
                         "focus_score_gte": { "type": "integer", "description": "Filter to tasks whose composite focus_score is ≥ N." },
                         "since": { "type": "string", "description": "Filter: return only tasks modified on or after YYYY-MM-DD (inclusive). Tasks with no modified date are excluded." },
                         "before": { "type": "string", "description": "Filter: return only tasks modified on or before YYYY-MM-DD (inclusive). Tasks with no modified date are excluded." },

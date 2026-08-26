@@ -862,6 +862,9 @@ impl PkbSearchServer {
                     .collect()
             })
             .unwrap_or_default();
+        let has_superseded_by = args
+            .get("has_superseded_by")
+            .and_then(|v| v.as_bool());
         let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
         let since = args.get("since").and_then(|v| v.as_str());
         let before = args.get("before").and_then(|v| v.as_str());
@@ -1028,6 +1031,10 @@ impl PkbSearchServer {
             });
         }
 
+        if let Some(want_superseded) = has_superseded_by {
+            tasks.retain(|t| t.superseded_by.is_some() == want_superseded);
+        }
+
         if let Some(min_score) = focus_score_gte {
             tasks.retain(|t| t.focus_score.unwrap_or(0) >= min_score);
         }
@@ -1095,7 +1102,7 @@ impl PkbSearchServer {
             let json_tasks: Vec<serde_json::Value> = tasks
                 .iter()
                 .map(|t| {
-                    serde_json::json!({
+                    let mut obj = serde_json::json!({
                         "id": t.task_id.as_deref().unwrap_or(&t.id),
                         "title": t.label,
                         "status": t.status.as_deref().unwrap_or("unknown"),
@@ -1124,7 +1131,19 @@ impl PkbSearchServer {
                         "severity": t.severity,
                         "goal_type": t.goal_type,
                         "edge_template": t.edge_template,
-                    })
+                    });
+                    if has_superseded_by.is_some() {
+                        if let Some(map) = obj.as_object_mut() {
+                            map.insert(
+                                "superseded_by".to_string(),
+                                t.superseded_by
+                                    .clone()
+                                    .map(serde_json::Value::String)
+                                    .unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                    }
+                    obj
                 })
                 .collect();
             let result = serde_json::json!({
@@ -1147,6 +1166,11 @@ impl PkbSearchServer {
                     "**Status:** {}\n",
                     t.status.as_deref().unwrap_or("-")
                 ));
+                if has_superseded_by.is_some() {
+                    if let Some(ref sup) = t.superseded_by {
+                        out.push_str(&format!("**Superseded by:** {}\n", sup));
+                    }
+                }
                 if !t.depends_on.is_empty() {
                     out.push_str("**Blocked by:**\n");
                     for dep in &t.depends_on {
@@ -1172,7 +1196,11 @@ impl PkbSearchServer {
                 tasks.len()
             );
             let today = chrono::Utc::now().date_naive();
-            out.push_str("| # | ID | Status | Pri | Weight | Crit | Urg | Due | Title |\n|---|---|---|---|---|---|---|---|---|\n");
+            if has_superseded_by.is_some() {
+                out.push_str("| # | ID | Status | Pri | Weight | Crit | Urg | Due | Superseded By | Title |\n|---|---|---|---|---|---|---|---|---|---|\n");
+            } else {
+                out.push_str("| # | ID | Status | Pri | Weight | Crit | Urg | Due | Title |\n|---|---|---|---|---|---|---|---|---|\n");
+            }
             for (i, t) in tasks.iter().enumerate() {
                 let id = t.task_id.as_deref().unwrap_or(&t.id);
                 let weight = if t.downstream_weight > 0.0 {
@@ -1223,38 +1251,75 @@ impl PkbSearchServer {
                         .unwrap_or_else(|| due[..due.floor_char_boundary(len)].to_string())
                     })
                     .unwrap_or_else(|| "-".to_string());
-                out.push_str(&format!(
-                    "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                    i + 1,
-                    id,
-                    t.status.as_deref().unwrap_or("-"),
-                    t.priority.unwrap_or(4),
-                    weight,
-                    crit,
-                    urg,
-                    due_str,
-                    t.label
-                ));
+                if has_superseded_by.is_some() {
+                    let superseded_str = t.superseded_by.as_deref().unwrap_or("-");
+                    out.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                        i + 1,
+                        id,
+                        t.status.as_deref().unwrap_or("-"),
+                        t.priority.unwrap_or(4),
+                        weight,
+                        crit,
+                        urg,
+                        due_str,
+                        superseded_str,
+                        t.label
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                        i + 1,
+                        id,
+                        t.status.as_deref().unwrap_or("-"),
+                        t.priority.unwrap_or(4),
+                        weight,
+                        crit,
+                        urg,
+                        due_str,
+                        t.label
+                    ));
+                }
             }
             out
         } else {
             // Default view: standard table
-            let mut out = format!(
-                "**{total} tasks** (showing {})\n\n| # | ID | Pri | Status | Title |\n|---|---|---|---|---|\n",
-                tasks.len()
-            );
+            let mut out = if has_superseded_by.is_some() {
+                format!(
+                    "**{total} tasks** (showing {})\n\n| # | ID | Pri | Status | Superseded By | Title |\n|---|---|---|---|---|---|\n",
+                    tasks.len()
+                )
+            } else {
+                format!(
+                    "**{total} tasks** (showing {})\n\n| # | ID | Pri | Status | Title |\n|---|---|---|---|---|\n",
+                    tasks.len()
+                )
+            };
             for (i, t) in tasks.iter().enumerate() {
                 let id = t.task_id.as_deref().unwrap_or(&t.id);
                 let pri = t.priority.unwrap_or(4);
                 let status_str = t.status.as_deref().unwrap_or("-");
-                out.push_str(&format!(
-                    "| {} | {} | {} | {} | {} |\n",
-                    i + 1,
-                    id,
-                    pri,
-                    status_str,
-                    t.label
-                ));
+                if has_superseded_by.is_some() {
+                    let superseded_str = t.superseded_by.as_deref().unwrap_or("-");
+                    out.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} |\n",
+                        i + 1,
+                        id,
+                        pri,
+                        status_str,
+                        superseded_str,
+                        t.label
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "| {} | {} | {} | {} | {} |\n",
+                        i + 1,
+                        id,
+                        pri,
+                        status_str,
+                        t.label
+                    ));
+                }
             }
             out
         };
