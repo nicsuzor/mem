@@ -192,7 +192,18 @@ impl DiffEngine {
 
         // 1. Process Cards on Canvas
         for card in &canvas.cards {
-            if card.is_new || card.node_id.is_none() {
+            // Last-resort identity: a generator that names each rectangle after
+            // the node it draws (the natural convention, and what our own
+            // exporter should do) leaves the id recoverable from the element id
+            // alone. Only accept it when it resolves to a live node, so a card
+            // hand-drawn in Excalidraw — whose element id is a random nanoid —
+            // is still correctly reported as an addition.
+            let recovered = card.node_id.clone().or_else(|| {
+                live.get_node(&card.element_id)
+                    .map(|_| card.element_id.clone())
+            });
+
+            if recovered.is_none() {
                 // New node added to canvas
                 diff.added_nodes.push(AddedNodeMutation {
                     temp_id: card.element_id.clone(),
@@ -208,7 +219,7 @@ impl DiffEngine {
                 continue;
             }
 
-            let node_id = card.node_id.as_ref().unwrap().clone();
+            let node_id = recovered.expect("recovered id checked above");
             canvas_node_ids.insert(node_id.clone());
 
             let live_node = live.get_node(&node_id);
@@ -221,7 +232,11 @@ impl DiffEngine {
                 let mut tags_update = None;
 
                 // Title check
-                if !card.title.is_empty() && card.title != ln.label && card.title != node_id {
+                if !card.title.is_empty()
+                    && card.title != ln.label
+                    && card.title != node_id
+                    && card.title != "Untitled"
+                {
                     // Check for 3-way conflict
                     if let Some(base_snap) = base {
                         if let Some(bn) = base_snap.nodes.get(&node_id) {
@@ -664,5 +679,162 @@ mod tests {
         assert_eq!(diff.removed_edges[0].edge_type, EdgeType::DependsOn);
         assert_eq!(diff.added_edges.len(), 1);
         assert_eq!(diff.added_edges[0].edge_type, EdgeType::ContributesTo);
+    }
+
+    /// A generator that names each rectangle after the node it draws leaves the
+    /// identity recoverable from the element id. Without this the whole canvas
+    /// diffs as additions and sync would propose duplicating the graph.
+    #[test]
+    fn element_id_recovers_identity_when_it_resolves_to_a_live_node() {
+        fn card(element_id: &str, title: &str) -> crate::excalidraw::reader::CanvasCard {
+            crate::excalidraw::reader::CanvasCard {
+                element_id: element_id.to_string(),
+                node_id: None,          // no customData, and no id in the card text
+                title: title.to_string(),
+                node_type: None,
+                status: None,
+                priority: None,
+                parent: None,
+                tags: vec![],
+                frame_id: None,
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+                stroke_color: String::new(),
+                background_color: String::new(),
+                custom_data: None,
+                raw_card_element: Default::default(),
+                bound_text_element: None,
+                is_new: true,
+                is_duplicate: false,
+            }
+        }
+
+        let mut gs = GraphStore::build(&[], std::path::Path::new("/tmp"));
+        let mut n = GraphNode::default();
+        n.id = "task-48234949".to_string();
+        n.label = "Finish LED strip above sink".to_string();
+        gs.replace_node(n);
+
+        let canvas = CanvasModel {
+            cards: vec![
+                card("task-48234949", "Finish LED strip above sink"), // named after its node
+                card("Xk3p9qZr", "Something brand new"),              // hand-drawn nanoid
+            ],
+            arrows: vec![],
+            frames: vec![],
+            annotations: vec![],
+            duplicate_ids: vec![],
+            raw_file: Default::default(),
+        };
+
+        let diff = DiffEngine::compute_diff(None, &gs, &canvas);
+        assert_eq!(
+            diff.added_nodes.len(),
+            1,
+            "only the genuinely new card is an addition"
+        );
+        assert_eq!(diff.added_nodes[0].temp_id, "Xk3p9qZr");
+    }
+
+    /// When a card's identity is recovered via element_id without bound text,
+    /// reader sets title to "Untitled". DiffEngine must NOT propose updating
+    /// the live node's title to "Untitled".
+    #[test]
+    fn element_id_recovery_without_title_does_not_overwrite_live_label_with_untitled() {
+        let mut gs = GraphStore::build(&[], std::path::Path::new("/tmp"));
+        let mut n = GraphNode::default();
+        n.id = "task-12345678".to_string();
+        n.label = "Important Existing Task".to_string();
+        gs.replace_node(n);
+
+        let canvas = CanvasModel {
+            cards: vec![crate::excalidraw::reader::CanvasCard {
+                element_id: "task-12345678".to_string(),
+                node_id: None,
+                title: "Untitled".to_string(), // placeholder from reader
+                node_type: None,
+                status: None,
+                priority: None,
+                parent: None,
+                tags: vec![],
+                frame_id: None,
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+                stroke_color: String::new(),
+                background_color: String::new(),
+                custom_data: None,
+                raw_card_element: Default::default(),
+                bound_text_element: None,
+                is_new: true,
+                is_duplicate: false,
+            }],
+            arrows: vec![],
+            frames: vec![],
+            annotations: vec![],
+            duplicate_ids: vec![],
+            raw_file: Default::default(),
+        };
+
+        let diff = DiffEngine::compute_diff(None, &gs, &canvas);
+        assert!(
+            diff.added_nodes.is_empty(),
+            "element_id matches live node, so not an addition"
+        );
+        assert!(
+            diff.updated_nodes.is_empty(),
+            "placeholder Untitled must not update live node title"
+        );
+    }
+
+    /// When a card's identity is recovered via element_id AND it has genuine
+    /// bound text with a new title, DiffEngine SHOULD propose a title update.
+    #[test]
+    fn element_id_recovery_with_custom_title_updates_label() {
+        let mut gs = GraphStore::build(&[], std::path::Path::new("/tmp"));
+        let mut n = GraphNode::default();
+        n.id = "task-12345678".to_string();
+        n.label = "Old Title".to_string();
+        gs.replace_node(n);
+
+        let canvas = CanvasModel {
+            cards: vec![crate::excalidraw::reader::CanvasCard {
+                element_id: "task-12345678".to_string(),
+                node_id: None,
+                title: "Updated Node Title".to_string(),
+                node_type: None,
+                status: None,
+                priority: None,
+                parent: None,
+                tags: vec![],
+                frame_id: None,
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+                stroke_color: String::new(),
+                background_color: String::new(),
+                custom_data: None,
+                raw_card_element: Default::default(),
+                bound_text_element: None,
+                is_new: true,
+                is_duplicate: false,
+            }],
+            arrows: vec![],
+            frames: vec![],
+            annotations: vec![],
+            duplicate_ids: vec![],
+            raw_file: Default::default(),
+        };
+
+        let diff = DiffEngine::compute_diff(None, &gs, &canvas);
+        assert_eq!(diff.updated_nodes.len(), 1);
+        assert_eq!(
+            diff.updated_nodes[0].title.as_deref(),
+            Some("Updated Node Title")
+        );
     }
 }

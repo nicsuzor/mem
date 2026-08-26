@@ -176,7 +176,10 @@ pub fn merge_live_into_canvas(
 
     let mut canvas_card_map: HashMap<String, CanvasCard> = HashMap::new();
     for card in &parsed_canvas.cards {
-        if let Some(ref nid) = card.node_id {
+        let node_id = card.node_id.clone().or_else(|| {
+            live.get_node(&card.element_id).map(|_| card.element_id.clone())
+        });
+        if let Some(ref nid) = node_id {
             canvas_card_map.insert(nid.clone(), card.clone());
             existing_card_map.insert(nid.clone(), card.raw_card_element.clone());
             if let Some(ref bt) = card.bound_text_element {
@@ -205,7 +208,10 @@ pub fn merge_live_into_canvas(
 
     let mut target_set: HashSet<String> = target_node_ids.iter().cloned().collect();
     for card in &parsed_canvas.cards {
-        if let Some(ref nid) = card.node_id {
+        let node_id = card.node_id.clone().or_else(|| {
+            live.get_node(&card.element_id).map(|_| card.element_id.clone())
+        });
+        if let Some(ref nid) = node_id {
             target_set.insert(nid.clone());
         }
     }
@@ -824,5 +830,33 @@ mod tests {
         let done_style = node_color_style(Some("done"), Some("task"));
         assert_eq!(merged_card2.background_color, done_style.bg_color);
         assert_eq!(merged_card2.stroke_color, done_style.stroke_color);
+    }
+
+    #[test]
+    fn test_merge_preserves_card_identified_by_element_id() {
+        let mut file = ExcalidrawFile::default();
+        let mut card = ExcalidrawElement::default();
+        card.id = "task-48234949".to_string(); // Named after the node, no customData
+        card.element_type = "rectangle".to_string();
+        card.x = 150.0;
+        card.y = 250.0;
+        file.elements.push(card);
+
+        let mut gs = GraphStore::build(&[], Path::new("/tmp"));
+        let mut node = GraphNode::default();
+        node.id = "task-48234949".to_string();
+        node.label = "Finish LED strip".to_string();
+        node.node_type = Some("task".to_string());
+        node.status = Some("ready".to_string());
+        gs.replace_node(node);
+
+        let merged = merge_live_into_canvas(&file, &gs, &["task-48234949".to_string()]);
+        let matched = merged
+            .elements
+            .iter()
+            .find(|e| e.id == "task-48234949")
+            .unwrap();
+        assert_eq!(matched.x, 150.0, "must preserve existing x position");
+        assert_eq!(matched.y, 250.0, "must preserve existing y position");
     }
 }
