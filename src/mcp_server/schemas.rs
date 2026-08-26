@@ -587,22 +587,6 @@ impl PkbSearchServer {
             .with_title("Get Task Children")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
-                "pkb_context",
-                "Explore the knowledge neighbourhood of a node. Returns metadata, relationships, and backlinks grouped by source type. Supports flexible ID resolution.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Node ID, task ID, filename stem, or title" },
-                        "hops": { "type": "integer", "description": "Neighbourhood radius in hops (default: 2, clamped to a max of 5)" },
-                        "max_backlinks": { "type": "integer", "description": "Max backlinks printed per source type (default: 50)" }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            )
-            .with_title("PKB Knowledge Context")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
                 "pkb_trace",
                 "Find shortest paths between two nodes in the knowledge graph. Useful for understanding how two seemingly unrelated concepts or tasks are linked.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
