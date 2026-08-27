@@ -24,6 +24,43 @@ use std::process::Command;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+// See tests/mcp_integration.rs for the full rationale: `Drop`-based child
+// reaping doesn't run when the harness process itself is SIGKILLed, so a
+// kernel-level PR_SET_PDEATHSIG backstop is installed on every spawned `pkb`
+// child here too.
+#[cfg(target_os = "linux")]
+trait KillOnParentDeath {
+    fn kill_on_parent_death(&mut self) -> &mut Self;
+}
+
+#[cfg(target_os = "linux")]
+impl KillOnParentDeath for Command {
+    fn kill_on_parent_death(&mut self) -> &mut Self {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            self.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        self
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+trait KillOnParentDeath {
+    fn kill_on_parent_death(&mut self) -> &mut Self;
+}
+
+#[cfg(not(target_os = "linux"))]
+impl KillOnParentDeath for Command {
+    fn kill_on_parent_death(&mut self) -> &mut Self {
+        self
+    }
+}
+
 // ===========================================================================
 // Test Helpers
 // ===========================================================================
@@ -760,6 +797,7 @@ fn test_cli_excalidraw_and_graph_execution() {
             "--output",
             excal_out.to_str().unwrap(),
         ])
+        .kill_on_parent_death()
         .status()
         .expect("run pkb graph excalidraw");
     assert!(status.success(), "pkb graph excalidraw must exit 0");
@@ -784,6 +822,7 @@ fn test_cli_excalidraw_and_graph_execution() {
             "--output",
             json_out.to_str().unwrap(),
         ])
+        .kill_on_parent_death()
         .status()
         .expect("run pkb graph json");
     assert!(status.success());
@@ -805,6 +844,7 @@ fn test_cli_excalidraw_and_graph_execution() {
             "--output",
             graphml_out.to_str().unwrap(),
         ])
+        .kill_on_parent_death()
         .status()
         .expect("run pkb graph graphml");
     assert!(status.success());
@@ -828,6 +868,7 @@ fn test_cli_excalidraw_and_graph_execution() {
             "--hops",
             "2",
         ])
+        .kill_on_parent_death()
         .status()
         .expect("run pkb excalidraw export");
     assert!(status.success());
@@ -847,6 +888,7 @@ fn test_cli_excalidraw_and_graph_execution() {
             export_out.to_str().unwrap(),
             "--json",
         ])
+        .kill_on_parent_death()
         .output()
         .expect("run pkb excalidraw diff");
     assert!(output.status.success());
@@ -868,6 +910,7 @@ fn test_cli_excalidraw_and_graph_execution() {
             export_out.to_str().unwrap(),
             "--dry-run",
         ])
+        .kill_on_parent_death()
         .status()
         .expect("run pkb excalidraw sync dry-run");
     assert!(status.success());
@@ -920,6 +963,7 @@ fn test_cli_excalidraw_sync_dry_run_writes_nothing() {
             "export",
             canvas_path.to_str().unwrap(),
         ])
+        .kill_on_parent_death()
         .status()
         .expect("run pkb excalidraw export");
     assert!(status.success(), "pkb excalidraw export must exit 0");
@@ -963,6 +1007,7 @@ fn test_cli_excalidraw_sync_dry_run_writes_nothing() {
             canvas_path.to_str().unwrap(),
             "--dry-run",
         ])
+        .kill_on_parent_death()
         .status()
         .expect("run pkb excalidraw sync --dry-run");
     assert!(status.success(), "dry-run sync must exit 0");
@@ -987,6 +1032,7 @@ fn test_cli_excalidraw_sync_dry_run_writes_nothing() {
             "sync",
             canvas_path.to_str().unwrap(),
         ])
+        .kill_on_parent_death()
         .status()
         .expect("run pkb excalidraw sync");
     assert!(status.success(), "sync must exit 0");
@@ -1020,6 +1066,7 @@ fn test_cli_excalidraw_export_resolves_root_from_env() {
             "--hops",
             "2",
         ])
+        .kill_on_parent_death()
         .output()
         .expect("run pkb excalidraw export without --pkb-root");
     assert!(
@@ -1052,6 +1099,7 @@ fn test_cli_excalidraw_export_requires_a_root() {
         .env_remove("ACA_DATA")
         .env("AOPS_OFFLINE", "1")
         .args(["excalidraw", "export", export_out.to_str().unwrap()])
+        .kill_on_parent_death()
         .output()
         .expect("run pkb excalidraw export without a root");
 
