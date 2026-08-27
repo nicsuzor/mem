@@ -479,7 +479,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "update_task",
-                "Patch metadata fields on an existing task. Pass fields either nested as `updates: {status: \"done\"}` or flat at the top level (e.g. status=\"done\"). Use for non-terminal updates (priority, tags, assignee). For state transitions (done, merge_ready, blocked, cancelled, review, partial), prefer release_task — it also enforces the evidence-or-failure-reason contract (completion_evidence for done; reason/blocker for handback statuses) that this generic patch path does not. Setting status=\"done\" here still requires a non-empty `completion_evidence` field (in updates or top-level), unchanged.",
+                "Patch metadata fields on an existing task. Pass fields either nested as `updates: {status: \"done\"}` or flat at the top level (e.g. status=\"done\"). Use for non-terminal updates (tags, assignee, body). For state transitions (done, merge_ready, blocked, cancelled, review, partial), prefer release_task — it also enforces the evidence-or-failure-reason contract (completion_evidence for done; reason/blocker for handback statuses) that this generic patch path does not. Setting status=\"done\" here still requires a non-empty `completion_evidence` field (in updates or top-level), unchanged. A caller-supplied `priority` is rejected outright — priority bands are Nic's call only, never an agent's.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -553,7 +553,7 @@ impl PkbSearchServer {
                                 "properties": {
                                     "title": { "type": "string", "description": "Subtask title (required; must be unique among siblings for cross-referencing)" },
                                     "id": { "type": "string", "description": "Optional custom task ID" },
-                                    "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P3 (Planned)." },
+                                    "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P3 (Planned). Agents must NOT set this — a caller-supplied value is rejected outright. Priority bands are Nic's call only." },
                                     "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Dependency IDs. Supports positional sibling refs ('$1', '$2', ... 1-indexed into this subtasks array) and case-insensitive sibling title matches, in addition to existing task IDs." },
                                     "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                                     "assignee": { "type": "string", "description": "Who is responsible for this subtask" },
@@ -660,7 +660,7 @@ impl PkbSearchServer {
                         "orphan": { "type": "boolean", "description": "Filter: no parent and no project" },
                         "title_contains": { "type": "string", "description": "Filter: title substring (case-insensitive)" },
                         "weight_gte": { "type": "integer", "description": "Filter: downstream weight >= N" },
-                        "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on" },
+                        "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on. A `priority` key is rejected outright — priority bands are Nic's call only, never an agent's." },
                         "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["updates"]

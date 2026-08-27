@@ -234,6 +234,54 @@ use super::*;
         assert_eq!(subtask_node.severity, Some(0)); // Coerced to 0
     }
 
+    #[test]
+    fn test_decompose_task_rejects_agent_priority() {
+        let server = build_test_server();
+        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+
+        let parent_res = server
+            .handle_create_task(&json!({
+                "title": "Parent Task for Decompose Priority Guard",
+                "type": "epic",
+                "project": "proj-alpha",
+                "parent": "proj-alpha"
+            }))
+            .unwrap();
+
+        let mut parent_id = String::new();
+        for c in &parent_res.content {
+            if let Some(t) = c.raw.as_text() {
+                if t.text.trim().starts_with('{') {
+                    let parent_val: serde_json::Value = serde_json::from_str(&t.text).unwrap();
+                    parent_id = parent_val.get("id").unwrap().as_str().unwrap().to_string();
+                }
+            }
+        }
+
+        let subtasks = json!([
+            { "title": "Subtask With Priority", "type": "task", "priority": 1 }
+        ]);
+
+        let err = server
+            .handle_decompose_task(&json!({
+                "parent_id": parent_id,
+                "subtasks": subtasks
+            }))
+            .expect_err("agent-supplied subtask priority via decompose_task should be rejected");
+        let msg = format!("{}", err.message);
+        assert!(
+            msg.to_lowercase().contains("priority"),
+            "error should mention priority, got: {msg}"
+        );
+
+        // No subtask should have been created (fail before any writes).
+        let graph = server.graph.read();
+        assert!(
+            graph.resolve("Subtask With Priority").is_none(),
+            "subtask must not have been created when priority guard rejects the batch"
+        );
+    }
+
     // ── epic_882b7576: soft session-identity display on subtasks (D1, display-only) ──
 
     #[test]
@@ -417,6 +465,49 @@ use super::*;
         assert!(
             msg.to_lowercase().contains("cycle") || msg.to_lowercase().contains("own parent"),
             "error should mention cycle/own-parent, got: {msg}"
+        );
+    }
+
+    // ── update_task: agent-originated priority rejection (task_1381381c) ──
+
+    #[test]
+    fn test_update_task_rejects_agent_priority_nested() {
+        let server = build_test_server();
+        let err = server
+            .handle_update_task(&json!({
+                "id": "task-a1",
+                "updates": { "priority": 1 }
+            }))
+            .expect_err("agent-supplied priority via update_task should be rejected");
+        let msg = format!("{}", err.message);
+        assert!(
+            msg.to_lowercase().contains("priority"),
+            "error should mention priority, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_update_task_rejects_agent_priority_flat() {
+        let server = build_test_server();
+        let err = server
+            .handle_update_task(&json!({
+                "id": "task-a1",
+                "priority": 0
+            }))
+            .expect_err("agent-supplied priority via update_task (flat form) should be rejected");
+        let msg = format!("{}", err.message);
+        assert!(
+            msg.to_lowercase().contains("priority"),
+            "error should mention priority, got: {msg}"
+        );
+
+        // The task's priority must be unchanged on disk/graph after the rejection.
+        let graph = server.graph.read();
+        let node = graph.resolve("task-a1").unwrap();
+        assert_ne!(
+            node.priority,
+            Some(0),
+            "priority must not have been written despite rejection"
         );
     }
 

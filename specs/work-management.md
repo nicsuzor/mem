@@ -14,7 +14,7 @@ tags: [spec, tasks, mcp, data]
 
 - PKB MCP server (Rust, `nicsuzor/mem`) implementing task CRUD and graph operations
 - [[mcp__pkb__create_task]] - Create task
-- [[mcp__pkb__update_task]] - Update task fields (priority, tags, assignee, body)
+- [[mcp__pkb__update_task]] - Update task fields (tags, assignee, body; not `priority` — agents may not set it, see below)
 - [[mcp__pkb__release_task]] - Release task to handoff status with required summary
 - [[mcp__pkb__complete_task]] - Mark task done with completion evidence
 - [[mcp__pkb__list_tasks]] - List tasks with filters
@@ -68,7 +68,7 @@ flowchart LR
 | -------------------------------------------------- | ----------------------------------------------------------- |
 | `mcp__pkb__create_task(title, ...)`                | Create new task                                             |
 | `mcp__pkb__get_task(id)`                           | Get task details + relationship context                     |
-| `mcp__pkb__update_task(id, updates={...})`         | Update non-terminal fields (priority, tags, assignee, body) |
+| `mcp__pkb__update_task(id, updates={...})`         | Update non-terminal fields (tags, assignee, body — not `priority`) |
 | `mcp__pkb__release_task(id, status, summary, ...)` | Release task to handoff status with summary                 |
 | `mcp__pkb__complete_task(id, completion_evidence)` | Mark task done with evidence (legacy path)                  |
 | `mcp__pkb__list_tasks(status, ...)`                | List/filter tasks                                           |
@@ -173,7 +173,7 @@ release_task(id, status, summary, pr_url?, branch?, blocker?, reason?)
 
 `update_task` historically required a nested `updates={...}` JSON object, which agents frequently serialized as a string instead of an object, dropped fields on retry, or forgot entirely. While it now supports flat parameters for convenience, `release_task` remains preferred for terminal transitions because it uses flat string parameters and always requires a summary, making it harder to lose information than to capture it.
 
-`update_task` remains for non-terminal field changes (priority, tags, assignee, body). It soft-hints toward `release_task` when a terminal status is detected.
+`update_task` remains for non-terminal field changes (tags, assignee, body). It soft-hints toward `release_task` when a terminal status is detected. It rejects a caller-supplied `priority` outright (task_1381381c) — priority bands are Nic's call only; agents must leave the field unset.
 
 ### Statuses
 
@@ -198,9 +198,10 @@ mcp__pkb__create_task(
     title="Task title",
     type="task",
     project="aops",
-    priority=2
 )
 ```
+
+Leave `priority` unset — it defaults to P3. Priority bands are Nic's call only; agents must not originate a non-default band, and `update_task`/`batch_update`/`decompose_task` reject a caller-supplied `priority` outright.
 
 ## Dependencies
 

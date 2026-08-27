@@ -153,6 +153,11 @@ impl PkbSearchServer {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
+        // task_1381381c: agents must not originate priority bands via batch_update.
+        if updates.get("priority").is_some() {
+            return Err(Self::reject_agent_priority("batch_update"));
+        }
+
         if filters.is_empty() && updates.as_object().map(|m| m.is_empty()).unwrap_or(true) {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -998,6 +1003,51 @@ mod batch_finalize_tests {
                 "entry {id} should carry status=blocked in vector store; got {status:?}"
             );
         }
+    }
+
+    /// task_1381381c: agents must not be able to set `priority` via
+    /// `batch_update` — one of the write paths that had only a range check
+    /// (`is_valid_priority`) and no authority guard.
+    #[test]
+    fn test_batch_update_rejects_agent_priority() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+        let server = build_disk_server(pkb_root);
+
+        let create_args = json!({
+            "title": "Batch Priority Guard Task",
+            "parent": "test-project",
+            "project": "test-project",
+            "status": "ready",
+        });
+        server
+            .handle_create_task(&create_args)
+            .expect("create_task failed");
+
+        let args = json!({
+            "parent": "test-project",
+            "updates": { "priority": 0 },
+            "dry_run": false
+        });
+        let err = server
+            .handle_batch_update(&args)
+            .expect_err("agent-supplied priority via batch_update should be rejected");
+        let msg = format!("{}", err.message);
+        assert!(
+            msg.to_lowercase().contains("priority"),
+            "error should mention priority, got: {msg}"
+        );
+
+        // Nothing should have been written despite the filter matching a task.
+        let graph = server.graph.read();
+        let node = graph
+            .resolve("Batch Priority Guard Task")
+            .expect("task should exist");
+        assert_ne!(
+            node.priority,
+            Some(0),
+            "priority must not have been written despite rejection"
+        );
     }
 
     use crate::batch_ops::tree_snapshot;

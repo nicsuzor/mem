@@ -85,6 +85,24 @@ impl PkbSearchServer {
             })
     }
 
+    /// Priority bands are Nic's call only (task_1381381c). `create_task`/`create`
+    /// already carry a prose-only guard against agent-originated priority
+    /// (schemas.rs); this closes the remaining write paths with a runtime
+    /// check. No provenance/authority mechanism distinguishes an agent's call
+    /// from Nic's own on these paths, so the guard rejects unconditionally
+    /// rather than trying to approximate "who" by heuristic.
+    pub(crate) fn reject_agent_priority(tool: &str) -> McpError {
+        McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!(
+                "Agents must not set `priority` via {tool} — priority bands are Nic's call only. \
+                 Leave it unset (or omit it from this update); ask Nic to change it directly if a \
+                 re-prioritization is genuinely warranted."
+            )),
+            data: None,
+        }
+    }
+
     pub(crate) fn args_to_value(args: Option<JsonObject>) -> JsonValue {
         match args {
             Some(map) => JsonValue::Object(map),
