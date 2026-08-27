@@ -293,4 +293,13 @@ fn test_ac7_concurrent_two_writers_on_same_node() {
     // Verify index state matches
     let index_entry = env_arc.server.store_for_test().read().get_entry(task_id).cloned().expect("in index");
     assert_eq!(index_entry.id, task_id);
+
+    // Restart server to verify replay_wal recovers state from disk
+    let mut env = Arc::into_inner(env_arc).expect("unwrap TestEnv arc after threads joined");
+    env.restart_server();
+
+    // Verify store recovers state from WAL / snapshot replay
+    let replayed_entry = env.server.store_for_test().read().get_entry(task_id).cloned().expect("in index after restart");
+    assert_eq!(replayed_entry.id, task_id);
+    assert_eq!(replayed_entry.title, "Concurrent Task");
 }

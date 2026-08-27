@@ -581,10 +581,11 @@ impl PkbSearchServer {
     /// and if so, compacts by writing a full snapshot and removing the WAL file.
     pub(crate) fn save_store(&self) {
         let wal_p = self.wal_path();
+        let wal_compacting_p = crate::vectordb::wal_compacting_path(&self.db_path);
         let should_compact = match std::fs::metadata(&wal_p) {
-            Ok(meta) => meta.len() >= 32 * 1024 * 1024,
+            Ok(meta) => meta.len() >= 16 * 1024 * 1024,
             Err(_) => false,
-        };
+        } || wal_compacting_p.exists();
         if !should_compact {
             return;
         }
@@ -787,6 +788,12 @@ impl PkbSearchServer {
                     .find(|n| n.path == rel)
                     .map(|n| n.id.clone());
                 let id = node_id.unwrap_or_else(|| crate::pkb::fallback_id(rel));
+                if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
+                    &self.wal_path(),
+                    &crate::vectordb::WalRecord::Remove(id.clone()),
+                ) {
+                    tracing::error!("maybe_drain_deferred: Failed to append remove to WAL: {e}");
+                }
                 if self.store.write().remove(&id) {
                     applied_removes += 1;
                 }
@@ -861,15 +868,15 @@ impl PkbSearchServer {
             (true, true) => {
                 // Body unchanged: just patch metadata fields (cheap).
                 let patch = crate::vectordb::VectorStore::prepare_metadata_patch(doc);
-                self.store
-                    .write()
-                    .apply_prepared(crate::vectordb::PreparedUpsert::MetadataOnly(patch.clone()));
                 if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
                     &self.wal_path(),
-                    &crate::vectordb::WalRecord::MetadataOnly(patch),
+                    &crate::vectordb::WalRecord::MetadataOnly(patch.clone()),
                 ) {
                     tracing::error!("Failed to append to WAL: {e}");
                 }
+                self.store
+                    .write()
+                    .apply_prepared(crate::vectordb::PreparedUpsert::MetadataOnly(patch));
                 tracing::debug!(
                     target: "perf::vector",
                     phase = "store_upsert_inmem",
@@ -880,15 +887,15 @@ impl PkbSearchServer {
             (true, false) => {
                 // Body changed: patch metadata now, queue re-embed for later.
                 let patch = crate::vectordb::VectorStore::prepare_metadata_patch(doc);
-                self.store
-                    .write()
-                    .apply_prepared(crate::vectordb::PreparedUpsert::MetadataOnly(patch.clone()));
                 if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
                     &self.wal_path(),
-                    &crate::vectordb::WalRecord::MetadataOnly(patch),
+                    &crate::vectordb::WalRecord::MetadataOnly(patch.clone()),
                 ) {
                     tracing::error!("Failed to append to WAL: {e}");
                 }
+                self.store
+                    .write()
+                    .apply_prepared(crate::vectordb::PreparedUpsert::MetadataOnly(patch));
                 self.schedule_embed(doc.clone());
                 tracing::debug!(
                     target: "perf::vector",
@@ -926,15 +933,15 @@ impl PkbSearchServer {
                     consolidated: doc.consolidated,
                     consolidated_at: doc.consolidated_at.clone(),
                 };
-                self.store
-                    .write()
-                    .apply_prepared(crate::vectordb::PreparedUpsert::Full(Box::new(entry.clone())));
                 if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
                     &self.wal_path(),
-                    &crate::vectordb::WalRecord::Upsert(Box::new(entry)),
+                    &crate::vectordb::WalRecord::Upsert(Box::new(entry.clone())),
                 ) {
                     tracing::error!("Failed to append to WAL: {e}");
                 }
+                self.store
+                    .write()
+                    .apply_prepared(crate::vectordb::PreparedUpsert::Full(Box::new(entry)));
                 self.schedule_embed(doc.clone());
                 tracing::debug!(
                     target: "perf::vector",
@@ -1003,19 +1010,22 @@ impl PkbSearchServer {
                         }
                     };
                     let wal_p = crate::vectordb::wal_path(&db_path);
-                    match &prepared {
+                    let wal_res = match &prepared {
                         crate::vectordb::PreparedUpsert::MetadataOnly(patch) => {
-                            let _ = crate::vectordb::VectorStore::append_wal_record(
+                            crate::vectordb::VectorStore::append_wal_record(
                                 &wal_p,
                                 &crate::vectordb::WalRecord::MetadataOnly(patch.clone()),
-                            );
+                            )
                         }
                         crate::vectordb::PreparedUpsert::Full(entry) => {
-                            let _ = crate::vectordb::VectorStore::append_wal_record(
+                            crate::vectordb::VectorStore::append_wal_record(
                                 &wal_p,
                                 &crate::vectordb::WalRecord::Upsert(entry.clone()),
-                            );
+                            )
                         }
+                    };
+                    if let Err(e) = wal_res {
+                        tracing::error!("background embed: Failed to append to WAL: {e}");
                     }
                     store.write().apply_prepared(prepared);
                     tracing::debug!(
@@ -1162,19 +1172,22 @@ impl PkbSearchServer {
             let mut store = self.store.write();
             let wal_p = self.wal_path();
             for p in &results {
-                match p {
+                let wal_res = match p {
                     crate::vectordb::PreparedUpsert::MetadataOnly(patch) => {
-                        let _ = crate::vectordb::VectorStore::append_wal_record(
+                        crate::vectordb::VectorStore::append_wal_record(
                             &wal_p,
                             &crate::vectordb::WalRecord::MetadataOnly(patch.clone()),
-                        );
+                        )
                     }
                     crate::vectordb::PreparedUpsert::Full(entry) => {
-                        let _ = crate::vectordb::VectorStore::append_wal_record(
+                        crate::vectordb::VectorStore::append_wal_record(
                             &wal_p,
                             &crate::vectordb::WalRecord::Upsert(entry.clone()),
-                        );
+                        )
                     }
+                };
+                if let Err(e) = wal_res {
+                    tracing::error!("finalize_batch: Failed to append to WAL: {e}");
                 }
                 store.apply_prepared(p.clone());
             }
@@ -1182,10 +1195,12 @@ impl PkbSearchServer {
                 let rel = abs_path.strip_prefix(&self.pkb_root).unwrap_or(abs_path);
                 let node_id = graph.nodes().find(|n| n.path == rel).map(|n| n.id.clone());
                 let id = node_id.unwrap_or_else(|| crate::pkb::fallback_id(rel));
-                let _ = crate::vectordb::VectorStore::append_wal_record(
+                if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
                     &wal_p,
                     &crate::vectordb::WalRecord::Remove(id.clone()),
-                );
+                ) {
+                    tracing::error!("finalize_batch: Failed to append remove to WAL: {e}");
+                }
                 store.remove(&id);
             }
         }
@@ -1229,11 +1244,13 @@ impl PkbSearchServer {
             tracing::info!("Index locked by another process — deferring in-memory remove for {id}");
             return;
         }
-        self.store.write().remove(id);
-        let _ = crate::vectordb::VectorStore::append_wal_record(
+        if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
             &self.wal_path(),
             &crate::vectordb::WalRecord::Remove(id.to_string()),
-        );
+        ) {
+            tracing::error!("try_remove_document: Failed to append remove to WAL: {e}");
+        }
+        self.store.write().remove(id);
         self.save_store();
     }
 

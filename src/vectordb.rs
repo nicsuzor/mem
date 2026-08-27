@@ -141,6 +141,11 @@ pub fn wal_path(db_path: &Path) -> PathBuf {
     db_path.with_extension("wal")
 }
 
+/// Returns the compacting WAL file path corresponding to a database path (e.g. `pkb_vectors.wal.compacting`).
+pub fn wal_compacting_path(db_path: &Path) -> PathBuf {
+    db_path.with_extension("wal.compacting")
+}
+
 /// Outcome of [`VectorStore::prepare_upsert`]. The caller applies this under
 /// a brief write lock via [`VectorStore::apply_prepared`].
 ///
@@ -294,25 +299,32 @@ impl VectorStore {
 
     /// Append a single operation record to the Write-Ahead Log.
     /// Framed as 4-byte little-endian length prefix + bincode payload.
+    /// Packs the length prefix and payload into a single contiguous buffer
+    /// and issues a single write call so POSIX O_APPEND guarantees atomic writes
+    /// without byte-interleaving on concurrent writes.
     pub fn append_wal_record(wal_path: &Path, record: &WalRecord) -> Result<()> {
         if let Some(parent) = wal_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let encoded = bincode::serialize(record)?;
         let len = encoded.len() as u32;
+        let mut buf = Vec::with_capacity(4 + encoded.len());
+        buf.extend_from_slice(&len.to_le_bytes());
+        buf.extend_from_slice(&encoded);
+
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(wal_path)?;
         use std::io::Write;
-        file.write_all(&len.to_le_bytes())?;
-        file.write_all(&encoded)?;
+        file.write_all(&buf)?;
         file.flush()?;
         Ok(())
     }
 
     /// Replay records from the WAL file into this in-memory store.
     /// Stops cleanly at the last valid record if the file is truncated / corrupted at the end.
+    /// Defensively bounds allocation to prevent OOM panic on corrupted length headers (> 16MB).
     pub fn replay_wal(&mut self, wal_path: &Path) -> Result<usize> {
         if !wal_path.exists() {
             return Ok(0);
@@ -323,11 +335,18 @@ impl VectorStore {
         };
         use std::io::Read;
         let mut count = 0;
+        const MAX_RECORD_SIZE: usize = 16 * 1024 * 1024; // 16 MB max record size guard
         loop {
             let mut len_buf = [0u8; 4];
             match file.read_exact(&mut len_buf) {
                 Ok(()) => {
                     let len = u32::from_le_bytes(len_buf) as usize;
+                    if len > MAX_RECORD_SIZE {
+                        tracing::warn!(
+                            "WAL record length {len} exceeds max size {MAX_RECORD_SIZE} at record {count}. Stopping replay."
+                        );
+                        break;
+                    }
                     let mut record_buf = vec![0u8; len];
                     match file.read_exact(&mut record_buf) {
                         Ok(()) => {
@@ -372,7 +391,8 @@ impl VectorStore {
 
     /// Load from disk, or create new if file doesn't exist.
     /// Detects dimension mismatch (e.g. model upgrade) and creates a fresh store.
-    /// Replays any uncompacted records from `pkb_vectors.wal` on top of the snapshot.
+    /// Replays any uncompacted records from `pkb_vectors.wal.compacting` (if present from a crashed save)
+    /// and `pkb_vectors.wal` on top of the snapshot.
     pub fn load_or_create(path: &Path, dimension: usize) -> Result<Self> {
         let mut store = if path.exists() {
             tracing::info!("Loading vector store from {path:?}");
@@ -450,7 +470,13 @@ impl VectorStore {
             Self::new(dimension)
         };
 
-        // Replay any WAL records on top of base store
+        // Replay any WAL records on top of base store:
+        // 1. Replay .wal.compacting first if present from a crashed prior save.
+        let wal_compacting = wal_compacting_path(path);
+        if wal_compacting.exists() {
+            let _ = store.replay_wal(&wal_compacting);
+        }
+        // 2. Replay current .wal.
         let wal = wal_path(path);
         if wal.exists() {
             let _ = store.replay_wal(&wal);
@@ -460,11 +486,21 @@ impl VectorStore {
     }
 
     /// Save full snapshot to disk (compaction).
-    /// Atomically writes `path` and removes the associated `.wal` file.
+    /// Rotates `pkb_vectors.wal` -> `pkb_vectors.wal.compacting` before writing snapshot,
+    /// atomically writes snapshot to `path`, and deletes only the `.wal.compacting` file.
+    /// Any incoming writes arriving during snapshot save write to a fresh `pkb_vectors.wal`
+    /// and are preserved without data loss.
     pub fn save(&self, path: &Path) -> Result<()> {
         let t_start = std::time::Instant::now();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+
+        // 1. Rotate current WAL to .wal.compacting before taking snapshot
+        let wal = wal_path(path);
+        let wal_compacting = wal_compacting_path(path);
+        if wal.exists() {
+            let _ = std::fs::rename(&wal, &wal_compacting);
         }
 
         let t_serialize = std::time::Instant::now();
@@ -477,10 +513,10 @@ impl VectorStore {
         std::fs::write(&tmp_path, &data)?;
         std::fs::rename(&tmp_path, path)?;
 
-        // Clean up compacted WAL file
-        let wal = wal_path(path);
-        if wal.exists() {
-            let _ = std::fs::remove_file(&wal);
+        // Clean up ONLY the rotated compacting WAL file.
+        // Any fresh pkb_vectors.wal written concurrently remains untouched.
+        if wal_compacting.exists() {
+            let _ = std::fs::remove_file(&wal_compacting);
         }
 
         let elapsed_write = t_write.elapsed();
@@ -1920,5 +1956,166 @@ mod tests {
         // Re-load should find fresh snapshot with no WAL
         let reloaded = VectorStore::load_or_create(&db_path, 3).unwrap();
         assert_eq!(reloaded.get_entry("t1").unwrap().title, "T1 Patched");
+    }
+
+    #[test]
+    fn test_wal_replay_oversized_length_graceful() {
+        use std::io::Write;
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal = dir.path().join("test_oversized.wal");
+
+        let entry = make_entry(
+            "tasks/v1.md",
+            "Valid Task 1",
+            Some("task"),
+            Some("active"),
+            &[],
+            Some("v1"),
+            None,
+            vec![0.1, 0.2, 0.3],
+        );
+        VectorStore::append_wal_record(&wal, &WalRecord::Upsert(Box::new(entry))).unwrap();
+
+        // Append an invalid oversized length (e.g. 0xFFFFFFFF = ~4GB or 32MB > 16MB)
+        let mut file = std::fs::OpenOptions::new().append(true).open(&wal).unwrap();
+        file.write_all(&0x0200_0000u32.to_le_bytes()).unwrap(); // 32 MB > 16 MB limit
+        file.flush().unwrap();
+        drop(file);
+
+        let mut store = VectorStore::new(3);
+        let count = store.replay_wal(&wal).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(store.len(), 1);
+        assert!(store.get_entry("v1").is_some());
+    }
+
+    #[test]
+    fn test_wal_compacting_incoming_writes_preserved() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("pkb_vectors.bin");
+        let wal_path = dir.path().join("pkb_vectors.wal");
+        let wal_compacting_path = dir.path().join("pkb_vectors.wal.compacting");
+
+        let mut store = VectorStore::new(3);
+        let entry1 = make_entry(
+            "tasks/t1.md",
+            "T1 Initial",
+            Some("task"),
+            Some("active"),
+            &[],
+            Some("t1"),
+            None,
+            vec![1.0, 0.0, 0.0],
+        );
+        store.documents.insert("t1".to_string(), entry1);
+        store.save(&db_path).unwrap();
+
+        // Write a WAL record
+        let patch1 = MetadataPatch {
+            id: "t1".to_string(),
+            title: "T1 Mod1".to_string(),
+            doc_type: Some("task".to_string()),
+            status: Some("in_progress".to_string()),
+            tags: vec![],
+            date: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            confidence: None,
+            file_hash: "fh1".to_string(),
+        };
+        VectorStore::append_wal_record(&wal_path, &WalRecord::MetadataOnly(patch1)).unwrap();
+
+        // Simulate save rotating WAL to .wal.compacting
+        std::fs::rename(&wal_path, &wal_compacting_path).unwrap();
+
+        // While compacting is in-flight, an incoming write arrives and creates a fresh .wal
+        let patch2 = MetadataPatch {
+            id: "t1".to_string(),
+            title: "T1 Mod2 Incoming".to_string(),
+            doc_type: Some("task".to_string()),
+            status: Some("done".to_string()),
+            tags: vec![],
+            date: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            confidence: None,
+            file_hash: "fh2".to_string(),
+        };
+        VectorStore::append_wal_record(&wal_path, &WalRecord::MetadataOnly(patch2)).unwrap();
+
+        // Save finishes and removes ONLY .wal.compacting
+        if wal_compacting_path.exists() {
+            std::fs::remove_file(&wal_compacting_path).unwrap();
+        }
+        assert!(wal_path.exists(), "Concurrent incoming WAL must NOT be deleted by save");
+
+        // On reload, the fresh incoming WAL must be replayed
+        let loaded = VectorStore::load_or_create(&db_path, 3).unwrap();
+        assert_eq!(loaded.get_entry("t1").unwrap().title, "T1 Mod2 Incoming");
+        assert_eq!(loaded.get_entry("t1").unwrap().status.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn test_wal_replay_both_compacting_and_wal() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("pkb_vectors.bin");
+        let wal_path = dir.path().join("pkb_vectors.wal");
+        let wal_compacting_path = dir.path().join("pkb_vectors.wal.compacting");
+
+        let mut store = VectorStore::new(3);
+        let entry1 = make_entry(
+            "tasks/t1.md",
+            "T1 Initial",
+            Some("task"),
+            Some("active"),
+            &[],
+            Some("t1"),
+            None,
+            vec![1.0, 0.0, 0.0],
+        );
+        store.documents.insert("t1".to_string(), entry1);
+        store.save(&db_path).unwrap();
+
+        // Record 1 in compacting WAL (from crashed save)
+        let patch1 = MetadataPatch {
+            id: "t1".to_string(),
+            title: "T1 Mid".to_string(),
+            doc_type: Some("task".to_string()),
+            status: Some("in_progress".to_string()),
+            tags: vec![],
+            date: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            confidence: None,
+            file_hash: "fh1".to_string(),
+        };
+        VectorStore::append_wal_record(&wal_compacting_path, &WalRecord::MetadataOnly(patch1)).unwrap();
+
+        // Record 2 in new WAL
+        let patch2 = MetadataPatch {
+            id: "t1".to_string(),
+            title: "T1 Final".to_string(),
+            doc_type: Some("task".to_string()),
+            status: Some("done".to_string()),
+            tags: vec![],
+            date: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            confidence: None,
+            file_hash: "fh2".to_string(),
+        };
+        VectorStore::append_wal_record(&wal_path, &WalRecord::MetadataOnly(patch2)).unwrap();
+
+        // Load or create must replay both in sequence
+        let loaded = VectorStore::load_or_create(&db_path, 3).unwrap();
+        assert_eq!(loaded.get_entry("t1").unwrap().title, "T1 Final");
+        assert_eq!(loaded.get_entry("t1").unwrap().status.as_deref(), Some("done"));
     }
 }
