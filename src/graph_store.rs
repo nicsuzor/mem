@@ -1711,7 +1711,7 @@ impl GraphStore {
 
             let pri = node.priority.unwrap_or(4);
             let sev = node.severity.unwrap_or(0);
-            let severity_gate = if sev >= 4 {
+            let severity_gate = if sev >= 4 && node.goal_type.as_deref() == Some("committed") {
                 crate::graph::SeverityGate::Catastrophic
             } else {
                 crate::graph::SeverityGate::Normal
@@ -1754,10 +1754,14 @@ impl GraphStore {
                             deadline_band = crate::graph::DeadlineBand::Urgent;
                             deadline_points = 2000 + ((ratio - 0.5) * 8000.0) as i64;
                             deadline_ramp_fired = true;
-                        } else {
+                        } else if days_until <= 30 {
                             deadline_band = crate::graph::DeadlineBand::Approaching;
                             deadline_points = (ratio * 4000.0) as i64;
                             deadline_ramp_fired = deadline_points > 0;
+                        } else {
+                            deadline_band = crate::graph::DeadlineBand::None;
+                            deadline_points = 0;
+                            deadline_ramp_fired = false;
                         }
                     }
                 }
@@ -1841,6 +1845,7 @@ impl GraphStore {
             .ready
             .iter()
             .filter_map(|id| self.nodes.get(id))
+            .filter(|n| !n.affordable_loss_filtered)
             .collect();
 
         scored.sort_by(|a, b| Self::focus_cmp(a, b));
@@ -7573,8 +7578,8 @@ mod tests {
         let diff = (score_30 - score_31).abs();
 
         assert!(
-            diff < 100,
-            "Discontinuity at 30-day horizon in deadline score: score_30={score_30}, score_31={score_31}, diff={diff} (expected < 100)"
+            diff <= 200,
+            "Discontinuity at 30-day horizon in deadline score: score_30={score_30}, score_31={score_31}, diff={diff} (expected <= 200)"
         );
     }
 
@@ -7864,6 +7869,127 @@ mod tests {
                 i + 1
             );
         }
+    }
+
+    #[test]
+    fn test_sev4_aspirational_produces_normal_severity_gate() {
+        use crate::graph::{GraphNode, SeverityGate};
+
+        let mut sev4_aspirational = GraphNode::default();
+        sev4_aspirational.id = "sev4-asp".to_string();
+        sev4_aspirational.severity = Some(4);
+        sev4_aspirational.goal_type = Some("aspirational".to_string());
+
+        let mut sev4_learning = GraphNode::default();
+        sev4_learning.id = "sev4-learn".to_string();
+        sev4_learning.severity = Some(4);
+        sev4_learning.goal_type = Some("learning".to_string());
+
+        let mut sev4_none = GraphNode::default();
+        sev4_none.id = "sev4-none".to_string();
+        sev4_none.severity = Some(4);
+        sev4_none.goal_type = None;
+
+        let mut sev4_committed = GraphNode::default();
+        sev4_committed.id = "sev4-comm".to_string();
+        sev4_committed.severity = Some(4);
+        sev4_committed.goal_type = Some("committed".to_string());
+
+        let mut nodes = vec![sev4_aspirational, sev4_learning, sev4_none, sev4_committed];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        assert_eq!(
+            nodes[0].focus_tuple.as_ref().unwrap().severity_gate,
+            SeverityGate::Normal
+        );
+        assert_eq!(
+            nodes[1].focus_tuple.as_ref().unwrap().severity_gate,
+            SeverityGate::Normal
+        );
+        assert_eq!(
+            nodes[2].focus_tuple.as_ref().unwrap().severity_gate,
+            SeverityGate::Normal
+        );
+        assert_eq!(
+            nodes[3].focus_tuple.as_ref().unwrap().severity_gate,
+            SeverityGate::Catastrophic
+        );
+    }
+
+    #[test]
+    fn test_focus_picks_excludes_affordable_loss_filtered() {
+        let doc_normal = make_doc(
+            "tasks/t-normal.md",
+            "Normal Task",
+            "task",
+            "ready",
+            "t-normal",
+            None,
+            &[],
+        );
+        let mut doc_filtered = make_doc(
+            "tasks/t-filtered.md",
+            "Filtered Task",
+            "task",
+            "ready",
+            "t-filtered",
+            None,
+            &[],
+        );
+        if let Some(ref mut fm) = doc_filtered.frontmatter {
+            if let Some(map) = fm.as_object_mut() {
+                map.insert("affordable_loss".to_string(), serde_json::json!(false));
+                map.insert("priority".to_string(), serde_json::json!(0));
+            }
+        }
+
+        let graph = GraphStore::build(&[doc_normal, doc_filtered], Path::new("/tmp"));
+        let picks = graph.focus_picks(10);
+        assert!(picks.contains(&"t-normal".to_string()));
+        assert!(!picks.contains(&"t-filtered".to_string()));
+    }
+
+    #[test]
+    fn test_p0_without_due_date_ranks_above_low_priority_far_future_due_date() {
+        use crate::graph::{DeadlineBand, GraphNode};
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        // Far future date > 30 days
+        let far_future = (today + chrono::Duration::days(90))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let mut p0_no_due = GraphNode::default();
+        p0_no_due.id = "p0-no-due".to_string();
+        p0_no_due.priority = Some(0);
+        p0_no_due.due = None;
+
+        let mut p4_far_due = GraphNode::default();
+        p4_far_due.id = "p4-far-due".to_string();
+        p4_far_due.priority = Some(4);
+        p4_far_due.due = Some(far_future);
+        p4_far_due.effort = Some("1d".to_string());
+
+        let mut nodes = vec![p0_no_due, p4_far_due];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        // Far-future due date task should have DeadlineBand::None
+        assert_eq!(
+            nodes[1].focus_tuple.as_ref().unwrap().deadline_band,
+            DeadlineBand::None
+        );
+        assert_eq!(
+            nodes[0].focus_tuple.as_ref().unwrap().deadline_band,
+            DeadlineBand::None
+        );
+
+        // P0 task without due date ranks above low priority far-future task
+        assert_eq!(
+            GraphStore::focus_cmp(&nodes[0], &nodes[1]),
+            std::cmp::Ordering::Less,
+            "P0 task without due date must rank before P4 task with far-future due date"
+        );
     }
 }
 

@@ -914,4 +914,28 @@ use super::*;
         }
     }
 
+    #[test]
+    fn test_task_signals_include_affordable_loss() {
+        let server = build_test_server();
+        let result = server
+            .handle_list_tasks(&json!({"format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&result);
+        assert!(!tasks.is_empty());
+        for t in tasks {
+            let signals = t
+                .get("signals")
+                .and_then(|s| s.as_object())
+                .expect("signals object must exist");
+            assert!(
+                signals.contains_key("affordable_loss"),
+                "signals must contain affordable_loss"
+            );
+            assert!(
+                signals.contains_key("affordable_loss_filtered"),
+                "signals must contain affordable_loss_filtered"
+            );
+        }
+    }
+
 
