@@ -35,7 +35,7 @@ mod path_serde {
 }
 
 /// A stored document entry with its embeddings
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DocumentEntry {
     /// File path (relative to pkb_root for portability)
     #[serde(with = "path_serde")]
@@ -110,7 +110,7 @@ pub struct SearchResult {
 /// Metadata-only patch produced by [`VectorStore::prepare_upsert`] when the
 /// body hash matches the existing entry. Applied via [`VectorStore::apply_prepared`]
 /// without touching `chunk_embeddings`, `chunk_texts`, or `body_chunks`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MetadataPatch {
     pub id: String,
     pub title: String,
@@ -125,12 +125,29 @@ pub struct MetadataPatch {
     pub file_hash: String,
 }
 
+/// An incremental write operation recorded in the Write-Ahead Log (WAL).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum WalRecord {
+    /// Full document entry upsert
+    Upsert(Box<DocumentEntry>),
+    /// Metadata-only patch
+    MetadataOnly(MetadataPatch),
+    /// Document deletion by ID
+    Remove(String),
+}
+
+/// Returns the WAL file path corresponding to a database path (e.g. `pkb_vectors.wal`).
+pub fn wal_path(db_path: &Path) -> PathBuf {
+    db_path.with_extension("wal")
+}
+
 /// Outcome of [`VectorStore::prepare_upsert`]. The caller applies this under
 /// a brief write lock via [`VectorStore::apply_prepared`].
 ///
 /// The point of splitting prepare/apply is to keep the slow work
 /// (chunking + embedding) outside the `VectorStore` write lock, so that
 /// concurrent writers don't serialise behind a multi-second embed.
+#[derive(Debug, Clone)]
 pub enum PreparedUpsert {
     /// Body is unchanged vs. the existing entry — apply only the cheap
     /// metadata mutation (`title`, `status`, `tags`, …) and keep the
@@ -275,10 +292,89 @@ impl VectorStore {
         Ok(RwLock::new(file))
     }
 
+    /// Append a single operation record to the Write-Ahead Log.
+    /// Framed as 4-byte little-endian length prefix + bincode payload.
+    pub fn append_wal_record(wal_path: &Path, record: &WalRecord) -> Result<()> {
+        if let Some(parent) = wal_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let encoded = bincode::serialize(record)?;
+        let len = encoded.len() as u32;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(wal_path)?;
+        use std::io::Write;
+        file.write_all(&len.to_le_bytes())?;
+        file.write_all(&encoded)?;
+        file.flush()?;
+        Ok(())
+    }
+
+    /// Replay records from the WAL file into this in-memory store.
+    /// Stops cleanly at the last valid record if the file is truncated / corrupted at the end.
+    pub fn replay_wal(&mut self, wal_path: &Path) -> Result<usize> {
+        if !wal_path.exists() {
+            return Ok(0);
+        }
+        let mut file = match std::fs::File::open(wal_path) {
+            Ok(f) => f,
+            Err(e) => return Err(e.into()),
+        };
+        use std::io::Read;
+        let mut count = 0;
+        loop {
+            let mut len_buf = [0u8; 4];
+            match file.read_exact(&mut len_buf) {
+                Ok(()) => {
+                    let len = u32::from_le_bytes(len_buf) as usize;
+                    let mut record_buf = vec![0u8; len];
+                    match file.read_exact(&mut record_buf) {
+                        Ok(()) => {
+                            match bincode::deserialize::<WalRecord>(&record_buf) {
+                                Ok(record) => {
+                                    match record {
+                                        WalRecord::Upsert(entry) => {
+                                            self.documents.insert(entry.id.clone(), *entry);
+                                        }
+                                        WalRecord::MetadataOnly(patch) => {
+                                            self.apply_prepared(PreparedUpsert::MetadataOnly(patch));
+                                        }
+                                        WalRecord::Remove(id) => {
+                                            self.remove(&id);
+                                        }
+                                    }
+                                    count += 1;
+                                }
+                                Err(e) => {
+                                    tracing::warn!("WAL record deserialization error at record {count}: {e}. Stopping replay.");
+                                    break;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            tracing::warn!("Truncated WAL record at {count}. Stopping replay.");
+                            break;
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if count > 0 {
+            tracing::info!("Replayed {count} WAL records from {wal_path:?}");
+        }
+        Ok(count)
+    }
+
     /// Load from disk, or create new if file doesn't exist.
     /// Detects dimension mismatch (e.g. model upgrade) and creates a fresh store.
+    /// Replays any uncompacted records from `pkb_vectors.wal` on top of the snapshot.
     pub fn load_or_create(path: &Path, dimension: usize) -> Result<Self> {
-        if path.exists() {
+        let mut store = if path.exists() {
             tracing::info!("Loading vector store from {path:?}");
             let t_read = std::time::Instant::now();
             let data = std::fs::read(path)?;
@@ -297,7 +393,7 @@ impl VectorStore {
                             store.dimension,
                             dimension
                         );
-                        Ok(Self::new(dimension))
+                        Self::new(dimension)
                     } else {
                         tracing::info!(
                             "Loaded {} documents from store in {:.1}ms (read: {:.1}ms, deserialize: {:.1}ms)",
@@ -306,7 +402,7 @@ impl VectorStore {
                             elapsed_read.as_secs_f64() * 1000.0,
                             elapsed_deserialize.as_secs_f64() * 1000.0
                         );
-                        Ok(store)
+                        store
                     }
                 }
                 Err(e) => {
@@ -342,22 +438,29 @@ impl VectorStore {
                             );
                         }
                         
-                        // Optionally persist right away so we don't pay migration cost repeatedly
-                        // (Though it will be overwritten gracefully during any graph build)
-                        return Ok(new_store);
+                        new_store
                     } else {
                         tracing::warn!("Failed to deserialize vector store entirely: {e}. Creating new.");
-                        Ok(Self::new(dimension))
+                        Self::new(dimension)
                     }
                 }
             }
         } else {
             tracing::info!("No existing vector store found. Creating new.");
-            Ok(Self::new(dimension))
+            Self::new(dimension)
+        };
+
+        // Replay any WAL records on top of base store
+        let wal = wal_path(path);
+        if wal.exists() {
+            let _ = store.replay_wal(&wal);
         }
+
+        Ok(store)
     }
 
-    /// Save to disk
+    /// Save full snapshot to disk (compaction).
+    /// Atomically writes `path` and removes the associated `.wal` file.
     pub fn save(&self, path: &Path) -> Result<()> {
         let t_start = std::time::Instant::now();
         if let Some(parent) = path.parent() {
@@ -373,6 +476,13 @@ impl VectorStore {
         let tmp_path = path.with_extension("tmp");
         std::fs::write(&tmp_path, &data)?;
         std::fs::rename(&tmp_path, path)?;
+
+        // Clean up compacted WAL file
+        let wal = wal_path(path);
+        if wal.exists() {
+            let _ = std::fs::remove_file(&wal);
+        }
+
         let elapsed_write = t_write.elapsed();
 
         tracing::info!(
@@ -1672,5 +1782,143 @@ mod tests {
             matches!(prepared, PreparedUpsert::Full(_)),
             "expected Full path when body hash changes"
         );
+    }
+
+    // ── WAL Persistence Tests ──
+
+    #[test]
+    fn test_wal_append_and_replay() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal = dir.path().join("test_store.wal");
+
+        let entry = make_entry(
+            "tasks/task-wal-1.md",
+            "Task WAL 1",
+            Some("task"),
+            Some("active"),
+            &["wal-tag"],
+            Some("task-wal-1"),
+            None,
+            vec![1.0, 0.0, 0.0],
+        );
+        VectorStore::append_wal_record(&wal, &WalRecord::Upsert(Box::new(entry))).unwrap();
+
+        let patch = MetadataPatch {
+            id: "task-wal-1".to_string(),
+            title: "Task WAL 1 (Updated)".to_string(),
+            doc_type: Some("task".to_string()),
+            status: Some("done".to_string()),
+            tags: vec!["wal-tag".to_string(), "done-tag".to_string()],
+            date: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: Some("2026-08-27".to_string()),
+            confidence: Some(0.95),
+            file_hash: "updated_hash".to_string(),
+        };
+        VectorStore::append_wal_record(&wal, &WalRecord::MetadataOnly(patch)).unwrap();
+
+        let mut store = VectorStore::new(3);
+        let count = store.replay_wal(&wal).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(store.len(), 1);
+
+        let item = store.get_entry("task-wal-1").expect("item exists");
+        assert_eq!(item.title, "Task WAL 1 (Updated)");
+        assert_eq!(item.status.as_deref(), Some("done"));
+        assert_eq!(item.chunk_embeddings, vec![vec![1.0, 0.0, 0.0]]);
+
+        // Append Remove record
+        VectorStore::append_wal_record(&wal, &WalRecord::Remove("task-wal-1".to_string())).unwrap();
+        let mut store2 = VectorStore::new(3);
+        let count2 = store2.replay_wal(&wal).unwrap();
+        assert_eq!(count2, 3);
+        assert_eq!(store2.len(), 0);
+    }
+
+    #[test]
+    fn test_wal_replay_corrupted_tail_graceful() {
+        use std::io::Write;
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal = dir.path().join("test_corrupt.wal");
+
+        let entry = make_entry(
+            "tasks/valid.md",
+            "Valid Task",
+            Some("task"),
+            Some("active"),
+            &[],
+            Some("valid-task"),
+            None,
+            vec![0.5, 0.5, 0.0],
+        );
+        VectorStore::append_wal_record(&wal, &WalRecord::Upsert(Box::new(entry))).unwrap();
+
+        // Append incomplete / corrupted bytes at end of file (simulating power failure / SIGKILL mid-write)
+        let mut file = std::fs::OpenOptions::new().append(true).open(&wal).unwrap();
+        file.write_all(&[0x10, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
+        file.flush().unwrap();
+        drop(file);
+
+        let mut store = VectorStore::new(3);
+        let count = store.replay_wal(&wal).unwrap();
+        // Should have replayed the 1 valid record and stopped cleanly without error
+        assert_eq!(count, 1);
+        assert_eq!(store.len(), 1);
+        assert!(store.get_entry("valid-task").is_some());
+    }
+
+    #[test]
+    fn test_wal_snapshot_compaction() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("pkb_vectors.bin");
+        let wal_path = dir.path().join("pkb_vectors.wal");
+
+        let mut store = VectorStore::new(3);
+        let entry = make_entry(
+            "tasks/t1.md",
+            "T1",
+            Some("task"),
+            Some("active"),
+            &[],
+            Some("t1"),
+            None,
+            vec![1.0, 0.0, 0.0],
+        );
+        store.documents.insert("t1".to_string(), entry.clone());
+        store.save(&db_path).unwrap();
+        assert!(!wal_path.exists());
+
+        // Append incremental update to WAL
+        let patch = MetadataPatch {
+            id: "t1".to_string(),
+            title: "T1 Patched".to_string(),
+            doc_type: Some("task".to_string()),
+            status: Some("done".to_string()),
+            tags: vec![],
+            date: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            confidence: None,
+            file_hash: "fh".to_string(),
+        };
+        VectorStore::append_wal_record(&wal_path, &WalRecord::MetadataOnly(patch)).unwrap();
+        assert!(wal_path.exists());
+
+        // load_or_create should load snapshot + replay WAL
+        let loaded = VectorStore::load_or_create(&db_path, 3).unwrap();
+        assert_eq!(loaded.get_entry("t1").unwrap().title, "T1 Patched");
+
+        // Saving snapshot compacts and removes WAL
+        loaded.save(&db_path).unwrap();
+        assert!(!wal_path.exists(), "Snapshot save must remove compacted WAL file");
+
+        // Re-load should find fresh snapshot with no WAL
+        let reloaded = VectorStore::load_or_create(&db_path, 3).unwrap();
+        assert_eq!(reloaded.get_entry("t1").unwrap().title, "T1 Patched");
     }
 }
