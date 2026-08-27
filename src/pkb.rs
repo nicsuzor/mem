@@ -356,5 +356,28 @@ mod tests {
             "doc with no frontmatter modified must have doc.modified == None"
         );
     }
+
+    #[test]
+    fn test_malformed_closing_delimiter_behavior() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("corrupted_doc.md");
+        let content = "---\nid: x\ntitle: Real Title\ntype: task\nstatus: ready\n---# Title\nSome body text\n";
+        std::fs::write(&file_path, content).unwrap();
+
+        let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+        let parsed = matter.parse(content);
+        assert!(parsed.data.is_none(), "gray_matter returns None for frontmatter data when closing delimiter is glued to body");
+        assert_eq!(
+            parsed.content.trim(),
+            "id: x\ntitle: Real Title\ntype: task\nstatus: ready\n---# Title\nSome body text"
+        );
+
+        let doc = parse_file(&file_path).expect("parse_file returns Some");
+        assert_eq!(doc.title, "corrupted_doc", "title falls back to file stem");
+        assert_eq!(doc.doc_type, None);
+        assert_eq!(doc.status, None);
+        assert_eq!(doc.frontmatter, None);
+        assert!(doc.body.starts_with("id: x\n"));
+    }
 }
 

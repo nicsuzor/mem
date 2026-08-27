@@ -1899,7 +1899,7 @@ pub fn add_observations(
 
     let new_file_content = if has_frontmatter {
         let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
-        format!("---\n{}---{}", yaml, new_body)
+        format!("---\n{}---\n{}", yaml, new_body)
     } else {
         new_body
     };
@@ -2089,7 +2089,7 @@ pub fn delete_observations(
 
     let new_file_content = if has_frontmatter {
         let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
-        format!("---\n{}---{}", yaml, new_body)
+        format!("---\n{}---\n{}", yaml, new_body)
     } else {
         new_body
     };
@@ -5275,6 +5275,68 @@ mod tests {
 
         let final_content = std::fs::read_to_string(&file_path).unwrap();
         assert!(final_content.contains("```python\ndef foo():\n    return 42\n```\n\n| Col A | Col B |\n|---|---|\n| 1 | 2 |\n\n## Observations\n\n- obs alpha\n- obs gamma\n\n## Trailing\n\nEnd text with trailing newlines.\n\n\n"));
+    }
+
+    #[test]
+    fn test_add_observations_frontmatter_delimiter_without_leading_newline_in_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("test_add_no_newline.md");
+        // Document whose body starts immediately with # Title (no blank line after ---)
+        let initial_content = "---\nid: test-add-no-nl\nmodified: '2026-08-01T00:00:00Z'\nstatus: ready\ntitle: Immediate Title\ntype: task\n---\n# Title\n\n## Observations\n- existing\n";
+        std::fs::write(&file_path, initial_content).unwrap();
+
+        let res = add_observations(
+            &file_path,
+            &["new obs line".to_string()],
+            Some("Observations"),
+            false,
+            Some("2026-08-01T00:00:00Z"),
+        )
+        .unwrap();
+
+        assert_eq!(res.added_count, 1);
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        // The closing delimiter MUST occupy its own line
+        assert!(!on_disk.contains("---#"), "Closing delimiter must not be concatenated with '# Title'");
+        assert!(on_disk.contains("---\n# Title"), "Closing delimiter must be followed by newline before '# Title'");
+
+        // Round-trip through real read path (pkb::parse_file) with frontmatter intact
+        let doc = crate::pkb::parse_file(&file_path).expect("parse_file must succeed");
+        assert_eq!(doc.title, "Immediate Title");
+        assert_eq!(doc.doc_type.as_deref(), Some("task"));
+        assert_eq!(doc.status.as_deref(), Some("ready"));
+        assert!(doc.frontmatter.is_some());
+    }
+
+    #[test]
+    fn test_delete_observations_frontmatter_delimiter_without_leading_newline_in_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("test_del_no_newline.md");
+        // Document whose body starts immediately with # Title (no blank line after ---)
+        let initial_content = "---\nid: test-del-no-nl\nmodified: '2026-08-01T00:00:00Z'\nstatus: ready\ntitle: Immediate Title\ntype: task\n---\n# Title\n\n## Observations\n- existing to delete\n";
+        std::fs::write(&file_path, initial_content).unwrap();
+
+        let res = delete_observations(
+            &file_path,
+            &["existing to delete".to_string()],
+            Some("2026-08-01T00:00:00Z"),
+        )
+        .unwrap();
+
+        assert_eq!(res.deleted_count, 1);
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        // The closing delimiter MUST occupy its own line
+        assert!(!on_disk.contains("---#"), "Closing delimiter must not be concatenated with '# Title'");
+        assert!(on_disk.contains("---\n# Title"), "Closing delimiter must be followed by newline before '# Title'");
+
+        // Round-trip through real read path (pkb::parse_file) with frontmatter intact
+        let doc = crate::pkb::parse_file(&file_path).expect("parse_file must succeed");
+        assert_eq!(doc.title, "Immediate Title");
+        assert_eq!(doc.doc_type.as_deref(), Some("task"));
+        assert_eq!(doc.status.as_deref(), Some("ready"));
+        assert!(doc.frontmatter.is_some());
     }
 }
 
