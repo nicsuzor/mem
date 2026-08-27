@@ -101,6 +101,8 @@ pub struct GraphStats {
     /// Count of SCCs with size > 1 in the SoftDependsOn subgraph.
     /// Soft cycles are healthy (mutual reinforcement) — counted but not flagged.
     pub soft_cycle_count: usize,
+    /// Count of tasks filtered by the non-compensatory affordable-loss constraint.
+    pub affordable_loss_filtered_count: usize,
     /// Deterministic hash of health metrics for convergence detection.
     /// Compare with previous run's hash — if equal, the graph has stabilized.
     pub metrics_hash: String,
@@ -178,6 +180,10 @@ impl GraphStats {
             "  Soft cycle count:     {}\n",
             self.soft_cycle_count
         ));
+        out.push_str(&format!(
+            "  Affordable loss filtered: {}\n",
+            self.affordable_loss_filtered_count
+        ));
         out.push_str(&format!("  Metrics hash:         {}\n", self.metrics_hash));
 
         out
@@ -201,6 +207,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
     let mut projects_without_goals = 0usize;
     let mut projects_with_goals_field = 0usize;
     let mut total_projects = 0usize;
+    let mut affordable_loss_filtered_count = 0usize;
 
     for node in graph.nodes() {
         let node_type = node.node_type.as_deref().unwrap_or("unknown");
@@ -287,6 +294,10 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
             }
         }
 
+        if node.affordable_loss_filtered {
+            affordable_loss_filtered_count += 1;
+        }
+
         // Disconnected epics (Model B): an epic is connected iff it — or any node in
         // its work-subtree — has a `contributes_to` edge resolving to a `target` or
         // `goal`. Connection is via `contributes_to`, NOT parent-ancestry: goals and
@@ -344,6 +355,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         total_projects,
         hard_cycles,
         soft_cycle_count,
+        affordable_loss_filtered_count,
         metrics_hash,
     }
 }

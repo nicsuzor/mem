@@ -61,6 +61,103 @@ impl EdgeType {
     }
 }
 
+/// Severity gate for catastrophic-obligation overrides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SeverityGate {
+    Normal = 0,
+    Catastrophic = 1,
+}
+
+/// Calendar float / slack deadline bands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum DeadlineBand {
+    None = 0,
+    Approaching = 1,
+    Urgent = 2,
+    Imminent = 3,
+    Overdue = 4,
+}
+
+/// Deterministic tie-breaker signals for ranking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FocusTieBreakers {
+    pub downstream_weight_x10: i64,
+    pub age_staleness: i64,
+    pub effective_priority: i32,
+    pub order: i32,
+    pub id: String,
+}
+
+/// Canonical explicit sort tuple for task ranking.
+///
+/// Under the derived ordering:
+/// `(severity gate, deadline band, cost-of-delay index, tie-breakers)`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FocusTuple {
+    pub severity_gate: SeverityGate,
+    pub deadline_band: DeadlineBand,
+    pub cost_of_delay: i64,
+    pub tie_breakers: FocusTieBreakers,
+}
+
+impl FocusTuple {
+    /// Explain which tuple component decides the pairwise ordering against another tuple.
+    pub fn explain_diff(&self, other: &Self) -> &'static str {
+        if self.severity_gate != other.severity_gate {
+            "severity_gate"
+        } else if self.deadline_band != other.deadline_band {
+            "deadline_band"
+        } else if self.cost_of_delay != other.cost_of_delay {
+            "cost_of_delay"
+        } else if self.tie_breakers.downstream_weight_x10 != other.tie_breakers.downstream_weight_x10 {
+            "tie_breakers.downstream_weight"
+        } else if self.tie_breakers.age_staleness != other.tie_breakers.age_staleness {
+            "tie_breakers.age_staleness"
+        } else if self.tie_breakers.effective_priority != other.tie_breakers.effective_priority {
+            "tie_breakers.effective_priority"
+        } else if self.tie_breakers.order != other.tie_breakers.order {
+            "tie_breakers.order"
+        } else if self.tie_breakers.id != other.tie_breakers.id {
+            "tie_breakers.id"
+        } else {
+            "identical"
+        }
+    }
+
+    /// Synthetic display score for UI and legacy rendering.
+    pub fn synthetic_display_score(&self) -> i64 {
+        let gate_pts = match self.severity_gate {
+            SeverityGate::Catastrophic => 100000,
+            SeverityGate::Normal => 0,
+        };
+        gate_pts
+            + self.cost_of_delay
+            + self.tie_breakers.downstream_weight_x10
+            + self.tie_breakers.age_staleness
+    }
+}
+
+impl Ord for FocusTuple {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.severity_gate
+            .cmp(&other.severity_gate)
+            .then_with(|| self.deadline_band.cmp(&other.deadline_band))
+            .then_with(|| self.cost_of_delay.cmp(&other.cost_of_delay))
+            .then_with(|| self.tie_breakers.downstream_weight_x10.cmp(&other.tie_breakers.downstream_weight_x10))
+            .then_with(|| self.tie_breakers.age_staleness.cmp(&other.tie_breakers.age_staleness))
+            // Inverted for higher-is-better tuple Ord
+            .then_with(|| other.tie_breakers.effective_priority.cmp(&self.tie_breakers.effective_priority))
+            .then_with(|| other.tie_breakers.order.cmp(&self.tie_breakers.order))
+            .then_with(|| other.tie_breakers.id.cmp(&self.tie_breakers.id))
+    }
+}
+
+impl PartialOrd for FocusTuple {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// A directed edge in the knowledge graph.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Edge {
@@ -272,6 +369,17 @@ pub struct GraphNode {
     pub weak_keys: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus_score: Option<i64>,
+    /// Explicit sort tuple computed by `compute_focus_scores` for canonical ranking.
+    /// (severity gate, deadline band, cost-of-delay index, tie-breakers).
+    #[serde(skip)]
+    pub focus_tuple: Option<FocusTuple>,
+    /// Whether this task satisfies the affordable-loss constraint.
+    /// If Some(false), the non-compensatory affordable-loss filter fires and zeroes out the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affordable_loss: Option<bool>,
+    /// Flag indicating the non-compensatory affordable-loss filter fired on this task.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub affordable_loss_filtered: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voi_value: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1157,6 +1265,9 @@ impl GraphNode {
                 .and_then(|v| v.as_str())
                 .map(String::from)
         });
+        let affordable_loss = fm
+            .as_ref()
+            .and_then(|f| f.get("affordable_loss").and_then(|v| v.as_bool()));
 
         let word_count = doc.body.split_whitespace().count() as i32;
         let has_acceptance_criteria = detect_acceptance_criteria(&doc.body);
@@ -1337,6 +1448,9 @@ impl GraphNode {
             reachable: false,
             assumptions,
             focus_score: None,
+            focus_tuple: None,
+            affordable_loss,
+            affordable_loss_filtered: false,
             voi_value: None,
             classification,
             has_acceptance_criteria,

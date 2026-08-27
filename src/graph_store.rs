@@ -703,6 +703,8 @@ impl GraphStore {
             new_node.urgency = old.urgency;
             new_node.blocking_urgency = old.blocking_urgency;
             new_node.focus_score = old.focus_score;
+            new_node.focus_tuple = old.focus_tuple.clone();
+            new_node.affordable_loss_filtered = old.affordable_loss_filtered;
             if new_node.project.is_none() {
                 new_node.project = old.project;
             }
@@ -748,6 +750,7 @@ impl GraphStore {
             new_node.urgency = 0.0;
             new_node.blocking_urgency = 0.0;
             new_node.focus_score = None;
+            new_node.focus_tuple = None;
         }
 
         if new_node.project.is_some() {
@@ -881,11 +884,10 @@ impl GraphStore {
 
     /// Canonical default ordering for any flat task/node result set.
     ///
-    /// `focus_score` DESC is the documented primary ranking signal (the composite
-    /// of priority, severity, deadline urgency, age, downstream weight, stakeholder
-    /// waiting, urgency and VOI computed in [`Self::compute_focus_scores`]). Ties are
-    /// broken deterministically so repeated identical calls yield identical ordering:
-    ///   1. `focus_score` DESC (nodes with no score sort last)
+    /// The explicit `focus_tuple` (severity gate, deadline band, cost-of-delay index, tie-breakers)
+    /// computed in [`Self::compute_focus_scores`] is the primary ranking key under derived ordering.
+    /// Ties are broken deterministically so repeated identical calls yield identical ordering:
+    ///   1. `focus_tuple` DESC (nodes with no score sort last)
     ///   2. `effective_priority` ASC (propagated min-priority in the downstream cone)
     ///   3. `order` ASC (authored/sequence order)
     ///   4. `id` ASC (unique — guarantees total, stable ordering)
@@ -893,16 +895,17 @@ impl GraphStore {
     /// Both the MCP `list_tasks` handler and the CLI `list` command sort through this
     /// single comparator, so the two surfaces agree for the same query by construction.
     pub fn focus_cmp(a: &GraphNode, b: &GraphNode) -> std::cmp::Ordering {
-        let fa = a.focus_score.unwrap_or(i64::MIN);
-        let fb = b.focus_score.unwrap_or(i64::MIN);
-        fb.cmp(&fa)
-            .then(
-                a.effective_priority
-                    .unwrap_or(4)
-                    .cmp(&b.effective_priority.unwrap_or(4)),
-            )
-            .then(a.order.cmp(&b.order))
-            .then(a.id.cmp(&b.id))
+        match (&a.focus_tuple, &b.focus_tuple) {
+            (Some(fa), Some(fb)) => fb.cmp(fa),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a
+                .effective_priority
+                .unwrap_or(4)
+                .cmp(&b.effective_priority.unwrap_or(4))
+                .then(a.order.cmp(&b.order))
+                .then(a.id.cmp(&b.id)),
+        }
     }
 
     /// Sort a slice of node refs in place by the canonical focus-score default order.
@@ -1682,38 +1685,48 @@ impl GraphStore {
         Ok(written)
     }
 
-    /// Compute focus scores for all nodes.
+    /// Compute focus scores and sort tuples for all nodes.
     ///
-    /// Score based on priority, deadline urgency, staleness, and downstream weight.
-    /// Results are stored in node.focus_score.
+    /// Evaluates the canonical sort tuple:
+    /// (severity gate, deadline band, cost-of-delay index, tie-breakers)
+    /// and derives synthetic display focus_scores.
+    /// Results are stored in node.focus_tuple and node.focus_score.
     fn compute_focus_scores(nodes: &mut [GraphNode]) {
         let today = chrono::Utc::now().date_naive();
         for node in nodes.iter_mut() {
+            // Non-compensatory affordable-loss filter: zero out tasks where affordable_loss is explicitly false.
+            if node.affordable_loss == Some(false) {
+                node.affordable_loss_filtered = true;
+                node.focus_tuple = None;
+                node.focus_score = None;
+                continue;
+            }
+            node.affordable_loss_filtered = false;
+
             if graph::is_completed(node.status.as_deref()) {
+                node.focus_tuple = None;
                 node.focus_score = None;
                 continue;
             }
 
             let pri = node.priority.unwrap_or(4);
             let sev = node.severity.unwrap_or(0);
-            let mut score: i64 = match pri {
+            let severity_gate = if sev >= 4 {
+                crate::graph::SeverityGate::Catastrophic
+            } else {
+                crate::graph::SeverityGate::Normal
+            };
+
+            let priority_pressure: i64 = match pri {
                 0 => 10000,
                 1 => 5000,
                 _ => 0,
             };
-            // Whether a hard `due` produced a positive deadline ramp this pass.
-            // When true, lateness is already counted by the deadline ramp, so the
-            // stakeholder-waiting ramp drops its per-day growth (see below) to avoid
-            // double-counting the same "late to an external party" fact (mem-830588f3).
+
+            let mut deadline_band = crate::graph::DeadlineBand::None;
+            let mut deadline_points: i64 = 0;
             let mut deadline_ramp_fired = false;
-            // Severity bonus (lexicographic for SEV4)
-            score += match sev {
-                4 => 100000,
-                3 => 20000,
-                2 => 10000,
-                1 => 5000,
-                _ => 0,
-            };
+
             if let Some(ref due) = node.due {
                 let len = std::cmp::min(10, due.len());
                 if let Ok(due_date) = chrono::NaiveDate::parse_from_str(
@@ -1727,29 +1740,30 @@ impl GraphStore {
                         .and_then(crate::graph::parse_effort_days)
                         .unwrap_or(3);
 
-                    let deadline_score = if days_until < 0 {
-                        8000 + std::cmp::min((-days_until) * 200, 4000)
+                    if days_until < 0 {
+                        deadline_band = crate::graph::DeadlineBand::Overdue;
+                        deadline_points = 8000 + std::cmp::min((-days_until) * 200, 4000);
+                        deadline_ramp_fired = true;
                     } else {
                         let ratio = effort_days as f64 / (days_until.max(1) as f64);
                         if ratio >= 1.0 {
-                            6000
+                            deadline_band = crate::graph::DeadlineBand::Imminent;
+                            deadline_points = 6000;
+                            deadline_ramp_fired = true;
                         } else if ratio > 0.5 {
-                            // linear interpolation: 0.5 -> 2000, 1.0 -> 6000
-                            2000 + ((ratio - 0.5) * 8000.0) as i64
+                            deadline_band = crate::graph::DeadlineBand::Urgent;
+                            deadline_points = 2000 + ((ratio - 0.5) * 8000.0) as i64;
+                            deadline_ramp_fired = true;
                         } else {
-                            // continuous linear interpolation: 0.0 -> 0, 0.5 -> 2000 (replaces 30d cliff)
-                            (ratio * 4000.0) as i64
+                            deadline_band = crate::graph::DeadlineBand::Approaching;
+                            deadline_points = (ratio * 4000.0) as i64;
+                            deadline_ramp_fired = deadline_points > 0;
                         }
-                    };
-
-                    // Stakes do NOT enter the deadline term via consequence prose.
-                    // `consequence` is explanatory prose (TAXONOMY.md L159); the sanctioned
-                    // stakes channel is target `severity` reaching tasks through
-                    // `contributes_to` edges (Birnbaum-weighted, slack-discounted).
-                    score += deadline_score;
-                    deadline_ramp_fired = deadline_score > 0;
+                    }
                 }
             }
+
+            let mut age_staleness: i64 = 0;
             if pri >= 2 {
                 if let Some(ref created) = node.created {
                     if created.len() >= 10 {
@@ -1758,25 +1772,19 @@ impl GraphStore {
                             "%Y-%m-%d",
                         ) {
                             let days = (today - created_dt).num_days();
-                            score += std::cmp::min(days.max(0), 200);
+                            age_staleness = std::cmp::min(days.max(0), 200);
                         }
                     }
                 }
             }
-            score += (node.downstream_weight * 10.0) as i64;
-            // Stakeholder waiting urgency: someone external is waiting on this task.
-            // Base +2000 (someone is waiting at all), growing +200/day, capped at +8000 total.
-            //
-            // The per-day growth is the *lateness* signal. When a hard `due` already
-            // fired the deadline ramp, that lateness is counted there — so we suppress
-            // the per-day growth and keep only the +2000 base, avoiding the additive
-            // double-count of one "late to an external party" fact (mem-830588f3). The
-            // ramp's distinct job is the "I promised, but there's no formal deadline"
-            // case, which has no `due` and so keeps its full time-growth.
+
+            let downstream_weight_x10 = (node.downstream_weight * 10.0) as i64;
+
+            let mut stakeholder_waiting: i64 = 0;
             if node.stakeholder.is_some() {
                 if deadline_ramp_fired {
-                    // Deadline ramp already counts the lateness; keep only the base.
-                    score += 2000;
+                    // Deadline ramp already counts lateness; keep only the base.
+                    stakeholder_waiting = 2000;
                 } else {
                     let anchor = node.waiting_since.as_ref().or(node.created.as_ref());
                     if let Some(anchor_str) = anchor {
@@ -1786,20 +1794,42 @@ impl GraphStore {
                             "%Y-%m-%d",
                         ) {
                             let days = (today - anchor_date).num_days().max(0);
-                            score += 2000 + std::cmp::min(days * 200, 6000);
+                            stakeholder_waiting = 2000 + std::cmp::min(days * 200, 6000);
                         } else {
-                            score += 2000; // stakeholder set but unparseable date
+                            stakeholder_waiting = 2000; // stakeholder set but unparseable date
                         }
                     } else {
-                        score += 2000; // stakeholder set but no date at all
+                        stakeholder_waiting = 2000; // stakeholder set but no date at all
                     }
                 }
             }
-            score += node.urgency.round() as i64;
-            if let Some(voi) = node.voi_value {
-                score += voi.round() as i64;
-            }
-            node.focus_score = Some(score);
+
+            let urgency_term = node.urgency.round() as i64;
+            let voi_term = node.voi_value.map(|v| v.round() as i64).unwrap_or(0);
+
+            let cost_of_delay = priority_pressure
+                + deadline_points
+                + stakeholder_waiting
+                + urgency_term
+                + voi_term;
+
+            let tie_breakers = crate::graph::FocusTieBreakers {
+                downstream_weight_x10,
+                age_staleness,
+                effective_priority: node.effective_priority.unwrap_or(4),
+                order: node.order,
+                id: node.id.clone(),
+            };
+
+            let tuple = crate::graph::FocusTuple {
+                severity_gate,
+                deadline_band,
+                cost_of_delay,
+                tie_breakers,
+            };
+
+            node.focus_score = Some(tuple.synthetic_display_score());
+            node.focus_tuple = Some(tuple);
         }
     }
 
@@ -1807,14 +1837,13 @@ impl GraphStore {
     /// Status-independent surfacing (spec §3.1): imminent deadlines (urgency >= 10000)
     /// appear regardless of status — in_progress and blocked tasks are included.
     pub fn focus_picks(&self, max: usize) -> Vec<String> {
-        let mut scored: Vec<(&GraphNode, i64)> = self
+        let mut scored: Vec<&GraphNode> = self
             .ready
             .iter()
             .filter_map(|id| self.nodes.get(id))
-            .map(|t| (t, t.focus_score.unwrap_or(0)))
             .collect();
 
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by(|a, b| Self::focus_cmp(a, b));
 
         let mut result: Vec<String> = Vec::with_capacity(max);
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1829,6 +1858,7 @@ impl GraphStore {
             .filter(|n| {
                 n.urgency >= 10000.0
                     && !completed_statuses.contains(&n.status.as_deref().unwrap_or(""))
+                    && !n.affordable_loss_filtered
             })
             .collect();
         urgent.sort_by(|a, b| {
@@ -1846,7 +1876,7 @@ impl GraphStore {
         }
 
         // 2. Fill remaining slots with top-scored ready tasks.
-        for (node, _) in scored {
+        for node in scored {
             if result.len() >= max {
                 break;
             }
@@ -7647,6 +7677,193 @@ mod tests {
         );
         let gs = GraphStore::build(&[doc1, doc2], Path::new("/tmp"));
         assert_eq!(gs.ready.len(), 2);
+    }
+
+    #[test]
+    fn test_phase1_sort_tuple_inspectability_and_explain_diff() {
+        use crate::graph::{DeadlineBand, FocusTieBreakers, FocusTuple, GraphNode, SeverityGate};
+
+        let t1 = FocusTuple {
+            severity_gate: SeverityGate::Catastrophic,
+            deadline_band: DeadlineBand::Overdue,
+            cost_of_delay: 5000,
+            tie_breakers: FocusTieBreakers {
+                downstream_weight_x10: 10,
+                age_staleness: 20,
+                effective_priority: 1,
+                order: 0,
+                id: "a".to_string(),
+            },
+        };
+
+        let mut t2 = t1.clone();
+        t2.severity_gate = SeverityGate::Normal;
+        assert_eq!(t1.explain_diff(&t2), "severity_gate");
+        assert!(t1 > t2);
+
+        let mut t3 = t1.clone();
+        t3.deadline_band = DeadlineBand::Imminent;
+        assert_eq!(t1.explain_diff(&t3), "deadline_band");
+        assert!(t1 > t3);
+
+        let mut t4 = t1.clone();
+        t4.cost_of_delay = 4000;
+        assert_eq!(t1.explain_diff(&t4), "cost_of_delay");
+        assert!(t1 > t4);
+
+        let mut t5 = t1.clone();
+        t5.tie_breakers.downstream_weight_x10 = 5;
+        assert_eq!(t1.explain_diff(&t5), "tie_breakers.downstream_weight");
+        assert!(t1 > t5);
+
+        let mut t6 = t1.clone();
+        t6.tie_breakers.id = "b".to_string();
+        assert_eq!(t1.explain_diff(&t6), "tie_breakers.id");
+        assert!(t1 > t6);
+    }
+
+    #[test]
+    fn test_phase1_severity_gate_and_no_double_count() {
+        use crate::graph::{DeadlineBand, GraphNode, SeverityGate};
+
+        let mut sev4_committed = GraphNode::default();
+        sev4_committed.id = "sev4-task".to_string();
+        sev4_committed.severity = Some(4);
+        sev4_committed.goal_type = Some("committed".to_string());
+
+        let mut sev3_normal = GraphNode::default();
+        sev3_normal.id = "sev3-task".to_string();
+        sev3_normal.severity = Some(3);
+
+        let mut nodes = vec![sev4_committed, sev3_normal];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        let tuple_sev4 = nodes[0].focus_tuple.as_ref().unwrap();
+        let tuple_sev3 = nodes[1].focus_tuple.as_ref().unwrap();
+
+        assert_eq!(tuple_sev4.severity_gate, SeverityGate::Catastrophic);
+        assert_eq!(tuple_sev3.severity_gate, SeverityGate::Normal);
+
+        // SEV4 committed sorts before SEV3 via the severity gate
+        assert_eq!(
+            GraphStore::focus_cmp(&nodes[0], &nodes[1]),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn test_phase1_affordable_loss_filter_non_compensatory() {
+        use crate::graph::GraphNode;
+
+        let mut normal_task = GraphNode::default();
+        normal_task.id = "normal-task".to_string();
+        normal_task.priority = Some(2);
+
+        let mut unaffordable_task = GraphNode::default();
+        unaffordable_task.id = "unaffordable-task".to_string();
+        unaffordable_task.priority = Some(0); // P0 would normally score 10,000
+        unaffordable_task.affordable_loss = Some(false); // Fails affordable-loss constraint
+
+        let mut nodes = vec![normal_task, unaffordable_task];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        assert_eq!(nodes[0].affordable_loss_filtered, false);
+        assert!(nodes[0].focus_tuple.is_some());
+        assert!(nodes[0].focus_score.is_some());
+
+        // Unaffordable task is zeroed out by the non-compensatory filter
+        assert_eq!(nodes[1].affordable_loss_filtered, true);
+        assert!(nodes[1].focus_tuple.is_none());
+        assert!(nodes[1].focus_score.is_none());
+
+        // In pairwise sort, normal task sorts before the filtered task
+        assert_eq!(
+            GraphStore::focus_cmp(&nodes[0], &nodes[1]),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn test_phase1_deadline_band_hierarchy() {
+        use crate::graph::{DeadlineBand, GraphNode};
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        let overdue_date = (today - chrono::Duration::days(3))
+            .format("%Y-%m-%d")
+            .to_string();
+        let imminent_date = (today + chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let urgent_date = (today + chrono::Duration::days(4))
+            .format("%Y-%m-%d")
+            .to_string();
+        let approaching_date = (today + chrono::Duration::days(20))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let mut n_overdue = GraphNode::default();
+        n_overdue.id = "t-overdue".to_string();
+        n_overdue.due = Some(overdue_date);
+        n_overdue.effort = Some("1d".to_string());
+
+        let mut n_imminent = GraphNode::default();
+        n_imminent.id = "t-imminent".to_string();
+        n_imminent.due = Some(imminent_date);
+        n_imminent.effort = Some("2d".to_string());
+
+        let mut n_urgent = GraphNode::default();
+        n_urgent.id = "t-urgent".to_string();
+        n_urgent.due = Some(urgent_date);
+        n_urgent.effort = Some("3d".to_string());
+
+        let mut n_approaching = GraphNode::default();
+        n_approaching.id = "t-approaching".to_string();
+        n_approaching.due = Some(approaching_date);
+        n_approaching.effort = Some("1d".to_string());
+
+        let mut n_none = GraphNode::default();
+        n_none.id = "t-none".to_string();
+
+        let mut nodes = vec![
+            n_overdue,
+            n_imminent,
+            n_urgent,
+            n_approaching,
+            n_none,
+        ];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        assert_eq!(
+            nodes[0].focus_tuple.as_ref().unwrap().deadline_band,
+            DeadlineBand::Overdue
+        );
+        assert_eq!(
+            nodes[1].focus_tuple.as_ref().unwrap().deadline_band,
+            DeadlineBand::Imminent
+        );
+        assert_eq!(
+            nodes[2].focus_tuple.as_ref().unwrap().deadline_band,
+            DeadlineBand::Urgent
+        );
+        assert_eq!(
+            nodes[3].focus_tuple.as_ref().unwrap().deadline_band,
+            DeadlineBand::Approaching
+        );
+        assert_eq!(
+            nodes[4].focus_tuple.as_ref().unwrap().deadline_band,
+            DeadlineBand::None
+        );
+
+        // Verify pairwise ordering: Overdue > Imminent > Urgent > Approaching > None
+        for i in 0..4 {
+            assert_eq!(
+                GraphStore::focus_cmp(&nodes[i], &nodes[i + 1]),
+                std::cmp::Ordering::Less,
+                "Node {i} must sort before node {}",
+                i + 1
+            );
+        }
     }
 }
 

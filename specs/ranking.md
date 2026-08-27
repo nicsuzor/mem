@@ -22,11 +22,17 @@ Per `.agents/CORE.md`, this specification documents approved current state only.
 
 ---
 
-## 1. Overview of the Scoring Architecture
+## 1. Overview of the Scoring Architecture & Sort Tuple
 
-The PKB prioritisation model produces a single composite integer rank — **`focus_score`** — for every active, uncompleted task (`status ∉ {"done", "cancelled"}`).
+The PKB prioritisation model ranks every active, uncompleted task (`status ∉ {"done", "cancelled"}`) using an explicit, ordered sort tuple under a derived ordering:
 
-Ranking in `mem` combines multiple signal classes into an additive composite computed in `GraphStore::compute_focus_scores` (`src/graph_store.rs:1689`), executed at the end of the graph build pipeline:
+```text
+focus_tuple = (severity_gate, deadline_band, cost_of_delay, tie_breakers)
+```
+
+The sort tuple replaces the hand-built positional encoding of the earlier eight-term additive accumulator. It maintains the strict "one signal" invariant — the tuple **is** the single sort key across all ranking surfaces (`GraphStore::focus_cmp`, `list_tasks`, and the CLI). A synthetic display number — **`focus_score`** — is derived from the tuple for human-facing output and backwards-compatibility, but is demonstrably not a sort input.
+
+Ranking in `mem` computes the sort tuple in `GraphStore::compute_focus_scores` (`src/graph_store.rs:1689`), executed at the end of the graph build pipeline:
 
 ```text
 compute_inverses
@@ -47,36 +53,28 @@ compute_inverses
 
 ---
 
-## 2. `focus_score` Components
+## 2. `focus_tuple` and `focus_score` Components
 
-`focus_score` is the sum of **eight additive terms**:
+Ranking is produced by the explicit 4-component tuple `FocusTuple`:
 
-```text
-focus_score = priority_base
-            + severity_bonus
-            + deadline_score
-            + age_staleness_bonus
-            + (downstream_weight × 10)
-            + stakeholder_waiting_bonus
-            + urgency_term
-            + voi_term
-```
-
-If a node is completed (`graph::is_completed(status)` is `true`), `focus_score` is `None` (null).
+1. **`severity_gate`**: Non-linear catastrophic obligation override (`Catastrophic` for SEV4-committed, else `Normal`).
+2. **`deadline_band`**: Discrete calendar float band (`Overdue` > `Imminent` > `Urgent` > `Approaching` > `None`).
+3. **`cost_of_delay`**: Commensurable dynamic pressure combining `priority_base`, fine-grained `deadline_score`, `stakeholder_waiting`, `urgency_term`, and `voi_term`.
+4. **`tie_breakers`**: Deterministic tie-breaking signals (`downstream_weight × 10`, `age_staleness_bonus`, `effective_priority`, `order`, `id`).
 
 ```
 +---------------------------------------------------------------------------------------------------+
-| Term                       | Formula / Logic                                   | Shipped Range    |
+| Term / Component           | Formula / Logic                                   | Shipped Range    |
 +---------------------------------------------------------------------------------------------------+
 | 1. priority_base           | match pri { 0 => 10000, 1 => 5000, _ => 0 }       | 0 – 10,000       |
-| 2. severity_bonus          | match sev { 4 => 100000, 3 => 20000, 2 => 10000,  | 0 – 100,000      |
-|                            |             1 => 5000, _ => 0 }                   |                  |
+| 2. severity_bonus          | Replaced by severity_gate (no double-count)       | Catastrophic/Norm|
 | 3. deadline_score          | Piecewise ramp on due date & effort ratio         | 0 – 12,000       |
 | 4. age_staleness_bonus     | If pri >= 2: min(days_since_created, 200)         | 0 – 200          |
 | 5. downstream_weight × 10  | (downstream_weight * 10.0) as i64                 | 0 – ~53 (obs)    |
 | 6. stakeholder_waiting     | Base 2000 + lateness ramp (unless deadline fired) | 0 / 2,000 – 8,000|
 | 7. urgency_term            | round(node.urgency)                               | 0 – 10,000+      |
 | 8. voi_term                | round(node.voi_value) (leaf nodes only)           | 0 – 5,000        |
+| 9. affordable_loss         | Non-compensatory filter zeroing unaffordable tasks| Bool filter      |
 +---------------------------------------------------------------------------------------------------+
 ```
 
