@@ -431,8 +431,9 @@ impl PkbSearchServer {
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
         })?;
-
         let abs_path = self.abs_path(&node.path);
+        let cached_status = node.status.clone();
+        drop(graph);
 
         if !abs_path.exists() {
             return Err(McpError {
@@ -444,6 +445,35 @@ impl PkbSearchServer {
                 data: None,
             });
         }
+
+        // Self-heal (aops_fb137646 AC3): a by-id read must return the state
+        // actually on disk, not a cached status that a prior write's
+        // in-place patch failed to land (same-process race) or that this
+        // process never observed (a write from another `pkb mcp` process).
+        // Reparse the file — cheap, single document — and compare `status`
+        // against the cached node. On a mismatch, patch the in-memory graph
+        // in place before building the response, so the response and every
+        // subsequent read in this process are consistent with disk.
+        if let Some(fresh_doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+            if fresh_doc.status.as_deref() != cached_status.as_deref() {
+                tracing::warn!(
+                    id = %id,
+                    cached_status = ?cached_status,
+                    disk_status = ?fresh_doc.status,
+                    "get_task: served-graph status disagreed with disk; self-healing in place"
+                );
+                self.rebuild_graph_for_pkb_document(&fresh_doc);
+            }
+        }
+
+        // Re-resolve after the possible self-heal above so every field built
+        // below (including `node.status`) reflects disk, not the pre-heal copy.
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Task not found: {id}")),
+            data: None,
+        })?;
 
         let content = std::fs::read_to_string(&abs_path).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -887,6 +917,11 @@ impl PkbSearchServer {
             .and_then(|v| v.as_str())
             .unwrap_or("markdown");
 
+        // Computed before taking the graph read lock below: list_staleness_signal
+        // takes its own read lock internally, and parking_lot's RwLock is not
+        // safe to read-lock reentrantly on the same thread (aops_fb137646 AC2).
+        let staleness = self.list_staleness_signal();
+
         let graph = self.graph.read();
 
         // Detect special status filters: "ready" and "blocked"
@@ -1083,6 +1118,14 @@ impl PkbSearchServer {
             } else {
                 "No tasks found matching filters."
             };
+            let label = match staleness {
+                Some((disk_count, index_count)) => format!(
+                    "{label}\n\nWARNING: the in-memory index ({index_count} nodes) disagrees \
+                     with disk ({disk_count} files) — this empty result may be wrong. \
+                     Call refresh_graph and retry before trusting it."
+                ),
+                None => label.to_string(),
+            };
             return Ok(CallToolResult::success(vec![Content::text(label)]));
         }
 
@@ -1146,11 +1189,23 @@ impl PkbSearchServer {
                     obj
                 })
                 .collect();
-            let result = serde_json::json!({
+            let mut result = serde_json::json!({
                 "total": total,
                 "showing": tasks.len(),
                 "tasks": json_tasks,
             });
+            if let Some((disk_count, index_count)) = staleness {
+                if let Some(obj) = result.as_object_mut() {
+                    obj.insert(
+                        "index_warning".to_string(),
+                        serde_json::json!({
+                            "message": "the in-memory index disagrees with disk; results above may under- or over-count. Call refresh_graph and retry.",
+                            "disk_file_count": disk_count,
+                            "index_node_count": index_count,
+                        }),
+                    );
+                }
+            }
             return Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&result).unwrap_or_default(),
             )]));
@@ -1322,6 +1377,15 @@ impl PkbSearchServer {
                 }
             }
             out
+        };
+
+        let output = match staleness {
+            Some((disk_count, index_count)) => format!(
+                "WARNING: the in-memory index ({index_count} nodes) disagrees with disk \
+                 ({disk_count} files) — this list may be missing or misreporting tasks. \
+                 Call refresh_graph and retry before trusting it.\n\n{output}"
+            ),
+            None => output,
         };
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -1684,6 +1748,12 @@ impl PkbSearchServer {
     // =========================================================================
 
     pub(crate) fn handle_task_summary(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        // Computed before the graph read lock below — see list_staleness_signal's
+        // docs on parking_lot RwLock reentrancy (aops_fb137646 AC2). A reconcile
+        // sweep leans on these counts as ground truth, so this surface gets the
+        // same signal as list_tasks.
+        let staleness = self.list_staleness_signal();
+
         let graph = self.graph.read();
         let ready = graph.ready_tasks();
         let blocked = graph.blocked_tasks();
@@ -1720,7 +1790,7 @@ impl PkbSearchServer {
             }
         }
 
-        let summary = serde_json::json!({
+        let mut summary = serde_json::json!({
             "ready": ready.len(),
             "blocked": blocked.len(),
             "by_priority": {
@@ -1735,6 +1805,18 @@ impl PkbSearchServer {
                 "due_this_week": due_this_week,
             }
         });
+        if let Some((disk_count, index_count)) = staleness {
+            if let Some(obj) = summary.as_object_mut() {
+                obj.insert(
+                    "index_warning".to_string(),
+                    serde_json::json!({
+                        "message": "the in-memory index disagrees with disk; these counts may be wrong. Call refresh_graph and retry.",
+                        "disk_file_count": disk_count,
+                        "index_node_count": index_count,
+                    }),
+                );
+            }
+        }
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&summary).unwrap_or_default(),
