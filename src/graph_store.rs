@@ -1764,8 +1764,9 @@ impl GraphStore {
                 }
             }
             score += (node.downstream_weight * 10.0) as i64;
-            // Stakeholder waiting urgency: someone external is waiting on this task.
-            // Base +2000 (someone is waiting at all), growing +200/day, capped at +8000 total.
+            // Stakeholder waiting urgency & Human gate urgency: someone external is waiting
+            // on this task, or a structurally-identified human gate is awaiting decision/review.
+            // Base +2000 (someone is waiting / human decision required), growing +200/day, capped at +8000 total.
             //
             // The per-day growth is the *lateness* signal. When a hard `due` already
             // fired the deadline ramp, that lateness is counted there — so we suppress
@@ -1773,7 +1774,8 @@ impl GraphStore {
             // double-count of one "late to an external party" fact (mem-830588f3). The
             // ramp's distinct job is the "I promised, but there's no formal deadline"
             // case, which has no `due` and so keeps its full time-growth.
-            if node.stakeholder.is_some() {
+            let is_waiting_or_human_gate = node.stakeholder.is_some() || node.is_human_gate();
+            if is_waiting_or_human_gate {
                 if deadline_ramp_fired {
                     // Deadline ramp already counts the lateness; keep only the base.
                     score += 2000;
@@ -1788,10 +1790,10 @@ impl GraphStore {
                             let days = (today - anchor_date).num_days().max(0);
                             score += 2000 + std::cmp::min(days * 200, 6000);
                         } else {
-                            score += 2000; // stakeholder set but unparseable date
+                            score += 2000; // stakeholder/gate set but unparseable date
                         }
                     } else {
-                        score += 2000; // stakeholder set but no date at all
+                        score += 2000; // stakeholder/gate set but no date at all
                     }
                 }
             }
@@ -1803,22 +1805,54 @@ impl GraphStore {
         }
     }
 
-    /// Compute focus picks: top ready tasks ranked by pre-computed focus_score.
+    /// Compute focus picks: top ready tasks and active human gates ranked by pre-computed focus_score.
     /// Status-independent surfacing (spec §3.1): imminent deadlines (urgency >= 10000)
     /// appear regardless of status — in_progress and blocked tasks are included.
     pub fn focus_picks(&self, max: usize) -> Vec<String> {
-        let mut scored: Vec<(&GraphNode, i64)> = self
-            .ready
-            .iter()
-            .filter_map(|id| self.nodes.get(id))
+        let completed_statuses = crate::graph::COMPLETED_STATUSES;
+
+        // Collect candidates for focus picks:
+        // - All ready tasks (from self.ready)
+        // - All active human gate tasks (non-completed tasks where is_human_gate() is true)
+        let mut candidates: Vec<&GraphNode> = Vec::new();
+        let mut candidate_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+        for id in &self.ready {
+            if let Some(node) = self.nodes.get(id) {
+                if candidate_ids.insert(node.id.as_str()) {
+                    candidates.push(node);
+                }
+            }
+        }
+
+        for node in self.nodes.values() {
+            if node.is_human_gate()
+                && !completed_statuses.contains(&node.status.as_deref().unwrap_or(""))
+            {
+                if candidate_ids.insert(node.id.as_str()) {
+                    candidates.push(node);
+                }
+            }
+        }
+
+        let mut scored: Vec<(&GraphNode, i64)> = candidates
+            .into_iter()
             .map(|t| (t, t.focus_score.unwrap_or(0)))
             .collect();
 
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| {
+                    let pa = a.0.effective_priority.unwrap_or(4);
+                    let pb = b.0.effective_priority.unwrap_or(4);
+                    pa.cmp(&pb)
+                })
+                .then_with(|| a.0.order.cmp(&b.0.order))
+                .then_with(|| a.0.id.cmp(&b.0.id))
+        });
 
         let mut result: Vec<String> = Vec::with_capacity(max);
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let completed_statuses = crate::graph::COMPLETED_STATUSES;
 
         // 1. Status-independent surfacing first (spec §3.1): non-completed nodes with
         //    urgency >= 10000 take priority over the regular ready queue, otherwise
@@ -1845,7 +1879,7 @@ impl GraphStore {
             }
         }
 
-        // 2. Fill remaining slots with top-scored ready tasks.
+        // 2. Fill remaining slots with top-scored candidates (ready tasks and human gates).
         for (node, _) in scored {
             if result.len() >= max {
                 break;
@@ -3871,6 +3905,51 @@ mod tests {
         }
     }
 
+    fn make_doc_with_fields(
+        path: &str,
+        title: &str,
+        doc_type: &str,
+        status: &str,
+        id: &str,
+        parent: Option<&str>,
+        depends_on: &[&str],
+        assignee: Option<&str>,
+        tags: &[&str],
+    ) -> PkbDocument {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), serde_json::json!(title));
+        fm.insert("type".to_string(), serde_json::json!(doc_type));
+        fm.insert("status".to_string(), serde_json::json!(status));
+        fm.insert("id".to_string(), serde_json::json!(id));
+        if let Some(p) = parent {
+            fm.insert("parent".to_string(), serde_json::json!(p));
+        }
+        if !depends_on.is_empty() {
+            fm.insert("depends_on".to_string(), serde_json::json!(depends_on));
+        }
+        if let Some(a) = assignee {
+            fm.insert("assignee".to_string(), serde_json::json!(a));
+        }
+        if !tags.is_empty() {
+            fm.insert("tags".to_string(), serde_json::json!(tags));
+        }
+
+        PkbDocument {
+            path: PathBuf::from(path),
+            title: title.to_string(),
+            body: String::new(),
+            doc_type: Some(doc_type.to_string()),
+            status: Some(status.to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test_hash".to_string(),
+            file_hash: "test_hash".to_string(),
+        }
+    }
+
     /// A memory-type document with a freeform `body`. Used to exercise the
     /// wikilink -> Link-edge -> orphan-detection path (the `/remember` quick
     /// path leans on body wikilinks rather than a structured parent field).
@@ -5444,6 +5523,166 @@ mod tests {
         assert!(
             (jolt_new - ethics_new).abs() < 2000,
             "JOLT must be roughly level with the ethics task"
+        );
+    }
+
+    /// Task aops_fd5283aa: A structurally-identified human gate (awaiting human decision /
+    /// review / sign-off) must score in the waiting-urgency band (2000-8000) without
+    /// requiring hand-written `stakeholder` or other prohibited fields.
+    /// Ordinary tasks created by working agents must not earn this waiting bonus.
+    #[test]
+    fn test_human_gate_ranking_and_anti_gaming() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        let d14_ago = (today - chrono::Duration::days(14))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        // 1. Live Exemplar A: task_72b7886e (status: review, assignee: Nic, priority: 2, created: 14d ago)
+        let mut task_72b7886e = GraphNode::default();
+        task_72b7886e.id = "task_72b7886e".to_string();
+        task_72b7886e.label = "DECISION (Nic): push the rtk-enabled polecat worker image to ghcr".to_string();
+        task_72b7886e.status = Some("review".to_string());
+        task_72b7886e.assignee = Some("Nic".to_string());
+        task_72b7886e.priority = Some(2);
+        task_72b7886e.created = Some(d14_ago.clone());
+        task_72b7886e.tags = vec!["decision".to_string(), "needs-nic".to_string(), "human-approval".to_string()];
+
+        // 2. Live Exemplar B: task_21d3ece0 (status: review, assignee: Nic, priority: 2, created: 14d ago)
+        let mut task_21d3ece0 = GraphNode::default();
+        task_21d3ece0.id = "task_21d3ece0".to_string();
+        task_21d3ece0.label = "DECISION (Nic): run one aops-slug Claude Code session to a normal turn-end".to_string();
+        task_21d3ece0.status = Some("review".to_string());
+        task_21d3ece0.assignee = Some("Nic".to_string());
+        task_21d3ece0.priority = Some(2);
+        task_21d3ece0.created = Some(d14_ago.clone());
+        task_21d3ece0.tags = vec!["decision".to_string(), "needs-nic".to_string(), "human-approval".to_string()];
+
+        // 3. Live Exemplar C: aops_ee205f8f (status: queued, tags: human-approval/sign-off, priority: 4, created: 14d ago)
+        let mut aops_ee205f8f = GraphNode::default();
+        aops_ee205f8f.id = "aops_ee205f8f".to_string();
+        aops_ee205f8f.label = "Sign-off: does the dispatch payload boundary permit injecting a worker's own target task body?".to_string();
+        aops_ee205f8f.status = Some("queued".to_string());
+        aops_ee205f8f.priority = Some(4);
+        aops_ee205f8f.created = Some(d14_ago.clone());
+        aops_ee205f8f.tags = vec!["sign-off".to_string(), "doctrine".to_string(), "human-approval".to_string()];
+
+        // 4. Reference Exemplar: aops_3d6c268f (has hand-written stakeholder: Nic, status: inbox, created: 14d ago)
+        let mut aops_3d6c268f = GraphNode::default();
+        aops_3d6c268f.id = "aops_3d6c268f".to_string();
+        aops_3d6c268f.status = Some("inbox".to_string());
+        aops_3d6c268f.assignee = Some("Nic".to_string());
+        aops_3d6c268f.stakeholder = Some("Nic".to_string());
+        aops_3d6c268f.priority = Some(4);
+        aops_3d6c268f.created = Some(d14_ago.clone());
+
+        // 5. Anti-gaming test: ordinary work task created by working agent (P4, 14d ago, no human gate indicators)
+        let mut normal_agent_task = GraphNode::default();
+        normal_agent_task.id = "task_agent_work".to_string();
+        normal_agent_task.label = "Refactor internal parser helpers".to_string();
+        normal_agent_task.status = Some("ready".to_string());
+        normal_agent_task.assignee = Some("polecat".to_string());
+        normal_agent_task.priority = Some(4);
+        normal_agent_task.created = Some(d14_ago.clone());
+        normal_agent_task.tags = vec!["refactor".to_string(), "parser".to_string()];
+
+        let mut nodes = vec![
+            task_72b7886e,
+            task_21d3ece0,
+            aops_ee205f8f,
+            aops_3d6c268f,
+            normal_agent_task,
+        ];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        let score_72b = nodes[0].focus_score.unwrap();
+        let score_21d = nodes[1].focus_score.unwrap();
+        let score_ee2 = nodes[2].focus_score.unwrap();
+        let score_3d6 = nodes[3].focus_score.unwrap();
+        let score_norm = nodes[4].focus_score.unwrap();
+
+        // Reference score with stakeholder: Nic is 4814 (2000 base + 14*200 ramp + 14 age staleness)
+        assert_eq!(score_3d6, 4814, "reference node with stakeholder: Nic scores 4814");
+
+        // AC1: Structurally identified human gates score in the same 4814 band WITHOUT hand-written stakeholder
+        assert_eq!(
+            score_72b, 4814,
+            "task_72b7886e must score 4814 (was 14 before fix)"
+        );
+        assert_eq!(
+            score_21d, 4814,
+            "task_21d3ece0 must score 4814 (was 14 before fix)"
+        );
+        assert_eq!(
+            score_ee2, 4814,
+            "aops_ee205f8f must score 4814 (was 14 before fix)"
+        );
+
+        // AC2: Normal task created by working agent earns only age staleness (14 points), cannot game waiting urgency
+        assert_eq!(
+            score_norm, 14,
+            "normal agent task must score only staleness (14), not waiting urgency bonus"
+        );
+    }
+
+    /// Task aops_fd5283aa AC3 & AC4:
+    /// AC3: A `review`-status human gate appears on `focus_picks` (and `pkb focus`).
+    /// AC4: Human gates in `review` status do NOT become claimable via `ready_tasks()`.
+    #[test]
+    fn test_human_gate_focus_picks_surfacing_and_claimability() {
+        let docs = vec![
+            make_doc_with_fields(
+                "tasks/human-gate.md",
+                "DECISION (Nic): push the rtk worker image",
+                "task",
+                "review",
+                "human-gate-1",
+                None,
+                &[],
+                Some("Nic"),
+                &["decision", "needs-nic", "human-approval"],
+            ),
+            make_doc_with_fields(
+                "tasks/claimable-work.md",
+                "Implement telemetry exporter",
+                "task",
+                "ready",
+                "claimable-work-1",
+                None,
+                &[],
+                None,
+                &["telemetry"],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        // AC3: focus_picks must surface the review human gate
+        let picks = graph.focus_picks(10);
+        assert!(
+            picks.contains(&"human-gate-1".to_string()),
+            "review-status human gate must appear in focus_picks"
+        );
+        assert!(
+            picks.contains(&"claimable-work-1".to_string()),
+            "ready task must appear in focus_picks"
+        );
+        // Human gate with 2000+ base score ranks higher than ordinary ready task with 0 score
+        assert_eq!(
+            picks[0], "human-gate-1",
+            "human gate with 2000+ score must rank above default P4 ready task"
+        );
+
+        // AC4: ready_tasks() must strictly exclude the review-status human gate (staying non-claimable by polecats)
+        let ready_ids: Vec<&str> = graph.ready_tasks().iter().map(|n| n.id.as_str()).collect();
+        assert!(
+            !ready_ids.contains(&"human-gate-1"),
+            "review-status human gate MUST NOT be in ready_tasks() (not claimable by polecats)"
+        );
+        assert!(
+            ready_ids.contains(&"claimable-work-1"),
+            "ready task must be in ready_tasks()"
         );
     }
 

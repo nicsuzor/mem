@@ -74,7 +74,7 @@ If a node is completed (`graph::is_completed(status)` is `true`), `focus_score` 
 | 3. deadline_score          | Piecewise ramp on due date & effort ratio         | 0 – 12,000       |
 | 4. age_staleness_bonus     | If pri >= 2: min(days_since_created, 200)         | 0 – 200          |
 | 5. downstream_weight × 10  | (downstream_weight * 10.0) as i64                 | 0 – ~53 (obs)    |
-| 6. stakeholder_waiting     | Base 2000 + lateness ramp (unless deadline fired) | 0 / 2,000 – 8,000|
+| 6. stakeholder/human gate  | Base 2000 + lateness ramp (unless deadline fired) | 0 / 2,000 – 8,000|
 | 7. urgency_term            | round(node.urgency)                               | 0 – 10,000+      |
 | 8. voi_term                | round(node.voi_value) (leaf nodes only)           | 0 – 5,000        |
 +---------------------------------------------------------------------------------------------------+
@@ -121,23 +121,23 @@ If a node is completed (`graph::is_completed(status)` is `true`), `focus_score` 
 - **Formula**:
   Let `today = Utc::now().date_naive()`, `due_date = parse(node.due)`, `days_until = (due_date - today).num_days()`, and `effort_days = parse_effort_days(node.effort).unwrap_or(3)`:
   - If `days_until < 0` (overdue):
-    $$\\text{deadline\\_score} = 8000 + \\min((-\\text{days\\_until}) \\times 200, 4000) \\quad \\in [8000, 12000]$$
-  - Else (`days_until >= 0`), let $\\text{ratio} = \\frac{\\text{effort\\_days}}{\\max(\\text{days\\_until}, 1)}$:
-    - If $\\text{ratio} \\ge 1.0$: $\\text{deadline\\_score} = 6000$
-    - Else if $\\text{ratio} > 0.5$: $\\text{deadline\\_score} = 2000 + \\lfloor(\\text{ratio} - 0.5) \\times 8000.0\\rfloor \\quad \\in (2000, 6000)$
-    - Else if $\\text{days\\_until} \\le 30$: $\\text{deadline\\_score} = 1000$
-    - Else: $\\text{deadline\\_score} = 0$
+    $$\text{deadline\_score} = 8000 + \min((-\text{days\_until}) \times 200, 4000) \quad \in [8000, 12000]$$
+  - Else (`days_until >= 0`), let $\text{ratio} = \frac{\text{effort\_days}}{\max(\text{days\_until}, 1)}$:
+    - If $\text{ratio} \ge 1.0$: $\text{deadline\_score} = 6000$
+    - Else if $\text{ratio} > 0.5$: $\text{deadline\_score} = 2000 + \lfloor(\text{ratio} - 0.5) \times 8000.0\rfloor \quad \in (2000, 6000)$
+    - Else if $\text{days\_until} \le 30$: $\text{deadline\_score} = 1000$
+    - Else: $\text{deadline\_score} = 0$
 - **Theoretical Range**: `0` to `12,000`.
 - **Flag side-effect**: Sets `deadline_ramp_fired = deadline_score > 0` (used to suppress lateness double-counting in the stakeholder waiting bonus).
 - **Default (absent input)**: `0`.
-- **Zeroing conditions**: `due` is absent or unparseable, or `days_until > 30` and $\\text{ratio} \\le 0.5$.
+- **Zeroing conditions**: `due` is absent or unparseable, or `days_until > 30` and $\text{ratio} \le 0.5$.
 - **Consumers**: `compute_focus_scores`.
 
 ### 2.4. Age / Staleness Bonus (`age_staleness_bonus`)
 - **Code reference**: `src/graph_store.rs:1754–1766`
 - **Formula**:
   Only applies if `priority >= 2`:
-  $$\\text{age\\_bonus} = \\min(\\max(\\text{days\\_since\\_created}, 0), 200)$$
+  $$\text{age\_bonus} = \min(\max(\text{days\_since\_created}, 0), 200)$$
 - **Theoretical Range**: `0` to `200`.
 - **Observed Range**: `0` to `200`.
 - **Default (absent input)**: `0`.
@@ -154,10 +154,10 @@ If a node is completed (`graph::is_completed(status)` is `true`), `focus_score` 
 - **Zeroing conditions**: Empty downstream cone or all descendants completed.
 - **Consumers**: `compute_focus_scores`.
 
-### 2.6. Stakeholder Waiting Urgency (`stakeholder_waiting_bonus`)
-- **Code reference**: `src/graph_store.rs:1768–1798`
+### 2.6. Stakeholder & Human-Gate Waiting Urgency (`stakeholder_waiting_bonus`)
+- **Code reference**: `src/graph_store.rs:1767–1798`
 - **Formula**:
-  Applies only when `node.stakeholder.is_some()`:
+  Applies when `node.stakeholder.is_some()` or `node.is_human_gate()`:
   - If `deadline_ramp_fired` is `true`:
     $$\text{score} += 2000 \quad \text{(base only, suppressing per-day lateness growth to prevent double-counting)}$$
   - Else (`deadline_ramp_fired` is `false`):
@@ -167,7 +167,7 @@ If a node is completed (`graph::is_completed(status)` is `true`), `focus_score` 
 - **Theoretical Range**: `0`, or `2000` to `8000`.
 - **Observed Range**: `0` (unset) or `2000`–`8000`.
 - **Default (absent input)**: `0`.
-- **Zeroing conditions**: `stakeholder` field is absent (`None`).
+- **Zeroing conditions**: `stakeholder` field is absent (`None`) and `node.is_human_gate()` is `false`.
 - **Consumers**: `compute_focus_scores`.
 
 ### 2.7. Urgency Term (`urgency_term`)

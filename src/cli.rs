@@ -1692,7 +1692,11 @@ async fn main() -> Result<()> {
 
                 // ── Focus picks (only for default ready view) ──
                 if matches!(filter, TaskFilter::Ready) {
-                    let picks = select_focus_picks(&tasks, 5);
+                    let pick_ids = gs.focus_picks(5);
+                    let picks: Vec<&graph::GraphNode> = pick_ids
+                        .iter()
+                        .filter_map(|id| gs.get_node(id))
+                        .collect();
                     if !picks.is_empty() {
                         println!();
                         println!(
@@ -1757,19 +1761,20 @@ async fn main() -> Result<()> {
 
         Commands::Focus { limit } => {
             let gs = load_graph(&pkb_root, &db_path, None);
-            let tasks = gs.ready_tasks();
+            let pick_ids = gs.focus_picks(limit);
 
-            if tasks.is_empty() {
-                println!("No ready tasks.");
+            if pick_ids.is_empty() {
+                println!("No focus tasks.");
                 return Ok(());
             }
 
-            let picks = select_focus_picks(&tasks, limit);
             let width = term_width();
 
             println!();
-            for pick in &picks {
-                println!("  {}", format_task_line(pick, width.saturating_sub(2)));
+            for id in &pick_ids {
+                if let Some(pick) = gs.get_node(id) {
+                    println!("  {}", format_task_line(pick, width.saturating_sub(2)));
+                }
             }
             println!();
         }
@@ -4492,22 +4497,6 @@ fn format_complexity(complexity: &str) -> String {
 /// Pick the top `max` focus tasks.
 ///
 /// Ranking delegates to the canonical scorer: `focus_score` is computed once by
-/// `GraphStore::compute_focus_scores` during the graph build, and the ordering
-/// here uses the same `GraphStore::sort_by_focus` comparator that the tree view
-/// (and the MCP `list_tasks` handler) uses. There is one focus scorer.
-///
-/// This function previously carried a second, divergent implementation — older
-/// deadline bands, no severity, no urgency, no VoI, and no suppression of the
-/// stakeholder/deadline double-count — which meant the "Today's Focus" block and
-/// the task tree rendered immediately below it could disagree about the same
-/// tasks within a single `pkb tasks` render.
-fn select_focus_picks<'a>(tasks: &[&'a graph::GraphNode], max: usize) -> Vec<&'a graph::GraphNode> {
-    let mut ranked: Vec<&'a graph::GraphNode> = tasks.to_vec();
-    graph_store::GraphStore::sort_by_focus(&mut ranked);
-    ranked.truncate(max);
-    ranked
-}
-
 fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     let pri = task.priority.unwrap_or(4);
     let color = pri_color(pri);

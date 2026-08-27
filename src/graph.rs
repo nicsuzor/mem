@@ -1349,6 +1349,56 @@ impl GraphNode {
             parse_warnings,
         }
     }
+
+    /// Returns true if this node represents a structurally-identified human gate
+    /// (e.g. awaiting human decision, review, approval, or sign-off).
+    ///
+    /// Structurally identified from:
+    /// - `status == "review"` (task parked awaiting human review)
+    /// - `assignee` set to a human (case-insensitive "nic" or named human)
+    /// - tags indicating human gating (`human-approval`, `needs-nic`, `sign-off`, `signoff`,
+    ///   `decision`, `one-way-door`, `wf-human-approval`, `nic-owes`, `awaiting-nic`)
+    /// - title/label conventions (`DECISION`, `SIGN-OFF`, `Sign-off`, `Nic sign-off`, `Nic owes`)
+    pub fn is_human_gate(&self) -> bool {
+        if let Some(ref s) = self.status {
+            if s.eq_ignore_ascii_case("review") {
+                return true;
+            }
+        }
+        if let Some(ref a) = self.assignee {
+            if a.eq_ignore_ascii_case("nic") {
+                return true;
+            }
+        }
+        for tag in &self.tags {
+            let t = tag.to_ascii_lowercase();
+            if matches!(
+                t.as_str(),
+                "human-approval"
+                    | "needs-nic"
+                    | "sign-off"
+                    | "signoff"
+                    | "decision"
+                    | "one-way-door"
+                    | "wf-human-approval"
+                    | "nic-owes"
+                    | "awaiting-nic"
+            ) {
+                return true;
+            }
+        }
+        let label_lower = self.label.to_ascii_lowercase();
+        if label_lower.starts_with("decision")
+            || label_lower.starts_with("sign-off")
+            || label_lower.starts_with("signoff")
+            || label_lower.starts_with("nic sign-off")
+            || label_lower.starts_with("nic signs off")
+            || label_lower.starts_with("nic owes")
+        {
+            return true;
+        }
+        false
+    }
 }
 
 #[cfg(test)]
