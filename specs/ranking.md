@@ -29,7 +29,8 @@ The PKB prioritisation model produces a single composite integer rank — **`foc
 Ranking in `mem` combines multiple signal classes into an additive composite computed in `GraphStore::compute_focus_scores` (`src/graph_store.rs:1689`), executed at the end of the graph build pipeline:
 
 ```text
-compute_inverses
+canonical node sort (node id ASC)
+  → compute_inverses
   → compute_project_field / compute_target_ancestors
   → compute_cone_base_weights
   → compute_downstream_metrics
@@ -44,6 +45,14 @@ compute_inverses
   → compute_focus_scores
   → classify_tasks
 ```
+
+### 1.1. Canonical Node Ordering & Rebuild Determinism
+
+To guarantee that graph rebuilds are strictly deterministic and immune to Rust's randomized `HashMap` iteration order or non-deterministic file scan order:
+- **Canonical Sort Order**: In `GraphStore::build_internal`, the node collection is canonically sorted by node `id` (`nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id))`) at entry and immediately following ghost node discovery (where referenced IDs are also sorted).
+- **Invariance Property**: Two builds or rebuilds from byte-identical input produce byte-identical derived scores (`downstream_weight`, `criticality`, `focus_score`, `voi_value`, `urgency`, `effective_priority`) across all build entry points (`build`, `build_from_directory`, `rebuild_from_nodes`, `rebuild_from_nodes_fast`, `rebuild_from_nodes_fast_with_embeddings`, `rebuild_from_nodes_skip_similarity`).
+- **Precedence**: Follows established precedents in `build_resolution_map` (`src/graph_store.rs:3622-3635`) and `tarjan_scc` (`src/graph_store.rs:3691`).
+
 
 ---
 
