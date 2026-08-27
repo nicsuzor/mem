@@ -1355,47 +1355,44 @@ impl GraphNode {
     ///
     /// Structurally identified from:
     /// - `status == "review"` (task parked awaiting human review)
-    /// - `assignee` set to a human (case-insensitive "nic" or named human)
-    /// - tags indicating human gating (`human-approval`, `needs-nic`, `sign-off`, `signoff`,
-    ///   `decision`, `one-way-door`, `wf-human-approval`, `nic-owes`, `awaiting-nic`)
-    /// - title/label conventions (`DECISION`, `SIGN-OFF`, `Sign-off`, `Nic sign-off`, `Nic owes`)
+    /// - tags indicating human gating (`human-approval`, `decision`, `sign-off`, `signoff`,
+    ///   `one-way-door`, `wf-human-approval`)
+    /// - title/label conventions with boundary delimiters (`DECISION:`, `DECISION (`, `SIGN-OFF:`, `Sign-off - `, `Sign-off:`)
     pub fn is_human_gate(&self) -> bool {
         if let Some(ref s) = self.status {
             if s.eq_ignore_ascii_case("review") {
                 return true;
             }
         }
-        if let Some(ref a) = self.assignee {
-            if a.eq_ignore_ascii_case("nic") {
-                return true;
-            }
-        }
         for tag in &self.tags {
-            let t = tag.to_ascii_lowercase();
-            if matches!(
-                t.as_str(),
-                "human-approval"
-                    | "needs-nic"
-                    | "sign-off"
-                    | "signoff"
-                    | "decision"
-                    | "one-way-door"
-                    | "wf-human-approval"
-                    | "nic-owes"
-                    | "awaiting-nic"
-            ) {
+            let t = tag.as_str();
+            if t.eq_ignore_ascii_case("human-approval")
+                || t.eq_ignore_ascii_case("decision")
+                || t.eq_ignore_ascii_case("sign-off")
+                || t.eq_ignore_ascii_case("signoff")
+                || t.eq_ignore_ascii_case("one-way-door")
+                || t.eq_ignore_ascii_case("wf-human-approval")
+            {
                 return true;
             }
         }
-        let label_lower = self.label.to_ascii_lowercase();
-        if label_lower.starts_with("decision")
-            || label_lower.starts_with("sign-off")
-            || label_lower.starts_with("signoff")
-            || label_lower.starts_with("nic sign-off")
-            || label_lower.starts_with("nic signs off")
-            || label_lower.starts_with("nic owes")
-        {
-            return true;
+        const GATE_PREFIXES: &[&str] = &[
+            "decision:",
+            "decision (",
+            "decision - ",
+            "sign-off:",
+            "sign-off - ",
+            "sign-off (",
+            "signoff:",
+            "signoff - ",
+            "signoff (",
+        ];
+        for prefix in GATE_PREFIXES {
+            if self.label.len() >= prefix.len()
+                && self.label.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+            {
+                return true;
+            }
         }
         false
     }

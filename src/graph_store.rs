@@ -1829,27 +1829,21 @@ impl GraphStore {
             if node.is_human_gate()
                 && !completed_statuses.contains(&node.status.as_deref().unwrap_or(""))
             {
-                if candidate_ids.insert(node.id.as_str()) {
-                    candidates.push(node);
+                let is_review = node
+                    .status
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case("review"))
+                    .unwrap_or(false);
+                let is_unblocked = !self.is_blocked(&node.id);
+                if is_review || is_unblocked {
+                    if candidate_ids.insert(node.id.as_str()) {
+                        candidates.push(node);
+                    }
                 }
             }
         }
 
-        let mut scored: Vec<(&GraphNode, i64)> = candidates
-            .into_iter()
-            .map(|t| (t, t.focus_score.unwrap_or(0)))
-            .collect();
-
-        scored.sort_by(|a, b| {
-            b.1.cmp(&a.1)
-                .then_with(|| {
-                    let pa = a.0.effective_priority.unwrap_or(4);
-                    let pb = b.0.effective_priority.unwrap_or(4);
-                    pa.cmp(&pb)
-                })
-                .then_with(|| a.0.order.cmp(&b.0.order))
-                .then_with(|| a.0.id.cmp(&b.0.id))
-        });
+        Self::sort_by_focus(&mut candidates);
 
         let mut result: Vec<String> = Vec::with_capacity(max);
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1880,7 +1874,7 @@ impl GraphStore {
         }
 
         // 2. Fill remaining slots with top-scored candidates (ready tasks and human gates).
-        for (node, _) in scored {
+        for node in candidates {
             if result.len() >= max {
                 break;
             }
@@ -5683,6 +5677,168 @@ mod tests {
         assert!(
             ready_ids.contains(&"claimable-work-1"),
             "ready task must be in ready_tasks()"
+        );
+    }
+
+    #[test]
+    fn test_human_gate_false_positive_prevention() {
+        let mut fp1 = GraphNode::default();
+        fp1.label = "Decision tree refactor".to_string();
+        fp1.status = Some("ready".to_string());
+        fp1.tags = vec!["refactor".to_string(), "ml".to_string()];
+        assert!(
+            !fp1.is_human_gate(),
+            "bare prefix 'Decision ' without boundary delimiter must not match"
+        );
+
+        let mut fp2 = GraphNode::default();
+        fp2.label = "Signoff process documentation".to_string();
+        fp2.status = Some("inbox".to_string());
+        fp2.tags = vec!["docs".to_string()];
+        assert!(
+            !fp2.is_human_gate(),
+            "bare prefix 'Signoff ' without boundary delimiter must not match"
+        );
+
+        let mut fp3 = GraphNode::default();
+        fp3.label = "Update parser documentation".to_string();
+        fp3.assignee = Some("nic".to_string());
+        fp3.status = Some("ready".to_string());
+        fp3.tags = vec!["docs".to_string()];
+        assert!(
+            !fp3.is_human_gate(),
+            "personal handle in assignee without structural gate marker must not match"
+        );
+
+        // Valid structured prefixes
+        let mut g1 = GraphNode::default();
+        g1.label = "DECISION: choose database engine".to_string();
+        assert!(g1.is_human_gate(), "'DECISION:' must match");
+
+        let mut g2 = GraphNode::default();
+        g2.label = "DECISION (Team): architecture choice".to_string();
+        assert!(g2.is_human_gate(), "'DECISION (' must match");
+
+        let mut g3 = GraphNode::default();
+        g3.label = "SIGN-OFF: release v2.0".to_string();
+        assert!(g3.is_human_gate(), "'SIGN-OFF:' must match");
+
+        let mut g4 = GraphNode::default();
+        g4.label = "Sign-off - migration checklist".to_string();
+        assert!(g4.is_human_gate(), "'Sign-off - ' must match");
+
+        let mut g5 = GraphNode::default();
+        g5.label = "Signoff: production rollout".to_string();
+        assert!(g5.is_human_gate(), "'Signoff:' must match");
+
+        // Valid structural tags
+        let structural_tags = [
+            "human-approval",
+            "decision",
+            "sign-off",
+            "signoff",
+            "one-way-door",
+            "wf-human-approval",
+        ];
+        for tag in &structural_tags {
+            let mut gn = GraphNode::default();
+            gn.label = "Regular task".to_string();
+            gn.tags = vec![tag.to_string()];
+            assert!(
+                gn.is_human_gate(),
+                "structural tag '{}' must classify as human gate",
+                tag
+            );
+        }
+    }
+
+    #[test]
+    fn test_blocked_human_gate_excluded_from_focus_picks() {
+        let docs = vec![
+            make_doc_with_fields(
+                "tasks/prereq.md",
+                "Prerequisite task",
+                "task",
+                "inbox",
+                "prereq-1",
+                None,
+                &[],
+                None,
+                &[],
+            ),
+            make_doc_with_fields(
+                "tasks/blocked-gate.md",
+                "DECISION: deploy to cluster",
+                "task",
+                "queued",
+                "blocked-gate-1",
+                None,
+                &["prereq-1"],
+                None,
+                &["decision"],
+            ),
+            make_doc_with_fields(
+                "tasks/ready-work.md",
+                "Claimable work item",
+                "task",
+                "ready",
+                "ready-work-1",
+                None,
+                &[],
+                None,
+                &[],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        assert!(
+            graph.is_blocked("blocked-gate-1"),
+            "gate with unfinished prerequisite must be classified as blocked"
+        );
+        let picks = graph.focus_picks(10);
+        assert!(
+            !picks.contains(&"blocked-gate-1".to_string()),
+            "blocked human gate with unfinished dependency MUST NOT appear in focus_picks"
+        );
+        assert!(
+            picks.contains(&"ready-work-1".to_string()),
+            "unblocked ready work MUST appear in focus_picks"
+        );
+
+        // When prerequisite finishes, the human gate is unblocked and surfaces
+        let docs_resolved = vec![
+            make_doc_with_fields(
+                "tasks/prereq.md",
+                "Prerequisite task",
+                "task",
+                "done",
+                "prereq-1",
+                None,
+                &[],
+                None,
+                &[],
+            ),
+            make_doc_with_fields(
+                "tasks/blocked-gate.md",
+                "DECISION: deploy to cluster",
+                "task",
+                "queued",
+                "blocked-gate-1",
+                None,
+                &["prereq-1"],
+                None,
+                &["decision"],
+            ),
+        ];
+        let graph_resolved = GraphStore::build(&docs_resolved, Path::new("/tmp/test-pkb"));
+        assert!(
+            !graph_resolved.is_blocked("blocked-gate-1"),
+            "gate with completed dependency is unblocked"
+        );
+        let picks_resolved = graph_resolved.focus_picks(10);
+        assert!(
+            picks_resolved.contains(&"blocked-gate-1".to_string()),
+            "unblocked human gate MUST now surface in focus_picks"
         );
     }
 
