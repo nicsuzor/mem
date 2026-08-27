@@ -7,6 +7,43 @@
 
 use std::process::Command;
 
+// See tests/mcp_integration.rs for the full rationale: `Drop`-based child
+// reaping doesn't run when the harness process itself is SIGKILLed, so a
+// kernel-level PR_SET_PDEATHSIG backstop is installed on every spawned `pkb`
+// child here too.
+#[cfg(target_os = "linux")]
+trait KillOnParentDeath {
+    fn kill_on_parent_death(&mut self) -> &mut Self;
+}
+
+#[cfg(target_os = "linux")]
+impl KillOnParentDeath for Command {
+    fn kill_on_parent_death(&mut self) -> &mut Self {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            self.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        self
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+trait KillOnParentDeath {
+    fn kill_on_parent_death(&mut self) -> &mut Self;
+}
+
+#[cfg(not(target_os = "linux"))]
+impl KillOnParentDeath for Command {
+    fn kill_on_parent_death(&mut self) -> &mut Self {
+        self
+    }
+}
+
 /// Seed a temp PKB whose focus_score ordering DIVERGES from priority ordering:
 ///   - t-hi   : priority 0          → focus_score 10000
 ///   - t-mid  : priority 1          → focus_score  5000
@@ -58,6 +95,7 @@ fn ordered_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
         // --pkb-root is explicitly supplied. Set it to the same temp dir so
         // the default function doesn't abort before args are parsed.
         .env("ACA_DATA", dir.to_string_lossy().as_ref())
+        .kill_on_parent_death()
         .output()
         .expect("run pkb tasks");
     assert!(

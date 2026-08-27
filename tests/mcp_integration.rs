@@ -14,6 +14,77 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+// ── Process-lifecycle backstop ──────────────────────────────────────────
+//
+// `Drop`-based child reaping (see `impl Drop for HttpServer` below) does not
+// run when the harness process is itself killed abnormally (SIGKILL, OOM
+// kill, CI timeout that sends SIGKILL) rather than unwinding normally. Spawned
+// `pkb mcp --http` servers then get reparented to init and run forever.
+//
+// `PR_SET_PDEATHSIG` is a kernel-level backstop: it asks the kernel to send
+// SIGKILL to the child when the thread that spawned it exits, for any reason,
+// including the parent being SIGKILLed. It does NOT cover: parent processes
+// SIGKILLed via a signal to the whole process group before the child's
+// creating thread runs (fork/exec is effectively atomic for this purpose so
+// that window doesn't exist in practice), or the child being adopted by a
+// *different* thread than the one that called `spawn` (not applicable here —
+// each call site spawns and forgets synchronously). It also does not cover
+// non-Linux platforms, hence `#[cfg(unix)]` — on other unix platforms
+// (e.g. macOS) `PR_SET_PDEATHSIG` doesn't exist and this becomes a no-op below.
+#[cfg(target_os = "linux")]
+trait KillOnParentDeath {
+    fn kill_on_parent_death(&mut self) -> &mut Self;
+}
+
+#[cfg(target_os = "linux")]
+impl KillOnParentDeath for Command {
+    fn kill_on_parent_death(&mut self) -> &mut Self {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            self.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        self
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+trait KillOnParentDeath {
+    fn kill_on_parent_death(&mut self) -> &mut Self;
+}
+
+#[cfg(not(target_os = "linux"))]
+impl KillOnParentDeath for Command {
+    fn kill_on_parent_death(&mut self) -> &mut Self {
+        self
+    }
+}
+
+/// Read `/proc/<pid>/stat` and determine whether the process is alive.
+/// A bare `kill(pid, 0)` is not sufficient — it returns success for zombies.
+/// The `comm` field (2nd column) can itself contain spaces and parentheses,
+/// so the state field is located from the LAST `)` in the line, not the
+/// first `(`.
+#[cfg(target_os = "linux")]
+fn pid_is_live(pid: i32) -> bool {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let after_comm = match stat.rfind(')') {
+        Some(idx) => &stat[idx + 1..],
+        None => return false,
+    };
+    match after_comm.trim_start().chars().next() {
+        Some('Z') | None => false,
+        Some(_) => true,
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 fn pkb_binary() -> PathBuf {
@@ -116,6 +187,7 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_parent_death()
         .spawn()
         .expect("failed to spawn pkb mcp");
 
@@ -169,7 +241,9 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
 // ── HTTP/SSE helpers ─────────────────────────────────────────────────────
 
 fn spawn_http_mcp(mut cmd: Command) -> (Child, u16) {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_parent_death();
     let mut child = cmd.spawn().expect("failed to spawn MCP HTTP server");
 
     let stderr = child.stderr.take().unwrap();
@@ -465,6 +539,7 @@ fn test_stdio_stdout_purity() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_parent_death()
         .spawn()
         .expect("failed to spawn pkb mcp");
 
@@ -775,6 +850,7 @@ fn test_http_seeded_search_returns_seeded_doc() {
         .env("AOPS_OFFLINE", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_parent_death()
         .output();
 
     let output = match reindex {
@@ -911,4 +987,108 @@ fn test_http_concurrent_sessions() {
         results[0].0, results[1].0,
         "concurrent sessions got the same session ID!"
     );
+}
+
+// ── SIGKILL-of-harness backstop test ────────────────────────────────────
+//
+// Acceptance criterion: a test SIGKILLs the harness process (not the child)
+// and asserts zero surviving grandchildren. `Drop`-based cleanup (the
+// existing `impl Drop for HttpServer`) provably cannot satisfy this — no
+// destructor runs across a SIGKILL. This test re-execs the test binary as a
+// "helper" process that starts a real `HttpServer` fixture and then parks
+// forever (so the helper's own cleanup never runs either — mirroring an
+// abnormal cargo-test death), prints the grandchild's pid, and the outer
+// test SIGKILLs *that helper* — never the grandchild directly — then polls
+// for the grandchild's death via the PR_SET_PDEATHSIG backstop installed in
+// `spawn_http_mcp` above.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_grandchild_server_dies_when_harness_is_sigkilled() {
+    const HELPER_ENV: &str = "__TEST_HARNESS_HELPER";
+    const PID_MARKER: &str = "CHILD_PID=";
+
+    if std::env::var_os(HELPER_ENV).is_some() {
+        // Helper mode: start a real HttpServer fixture, announce its pid,
+        // then park forever so this process's own cleanup glue never runs.
+        let server = HttpServer::start();
+        let child_pid = server.child.as_ref().expect("child present").id();
+        println!("{PID_MARKER}{child_pid}");
+        std::io::stdout().flush().ok();
+        std::mem::forget(server);
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
+    }
+
+    let exe = std::env::current_exe().expect("current_exe");
+    let mut helper = Command::new(&exe)
+        .arg("--exact")
+        .arg("test_grandchild_server_dies_when_harness_is_sigkilled")
+        .arg("--nocapture")
+        .env(HELPER_ENV, "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn helper harness process");
+
+    let mut reader = std::io::BufReader::new(helper.stdout.take().unwrap());
+    let mut grandchild_pid: Option<i32> = None;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break, // EOF: helper exited before announcing a pid
+            Ok(_) => {
+                if let Some(rest) = line.trim().strip_prefix(PID_MARKER) {
+                    grandchild_pid = rest.parse().ok();
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let grandchild_pid = grandchild_pid
+        .unwrap_or_else(|| panic!("helper never announced a grandchild pid ({PID_MARKER}...)"));
+
+    assert!(
+        pid_is_live(grandchild_pid),
+        "grandchild pid {grandchild_pid} was not alive before the kill — test setup is broken"
+    );
+
+    // SIGKILL the HELPER (the simulated harness process). Never the
+    // grandchild directly — that would prove nothing about the backstop.
+    helper.kill().expect("SIGKILL of helper harness failed");
+    helper.wait().ok();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut still_alive = true;
+    while Instant::now() < deadline {
+        if !pid_is_live(grandchild_pid) {
+            still_alive = false;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    if still_alive {
+        // Best-effort cleanup so a failing assertion doesn't also leak the
+        // process it was testing for.
+        unsafe {
+            libc::kill(grandchild_pid, libc::SIGKILL);
+        }
+    }
+
+    assert!(
+        !still_alive,
+        "grandchild pkb process (pid {grandchild_pid}) survived SIGKILL of its parent harness — \
+         PR_SET_PDEATHSIG backstop failed"
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+#[ignore = "PR_SET_PDEATHSIG is Linux-only; this platform has no equivalent backstop to verify"]
+fn test_grandchild_server_dies_when_harness_is_sigkilled() {
+    unreachable!("ignored on non-Linux platforms — see #[ignore] reason");
 }
