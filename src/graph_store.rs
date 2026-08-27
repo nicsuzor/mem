@@ -239,6 +239,9 @@ impl GraphStore {
         opt_embeddings: Option<&HashMap<String, Vec<f32>>>,
         include_similarity: bool,
     ) -> Self {
+        // 1. Sort nodes by id for deterministic processing across all rebuild and build paths.
+        nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+
         // 2. Build lookup maps
         // Node paths may be relative — reconstruct absolute for canonicalize & link resolution.
         // Canonical paths are cached on each GraphNode so incremental rebuilds avoid the
@@ -386,8 +389,11 @@ impl GraphStore {
             }
         }
 
-        let mut ghost_nodes = Vec::with_capacity(referenced_ids.len() / 4);
-        for ref_id in referenced_ids {
+        let mut sorted_referenced_ids: Vec<String> = referenced_ids.into_iter().collect();
+        sorted_referenced_ids.sort_unstable();
+
+        let mut ghost_nodes = Vec::with_capacity(sorted_referenced_ids.len() / 4);
+        for ref_id in sorted_referenced_ids {
             let lower = ref_id.to_lowercase();
             if !id_map.contains_key(&lower) {
                 let mut ghost = GraphNode::default();
@@ -414,6 +420,7 @@ impl GraphStore {
             }
         }
         nodes.extend(ghost_nodes);
+        nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
 
         // 3. Build edges from links and frontmatter refs
         let _t_edges = std::time::Instant::now();
@@ -7648,6 +7655,261 @@ mod tests {
         let gs = GraphStore::build(&[doc1, doc2], Path::new("/tmp"));
         assert_eq!(gs.ready.len(), 2);
     }
+
+    #[test]
+    fn test_rebuild_determinism_across_entry_points() {
+        let root = Path::new("/tmp/test-pkb");
+        let empty_embeddings = HashMap::new();
+
+        // Cold build from docs in different slice orders
+        let mut fm_target = serde_json::Map::new();
+        fm_target.insert("title".to_string(), serde_json::json!("Target Goal"));
+        fm_target.insert("type".to_string(), serde_json::json!("goal"));
+        fm_target.insert("id".to_string(), serde_json::json!("target-goal"));
+        fm_target.insert("priority".to_string(), serde_json::json!(1));
+        fm_target.insert("status".to_string(), serde_json::json!("ready"));
+
+        let mut fm_contrib_a = serde_json::Map::new();
+        fm_contrib_a.insert("title".to_string(), serde_json::json!("Contributor A"));
+        fm_contrib_a.insert("type".to_string(), serde_json::json!("task"));
+        fm_contrib_a.insert("id".to_string(), serde_json::json!("contrib-a"));
+        fm_contrib_a.insert("priority".to_string(), serde_json::json!(2));
+        fm_contrib_a.insert("status".to_string(), serde_json::json!("ready"));
+        fm_contrib_a.insert("contributes_to".to_string(), serde_json::json!([{"to": "target-goal", "weight": "probable"}]));
+        fm_contrib_a.insert("blocks".to_string(), serde_json::json!(["shared-leaf"]));
+
+        let mut fm_contrib_b = serde_json::Map::new();
+        fm_contrib_b.insert("title".to_string(), serde_json::json!("Contributor B"));
+        fm_contrib_b.insert("type".to_string(), serde_json::json!("task"));
+        fm_contrib_b.insert("id".to_string(), serde_json::json!("contrib-b"));
+        fm_contrib_b.insert("priority".to_string(), serde_json::json!(3));
+        fm_contrib_b.insert("status".to_string(), serde_json::json!("ready"));
+        fm_contrib_b.insert("contributes_to".to_string(), serde_json::json!([{"to": "target-goal", "weight": "uncertain"}]));
+        fm_contrib_b.insert("soft_blocks".to_string(), serde_json::json!(["shared-leaf"]));
+
+        let mut fm_leaf = serde_json::Map::new();
+        fm_leaf.insert("title".to_string(), serde_json::json!("Shared Leaf"));
+        fm_leaf.insert("type".to_string(), serde_json::json!("task"));
+        fm_leaf.insert("id".to_string(), serde_json::json!("shared-leaf"));
+        fm_leaf.insert("priority".to_string(), serde_json::json!(0));
+        fm_leaf.insert("status".to_string(), serde_json::json!("ready"));
+        fm_leaf.insert("due".to_string(), serde_json::json!("2026-09-01"));
+        fm_leaf.insert("effort".to_string(), serde_json::json!("1d"));
+
+        let doc_target = PkbDocument {
+            path: PathBuf::from("goals/target.md"),
+            title: "Target Goal".to_string(),
+            body: String::new(),
+            doc_type: Some("goal".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_target)),
+            content_hash: "test".to_string(),
+            file_hash: "test".to_string(),
+        };
+
+        let doc_contrib_a = PkbDocument {
+            path: PathBuf::from("tasks/contrib-a.md"),
+            title: "Contributor A".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_contrib_a)),
+            content_hash: "test".to_string(),
+            file_hash: "test".to_string(),
+        };
+
+        let doc_contrib_b = PkbDocument {
+            path: PathBuf::from("tasks/contrib-b.md"),
+            title: "Contributor B".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_contrib_b)),
+            content_hash: "test".to_string(),
+            file_hash: "test".to_string(),
+        };
+
+        let doc_leaf = PkbDocument {
+            path: PathBuf::from("tasks/shared-leaf.md"),
+            title: "Shared Leaf".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_leaf)),
+            content_hash: "test".to_string(),
+            file_hash: "test".to_string(),
+        };
+
+        let docs1 = vec![doc_target.clone(), doc_contrib_a.clone(), doc_contrib_b.clone(), doc_leaf.clone()];
+        let docs2 = vec![doc_leaf.clone(), doc_contrib_b.clone(), doc_contrib_a.clone(), doc_target.clone()];
+
+        let g_cold1 = GraphStore::build(&docs1, root);
+        let g_cold2 = GraphStore::build(&docs2, root);
+
+        for (id, n1) in &g_cold1.nodes {
+            let n2 = g_cold2.nodes.get(id).expect("node must exist");
+            assert_eq!(
+                n1.downstream_weight, n2.downstream_weight,
+                "cold build: downstream_weight differs for node {id}: {} vs {}",
+                n1.downstream_weight, n2.downstream_weight
+            );
+            assert_eq!(
+                n1.criticality, n2.criticality,
+                "cold build: criticality differs for node {id}: {} vs {}",
+                n1.criticality, n2.criticality
+            );
+            assert_eq!(
+                n1.focus_score, n2.focus_score,
+                "cold build: focus_score differs for node {id}: {:?} vs {:?}",
+                n1.focus_score, n2.focus_score
+            );
+            assert_eq!(
+                n1.voi_value, n2.voi_value,
+                "cold build: voi_value differs for node {id}: {:?} vs {:?}",
+                n1.voi_value, n2.voi_value
+            );
+        }
+
+        // 1. rebuild_from_nodes_fast_with_embeddings (the live MCP server path)
+        let map_cold1 = g_cold1.nodes_cloned();
+        let map_cold2 = g_cold2.nodes_cloned();
+
+        let g1_fast_emb = GraphStore::rebuild_from_nodes_fast_with_embeddings(
+            map_cold1.clone(),
+            root,
+            &empty_embeddings,
+        );
+        let g2_fast_emb = GraphStore::rebuild_from_nodes_fast_with_embeddings(
+            map_cold2.clone(),
+            root,
+            &empty_embeddings,
+        );
+
+        for (id, n1) in &g1_fast_emb.nodes {
+            let n2 = g2_fast_emb.nodes.get(id).expect("node must exist");
+            assert_eq!(
+                n1.downstream_weight, n2.downstream_weight,
+                "rebuild_from_nodes_fast_with_embeddings: downstream_weight differs for node {id}: {} vs {}",
+                n1.downstream_weight, n2.downstream_weight
+            );
+            assert_eq!(
+                n1.criticality, n2.criticality,
+                "rebuild_from_nodes_fast_with_embeddings: criticality differs for node {id}: {} vs {}",
+                n1.criticality, n2.criticality
+            );
+            assert_eq!(
+                n1.focus_score, n2.focus_score,
+                "rebuild_from_nodes_fast_with_embeddings: focus_score differs for node {id}: {:?} vs {:?}",
+                n1.focus_score, n2.focus_score
+            );
+            assert_eq!(
+                n1.voi_value, n2.voi_value,
+                "rebuild_from_nodes_fast_with_embeddings: voi_value differs for node {id}: {:?} vs {:?}",
+                n1.voi_value, n2.voi_value
+            );
+        }
+
+        // 2. rebuild_from_nodes (full rebuild with centrality)
+        let g1_full = GraphStore::rebuild_from_nodes(map_cold1.clone(), root);
+        let g2_full = GraphStore::rebuild_from_nodes(map_cold2.clone(), root);
+
+        for (id, n1) in &g1_full.nodes {
+            let n2 = g2_full.nodes.get(id).expect("node must exist");
+            assert_eq!(
+                n1.downstream_weight, n2.downstream_weight,
+                "rebuild_from_nodes: downstream_weight differs for node {id}: {} vs {}",
+                n1.downstream_weight, n2.downstream_weight
+            );
+            assert_eq!(
+                n1.criticality, n2.criticality,
+                "rebuild_from_nodes: criticality differs for node {id}: {} vs {}",
+                n1.criticality, n2.criticality
+            );
+            assert_eq!(
+                n1.focus_score, n2.focus_score,
+                "rebuild_from_nodes: focus_score differs for node {id}: {:?} vs {:?}",
+                n1.focus_score, n2.focus_score
+            );
+            assert_eq!(
+                n1.voi_value, n2.voi_value,
+                "rebuild_from_nodes: voi_value differs for node {id}: {:?} vs {:?}",
+                n1.voi_value, n2.voi_value
+            );
+        }
+
+        // 3. rebuild_from_nodes_fast
+        let g1_fast = GraphStore::rebuild_from_nodes_fast(map_cold1.clone(), root);
+        let g2_fast = GraphStore::rebuild_from_nodes_fast(map_cold2.clone(), root);
+
+        for (id, n1) in &g1_fast.nodes {
+            let n2 = g2_fast.nodes.get(id).expect("node must exist");
+            assert_eq!(
+                n1.downstream_weight, n2.downstream_weight,
+                "rebuild_from_nodes_fast: downstream_weight differs for node {id}: {} vs {}",
+                n1.downstream_weight, n2.downstream_weight
+            );
+            assert_eq!(
+                n1.criticality, n2.criticality,
+                "rebuild_from_nodes_fast: criticality differs for node {id}: {} vs {}",
+                n1.criticality, n2.criticality
+            );
+            assert_eq!(
+                n1.focus_score, n2.focus_score,
+                "rebuild_from_nodes_fast: focus_score differs for node {id}: {:?} vs {:?}",
+                n1.focus_score, n2.focus_score
+            );
+            assert_eq!(
+                n1.voi_value, n2.voi_value,
+                "rebuild_from_nodes_fast: voi_value differs for node {id}: {:?} vs {:?}",
+                n1.voi_value, n2.voi_value
+            );
+        }
+
+        // 4. rebuild_from_nodes_skip_similarity
+        let g1_skip = GraphStore::rebuild_from_nodes_skip_similarity(map_cold1, root, vec![]);
+        let g2_skip = GraphStore::rebuild_from_nodes_skip_similarity(map_cold2, root, vec![]);
+
+        for (id, n1) in &g1_skip.nodes {
+            let n2 = g2_skip.nodes.get(id).expect("node must exist");
+            assert_eq!(
+                n1.downstream_weight, n2.downstream_weight,
+                "rebuild_from_nodes_skip_similarity: downstream_weight differs for node {id}: {} vs {}",
+                n1.downstream_weight, n2.downstream_weight
+            );
+            assert_eq!(
+                n1.criticality, n2.criticality,
+                "rebuild_from_nodes_skip_similarity: criticality differs for node {id}: {} vs {}",
+                n1.criticality, n2.criticality
+            );
+            assert_eq!(
+                n1.focus_score, n2.focus_score,
+                "rebuild_from_nodes_skip_similarity: focus_score differs for node {id}: {:?} vs {:?}",
+                n1.focus_score, n2.focus_score
+            );
+            assert_eq!(
+                n1.voi_value, n2.voi_value,
+                "rebuild_from_nodes_skip_similarity: voi_value differs for node {id}: {:?} vs {:?}",
+                n1.voi_value, n2.voi_value
+            );
+        }
+    }
 }
+
 
 
