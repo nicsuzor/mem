@@ -958,10 +958,12 @@ mod batch_finalize_tests {
             "expected 3 ready task entries; got {pre:?}"
         );
 
-        // Run a batch update that flips status to "blocked".
+        // Run a batch update that flips status to "blocked". mem_2ecf862b:
+        // a bare status="blocked" write is rejected — carry a blocker so
+        // this exercises the batch-update path, not the guard.
         let args = json!({
             "ids": task_ids,
-            "updates": { "status": "blocked" },
+            "updates": { "status": "blocked", "blocker": "test fixture: awaiting upstream" },
             "dry_run": false
         });
         let result = server.handle_batch_update(&args).expect("batch_update");
@@ -1141,7 +1143,7 @@ mod batch_finalize_tests {
             (
                 "batch_update",
                 PkbSearchServer::handle_batch_update,
-                json!({ "ids": ["t1", "t2"], "updates": { "status": "blocked" } }),
+                json!({ "ids": ["t1", "t2"], "updates": { "status": "blocked", "blocker": "dry-run cover" } }),
                 "\"dry_run\": true",
             ),
             (
@@ -1186,7 +1188,7 @@ mod batch_finalize_tests {
             (
                 "apply_consolidation_batch",
                 PkbSearchServer::handle_apply_consolidation_batch,
-                json!({ "seed_id": "t1", "updates": { "t1": { "status": "done" }, "t2": { "status": "blocked" } } }),
+                json!({ "seed_id": "t1", "updates": { "t1": { "status": "done" }, "t2": { "status": "blocked", "blocker": "dry-run cover" } } }),
                 "\"dry_run\": true",
             ),
         ];
@@ -1235,6 +1237,53 @@ mod batch_finalize_tests {
                  assertion above proved nothing about the gate"
             );
         }
+    }
+
+    // ── mem_8035b002: batch_merge must record the merge via the canonical
+    // node's own `supersedes` list, not a hand-written `superseded_by` on
+    // the merged-away source (superseded_by is a computed reverse index).
+
+    #[test]
+    fn test_batch_merge_records_supersedes_on_canonical_not_superseded_by_on_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+        let server = build_disk_server(pkb_root);
+
+        std::fs::write(
+            pkb_root.join("task-canon.md"),
+            "---\nid: task-canon\ntitle: Canonical\ntype: task\nstatus: ready\nparent: test-project\n---\n\n# Canonical\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("task-dup.md"),
+            "---\nid: task-dup\ntitle: Duplicate\ntype: task\nstatus: ready\nparent: test-project\n---\n\n# Duplicate\n",
+        )
+        .unwrap();
+        {
+            let mut graph = server.graph.write();
+            *graph = GraphStore::build_from_directory(pkb_root);
+        }
+
+        server
+            .handle_batch_merge(&json!({
+                "canonical": "task-canon",
+                "merge_ids": ["task-dup"],
+                "dry_run": false,
+            }))
+            .unwrap_or_else(|e| panic!("batch_merge failed: {e:?}"));
+
+        let canon_disk = std::fs::read_to_string(pkb_root.join("task-canon.md")).unwrap();
+        assert!(
+            canon_disk.contains("supersedes") && canon_disk.contains("task-dup"),
+            "canonical must record the merge via its own supersedes list, got:\n{canon_disk}"
+        );
+
+        let dup_disk = std::fs::read_to_string(pkb_root.join("task-dup.md")).unwrap();
+        assert!(
+            !dup_disk.contains("superseded_by"),
+            "merged-away source must NOT carry a hand-written superseded_by, got:\n{dup_disk}"
+        );
+        assert!(dup_disk.contains("status: done"));
     }
 }
 

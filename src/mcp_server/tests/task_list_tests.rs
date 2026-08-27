@@ -745,7 +745,6 @@ use super::*;
         fm_open.insert("type".to_string(), json!("task"));
         fm_open.insert("status".to_string(), json!("ready"));
         fm_open.insert("id".to_string(), json!("task-open-superseded"));
-        fm_open.insert("superseded_by".to_string(), json!("task-canonical-1"));
         let doc_open = PkbDocument {
             path: PathBuf::from("tasks/task-open-superseded.md"),
             title: "Open Superseded Task".to_string(),
@@ -767,7 +766,6 @@ use super::*;
         fm_closed.insert("type".to_string(), json!("task"));
         fm_closed.insert("status".to_string(), json!("done"));
         fm_closed.insert("id".to_string(), json!("task-closed-superseded"));
-        fm_closed.insert("superseded_by".to_string(), json!("task-canonical-2"));
         let doc_closed = PkbDocument {
             path: PathBuf::from("tasks/task-closed-superseded.md"),
             title: "Closed Superseded Task".to_string(),
@@ -804,7 +802,54 @@ use super::*;
             file_hash: "h3".to_string(),
         };
 
-        let graph = GraphStore::build(&[doc_open, doc_closed, doc_normal], root);
+        // mem_8035b002: superseded_by is a computed reverse index of
+        // `supersedes` — express the relationship on the surviving/canonical
+        // nodes instead of hand-writing `superseded_by` on the retired ones.
+        let mut fm_canon1 = serde_json::Map::new();
+        fm_canon1.insert("title".to_string(), json!("Canonical 1"));
+        fm_canon1.insert("type".to_string(), json!("task"));
+        fm_canon1.insert("status".to_string(), json!("ready"));
+        fm_canon1.insert("id".to_string(), json!("task-canonical-1"));
+        fm_canon1.insert("supersedes".to_string(), json!("task-open-superseded"));
+        let doc_canon1 = PkbDocument {
+            path: PathBuf::from("tasks/task-canonical-1.md"),
+            title: "Canonical 1".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_canon1)),
+            content_hash: "h4".to_string(),
+            file_hash: "h4".to_string(),
+        };
+        let mut fm_canon2 = serde_json::Map::new();
+        fm_canon2.insert("title".to_string(), json!("Canonical 2"));
+        fm_canon2.insert("type".to_string(), json!("task"));
+        fm_canon2.insert("status".to_string(), json!("ready"));
+        fm_canon2.insert("id".to_string(), json!("task-canonical-2"));
+        fm_canon2.insert("supersedes".to_string(), json!("task-closed-superseded"));
+        let doc_canon2 = PkbDocument {
+            path: PathBuf::from("tasks/task-canonical-2.md"),
+            title: "Canonical 2".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm_canon2)),
+            content_hash: "h5".to_string(),
+            file_hash: "h5".to_string(),
+        };
+
+        let graph = GraphStore::build(
+            &[doc_open, doc_closed, doc_normal, doc_canon1, doc_canon2],
+            root,
+        );
         let store = VectorStore::new(3);
         let embedder = Embedder::new_dummy();
         let db_path = root.join("db");
@@ -830,11 +875,17 @@ use super::*;
         );
         let t0 = &json_tasks[0];
         assert_eq!(t0.get("id").and_then(|v| v.as_str()), Some("task-open-superseded"));
-        // AC2: returned row carries its superseded_by value
+        // AC2: returned row carries its superseded_by value (now a computed
+        // list, materialised from the canonical node's `supersedes` edge).
+        let superseded_by_arr: Vec<&str> = t0
+            .get("superseded_by")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
         assert_eq!(
-            t0.get("superseded_by").and_then(|v| v.as_str()),
-            Some("task-canonical-1"),
-            "returned task row must carry superseded_by value"
+            superseded_by_arr,
+            vec!["task-canonical-1"],
+            "returned task row must carry computed superseded_by value"
         );
 
         // B. Filter has_superseded_by: true with include_done: true
@@ -850,19 +901,23 @@ use super::*;
         );
 
         // C. Filter has_superseded_by: false
-        // Must return task-normal-open (1 task)
+        // Must return every open task NOT named by a `supersedes` edge:
+        // task-normal-open plus the two canonical (superseding) nodes
+        // themselves, which are not superseded by anything.
         let res_not_superseded = server
             .handle_list_tasks(&json!({"has_superseded_by": false, "format": "json"}))
             .unwrap();
-        let normal_tasks = extract_task_objects(&res_not_superseded);
-        assert_eq!(
-            normal_tasks.len(),
-            1,
-            "has_superseded_by: false should return 1 normal task"
+        let normal_ids: Vec<String> = extract_task_objects(&res_not_superseded)
+            .iter()
+            .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        assert!(
+            normal_ids.contains(&"task-normal-open".to_string()),
+            "got: {normal_ids:?}"
         );
-        assert_eq!(
-            normal_tasks[0].get("id").and_then(|v| v.as_str()),
-            Some("task-normal-open")
+        assert!(
+            !normal_ids.contains(&"task-open-superseded".to_string()),
+            "got: {normal_ids:?}"
         );
 
         // D. Empty result set: query for non-existent condition

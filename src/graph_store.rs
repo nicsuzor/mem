@@ -688,6 +688,9 @@ impl GraphStore {
             if new_node.contributed_by.is_empty() {
                 new_node.contributed_by = old.contributed_by;
             }
+            if new_node.superseded_by.is_empty() {
+                new_node.superseded_by = old.superseded_by;
+            }
             if new_node.target_ancestors.is_empty() {
                 new_node.target_ancestors = old.target_ancestors;
             }
@@ -2185,8 +2188,8 @@ fn build_node_edges(
         }
     }
 
-    // supersedes -> Supersedes edge (this -> old memory)
-    if let Some(ref old_id_ref) = n.supersedes {
+    // supersedes -> Supersedes edge (this -> old memory), one per named target
+    for old_id_ref in &n.supersedes {
         if let Some(target_id) = graph::resolve_ref(old_id_ref, id_map, path_to_id) {
             if n.id != target_id {
                 edges.push(Edge {
@@ -2243,6 +2246,11 @@ fn compute_inverses(
     let mut children_updates: Vec<(usize, String)> = Vec::new();
     let mut subtask_updates: Vec<(usize, String)> = Vec::new();
     let mut contributed_by_updates: Vec<(usize, String)> = Vec::new();
+    // (target_idx, superseder_id) — mem_8035b002: superseded_by is computed
+    // from Supersedes edges, the same way contributed_by derives from
+    // ContributesTo, so a hand-written `superseded_by:` can never dangle or
+    // desync from the `supersedes:` edge that is its only source of truth.
+    let mut superseded_by_updates: Vec<(usize, String)> = Vec::new();
     // Resolve parent field: raw frontmatter value → actual node ID
     let mut parent_updates: Vec<(usize, String)> = Vec::new(); // (child_idx, resolved_parent_id)
 
@@ -2279,7 +2287,13 @@ fn compute_inverses(
                     contributed_by_updates.push((idx, edge.source.clone()));
                 }
             }
-            EdgeType::Link | EdgeType::Supersedes | EdgeType::SimilarTo | EdgeType::Closes => {}
+            EdgeType::Supersedes => {
+                // source supersedes target -> target is superseded by source
+                if let Some(&idx) = id_to_idx.get(&edge.target) {
+                    superseded_by_updates.push((idx, edge.source.clone()));
+                }
+            }
+            EdgeType::Link | EdgeType::SimilarTo | EdgeType::Closes => {}
         }
     }
 
@@ -2306,6 +2320,11 @@ fn compute_inverses(
     for (idx, contributor_id) in contributed_by_updates {
         if !nodes[idx].contributed_by.contains(&contributor_id) {
             nodes[idx].contributed_by.push(contributor_id);
+        }
+    }
+    for (idx, superseder_id) in superseded_by_updates {
+        if !nodes[idx].superseded_by.contains(&superseder_id) {
+            nodes[idx].superseded_by.push(superseder_id);
         }
     }
     // Resolve parent fields: replace raw frontmatter references with actual node IDs.

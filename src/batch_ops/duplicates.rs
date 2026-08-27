@@ -173,6 +173,9 @@ pub fn batch_merge(
     let best_priority = canonical.priority.unwrap_or(4);
     let mut children_to_reparent: Vec<String> = Vec::new();
     let mut backlinks_to_update: Vec<(String, String)> = Vec::new(); // (node_id, field) to repoint
+    // Source ids successfully archived — appended to the canonical node's
+    // own `supersedes` list below (mem_8035b002: superseded_by is computed).
+    let mut merged_ids_for_supersedes: Vec<String> = Vec::new();
 
     for merge_id in merge_ids {
         let node = match graph.resolve(merge_id) {
@@ -225,15 +228,13 @@ pub fn batch_merge(
             continue;
         }
 
-        // Archive merged task with superseded_by
+        // Archive merged task. `superseded_by` is never written directly
+        // (mem_8035b002) — it is a computed reverse index of the
+        // canonical's own `supersedes` list, recorded below.
         let mut updates = HashMap::new();
         updates.insert(
             "status".to_string(),
             serde_json::Value::String("done".to_string()),
-        );
-        updates.insert(
-            "superseded_by".to_string(),
-            serde_json::Value::String(canonical_id.clone()),
         );
 
         match ctx.update_task(&node.id, updates) {
@@ -247,6 +248,7 @@ pub fn batch_merge(
                     old_value: None,
                     new_value: None,
                 });
+                merged_ids_for_supersedes.push(node.id.clone());
             }
             Err(e) => {
                 summary.errors.push(TaskError {
@@ -315,6 +317,24 @@ pub fn batch_merge(
         "priority".to_string(),
         serde_json::Value::Number(final_priority.into()),
     );
+
+    if !merged_ids_for_supersedes.is_empty() {
+        let mut supersedes_vec: Vec<String> = canonical.supersedes.clone();
+        for id in &merged_ids_for_supersedes {
+            if !supersedes_vec.contains(id) {
+                supersedes_vec.push(id.clone());
+            }
+        }
+        canonical_updates.insert(
+            "supersedes".to_string(),
+            serde_json::Value::Array(
+                supersedes_vec
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+    }
 
     if let Err(e) = ctx.update_task(&canonical_id, canonical_updates) {
         summary.errors.push(TaskError {

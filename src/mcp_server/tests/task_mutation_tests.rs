@@ -1367,3 +1367,597 @@ use super::*;
         let nomatch_err = nomatch_res.unwrap_err();
         assert!(nomatch_err.message.contains("diff_application_failed"));
     }
+
+    // ── mem_2ecf862b: `status: "blocked"` is a stored-vs-computed collision
+    // unless it carries new information (a blocker/reason). A bare hand-write
+    // (no blocker, no reason) duplicates what `depends_on` + the computed
+    // `blocked` boolean already say and goes stale silently — reject it at
+    // the shared write path (document_crud::update_document), which both
+    // `update_task` and `release_task` funnel through.
+
+    #[test]
+    fn test_update_task_bare_status_blocked_is_rejected() {
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        let err = server
+            .handle_update_task(&json!({"id": "task-new", "status": "blocked"}))
+            .expect_err("bare status=blocked with no blocker/reason must be rejected");
+        assert!(
+            matches!(err.code, ErrorCode::INTERNAL_ERROR),
+            "got: {:?}",
+            err.code
+        );
+        let msg = err.message.to_lowercase();
+        assert!(
+            msg.contains("blocker") && msg.contains("reason"),
+            "error should mention blocker/reason requirement; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_update_task_status_blocked_with_blocker_is_accepted() {
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        server
+            .handle_update_task(&json!({
+                "id": "task-new",
+                "status": "blocked",
+                "blocker": "waiting on infra provisioning",
+            }))
+            .expect("status=blocked with a non-empty blocker must be accepted");
+        let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
+        assert!(disk.contains("status: blocked"));
+        assert!(disk.contains("waiting on infra provisioning"));
+    }
+
+    #[test]
+    fn test_update_task_status_blocked_reuses_already_stored_blocker() {
+        // A metadata-only patch (e.g. re-affirming status=blocked after some
+        // other field changed) must not be rejected just because THIS call
+        // didn't repeat the blocker — the one already on disk still applies.
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: blocked\nblocker: waiting on upstream\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        server
+            .handle_update_task(&json!({"id": "task-new", "priority": 1}))
+            .expect("unrelated metadata patch on an already-blocked node must not be rejected");
+        let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
+        assert!(disk.contains("status: blocked"));
+    }
+
+    #[test]
+    fn test_update_document_rejects_manual_blocked_boolean() {
+        // Pre-existing guard (mem-74b6165e) — reconfirmed still active after
+        // the mem_2ecf862b status=blocked gate was added alongside it.
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        let err = server
+            .handle_update_task(&json!({"id": "task-new", "updates": {"blocked": true}}))
+            .expect_err("manual 'blocked' boolean must be rejected");
+        assert!(err.message.to_lowercase().contains("reserved computed keyword"));
+    }
+
+    // ── mem_8a8aeb2a: release_task must persist the exact status it reports,
+    // and must persist `reason`/`blocker` to frontmatter (not just prose).
+
+    #[test]
+    fn test_release_task_reported_status_matches_persisted_status() {
+        for status in ["cancelled", "blocked", "review", "partial", "done", "merge_ready"] {
+            let (tmp, server) = build_disk_backed_server(&[(
+                "tasks/task-new.md",
+                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+            )]);
+            let mut args = json!({
+                "id": "task-new",
+                "status": status,
+                "summary": format!("Releasing as {status}."),
+            });
+            if status == "cancelled" || status == "review" || status == "partial" {
+                args["reason"] = json!("declared explicitly for this test");
+            } else if status == "blocked" {
+                args["blocker"] = json!("declared explicitly for this test");
+            }
+            if status == "done" {
+                args["completion_evidence"] = json!("evidence for this test");
+            }
+            let res = server
+                .handle_release_task(&args)
+                .unwrap_or_else(|e| panic!("release to {status} should succeed: {e:?}"));
+            let res_text: String = res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
+            let reported: serde_json::Value = serde_json::from_str(&res_text)
+                .unwrap_or_else(|_| panic!("release_task should return JSON, got: {res_text}"));
+            let reported_status = reported.get("status").and_then(|v| v.as_str()).unwrap();
+            assert_eq!(
+                reported_status, status,
+                "reported status must equal the requested status"
+            );
+
+            let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
+            assert!(
+                disk.contains(&format!("status: {status}")),
+                "status={status}: persisted frontmatter must match reported status, got:\n{disk}"
+            );
+
+            let get_res = server
+                .handle_get_task(&json!({"id": "task-new"}))
+                .expect("get_task should succeed");
+            let get_text: String = get_res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
+            let get_json: serde_json::Value = serde_json::from_str(&get_text).unwrap();
+            assert_eq!(
+                get_json
+                    .get("frontmatter")
+                    .and_then(|f| f.get("status"))
+                    .and_then(|v| v.as_str()),
+                Some(status),
+                "status={status}: get_task must read back the same status release_task reported"
+            );
+        }
+    }
+
+    #[test]
+    fn test_release_task_persists_reason_and_blocker_to_frontmatter() {
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        server
+            .handle_release_task(&json!({
+                "id": "task-new",
+                "status": "cancelled",
+                "summary": "Cancelling.",
+                "reason": "Duplicate of task-other, filed concurrently.",
+            }))
+            .expect("release to cancelled with a reason must succeed");
+        let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
+        assert!(
+            disk.contains("reason: Duplicate of task-other, filed concurrently."),
+            "reason must be persisted to frontmatter, not just prose evidence, got:\n{disk}"
+        );
+
+        let (tmp2, server2) = build_disk_backed_server(&[(
+            "tasks/task-blk.md",
+            "---\nid: task-blk\ntitle: Blk task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Blk task\n",
+        )]);
+        server2
+            .handle_release_task(&json!({
+                "id": "task-blk",
+                "status": "blocked",
+                "summary": "Blocked.",
+                "blocker": "waiting on external API access",
+            }))
+            .expect("release to blocked with a blocker must succeed");
+        let disk2 = std::fs::read_to_string(tmp2.path().join("tasks/task-blk.md")).unwrap();
+        assert!(
+            disk2.contains("blocker: waiting on external API access"),
+            "blocker must be persisted to frontmatter, not just prose evidence, got:\n{disk2}"
+        );
+    }
+
+    // ── mem_e6245fc2: list_tasks(status=<S>) must filter strictly on the
+    // node's stored frontmatter status, never a computed set.
+
+    #[test]
+    fn test_list_tasks_status_blocked_excludes_stored_ready_with_computed_block() {
+        // task-d63bfe83-shaped fixture: stored status "ready", but has an
+        // unmet dependency so the computed `blocked` boolean is true.
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-dep.md",
+                "---\nid: task-dep\ntitle: Dependency\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Dependency\n",
+            ),
+            (
+                "tasks/task-shadow.md",
+                "---\nid: task-shadow\ntitle: Shadow\ntype: task\nstatus: ready\ndepends_on: [task-dep]\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Shadow\n",
+            ),
+        ]);
+        // Sanity: the computed `blocked` flag IS true for task-shadow.
+        let ready_list = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "json", "include_subtasks": true}))
+            .unwrap();
+        let ready_objs = extract_task_objects(&ready_list);
+        let shadow = ready_objs
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-shadow"))
+            .expect("stored-ready task-shadow must appear under status=ready");
+        assert_eq!(shadow.get("blocked").and_then(|v| v.as_bool()), Some(true));
+
+        // The bug: status="blocked" must NOT match task-shadow just because
+        // its computed `blocked` flag is true — its stored status is "ready".
+        let blocked_list = server
+            .handle_list_tasks(&json!({"status": "blocked", "format": "json"}))
+            .unwrap();
+        let blocked_ids: Vec<String> = extract_task_objects(&blocked_list)
+            .iter()
+            .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        assert!(
+            !blocked_ids.contains(&"task-shadow".to_string()),
+            "status=\"blocked\" must not admit a stored-ready node just because its \
+             computed blocked flag is true; got: {blocked_ids:?}"
+        );
+    }
+
+    #[test]
+    fn test_list_tasks_status_ready_excludes_stored_inbox_and_queued() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-ready.md",
+                "---\nid: task-ready\ntitle: Ready\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Ready\n",
+            ),
+            (
+                "tasks/task-inbox.md",
+                "---\nid: task-inbox\ntitle: Inbox\ntype: task\nstatus: inbox\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Inbox\n",
+            ),
+            (
+                "tasks/task-queued.md",
+                "---\nid: task-queued\ntitle: Queued\ntype: task\nstatus: queued\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Queued\n",
+            ),
+        ]);
+        let result = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+            .unwrap();
+        let ids: Vec<String> = extract_task_objects(&result)
+            .iter()
+            .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        assert!(ids.contains(&"task-ready".to_string()), "got: {ids:?}");
+        assert!(
+            !ids.contains(&"task-inbox".to_string()),
+            "status=\"ready\" must not admit stored inbox; got: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"task-queued".to_string()),
+            "status=\"ready\" must not admit stored queued; got: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn test_list_tasks_status_archived_is_rejected_not_aliased_to_done() {
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-done.md",
+            "---\nid: task-done\ntitle: Done\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Done\n",
+        )]);
+        let err = server
+            .handle_list_tasks(&json!({"status": "archived", "format": "json"}))
+            .expect_err(
+                "status=\"archived\" is not a supported stored value and must be rejected, \
+                 not silently aliased to the done set",
+            );
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "got: {:?}",
+            err.code
+        );
+    }
+
+    #[test]
+    fn test_list_tasks_per_status_totals_disjoint_and_sum_correctly() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-r.md",
+                "---\nid: task-r\ntitle: R\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# R\n",
+            ),
+            (
+                "tasks/task-q.md",
+                "---\nid: task-q\ntitle: Q\ntype: task\nstatus: queued\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Q\n",
+            ),
+            (
+                "tasks/task-ip.md",
+                "---\nid: task-ip\ntitle: IP\ntype: task\nstatus: in_progress\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# IP\n",
+            ),
+            (
+                "tasks/task-b.md",
+                "---\nid: task-b\ntitle: B\ntype: task\nstatus: blocked\nblocker: x\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# B\n",
+            ),
+        ]);
+        let mut total = 0usize;
+        for status in ["ready", "queued", "in_progress", "blocked", "review"] {
+            let result = server
+                .handle_list_tasks(&json!({"status": status, "format": "json"}))
+                .unwrap();
+            total += extract_task_objects(&result).len();
+        }
+        assert_eq!(
+            total, 4,
+            "disjoint per-status totals across the 5-leg spine must sum to exactly the \
+             4 fixture tasks stored under those statuses (no overlap, no leak)"
+        );
+    }
+
+    // ── mem_8035b002: supersedes/superseded_by referential integrity ──
+
+    #[test]
+    fn test_update_task_rejects_dangling_supersedes_target() {
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        let err = server
+            .handle_update_task(&json!({"id": "task-new", "updates": {"supersedes": "task-does-not-exist"}}))
+            .expect_err("a supersedes target that does not resolve must be rejected");
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "got: {:?}",
+            err.code
+        );
+        assert!(
+            err.message.contains("task-does-not-exist"),
+            "error should name the unresolved target; got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_update_task_accepts_supersedes_with_existing_target() {
+        let (tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-new.md",
+                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+            ),
+            (
+                "tasks/task-old.md",
+                "---\nid: task-old\ntitle: Old task\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Old task\n",
+            ),
+        ]);
+        server
+            .handle_update_task(&json!({"id": "task-new", "updates": {"supersedes": "task-old"}}))
+            .expect("a supersedes target that resolves must be accepted");
+        let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
+        assert!(disk.contains("supersedes"));
+        assert!(disk.contains("task-old"));
+    }
+
+    #[test]
+    fn test_update_task_rejects_manual_superseded_by_write() {
+        // superseded_by is a computed reverse index of supersedes — never a
+        // second hand-written field (mem_8035b002, mirrors mem-74b6165e's
+        // pre-existing 'blocked' guard).
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        let err = server
+            .handle_update_task(&json!({"id": "task-new", "updates": {"superseded_by": "task-other"}}))
+            .expect_err("manual 'superseded_by' write must be rejected");
+        assert!(
+            err.message.to_lowercase().contains("reserved computed keyword"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_supersedes_comma_joined_string_form_parses_as_multiple_targets() {
+        // The cited defect: `supersedes: "id1,id2,id3"` inside a single quoted
+        // scalar must not be stored/read as one id with commas in it — split
+        // via the same parse_string_array convention already used by
+        // depends_on/soft_depends_on/etc.
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-new.md",
+                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\nsupersedes: \"task-old-1,task-old-2\"\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+            ),
+            (
+                "tasks/task-old-1.md",
+                "---\nid: task-old-1\ntitle: Old 1\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Old 1\n",
+            ),
+            (
+                "tasks/task-old-2.md",
+                "---\nid: task-old-2\ntitle: Old 2\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Old 2\n",
+            ),
+        ]);
+        // Both old tasks must show task-new in their computed superseded_by.
+        for old_id in ["task-old-1", "task-old-2"] {
+            let res = server
+                .handle_list_tasks(&json!({
+                    "has_superseded_by": true,
+                    "include_done": true,
+                    "format": "json"
+                }))
+                .unwrap();
+            let objs = extract_task_objects(&res);
+            let row = objs
+                .iter()
+                .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(old_id))
+                .unwrap_or_else(|| panic!("{old_id} should be in has_superseded_by=true set, got {objs:?}"));
+            let arr: Vec<&str> = row
+                .get("superseded_by")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            assert_eq!(arr, vec!["task-new"], "for {old_id}, got {arr:?}");
+        }
+    }
+
+    #[test]
+    fn test_merge_node_records_supersedes_on_canonical_not_superseded_by_on_source() {
+        let (tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-canon.md",
+                "---\nid: task-canon\ntitle: Canonical\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Canonical\n",
+            ),
+            (
+                "tasks/task-dup.md",
+                "---\nid: task-dup\ntitle: Duplicate\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Duplicate\n",
+            ),
+        ]);
+        server
+            .handle_merge_node(&json!({
+                "canonical_id": "task-canon",
+                "source_ids": ["task-dup"],
+                "dry_run": false,
+            }))
+            .expect("merge_node should succeed");
+
+        let canon_disk = std::fs::read_to_string(tmp.path().join("tasks/task-canon.md")).unwrap();
+        assert!(
+            canon_disk.contains("supersedes"),
+            "canonical node must record the merge via its own supersedes list, got:\n{canon_disk}"
+        );
+        let dup_disk = std::fs::read_to_string(tmp.path().join("tasks/task-dup.md")).unwrap();
+        assert!(
+            !dup_disk.contains("superseded_by"),
+            "source node must NOT carry a hand-written superseded_by, got:\n{dup_disk}"
+        );
+        assert!(dup_disk.contains("status: done"));
+
+        // The reverse index must resolve via the graph (computed, not stored).
+        let res = server
+            .handle_list_tasks(&json!({"has_superseded_by": true, "include_done": true, "format": "json"}))
+            .unwrap();
+        let objs = extract_task_objects(&res);
+        let row = objs
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-dup"))
+            .expect("task-dup should show up with computed superseded_by");
+        let arr: Vec<&str> = row
+            .get("superseded_by")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(arr, vec!["task-canon"]);
+    }
+
+    // ── mem_45c5d3c9: `update_body` is a read-modify-write with no CAS by
+    // default; PR #492 added an *optional* `expected_modified` precondition.
+    // Reproduce both the fixed path (CAS supplied → stale write rejected,
+    // content preserved) and the still-reachable gap (CAS omitted → silent
+    // last-write-wins), matching the git-forensics-verified 6208→4597→5147
+    // clobber this defect was filed against.
+
+    #[test]
+    fn test_update_body_concurrent_writers_stale_write_rejected_with_cas() {
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-race.md",
+            "---\nid: task-race\ntitle: Race\ntype: task\nstatus: ready\nmodified: '2026-08-18T22:50:03Z'\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nOriginal body.\n",
+        )]);
+        let path = tmp.path().join("tasks/task-race.md");
+
+        // Both "writers" read the same snapshot (modified=T0).
+        let t0 = "2026-08-18T22:50:03Z";
+
+        // Writer B (the appender in the real incident) writes first and wins.
+        server
+            .handle_update_body(&json!({
+                "id": "task-race",
+                "new_body": "Original body.\n\nWriter B's trailer.",
+                "expected_modified": t0,
+            }))
+            .expect("writer B's write against a fresh snapshot must succeed");
+        let after_b = std::fs::read_to_string(&path).unwrap();
+        assert!(after_b.contains("Writer B's trailer."));
+
+        // Writer A (the "condensing" edit in the incident) still holds the
+        // stale T0 snapshot and must be rejected, not silently overwrite B.
+        let err = server
+            .handle_update_body(&json!({
+                "id": "task-race",
+                "new_body": "Original body, condensed by writer A.",
+                "expected_modified": t0,
+            }))
+            .expect_err("a stale snapshot must be rejected, not silently applied");
+        assert_eq!(
+            err.data.as_ref().and_then(|d| d.get("error_type")).and_then(|v| v.as_str()),
+            Some("stale_write"),
+            "failure must be specifically distinguishable as a stale write, got: {err:?}"
+        );
+
+        // Writer B's content must survive on disk — the whole point of the guard.
+        let final_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            final_disk.contains("Writer B's trailer."),
+            "writer A's stale write must not have destroyed writer B's content, got:\n{final_disk}"
+        );
+    }
+
+    #[test]
+    fn test_update_body_without_expected_modified_still_last_write_wins() {
+        // Documents the residual, deliberately-unresolved gap: `expected_modified`
+        // is optional (PR #492), so a caller that omits it still silently
+        // clobbers a concurrent writer's content, unconditionally.
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-race2.md",
+            "---\nid: task-race2\ntitle: Race2\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nOriginal body.\n",
+        )]);
+        let path = tmp.path().join("tasks/task-race2.md");
+
+        server
+            .handle_update_body(&json!({
+                "id": "task-race2",
+                "new_body": "Original body.\n\nWriter B's trailer.",
+            }))
+            .expect("writer B's write must succeed");
+
+        // Writer A, with no expected_modified, clobbers B's write unconditionally.
+        server
+            .handle_update_body(&json!({
+                "id": "task-race2",
+                "new_body": "Original body, condensed by writer A.",
+            }))
+            .expect("writer A's write without a CAS token is still accepted (known gap)");
+
+        let final_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !final_disk.contains("Writer B's trailer."),
+            "documents the known gap: omitting expected_modified still silently \
+             destroys a concurrent writer's content"
+        );
+    }
+
+    // ── aops_81bbdd77: `since=`/`before=` compare the UTC calendar date of
+    // `modified`, not a local one. Pin that explicitly: a task modified late
+    // in the UTC day (which is still "yesterday" in a UTC+ timezone at local
+    // morning) must be excluded by since=<the UTC date + 1>, matching the
+    // documented UTC semantics rather than silently using local dates.
+
+    #[test]
+    fn test_list_tasks_since_before_compare_utc_calendar_date_of_modified() {
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-late-utc.md",
+            "---\nid: task-late-utc\ntitle: Late UTC\ntype: task\nstatus: ready\nmodified: '2026-08-17T23:00:00Z'\ncreated: 2026-08-17T23:00:00+00:00\n---\n\n# Late UTC\n",
+        )]);
+
+        // since=2026-08-17 (the UTC date) must include it.
+        let res = server
+            .handle_list_tasks(&json!({"since": "2026-08-17", "format": "json"}))
+            .unwrap();
+        let ids: Vec<String> = extract_task_objects(&res)
+            .iter()
+            .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        assert!(
+            ids.contains(&"task-late-utc".to_string()),
+            "since=2026-08-17 (the UTC date of modified) must include the task, got {ids:?}"
+        );
+
+        // since=2026-08-18 (one day past the UTC date) must exclude it, even
+        // though 2026-08-17T23:00:00Z is already 2026-08-18 local in any
+        // timezone ahead of UTC (e.g. Brisbane, UTC+10) — the comparison is
+        // against the UTC date, documented explicitly in the tool schema.
+        let res2 = server
+            .handle_list_tasks(&json!({"since": "2026-08-18", "format": "json"}))
+            .unwrap();
+        let ids2: Vec<String> = extract_task_objects(&res2)
+            .iter()
+            .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        assert!(
+            !ids2.contains(&"task-late-utc".to_string()),
+            "since=2026-08-18 must exclude a task whose UTC modified date is still 2026-08-17, got {ids2:?}"
+        );
+    }

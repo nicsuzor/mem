@@ -786,19 +786,31 @@ fn check_frontmatter(
             }
         }
 
-        // Single-value reference fields: supersedes, superseded_by
-        for key in &["supersedes", "superseded_by"] {
-            if let Some(ref_id) = fm.get(*key).and_then(|v| v.as_str()) {
-                if !known_ids.contains(ref_id) {
-                    diags.push(Diagnostic {
-                        severity: Severity::Warning,
-                        rule: "ref-broken-dep",
-                        message: format!("{} reference '{}' not found in PKB", key, ref_id),
-                        line: None,
-                        fixable: false,
-                    });
-                }
+        // `supersedes` accepts a scalar, comma-joined string, or YAML
+        // sequence (mem_8035b002) — check every named target, not just a
+        // bare scalar.
+        for ref_id in crate::graph::parse_string_array(&serde_json::Value::Object(fm.clone()), "supersedes") {
+            if !known_ids.contains(ref_id.as_str()) {
+                diags.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule: "ref-broken-dep",
+                    message: format!("supersedes reference '{}' not found in PKB", ref_id),
+                    line: None,
+                    fixable: false,
+                });
             }
+        }
+        // `superseded_by` is a reserved computed keyword going forward
+        // (mem_8035b002) — a hand-written value in legacy data is itself a
+        // lint issue, separate from whether it happens to resolve.
+        if fm.contains_key("superseded_by") {
+            diags.push(Diagnostic {
+                severity: Severity::Warning,
+                rule: "superseded-by-hand-written",
+                message: "'superseded_by' is a computed reverse index of 'supersedes' and should not be hand-written; set 'supersedes' on the superseding node instead".to_string(),
+                line: None,
+                fixable: false,
+            });
         }
     }
 
