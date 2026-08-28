@@ -258,13 +258,13 @@ fn test_ac7_concurrent_two_writers_on_same_node() {
         let env_clone = env_arc.clone();
         let sc = success_count.clone();
         let h = thread::spawn(move || {
-            let priority = (thread_idx + 1) as i64;
+            let effort = format!("{}d", thread_idx + 1);
             let res = env_clone.server.dispatch_tool_sync(
                 "update_task",
                 &json!({
                     "id": task_id,
                     "updates": {
-                        "priority": priority,
+                        "effort": effort,
                     }
                 }),
             );
@@ -287,8 +287,8 @@ fn test_ac7_concurrent_two_writers_on_same_node() {
 
     // Read back final state on disk
     let doc_final = mem::pkb::parse_file_relative(&task_path, &env_arc.pkb_root).expect("task parses");
-    let prio = doc_final.frontmatter.as_ref().unwrap()["priority"].as_i64().unwrap();
-    assert!(prio == 1 || prio == 2, "Final priority must be one of the two written values");
+    let effort = doc_final.frontmatter.as_ref().unwrap()["effort"].as_str().unwrap();
+    assert!(effort == "1d" || effort == "2d", "Final effort must be one of the two written values");
 
     // Verify index state matches
     let index_entry = env_arc.server.store_for_test().read().get_entry(task_id).cloned().expect("in index");
