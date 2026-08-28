@@ -1,5 +1,6 @@
 use super::*;
 
+    #[test]
     fn test_partial_status_release_and_list_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -1424,7 +1425,7 @@ use super::*;
             "---\nid: task-new\ntitle: New task\ntype: task\nstatus: blocked\nblocker: waiting on upstream\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
         )]);
         server
-            .handle_update_task(&json!({"id": "task-new", "priority": 1}))
+            .handle_update_task(&json!({"id": "task-new", "tags": ["backend"]}))
             .expect("unrelated metadata patch on an already-blocked node must not be rejected");
         let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
         assert!(disk.contains("status: blocked"));
