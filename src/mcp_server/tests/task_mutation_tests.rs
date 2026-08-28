@@ -763,6 +763,29 @@ use super::*;
             );
     }
 
+    #[test]
+    fn test_template_child_does_not_block_parent_completion() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/parent-task.md",
+                "---\nid: parent-task\ntitle: Parent Task\ntype: task\nstatus: ready\n---\n\n# Parent Task\n",
+            ),
+            (
+                "tasks/child-template.md",
+                "---\nid: child-template\ntitle: Child Template\ntype: template\nstatus: ready\nparent: parent-task\n---\n\n# Child Template\n",
+            ),
+        ]);
+
+        // Completing parent-task must succeed despite child-template being open,
+        // because templates are perpetual definitions excluded from open_descendants.
+        server
+            .handle_complete_task(&json!({
+                "id": "parent-task",
+                "completion_evidence": "work is finished; template child is a perpetual definition"
+            }))
+            .expect("complete_task(parent-task) must succeed with a template child");
+    }
+
     // ── Mutation neighborhood (specs/mutation-neighborhood.md) ────────────────
 
     #[test]
