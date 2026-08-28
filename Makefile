@@ -8,7 +8,7 @@ TARGET_WIN    = x86_64-pc-windows-gnullvm
 RELEASE_DIR   = target/release
 MACOS_DIR     = target/$(TARGET_MACOS)/release
 WIN_DIR       = target/$(TARGET_WIN)/release
-BINS          = pkb
+BINS          = pkb pkb-excalidraw
 VERSION       = $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
 # macOS SDK sysroot with framework stubs (needed for cross-compile)

@@ -2,8 +2,8 @@
 
 **Target Audience**: LLM Coding Agents, Agent Harnesses, and Autonomous Assistants.  
 **Canonical Spec**: [`specs/excalidraw-tooling.md`](file:///workspace/specs/excalidraw-tooling.md)  
-**Binary Implementation**: [`src/bin/excalidraw_view.rs`](file:///workspace/src/bin/excalidraw_view.rs)  
-**Integration Tests**: [`tests/excalidraw_view_test.rs`](file:///workspace/tests/excalidraw_view_test.rs)
+**Binary Implementation**: [`src/bin/pkb_excalidraw.rs`](file:///workspace/src/bin/pkb_excalidraw.rs)  
+**Integration Tests**: [`tests/pkb_excalidraw_test.rs`](file:///workspace/tests/pkb_excalidraw_test.rs)
 
 ---
 
@@ -11,11 +11,11 @@
 
 > [!CAUTION]
 > **NEVER read, edit, or write raw `.excalidraw` JSON directly.**  
-> Always interact with whiteboard files exclusively through the `excalidraw-view` CLI.
+> Always interact with whiteboard files exclusively through the `pkb-excalidraw` CLI.
 
 ### Why Direct JSON Manipulation Fails
 
-| Problem | Raw JSON Editing | `excalidraw-view` CLI |
+| Problem | Raw JSON Editing | `pkb-excalidraw` CLI |
 | :--- | :--- | :--- |
 | **Token Consumption** | **35,000 – 60,000 tokens** per document read/write. | **50 – 250 tokens** via dense projection tables. |
 | **Index Ordering** | Fractional base-62 index keys desynchronize with array order, causing Excalidraw frontend crashes. | Monotonic base-62 index minting & auto-sorting on atomic save. |
@@ -39,7 +39,7 @@ graph TD
 
 ### Step 1: High-Level Orientation (`summary`)
 ```bash
-excalidraw-view diagram.excalidraw summary
+pkb-excalidraw diagram.excalidraw summary
 ```
 *Output (~30 tokens)*:
 ```text
@@ -52,7 +52,7 @@ array order == index order: True
 
 ### Step 2: Dense Layout Scan (`map`)
 ```bash
-excalidraw-view diagram.excalidraw map
+pkb-excalidraw diagram.excalidraw map
 ```
 *Output (~80 tokens)*:
 ```text
@@ -68,16 +68,16 @@ t1	text	100,120	Production Ingress Architecture
 ### Step 3: Logical Node & Edge Filtering (`nodes` / `edges`)
 - `nodes`: Prints only structural shapes with labels and semantic roles (folds bound text into the node):
   ```bash
-  excalidraw-view diagram.excalidraw nodes
+  pkb-excalidraw diagram.excalidraw nodes
   ```
 - `edges` (or `arrows`): Prints only directed arrow connections:
   ```bash
-  excalidraw-view diagram.excalidraw edges
+  pkb-excalidraw diagram.excalidraw edges
   ```
 
 ### Step 4: Targeted Inspection (`inspect <id>`)
 ```bash
-excalidraw-view diagram.excalidraw inspect r2
+pkb-excalidraw diagram.excalidraw inspect r2
 ```
 *Output (~40 tokens)*:
 ```text
@@ -97,7 +97,7 @@ outbound: [a2]
 When a user modifies a diagram in the Excalidraw UI, standard `git diff` produces hundreds of noisy coordinate diffs. Always run `struct-diff` to extract the pure semantic DSL:
 
 ```bash
-excalidraw-view diagram.excalidraw struct-diff diagram_edited.excalidraw
+pkb-excalidraw diagram.excalidraw struct-diff diagram_edited.excalidraw
 ```
 
 ### Interpreting the Diff DSL
@@ -131,31 +131,31 @@ excalidraw-view diagram.excalidraw struct-diff diagram_edited.excalidraw
 #### Adding Nodes and Annotations
 ```bash
 # Add a rectangle with centered text and role
-excalidraw-view canvas.excalidraw add-node --type rectangle --text "Payment Service" --at 400,200 --role info
+pkb-excalidraw canvas.excalidraw add-node --type rectangle --text "Payment Service" --at 400,200 --role info
 
 # Add free-floating title text
-excalidraw-view canvas.excalidraw add-text --text "System Architecture v2" --at 100,50 --font-size 24
+pkb-excalidraw canvas.excalidraw add-text --text "System Architecture v2" --at 100,50 --font-size 24
 ```
 
 #### Connecting Nodes
 ```bash
 # Connect two nodes with a labeled arrow
-excalidraw-view canvas.excalidraw connect --from node_auth --to node_db --label "Read / Write"
+pkb-excalidraw canvas.excalidraw connect --from node_auth --to node_db --label "Read / Write"
 ```
 
 #### Updating & Fitting Text
 ```bash
 # Set new text and automatically resize the container around its center point
-excalidraw-view canvas.excalidraw fit node_auth "Auth Service (Cluster Active)"
+pkb-excalidraw canvas.excalidraw fit node_auth "Auth Service (Cluster Active)"
 ```
 
 #### Moving & Deleting
 ```bash
 # Shift a node and dynamically adjust connected arrows
-excalidraw-view canvas.excalidraw move-elem node_db --by 100,0
+pkb-excalidraw canvas.excalidraw move-elem node_db --by 100,0
 
 # Cleanly delete a node and cascade-delete connected arrows
-excalidraw-view canvas.excalidraw delete-elem old_node --cascade-arrows
+pkb-excalidraw canvas.excalidraw delete-elem old_node --cascade-arrows
 ```
 
 ---
@@ -179,7 +179,7 @@ For multi-step modifications, use `batch` with stdin or a `.json` file for atomi
 ```
 *Run via*:
 ```bash
-excalidraw-view canvas.excalidraw batch - <<'EOF'
+pkb-excalidraw canvas.excalidraw batch - <<'EOF'
 [ ... ]
 EOF
 ```
@@ -224,11 +224,11 @@ graph LR
 
 ```bash
 # 1. Update text on Node A (expands by 60px: 30px left, 30px right)
-excalidraw-view canvas.excalidraw fit nodeA "Authentication & Token Issuer Service"
+pkb-excalidraw canvas.excalidraw fit nodeA "Authentication & Token Issuer Service"
 
 # 2. Shift downstream Node B and Node C to restore 80px gap
-excalidraw-view canvas.excalidraw move-elem nodeB --by 30,0
-excalidraw-view canvas.excalidraw move-elem nodeC --by 30,0
+pkb-excalidraw canvas.excalidraw move-elem nodeB --by 30,0
+pkb-excalidraw canvas.excalidraw move-elem nodeC --by 30,0
 ```
 
 ---
@@ -275,7 +275,7 @@ To reuse pre-built components from an `.excalidrawlib` library file:
 
 ### Step 1: Inspect the Library
 ```bash
-excalidraw-view cloud-icons.excalidrawlib lib
+pkb-excalidraw cloud-icons.excalidrawlib lib
 ```
 *Output*:
 ```text
@@ -288,10 +288,10 @@ excalidraw-view cloud-icons.excalidrawlib lib
 ### Step 2: Get Target Max Index & Extract Item
 ```bash
 # 1. Get max index from target document
-MAX_IDX=$(excalidraw-view canvas.excalidraw summary | grep "max index" | awk '{print $3}')
+MAX_IDX=$(pkb-excalidraw canvas.excalidraw summary | grep "max index" | awk '{print $3}')
 
 # 2. Extract item #1, minting new unique IDs and indices after $MAX_IDX
-excalidraw-view cloud-icons.excalidrawlib item #1 --after "$MAX_IDX" --at 450,200 > /tmp/imported_item.json
+pkb-excalidraw cloud-icons.excalidrawlib item #1 --after "$MAX_IDX" --at 450,200 > /tmp/imported_item.json
 ```
 
 ### Step 3: Append Directly or Batch
@@ -319,7 +319,7 @@ graph TD
 
 ### Gate 1: Structural Integrity (`check`)
 ```bash
-excalidraw-view canvas.excalidraw check
+pkb-excalidraw canvas.excalidraw check
 ```
 - **Error**: `arrow a1 is half-bound: startBinding=r1, endBinding=none`
   - *Repair*: Connect the other end via `connect` or remove `startBinding` if decorative.
@@ -328,24 +328,24 @@ excalidraw-view canvas.excalidraw check
 
 ### Gate 2: Element Overlap Auditing (`overlap`)
 ```bash
-excalidraw-view canvas.excalidraw overlap
+pkb-excalidraw canvas.excalidraw overlap
 ```
 - **Error**: `svc1 (Auth Service) overlaps with svc2 (Database) [200,100 160x60 vs 300,100 160x60]`
   - *Analysis*: Overlap of $60\text{ px}$ horizontally ($200 + 160 = 360 > 300$).
   - *Repair*: Move `svc2` to $X \ge 420$:
     ```bash
-    excalidraw-view canvas.excalidraw move-elem svc2 --by 120,0
+    pkb-excalidraw canvas.excalidraw move-elem svc2 --by 120,0
     ```
 
 ### Gate 3: Arrow Occlusion Auditing (`arrows-check`)
 ```bash
-excalidraw-view canvas.excalidraw arrows-check
+pkb-excalidraw canvas.excalidraw arrows-check
 ```
 - **Error**: `arrow a1 cuts through box gw (API Gateway)`
   - *Analysis*: Straight-line arrow passes directly across the bounding box of intermediate node `gw`.
   - *Repair*: Shift the intermediate box `gw` vertically out of the direct line of sight:
     ```bash
-    excalidraw-view canvas.excalidraw move-elem gw --by 0,100
+    pkb-excalidraw canvas.excalidraw move-elem gw --by 0,100
     ```
 
 ---
@@ -355,7 +355,7 @@ excalidraw-view canvas.excalidraw arrows-check
 > [!CAUTION]
 > Violating any of these rules will cause immediate layout corruption or validation failure.
 
-1. ❌ **NEVER write raw JSON files directly.** Always invoke `excalidraw-view` or `batch`.
+1. ❌ **NEVER write raw JSON files directly.** Always invoke `pkb-excalidraw` or `batch`.
 2. ❌ **NEVER place nodes with overlapping coordinates.** Always compute $(X, Y)$ using standard box width ($160\text{ px}$) plus gap ($80\text{ px}$).
 3. ❌ **NEVER leave half-bound arrows.** If an arrow is connected, both `startBinding` and `endBinding` must be valid nodes.
 4. ❌ **NEVER edit text without testing dimensions.** Longer strings expand containers; always run `overlap` after `set-text`/`fit`.
@@ -368,15 +368,15 @@ excalidraw-view canvas.excalidraw arrows-check
 
 | Intent | Command / Syntax |
 | :--- | :--- |
-| **Get Scene Summary** | `excalidraw-view scene.excalidraw summary` |
-| **Inspect All Elements** | `excalidraw-view scene.excalidraw map` |
-| **Inspect Single Node** | `excalidraw-view scene.excalidraw inspect <id>` |
-| **Compare Revisions** | `excalidraw-view old.excalidraw struct-diff new.excalidraw` |
-| **Add New Node** | `excalidraw-view scene.excalidraw add-node --type rectangle --text "Name" --at X,Y --role info` |
-| **Connect Two Nodes** | `excalidraw-view scene.excalidraw connect --from idA --to idB --label "Label"` |
-| **Update Node Text** | `excalidraw-view scene.excalidraw fit <id> "New Long Text"` |
-| **Translate Node** | `excalidraw-view scene.excalidraw move-elem <id> --by DX,DY` |
-| **Delete Node** | `excalidraw-view scene.excalidraw delete-elem <id> --cascade-arrows` |
-| **Execute Transaction** | `excalidraw-view scene.excalidraw batch changes.json` (or `batch -`) |
-| **Apply Standard Theme**| `excalidraw-view scene.excalidraw theme apply retro-terminal --all` |
-| **Verify Everything** | `excalidraw-view scene.excalidraw check && excalidraw-view scene.excalidraw overlap && excalidraw-view scene.excalidraw arrows-check` |
+| **Get Scene Summary** | `pkb-excalidraw scene.excalidraw summary` |
+| **Inspect All Elements** | `pkb-excalidraw scene.excalidraw map` |
+| **Inspect Single Node** | `pkb-excalidraw scene.excalidraw inspect <id>` |
+| **Compare Revisions** | `pkb-excalidraw old.excalidraw struct-diff new.excalidraw` |
+| **Add New Node** | `pkb-excalidraw scene.excalidraw add-node --type rectangle --text "Name" --at X,Y --role info` |
+| **Connect Two Nodes** | `pkb-excalidraw scene.excalidraw connect --from idA --to idB --label "Label"` |
+| **Update Node Text** | `pkb-excalidraw scene.excalidraw fit <id> "New Long Text"` |
+| **Translate Node** | `pkb-excalidraw scene.excalidraw move-elem <id> --by DX,DY` |
+| **Delete Node** | `pkb-excalidraw scene.excalidraw delete-elem <id> --cascade-arrows` |
+| **Execute Transaction** | `pkb-excalidraw scene.excalidraw batch changes.json` (or `batch -`) |
+| **Apply Standard Theme**| `pkb-excalidraw scene.excalidraw theme apply retro-terminal --all` |
+| **Verify Everything** | `pkb-excalidraw scene.excalidraw check && pkb-excalidraw scene.excalidraw overlap && pkb-excalidraw scene.excalidraw arrows-check` |

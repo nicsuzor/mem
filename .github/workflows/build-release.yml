@@ -67,11 +67,11 @@ jobs:
         run: |
           TAG="${{ inputs.tag }}"
           ARCHIVE="mem-${TAG}-${{ matrix.artifact }}.tar.gz"
-          BINARY_NAME="pkb"
+          BINARIES=("pkb" "pkb-excalidraw")
           if [[ "${{ matrix.runner }}" == "windows-latest" ]]; then
-            BINARY_NAME="pkb.exe"
+            BINARIES=("pkb.exe" "pkb-excalidraw.exe")
           fi
-          tar -czf "$ARCHIVE" -C target/${{ matrix.target }}/release "$BINARY_NAME"
+          tar -czf "$ARCHIVE" -C target/${{ matrix.target }}/release "${BINARIES[@]}"
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4

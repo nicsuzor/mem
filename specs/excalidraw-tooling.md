@@ -1,27 +1,27 @@
 ---
 id: excalidraw-tooling
-title: Excalidraw Tooling Specification (src/bin/excalidraw_view.rs)
+title: Excalidraw Tooling Specification (src/bin/pkb_excalidraw.rs)
 type: spec
 status: approved
 tags: [spec, excalidraw, tooling, cli, rust, sst]
 created: 2026-08-17
 ---
 
-# Excalidraw Tooling Specification (`src/bin/excalidraw_view.rs`)
+# Excalidraw Tooling Specification (`src/bin/pkb_excalidraw.rs`)
 
 **Status**: Approved Engineering Specification (Single Source of Truth, current-state only).  
-**Implementation**: [`src/bin/excalidraw_view.rs`](file:///workspace/src/bin/excalidraw_view.rs)  
-**Integration Tests**: [`tests/excalidraw_view_test.rs`](file:///workspace/tests/excalidraw_view_test.rs)
+**Implementation**: [`src/bin/pkb_excalidraw.rs`](file:///workspace/src/bin/pkb_excalidraw.rs)  
+**Integration Tests**: [`tests/pkb_excalidraw_test.rs`](file:///workspace/tests/pkb_excalidraw_test.rs)
 
 ---
 
 ## 1. Overview & Architectural Purpose
 
-`excalidraw-view` is a zero-dependency (stdlib + serde/serde_json/rand) Rust CLI tool engineered to bridge the semantic gap between Large Language Model (LLM) agents and Excalidraw whiteboards (`.excalidraw` and `.excalidrawlib` formats).
+`pkb-excalidraw` is a zero-dependency (stdlib + serde/serde_json/rand) Rust CLI tool engineered to bridge the semantic gap between Large Language Model (LLM) agents and Excalidraw whiteboards (`.excalidraw` and `.excalidrawlib` formats).
 
 Raw Excalidraw JSON documents are intensely token-expensive (typically 20,000–50,000 tokens for moderate diagrams) and rife with fragile mathematical invariants (fractional index ordering, bidirectional container-text bindings, dual-string text wrapping, and geometric arrow coordinate bindings). Manual JSON edits by LLMs routinely introduce catastrophic scene corruption.
 
-`excalidraw-view` solves this by providing:
+`pkb-excalidraw` solves this by providing:
 1. **Token-Cheap Projections**: Transforming verbose JSON scenes into dense, line-oriented tabular streams (`summary`, `map`, `nodes`, `edges`) averaging 50–200 tokens.
 2. **Semantic Structural Diffing**: Providing node/edge diffs (`struct-diff`) that isolate intentional changes from coordinate floating-point noise.
 3. **Atomic, Invariant-Enforcing CRUD**: High-level commands and transactional batch operations (`add-node`, `add-text`, `connect`, `set-text`, `fit`, `move-elem`, `delete-elem`, `batch`) that strictly enforce Excalidraw engine invariants.
@@ -32,7 +32,7 @@ Raw Excalidraw JSON documents are intensely token-expensive (typically 20,000–
 
 ## 2. File Formats & Schema Separation
 
-`excalidraw-view` handles two distinct file schemas and enforces strict separation between them:
+`pkb-excalidraw` handles two distinct file schemas and enforces strict separation between them:
 
 ```mermaid
 graph TD
@@ -67,7 +67,7 @@ An `.excalidraw` file represents a full interactive drawing canvas. The top-leve
 
 ### 2.2 Library Files (`.excalidrawlib`)
 
-Library files contain reusable component templates. `excalidraw-view` transparently supports both historical v1 and current v2 formats:
+Library files contain reusable component templates. `pkb-excalidraw` transparently supports both historical v1 and current v2 formats:
 
 - **Version 2 Format (Standard)**:
   ```json
@@ -100,7 +100,7 @@ Library files contain reusable component templates. `excalidraw-view` transparen
 
 ## 3. Invariant Laws & Validation Rules
 
-`excalidraw-view` codifies and guarantees five core invariant laws. Any mutation that would violate these invariants is rejected before writing to disk.
+`pkb-excalidraw` codifies and guarantees five core invariant laws. Any mutation that would violate these invariants is rejected before writing to disk.
 
 ```
 +-------------------------------------------------------------------------+
@@ -167,27 +167,27 @@ Arrows connect shapes or serve as free-floating visual indicators.
 
 ## 4. CLI Command Reference & Grammar
 
-`excalidraw-view` accepts commands using either standard `excalidraw-view FILE COMMAND [args]` or prefix `excalidraw-view COMMAND FILE [args]` syntax.
+`pkb-excalidraw` accepts commands using either standard `pkb-excalidraw FILE COMMAND [args]` or prefix `pkb-excalidraw COMMAND FILE [args]` syntax.
 
 ```
 Usage:
-  excalidraw-view FILE [summary|map|nodes|edges|arrows|style|check|overlap|arrows-check]
-  excalidraw-view FILE inspect <id>
-  excalidraw-view FILE get <id>
-  excalidraw-view FILE1 diff FILE2
-  excalidraw-view FILE1 struct-diff FILE2
-  excalidraw-view FILE.excalidrawlib lib
-  excalidraw-view FILE.excalidrawlib item SELECTOR --after INDEX [--at X,Y]
-  excalidraw-view FILE add-node --type <type> --text "<text>" [--at X,Y] [--size W,H] [--role <role>] [--color <hex>] [--id <custom_id>]
-  excalidraw-view FILE add-text --text "<text>" --at X,Y [--font-size <size>] [--color <hex>]
-  excalidraw-view FILE connect --from <id1> --to <id2> [--label "<label>"] [--color <hex>]
-  excalidraw-view FILE set-text <id> "<new_text>"
-  excalidraw-view FILE fit <id> "<new_text>"
-  excalidraw-view FILE move-elem <id> [--to X,Y | --by DX,DY]
-  excalidraw-view FILE delete-elem <id> [--cascade-arrows]
-  excalidraw-view FILE batch <changes.json | - >
-  excalidraw-view FILE theme export [out.json]
-  excalidraw-view FILE theme apply <theme.json | default | retro-terminal | aops-default> [--all | --id <id>]
+  pkb-excalidraw FILE [summary|map|nodes|edges|arrows|style|check|overlap|arrows-check]
+  pkb-excalidraw FILE inspect <id>
+  pkb-excalidraw FILE get <id>
+  pkb-excalidraw FILE1 diff FILE2
+  pkb-excalidraw FILE1 struct-diff FILE2
+  pkb-excalidraw FILE.excalidrawlib lib
+  pkb-excalidraw FILE.excalidrawlib item SELECTOR --after INDEX [--at X,Y]
+  pkb-excalidraw FILE add-node --type <type> --text "<text>" [--at X,Y] [--size W,H] [--role <role>] [--color <hex>] [--id <custom_id>]
+  pkb-excalidraw FILE add-text --text "<text>" --at X,Y [--font-size <size>] [--color <hex>]
+  pkb-excalidraw FILE connect --from <id1> --to <id2> [--label "<label>"] [--color <hex>]
+  pkb-excalidraw FILE set-text <id> "<new_text>"
+  pkb-excalidraw FILE fit <id> "<new_text>"
+  pkb-excalidraw FILE move-elem <id> [--to X,Y | --by DX,DY]
+  pkb-excalidraw FILE delete-elem <id> [--cascade-arrows]
+  pkb-excalidraw FILE batch <changes.json | - >
+  pkb-excalidraw FILE theme export [out.json]
+  pkb-excalidraw FILE theme apply <theme.json | default | retro-terminal | aops-default> [--all | --id <id>]
 ```
 
 ### 4.1 Projection & Inspection Modes
@@ -235,30 +235,30 @@ Computes a pure semantic diff of the logical graph, completely filtering out coo
 ### 4.4 Granular CRUD Commands
 
 - **`add-node`**:
-  `excalidraw-view FILE add-node --type rectangle --text "Worker Node" --at 200,300 --size 160,60 --role info`
+  `pkb-excalidraw FILE add-node --type rectangle --text "Worker Node" --at 200,300 --size 160,60 --role info`
   - Generates container shape + bound centered text element.
   - Automatically calculates dimensions if `--size` is omitted.
   - Applies role theme colors if `--role` is specified.
 - **`add-text`**:
-  `excalidraw-view FILE add-text --text "System Architecture v2" --at 100,50 --font-size 24 --color "#333333"`
+  `pkb-excalidraw FILE add-text --text "System Architecture v2" --at 100,50 --font-size 24 --color "#333333"`
 - **`connect`**:
-  `excalidraw-view FILE connect --from nodeA --to nodeB --label "gRPC Call" --color "#404040"`
+  `pkb-excalidraw FILE connect --from nodeA --to nodeB --label "gRPC Call" --color "#404040"`
   - Computes center-to-center arrow endpoints.
   - Creates arrow element and updates `boundElements` on both connected nodes.
   - Generates container-bound centered text label if `--label` is provided.
 - **`set-text` / `fit`**:
-  `excalidraw-view FILE set-text nodeA "Worker Node (Replicas: 3)"`
+  `pkb-excalidraw FILE set-text nodeA "Worker Node (Replicas: 3)"`
   - Updates both `text` and `originalText`.
   - Recalculates text dimensions.
   - Automatically expands the parent container if text exceeds boundaries while preserving the exact center point (symmetrical expansion).
   - Re-centers arrow labels if target is an arrow.
 - **`move-elem`**:
-  `excalidraw-view FILE move-elem nodeA --by 50,100` (or `--to 400,200`)
+  `pkb-excalidraw FILE move-elem nodeA --by 50,100` (or `--to 400,200`)
   - Translates container shape and bound text synchronously.
   - Dynamically shifts endpoints of connected arrows (`startBinding` or `endBinding`).
   - Translates arrow labels proportionally ($\Delta/2$ for single-end moves, $\Delta$ for dual-end moves).
 - **`delete-elem`**:
-  `excalidraw-view FILE delete-elem nodeA [--cascade-arrows]`
+  `pkb-excalidraw FILE delete-elem nodeA [--cascade-arrows]`
   - Recursively removes container shape and bound text.
   - If `--cascade-arrows` is passed, deletes all connected arrows and their labels.
   - If `--cascade-arrows` is omitted, cleanly unbinds connected arrows (sets bindings to `null`) and strips references from surviving nodes, maintaining the 0-bound invariant.
@@ -369,7 +369,7 @@ The `batch` command executes an atomic sequence of mutations from a JSON array (
 
 ## 6. Layout Mathematics & Geometry Algorithms
 
-`excalidraw-view` embeds precise layout and collision mathematics to ensure clean, human-quality visual output.
+`pkb-excalidraw` embeds precise layout and collision mathematics to ensure clean, human-quality visual output.
 
 ### 6.1 Font Metrics & Dimension Calculation
 
@@ -514,5 +514,5 @@ sequenceDiagram
 
 ## 9. Implementation File References
 
-- Binary Source: [`src/bin/excalidraw_view.rs`](file:///workspace/src/bin/excalidraw_view.rs)
-- Test Suite: [`tests/excalidraw_view_test.rs`](file:///workspace/tests/excalidraw_view_test.rs)
+- Binary Source: [`src/bin/pkb_excalidraw.rs`](file:///workspace/src/bin/pkb_excalidraw.rs)
+- Test Suite: [`tests/pkb_excalidraw_test.rs`](file:///workspace/tests/pkb_excalidraw_test.rs)

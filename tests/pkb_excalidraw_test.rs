@@ -4,10 +4,10 @@ use std::process::{Command, Stdio};
 use tempfile::NamedTempFile;
 
 fn run_bin(args: &[&str]) -> (i32, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_excalidraw-view"))
+    let output = Command::new(env!("CARGO_BIN_EXE_pkb-excalidraw"))
         .args(args)
         .output()
-        .expect("Failed to execute excalidraw-view binary");
+        .expect("Failed to execute pkb-excalidraw binary");
     let code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -15,13 +15,13 @@ fn run_bin(args: &[&str]) -> (i32, String, String) {
 }
 
 fn run_bin_stdin(args: &[&str], input: &str) -> (i32, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_excalidraw-view"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pkb-excalidraw"))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("Failed to spawn excalidraw-view binary");
+        .expect("Failed to spawn pkb-excalidraw binary");
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(input.as_bytes()).unwrap();
@@ -38,15 +38,15 @@ fn run_bin_stdin(args: &[&str], input: &str) -> (i32, String, String) {
 fn test_help_and_no_args() {
     let (code, _stdout, stderr) = run_bin(&[]);
     assert_eq!(code, 1);
-    assert!(stderr.contains("Usage: excalidraw-view"));
+    assert!(stderr.contains("Usage: pkb-excalidraw"));
 
     let (code, stdout, _stderr) = run_bin(&["--help"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("Usage: excalidraw-view"));
+    assert!(stdout.contains("Usage: pkb-excalidraw"));
 
     let (code, stdout, _stderr) = run_bin(&["-h"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("Usage: excalidraw-view"));
+    assert!(stdout.contains("Usage: pkb-excalidraw"));
 }
 
 #[test]

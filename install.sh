@@ -73,10 +73,19 @@ tar -xzf "${TMPDIR}/${ARCHIVE}" -C "${TMPDIR}"
 # Install binary
 if [ -w "${INSTALL_DIR}" ]; then
   mv "${TMPDIR}/pkb" "${INSTALL_DIR}/"
+  if [ -f "${TMPDIR}/pkb-excalidraw" ]; then
+    mv "${TMPDIR}/pkb-excalidraw" "${INSTALL_DIR}/"
+  fi
 else
   echo "Need sudo to install to ${INSTALL_DIR}"
   sudo mv "${TMPDIR}/pkb" "${INSTALL_DIR}/"
+  if [ -f "${TMPDIR}/pkb-excalidraw" ]; then
+    sudo mv "${TMPDIR}/pkb-excalidraw" "${INSTALL_DIR}/"
+  fi
 fi
 
 echo "Installed pkb to ${INSTALL_DIR}"
-echo "  pkb $(command -v pkb)"
+echo "  pkb $(command -v pkb || true)"
+if command -v pkb-excalidraw >/dev/null 2>&1; then
+  echo "  pkb-excalidraw $(command -v pkb-excalidraw)"
+fi

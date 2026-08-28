@@ -35,8 +35,8 @@ RUN git config --global user.name "pkb-sync" && \
     git config --global user.email "pkb-sync@noreply"
 
 RUN test -n "$PKB_BINARY_URL" || { echo "ERROR: PKB_BINARY_URL build-arg required" >&2; exit 1; } && \
-    curl -fsSL "$PKB_BINARY_URL" | tar -xz -C /usr/local/bin pkb && \
-    chmod +x /usr/local/bin/pkb
+    curl -fsSL "$PKB_BINARY_URL" | tar -xz -C /usr/local/bin pkb pkb-excalidraw && \
+    chmod +x /usr/local/bin/pkb /usr/local/bin/pkb-excalidraw
 
 COPY containers/pkb/git-sync.sh /usr/local/bin/git-sync.sh
 COPY containers/pkb/git-sync-loop.sh /usr/local/bin/git-sync-loop.sh

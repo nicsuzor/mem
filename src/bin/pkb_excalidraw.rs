@@ -21,27 +21,27 @@ const ID_ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmno
 
 const USAGE: &str = r#"Token-cheap projections of an .excalidraw file. Stdlib only.
 
-Usage: excalidraw-view FILE [summary|map|style|check|overlap|arrows-check|nodes|edges|arrows]
-       excalidraw-view FILE inspect <id>
-       excalidraw-view FILE get <id>
-       excalidraw-view FILE1 diff FILE2
-       excalidraw-view FILE1 struct-diff FILE2
-       excalidraw-view FILE.excalidrawlib lib
-       excalidraw-view FILE.excalidrawlib item SELECTOR --after INDEX [--at X,Y]
+Usage: pkb-excalidraw FILE [summary|map|style|check|overlap|arrows-check|nodes|edges|arrows]
+       pkb-excalidraw FILE inspect <id>
+       pkb-excalidraw FILE get <id>
+       pkb-excalidraw FILE1 diff FILE2
+       pkb-excalidraw FILE1 struct-diff FILE2
+       pkb-excalidraw FILE.excalidrawlib lib
+       pkb-excalidraw FILE.excalidrawlib item SELECTOR --after INDEX [--at X,Y]
 
 CRUD & Mutation Commands:
-       excalidraw-view FILE add-node --type <type> --text "<text>" [--at X,Y] [--size W,H] [--role <role>] [--color <hex>] [--id <custom_id>]
-       excalidraw-view FILE add-text --text "<text>" --at X,Y [--font-size <size>] [--color <hex>]
-       excalidraw-view FILE connect --from <id1> --to <id2> [--label "<label>"] [--color <hex>]
-       excalidraw-view FILE set-text <id> "<new_text>"
-       excalidraw-view FILE fit <id> "<new_text>"
-       excalidraw-view FILE move-elem <id> [--to X,Y | --by DX,DY]
-       excalidraw-view FILE delete-elem <id> [--cascade-arrows]
-       excalidraw-view FILE batch <changes.json | - >
+       pkb-excalidraw FILE add-node --type <type> --text "<text>" [--at X,Y] [--size W,H] [--role <role>] [--color <hex>] [--id <custom_id>]
+       pkb-excalidraw FILE add-text --text "<text>" --at X,Y [--font-size <size>] [--color <hex>]
+       pkb-excalidraw FILE connect --from <id1> --to <id2> [--label "<label>"] [--color <hex>]
+       pkb-excalidraw FILE set-text <id> "<new_text>"
+       pkb-excalidraw FILE fit <id> "<new_text>"
+       pkb-excalidraw FILE move-elem <id> [--to X,Y | --by DX,DY]
+       pkb-excalidraw FILE delete-elem <id> [--cascade-arrows]
+       pkb-excalidraw FILE batch <changes.json | - >
 
 Theme Commands:
-       excalidraw-view FILE theme export [out.json]
-       excalidraw-view FILE theme apply <theme.json | default | retro-terminal | aops-default> [--all | --id <id>]
+       pkb-excalidraw FILE theme export [out.json]
+       pkb-excalidraw FILE theme apply <theme.json | default | retro-terminal | aops-default> [--all | --id <id>]
 "#;
 
 // ============================================================================
@@ -2780,7 +2780,7 @@ fn main() {
     }
 
     // Normalize command positioning:
-    // Support both `excalidraw-view FILE COMMAND [args]` and `excalidraw-view COMMAND FILE [args]`
+    // Support both `pkb-excalidraw FILE COMMAND [args]` and `pkb-excalidraw COMMAND FILE [args]`
     let known_modes = [
         "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
         "nodes", "edges", "arrows", "inspect", "get", "add-node", "add-text",
@@ -2823,14 +2823,14 @@ fn main() {
         "edges" | "arrows" => cmd_edges(&doc),
         "inspect" => {
             if extra_args.is_empty() {
-                eprintln!("inspect mode requires an element id: excalidraw-view FILE inspect <id>");
+                eprintln!("inspect mode requires an element id: pkb-excalidraw FILE inspect <id>");
                 process::exit(1);
             }
             cmd_inspect(&doc, &extra_args[0]);
         }
         "get" => {
             if extra_args.is_empty() {
-                eprintln!("get mode requires an element id: excalidraw-view FILE get <id>");
+                eprintln!("get mode requires an element id: pkb-excalidraw FILE get <id>");
                 process::exit(1);
             }
             cmd_get(&doc, &extra_args[0]);
@@ -2877,7 +2877,7 @@ fn main() {
         },
         "diff" => {
             if extra_args.is_empty() {
-                eprintln!("diff mode requires a second file: excalidraw-view FILE1 diff FILE2");
+                eprintln!("diff mode requires a second file: pkb-excalidraw FILE1 diff FILE2");
                 process::exit(1);
             }
             let file2_path = &extra_args[0];
@@ -2899,7 +2899,7 @@ fn main() {
         }
         "struct-diff" => {
             if extra_args.is_empty() {
-                eprintln!("struct-diff mode requires a second file: excalidraw-view FILE1 struct-diff FILE2");
+                eprintln!("struct-diff mode requires a second file: pkb-excalidraw FILE1 struct-diff FILE2");
                 process::exit(1);
             }
             let file2_path = &extra_args[0];
@@ -3303,7 +3303,7 @@ fn main() {
         }
         "batch" => {
             if extra_args.is_empty() {
-                eprintln!("batch requires a JSON file or '-' for stdin: excalidraw-view FILE batch <changes.json | ->");
+                eprintln!("batch requires a JSON file or '-' for stdin: pkb-excalidraw FILE batch <changes.json | ->");
                 process::exit(1);
             }
             let batch_input = if extra_args[0] == "-" {
