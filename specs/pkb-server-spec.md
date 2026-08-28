@@ -100,7 +100,8 @@ The server computes deterministic metrics (counts, depths, degrees). It does NOT
 
 - **Immediate Feedback**: CLI commands (search, tasks, status) respond in <500ms for typical PKBs (<5,000 nodes).
 - **Search Latency**: MCP hybrid search returns results within 2 seconds.
-- **Always Available**: The server is stateless and starts in <1s. If the index is stale, search results include a warning but remain functional.
+- **Always Available**: The server is stateless and starts in <1s.
+- **Staleness is signalled, not silent**: the in-memory graph index can disagree with disk (a write from another `pkb mcp` process, or a file synced/edited outside MCP, that this process's graph never observed). `get_task` self-heals a stale-by-id read by reparsing the file and patching the graph in place before responding. `list_tasks`/`task_summary` cannot self-heal a *missing* node the same way (they'd need a full directory walk per call to know what they're missing), so they instead compare the disk file count against the in-memory node count and attach an `index_warning` (JSON) or a `WARNING:` line (markdown) when they disagree, naming `refresh_graph` as the fix. A result with no warning is not a disk-truth guarantee for every field (derived metrics like `focus_score`/`downstream_weight` still lag the coalesced background rebuild by design — see `mem` `CORE.md`), but membership and `status` are no longer silently wrong.
 
 ### Data Integrity & Portability
 
