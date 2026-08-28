@@ -3521,6 +3521,107 @@ mod tests {
         );
     }
 
+    /// A long, multi-section, code-fenced body — the regime AC3 of mem_73d7e134
+    /// requires: a short-body smoke test is not acceptable evidence for the
+    /// silent-body-loss defect, since a 77-char body was independently observed
+    /// to land correctly while longer bodies were reportedly discarded.
+    fn long_fenced_multisection_body() -> String {
+        let mut body = String::from("# Repro body\n\n");
+        for i in 1..=7 {
+            body.push_str(&format!("## Section {i}\n\n"));
+            body.push_str(
+                &format!("Some prose content for section {i}. ")
+                    .repeat(20)
+                    .trim(),
+            );
+            body.push_str("\n\n```rust\n");
+            body.push_str(&format!(
+                "fn section_{i}() {{\n    println!(\"section {i}\");\n}}\n"
+            ));
+            body.push_str("```\n\n");
+            body.push_str(&format!("- [[wikilink_{i}]]\n\n"));
+        }
+        body
+    }
+
+    #[test]
+    fn create_document_writes_long_fenced_body_verbatim() {
+        // Regression for mem_73d7e134 manifestation A: `create` (backed by
+        // create_document) was reported to return `ok` with correct frontmatter
+        // but silently discard a long, multi-section, code-fenced body, leaving
+        // an empty node. No test previously exercised create_document's body
+        // handling at all. Confirm the body round-trips byte-for-byte.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["mem"]);
+        fs::create_dir_all(root.join("notes")).unwrap();
+
+        let body = long_fenced_multisection_body();
+        let fields = DocumentFields {
+            title: "Long fenced body repro".to_string(),
+            doc_type: "note".to_string(),
+            body: Some(body.clone()),
+            ..Default::default()
+        };
+
+        let path = create_document(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        let after_fm = content
+            .split_once("---\n\n")
+            .map(|(_, rest)| rest)
+            .expect("file must have closing frontmatter delimiter");
+
+        assert_eq!(
+            after_fm,
+            format!("{body}\n"),
+            "body must round-trip byte-for-byte after frontmatter"
+        );
+    }
+
+    #[test]
+    fn create_task_writes_long_fenced_body_verbatim_no_consequence_absorption() {
+        // Regression for mem_73d7e134 manifestation B: a long, fenced
+        // create_task body was reported to be absorbed into `consequence`,
+        // with a literal `<parameter name="body">` tag visible in the stored
+        // value, while the real body defaulted to just the title.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let body = long_fenced_multisection_body();
+        let fields = TaskFields {
+            title: "Long fenced create_task body repro".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            body: Some(body.clone()),
+            ..Default::default()
+        };
+
+        let path = create_task(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            !content.contains("<parameter name=\"body\">"),
+            "no literal tool-call parameter tag should ever be persisted: {content}"
+        );
+        assert!(
+            !content.contains("consequence:"),
+            "consequence must stay absent when not supplied — body must not be absorbed into it: {content}"
+        );
+
+        let after_fm = content
+            .split_once("---\n\n")
+            .map(|(_, rest)| rest)
+            .expect("file must have closing frontmatter delimiter");
+        assert_eq!(
+            after_fm,
+            format!("{body}\n"),
+            "body must round-trip byte-for-byte after frontmatter, not default to just the title"
+        );
+    }
+
     #[test]
     fn create_task_handles_multiline_consequence() {
         // Regression: re-confirmation 2026-05-05 — create_task observed to drop
