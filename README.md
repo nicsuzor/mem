@@ -312,9 +312,29 @@ It also provides **MCP prompts** to guide AI assistants through common search an
 | **Tasks** | `task_search`, `list_tasks`, `get_task`, `create_task`, `create_subtask`, `update_task`, `complete_task`, `release_task`, `decompose_task`, `get_dependency_tree`, `get_task_children`, `task_summary`, `get_network_metrics`, `top_n_by_metric` |
 | **Memory** | `retrieve_memory`, `search_by_tag`, `list_memories`, `delete` (pass `type: "memory"` to restrict to memory-type documents) |
 | **CRUD** | `create`, `create_memory`, `append`, `delete` |
-| **Graph** | `pkb_trace`, `pkb_orphans`, `graph_stats`, `graph_json` |
+| **Graph** | `pkb_trace`, `pkb_orphans`, `graph_stats`, `graph_json`, `graph_excalidraw`, `export_graph` |
 | **Batch** | `batch_update`, `batch_reparent`, `batch_archive`, `batch_merge`, `batch_create_epics`, `batch_reclassify`, `merge_node` |
 | **System** | `get_stats` |
+
+### `export_graph`: GraphViz DOT export
+
+Read-only export of the knowledge/task graph as GraphViz DOT syntax (`digraph PKB { ... }`), for external rendering (`dot`, `neato`, `sfdp`) or topological analysis pipelines — a static, one-way counterpart to `graph_excalidraw`'s interactive round-trip canvas.
+
+| Parameter | Type | Description |
+|-----------|------|--------------|
+| `focus` | string, optional | Focus node ID, filename, or title (flexible resolution). Omit for the full active graph. |
+| `max_depth` | integer, optional | Traversal depth in hops from `focus` (1–5, default 2). Ignored if `focus` is omitted. |
+| `project` | string, optional | Filter to nodes whose `project` field matches exactly. |
+| `include_done` | boolean, optional | Include `done`/`cancelled` nodes (default `false`). |
+
+Nodes carry `label`, `type`, and `status` attributes. Edges cover `depends_on`, `soft_depends_on`, `contributes_to`, `supersedes`, `closes`, and parent-child hierarchy — `blocks:` frontmatter is compiled into `depends_on` edges at graph-build time, so it needs no separate edge type. Labels and attribute values are escaped for safe DOT syntax (backslashes, quotes, embedded newlines).
+
+Render the result with GraphViz:
+
+```bash
+# via an MCP client that writes the tool's text output to graph.dot
+dot -Tsvg graph.dot -o graph.svg
+```
 
 ## Architecture
 

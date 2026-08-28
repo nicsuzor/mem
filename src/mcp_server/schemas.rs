@@ -783,6 +783,22 @@ impl PkbSearchServer {
             .with_title("Export Graph to Excalidraw")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
+                "export_graph",
+                "Export the knowledge/task graph as GraphViz DOT syntax (`digraph PKB { ... }`) for external rendering (`dot -Tsvg`, `neato`, `sfdp`) or topological analysis pipelines. Unlike graph_excalidraw (round-trip interactive canvas), this is a static, one-way export. Nodes carry id/title/status/type; edges cover depends_on, contributes_to, supersedes, closes, and parent-child hierarchy (blocks: frontmatter is compiled into depends_on edges, so it needs no separate edge type). Labels are escaped for safe DOT syntax.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "focus": { "type": "string", "description": "Focus node ID, filename, or title (flexible resolution). If omitted, exports the full active graph." },
+                        "max_depth": { "type": "integer", "description": "Traversal depth in hops from focus (1 to 5, default: 2). Ignored if focus is omitted." },
+                        "project": { "type": "string", "description": "Filter to nodes whose project field matches exactly." },
+                        "include_done": { "type": "boolean", "description": "Include done/cancelled nodes (default: false)." }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("Export Graph to GraphViz DOT")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
                 "diff_excalidraw",
                 "Parses an Excalidraw JSON string and returns a structured diff against live PKB. Identifies added/updated/removed nodes, edge mutations, and visual styling changes.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({

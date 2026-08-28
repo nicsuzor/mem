@@ -1334,6 +1334,7 @@ impl PkbSearchServer {
             "graph_stats" => self.handle_graph_stats(args),
             "graph_json" => self.handle_graph_json(args),
             "graph_excalidraw" => self.handle_graph_excalidraw(args),
+            "export_graph" => self.handle_export_graph(args),
             "diff_excalidraw" => self.handle_diff_excalidraw(args),
             "sync_excalidraw" => self.handle_sync_excalidraw(args),
             "task_summary" => self.handle_task_summary(args),

@@ -377,6 +377,24 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    pub fn handle_export_graph(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let focus = args.get("focus").and_then(|v| v.as_str());
+        let max_depth = args
+            .get("max_depth")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(2) as usize;
+        let project = args.get("project").and_then(|v| v.as_str());
+        let include_done = args
+            .get("include_done")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let graph = self.graph.read();
+        let dot = graph.output_dot(focus, max_depth, project, include_done);
+
+        Ok(CallToolResult::success(vec![Content::text(dot)]))
+    }
+
     pub fn handle_diff_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let canvas_str = args
             .get("canvas")

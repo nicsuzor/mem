@@ -2091,6 +2091,91 @@ impl GraphStore {
         xml.push_str("  </graph>\n</graphml>\n");
         xml
     }
+
+    /// Export the graph (or a focused subgraph) as GraphViz DOT syntax.
+    ///
+    /// With `focus` set, exports the `max_depth`-hop ego-network around that
+    /// node (same traversal as [`GraphStore::output_excalidraw`] — structural
+    /// edges only: parent, depends_on, soft_depends_on, contributes_to,
+    /// supersedes, closes). Without `focus`, exports every node. `project`
+    /// and `include_done` filter the resulting node set further; edges are
+    /// then restricted to those whose endpoints both survived filtering.
+    ///
+    /// `blocks:` frontmatter is compiled into `DependsOn` edges at build time
+    /// (blocked node -> blocker), so there is no separate `blocks` edge type
+    /// to render — `depends_on` already carries that relationship.
+    pub fn output_dot(
+        &self,
+        focus: Option<&str>,
+        max_depth: usize,
+        project: Option<&str>,
+        include_done: bool,
+    ) -> String {
+        let (mut nodes, mut edges): (Vec<GraphNode>, Vec<Edge>) = match focus {
+            Some(query) => match self.resolve(query).map(|n| n.id.clone()) {
+                Some(id) => crate::excalidraw::extract_ego_subgraph(self, &id, max_depth.max(1)),
+                None => (Vec::new(), Vec::new()),
+            },
+            None => (self.nodes.values().cloned().collect(), self.edges.clone()),
+        };
+
+        if !include_done {
+            nodes.retain(|n| {
+                !graph::COMPLETED_STATUSES.contains(&n.status.as_deref().unwrap_or(""))
+            });
+        }
+        if let Some(proj) = project {
+            nodes.retain(|n| n.project.as_deref() == Some(proj));
+        }
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+
+        let kept_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        edges.retain(|e| kept_ids.contains(e.source.as_str()) && kept_ids.contains(e.target.as_str()));
+
+        let mut dot = String::from("digraph PKB {\n  rankdir=LR;\n");
+        for node in &nodes {
+            let label = dot_escape(&format!(
+                "{}\n{}",
+                node.label,
+                node.status.as_deref().unwrap_or("")
+            ));
+            dot.push_str(&format!(
+                "  \"{}\" [label=\"{}\", type=\"{}\", status=\"{}\"];\n",
+                dot_escape(&node.id),
+                label,
+                dot_escape(node.node_type.as_deref().unwrap_or("")),
+                dot_escape(node.status.as_deref().unwrap_or("")),
+            ));
+        }
+        for edge in &edges {
+            dot.push_str(&format!(
+                "  \"{}\" -> \"{}\" [type=\"{}\"];\n",
+                dot_escape(&edge.source),
+                dot_escape(&edge.target),
+                edge.edge_type.as_str(),
+            ));
+        }
+        dot.push_str("}\n");
+        dot
+    }
+}
+
+/// Escape a string for safe use inside a double-quoted GraphViz DOT label or
+/// attribute value: backslashes and quotes are escaped, real newlines become
+/// the DOT literal `\n` line-break escape. Markdown syntax (`[[..]]`, `**..**`)
+/// is not special in DOT and passes through unchanged.
+fn dot_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => {}
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Recency signal (0.0 - 1.0) based on modification date.
@@ -8674,6 +8759,167 @@ mod tests {
             std::cmp::Ordering::Less,
             "P0 task without due date must rank before P4 task with far-future due date"
         );
+    }
+
+    // ── output_dot (GraphViz DOT export) ──
+
+    fn build_dot_test_graph() -> GraphStore {
+        let docs = vec![
+            make_doc(
+                "tasks/epic-1.md",
+                "Epic \"One\"",
+                "epic",
+                "active",
+                "epic-1",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/task-a.md",
+                "Task A [[wikilink]] **bold**",
+                "task",
+                "active",
+                "task-a",
+                Some("epic-1"),
+                &[],
+            ),
+            make_doc(
+                "tasks/task-b.md",
+                "Task B\nline two \\ with backslash and \"quotes\"",
+                "task",
+                "active",
+                "task-b",
+                None,
+                &["task-a"],
+            ),
+            make_doc(
+                "tasks/task-c.md",
+                "Task C (done)",
+                "task",
+                "done",
+                "task-c",
+                None,
+                &[],
+            ),
+        ];
+        GraphStore::build(&docs, Path::new("/tmp/test-pkb"))
+    }
+
+    #[test]
+    fn test_output_dot_basic_structure_and_edges() {
+        let graph = build_dot_test_graph();
+        let dot = graph.output_dot(None, 2, None, false);
+
+        assert!(dot.starts_with("digraph PKB {"), "must open with digraph PKB {{, got: {dot}");
+        assert!(dot.trim_end().ends_with('}'), "must close with }}, got: {dot}");
+        assert!(dot.contains("\"task-a\""), "must contain task-a node id");
+        assert!(dot.contains("\"task-a\" -> \"epic-1\""), "parent edge must run child -> parent");
+        assert!(dot.contains("\"task-b\" -> \"task-a\""), "depends_on edge must run dependent -> dependency");
+        // done task excluded by default (include_done=false)
+        assert!(!dot.contains("\"task-c\""), "done task must be excluded when include_done=false");
+    }
+
+    #[test]
+    fn test_output_dot_include_done_true_includes_completed_nodes() {
+        let graph = build_dot_test_graph();
+        let dot = graph.output_dot(None, 2, None, true);
+        assert!(dot.contains("\"task-c\""), "done task must be included when include_done=true");
+    }
+
+    #[test]
+    fn test_output_dot_focus_and_max_depth_limits_subgraph() {
+        let graph = build_dot_test_graph();
+        // task-a is 1 hop from epic-1; task-b depends on task-a (2 hops from epic-1)
+        let dot = graph.output_dot(Some("epic-1"), 1, None, true);
+        assert!(dot.contains("\"epic-1\""));
+        assert!(dot.contains("\"task-a\""));
+        assert!(!dot.contains("\"task-b\""), "task-b is 2 hops away, must be excluded at max_depth=1");
+    }
+
+    #[test]
+    fn test_output_dot_project_filter() {
+        let mut docs = vec![
+            make_doc_with_fields(
+                "tasks/proj-a.md",
+                "Project A Task",
+                "task",
+                "active",
+                "proj-a-task",
+                None,
+                &[],
+                None,
+                &[],
+            ),
+        ];
+        if let Some(fm) = docs[0].frontmatter.as_mut().and_then(|f| f.as_object_mut()) {
+            fm.insert("project".to_string(), serde_json::json!("alpha"));
+        }
+        docs.push(make_doc(
+            "tasks/proj-b.md",
+            "Project B Task",
+            "task",
+            "active",
+            "proj-b-task",
+            None,
+            &[],
+        ));
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        let dot = graph.output_dot(None, 2, Some("alpha"), true);
+        assert!(dot.contains("\"proj-a-task\""), "node in project 'alpha' must be included");
+        assert!(!dot.contains("\"proj-b-task\""), "node without matching project must be excluded");
+    }
+
+    #[test]
+    fn test_output_dot_empty_graph() {
+        let graph = GraphStore::build(&[], Path::new("/tmp/test-pkb"));
+        let dot = graph.output_dot(None, 2, None, true);
+        assert_eq!(dot, "digraph PKB {\n  rankdir=LR;\n}\n");
+    }
+
+    #[test]
+    fn test_output_dot_single_node_no_edges() {
+        let docs = vec![make_doc(
+            "tasks/solo.md",
+            "Solo Task",
+            "task",
+            "active",
+            "solo-task",
+            None,
+            &[],
+        )];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let dot = graph.output_dot(None, 2, None, true);
+        assert!(dot.contains("\"solo-task\""));
+        assert!(!dot.contains("->"), "single node with no edges must have no edge lines");
+    }
+
+    #[test]
+    fn test_output_dot_escapes_special_characters_in_labels() {
+        let graph = build_dot_test_graph();
+        let dot = graph.output_dot(None, 2, None, true);
+
+        // task-b's title contains a literal newline, a backslash, and double quotes —
+        // none of these may appear unescaped inside a quoted DOT string, or the
+        // output is not valid DOT syntax.
+        for line in dot.lines() {
+            if line.trim_start().starts_with("\"task-b\" [") {
+                // Every quote inside the label must be preceded by a backslash,
+                // and the line must not contain a raw (unescaped) newline — i.e.
+                // this must be a single line of output.
+                assert!(
+                    !line.contains("\\\"\\\"") ,
+                    "label quoting must be properly escaped, not doubled: {line}"
+                );
+                assert!(
+                    line.contains("\\\\") || !line.contains('\\'),
+                    "backslash in title must be escaped as \\\\\\\\: {line}"
+                );
+            }
+        }
+        // wikilink/markdown syntax in task-a's title must survive verbatim
+        // inside the quoted label (not special in DOT, just needs quote-safety).
+        assert!(dot.contains("[[wikilink]]"), "markdown/wikilink syntax must appear in output: {dot}");
     }
 }
 
