@@ -259,9 +259,41 @@ fn extract_id_from_filename(path: &Path) -> Option<String> {
     re.captures(&stem).map(|c| c[1].to_string())
 }
 
+/// Extract a leading `YYYY-MM-DD` date from a filename stem or, failing that,
+/// from the frontmatter `title`. Used to build convention-correct daily-note ids.
+fn extract_daily_date(
+    path: &Path,
+    fm: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"^(\d{4}-\d{2}-\d{2})").unwrap());
+    if let Some(stem) = path.file_stem() {
+        if let Some(c) = re.captures(&stem.to_string_lossy()) {
+            return Some(c[1].to_string());
+        }
+    }
+    fm.get("title")
+        .and_then(|v| v.as_str())
+        .and_then(|t| re.captures(t))
+        .map(|c| c[1].to_string())
+}
+
 /// Generate an ID for a file that's missing one.
-/// Tries: filename pattern extraction → project field → parent dir → "task"
+/// Tries: daily-note date convention → filename pattern extraction → project field → parent dir → "task"
 fn generate_missing_id(path: &Path, fm: &serde_json::Map<String, serde_json::Value>) -> String {
+    // Daily notes follow a distinct id convention (`<date>-<hex>`), not the
+    // generic `<prefix>_<hex>` shape. extract_id_from_filename below requires
+    // a letter-led stem, so a digit-led "<date>-daily" filename never matches
+    // it — special-case daily notes first or they'd fall through to a
+    // "daily_<hex>" id, diverging from the corpus convention (135/150
+    // existing daily notes use `<date>-<hex>`).
+    let node_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if resolve_type_alias(node_type) == "daily" {
+        if let Some(date) = extract_daily_date(path, fm) {
+            return crate::graph::create_id_verbatim(&date);
+        }
+    }
+
     // First try extracting from filename
     if let Some(id) = extract_id_from_filename(path) {
         return id;
@@ -346,17 +378,37 @@ pub fn lint_file(
 
     check_markdown_body(&content, &mut diags);
 
+    // ── Self-heal a missing id, regardless of --fix ───────────────────
+    //
+    // A missing id must never hard-fail CI (see the demoted `task-no-id`
+    // severity above) — it self-heals unconditionally. Only ever *fills* an
+    // absent id (idempotent: a note that already has one is never touched
+    // here), and inserts a single `id:` line without altering any other
+    // frontmatter (safe write).
+    let id_healed_content = match &fm_data {
+        Some(serde_json::Value::Object(fm))
+            if !fm.contains_key("id")
+                && !fm.contains_key("task_id")
+                && content.starts_with("---\n") =>
+        {
+            let id = generate_missing_id(path, fm);
+            Some(format!("---\nid: {}\n{}", id, &content[4..]))
+        }
+        _ => None,
+    };
+    let content_after_heal: &str = id_healed_content.as_deref().unwrap_or(&content);
+
     // ── Build fixed content if requested ─────────────────────────────
 
     let fixed_content = if fix && diags.iter().any(|d| d.fixable) {
-        let fixed = apply_fixes(&content, &fm_data, path, ancestor_map);
+        let fixed = apply_fixes(content_after_heal, &fm_data, path, ancestor_map);
         if fixed != content {
             Some(fixed)
         } else {
             None
         }
     } else {
-        None
+        id_healed_content.filter(|healed| healed != &content)
     };
 
     FileResult {
@@ -825,10 +877,13 @@ fn check_frontmatter(
                 fixable: true,
             });
         } else {
+            // Self-healing: lint_file always regenerates a missing id
+            // regardless of --fix (see the id-heal step there), so this is
+            // no longer a build-breaking error — just a note that it happened.
             diags.push(Diagnostic {
-                severity: Severity::Error,
+                severity: Severity::Style,
                 rule: "task-no-id",
-                message: "Document is missing 'id' field".into(),
+                message: "Document was missing 'id' field — auto-generated".into(),
                 line: None,
                 fixable: true,
             });
@@ -1011,7 +1066,7 @@ fn remove_key_from_frontmatter(fm_text: &str, target_key: &str) -> String {
 fn apply_fixes(
     content: &str,
     fm_data: &Option<serde_json::Value>,
-    path: &Path,
+    _path: &Path,
     _ancestor_map: Option<&AncestorMap>,
 ) -> String {
     let mut result = content.to_string();
@@ -1026,15 +1081,8 @@ fn apply_fixes(
                 .to_string();
         }
 
-        // Fix 2: Generate missing ID for all documents
-        let has_id = fm.contains_key("id") || fm.contains_key("task_id");
-        if !has_id {
-            let id = generate_missing_id(path, fm);
-            // Insert `id: xxx` right after the opening `---\n`
-            if result.starts_with("---\n") {
-                result = format!("---\nid: {}\n{}", id, &result[4..]);
-            }
-        }
+        // Missing-id generation is handled unconditionally in `lint_file`
+        // (self-heal, independent of --fix) before this function is called.
 
         // Fix 3: Fix status aliases in-place
         if let Some(status) = fm.get("status").and_then(|v| v.as_str()) {
@@ -2041,6 +2089,84 @@ mod tests {
     fn detects_task_missing_id() {
         let diags = lint_str("---\ntitle: Test\ntype: task\nstatus: active\n---\n\nBody.\n");
         assert!(diags.iter().any(|d| d.rule == "task-no-id"));
+    }
+
+    #[test]
+    fn missing_id_no_longer_hard_fails_ci() {
+        // task-no-id must be auto-fixable, not Error severity — an id-less
+        // note self-heals and must never block a CI lint gate.
+        let diags = lint_str("---\ntitle: Test\ntype: task\nstatus: active\n---\n\nBody.\n");
+        let d = diags
+            .iter()
+            .find(|d| d.rule == "task-no-id")
+            .expect("expected a task-no-id diagnostic");
+        assert!(
+            d.severity < Severity::Error,
+            "missing id must not be Error severity (would hard-fail CI), got {:?}",
+            d.severity
+        );
+    }
+
+    #[test]
+    fn missing_id_self_heals_without_fix_flag() {
+        // `pkb lint --refs` (no --fix) is exactly the CI invocation this bug
+        // is about — a missing id must be generated and persisted even then.
+        let content = "---\ntitle: Test\ntype: task\nstatus: active\n---\n\nBody.\n";
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        let result = lint_file(f.path(), false, None, None, None);
+        let healed = result
+            .fixed_content
+            .expect("missing id must self-heal even without --fix");
+        assert!(
+            healed.contains("id: "),
+            "expected a generated id, got: {}",
+            healed
+        );
+        assert!(
+            healed.starts_with("---\nid: "),
+            "id must be the first frontmatter line, got: {}",
+            healed
+        );
+    }
+
+    #[test]
+    fn present_id_is_never_regenerated() {
+        // Idempotence: an id-bearing note must never be rewritten by the
+        // self-heal step — regenerating a different id would break every
+        // wikilink/backlink pointing at the original.
+        let content =
+            "---\nid: mem-abc12345\ntitle: Test\ntype: task\nstatus: active\n---\n\nBody.\n";
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        let result = lint_file(f.path(), false, None, None, None);
+        assert!(
+            result.fixed_content.is_none(),
+            "an existing id must never be touched, got fixed_content: {:?}",
+            result.fixed_content
+        );
+
+        // Re-running (idempotence) must be a true no-op too.
+        let result2 = lint_file(f.path(), false, None, None, None);
+        assert!(result2.fixed_content.is_none());
+    }
+
+    #[test]
+    fn daily_note_gets_date_convention_id() {
+        // Corpus convention for daily notes is `<date>-<hex>`, not the
+        // generic `<prefix>_<hex>` shape generate_missing_id falls back to.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("2026-08-28-daily.md");
+        std::fs::write(&path, "---\ntitle: 2026-08-28\ntype: daily\n---\n\nBody.\n").unwrap();
+        let result = lint_file(&path, false, None, None, None);
+        let healed = result
+            .fixed_content
+            .expect("daily note missing id must self-heal");
+        assert!(
+            healed.contains("id: 2026-08-28-"),
+            "expected <date>-<hex> convention, got: {}",
+            healed
+        );
     }
 
     #[test]
