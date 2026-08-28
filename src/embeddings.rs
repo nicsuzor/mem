@@ -364,7 +364,8 @@ fn download_onnx_runtime() -> Result<PathBuf> {
 
                 if let Some(fname) = filename {
                     // Normalize the main library name (strip version suffix)
-                    let dest_name = if fname.contains(lib_name) {
+                    let is_main_lib = fname.starts_with("libonnxruntime.") || fname == "onnxruntime.dll";
+                    let dest_name = if is_main_lib {
                         lib_name.to_string()
                     } else {
                         fname

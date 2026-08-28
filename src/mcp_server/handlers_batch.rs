@@ -1,6 +1,6 @@
 use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
-use rmcp::{Error as McpError, ServerHandler};
+use rmcp::{ErrorData as McpError, ServerHandler};
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
