@@ -1099,6 +1099,30 @@ impl PkbSearchServer {
             );
         }
 
+        // mem_8a8aeb2a: the evidence-or-failure-reason contract requires
+        // `reason`/`blocker` on handback statuses, but until now the values
+        // were only appended as prose into the release-evidence body block —
+        // never persisted to frontmatter, so no query or read could find them.
+        // Persist both as frontmatter fields, matching the convention already
+        // used elsewhere in the corpus (e.g. a `reason:` field on cancelled
+        // nodes).
+        if let Some(r) = reason {
+            if !r.trim().is_empty() {
+                updates.insert(
+                    "reason".to_string(),
+                    serde_json::Value::String(r.trim().to_string()),
+                );
+            }
+        }
+        if let Some(b) = blocker {
+            if !b.trim().is_empty() {
+                updates.insert(
+                    "blocker".to_string(),
+                    serde_json::Value::String(b.trim().to_string()),
+                );
+            }
+        }
+
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         updates.insert(
             "released_at".to_string(),

@@ -247,10 +247,18 @@ pub struct GraphNode {
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub supersedes: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub superseded_by: Option<String>,
+    /// Hand-writable: the one directed edge of the supersession pair
+    /// (survivor -> dead). Accepts a scalar, comma-joined string, or YAML
+    /// sequence (via `parse_string_array`), so more than one prior node can
+    /// be named.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub supersedes: Vec<String>,
+    /// Computed reverse index — never read from frontmatter (mem_8035b002).
+    /// Materialised from other nodes' `supersedes` edges in
+    /// `compute_inverses`, the same way `contributed_by` derives from
+    /// `contributes_to`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub superseded_by: Vec<String>,
     #[serde(skip_serializing_if = "is_zero_i32")]
     pub depth: i32,
     #[serde(skip_serializing_if = "is_zero_i32")]
@@ -1147,16 +1155,14 @@ impl GraphNode {
         let confidence = fm
             .as_ref()
             .and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
-        let supersedes = fm.as_ref().and_then(|f| {
-            f.get("supersedes")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
-        let superseded_by = fm.as_ref().and_then(|f| {
-            f.get("superseded_by")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
+        let supersedes = fm
+            .as_ref()
+            .map(|f| parse_string_array(f, "supersedes"))
+            .unwrap_or_default();
+        // superseded_by is never read from frontmatter — it is a computed
+        // reverse index of `supersedes` edges, materialised in
+        // `compute_inverses` (mem_8035b002).
+        let superseded_by: Vec<String> = Vec::new();
 
         let word_count = doc.body.split_whitespace().count() as i32;
         let has_acceptance_criteria = detect_acceptance_criteria(&doc.body);

@@ -844,8 +844,14 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     };
 
     let now = chrono::Utc::now();
-    let date_str = now.format("%Y%m%d").to_string();
-    let time_str = now.format("%H%M%S").to_string();
+    // aops_81bbdd77: the slug/title date names a *local calendar day* — a
+    // stored instant is UTC, but the datestamp a human reads on a filename
+    // must reflect their local clock, or a run in the first ~10 hours of a
+    // Brisbane (UTC+10) day is misdated to the previous day. Convert to
+    // local time before formatting; `now`/`created_at` below stay UTC.
+    let local_now = chrono::Local::now();
+    let date_str = local_now.format("%Y%m%d").to_string();
+    let time_str = local_now.format("%H%M%S").to_string();
 
     // Derive hostname: try env vars then /etc/hostname, fall back to "local".
     let raw_host = std::env::var("HOSTNAME")
@@ -879,7 +885,7 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     }
 
     let created_at = now.to_rfc3339();
-    let instance_title = format!("{} — {}", fields.template_title, now.format("%Y-%m-%d"));
+    let instance_title = format!("{} — {}", fields.template_title, local_now.format("%Y-%m-%d"));
 
     let mut fm = String::from("---\n");
     fm.push_str(&format!("id: {}\n", instance_id));
@@ -1451,6 +1457,52 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         }
     }
 
+    // mem_2ecf862b: `status: "blocked"` must not be a bare hand-write that
+    // silently shadows a `depends_on`-derived computed block (the `blocked:`
+    // boolean, rejected below, already covers that fact once — a status write
+    // that carries no new information is just a second, staler copy of it).
+    // `release_task`'s failure-reason-mandatory gate already requires
+    // `blocker`/`reason` on this transition; enforce the same contract here,
+    // at the single write path every caller (including the generic
+    // `update_task` patch path) funnels through, so the gate cannot be
+    // bypassed by calling `update_document` directly instead of
+    // `release_task`. A blocker/reason already on disk (e.g. a prior
+    // `release_task` call) satisfies a later metadata-only patch.
+    if let Some(new_status) = updates.get("status").and_then(|v| v.as_str()) {
+        if new_status == "blocked" {
+            let incoming_blocker = updates
+                .get("blocker")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let incoming_reason = updates
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let stored_blocker = fm
+                .get("blocker")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let stored_reason = fm
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !(incoming_blocker || incoming_reason || stored_blocker || stored_reason) {
+                anyhow::bail!(
+                    "Refusing to set status: \"blocked\" on {} without a non-empty 'blocker' or \
+                     'reason' — a bare status write duplicates what 'depends_on' plus the computed \
+                     'blocked' flag already say, and goes stale silently. Use release_task(status=\"blocked\", \
+                     blocker=\"...\") to record the specific external blocker, or set 'depends_on' \
+                     if this is a graph dependency.",
+                    path.display()
+                );
+            }
+        }
+    }
+
     // Apply updates, routing body/content keys to the markdown body instead of frontmatter
     let mut new_body_text: Option<String> = None;
     for (key, value) in updates {
@@ -1469,6 +1521,9 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         match key.as_str() {
             "blocked" => {
                 anyhow::bail!("'blocked' is a reserved computed keyword and cannot be set manually. Use 'depends_on' to add hard dependencies.");
+            }
+            "superseded_by" => {
+                anyhow::bail!("'superseded_by' is a reserved computed keyword and cannot be set manually — it is derived from other nodes' 'supersedes' edges. Set 'supersedes' on the superseding node instead.");
             }
             "status" => {
                 if let Some(s) = value.as_str() {
@@ -3437,6 +3492,50 @@ mod tests {
         assert!(
             !content.contains("priority:"),
             "claim_template_instance must not stamp any priority when none is supplied: {content}"
+        );
+    }
+
+    #[test]
+    fn claim_template_instance_slug_and_title_use_local_calendar_day() {
+        // aops_81bbdd77: the instance slug/title must name the LOCAL calendar
+        // day, not the UTC one — a stored `created`/`modified` instant stays
+        // UTC (unaffected), but the human-facing datestamp embedded in the
+        // filename/title must match the operator's own clock, or every run
+        // in the first ~10 hours of a UTC+10 (e.g. Brisbane) day is silently
+        // misdated to the previous day.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TemplateInstanceFields {
+            template_title: "Daily Note".to_string(),
+            template_body: "Body".to_string(),
+            template_id: "tpl_daily".to_string(),
+            ..Default::default()
+        };
+        let path = claim_template_instance(root, fields).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        let expected_local_date = chrono::Local::now().format("%Y%m%d").to_string();
+        let expected_local_title_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert!(
+            path.file_name().unwrap().to_string_lossy().contains(&expected_local_date),
+            "slug must embed the local calendar day {expected_local_date}, got path: {path:?}"
+        );
+        assert!(
+            content.contains(&expected_local_title_date),
+            "title must embed the local calendar day {expected_local_title_date}, got:\n{content}"
+        );
+
+        // created/modified stay UTC instants — unaffected by this fix.
+        let created_line = content
+            .lines()
+            .find(|l| l.starts_with("created:"))
+            .expect("created field must be present");
+        assert!(
+            created_line.ends_with('Z') || created_line.contains("+00:00"),
+            "created must remain a UTC instant, got: {created_line}"
         );
     }
 
@@ -5467,8 +5566,11 @@ pub struct MergeNodeSummary {
 ///    (`parent`, `depends_on`, `soft_depends_on`, `blocks`, `soft_blocks`,
 ///    `supersedes`, and wikilinks) to point to `canonical_id` instead — but
 ///    leaves the source file's own `id:` field untouched.
-/// 2. Archives the source node by setting `status: done` and
-///    `superseded_by: <canonical_id>` in its frontmatter.
+/// 2. Archives the source node by setting `status: done`.
+/// 3. Appends each source id to the canonical node's own `supersedes` list.
+///    `superseded_by` is never written directly (mem_8035b002) — it is a
+///    computed reverse index of `supersedes` edges, materialised at
+///    graph-build time, so every source node picks it up automatically.
 ///
 /// Unlike `rename_id` (which changes the node's own ID), this operation
 /// preserves the source node as an archived record.
@@ -5502,6 +5604,13 @@ pub fn merge_node(
     let mut modified_paths: Vec<PathBuf> = Vec::new();
     // Track each source ID → its file path for archiving
     let mut source_paths: HashMap<String, PathBuf> = HashMap::new();
+    // Track the canonical node's own path + its already-stored `supersedes`
+    // list, so the archive step below can append to it instead of writing a
+    // hand-written `superseded_by` on each source (mem_8035b002:
+    // `superseded_by` is a computed reverse index of `supersedes`, never
+    // written directly).
+    let mut canonical_path: Option<PathBuf> = None;
+    let mut canonical_supersedes: Vec<String> = Vec::new();
 
     for file_path in &files {
         let content = match std::fs::read_to_string(file_path) {
@@ -5527,6 +5636,13 @@ pub fn merge_node(
                 // Don't update reference fields in source files —
                 // they'll be archived separately.
                 continue;
+            }
+            if file_id == canonical_id {
+                canonical_path = Some(file_path.clone());
+                canonical_supersedes = crate::graph::parse_string_array(
+                    &serde_json::Value::Object(fm.clone()),
+                    "supersedes",
+                );
             }
         }
 
@@ -5604,7 +5720,9 @@ pub fn merge_node(
         }
     }
 
-    // Archive source nodes
+    // Archive source nodes: status=done only. `superseded_by` is never
+    // written directly (mem_8035b002) — it is a computed reverse index of
+    // the canonical node's `supersedes` edges, updated below.
     let mut nodes_archived = 0usize;
     for (src_id, src_path) in &source_paths {
         if !dry_run {
@@ -5612,10 +5730,6 @@ pub fn merge_node(
             updates.insert(
                 "status".to_string(),
                 serde_json::Value::String("done".to_string()),
-            );
-            updates.insert(
-                "superseded_by".to_string(),
-                serde_json::Value::String(canonical_id.to_string()),
             );
             if let Err(e) = update_document(src_path, updates) {
                 eprintln!("Warning: failed to archive {}: {}", src_id, e);
@@ -5625,6 +5739,42 @@ pub fn merge_node(
             }
         } else {
             nodes_archived += 1;
+        }
+    }
+
+    // Record the merge on the canonical node's own `supersedes` list — the
+    // one hand-writable half of the pair; `superseded_by` on each source is
+    // derived from this at graph-build time, never written here.
+    if !dry_run {
+        if let Some(path) = &canonical_path {
+            let mut merged = canonical_supersedes.clone();
+            for src_id in source_ids {
+                if !merged.contains(src_id) {
+                    merged.push(src_id.clone());
+                }
+            }
+            if merged != canonical_supersedes {
+                let mut updates = HashMap::new();
+                updates.insert(
+                    "supersedes".to_string(),
+                    serde_json::Value::Array(
+                        merged.into_iter().map(serde_json::Value::String).collect(),
+                    ),
+                );
+                if let Err(e) = update_document(path, updates) {
+                    eprintln!(
+                        "Warning: failed to record supersedes on canonical {}: {}",
+                        canonical_id, e
+                    );
+                } else {
+                    modified_paths.push(path.clone());
+                }
+            }
+        } else {
+            eprintln!(
+                "Warning: canonical node '{}' not found on disk; supersedes not recorded",
+                canonical_id
+            );
         }
     }
 
@@ -5645,13 +5795,7 @@ pub fn expand_special_update_keys(
     updates_map: &serde_json::Map<String, serde_json::Value>,
 ) -> anyhow::Result<std::collections::HashMap<String, serde_json::Value>> {
     let mut effective = std::collections::HashMap::new();
-    let special_keys = [
-        "_add_tags",
-        "_remove_tags",
-        "_add_depends_on",
-        "_remove_depends_on",
-        "superseded_by",
-    ];
+    let special_keys = ["_add_tags", "_remove_tags", "_add_depends_on", "_remove_depends_on"];
 
     for (key, value) in updates_map {
         if special_keys.contains(&key.as_str()) {
@@ -5827,16 +5971,11 @@ pub fn expand_special_update_keys(
         }
     }
 
-    // Handle superseded_by
-    if let Some(superseded_by) = updates_map.get("superseded_by") {
-        effective.insert("superseded_by".to_string(), superseded_by.clone());
-        if !effective.contains_key("status") {
-            effective.insert(
-                "status".to_string(),
-                serde_json::Value::String("done".to_string()),
-            );
-        }
-    }
+    // mem_8035b002: `superseded_by` is no longer a hand-writable field — it
+    // is passed through unchanged into `effective` so `update_document`'s
+    // reserved-keyword guard rejects it loudly, instead of silently
+    // swallowing it (as the old special-case here did) or writing a second,
+    // stale copy of what `supersedes` (on the OTHER node) already encodes.
 
     Ok(effective)
 }

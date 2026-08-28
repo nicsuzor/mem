@@ -889,7 +889,32 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
 
-        // Detect special status filters: "ready" and "blocked"
+        // mem_e6245fc2: `status=<S>` must filter strictly on the node's
+        // stored frontmatter `status` field. It previously did not:
+        // `status="ready"`/`status="blocked"` matched a *computed* leaf/
+        // unmet-deps set instead of the literal stored value (so a node
+        // stored `ready` but computed-blocked would vanish from
+        // `status="ready"`, and vice versa), and every other value was
+        // alias-resolved before comparison, so `status="archived"` silently
+        // returned the entire `done` set (`archived` resolves to `done`)
+        // instead of the correctly-empty archived set. An unsupported/
+        // unknown status value is now rejected outright rather than
+        // silently substituted for a different, larger set.
+        if let Some(s) = status {
+            if !crate::graph::is_valid_status(&s.to_ascii_lowercase()) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Invalid status filter \"{s}\". Must be one of the stored status values: {}.",
+                        crate::graph::VALID_STATUSES.join(", ")
+                    )),
+                    data: None,
+                });
+            }
+        }
+
+        // Retained only to choose which markdown rendering template / empty
+        // message to use below — no longer used to select a computed task set.
         let is_ready = status
             .map(|s| s.eq_ignore_ascii_case("ready"))
             .unwrap_or(false);
@@ -912,35 +937,15 @@ impl PkbSearchServer {
             graph.actionable_tasks(query_include_done)
         };
 
-        let mut tasks: Vec<_> = if is_ready {
-            // Use graph.ready_tasks() for the ready filter
-            let ready_ids: std::collections::HashSet<String> =
-                graph.ready_tasks().iter().map(|n| n.id.clone()).collect();
-            base_nodes
-                .into_iter()
-                .filter(|t| ready_ids.contains(&t.id))
-                .collect()
-        } else if is_blocked {
-            // Use graph.blocked_tasks() for the blocked filter
-            let blocked_ids: std::collections::HashSet<String> =
-                graph.blocked_tasks().iter().map(|n| n.id.clone()).collect();
-            base_nodes
-                .into_iter()
-                .filter(|t| blocked_ids.contains(&t.id))
-                .collect()
-        } else {
-            let mut all: Vec<_> = base_nodes.into_iter().collect();
-            if let Some(s) = status {
-                let s_canonical = crate::graph::resolve_status_alias(s);
-                all.retain(|t| {
-                    t.status
-                        .as_deref()
-                        .map(|st| st.eq_ignore_ascii_case(s_canonical))
-                        .unwrap_or(false)
-                });
-            }
-            all
-        };
+        let mut tasks: Vec<_> = base_nodes.into_iter().collect();
+        if let Some(s) = status {
+            tasks.retain(|t| {
+                t.status
+                    .as_deref()
+                    .map(|st| st.eq_ignore_ascii_case(s))
+                    .unwrap_or(false)
+            });
+        }
 
         if !include_done && !is_explicit_closed_status {
             tasks.retain(|t| {
@@ -1032,7 +1037,7 @@ impl PkbSearchServer {
         }
 
         if let Some(want_superseded) = has_superseded_by {
-            tasks.retain(|t| t.superseded_by.is_some() == want_superseded);
+            tasks.retain(|t| !t.superseded_by.is_empty() == want_superseded);
         }
 
         if let Some(min_score) = focus_score_gte {
@@ -1136,10 +1141,13 @@ impl PkbSearchServer {
                         if let Some(map) = obj.as_object_mut() {
                             map.insert(
                                 "superseded_by".to_string(),
-                                t.superseded_by
-                                    .clone()
-                                    .map(serde_json::Value::String)
-                                    .unwrap_or(serde_json::Value::Null),
+                                serde_json::Value::Array(
+                                    t.superseded_by
+                                        .iter()
+                                        .cloned()
+                                        .map(serde_json::Value::String)
+                                        .collect(),
+                                ),
                             );
                         }
                     }
@@ -1166,10 +1174,11 @@ impl PkbSearchServer {
                     "**Status:** {}\n",
                     t.status.as_deref().unwrap_or("-")
                 ));
-                if has_superseded_by.is_some() {
-                    if let Some(ref sup) = t.superseded_by {
-                        out.push_str(&format!("**Superseded by:** {}\n", sup));
-                    }
+                if has_superseded_by.is_some() && !t.superseded_by.is_empty() {
+                    out.push_str(&format!(
+                        "**Superseded by:** {}\n",
+                        t.superseded_by.join(", ")
+                    ));
                 }
                 if !t.depends_on.is_empty() {
                     out.push_str("**Blocked by:**\n");
@@ -1252,7 +1261,7 @@ impl PkbSearchServer {
                     })
                     .unwrap_or_else(|| "-".to_string());
                 if has_superseded_by.is_some() {
-                    let superseded_str = t.superseded_by.as_deref().unwrap_or("-");
+                    let superseded_str = if t.superseded_by.is_empty() { "-".to_string() } else { t.superseded_by.join(", ") };
                     out.push_str(&format!(
                         "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                         i + 1,
@@ -1300,7 +1309,7 @@ impl PkbSearchServer {
                 let pri = t.priority.unwrap_or(4);
                 let status_str = t.status.as_deref().unwrap_or("-");
                 if has_superseded_by.is_some() {
-                    let superseded_str = t.superseded_by.as_deref().unwrap_or("-");
+                    let superseded_str = if t.superseded_by.is_empty() { "-".to_string() } else { t.superseded_by.join(", ") };
                     out.push_str(&format!(
                         "| {} | {} | {} | {} | {} | {} |\n",
                         i + 1,
@@ -1490,6 +1499,34 @@ impl PkbSearchServer {
                         data: None,
                     });
                 }
+            }
+        }
+
+        // mem_8035b002: reject a `supersedes:` value naming an id that does
+        // not resolve — the same referential-integrity gap already closed
+        // for `parent:` above. Accepts a scalar, a comma-joined string, or a
+        // YAML sequence (matching `depends_on`'s parsing convention); every
+        // named target must exist.
+        if let Some(supersedes_val) = updates.get("supersedes") {
+            let targets = crate::graph::parse_string_array(
+                &serde_json::json!({ "supersedes": supersedes_val.clone() }),
+                "supersedes",
+            );
+            let graph = self.graph.read();
+            let unresolved: Vec<String> = targets
+                .iter()
+                .filter(|t| graph.resolve(t).is_none())
+                .cloned()
+                .collect();
+            if !unresolved.is_empty() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "supersedes target(s) not found in PKB: {}. Create the target(s) first or fix the id(s).",
+                        unresolved.join(", ")
+                    )),
+                    data: None,
+                });
             }
         }
 

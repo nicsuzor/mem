@@ -124,7 +124,7 @@ Bulk paths (`rebuild_graph()`, batch finalize, reindex) still run the full synch
 `GraphStore::resolve(query)` tries: exact ID match -> case-insensitive resolution map (id, task_id, filename stem, title, permalink). Used by most task/document tools.
 
 ### Status filters in list_tasks
-`status="ready"` = leaf tasks with no unmet deps, not done/cancelled, not learn type. `status="blocked"` = tasks with unmet deps or explicitly blocked status.
+`status=<S>` matches the node's stored frontmatter `status` field exactly (case-insensitive) — never a computed set. `status="ready"` matches only nodes literally stored `status: ready`; `status="blocked"` matches only nodes literally stored `status: blocked` (the computed unmet-deps view is exposed separately as the top-level `blocked` boolean on each row). An unsupported status value is rejected rather than silently aliased to a different set (e.g. `status="archived"` no longer returns `done`).
 
 ### String safety (Rust)
 Always use `str.floor_char_boundary(n)` before byte-slicing strings for display truncation. Direct `&str[..n]` panics on multi-byte UTF-8.
