@@ -1,6 +1,6 @@
 [package]
 name = "mem"
-version = "0.3.80"
+version = "0.3.81"
 edition = "2021"
 rust-version = "1.88"
 license = "GPL-3.0-or-later"
@@ -17,8 +17,8 @@ name = "pkb"
 path = "src/cli.rs"
 
 [[bin]]
-name = "pkb-excalidraw"
-path = "src/bin/pkb_excalidraw.rs"
+name = "excalidraw-view"
+path = "src/bin/excalidraw_view.rs"
 
 
 
