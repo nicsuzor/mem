@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.82](https://github.com/nicsuzor/mem/compare/mem-v0.3.81...mem-v0.3.82) (2026-08-28)
+
+
+### Features
+
+* **mcp:** add export_graph tool for GraphViz DOT export ([1dd6f0d](https://github.com/nicsuzor/mem/commit/1dd6f0d73ab541918ef43a69b41b7be263f43ce6))
+* **mcp:** add export_graph tool for GraphViz DOT export ([957c2b5](https://github.com/nicsuzor/mem/commit/957c2b5fc9eba6f237c0597f7fc9eef77c2089ee))
+
+
+### Bug Fixes
+
+* build errors and ONNX macOS download ([88c77b7](https://github.com/nicsuzor/mem/commit/88c77b7b636df01a69c8018b1b83e3fb186af491))
+
 ## [0.3.81](https://github.com/nicsuzor/mem/compare/mem-v0.3.80...mem-v0.3.81) (2026-08-28)
 
 
