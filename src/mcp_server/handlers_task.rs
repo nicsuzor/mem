@@ -1404,6 +1404,11 @@ impl PkbSearchServer {
             updates.insert("parent".to_string(), serde_json::Value::Null);
         }
 
+        // task_1381381c: agents must not originate priority bands via update_task.
+        if updates.contains_key("priority") {
+            return Err(Self::reject_agent_priority("update_task"));
+        }
+
         if updates.is_empty() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
