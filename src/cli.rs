@@ -3044,12 +3044,12 @@ async fn main() -> Result<()> {
                 (results, summary)
             };
 
-            // Write fixes
-            if fix {
-                let written = lint::write_fixes(&results);
-                if written > 0 {
-                    eprintln!("Fixed {} files", written);
-                }
+            // Write fixes. A missing id self-heals unconditionally (see
+            // lint_file), so this must run even when `--fix` wasn't passed —
+            // otherwise `pkb lint --refs` alone can't self-heal in CI.
+            let written = lint::write_fixes(&results);
+            if written > 0 {
+                eprintln!("Fixed {} files", written);
             }
 
             let elapsed = start.elapsed();

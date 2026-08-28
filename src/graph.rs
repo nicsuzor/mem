@@ -412,6 +412,17 @@ pub fn create_id(prefix: &str) -> String {
     format!("{}_{:08x}", snake_prefix, random)
 }
 
+/// Generate an ID by appending a random hex suffix to `prefix` verbatim —
+/// unlike [`create_id`], the prefix is not lowercased or underscore-normalized.
+/// Used for convention-specific ids (e.g. daily notes: `<date>-<hex>`) where the
+/// prefix's internal hyphens (a date like `2026-08-28`) must be preserved exactly.
+pub fn create_id_verbatim(prefix: &str) -> String {
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let random: u32 = rng.random();
+    format!("{}-{:08x}", prefix, random)
+}
+
 /// Normalize legacy/alternate status values to the canonical set defined in
 /// `aops-core/TAXONOMY.md`. Canonical statuses pass through unchanged.
 ///
