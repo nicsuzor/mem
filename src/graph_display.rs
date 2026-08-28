@@ -463,12 +463,44 @@ fn line_for_child(
     )
 }
 
+/// Human-readable name for the relation an edge belongs to, given the
+/// direction it was traversed in. Used to say *which* relation a `(cycle)`
+/// marker was found in, since `blocks`/`soft_blocks`/`children` (downstream)
+/// and `depends_on`/`soft_depends_on` (upstream) are walked as one merged
+/// tree for display but a cycle is only meaningful within a single relation.
+fn relation_name(direction: Direction, edge: Edge) -> &'static str {
+    match (direction, edge) {
+        (Direction::Upstream, Edge::Hard) => "depends_on",
+        (Direction::Upstream, Edge::Soft) => "soft_depends_on",
+        (Direction::Downstream, Edge::Hard) => "blocks",
+        (Direction::Downstream, Edge::Soft) => "soft_blocks",
+        (_, Edge::Child) => "children",
+    }
+}
+
 /// Recursively walk in either direction, emitting tree-formatted lines.
+///
+/// `path_ids` holds only the ancestors of the node currently being
+/// expanded — entries are removed on backtrack — so re-visiting an
+/// ancestor (rather than a node merely seen before) is what stops
+/// recursion. `path_edges` is the same ancestor chain paired with the edge
+/// relation used to reach each one, in order from the walk's root down to
+/// the current node; it lets a revisit be checked for whether every edge
+/// from the ancestor down to here — including the edge that closes the
+/// loop — belongs to the *same* relation. Only that case is a true cycle
+/// and gets marked `(cycle: <relation>)`. A revisit that mixes relations
+/// (e.g. reached once as a child, once as a dependency) or that reaches a
+/// node via two independent branches (a diamond, not an ancestor at all)
+/// is not a cycle in any single relation; recursion is still cut short to
+/// avoid unbounded output, tracked via the permanent `rendered` set, but no
+/// marker is printed.
 #[allow(clippy::too_many_arguments)]
 fn walk(
     gs: &GraphStore,
     out: &mut Vec<String>,
-    visited: &mut HashSet<String>,
+    path_ids: &mut HashSet<String>,
+    path_edges: &mut Vec<(String, Edge)>,
+    rendered: &mut HashSet<String>,
     node_id: &str,
     direction: Direction,
     prefix: String,
@@ -525,25 +557,38 @@ fn walk(
             Some(n) => n,
             None => continue,
         };
-        let already = !visited.insert((*next_id).clone());
+        let is_ancestor = path_ids.contains(next_id.as_str());
+        let is_cycle = is_ancestor && {
+            let suffix = match path_edges.iter().position(|(id, _)| id == next_id.as_str()) {
+                Some(idx) => &path_edges[idx + 1..],
+                None => &path_edges[..], // next_id is the walk's own root
+            };
+            suffix.iter().all(|(_, e)| e == edge)
+        };
+        let already_rendered = !is_ancestor && !rendered.insert((*next_id).clone());
         let mut line = line_for_child(next_node, &prefix, is_last, *edge, opts.plain);
-        if already {
+        if is_cycle {
             let dim_open = col(opts.plain, "\x1b[2m");
             let dim_close = col(opts.plain, "\x1b[0m");
-            line.push_str(&format!("{dim_open} (cycle){dim_close}"));
+            let rel = relation_name(direction, *edge);
+            line.push_str(&format!("{dim_open} (cycle: {rel}){dim_close}"));
         }
         out.push(line);
 
-        if !already {
+        if !is_ancestor && !already_rendered {
             let child_prefix = if is_last {
                 format!("{prefix}    ")
             } else {
                 format!("{prefix}\u{2502}   ")
             };
+            path_ids.insert((*next_id).clone());
+            path_edges.push(((*next_id).clone(), *edge));
             walk(
                 gs,
                 out,
-                visited,
+                path_ids,
+                path_edges,
+                rendered,
                 next_id,
                 direction,
                 child_prefix,
@@ -551,6 +596,8 @@ fn walk(
                 max_depth,
                 opts,
             );
+            path_edges.pop();
+            path_ids.remove(next_id.as_str());
         }
     }
 }
@@ -614,12 +661,17 @@ pub fn render_neighbourhood(
         !node.depends_on.is_empty() || (opts.include_soft && !node.soft_depends_on.is_empty());
     if has_upstream && opts.upstream_depth > 0 {
         out.push(format!("{bold_open}Upstream (blocks this):{bold_close}"));
-        let mut visited: HashSet<String> = HashSet::new();
-        visited.insert(node.id.clone());
+        let mut path_ids: HashSet<String> = HashSet::new();
+        path_ids.insert(node.id.clone());
+        let mut path_edges: Vec<(String, Edge)> = Vec::new();
+        let mut rendered: HashSet<String> = HashSet::new();
+        rendered.insert(node.id.clone());
         walk(
             gs,
             &mut out,
-            &mut visited,
+            &mut path_ids,
+            &mut path_edges,
+            &mut rendered,
             &node.id,
             Direction::Upstream,
             String::new(),
@@ -648,12 +700,17 @@ pub fn render_neighbourhood(
     if has_downstream && opts.downstream_depth > 0 {
         out.push(String::new());
         out.push(format!("{bold_open}Downstream (this blocks):{bold_close}"));
-        let mut visited: HashSet<String> = HashSet::new();
-        visited.insert(node.id.clone());
+        let mut path_ids: HashSet<String> = HashSet::new();
+        path_ids.insert(node.id.clone());
+        let mut path_edges: Vec<(String, Edge)> = Vec::new();
+        let mut rendered: HashSet<String> = HashSet::new();
+        rendered.insert(node.id.clone());
         walk(
             gs,
             &mut out,
-            &mut visited,
+            &mut path_ids,
+            &mut path_edges,
+            &mut rendered,
             &node.id,
             Direction::Downstream,
             String::new(),
@@ -1285,6 +1342,178 @@ mod tests {
         assert!(
             combined.contains("(child)") || combined.contains("Downstream"),
             "expected child section:\n{combined}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cycle-marker correctness: a diamond (two paths to the same node) is
+    // not a cycle; a true back-edge within one relation is.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn neighbourhood_diamond_is_not_marked_cycle() {
+        // root --blocks--> mid1 --blocks--> leaf
+        // root --blocks--> mid2 --blocks--> leaf
+        // `leaf` is reachable via two independent branches, not by looping
+        // back on itself, so it must never get a `(cycle)` marker even
+        // though the walk visits it twice.
+        let docs = vec![
+            make_doc_full(
+                "tasks/root.md",
+                "Root",
+                "task",
+                "active",
+                "d-root",
+                None,
+                &[],
+                &[],
+                &["d-mid1", "d-mid2"],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/mid1.md",
+                "Mid One",
+                "task",
+                "active",
+                "d-mid1",
+                None,
+                &[],
+                &[],
+                &["d-leaf"],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/mid2.md",
+                "Mid Two",
+                "task",
+                "active",
+                "d-mid2",
+                None,
+                &[],
+                &[],
+                &["d-leaf"],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/leaf.md",
+                "Leaf",
+                "task",
+                "active",
+                "d-leaf",
+                None,
+                &[],
+                &[],
+                &[],
+                &[],
+            ),
+        ];
+        let gs = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let opts = NeighbourhoodOpts {
+            plain: true,
+            ..Default::default()
+        };
+        let combined = render_neighbourhood(&gs, "d-root", &opts).join("\n");
+
+        assert!(
+            !combined.contains("(cycle"),
+            "diamond must not be marked as a cycle:\n{combined}"
+        );
+        assert!(
+            combined.contains("Leaf"),
+            "leaf should still be shown via at least one branch:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn neighbourhood_true_backedge_is_marked_cycle_with_relation() {
+        // task-x --blocks--> task-y --blocks--> task-x: a genuine back-edge,
+        // entirely within the `blocks` relation.
+        let docs = vec![
+            make_doc_full(
+                "tasks/x.md",
+                "Task X",
+                "task",
+                "active",
+                "cyc-x",
+                None,
+                &[],
+                &[],
+                &["cyc-y"],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/y.md",
+                "Task Y",
+                "task",
+                "active",
+                "cyc-y",
+                None,
+                &[],
+                &[],
+                &["cyc-x"],
+                &[],
+            ),
+        ];
+        let gs = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let opts = NeighbourhoodOpts {
+            plain: true,
+            ..Default::default()
+        };
+        let combined = render_neighbourhood(&gs, "cyc-x", &opts).join("\n");
+
+        assert!(
+            combined.contains("(cycle: blocks)"),
+            "true back-edge in `blocks` must be marked with its relation:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn neighbourhood_cross_relation_revisit_is_not_marked_cycle() {
+        // root --child--> mid, and mid --blocks--> root: mid reaches back to
+        // root, but via a different relation than the one used to reach
+        // mid, so this is not a cycle in any single relation. Recursion
+        // must still stop (else it would loop forever), but no marker
+        // should be printed.
+        let docs = vec![
+            make_doc_full(
+                "tasks/croot.md",
+                "C Root",
+                "epic",
+                "active",
+                "cr-root",
+                None,
+                &[],
+                &[],
+                &[],
+                &[],
+            ),
+            make_doc_full(
+                "tasks/cmid.md",
+                "C Mid",
+                "task",
+                "active",
+                "cr-mid",
+                Some("cr-root"),
+                &[],
+                &[],
+                &["cr-root"],
+                &[],
+            ),
+        ];
+        let gs = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let opts = NeighbourhoodOpts {
+            plain: true,
+            ..Default::default()
+        };
+        let combined = render_neighbourhood(&gs, "cr-root", &opts).join("\n");
+
+        assert!(
+            !combined.contains("(cycle"),
+            "a revisit across two different relations is not a single-relation cycle:\n{combined}"
+        );
+        assert!(
+            combined.contains("C Mid"),
+            "child should still be shown:\n{combined}"
         );
     }
 
