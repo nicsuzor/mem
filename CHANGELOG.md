@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.81](https://github.com/nicsuzor/mem/compare/mem-v0.3.80...mem-v0.3.81) (2026-08-28)
+
+
+### Features
+
+* **examples:** add live end-to-end probe against real MCP server (mem_eea75657) ([cef4460](https://github.com/nicsuzor/mem/commit/cef44604f9ea00bbf600f2a547319b6c123f3176))
+* **excalidraw:** rename companion binary to pkb-excalidraw ([03b4a04](https://github.com/nicsuzor/mem/commit/03b4a04738ec3efbf21da10f6d571b5836d85a67))
+* **ranking:** implement Phase 1 explicit sort tuple and affordable-loss filter ([eb28653](https://github.com/nicsuzor/mem/commit/eb28653a407f4425ada295881dd456107b909dbd))
+* **vectordb:** implement write-ahead log for instant PKB writes (mem_7f2a91c4) ([f69c024](https://github.com/nicsuzor/mem/commit/f69c024cd89a8690a151096bedf68399b41b6345))
+
+
+### Bug Fixes
+
+* **ci:** add --no-fail-fast to cargo test and convert frontmatter perf assertion to benchmark ([dc9d8c1](https://github.com/nicsuzor/mem/commit/dc9d8c10c10d53ff03db955f41252527f82f4e77))
+* **ci:** run cargo test with --no-fail-fast and convert frontmatter perf assertion to reporting benchmark ([63e149d](https://github.com/nicsuzor/mem/commit/63e149db66355cddf83f2cf56d6d332a86ed5725))
+* **crud:** add newline after closing frontmatter delimiter in observations CRUD ([ff54c7e](https://github.com/nicsuzor/mem/commit/ff54c7e273be639ab42f716edb67964e584d5be0))
+* **crud:** add newline after closing frontmatter delimiter in observations CRUD ([69798da](https://github.com/nicsuzor/mem/commit/69798daf82ae17926596743fe6476548a1146708))
+* **graph_display:** pkb deps no longer marks diamonds as (cycle) ([a0800db](https://github.com/nicsuzor/mem/commit/a0800dbcd550162df6e419ca4cdb5ca456b253db))
+* **lint:** self-heal missing ids instead of hard-failing CI ([c2a97f7](https://github.com/nicsuzor/mem/commit/c2a97f7433caf69d064647fa0a21683df199931a))
+* **mcp:** add blocker, reason, and evidence to UPDATE_KNOWN_KEYS in update_task ([c498a7e](https://github.com/nicsuzor/mem/commit/c498a7e09bbb91885e4a12474b2f0073a85e3df5))
+* **mcp:** self-heal stale by-id reads, warn on list-surface index drift ([515262f](https://github.com/nicsuzor/mem/commit/515262f0bf2a117fc1a3df6e25f3a4f91915fdd4))
+* **pkb:** land write-path/schema hardening wave (6 defects) ([e8c4b69](https://github.com/nicsuzor/mem/commit/e8c4b69cba11ea5507ee9eef21dc7605412fd354))
+* **ranking:** enforce canonical node ordering for deterministic graph rebuilds (mem_5744de8f) ([39d8b3f](https://github.com/nicsuzor/mem/commit/39d8b3fb61c157469386507200fbac71d72375fe))
+* **ranking:** enforce canonical node ordering for deterministic graph rebuilds (mem_5744de8f) ([bd3bd62](https://github.com/nicsuzor/mem/commit/bd3bd623d2fa003411846f04f0a2d6f3500c58cb))
+* **ranking:** guard SEV4 gate by commitment, filter affordable loss in focus picks, and bound approaching deadline horizon ([b48bd97](https://github.com/nicsuzor/mem/commit/b48bd971f952888b1e8d73dbdb028608e8667ba9))
+* **ranking:** rank structurally-identified human gates and surface in focus picks ([50e36b5](https://github.com/nicsuzor/mem/commit/50e36b57469ea4b01eade167b92c11afa4a7e149))
+* **ranking:** refine human gate detection boundaries, unblock focus picks surfacing, and consolidate sorting ([c5e8abd](https://github.com/nicsuzor/mem/commit/c5e8abd0500b44fe10e597304c70aa0d780032e0))
+* **vectordb:** address review findings for WAL atomic compaction, append framing, and durability ([e9a9b84](https://github.com/nicsuzor/mem/commit/e9a9b8475e36db1ebcfe8dac8d7939b42cccd73b))
+
+
+### Tests
+
+* **concurrency:** update concurrent write test to mutate effort instead of priority ([136eeab](https://github.com/nicsuzor/mem/commit/136eeab01e7f8e9db247ea9f86cc4ffc8a58b1cc))
+* **document_crud:** lock in body round-trip for create/create_task with long fenced bodies ([eff9437](https://github.com/nicsuzor/mem/commit/eff943734ce74da3a0e517481f79591858567852))
+* **mcp:** enable test_partial_status_release_and_list_roundtrip and update metadata patch fixture to tags ([05c06ce](https://github.com/nicsuzor/mem/commit/05c06ceab3104b68836ddf476c042c37d176ddcf))
+
 ## [0.3.80](https://github.com/nicsuzor/mem/compare/mem-v0.3.79...mem-v0.3.80) (2026-08-26)
 
 
