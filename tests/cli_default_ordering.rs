@@ -61,7 +61,7 @@ fn seed(dir: &std::path::Path) {
     let tasks = [
         ("t-hi", "priority: 0\n"),
         ("t-mid", "priority: 1\n"),
-        ("t-sev", "priority: 2\nseverity: 4\n"),
+        ("t-sev", "priority: 2\nseverity: 4\ngoal_type: committed\n"),
     ];
     for (id, extra) in tasks {
         std::fs::write(

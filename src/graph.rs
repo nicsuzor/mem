@@ -1469,6 +1469,53 @@ impl GraphNode {
             parse_warnings,
         }
     }
+
+    /// Returns true if this node represents a structurally-identified human gate
+    /// (e.g. awaiting human decision, review, approval, or sign-off).
+    ///
+    /// Structurally identified from:
+    /// - `status == "review"` (task parked awaiting human review)
+    /// - tags indicating human gating (`human-approval`, `decision`, `sign-off`, `signoff`,
+    ///   `one-way-door`, `wf-human-approval`)
+    /// - title/label conventions with boundary delimiters (`DECISION:`, `DECISION (`, `SIGN-OFF:`, `Sign-off - `, `Sign-off:`)
+    pub fn is_human_gate(&self) -> bool {
+        if let Some(ref s) = self.status {
+            if s.eq_ignore_ascii_case("review") {
+                return true;
+            }
+        }
+        for tag in &self.tags {
+            let t = tag.as_str();
+            if t.eq_ignore_ascii_case("human-approval")
+                || t.eq_ignore_ascii_case("decision")
+                || t.eq_ignore_ascii_case("sign-off")
+                || t.eq_ignore_ascii_case("signoff")
+                || t.eq_ignore_ascii_case("one-way-door")
+                || t.eq_ignore_ascii_case("wf-human-approval")
+            {
+                return true;
+            }
+        }
+        const GATE_PREFIXES: &[&str] = &[
+            "decision:",
+            "decision (",
+            "decision - ",
+            "sign-off:",
+            "sign-off - ",
+            "sign-off (",
+            "signoff:",
+            "signoff - ",
+            "signoff (",
+        ];
+        for prefix in GATE_PREFIXES {
+            if self.label.len() >= prefix.len()
+                && self.label.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+            {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
