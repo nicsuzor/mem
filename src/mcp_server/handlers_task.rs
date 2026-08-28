@@ -1404,6 +1404,68 @@ impl PkbSearchServer {
             updates.insert("parent".to_string(), serde_json::Value::Null);
         }
 
+        // Reject unknown update fields instead of silently writing them into
+        // frontmatter (mirrors the `create_task` guard below). Without this,
+        // a caller's typo'd or invented field name — e.g. `body_append`,
+        // guessing at append-like semantics that don't exist on this tool —
+        // lands verbatim as a YAML key in the task header.
+        const UPDATE_KNOWN_KEYS: &[&str] = &[
+            "title",
+            "status",
+            "type",
+            "priority",
+            "tags",
+            "parent",
+            "depends_on",
+            "soft_depends_on",
+            "blocks",
+            "soft_blocks",
+            "assignee",
+            "complexity",
+            "effort",
+            "consequence",
+            "severity",
+            "goal_type",
+            "body",
+            "content",
+            "stakeholder",
+            "waiting_since",
+            "due",
+            "project",
+            "session_id",
+            "issue_url",
+            "follow_up_tasks",
+            "release_summary",
+            "contributes_to",
+            "supersedes",
+            "superseded_by",
+            "blocked",
+            "completion_evidence",
+            "pr_url",
+            "_add_tags",
+            "_remove_tags",
+            "_add_depends_on",
+            "_remove_depends_on",
+        ];
+        let unknown: Vec<&str> = updates
+            .keys()
+            .map(|k| k.as_str())
+            .filter(|k| !UPDATE_KNOWN_KEYS.contains(k))
+            .collect();
+        if !unknown.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "Unknown keys in update_task: {:?}. These are not recognized task fields \
+                     and would otherwise be written verbatim into the YAML header. Use `append` \
+                     to add content to the document body, or extend the update_task schema if \
+                     this is meant to be a real field.",
+                    unknown
+                )),
+                data: None,
+            });
+        }
+
         if updates.is_empty() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,

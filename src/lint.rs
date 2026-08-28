@@ -696,6 +696,23 @@ fn check_frontmatter(
         }
     }
 
+    // Leading blank lines inside a YAML block-scalar value — an artifact of
+    // serializing a string that itself started with blank lines (e.g. an
+    // unvalidated caller-supplied field like `body_append` whose text began
+    // with "\n\n..."). See aops-cb065324.
+    if let Some(fm_section) = extract_frontmatter_section(content) {
+        if has_leading_blank_block_scalar(fm_section) {
+            diags.push(Diagnostic {
+                severity: Severity::Style,
+                rule: "fm-block-scalar-whitespace",
+                message: "YAML block-scalar value in frontmatter has leading blank line(s)"
+                    .into(),
+                line: None,
+                fixable: true,
+            });
+        }
+    }
+
     // Prohibited: body — content must live in the markdown body section, not frontmatter
     if fm.contains_key("body") {
         diags.push(Diagnostic {
@@ -949,6 +966,66 @@ fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
             fixable: true,
         });
     }
+}
+
+/// Extract the frontmatter block's raw text (between the `---` delimiters,
+/// exclusive of both, and with no trailing newline). Mirrors the boundary
+/// math used throughout this module's autofixes. Returns `None` if the file
+/// has no well-formed frontmatter block.
+fn extract_frontmatter_section(content: &str) -> Option<&str> {
+    if !content.starts_with("---\n") {
+        return None;
+    }
+    let end = content[3..].find("\n---")?;
+    Some(&content[4..end + 3])
+}
+
+/// True if `line` is a top-level (non-indented, non-list-item) `key: |...`
+/// or `key: >...` YAML block-scalar opener, with any chomping/indent
+/// indicator (`|-`, `|+`, `|2`, `>-`, …).
+fn is_block_scalar_opener(line: &str) -> bool {
+    if line.starts_with(' ') || line.starts_with('\t') || line.starts_with('-') {
+        return false;
+    }
+    match line.find(':') {
+        Some(idx) => {
+            let after = line[idx + 1..].trim();
+            after.starts_with('|') || after.starts_with('>')
+        }
+        None => false,
+    }
+}
+
+/// True if any block-scalar value in the frontmatter is immediately followed
+/// by one or more blank lines before its first line of content.
+fn has_leading_blank_block_scalar(fm_section: &str) -> bool {
+    let lines: Vec<&str> = fm_section.lines().collect();
+    lines.iter().enumerate().any(|(i, line)| {
+        is_block_scalar_opener(line)
+            && lines.get(i + 1).is_some_and(|next| next.trim().is_empty())
+    })
+}
+
+/// Remove blank lines that immediately follow a block-scalar opener, before
+/// its first line of content. Surgical: only touches those specific blank
+/// lines, never the delimiters or any other frontmatter text.
+fn strip_leading_blank_block_scalar_lines(fm_section: &str) -> String {
+    let lines: Vec<&str> = fm_section.lines().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        out.push(lines[i]);
+        if is_block_scalar_opener(lines[i]) {
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim().is_empty() {
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    out.join("\n")
 }
 
 // ── Auto-fix engine ──────────────────────────────────────────────────────
@@ -1281,6 +1358,24 @@ fn apply_fixes(
                 }
             }
             result = format!("---\n{}---{}", new_fm, &result[fm_end + 4..]);
+        }
+    }
+
+    // Fix 7b: Strip leading blank lines from YAML block-scalar frontmatter
+    // values — an artifact of serializing a string that itself started with
+    // blank lines (see aops-cb065324, e.g. a `body_append: |2-` header whose
+    // block scalar opens with two empty lines before its actual content).
+    if result.starts_with("---\n") {
+        if let Some(end) = result[3..].find("\n---") {
+            let fm_end = end + 3;
+            let fm_section = &result[4..fm_end];
+            if has_leading_blank_block_scalar(fm_section) {
+                let mut fixed_fm = strip_leading_blank_block_scalar_lines(fm_section);
+                if !fixed_fm.ends_with('\n') {
+                    fixed_fm.push('\n');
+                }
+                result = format!("---\n{}---{}", fixed_fm, &result[fm_end + 4..]);
+            }
         }
     }
 
@@ -2575,6 +2670,42 @@ Body.\n",
         assert!(
             fixed.contains("type: epic"),
             "fix should rewrite type: project → epic, got:\n{fixed}"
+        );
+    }
+
+    // aops-cb065324: a leaked call arg (e.g. `body_append`) serialized through
+    // serde_yaml with a leading "\n\n" produces exactly this shape.
+    #[test]
+    fn detects_block_scalar_leading_blank_lines() {
+        let content = "---\nid: test-abc12345\ntitle: Test\ntype: task\nassignee: nic\nbody_append: |2-\n\n\n  **2026-04-27 update**: Scripts arrived. Unblocking now.\ncontributes_to:\n---\n\nBody.\n";
+        let diags = lint_str(content);
+        assert!(
+            diags.iter().any(|d| d.rule == "fm-block-scalar-whitespace"),
+            "expected fm-block-scalar-whitespace, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn fixes_block_scalar_leading_blank_lines() {
+        let content = "---\nid: test-abc12345\ntitle: Test\ntype: task\nassignee: nic\nbody_append: |2-\n\n\n  **2026-04-27 update**: Scripts arrived. Unblocking now.\ncontributes_to:\n---\n\nBody.\n";
+        let fixed = fix_str(content);
+        assert!(
+            fixed.contains("body_append: |2-\n  **2026-04-27 update**"),
+            "expected leading blank lines stripped from the block scalar, got:\n{fixed}"
+        );
+        // The `---` delimiters and every other key must survive untouched.
+        assert!(fixed.starts_with("---\n"));
+        assert!(fixed.contains("\nassignee: nic\n"));
+        assert!(fixed.contains("\ncontributes_to:\n---\n"));
+    }
+
+    #[test]
+    fn no_false_positive_on_normal_block_scalar() {
+        let content = "---\nid: test-abc12345\ntitle: Test\ntype: task\nconsequence: |\n  This is fine.\n  No leading blanks.\n---\n\nBody.\n";
+        let diags = lint_str(content);
+        assert!(
+            !diags.iter().any(|d| d.rule == "fm-block-scalar-whitespace"),
+            "should not flag a block scalar with no leading blank lines, got: {diags:?}"
         );
     }
 }
