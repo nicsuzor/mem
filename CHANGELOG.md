@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.83](https://github.com/nicsuzor/mem/compare/mem-v0.3.82...mem-v0.3.83) (2026-08-28)
+
+
+### Bug Fixes
+
+* restore pkb-excalidraw binary in Cargo.toml after release-please regression ([c1287cc](https://github.com/nicsuzor/mem/commit/c1287ccb8a486cae4f70c57c299eda56466831df))
+
 ## [0.3.82](https://github.com/nicsuzor/mem/compare/mem-v0.3.81...mem-v0.3.82) (2026-08-28)
 
 
