@@ -1710,16 +1710,16 @@ impl PkbSearchServer {
                         "status".to_string(),
                         serde_json::Value::String(ns.to_string()),
                     );
-                    for (_, desc_path) in &open_descs {
-                        if let Err(e) =
-                            crate::document_crud::update_document(desc_path, desc_updates.clone())
-                        {
-                            tracing::warn!(
-                                "recursive close: failed to update {:?}: {}",
-                                desc_path,
-                                e
-                            );
-                        } else if let Some(doc) =
+                    for (desc_id, desc_path) in &open_descs {
+                        crate::document_crud::update_document(desc_path, desc_updates.clone())
+                            .map_err(|e| McpError {
+                                code: ErrorCode::INTERNAL_ERROR,
+                                message: Cow::from(format!(
+                                    "Failed to recursively close child task '{desc_id}': {e}"
+                                )),
+                                data: None,
+                            })?;
+                        if let Some(doc) =
                             crate::pkb::parse_file_relative(desc_path, &self.pkb_root)
                         {
                             self.rebuild_graph_for_pkb_document(&doc);
@@ -1767,28 +1767,33 @@ impl PkbSearchServer {
             .map(|s| s.to_string());
 
         let update_map = {
-            let graph = self.graph.read();
-            let node = graph.resolve(&canonical_id).ok_or_else(|| McpError {
-                code: ErrorCode::INTERNAL_ERROR,
-                message: std::borrow::Cow::from(format!(
-                    "Failed to resolve canonical id: {canonical_id}"
-                )),
-                data: None,
+            let doc = crate::pkb::parse_file_relative(&path, &self.pkb_root).ok_or_else(|| {
+                McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from(format!("Failed to parse task file at {}", path.display())),
+                    data: None,
+                }
             })?;
+            let disk_node = crate::graph::GraphNode::from_pkb_document(&doc);
             let mut filtered_updates = serde_json::Map::new();
             for (k, v) in &updates {
                 if k != "completion_evidence" {
                     filtered_updates.insert(k.clone(), v.clone());
                 }
             }
-            crate::document_crud::expand_special_update_keys(&node, &filtered_updates).map_err(
-                |e| McpError {
+            crate::document_crud::expand_special_update_keys(&disk_node, &filtered_updates)
+                .map_err(|e| McpError {
                     code: ErrorCode::INVALID_PARAMS,
                     message: std::borrow::Cow::from(format!("Invalid updates: {e}")),
                     data: None,
-                },
-            )?
+                })?
         };
+
+        if update_map.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Task {id} unchanged (no modifications)"
+            ))]));
+        }
 
         // Per-phase timing for write-path perf investigation (task-a4dcc039).
         // Emitted at debug; set RUST_LOG=mem::mcp_server=debug to observe.

@@ -299,14 +299,31 @@ impl PkbSearchServer {
             elapsed_ms = _t_snap.elapsed().as_secs_f64() * 1000.0
         );
 
+        // Clear patched tracker at start so any concurrent writes landing during
+        // scan and build are tracked and re-applied at swap time.
+        self.patched_during_rebuild.lock().clear();
+
         let files = crate::pkb::scan_directory(&self.pkb_root);
         let docs: Vec<crate::pkb::PkbDocument> = files
             .par_iter()
             .filter_map(|p| crate::pkb::parse_file_relative(p, &self.pkb_root))
             .collect();
 
-        let new_graph = GraphStore::build_with_embeddings(&docs, &self.pkb_root, &snapshot);
-        *self.graph.write() = new_graph;
+        let mut new_graph = GraphStore::build_with_embeddings(&docs, &self.pkb_root, &snapshot);
+        {
+            let mut g = self.graph.write();
+            let patched_ids: Vec<String> =
+                self.patched_during_rebuild.lock().iter().cloned().collect();
+            for id in &patched_ids {
+                if let Some(live_node) = g.nodes_map().get(id).cloned() {
+                    new_graph.replace_node(live_node);
+                }
+            }
+            if !patched_ids.is_empty() {
+                new_graph.reclassify();
+            }
+            *g = new_graph;
+        }
         *self.last_reindex.write() = ReindexStatus {
             timestamp: chrono::Utc::now().to_rfc3339(),
             outcome: "ok".to_string(),

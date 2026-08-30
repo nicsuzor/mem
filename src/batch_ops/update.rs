@@ -139,8 +139,17 @@ pub fn batch_update(
             }
         }
 
+        let file_path = if node.path.is_absolute() {
+            node.path.clone()
+        } else {
+            pkb_root.join(&node.path)
+        };
+        let disk_doc = crate::pkb::parse_file_relative(&file_path, pkb_root);
+        let disk_node = disk_doc.as_ref().map(crate::graph::GraphNode::from_pkb_document);
+        let node_ref = disk_node.as_ref().unwrap_or(node);
+
         // Build the effective updates for this node
-        let effective = match crate::document_crud::expand_special_update_keys(node, updates_map) {
+        let effective = match crate::document_crud::expand_special_update_keys(node_ref, updates_map) {
             Ok(e) => e,
             Err(e) => {
                 summary.errors.push(TaskError {

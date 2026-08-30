@@ -2354,3 +2354,115 @@ use super::*;
         assert!(!get_task_err.message.contains(root_str));
         assert!(!get_task_err.message.contains("/"));
     }
+
+    #[test]
+    fn test_update_task_empty_updates_returns_unchanged_and_does_not_modify_file() {
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/noop-task.md",
+            "---\nid: noop-task\ntitle: Noop Task\ntype: task\nstatus: ready\nassignee: alice\nmodified: \"2026-08-30T10:00:00Z\"\nlast_modified: \"2026-08-30T10:00:00Z\"\n---\n\n# Body\n",
+        )]);
+
+        let file_path = tmp.path().join("tasks/noop-task.md");
+        let before_content = std::fs::read_to_string(&file_path).unwrap();
+
+        let res = server
+            .handle_update_task(&json!({
+                "id": "noop-task",
+                "status": "ready",
+                "assignee": "alice",
+            }))
+            .unwrap();
+
+        let text = res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(
+            text.contains("unchanged"),
+            "empty expansion update should report unchanged, got: {text}"
+        );
+
+        let after_content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(
+            before_content, after_content,
+            "file on disk must NOT be rewritten or modified when expansion is empty"
+        );
+    }
+
+    #[test]
+    fn test_update_task_noop_evaluated_against_disk_not_stale_index() {
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/stale-index-task.md",
+            "---\nid: stale-index-task\ntitle: Stale Task\ntype: task\nstatus: ready\n---\n\n# Body\n",
+        )]);
+
+        // Artificially corrupt in-memory graph index to believe status is already "done"
+        {
+            let mut g = server.graph.write();
+            if let Some(mut node) = g.get_node("stale-index-task").cloned() {
+                node.status = Some("done".to_string());
+                g.replace_node(node);
+            }
+        }
+
+        // Now call update_task with status="done" and completion_evidence.
+        // Because on disk the status is actually "ready", this is NOT a no-op against disk.
+        let res = server
+            .handle_update_task(&json!({
+                "id": "stale-index-task",
+                "status": "done",
+                "completion_evidence": "Completed work verified on disk",
+            }))
+            .expect("update_task should succeed and write to disk despite stale in-memory graph");
+
+        let text = res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(
+            text.contains("updated"),
+            "must report updated, got: {text}"
+        );
+
+        let file_path = tmp.path().join("tasks/stale-index-task.md");
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            content.contains("status: done"),
+            "file on disk must have status: done written"
+        );
+    }
+
+    #[test]
+    fn test_recursive_close_failure_is_propagated_as_error() {
+        let (tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/parent-task.md",
+                "---\nid: parent-task\ntitle: Parent\ntype: task\nstatus: ready\n---\n\n# Parent\n",
+            ),
+            (
+                "tasks/child-task.md",
+                "---\nid: child-task\ntitle: Child\ntype: task\nstatus: ready\nparent: parent-task\n---\n\n# Child\n",
+            ),
+        ]);
+
+        // Remove child file from disk so that child update_document fails
+        let child_path = tmp.path().join("tasks/child-task.md");
+        std::fs::remove_file(&child_path).unwrap();
+
+        // Attempting recursive complete_task must FAIL and propagate error, not claim success
+        let err = server
+            .handle_complete_task(&json!({
+                "id": "parent-task",
+                "completion_evidence": "Parent done",
+                "recursive": true,
+            }))
+            .unwrap_err();
+
+        assert!(
+            err.message.contains("child task") || err.message.contains("child-task"),
+            "error must mention failure to recursively close child: {}",
+            err.message
+        );
+    }
