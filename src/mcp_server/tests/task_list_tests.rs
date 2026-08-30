@@ -1064,4 +1064,146 @@ use super::*;
         assert!(warnings[0].get("message").and_then(|m| m.as_str()).unwrap().contains("missing 'type' field"));
     }
 
+    #[test]
+    fn test_task_summary_global_and_project_scoping_regression() {
+        let docs = vec![
+            make_container_doc("projects/p1.md", "Project One", "p1", "proj-one"),
+            make_container_doc("projects/p2.md", "Project Two", "p2", "proj-two"),
+            // proj-one: 3 ready tasks, 0 blocked
+            make_doc_with_priority("tasks/t1.md", "T1", "task", "ready", "t1", Some("p1"), &[], 1, None),
+            make_doc_with_priority("tasks/t2.md", "T2", "task", "ready", "t2", Some("p1"), &[], 2, None),
+            make_doc_with_priority("tasks/t3.md", "T3", "task", "ready", "t3", Some("p1"), &[], 3, None),
+            // proj-two: 1 ready task, 1 blocked task
+            make_doc_with_priority("tasks/t4.md", "T4", "task", "ready", "t4", Some("p2"), &[], 1, None),
+            make_doc_with_priority("tasks/t5.md", "T5", "task", "blocked", "t5", Some("p2"), &["t4"], 2, None),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-summary"));
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let root = std::env::temp_dir().join(format!("mem-test-summary-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        let polecat = "projects:\n  proj-one:\n    aliases: [ProjectOne]\n  proj-two:\n    aliases: [ProjectTwo]\n";
+        let _ = std::fs::write(root.join("polecat.yaml"), polecat);
+        let db = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root,
+            db,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // 1. Global summary (no project parameter)
+        let global_res = server.handle_task_summary(&json!({})).unwrap();
+        let global_text = global_res.content[0].raw.as_text().unwrap().text.as_str();
+        let global_val: serde_json::Value = serde_json::from_str(global_text).unwrap();
+
+        let global_ready = global_val.get("ready").unwrap().as_u64().unwrap();
+        let global_blocked = global_val.get("blocked").unwrap().as_u64().unwrap();
+        assert_eq!(global_ready, 4, "global ready count matches test graph");
+        assert_eq!(global_blocked, 1, "global blocked count matches test graph (t5)");
+
+        // 2. Project-scoped summary for proj-one (3 ready, 0 blocked)
+        let p1_res = server.handle_task_summary(&json!({"project": "proj-one"})).unwrap();
+        let p1_text = p1_res.content[0].raw.as_text().unwrap().text.as_str();
+        let p1_val: serde_json::Value = serde_json::from_str(p1_text).unwrap();
+        let p1_ready = p1_val.get("ready").unwrap().as_u64().unwrap();
+        let p1_blocked = p1_val.get("blocked").unwrap().as_u64().unwrap();
+        assert_eq!(p1_ready, 3);
+        assert_eq!(p1_blocked, 0);
+
+        // Check against list_tasks for proj-one
+        let p1_list_res = server
+            .handle_list_tasks(&json!({"project": "proj-one", "status": "ready", "format": "json"}))
+            .unwrap();
+        let p1_list_text = p1_list_res.content[0].raw.as_text().unwrap().text.as_str();
+        let p1_list_val: serde_json::Value = serde_json::from_str(p1_list_text).unwrap();
+        let p1_list_total = p1_list_val.get("total").unwrap().as_u64().unwrap();
+        assert_eq!(p1_ready, p1_list_total, "task_summary(proj-one).ready == list_tasks(proj-one, ready).total");
+
+        // Check alias resolution: ProjectOne alias matches proj-one
+        let p1_alias_res = server.handle_task_summary(&json!({"project": "ProjectOne"})).unwrap();
+        let p1_alias_text = p1_alias_res.content[0].raw.as_text().unwrap().text.as_str();
+        let p1_alias_val: serde_json::Value = serde_json::from_str(p1_alias_text).unwrap();
+        assert_eq!(
+            p1_alias_val.get("ready").unwrap().as_u64().unwrap(),
+            p1_ready,
+            "alias ProjectOne must match proj-one"
+        );
+
+        // 3. Project-scoped summary for proj-two (1 ready, 1 blocked)
+        let p2_res = server.handle_task_summary(&json!({"project": "proj-two"})).unwrap();
+        let p2_text = p2_res.content[0].raw.as_text().unwrap().text.as_str();
+        let p2_val: serde_json::Value = serde_json::from_str(p2_text).unwrap();
+        let p2_ready = p2_val.get("ready").unwrap().as_u64().unwrap();
+        let p2_blocked = p2_val.get("blocked").unwrap().as_u64().unwrap();
+        assert_eq!(p2_ready, 1);
+        assert_eq!(p2_blocked, 1);
+
+        let p2_list_res = server
+            .handle_list_tasks(&json!({"project": "proj-two", "status": "ready", "format": "json"}))
+            .unwrap();
+        let p2_list_text = p2_list_res.content[0].raw.as_text().unwrap().text.as_str();
+        let p2_list_val: serde_json::Value = serde_json::from_str(p2_list_text).unwrap();
+        let p2_list_total = p2_list_val.get("total").unwrap().as_u64().unwrap();
+        assert_eq!(p2_ready, p2_list_total, "task_summary(proj-two).ready == list_tasks(proj-two, ready).total");
+
+        // Assert that the two projects have differing counts (3 vs 1)
+        assert_ne!(p1_ready, p2_ready, "proj-one and proj-two have differing ready counts");
+        assert_ne!(
+            p1_val,
+            p2_val,
+            "task_summary for proj-one and proj-two produce different summaries"
+        );
+
+        // 4. Non-existent project returns zeros
+        let nonexist_res = server.handle_task_summary(&json!({"project": "does-not-exist"})).unwrap();
+        let nonexist_text = nonexist_res.content[0].raw.as_text().unwrap().text.as_str();
+        let nonexist_val: serde_json::Value = serde_json::from_str(nonexist_text).unwrap();
+        assert_eq!(nonexist_val.get("ready").unwrap().as_u64().unwrap(), 0);
+        assert_eq!(nonexist_val.get("blocked").unwrap().as_u64().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_task_summary_unsupported_parameters_rejected() {
+        let server = build_test_server();
+
+        // 1. Unsupported parameter status
+        let err = server
+            .handle_task_summary(&json!({"status": "ready"}))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("Unsupported parameter(s) for task_summary: status"),
+            "Error message must name unsupported parameter: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("task_summary only accepts 'project'"),
+            "Error message must state allowed parameter: {}",
+            err.message
+        );
+
+        // 2. Unsupported parameter foo
+        let err2 = server
+            .handle_task_summary(&json!({"foo": "bar"}))
+            .unwrap_err();
+        assert_eq!(err2.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err2.message.contains("Unsupported parameter(s) for task_summary: foo"),
+            "Error message must name unsupported parameter: {}",
+            err2.message
+        );
+
+        // 3. Non-string project parameter
+        let err3 = server
+            .handle_task_summary(&json!({"project": 123}))
+            .unwrap_err();
+        assert_eq!(err3.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err3.message.contains("must be a string"),
+            "Error message must indicate project must be string: {}",
+            err3.message
+        );
+    }
 

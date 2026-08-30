@@ -1741,6 +1741,62 @@ use super::*;
         );
     }
 
+    // ── mem_bc1ed756: a node with stored status: ready, at least one child,
+    // and all depends_on targets closed (non-leaf unblocked stored-ready)
+    // is reachable by status="ready" (and has blocked: false in JSON output).
+
+    #[test]
+    fn test_list_tasks_status_ready_includes_unblocked_non_leaf_node() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-dep-closed.md",
+                "---\nid: task-dep-closed\ntitle: Closed Dependency\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Closed Dependency\n",
+            ),
+            (
+                "tasks/task-parent-ready.md",
+                "---\nid: task-parent-ready\ntitle: Parent Ready Task\ntype: task\nstatus: ready\ndepends_on: [task-dep-closed]\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent Ready Task\n",
+            ),
+            (
+                "tasks/task-child.md",
+                "---\nid: task-child\ntitle: Child Task\ntype: task\nstatus: queued\nparent: task-parent-ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child Task\n",
+            ),
+        ]);
+
+        let result = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&result);
+        let parent = tasks
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-parent-ready"))
+            .expect("unblocked non-leaf stored-ready node must be returned by status=\"ready\"");
+
+        assert_eq!(
+            parent.get("status").and_then(|v| v.as_str()),
+            Some("ready"),
+            "task-parent-ready status must be ready"
+        );
+        assert_eq!(
+            parent.get("blocked").and_then(|v| v.as_bool()),
+            Some(false),
+            "unblocked task-parent-ready must have blocked: false"
+        );
+
+        // Also test markdown output format returns the non-leaf ready task
+        let res_md = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "markdown"}))
+            .unwrap();
+        let md_text = res_md
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(
+            md_text.contains("task-parent-ready"),
+            "markdown status=\"ready\" output must include unblocked non-leaf task-parent-ready: {md_text}"
+        );
+    }
+
     #[test]
     fn test_blocker_resolution_case_insensitive_mcp() {
         // Blocker task has lowercase id: "academicops-d067e425", status: "done"

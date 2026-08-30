@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use crate::graph::is_completed;
+use crate::graph::{is_completed, GraphNode};
 use crate::graph_store::GraphStore;
 
 use super::{PkbSearchServer, MAX_RESULTS, GOAL_TYPE_ENUM};
@@ -1867,7 +1867,48 @@ impl PkbSearchServer {
     // BATCH OPERATIONS
     // =========================================================================
 
-    pub(crate) fn handle_task_summary(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_task_summary(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        if let Some(obj) = args.as_object() {
+            let unsupported: Vec<&str> = obj
+                .keys()
+                .filter(|k| k.as_str() != "project")
+                .map(|k| k.as_str())
+                .collect();
+            if !unsupported.is_empty() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Unsupported parameter(s) for task_summary: {}. task_summary only accepts 'project'. Use list_tasks for other filters (e.g. status, priority, type).",
+                        unsupported.join(", ")
+                    )),
+                    data: None,
+                });
+            }
+        }
+
+        if let Some(v) = args.get("project") {
+            if !v.is_string() && !v.is_null() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Invalid parameter: 'project' must be a string."),
+                    data: None,
+                });
+            }
+        }
+
+        let project = args
+            .get("project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+
+        let resolved_slug = project.and_then(|p| {
+            crate::polecat_config::PolecatRegistry::load(&self.pkb_root)
+                .ok()
+                .flatten()
+                .and_then(|reg| reg.resolve(p))
+        });
+
         // Computed before the graph read lock below — see list_staleness_signal's
         // docs on parking_lot RwLock reentrancy (aops_fb137646 AC2). A reconcile
         // sweep leans on these counts as ground truth, so this surface gets the
@@ -1879,6 +1920,49 @@ impl PkbSearchServer {
         let blocked = graph.blocked_tasks();
         let all_tasks = graph.all_tasks();
 
+        let matches_project = |node_proj: Option<&str>| -> bool {
+            if let Some(p) = project {
+                node_proj
+                    .map(|pr| {
+                        if let Some(ref slug) = resolved_slug {
+                            pr.eq_ignore_ascii_case(slug) || pr.eq_ignore_ascii_case(p)
+                        } else {
+                            pr.eq_ignore_ascii_case(p)
+                        }
+                    })
+                    .unwrap_or(false)
+            } else {
+                true
+            }
+        };
+
+        let ready: Vec<&GraphNode> = if project.is_some() {
+            ready
+                .into_iter()
+                .filter(|t| matches_project(t.project.as_deref()))
+                .collect()
+        } else {
+            ready
+        };
+
+        let blocked: Vec<&GraphNode> = if project.is_some() {
+            blocked
+                .into_iter()
+                .filter(|t| matches_project(t.project.as_deref()))
+                .collect()
+        } else {
+            blocked
+        };
+
+        let all_tasks: Vec<&GraphNode> = if project.is_some() {
+            all_tasks
+                .into_iter()
+                .filter(|t| matches_project(t.project.as_deref()))
+                .collect()
+        } else {
+            all_tasks
+        };
+
         let mut by_priority: std::collections::HashMap<i32, usize> =
             std::collections::HashMap::new();
         for task in &ready {
@@ -1886,7 +1970,7 @@ impl PkbSearchServer {
             *by_priority.entry(p).or_insert(0) += 1;
         }
 
-        // Compute deadline counts across all tasks
+        // Compute deadline counts across all tasks (scoped to project if provided)
         let today = chrono::Utc::now().date_naive();
         let mut overdue: usize = 0;
         let mut due_today: usize = 0;

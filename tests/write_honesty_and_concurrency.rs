@@ -303,3 +303,241 @@ fn test_ac7_concurrent_two_writers_on_same_node() {
     assert_eq!(replayed_entry.id, task_id);
     assert_eq!(replayed_entry.title, "Concurrent Task");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AC1 & AC2 Concurrency Acceptance Tests (mem_7451158a)
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn init_git_repo(path: &std::path::Path) {
+    use std::process::Command;
+    let out = Command::new("git")
+        .args(["init"])
+        .current_dir(path)
+        .output()
+        .expect("git init");
+    assert!(out.status.success(), "git init must succeed");
+
+    let out = Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(path)
+        .output()
+        .expect("git config email");
+    assert!(out.status.success());
+
+    let out = Command::new("git")
+        .args(["config", "user.name", "Test Runner"])
+        .current_dir(path)
+        .output()
+        .expect("git config name");
+    assert!(out.status.success());
+
+    let out = Command::new("git")
+        .args(["add", "."])
+        .current_dir(path)
+        .output()
+        .expect("git add");
+    assert!(out.status.success());
+
+    let out = Command::new("git")
+        .args(["commit", "-m", "initial seed"])
+        .current_dir(path)
+        .output()
+        .expect("git commit");
+    assert!(out.status.success(), "git commit initial seed must succeed");
+}
+
+#[test]
+fn test_ac1_concurrent_writes_to_different_nodes_every_write_survives_git_verified() {
+    use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
+
+    let mut env = TestEnv::new();
+    let n_writers = 8;
+
+    // Create N distinct documents across multiple directories (some pairs in same dir)
+    let dirs = ["tasks", "notes", "projects"];
+    for d in &dirs {
+        fs::create_dir_all(env.pkb_root.join(d)).unwrap();
+    }
+
+    let mut doc_ids = Vec::new();
+    for i in 0..n_writers {
+        let dir_name = dirs[i % dirs.len()];
+        let doc_id = format!("doc-ac1-{i:02}");
+        let doc_path = env.pkb_root.join(dir_name).join(format!("{doc_id}.md"));
+        fs::write(
+            &doc_path,
+            format!(
+                "---\nid: {doc_id}\ntype: task\ntitle: AC1 Doc {i}\nstatus: ready\npriority: 2\n---\n\nInitial body for doc {i}.\n"
+            ),
+        )
+        .unwrap();
+        doc_ids.push((doc_id, dir_name.to_string()));
+    }
+
+    // Initialize git repo and commit initial state
+    init_git_repo(&env.pkb_root);
+    env.restart_server();
+
+    let env_arc = Arc::new(env);
+    let success_count = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::new();
+
+    // Spawn N concurrent writer threads, each writing a distinct marker to a distinct node
+    for (i, (doc_id, _)) in doc_ids.iter().enumerate() {
+        let env_clone = env_arc.clone();
+        let sc = success_count.clone();
+        let doc_id = doc_id.clone();
+        let marker = format!("MARKER_AC1_WRITER_{i:02}_UNIQUE_PAYLOAD");
+
+        let h = thread::spawn(move || {
+            let res = env_clone.server.dispatch_tool_sync(
+                "update_body",
+                &json!({
+                    "id": doc_id,
+                    "new_body": format!("Body updated concurrently.\n\n{marker}\n"),
+                }),
+            );
+            if res.is_ok() {
+                sc.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        handles.push(h);
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    assert_eq!(
+        success_count.load(Ordering::SeqCst),
+        n_writers,
+        "All N concurrent writers must succeed"
+    );
+
+    // Commit all changes to git
+    let out = Command::new("git")
+        .args(["add", "."])
+        .current_dir(&env_arc.pkb_root)
+        .output()
+        .expect("git add after writes");
+    assert!(out.status.success());
+
+    let out = Command::new("git")
+        .args(["commit", "-m", "after N concurrent writes"])
+        .current_dir(&env_arc.pkb_root)
+        .output()
+        .expect("git commit after writes");
+    assert!(out.status.success());
+
+    // AC1 VERIFICATION FROM GIT:
+    // Every single marker must be present in the committed content, verified directly via git grep
+    for i in 0..n_writers {
+        let marker = format!("MARKER_AC1_WRITER_{i:02}_UNIQUE_PAYLOAD");
+        let grep_out = Command::new("git")
+            .args(["grep", &marker, "HEAD"])
+            .current_dir(&env_arc.pkb_root)
+            .output()
+            .expect("git grep");
+        assert!(
+            grep_out.status.success(),
+            "Marker '{marker}' must exist in committed git tree (AC1 requirement)"
+        );
+        let stdout = String::from_utf8_lossy(&grep_out.stdout);
+        assert!(
+            stdout.contains(&marker),
+            "Git committed content must contain marker '{marker}', got: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn test_ac2_concurrent_writes_to_same_node_optimistic_concurrency_conflict() {
+    use std::process::Command;
+
+    let mut env = TestEnv::new();
+    let task_id = "task-same-node-ac2";
+    let task_path = env.pkb_root.join("tasks").join(format!("{task_id}.md"));
+    let t0 = "2026-08-30T10:00:00Z";
+
+    fs::write(
+        &task_path,
+        format!(
+            "---\nid: {task_id}\ntype: task\ntitle: Same Node AC2\nstatus: ready\nmodified: '{t0}'\ncreated: 2026-08-30T10:00:00Z\npriority: 2\n---\n\nInitial node body at T0.\n"
+        ),
+    )
+    .unwrap();
+
+    init_git_repo(&env.pkb_root);
+    env.restart_server();
+
+    // Two writers both hold the initial read snapshot (T0)
+    let read_modified = t0;
+
+    // Writer 1 writes first with expected_modified = T0
+    let res1 = env.server.dispatch_tool_sync(
+        "update_body",
+        &json!({
+            "id": task_id,
+            "new_body": "Updated body by Writer 1 (winner).\n",
+            "expected_modified": read_modified,
+        }),
+    );
+    assert!(res1.is_ok(), "Writer 1 write with matching snapshot must succeed");
+
+    // Commit Writer 1's work to git
+    let out = Command::new("git")
+        .args(["add", "."])
+        .current_dir(&env.pkb_root)
+        .output()
+        .expect("git add writer 1");
+    assert!(out.status.success());
+    let out = Command::new("git")
+        .args(["commit", "-m", "Writer 1 update"])
+        .current_dir(&env.pkb_root)
+        .output()
+        .expect("git commit writer 1");
+    assert!(out.status.success());
+
+    // Writer 2 (holding stale T0 snapshot) attempts to write with expected_modified = T0
+    let res2 = env.server.dispatch_tool_sync(
+        "update_body",
+        &json!({
+            "id": task_id,
+            "new_body": "Updated body by Writer 2 (loser).\n",
+            "expected_modified": read_modified,
+        }),
+    );
+
+    // AC2 VERIFICATION: Loser receives non-success conflict result naming stale revision
+    assert!(res2.is_err(), "Writer 2 write with stale snapshot must be rejected");
+    let err = res2.unwrap_err();
+    let err_data = err.data.expect("stale_write error must have data payload");
+    assert_eq!(
+        err_data.get("error_type").and_then(|v| v.as_str()),
+        Some("stale_write"),
+        "Error type must be 'stale_write'"
+    );
+    assert_eq!(
+        err_data.get("expected_modified").and_then(|v| v.as_str()),
+        Some(t0),
+        "Error data must name expected_modified snapshot"
+    );
+
+    // Git verification: exactly Writer 1's content survived in git, Writer 2 was rejected
+    let show_out = Command::new("git")
+        .args(["show", &format!("HEAD:tasks/{task_id}.md")])
+        .current_dir(&env.pkb_root)
+        .output()
+        .expect("git show HEAD");
+    let git_content = String::from_utf8_lossy(&show_out.stdout);
+    assert!(
+        git_content.contains("Writer 1 (winner)"),
+        "Git committed state must contain Writer 1 content"
+    );
+    assert!(
+        !git_content.contains("Writer 2 (loser)"),
+        "Git committed state must NOT contain Writer 2 content"
+    );
+}
