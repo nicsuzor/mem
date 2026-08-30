@@ -1578,7 +1578,7 @@ async fn main() -> Result<()> {
                     visible.insert(cid.as_str());
                 }
 
-                // Sort siblings — context nodes first, then tasks by priority/weight
+                // Sort siblings — context nodes first (by label), then tasks by canonical focus ranking
                 fn sort_siblings(nodes: &mut [&graph::GraphNode], context_ids: &HashSet<String>) {
                     nodes.sort_by(|a, b| {
                         let a_ctx = context_ids.contains(&a.id);
@@ -1587,16 +1587,7 @@ async fn main() -> Result<()> {
                             (true, false) => std::cmp::Ordering::Less,
                             (false, true) => std::cmp::Ordering::Greater,
                             (true, true) => a.label.cmp(&b.label),
-                            (false, false) => a
-                                .priority
-                                .unwrap_or(2)
-                                .cmp(&b.priority.unwrap_or(4))
-                                .then(
-                                    b.downstream_weight
-                                        .partial_cmp(&a.downstream_weight)
-                                        .unwrap_or(std::cmp::Ordering::Equal),
-                                )
-                                .then(a.label.cmp(&b.label)),
+                            (false, false) => graph_store::GraphStore::focus_cmp(a, b),
                         }
                     });
                 }
@@ -4454,9 +4445,7 @@ fn format_complexity(complexity: &str) -> String {
     format!("{}[{complexity}]{}", colors::DIM, colors::RESET)
 }
 
-/// Pick the top `max` focus tasks.
-///
-/// Ranking delegates to the canonical scorer: `focus_score` is computed once by
+/// Format a single task line for terminal display.
 fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     let pri = task.priority.unwrap_or(4);
     let color = pri_color(pri);
