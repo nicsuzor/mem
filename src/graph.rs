@@ -185,7 +185,7 @@ pub struct ContributesTo {
     /// (present in well-formed entries; not validated at write time).
     #[serde(alias = "why", default)]
     pub justification: String,
-    /// Current decayed weight value (computed at runtime).
+    /// Current decayed weight value (persisted, unread field; parked dormant).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_weight: Option<f64>,
     /// Resolved target node ID (computed at build time, not serialized).
@@ -197,7 +197,7 @@ pub struct ContributesTo {
     /// Longitudinal calibration history (Brier scores).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub brier_history: Vec<f64>,
-    /// Last interaction timestamp (feeds decay trigger).
+    /// Last interaction timestamp (age-based, not attention-based; feeds dormant decay trigger).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_interacted: Option<String>,
     /// Stated-Revealed Divergence signal.
