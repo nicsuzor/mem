@@ -22,10 +22,10 @@ pub struct FilterSet {
     pub subtree: Option<String>,
     /// Match status
     pub status: Option<String>,
-    /// Exact priority match
-    pub priority: Option<i32>,
-    /// Priority >= N
-    pub priority_gte: Option<i32>,
+    /// Exact intent match
+    pub intent: Option<i32>,
+    /// Intent >= N
+    pub intent_gte: Option<i32>,
     /// Has ALL listed tags
     pub tags: Option<Vec<String>>,
     /// Match document type
@@ -57,8 +57,8 @@ impl FilterSet {
             && self.parent.is_none()
             && self.subtree.is_none()
             && self.status.is_none()
-            && self.priority.is_none()
-            && self.priority_gte.is_none()
+            && self.intent.is_none()
+            && self.intent_gte.is_none()
             && self.tags.is_none()
             && self.doc_type.is_none()
             && self.older_than_days.is_none()
@@ -132,11 +132,11 @@ impl FilterSet {
         if let Some(ref s) = self.status {
             parts.push(format!("status={s}"));
         }
-        if let Some(p) = self.priority {
-            parts.push(format!("priority={p}"));
+        if let Some(p) = self.intent {
+            parts.push(format!("intent={p}"));
         }
-        if let Some(p) = self.priority_gte {
-            parts.push(format!("priority>={p}"));
+        if let Some(p) = self.intent_gte {
+            parts.push(format!("intent>={p}"));
         }
         if let Some(ref t) = self.tags {
             parts.push(format!("tags=[{}]", t.join(", ")));
@@ -210,17 +210,17 @@ impl FilterSet {
             }
         }
 
-        // Priority exact
-        if let Some(priority) = self.priority {
-            if node.priority != Some(priority) {
+        // Intent exact
+        if let Some(intent) = self.intent {
+            if node.intent != Some(intent) {
                 return false;
             }
         }
 
-        // Priority gte
-        if let Some(priority_gte) = self.priority_gte {
-            match node.priority {
-                Some(p) if p >= priority_gte => {}
+        // Intent gte
+        if let Some(intent_gte) = self.intent_gte {
+            match node.intent {
+                Some(p) if p >= intent_gte => {}
                 _ => return false,
             }
         }
@@ -330,11 +330,13 @@ pub fn parse_filter_set(args: &serde_json::Value) -> FilterSet {
         status: args
             .get("status")
             .and_then(|v| v.as_str().map(String::from)),
-        priority: args
-            .get("priority")
+        intent: args
+            .get("intent")
+            .or_else(|| args.get("priority"))
             .and_then(|v| v.as_i64().map(|n| n as i32)),
-        priority_gte: args
-            .get("priority_gte")
+        intent_gte: args
+            .get("intent_gte")
+            .or_else(|| args.get("priority_gte"))
             .and_then(|v| v.as_i64().map(|n| n as i32)),
         tags: args.get("tags").and_then(|v| {
             v.as_array().map(|arr| {
@@ -422,10 +424,10 @@ mod tests {
     #[test]
     fn test_filter_set_describe() {
         let f = FilterSet {
-            priority_gte: Some(2),
+            intent_gte: Some(2),
             ..Default::default()
         };
-        assert_eq!(f.describe(), "priority>=2");
+        assert_eq!(f.describe(), "intent>=2");
     }
 
     #[test]
@@ -446,12 +448,12 @@ mod tests {
     #[test]
     fn test_parse_filter_set() {
         let args = serde_json::json!({
-            "priority_gte": 2,
+            "intent_gte": 2,
             "tags": ["batch-ops", "spec-ready"],
             "title_contains": "Write spec"
         });
         let f = parse_filter_set(&args);
-        assert_eq!(f.priority_gte, Some(2));
+        assert_eq!(f.intent_gte, Some(2));
         assert_eq!(f.tags.as_ref().map(|t| t.len()), Some(2));
         assert_eq!(f.title_contains.as_deref(), Some("Write spec"));
     }

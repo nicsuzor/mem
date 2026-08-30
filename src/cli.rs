@@ -170,7 +170,7 @@ enum Commands {
         #[arg(long)]
         flat: bool,
 
-        /// Sort order: priority (default), weight, due
+        /// Sort order: intent (default), weight, due
         #[arg(short, long)]
         sort: Option<String>,
     },
@@ -239,9 +239,9 @@ enum Commands {
         #[arg(long)]
         allow_missing_parent: bool,
 
-        /// Priority (0=Critical, 1=Active intent, 2=Active work, 3=Planned, 4=Backlog)
-        #[arg(short, long)]
-        priority: Option<i32>,
+        /// Intent band (0=Critical, 1=Active intent, 2=Active work, 3=Planned, 4=Backlog)
+        #[arg(short, long, alias = "priority")]
+        intent: Option<i32>,
 
         /// Project name
         #[arg(long)]
@@ -298,9 +298,9 @@ enum Commands {
         #[arg(short, long)]
         status: Option<String>,
 
-        /// Priority (0=Critical, 1=Active intent, 2=Active work, 3=Planned, 4=Backlog)
-        #[arg(short, long)]
-        priority: Option<i32>,
+        /// Intent band (0=Critical, 1=Active intent, 2=Active work, 3=Planned, 4=Backlog)
+        #[arg(short, long, alias = "priority")]
+        intent: Option<i32>,
 
         /// Parent document ID
         #[arg(long)]
@@ -358,9 +358,9 @@ enum Commands {
         #[arg(short, long)]
         status: Option<String>,
 
-        /// Priority (0=Critical, 1=Active intent, 2=Active work, 3=Planned, 4=Backlog)
-        #[arg(short, long)]
-        priority: Option<i32>,
+        /// Intent band (0=Critical, 1=Active intent, 2=Active work, 3=Planned, 4=Backlog)
+        #[arg(short, long, alias = "priority")]
+        intent: Option<i32>,
 
         /// Project name
         #[arg(long)]
@@ -857,13 +857,13 @@ pub struct BatchFilterArgs {
     #[arg(long)]
     status: Option<String>,
 
-    /// Filter by exact priority
-    #[arg(long)]
-    priority: Option<i32>,
+    /// Filter by exact intent
+    #[arg(long, alias = "priority")]
+    intent: Option<i32>,
 
-    /// Filter by minimum priority (>=)
-    #[arg(long)]
-    priority_gte: Option<i32>,
+    /// Filter by minimum intent (>=)
+    #[arg(long, alias = "priority_gte")]
+    intent_gte: Option<i32>,
 
     /// Filter by tags (must have ALL, comma-separated)
     #[arg(long, value_delimiter = ',')]
@@ -1457,7 +1457,7 @@ async fn main() -> Result<()> {
                             b.downstream_weight
                                 .partial_cmp(&a.downstream_weight)
                                 .unwrap_or(std::cmp::Ordering::Equal)
-                                .then(a.priority.unwrap_or(4).cmp(&b.priority.unwrap_or(4)))
+                                .then(a.intent.unwrap_or(4).cmp(&b.intent.unwrap_or(4)))
                         });
                     }
                     "due" => {
@@ -1467,9 +1467,9 @@ async fn main() -> Result<()> {
                             a_due.cmp(b_due)
                         });
                     }
-                    "priority" => {
+                    "intent" | "priority" => {
                         tasks.sort_by(|a, b| {
-                            a.priority.unwrap_or(4).cmp(&b.priority.unwrap_or(4)).then(
+                            a.intent.unwrap_or(4).cmp(&b.intent.unwrap_or(4)).then(
                                 b.downstream_weight
                                     .partial_cmp(&a.downstream_weight)
                                     .unwrap_or(std::cmp::Ordering::Equal),
@@ -1509,7 +1509,7 @@ async fn main() -> Result<()> {
                 println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
 
                 for task in &tasks {
-                    let pri = task.priority.unwrap_or(4);
+                    let pri = task.intent.unwrap_or(4);
                     let color = pri_color(pri);
                     let weight = if task.downstream_weight > 0.0 {
                         format!("{:.1}", task.downstream_weight)
@@ -1771,8 +1771,8 @@ async fn main() -> Result<()> {
                     if let Some(ref s) = node.status {
                         println!("  Status:   {s}");
                     }
-                    if let Some(p) = node.priority {
-                        println!("  Priority: {p}");
+                    if let Some(p) = node.intent {
+                        println!("  Intent:   {p}");
                     }
                     if let Some(ref due) = node.due {
                         println!("  Due:      {due}");
@@ -1957,7 +1957,7 @@ async fn main() -> Result<()> {
                             println!(
                                 "  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
                                 trunc(&node.label, 35),
-                                node.priority.unwrap_or(4),
+                                node.intent.unwrap_or(4),
                                 node.downstream_weight,
                                 exposure,
                                 p,
@@ -2001,7 +2001,7 @@ async fn main() -> Result<()> {
             title,
             parent,
             allow_missing_parent,
-            priority,
+            intent,
             project,
             tags,
             depends_on,
@@ -2066,7 +2066,7 @@ async fn main() -> Result<()> {
             let fields = document_crud::TaskFields {
                 title: title_str,
                 parent,
-                priority,
+                intent,
                 project: project_opt,
                 tags: tags.unwrap_or_default(),
                 depends_on: depends_on.unwrap_or_default(),
@@ -2132,7 +2132,7 @@ async fn main() -> Result<()> {
             doc_type,
             tags,
             status,
-            priority,
+            intent,
             parent,
             project: _,
             source,
@@ -2150,7 +2150,7 @@ async fn main() -> Result<()> {
                 doc_type,
                 tags: tags.unwrap_or_default(),
                 status,
-                priority,
+                intent,
                 parent,
                 source,
                 body,
@@ -2309,7 +2309,7 @@ async fn main() -> Result<()> {
         Commands::Update {
             id,
             status,
-            priority,
+            intent,
             project,
             assignee,
             tags,
@@ -2324,9 +2324,9 @@ async fn main() -> Result<()> {
                     if let Some(s) = status {
                         updates.insert("status".to_string(), serde_json::Value::String(s));
                     }
-                    if let Some(p) = priority {
+                    if let Some(p) = intent {
                         updates.insert(
-                            "priority".to_string(),
+                            "intent".to_string(),
                             serde_json::Value::Number(serde_json::Number::from(p)),
                         );
                     }
@@ -2354,7 +2354,7 @@ async fn main() -> Result<()> {
                     }
 
                     if updates.is_empty() {
-                        eprintln!("No updates specified. Use --status, --priority, --assignee, or --tags.");
+                        eprintln!("No updates specified. Use --status, --intent, --assignee, or --tags.");
                         std::process::exit(1);
                     }
 
@@ -2388,8 +2388,8 @@ async fn main() -> Result<()> {
                     if let Some(ref s) = node.status {
                         println!("  Status:   {s}");
                     }
-                    if let Some(p) = node.priority {
-                        println!("  Priority: {p}");
+                    if let Some(p) = node.intent {
+                        println!("  Intent:   {p}");
                     }
                     if let Some(ref due) = node.due {
                         println!("  Due:      {due}");
@@ -3520,8 +3520,8 @@ fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
         parent: args.parent.clone(),
         subtree: args.subtree.clone(),
         status: args.status.clone(),
-        priority: args.priority,
-        priority_gte: args.priority_gte,
+        intent: args.intent,
+        intent_gte: args.intent_gte,
         tags: args.tags.clone(),
         doc_type: args.doc_type.clone(),
         older_than_days: args.older_than.as_ref().and_then(parse_duration_days),
@@ -3824,8 +3824,8 @@ fn print_diff_summary(diff: &excalidraw::GraphDiff) {
             if let Some(ref s) = u.status {
                 changes.push(format!("status: {s}"));
             }
-            if let Some(ref p) = u.priority {
-                changes.push(format!("priority: {:?}", p));
+            if let Some(ref p) = u.intent {
+                changes.push(format!("intent: {:?}", p));
             }
             if let Some(ref p) = u.parent {
                 changes.push(format!("parent: {:?}", p));
@@ -4447,7 +4447,7 @@ fn format_complexity(complexity: &str) -> String {
 
 /// Format a single task line for terminal display.
 fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
-    let pri = task.priority.unwrap_or(4);
+    let pri = task.intent.unwrap_or(4);
     let color = pri_color(pri);
     let exposure = if task.stakeholder_exposure { "!" } else { " " };
 
@@ -4543,7 +4543,7 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
     let total = tasks.len();
     let urgent = tasks
         .iter()
-        .filter(|t| t.priority.unwrap_or(4) <= 1)
+        .filter(|t| t.intent.unwrap_or(4) <= 1)
         .count();
     let with_due = tasks.iter().filter(|t| t.due.is_some()).count();
     let overdue_count = {

@@ -22,7 +22,7 @@ pub struct AddedNodeMutation {
     pub title: String,
     pub node_type: String,
     pub status: String,
-    pub priority: Option<i32>,
+    pub intent: Option<i32>,
     pub parent: Option<String>,
     pub tags: Vec<String>,
     pub x: f64,
@@ -37,7 +37,7 @@ pub struct UpdatedNodeMutation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<Option<i32>>,
+    pub intent: Option<Option<i32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,7 +127,7 @@ impl BaseSnapshot {
                         id: nid.clone(),
                         title: card.title.clone(),
                         status: card.status.clone(),
-                        priority: card.priority,
+                        intent: card.intent,
                         parent: card.parent.clone(),
                         tags: card.tags.clone(),
                         x: card.x,
@@ -162,7 +162,7 @@ pub struct SnapshotNode {
     pub id: String,
     pub title: String,
     pub status: Option<String>,
-    pub priority: Option<i32>,
+    pub intent: Option<i32>,
     pub parent: Option<String>,
     pub tags: Vec<String>,
     pub x: f64,
@@ -210,7 +210,7 @@ impl DiffEngine {
                     title: card.title.clone(),
                     node_type: card.node_type.clone().unwrap_or_else(|| "task".to_string()),
                     status: card.status.clone().unwrap_or_else(|| "inbox".to_string()),
-                    priority: card.priority,
+                    intent: card.intent,
                     parent: card.parent.clone(),
                     tags: card.tags.clone(),
                     x: card.x,
@@ -227,7 +227,7 @@ impl DiffEngine {
             if let Some(ln) = live_node {
                 let mut title_update = None;
                 let mut status_update = None;
-                let mut priority_update = None;
+                let mut intent_update = None;
                 let mut parent_update = None;
                 let mut tags_update = None;
 
@@ -274,9 +274,9 @@ impl DiffEngine {
                     }
                 }
 
-                // Priority check
-                if card.priority.is_some() && card.priority != ln.priority {
-                    priority_update = Some(card.priority);
+                // Intent check
+                if card.intent.is_some() && card.intent != ln.intent {
+                    intent_update = Some(card.intent);
                 }
 
                 // Parent check
@@ -295,7 +295,7 @@ impl DiffEngine {
 
                 if title_update.is_some()
                     || status_update.is_some()
-                    || priority_update.is_some()
+                    || intent_update.is_some()
                     || parent_update.is_some()
                     || tags_update.is_some()
                 {
@@ -303,7 +303,7 @@ impl DiffEngine {
                         node_id: node_id.clone(),
                         title: title_update,
                         status: status_update,
-                        priority: priority_update,
+                        intent: intent_update,
                         parent: parent_update,
                         tags: tags_update,
                     });
@@ -336,7 +336,7 @@ impl DiffEngine {
                     title: card.title.clone(),
                     node_type: card.node_type.clone().unwrap_or_else(|| "task".to_string()),
                     status: card.status.clone().unwrap_or_else(|| "inbox".to_string()),
-                    priority: card.priority,
+                    intent: card.intent,
                     parent: card.parent.clone(),
                     tags: card.tags.clone(),
                     x: card.x,
@@ -415,7 +415,7 @@ mod tests {
                 id: "task-1".to_string(),
                 title: "Task One".to_string(),
                 status: Some("ready".to_string()),
-                priority: Some(1),
+                intent: Some(1),
                 parent: None,
                 tags: vec![],
                 x: 100.0,
@@ -456,7 +456,7 @@ mod tests {
             title: "New Title".to_string(),
             node_type: Some("task".to_string()),
             status: Some("ready".to_string()),
-            priority: Some(1),
+            intent: Some(1),
             parent: None,
             tags: vec![],
             frame_id: None,
@@ -499,7 +499,7 @@ mod tests {
                 id: "task-conflict".to_string(),
                 title: "Base Title".to_string(),
                 status: Some("inbox".to_string()),
-                priority: None,
+                intent: None,
                 parent: None,
                 tags: vec![],
                 x: 100.0,
@@ -525,7 +525,7 @@ mod tests {
             title: "Canvas Title".to_string(),
             node_type: Some("task".to_string()),
             status: Some("inbox".to_string()),
-            priority: None,
+            intent: None,
             parent: None,
             tags: vec![],
             frame_id: None,
@@ -569,7 +569,7 @@ mod tests {
                 id: "task-x".to_string(),
                 title: "X".to_string(),
                 status: None,
-                priority: None,
+                intent: None,
                 parent: None,
                 tags: vec![],
                 x: 100.0,
@@ -584,7 +584,7 @@ mod tests {
                 id: "task-y".to_string(),
                 title: "Y".to_string(),
                 status: None,
-                priority: None,
+                intent: None,
                 parent: None,
                 tags: vec![],
                 x: 200.0,
@@ -614,7 +614,7 @@ mod tests {
             title: "X".to_string(),
             node_type: Some("task".to_string()),
             status: None,
-            priority: None,
+            intent: None,
             parent: None,
             tags: vec![],
             frame_id: None,
@@ -636,7 +636,7 @@ mod tests {
             title: "Y".to_string(),
             node_type: Some("task".to_string()),
             status: None,
-            priority: None,
+            intent: None,
             parent: None,
             tags: vec![],
             frame_id: None,
@@ -693,7 +693,7 @@ mod tests {
                 title: title.to_string(),
                 node_type: None,
                 status: None,
-                priority: None,
+                intent: None,
                 parent: None,
                 tags: vec![],
                 frame_id: None,
@@ -756,7 +756,7 @@ mod tests {
                 title: "Untitled".to_string(), // placeholder from reader
                 node_type: None,
                 status: None,
-                priority: None,
+                intent: None,
                 parent: None,
                 tags: vec![],
                 frame_id: None,
@@ -807,7 +807,7 @@ mod tests {
                 title: "Updated Node Title".to_string(),
                 node_type: None,
                 status: None,
-                priority: None,
+                intent: None,
                 parent: None,
                 tags: vec![],
                 frame_id: None,

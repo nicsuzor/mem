@@ -52,7 +52,7 @@ pub struct DocumentFields {
     pub tags: Vec<String>,
     pub body: Option<String>,
     pub status: Option<String>,
-    pub priority: Option<i32>,
+    pub intent: Option<i32>,
     pub parent: Option<String>,
     pub depends_on: Vec<String>,
     pub soft_depends_on: Vec<String>,
@@ -79,7 +79,7 @@ pub struct TaskFields {
     pub title: String,
     pub id: Option<String>,
     pub parent: Option<String>,
-    pub priority: Option<i32>,
+    pub intent: Option<i32>,
     pub tags: Vec<String>,
     pub depends_on: Vec<String>,
     pub soft_depends_on: Vec<String>,
@@ -188,9 +188,9 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
             anyhow::bail!("Invalid status for task type: {}", status);
         }
     }
-    if let Some(priority) = fields.priority {
-        if !crate::graph::is_valid_priority(priority) {
-            anyhow::bail!("Invalid priority: {}. Must be between 0 and 4.", priority);
+    if let Some(intent) = fields.intent {
+        if !crate::graph::is_valid_intent(intent) {
+            anyhow::bail!("Invalid intent: {}. Must be between 0 and 4.", intent);
         }
     }
     if let Some(ref effort) = fields.effort {
@@ -279,8 +279,8 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         fm.push_str(&format!("status: {}\n", s));
     }
 
-    if let Some(p) = fields.priority {
-        fm.push_str(&format!("priority: {}\n", p));
+    if let Some(p) = fields.intent {
+        fm.push_str(&format!("intent: {}\n", p));
     }
 
     if let Some(ref parent) = fields.parent {
@@ -596,9 +596,9 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             anyhow::bail!("Invalid status: {}", status);
         }
     }
-    if let Some(priority) = fields.priority {
-        if !crate::graph::is_valid_priority(priority) {
-            anyhow::bail!("Invalid priority: {}. Must be between 0 and 4.", priority);
+    if let Some(intent) = fields.intent {
+        if !crate::graph::is_valid_intent(intent) {
+            anyhow::bail!("Invalid intent: {}. Must be between 0 and 4.", intent);
         }
     }
     if let Some(ref effort) = fields.effort {
@@ -684,12 +684,12 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         fields.status.as_deref().unwrap_or("inbox")
     ));
 
-    // #1905: do NOT force a default priority. Only stamp `priority:` when the
+    // #1905: do NOT force a default intent. Only stamp `intent:` when the
     // caller explicitly supplied one. New/swept tasks without a caller-supplied
-    // priority are created with NO priority field (left unset/None), so they can
+    // intent are created with NO intent field (left unset/None), so they can
     // be prioritised deliberately rather than inheriting an unwanted P2.
-    if let Some(p) = fields.priority {
-        fm.push_str(&format!("priority: {}\n", p));
+    if let Some(p) = fields.intent {
+        fm.push_str(&format!("intent: {}\n", p));
     }
 
     if let Some(ref parent) = fields.parent {
@@ -820,8 +820,8 @@ pub struct TemplateInstanceFields {
     pub template_body: String,
     /// Tags inherited from the template.
     pub tags: Vec<String>,
-    /// Priority inherited from the template.
-    pub priority: Option<i32>,
+    /// Intent inherited from the template.
+    pub intent: Option<i32>,
     /// Project inherited from the template frontmatter.
     pub project: Option<String>,
     /// Parent inherited from the template frontmatter.
@@ -949,12 +949,12 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     ));
     fm.push_str("type: task\n");
     fm.push_str("status: in_progress\n");
-    // #1905: do NOT force a default priority. Mirror create_task — only stamp
-    // `priority:` when a value is explicitly supplied (copied from the template).
-    // Template instances with no curated priority are created with NO priority
+    // #1905: do NOT force a default intent. Mirror create_task — only stamp
+    // `intent:` when a value is explicitly supplied (copied from the template).
+    // Template instances with no curated intent are created with NO intent
     // field so they remain distinct from an explicit P2/P3 at read time.
-    if let Some(p) = fields.priority {
-        fm.push_str(&format!("priority: {}\n", p));
+    if let Some(p) = fields.intent {
+        fm.push_str(&format!("intent: {}\n", p));
     }
 
     if let Some(ref parent) = fields.parent {
@@ -1654,10 +1654,10 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
                     }
                 }
             }
-            "priority" => {
+            "intent" | "priority" => {
                 if let Some(p) = value.as_i64() {
-                    if !crate::graph::is_valid_priority(p as i32) {
-                        anyhow::bail!("Invalid priority: {}. Must be between 0 and 4.", p);
+                    if !crate::graph::is_valid_intent(p as i32) {
+                        anyhow::bail!("Invalid intent: {}. Must be between 0 and 4.", p);
                     }
                 }
             }
@@ -3459,16 +3459,16 @@ mod tests {
     }
 
     #[test]
-    fn create_task_does_not_force_priority() {
-        // #1905: create_task must NOT auto-stamp a default priority. A task
-        // created without an explicit priority must have NO `priority:` field.
+    fn create_task_does_not_force_intent() {
+        // #1905: create_task must NOT auto-stamp a default intent. A task
+        // created without an explicit intent must have NO `intent:` field.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
-            title: "No priority task".to_string(),
+            title: "No intent task".to_string(),
             parent: Some("parent-001".to_string()),
             project: Some("aops".to_string()),
             ..Default::default()
@@ -3478,24 +3478,24 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
 
         assert!(
-            !content.contains("priority:"),
-            "create_task must NOT stamp any priority when none is supplied (no forced P2): {content}"
+            !content.contains("intent:"),
+            "create_task must NOT stamp any intent when none is supplied (no forced P2): {content}"
         );
     }
 
     #[test]
-    fn create_task_honours_explicit_priority() {
-        // #1905: a caller-supplied priority must still be written verbatim.
+    fn create_task_honours_explicit_intent() {
+        // #1905: a caller-supplied intent must still be written verbatim.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
-            title: "Explicit priority task".to_string(),
+            title: "Explicit intent task".to_string(),
             parent: Some("parent-001".to_string()),
             project: Some("aops".to_string()),
-            priority: Some(0),
+            intent: Some(0),
             ..Default::default()
         };
 
@@ -3503,8 +3503,8 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
 
         assert!(
-            content.contains("priority: 0"),
-            "caller-supplied priority must be honoured: {content}"
+            content.contains("intent: 0"),
+            "caller-supplied intent must be honoured: {content}"
         );
     }
 
@@ -3538,16 +3538,16 @@ mod tests {
             content.contains("project: aops"),
             "project should be written: {content}"
         );
-        // #1905: no default priority is stamped when none is supplied
+        // #1905: no default intent is stamped when none is supplied
         assert!(
-            !content.contains("priority:"),
-            "create_task must not stamp any default priority: {content}"
+            !content.contains("intent:"),
+            "create_task must not stamp any default intent: {content}"
         );
     }
 
     #[test]
-    fn create_task_explicit_priority_is_honoured() {
-        // An explicit priority=0 passed to create_task must be persisted as-is.
+    fn create_task_explicit_intent_is_honoured() {
+        // An explicit intent=0 passed to create_task must be persisted as-is.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write_test_polecat_yaml(root, &["aops", "mem"]);
@@ -3556,23 +3556,23 @@ mod tests {
         let fields = TaskFields {
             title: "Critical task".to_string(),
             parent: Some("parent-001".to_string()),
-            priority: Some(0),
+            intent: Some(0),
             ..Default::default()
         };
         let path = create_task(root, fields).unwrap();
         let content = fs::read_to_string(&path).unwrap();
 
         assert!(
-            content.contains("priority: 0"),
-            "explicit priority=0 must be honoured: {content}"
+            content.contains("intent: 0"),
+            "explicit intent=0 must be honoured: {content}"
         );
     }
 
     #[test]
-    fn claim_template_instance_does_not_force_priority() {
-        // #1905: claim_template_instance must NOT stamp any default priority when
+    fn claim_template_instance_does_not_force_intent() {
+        // #1905: claim_template_instance must NOT stamp any default intent when
         // the template supplies none. Mirrors create_task absence semantics so an
-        // uncurated instance stays distinct from an explicit priority band.
+        // uncurated instance stays distinct from an explicit intent band.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write_test_polecat_yaml(root, &["aops", "mem"]);
@@ -3588,8 +3588,8 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
 
         assert!(
-            !content.contains("priority:"),
-            "claim_template_instance must not stamp any priority when none is supplied: {content}"
+            !content.contains("intent:"),
+            "claim_template_instance must not stamp any intent when none is supplied: {content}"
         );
     }
 
@@ -3638,8 +3638,8 @@ mod tests {
     }
 
     #[test]
-    fn claim_template_instance_honours_explicit_priority() {
-        // A priority copied from the template must be written verbatim.
+    fn claim_template_instance_honours_explicit_intent() {
+        // An intent copied from the template must be written verbatim.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write_test_polecat_yaml(root, &["aops", "mem"]);
@@ -3649,15 +3649,15 @@ mod tests {
             template_title: "Template Task".to_string(),
             template_body: "Body".to_string(),
             template_id: "task-template-123".to_string(),
-            priority: Some(1),
+            intent: Some(1),
             ..Default::default()
         };
         let path = claim_template_instance(root, fields).unwrap();
         let content = fs::read_to_string(&path).unwrap();
 
         assert!(
-            content.contains("priority: 1"),
-            "template-supplied priority must be honoured: {content}"
+            content.contains("intent: 1"),
+            "template-supplied intent must be honoured: {content}"
         );
     }
 
@@ -3837,7 +3837,7 @@ mod tests {
             title: "fixed-interval mode accretes context".to_string(),
             parent: Some("parent-001".to_string()),
             project: Some("aops".to_string()),
-            priority: Some(1),
+            intent: Some(1),
             consequence: Some(multiline.to_string()),
             ..Default::default()
         };
@@ -3849,7 +3849,7 @@ mod tests {
         // newlines in `consequence: "..."` made gray_matter return
         // `data: Some(Null)` for the *whole* frontmatter — surfaced to
         // callers as `frontmatter: null` / `parent: null` / default
-        // priority / stub body.
+        // intent / stub body.
         let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
         let parsed = matter.parse(&content);
         let fm_json = parsed
@@ -3863,9 +3863,9 @@ mod tests {
         );
         let obj = fm_json.as_object().unwrap();
         assert_eq!(
-            obj.get("priority").and_then(|v| v.as_i64()),
+            obj.get("intent").and_then(|v| v.as_i64()),
             Some(1),
-            "priority must round-trip via gray_matter: {fm_json:?}"
+            "intent must round-trip via gray_matter: {fm_json:?}"
         );
         assert_eq!(
             obj.get("parent").and_then(|v| v.as_str()),
@@ -4051,7 +4051,7 @@ mod tests {
             title: "Frontmatter preservation test".to_string(),
             parent: Some("parent-001".to_string()),
             project: Some("mem".to_string()),
-            priority: Some(1),
+            intent: Some(1),
             ..Default::default()
         };
         let path = create_task(root, fields).unwrap();
@@ -4073,9 +4073,9 @@ mod tests {
         );
         let obj = fm.as_object().unwrap();
         assert_eq!(
-            obj.get("priority").and_then(|v| v.as_i64()),
+            obj.get("intent").and_then(|v| v.as_i64()),
             Some(1),
-            "priority must be preserved: {fm:?}"
+            "intent must be preserved: {fm:?}"
         );
         assert_eq!(
             obj.get("project").and_then(|v| v.as_str()),
@@ -4757,19 +4757,19 @@ mod tests {
         let path = tmp.path().join("task-null.md");
         std::fs::write(
             &path,
-            "---\nid: task-null1\ntitle: Clear Me\ntype: task\nstatus: ready\npriority: 2\nassignee: alice\nmodified: 2020-01-01T00:00:00Z\n---\n\n# Body\n",
+            "---\nid: task-null1\ntitle: Clear Me\ntype: task\nstatus: ready\nintent: 2\nassignee: alice\nmodified: 2020-01-01T00:00:00Z\n---\n\n# Body\n",
         )
         .unwrap();
 
         let mut updates = HashMap::new();
-        updates.insert("priority".to_string(), serde_json::Value::Null);
+        updates.insert("intent".to_string(), serde_json::Value::Null);
         updates.insert("assignee".to_string(), serde_json::Value::Null);
         update_document(&path, updates).unwrap();
 
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(
-            !after.contains("priority:"),
-            "priority field must be removed: {after}"
+            !after.contains("intent:"),
+            "intent field must be removed: {after}"
         );
         assert!(
             !after.contains("assignee:"),
@@ -4815,49 +4815,49 @@ mod tests {
         write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
-        // Create a task with an explicit priority so there is a value to clear.
+        // Create a task with an explicit intent so there is a value to clear.
         let fields = TaskFields {
             title: "Wrongly stamped P2".to_string(),
             parent: Some("parent-001".to_string()),
             project: Some("aops".to_string()),
-            priority: Some(2),
+            intent: Some(2),
             ..Default::default()
         };
         let path = create_task(root, fields).unwrap();
         assert!(
-            fs::read_to_string(&path).unwrap().contains("priority: 2"),
-            "precondition: task has priority 2"
+            fs::read_to_string(&path).unwrap().contains("intent: 2"),
+            "precondition: task has intent 2"
         );
 
         // Build the graph node exactly as the MCP server does before updating.
         let doc = crate::pkb::parse_file(&path).expect("parse created task");
         let node = GraphNode::from_pkb_document(&doc);
-        assert_eq!(node.priority, Some(2), "node carries the on-disk priority");
+        assert_eq!(node.intent, Some(2), "node carries the on-disk intent");
 
-        // Caller sends priority=null (clear) plus a generic field=null.
+        // Caller sends intent=null (clear) plus a generic field=null.
         let mut updates_map = serde_json::Map::new();
-        updates_map.insert("priority".to_string(), serde_json::Value::Null);
+        updates_map.insert("intent".to_string(), serde_json::Value::Null);
         updates_map.insert("custom_field".to_string(), serde_json::Value::Null);
 
         let effective = expand_special_update_keys(&node, &updates_map).unwrap();
         assert!(
-            effective.contains_key("priority"),
-            "null priority must NOT be dropped as a no-op (#1908): {effective:?}"
+            effective.contains_key("intent"),
+            "null intent must NOT be dropped as a no-op (#1908): {effective:?}"
         );
         assert!(
             effective
-                .get("priority")
+                .get("intent")
                 .map(|v| v.is_null())
                 .unwrap_or(false),
-            "priority must still be null going into the writer"
+            "intent must still be null going into the writer"
         );
 
         update_document(&path, effective).unwrap();
 
         let after = fs::read_to_string(&path).unwrap();
         assert!(
-            !after.contains("priority:"),
-            "priority must be removed from frontmatter on read-back: {after}"
+            !after.contains("intent:"),
+            "intent must be removed from frontmatter on read-back: {after}"
         );
     }
 
@@ -5928,7 +5928,7 @@ pub fn expand_special_update_keys(
         let is_noop = if value.is_null() {
             match key.as_str() {
                 "status" => node.status.is_none(),
-                "priority" => node.priority.is_none(),
+                "intent" | "priority" => node.intent.is_none(),
                 "assignee" => node.assignee.is_none(),
                 "complexity" => node.complexity.is_none(),
                 // As below: the stored value, not the resolved one. A node whose
@@ -5939,7 +5939,7 @@ pub fn expand_special_update_keys(
         } else {
             match key.as_str() {
                 "status" => node.status.as_deref() == value.as_str(),
-                "priority" => node.priority == value.as_i64().map(|v| v as i32),
+                "intent" | "priority" => node.intent == value.as_i64().map(|v| v as i32),
                 "assignee" => node.assignee.as_deref() == value.as_str(),
                 "complexity" => node.complexity.as_deref() == value.as_str(),
                 // Compare what the FILE says, not what the graph resolved it to.

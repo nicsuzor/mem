@@ -236,13 +236,13 @@ use super::*;
     }
 
     #[test]
-    fn test_decompose_task_rejects_agent_priority() {
+    fn test_decompose_task_rejects_agent_intent() {
         let server = build_test_server();
         std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
 
         let parent_res = server
             .handle_create_task(&json!({
-                "title": "Parent Task for Decompose Priority Guard",
+                "title": "Parent Task for Decompose Intent Guard",
                 "type": "epic",
                 "project": "proj-alpha",
                 "parent": "proj-alpha"
@@ -260,7 +260,7 @@ use super::*;
         }
 
         let subtasks = json!([
-            { "title": "Subtask With Priority", "type": "task", "priority": 1 }
+            { "title": "Subtask With Intent", "type": "task", "intent": 1 }
         ]);
 
         let err = server
@@ -268,18 +268,18 @@ use super::*;
                 "parent_id": parent_id,
                 "subtasks": subtasks
             }))
-            .expect_err("agent-supplied subtask priority via decompose_task should be rejected");
+            .expect_err("agent-supplied subtask intent via decompose_task should be rejected");
         let msg = format!("{}", err.message);
         assert!(
-            msg.to_lowercase().contains("priority"),
-            "error should mention priority, got: {msg}"
+            msg.to_lowercase().contains("intent"),
+            "error should mention intent, got: {msg}"
         );
 
         // No subtask should have been created (fail before any writes).
         let graph = server.graph.read();
         assert!(
-            graph.resolve("Subtask With Priority").is_none(),
-            "subtask must not have been created when priority guard rejects the batch"
+            graph.resolve("Subtask With Intent").is_none(),
+            "subtask must not have been created when intent guard rejects the batch"
         );
     }
 
@@ -469,46 +469,46 @@ use super::*;
         );
     }
 
-    // ── update_task: agent-originated priority rejection (task_1381381c) ──
+    // ── update_task: agent-originated intent rejection (task_1381381c) ──
 
     #[test]
-    fn test_update_task_rejects_agent_priority_nested() {
+    fn test_update_task_rejects_agent_intent_nested() {
         let server = build_test_server();
         let err = server
             .handle_update_task(&json!({
                 "id": "task-a1",
-                "updates": { "priority": 1 }
+                "updates": { "intent": 1 }
             }))
-            .expect_err("agent-supplied priority via update_task should be rejected");
+            .expect_err("agent-supplied intent via update_task should be rejected");
         let msg = format!("{}", err.message);
         assert!(
-            msg.to_lowercase().contains("priority"),
-            "error should mention priority, got: {msg}"
+            msg.to_lowercase().contains("intent"),
+            "error should mention intent, got: {msg}"
         );
     }
 
     #[test]
-    fn test_update_task_rejects_agent_priority_flat() {
+    fn test_update_task_rejects_agent_intent_flat() {
         let server = build_test_server();
         let err = server
             .handle_update_task(&json!({
                 "id": "task-a1",
-                "priority": 0
+                "intent": 0
             }))
-            .expect_err("agent-supplied priority via update_task (flat form) should be rejected");
+            .expect_err("agent-supplied intent via update_task (flat form) should be rejected");
         let msg = format!("{}", err.message);
         assert!(
-            msg.to_lowercase().contains("priority"),
-            "error should mention priority, got: {msg}"
+            msg.to_lowercase().contains("intent"),
+            "error should mention intent, got: {msg}"
         );
 
-        // The task's priority must be unchanged on disk/graph after the rejection.
+        // The task's intent must be unchanged on disk/graph after the rejection.
         let graph = server.graph.read();
         let node = graph.resolve("task-a1").unwrap();
         assert_ne!(
-            node.priority,
+            node.intent,
             Some(0),
-            "priority must not have been written despite rejection"
+            "intent must not have been written despite rejection"
         );
     }
 

@@ -117,7 +117,7 @@ const KNOWN_KEYS: &[&str] = &[
     "title",
     "type",
     "status",
-    "priority",
+    "intent",
     "project",
     "parent",
     "depends_on",
@@ -661,34 +661,34 @@ fn check_frontmatter(
         }
     }
 
-    // Priority validation
-    if let Some(p) = fm.get("priority") {
+    // Intent validation
+    if let Some(p) = fm.get("intent").or_else(|| fm.get("priority")) {
         if let Some(n) = p.as_i64() {
-            if !graph::is_valid_priority(n as i32) {
+            if !graph::is_valid_intent(n as i32) {
                 diags.push(Diagnostic {
                     severity: Severity::Warning,
-                    rule: "fm-priority-range",
-                    message: format!("Priority {} outside expected range 0-4", n),
+                    rule: "fm-intent-range",
+                    message: format!("Intent {} outside expected range 0-4", n),
                     line: None,
                     fixable: false,
                 });
             }
         } else if let Some(s) = p.as_str() {
-            // Check if it's a "p1"/"P2" style priority we can fix
+            // Check if it's a "p1"/"P2" style intent we can fix
             let stripped = s.strip_prefix('p').or_else(|| s.strip_prefix('P'));
             let can_fix = stripped.map(|n| n.parse::<i64>().is_ok()).unwrap_or(false);
             diags.push(Diagnostic {
                 severity: Severity::Error,
-                rule: "fm-priority-type",
-                message: format!("'priority' must be an integer (got '{}')", s),
+                rule: "fm-intent-type",
+                message: format!("'intent' must be an integer (got '{}')", s),
                 line: None,
                 fixable: can_fix,
             });
         } else if !p.is_number() {
             diags.push(Diagnostic {
                 severity: Severity::Error,
-                rule: "fm-priority-type",
-                message: "'priority' must be an integer".into(),
+                rule: "fm-intent-type",
+                message: "'intent' must be an integer".into(),
                 line: None,
                 fixable: false,
             });
@@ -1215,14 +1215,19 @@ fn apply_fixes(
             }
         }
 
-        // Fix 4: Fix "p1"/"P2" style priorities → integer
-        if let Some(s) = fm.get("priority").and_then(|v| v.as_str()) {
+        // Fix 4: Fix "p1"/"P2" style intent → integer
+        if let Some(s) = fm.get("intent").or_else(|| fm.get("priority")).and_then(|v| v.as_str()) {
             let stripped = s.strip_prefix('p').or_else(|| s.strip_prefix('P'));
             if let Some(num_str) = stripped {
                 if let Ok(n) = num_str.parse::<i64>() {
-                    let pattern = format!("priority: {}", s);
-                    let replacement = format!("priority: {}", n);
-                    result = result.replacen(&pattern, &replacement, 1);
+                    let p_pattern = format!("priority: {}", s);
+                    let i_pattern = format!("intent: {}", s);
+                    let replacement = format!("intent: {}", n);
+                    if result.contains(&p_pattern) {
+                        result = result.replacen(&p_pattern, &replacement, 1);
+                    } else if result.contains(&i_pattern) {
+                        result = result.replacen(&i_pattern, &replacement, 1);
+                    }
                 }
             }
         }
@@ -2211,7 +2216,7 @@ mod tests {
     #[test]
     fn valid_task_no_warnings() {
         let diags = lint_str(
-            "---\nid: test-abc12345\ntitle: Test task\ntype: task\nstatus: active\nproject: test\npriority: 2\nparent: proj-00000000\ntags:\n- foo\n---\n\nBody content.\n",
+            "---\nid: test-abc12345\ntitle: Test task\ntype: task\nstatus: active\nproject: test\nintent: 2\nparent: proj-00000000\ntags:\n- foo\n---\n\nBody content.\n",
         );
         // Should only have key-order style issues at most
         assert!(

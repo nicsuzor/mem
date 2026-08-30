@@ -13,8 +13,8 @@ pub struct EpicDef {
     pub title: String,
     #[serde(default)]
     pub id: Option<String>,
-    #[serde(default)]
-    pub priority: Option<i32>,
+    #[serde(default, alias = "priority")]
+    pub intent: Option<i32>,
     pub task_ids: Vec<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -88,7 +88,7 @@ pub fn batch_create_epics(
             title: epic_def.title.clone(),
             doc_type: "epic".to_string(),
             id: epic_def.id.clone(),
-            priority: epic_def.priority,
+            intent: epic_def.intent,
             parent: parent.map(String::from),
             depends_on: epic_def.depends_on.clone(),
             body: epic_def.body.clone(),

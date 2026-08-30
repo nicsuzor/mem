@@ -156,8 +156,8 @@ impl PkbSearchServer {
                 if let Some(ref s) = node.status {
                     output.push_str(&format!("**Status:** {s}\n"));
                 }
-                if let Some(p) = node.priority {
-                    output.push_str(&format!("**Priority:** {p}\n"));
+                if let Some(p) = node.intent {
+                    output.push_str(&format!("**Intent:** {p}\n"));
                 }
                 if !node.blocks.is_empty() {
                     output.push_str(&format!("**Blocks:** {}\n", node.blocks.join(", ")));

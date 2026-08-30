@@ -18,7 +18,7 @@ pub struct McpIndexEntry {
     #[serde(rename = "type")]
     pub task_type: String,
     pub status: String,
-    pub priority: i32,
+    pub intent: i32,
     pub order: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
@@ -103,7 +103,7 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
                 title: node.label.clone(),
                 task_type: node.node_type.clone().unwrap_or_else(|| "task".to_string()),
                 status: node.status.clone().unwrap_or_else(|| "inbox".to_string()),
-                priority: node.priority.unwrap_or(4),
+                intent: node.intent.unwrap_or(4),
                 order: node.order,
                 parent: node.parent.clone(),
                 children: node.children.clone(),
@@ -279,8 +279,8 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
     ready.sort_by(|a, b| {
         let ea = entries.get(a).unwrap();
         let eb = entries.get(b).unwrap();
-        ea.priority
-            .cmp(&eb.priority)
+        ea.intent
+            .cmp(&eb.intent)
             .then(
                 eb.downstream_weight
                     .partial_cmp(&ea.downstream_weight)

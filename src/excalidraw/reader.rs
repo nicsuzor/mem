@@ -31,7 +31,7 @@ pub struct CanvasCard {
     pub title: String,
     pub node_type: Option<String>,
     pub status: Option<String>,
-    pub priority: Option<i32>,
+    pub intent: Option<i32>,
     pub parent: Option<String>,
     pub tags: Vec<String>,
     pub frame_id: Option<String>,
@@ -213,8 +213,8 @@ impl CanvasReader {
                 .and_then(|t| t.text.as_deref().or(t.original_text.as_deref()))
                 .unwrap_or("");
 
-            // Parse text content for status, priority, title, tags
-            let (status_from_text, priority_from_text, parsed_title, tags_from_text) =
+            // Parse text content for status, intent, title, tags
+            let (status_from_text, intent_from_text, parsed_title, tags_from_text) =
                 parse_card_text(raw_text_content);
 
             let custom_pkb = card_elem
@@ -242,26 +242,33 @@ impl CanvasReader {
                 .and_then(|p| p.status.clone())
                 .or(status_from_text);
 
-            let priority = custom_pkb
-                .and_then(|p| p.priority)
-                .or(priority_from_text);
+            let intent = custom_pkb
+                .and_then(|p| p.intent)
+                .or(intent_from_text);
 
             let parent = custom_pkb.and_then(|p| p.parent.clone());
 
-            let mut tags = custom_pkb
-                .map(|p| p.tags.clone())
-                .unwrap_or_default();
-            for t in tags_from_text {
-                if !tags.contains(&t) {
-                    tags.push(t);
+            let mut tags = tags_from_text;
+            if let Some(pkb) = custom_pkb {
+                for t in &pkb.tags {
+                    if !tags.contains(t) {
+                        tags.push(t.clone());
+                    }
                 }
             }
 
             let title = if !parsed_title.is_empty() {
                 parsed_title
+            } else if let Some(ref nid) = node_id {
+                nid.clone()
             } else {
-                node_id.clone().unwrap_or_else(|| "Untitled".to_string())
+                "Untitled".to_string()
             };
+
+            // Don't generate tasks for decorative shape elements unless they have text or custom_pkb
+            if custom_pkb.is_none() && raw_text_content.trim().is_empty() {
+                continue;
+            }
 
             // A card is new only when no node id could be recovered by ANY route.
             // Keying this off customData alone reported every card on a
@@ -280,7 +287,7 @@ impl CanvasReader {
                 title,
                 node_type,
                 status,
-                priority,
+                intent,
                 parent,
                 tags,
                 frame_id: card_elem.frame_id.clone(),
@@ -405,10 +412,10 @@ impl CanvasReader {
     }
 }
 
-/// Parse card bound text for status, priority, clean title, and tags.
+/// Parse card bound text for status, intent, clean title, and tags.
 fn parse_card_text(raw_text: &str) -> (Option<String>, Option<i32>, String, Vec<String>) {
     let mut status = None;
-    let mut priority = None;
+    let mut intent = None;
     let mut tags = Vec::new();
     let mut clean_lines = Vec::new();
 
@@ -418,13 +425,13 @@ fn parse_card_text(raw_text: &str) -> (Option<String>, Option<i32>, String, Vec<
             continue;
         }
 
-        // Extract status and priority from [STATUS · P1]
+        // Extract status and intent from [STATUS · P1]
         if let Some(caps) = STATUS_HEADER_RE.captures(trimmed) {
             if let Some(s) = caps.get(1) {
                 status = Some(s.as_str().to_lowercase());
             }
             if let Some(p) = caps.get(2) {
-                priority = p.as_str().parse::<i32>().ok();
+                intent = p.as_str().parse::<i32>().ok();
             }
             // Strip header from line
             let rest = &trimmed[caps[0].len()..];
@@ -448,7 +455,7 @@ fn parse_card_text(raw_text: &str) -> (Option<String>, Option<i32>, String, Vec<
     }
 
     let title = clean_lines.join(" ");
-    (status, priority, title, tags)
+    (status, intent, title, tags)
 }
 
 /// Parse edge type from custom_data or arrow label / prefix.
@@ -538,7 +545,7 @@ mod tests {
         assert_eq!(model.cards.len(), 1);
         let c = &model.cards[0];
         assert_eq!(c.status.as_deref(), Some("ready"));
-        assert_eq!(c.priority, Some(1));
+        assert_eq!(c.intent, Some(1));
         assert_eq!(c.title, "Implement reader pass");
         assert_eq!(c.tags, vec!["backend", "pkb"]);
     }

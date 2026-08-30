@@ -641,7 +641,7 @@ pub fn generate_excalidraw_scene(
                 node_id: Some(node.id.clone()),
                 node_type: node.node_type.clone(),
                 status: node.status.clone(),
-                priority: node.priority,
+                intent: node.intent,
                 parent: node.parent.clone(),
                 tags: node.tags.clone(),
                 is_pkb_managed: Some(true),
@@ -654,7 +654,7 @@ pub fn generate_excalidraw_scene(
         let title_line = truncate_title(&node.label, 36);
         let status_str = node.status.as_deref().unwrap_or("inbox").to_uppercase();
         let prio_str = node
-            .priority
+            .intent
             .map(|p| format!("P{}", p))
             .unwrap_or_default();
         let header = if prio_str.is_empty() {

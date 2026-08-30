@@ -469,9 +469,9 @@ impl GraphStore {
         compute_downstream_metrics(&mut nodes);
         tracing::debug!(target: "perf::graph_rebuild", phase = "downstream_metrics", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
-        // 7b. Compute effective_priority (min priority in downstream cone)
+        // 7b. Compute effective_intent (min intent in downstream cone)
         let _t = std::time::Instant::now();
-        compute_effective_priority(&mut nodes);
+        compute_effective_intent(&mut nodes);
         compute_blocking_urgency(&mut nodes);
         compute_urgency(&mut nodes);
         tracing::debug!(target: "perf::graph_rebuild", phase = "priority_urgency", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
@@ -712,7 +712,7 @@ impl GraphStore {
             new_node.backlink_count = old.backlink_count;
             new_node.downstream_weight = old.downstream_weight;
             new_node.stakeholder_exposure = old.stakeholder_exposure;
-            new_node.effective_priority = old.effective_priority;
+            new_node.effective_intent = old.effective_intent;
             new_node.urgency = old.urgency;
             new_node.blocking_urgency = old.blocking_urgency;
             new_node.focus_score = old.focus_score;
@@ -902,7 +902,7 @@ impl GraphStore {
     /// computed in [`Self::compute_focus_scores`] is the primary ranking key under derived ordering.
     /// Ties are broken deterministically so repeated identical calls yield identical ordering:
     ///   1. `focus_tuple` DESC (nodes with no score sort last)
-    ///   2. `effective_priority` ASC (propagated min-priority in the downstream cone)
+    ///   2. `effective_intent` ASC (propagated min-intent in the downstream cone)
     ///   3. `order` ASC (authored/sequence order)
     ///   4. `id` ASC (unique — guarantees total, stable ordering)
     ///
@@ -914,9 +914,9 @@ impl GraphStore {
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => a
-                .effective_priority
+                .effective_intent
                 .unwrap_or(4)
-                .cmp(&b.effective_priority.unwrap_or(4))
+                .cmp(&b.effective_intent.unwrap_or(4))
                 .then(a.order.cmp(&b.order))
                 .then(a.id.cmp(&b.id)),
         }
@@ -956,7 +956,7 @@ impl GraphStore {
                 .partial_cmp(&a.urgency)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(b.severity.unwrap_or(0).cmp(&a.severity.unwrap_or(0)))
-                .then(a.priority.unwrap_or(4).cmp(&b.priority.unwrap_or(4)))
+                .then(a.intent.unwrap_or(4).cmp(&b.intent.unwrap_or(4)))
                 .then(
                     b.downstream_weight
                         .partial_cmp(&a.downstream_weight)
@@ -988,7 +988,7 @@ impl GraphStore {
                 .partial_cmp(&a.urgency)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(b.severity.unwrap_or(0).cmp(&a.severity.unwrap_or(0)))
-                .then(a.priority.unwrap_or(4).cmp(&b.priority.unwrap_or(4)))
+                .then(a.intent.unwrap_or(4).cmp(&b.intent.unwrap_or(4)))
                 .then(
                     b.downstream_weight
                         .partial_cmp(&a.downstream_weight)
@@ -1726,7 +1726,7 @@ impl GraphStore {
                 continue;
             }
 
-            let pri = node.priority.unwrap_or(4);
+            let intent_val = node.intent.unwrap_or(4);
             let sev = node.severity.unwrap_or(0);
             let severity_gate = if sev >= 4 && node.goal_type.as_deref() == Some("committed") {
                 crate::graph::SeverityGate::Catastrophic
@@ -1734,7 +1734,7 @@ impl GraphStore {
                 crate::graph::SeverityGate::Normal
             };
 
-            let priority_pressure: i64 = match pri {
+            let intent_pressure: i64 = match intent_val {
                 0 => 10000,
                 1 => 5000,
                 _ => 0,
@@ -1785,7 +1785,7 @@ impl GraphStore {
             }
 
             let mut age_staleness: i64 = 0;
-            if pri >= 2 {
+            if intent_val >= 2 {
                 if let Some(ref created) = node.created {
                     if created.len() >= 10 {
                         if let Ok(created_dt) = chrono::NaiveDate::parse_from_str(
@@ -1838,7 +1838,7 @@ impl GraphStore {
             let urgency_term = node.urgency.round() as i64;
             let voi_term = node.voi_value.map(|v| v.round() as i64).unwrap_or(0);
 
-            let cost_of_delay = priority_pressure
+            let cost_of_delay = intent_pressure
                 + deadline_points
                 + stakeholder_waiting
                 + urgency_term
@@ -1847,7 +1847,7 @@ impl GraphStore {
             let tie_breakers = crate::graph::FocusTieBreakers {
                 downstream_weight_x10,
                 age_staleness,
-                effective_priority: node.effective_priority.unwrap_or(4),
+                effective_intent: node.effective_intent.unwrap_or(4),
                 order: node.order,
                 id: node.id.clone(),
             };
@@ -2030,7 +2030,7 @@ impl GraphStore {
   <key id="d2" for="node" attr.name="tags" attr.type="string"/>
   <key id="d3" for="node" attr.name="type" attr.type="string"/>
   <key id="d4" for="node" attr.name="status" attr.type="string"/>
-  <key id="d5" for="node" attr.name="priority" attr.type="int"/>
+  <key id="d5" for="node" attr.name="intent" attr.type="int"/>
   <key id="d6" for="node" attr.name="project" attr.type="string"/>
   <key id="d7" for="node" attr.name="assignee" attr.type="string"/>
   <key id="d8" for="node" attr.name="complexity" attr.type="string"/>
@@ -2070,7 +2070,7 @@ impl GraphStore {
 
             append(&mut ns, "d3", node.node_type.as_deref().unwrap_or(""));
             append(&mut ns, "d4", node.status.as_deref().unwrap_or(""));
-            if let Some(p) = node.priority {
+            if let Some(p) = node.intent {
                 ns.push_str(&format!("      <data key=\"d5\">{}</data>\n", p));
             }
             append(&mut ns, "d6", "");
@@ -2842,7 +2842,7 @@ fn compute_cone_base_weights(nodes: &[GraphNode]) -> (Vec<f64>, Vec<bool>) {
             .map(|s| excluded.contains(s))
             .unwrap_or(true)
         {
-            let pw = match n.priority.unwrap_or(4) {
+            let pw = match n.intent.unwrap_or(4) {
                 0 => 5.0,
                 1 => 3.0,
                 2 => 2.0,
@@ -3034,11 +3034,11 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
     }
 }
 
-/// Compute effective_priority for each node: min(own priority, min priority in downstream cone).
+/// Compute effective_intent for each node: min(own intent, min intent in downstream cone).
 ///
 /// Downstream cone = BFS through blocks, soft_blocks, children edges (skipping completed nodes).
-/// A P2 blocker of a P0 child gets effective_priority=0.
-fn compute_effective_priority(nodes: &mut [GraphNode]) {
+/// A P2 blocker of a P0 child gets effective_intent=0.
+fn compute_effective_intent(nodes: &mut [GraphNode]) {
     let excluded: HashSet<&str> = graph::COMPLETED_STATUSES.iter().copied().collect();
 
     let id_to_idx: HashMap<String, usize> = nodes
@@ -3077,7 +3077,7 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
         })
         .collect();
 
-    let priorities: Vec<i32> = nodes.iter().map(|n| n.priority.unwrap_or(4)).collect();
+    let intents: Vec<i32> = nodes.iter().map(|n| n.intent.unwrap_or(4)).collect();
 
     let status_completed: Vec<bool> = nodes
         .iter()
@@ -3094,7 +3094,7 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
     let mut stack = Vec::new();
 
     for start_idx in 0..num_nodes {
-        let mut min_priority = priorities[start_idx];
+        let mut min_intent = intents[start_idx];
 
         visited.fill(false);
         visited[start_idx] = true;
@@ -3105,9 +3105,9 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
         }
 
         while let Some(tid) = stack.pop() {
-            let p = priorities[tid];
-            if p < min_priority {
-                min_priority = p;
+            let p = intents[tid];
+            if p < min_intent {
+                min_intent = p;
             }
 
             for &neighbor_idx in &adj[tid] {
@@ -3115,7 +3115,7 @@ fn compute_effective_priority(nodes: &mut [GraphNode]) {
             }
         }
 
-        nodes[start_idx].effective_priority = Some(min_priority);
+        nodes[start_idx].effective_intent = Some(min_intent);
     }
 }
 
@@ -3642,9 +3642,9 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(nb.severity.unwrap_or(0).cmp(&na.severity.unwrap_or(0)))
             .then(
-                na.effective_priority
+                na.effective_intent
                     .unwrap_or(4)
-                    .cmp(&nb.effective_priority.unwrap_or(4)),
+                    .cmp(&nb.effective_intent.unwrap_or(4)),
             )
             .then(
                 nb.downstream_weight
@@ -4418,17 +4418,17 @@ mod tests {
         GraphStore::build(&docs, Path::new("/tmp/test-pkb"))
     }
 
-    // ── effective_priority ──
+    // ── effective_intent ──
 
-    /// Build a graph to test priority propagation:
+    /// Build a graph to test intent propagation:
     ///   blocker (P2, active) --blocks--> p0-task (P0, active)
     ///   epic-p0 (P2) with child p0-task (P0, active)
     ///   unrelated (P3, active) -- standalone
     fn build_priority_test_graph() -> GraphStore {
-        let mut make_with_priority = |path: &str,
+        let mut make_with_intent = |path: &str,
                                       title: &str,
                                       id: &str,
-                                      priority: i32,
+                                      intent: i32,
                                       status: &str,
                                       parent: Option<&str>,
                                       depends_on: &[&str]|
@@ -4438,7 +4438,7 @@ mod tests {
             fm.insert("type".to_string(), serde_json::json!("task"));
             fm.insert("status".to_string(), serde_json::json!(status));
             fm.insert("id".to_string(), serde_json::json!(id));
-            fm.insert("priority".to_string(), serde_json::json!(priority));
+            fm.insert("intent".to_string(), serde_json::json!(intent));
             if let Some(p) = parent {
                 fm.insert("parent".to_string(), serde_json::json!(p));
             }
@@ -4463,7 +4463,7 @@ mod tests {
 
         let docs = vec![
             // p0-task: P0, blocked by blocker
-            make_with_priority(
+            make_with_intent(
                 "tasks/p0-task.md",
                 "P0 Task",
                 "p0-task",
@@ -4473,7 +4473,7 @@ mod tests {
                 &["blocker"],
             ),
             // blocker: P2, ready (no deps), blocks p0-task
-            make_with_priority(
+            make_with_intent(
                 "tasks/blocker.md",
                 "Blocker Task",
                 "blocker",
@@ -4483,7 +4483,7 @@ mod tests {
                 &[],
             ),
             // epic-p0: P2 epic, parent of p0-task
-            make_with_priority(
+            make_with_intent(
                 "tasks/epic-p0.md",
                 "Epic P0",
                 "epic-p0",
@@ -4493,7 +4493,7 @@ mod tests {
                 &[],
             ),
             // unrelated: P3, no connections
-            make_with_priority(
+            make_with_intent(
                 "tasks/unrelated.md",
                 "Unrelated Task",
                 "unrelated",
@@ -4565,45 +4565,45 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_priority_blocker_inherits_from_downstream() {
+    fn test_effective_intent_blocker_inherits_from_downstream() {
         let graph = build_priority_test_graph();
-        // blocker (P2) blocks p0-task (P0) → blocker's effective_priority should be 0
+        // blocker (P2) blocks p0-task (P0) → blocker's effective_intent should be 0
         let blocker = graph.resolve("blocker").expect("blocker not found");
         assert_eq!(
-            blocker.effective_priority,
+            blocker.effective_intent,
             Some(0),
             "blocker should inherit P0 from downstream p0-task"
         );
     }
 
     #[test]
-    fn test_effective_priority_epic_inherits_from_child() {
+    fn test_effective_intent_epic_inherits_from_child() {
         let graph = build_priority_test_graph();
-        // epic-p0 (P2) is parent of p0-task (P0) → epic's effective_priority should be 0
+        // epic-p0 (P2) is parent of p0-task (P0) → epic's effective_intent should be 0
         let epic = graph.resolve("epic-p0").expect("epic-p0 not found");
         assert_eq!(
-            epic.effective_priority,
+            epic.effective_intent,
             Some(0),
             "epic should inherit P0 from its child p0-task"
         );
     }
 
     #[test]
-    fn test_effective_priority_unrelated_unchanged() {
+    fn test_effective_intent_unrelated_unchanged() {
         let graph = build_priority_test_graph();
         let unrelated = graph.resolve("unrelated").expect("unrelated not found");
         assert_eq!(
-            unrelated.effective_priority,
+            unrelated.effective_intent,
             Some(3),
-            "unrelated task should keep its own priority"
+            "unrelated task should keep its own intent"
         );
     }
 
     #[test]
-    fn test_effective_priority_own_p0_stays_zero() {
+    fn test_effective_intent_own_p0_stays_zero() {
         let graph = build_priority_test_graph();
         let p0 = graph.resolve("p0-task").expect("p0-task not found");
-        assert_eq!(p0.effective_priority, Some(0));
+        assert_eq!(p0.effective_intent, Some(0));
     }
 
     // ── resolve ──
@@ -5696,7 +5696,7 @@ mod tests {
         //   + VoI 4587 (leaked from contributes_to target) + urgency 100.
         // No `created` field in live frontmatter -> P2 staleness bonus is 0.
         let mut jolt = GraphNode::default();
-        jolt.priority = Some(2);
+        jolt.intent = Some(2);
         jolt.due = Some(ago(14));
         jolt.stakeholder = Some("ANU JOLT Editors".to_string());
         jolt.waiting_since = Some(ago(29));
@@ -5709,7 +5709,7 @@ mod tests {
         // This is itself an instance of defect 2: a pure marking deliverable with
         // no dependents was earning max VoI. The fix removes that 5000.
         let mut marking = GraphNode::default();
-        marking.priority = Some(2);
+        marking.intent = Some(2);
         marking.due = Some(ago(9));
         marking.created = Some(ago(23));
         marking.urgency = 10000.0;
@@ -5723,7 +5723,7 @@ mod tests {
         // staleness 44 + urgency 1000 = 11844. The task AC asks JOLT to land
         // "roughly level with the ethics compliance task" — this asserts it.
         let mut ethics = GraphNode::default();
-        ethics.priority = Some(2);
+        ethics.intent = Some(2);
         ethics.due = Some(ago(14));
         ethics.created = Some(ago(44));
         ethics.consequence = Some("compliance exposure".to_string()); // ignored by deadline (#426)
@@ -5797,7 +5797,7 @@ mod tests {
         task_72b7886e.label = "DECISION (Nic): push the rtk-enabled polecat worker image to ghcr".to_string();
         task_72b7886e.status = Some("review".to_string());
         task_72b7886e.assignee = Some("Nic".to_string());
-        task_72b7886e.priority = Some(2);
+        task_72b7886e.intent = Some(2);
         task_72b7886e.created = Some(d14_ago.clone());
         task_72b7886e.tags = vec!["decision".to_string(), "needs-nic".to_string(), "human-approval".to_string()];
 
@@ -5807,7 +5807,7 @@ mod tests {
         task_21d3ece0.label = "DECISION (Nic): run one aops-slug Claude Code session to a normal turn-end".to_string();
         task_21d3ece0.status = Some("review".to_string());
         task_21d3ece0.assignee = Some("Nic".to_string());
-        task_21d3ece0.priority = Some(2);
+        task_21d3ece0.intent = Some(2);
         task_21d3ece0.created = Some(d14_ago.clone());
         task_21d3ece0.tags = vec!["decision".to_string(), "needs-nic".to_string(), "human-approval".to_string()];
 
@@ -5816,7 +5816,7 @@ mod tests {
         aops_ee205f8f.id = "aops_ee205f8f".to_string();
         aops_ee205f8f.label = "Sign-off: does the dispatch payload boundary permit injecting a worker's own target task body?".to_string();
         aops_ee205f8f.status = Some("queued".to_string());
-        aops_ee205f8f.priority = Some(4);
+        aops_ee205f8f.intent = Some(4);
         aops_ee205f8f.created = Some(d14_ago.clone());
         aops_ee205f8f.tags = vec!["sign-off".to_string(), "doctrine".to_string(), "human-approval".to_string()];
 
@@ -5826,7 +5826,7 @@ mod tests {
         aops_3d6c268f.status = Some("inbox".to_string());
         aops_3d6c268f.assignee = Some("Nic".to_string());
         aops_3d6c268f.stakeholder = Some("Nic".to_string());
-        aops_3d6c268f.priority = Some(4);
+        aops_3d6c268f.intent = Some(4);
         aops_3d6c268f.created = Some(d14_ago.clone());
 
         // 5. Anti-gaming test: ordinary work task created by working agent (P4, 14d ago, no human gate indicators)
@@ -5835,7 +5835,7 @@ mod tests {
         normal_agent_task.label = "Refactor internal parser helpers".to_string();
         normal_agent_task.status = Some("ready".to_string());
         normal_agent_task.assignee = Some("polecat".to_string());
-        normal_agent_task.priority = Some(4);
+        normal_agent_task.intent = Some(4);
         normal_agent_task.created = Some(d14_ago.clone());
         normal_agent_task.tags = vec!["refactor".to_string(), "parser".to_string()];
 
@@ -7343,7 +7343,7 @@ mod tests {
         GraphNode {
             id: id.to_string(),
             status: Some("active".to_string()),
-            priority: Some(priority),
+            intent: Some(priority),
             confidence: Some(1.0 - uncertainty),
             has_open_question: uncertainty > 0.0,
             uncertainty,
@@ -8245,9 +8245,9 @@ mod tests {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(nb.severity.unwrap_or(0).cmp(&na.severity.unwrap_or(0)))
                 .then(
-                    na.effective_priority
+                    na.effective_intent
                         .unwrap_or(4)
-                        .cmp(&nb.effective_priority.unwrap_or(4)),
+                        .cmp(&nb.effective_intent.unwrap_or(4)),
                 )
                 .then(
                     nb.downstream_weight
@@ -8259,14 +8259,14 @@ mod tests {
                 .then(a.cmp(b))
         };
 
-        // 1. Both-None effective_priority case (the exact case that failed under unwrap_or(2) vs unwrap_or(4))
+        // 1. Both-None effective_intent case (the exact case that failed under unwrap_or(2) vs unwrap_or(4))
         let mut na = GraphNode::default();
         na.id = "task-none-1".to_string();
-        na.effective_priority = None;
+        na.effective_intent = None;
 
         let mut nb = GraphNode::default();
         nb.id = "task-none-2".to_string();
-        nb.effective_priority = None;
+        nb.effective_intent = None;
 
         let cmp_ab = ready_cmp(&na, &nb, &na.id, &nb.id);
         let cmp_ba = ready_cmp(&nb, &na, &nb.id, &na.id);
@@ -8285,7 +8285,7 @@ mod tests {
         // 2. Transitivity test across a triple of nodes with None, Some(3), Some(1)
         let mut nc = GraphNode::default();
         nc.id = "task-none-3".to_string();
-        nc.effective_priority = Some(1);
+        nc.effective_intent = Some(1);
 
         let nodes = vec![
             ("task-none-1", na),
@@ -8600,7 +8600,7 @@ mod tests {
             tie_breakers: FocusTieBreakers {
                 downstream_weight_x10: 10,
                 age_staleness: 20,
-                effective_priority: 1,
+                effective_intent: 1,
                 order: 0,
                 id: "a".to_string(),
             },
@@ -8667,11 +8667,11 @@ mod tests {
 
         let mut normal_task = GraphNode::default();
         normal_task.id = "normal-task".to_string();
-        normal_task.priority = Some(2);
+        normal_task.intent = Some(2);
 
         let mut unaffordable_task = GraphNode::default();
         unaffordable_task.id = "unaffordable-task".to_string();
-        unaffordable_task.priority = Some(0); // P0 would normally score 10,000
+        unaffordable_task.intent = Some(0); // P0 would normally score 10,000
         unaffordable_task.affordable_loss = Some(false); // Fails affordable-loss constraint
 
         let mut nodes = vec![normal_task, unaffordable_task];
@@ -8867,12 +8867,12 @@ mod tests {
 
         let mut p0_no_due = GraphNode::default();
         p0_no_due.id = "p0-no-due".to_string();
-        p0_no_due.priority = Some(0);
+        p0_no_due.intent = Some(0);
         p0_no_due.due = None;
 
         let mut p4_far_due = GraphNode::default();
         p4_far_due.id = "p4-far-due".to_string();
-        p4_far_due.priority = Some(4);
+        p4_far_due.intent = Some(4);
         p4_far_due.due = Some(far_future);
         p4_far_due.effort = Some("1d".to_string());
 

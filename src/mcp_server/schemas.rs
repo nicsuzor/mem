@@ -171,7 +171,7 @@ impl PkbSearchServer {
                         "task_title": { "type": "string", "description": "Alias for title" },
                         "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
                         "parent": { "type": "string", "description": "Parent task ID (required for tasks; only epic, learn, goal, target may omit)" },
-                        "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See specs/ranking.md §2.1 and §4.6." },
+                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never intent. See specs/ranking.md §2.1 and §4.6." },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                         "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of tasks that must complete before this one is unblocked" },
                         "soft_depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of tasks that this task soft-depends on (informational/advisory dependency)" },
@@ -256,7 +256,7 @@ impl PkbSearchServer {
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                         "body": { "type": "string", "description": "Markdown body" },
                         "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Document/task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
-                        "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See specs/ranking.md §2.1 and §4.6." },
+                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never intent. See specs/ranking.md §2.1 and §4.6." },
                         "parent": { "type": "string", "description": "Parent document ID" },
                         "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of documents that must complete before this one is unblocked" },
                         "soft_depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of documents/tasks that this document soft-depends on" },
@@ -439,7 +439,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false).idempotent(true)),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering. Results are returned in `focus_score`-descending order by default (highest-focus first) across every path — default, ready, and blocked — with a deterministic tie-break, so the top rows are the most important and repeated calls are stable; no re-sort is needed. Every row carries `status`. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining priority, severity, deadline urgency, age/staleness, downstream weight, stakeholder waiting urgency, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md. `status=` filters strictly on the stored frontmatter status field (never a computed set) — pass status='ready' or status='blocked' to match nodes literally stored with that status.",
+                "List tasks with smart filtering. Results are returned in `focus_score`-descending order by default (highest-focus first) across every path — default, ready, and blocked — with a deterministic tie-break, so the top rows are the most important and repeated calls are stable; no re-sort is needed. Every row carries `status`. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining intent, severity, deadline urgency, age/staleness, downstream weight, stakeholder waiting urgency, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md. `status=` filters strictly on the stored frontmatter status field (never a computed set) — pass status='ready' or status='blocked' to match nodes literally stored with that status.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -451,7 +451,7 @@ impl PkbSearchServer {
                             ],
                             "description": "Filter by the node's stored frontmatter status value (exact match, case-insensitive) — never a computed set. Accepts a single status (e.g. 'ready'), a comma-separated list (e.g. 'ready,in_progress'), or an array of statuses (e.g. ['ready', 'in_progress']). One of: inbox, ready, queued, in_progress, review, merge_ready, blocked, paused, someday, partial, done, cancelled. 'ready' matches only nodes literally stored with status: ready (not a leaf/unblocked computation); 'blocked' matches only nodes literally stored with status: blocked (not the computed unmet-deps set — see the top-level `blocked` field on each row for that)."
                         },
-                        "priority": { "type": "integer", "description": "Filter to tasks whose effective priority (own or any downstream task via blocks/parent) ≤ N. E.g. priority=0 returns every task that touches a P0, including its blockers." },
+                        "intent": { "type": "integer", "description": "Filter to tasks whose effective intent (own or any downstream task via blocks/parent) ≤ N. E.g. intent=0 returns every task that touches a P0, including its blockers." },
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
@@ -476,7 +476,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric, combining priority, severity, deadline urgency, age/staleness, downstream weight, stakeholder waiting urgency, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md.",
+                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric, combining intent, severity, deadline urgency, age/staleness, downstream weight, stakeholder waiting urgency, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -491,7 +491,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "update_task",
-                "Patch metadata fields on an existing task. Pass fields either nested as `updates: {status: \"done\"}` or flat at the top level (e.g. status=\"done\"). Use for non-terminal updates (tags, assignee, body). For state transitions (done, merge_ready, blocked, cancelled, review, partial), prefer release_task — it also enforces the evidence-or-failure-reason contract (completion_evidence for done; reason/blocker for handback statuses) that this generic patch path does not. Setting status=\"done\" here still requires a non-empty `completion_evidence` field (in updates or top-level), unchanged. A caller-supplied `priority` is rejected outright — priority bands are Nic's call only, never an agent's.",
+                "Patch metadata fields on an existing task. Pass fields either nested as `updates: {status: \"done\"}` or flat at the top level (e.g. status=\"done\"). Use for non-terminal updates (tags, assignee, body). For state transitions (done, merge_ready, blocked, cancelled, review, partial), prefer release_task — it also enforces the evidence-or-failure-reason contract (completion_evidence for done; reason/blocker for handback statuses) that this generic patch path does not. Setting status=\"done\" here still requires a non-empty `completion_evidence` field (in updates or top-level), unchanged. A caller-supplied `intent` (or legacy `priority`) is rejected outright — intent bands are Nic's call only, never an agent's.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -569,7 +569,7 @@ impl PkbSearchServer {
                                 "properties": {
                                     "title": { "type": "string", "description": "Subtask title (required; must be unique among siblings for cross-referencing)" },
                                     "id": { "type": "string", "description": "Optional custom task ID" },
-                                    "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P3 (Planned). Agents must NOT set this — a caller-supplied value is rejected outright. Priority bands are Nic's call only." },
+                                    "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P3 (Planned). Agents must NOT set this — a caller-supplied value is rejected outright. Intent bands are Nic's call only." },
                                     "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Dependency IDs. Supports positional sibling refs ('$1', '$2', ... 1-indexed into this subtasks array) and case-insensitive sibling title matches, in addition to existing task IDs." },
                                     "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                                     "assignee": { "type": "string", "description": "Who is responsible for this subtask" },
@@ -667,8 +667,8 @@ impl PkbSearchServer {
                         "parent": { "type": "string", "description": "Filter: direct children of parent" },
                         "subtree": { "type": "string", "description": "Filter: all descendants of node" },
                         "status": { "type": "string", "description": "Filter by status" },
-                        "priority": { "type": "integer", "description": "Filter by exact priority" },
-                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
+                        "intent": { "type": "integer", "description": "Filter by exact intent" },
+                        "intent_gte": { "type": "integer", "description": "Filter: intent >= N" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
                         "type": { "type": "string", "description": "Filter by document type" },
                         "older_than_days": { "type": "integer", "description": "Filter: created > N days ago" },
@@ -676,7 +676,7 @@ impl PkbSearchServer {
                         "orphan": { "type": "boolean", "description": "Filter: no parent and no project" },
                         "title_contains": { "type": "string", "description": "Filter: title substring (case-insensitive)" },
                         "weight_gte": { "type": "integer", "description": "Filter: downstream weight >= N" },
-                        "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on. A `priority` key is rejected outright — priority bands are Nic's call only, never an agent's." },
+                        "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on. A `intent` or `priority` key is rejected outright — intent bands are Nic's call only, never an agent's." },
                         "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["updates"]
@@ -695,8 +695,8 @@ impl PkbSearchServer {
                         "parent": { "type": "string", "description": "Filter: direct children of parent" },
                         "subtree": { "type": "string", "description": "Filter: all descendants of node" },
                         "status": { "type": "string", "description": "Filter by status" },
-                        "priority": { "type": "integer", "description": "Filter by exact priority" },
-                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
+                        "intent": { "type": "integer", "description": "Filter by exact intent" },
+                        "intent_gte": { "type": "integer", "description": "Filter: intent >= N" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
                         "title_contains": { "type": "string", "description": "Filter: title substring" },
                         "new_parent": { "type": "string", "description": "ID of new parent (flexible resolution)" },
@@ -718,8 +718,8 @@ impl PkbSearchServer {
                         "parent": { "type": "string", "description": "Filter: direct children of parent" },
                         "subtree": { "type": "string", "description": "Filter: all descendants of node" },
                         "status": { "type": "string", "description": "Filter by status" },
-                        "priority": { "type": "integer", "description": "Filter by exact priority" },
-                        "priority_gte": { "type": "integer", "description": "Filter: priority >= N" },
+                        "intent": { "type": "integer", "description": "Filter by exact intent" },
+                        "intent_gte": { "type": "integer", "description": "Filter: intent >= N" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter: has ALL listed tags" },
                         "older_than_days": { "type": "integer", "description": "Filter: created > N days ago" },
                         "stale_days": { "type": "integer", "description": "Filter: not modified in N days" },
@@ -763,7 +763,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "graph_stats",
-                "Get a summary of PKB health, including task distribution by status/priority, orphan counts, and disconnected clusters. Read-only.",
+                "Get a summary of PKB health, including task distribution by status/intent, orphan counts, and disconnected clusters. Read-only.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -848,7 +848,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "task_summary",
-                "Get high-level dashboard metrics: counts of 'ready' vs 'blocked' tasks, and priority breakdowns. Use for situational awareness.",
+                "Get high-level dashboard metrics: counts of 'ready' vs 'blocked' tasks, and intent breakdowns. Use for situational awareness.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -923,7 +923,7 @@ impl PkbSearchServer {
                                 "properties": {
                                     "title": { "type": "string", "description": "Epic title (required)" },
                                     "id": { "type": "string", "description": "Optional custom epic ID (auto-generated if omitted)" },
-                                    "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical .. P4 Backlog)" },
+                                    "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog)" },
                                     "task_ids": { "type": "array", "items": { "type": "string" }, "description": "Existing task IDs to reparent under this new epic (required; unresolvable IDs are reported as errors, not fatal)" },
                                     "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs the epic itself depends on" },
                                     "body": { "type": "string", "description": "Markdown body for the epic" }

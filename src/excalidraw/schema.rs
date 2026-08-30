@@ -575,8 +575,12 @@ pub struct PkbCustomData {
     pub node_type: Option<String>,
     #[serde(rename = "status", skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    #[serde(rename = "priority", skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i32>,
+    #[serde(
+        rename = "intent",
+        alias = "priority",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub intent: Option<i32>,
     #[serde(rename = "parent", skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     #[serde(rename = "tags", default, skip_serializing_if = "Vec::is_empty")]
@@ -635,7 +639,7 @@ mod tests {
                 node_id: Some("task-123".to_string()),
                 node_type: Some("task".to_string()),
                 status: Some("ready".to_string()),
-                priority: Some(1),
+                intent: Some(1),
                 parent: Some("epic-abc".to_string()),
                 tags: vec!["backend".to_string()],
                 edge_type: None,

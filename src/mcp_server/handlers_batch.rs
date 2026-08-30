@@ -153,9 +153,9 @@ impl PkbSearchServer {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        // task_1381381c: agents must not originate priority bands via batch_update.
-        if updates.get("priority").is_some() {
-            return Err(Self::reject_agent_priority("batch_update"));
+        // task_1381381c: agents must not originate intent bands via batch_update.
+        if updates.get("intent").is_some() || updates.get("priority").is_some() {
+            return Err(Self::reject_agent_intent("batch_update"));
         }
 
         if filters.is_empty() && updates.as_object().map(|m| m.is_empty()).unwrap_or(true) {
@@ -1026,17 +1026,17 @@ mod batch_finalize_tests {
         }
     }
 
-    /// task_1381381c: agents must not be able to set `priority` via
+    /// task_1381381c: agents must not be able to set `intent` (or legacy `priority`) via
     /// `batch_update` — one of the write paths that had only a range check
-    /// (`is_valid_priority`) and no authority guard.
+    /// (`is_valid_intent`) and no authority guard.
     #[test]
-    fn test_batch_update_rejects_agent_priority() {
+    fn test_batch_update_rejects_agent_intent() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pkb_root = dir.path();
         let server = build_disk_server(pkb_root);
 
         let create_args = json!({
-            "title": "Batch Priority Guard Task",
+            "title": "Batch Intent Guard Task",
             "parent": "test-project",
             "project": "test-project",
             "status": "ready",
@@ -1047,27 +1047,27 @@ mod batch_finalize_tests {
 
         let args = json!({
             "parent": "test-project",
-            "updates": { "priority": 0 },
+            "updates": { "intent": 0 },
             "dry_run": false
         });
         let err = server
             .handle_batch_update(&args)
-            .expect_err("agent-supplied priority via batch_update should be rejected");
+            .expect_err("agent-supplied intent via batch_update should be rejected");
         let msg = format!("{}", err.message);
         assert!(
-            msg.to_lowercase().contains("priority"),
-            "error should mention priority, got: {msg}"
+            msg.to_lowercase().contains("intent"),
+            "error should mention intent, got: {msg}"
         );
 
         // Nothing should have been written despite the filter matching a task.
         let graph = server.graph.read();
         let node = graph
-            .resolve("Batch Priority Guard Task")
+            .resolve("Batch Intent Guard Task")
             .expect("task should exist");
         assert_ne!(
-            node.priority,
+            node.intent,
             Some(0),
-            "priority must not have been written despite rejection"
+            "intent must not have been written despite rejection"
         );
     }
 

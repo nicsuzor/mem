@@ -102,7 +102,7 @@ impl PkbSearchServer {
             template_path,
             template_label,
             template_tags,
-            template_priority,
+            template_intent,
             template_assignee,
         ) = {
             let graph = self.graph.read();
@@ -130,7 +130,7 @@ impl PkbSearchServer {
                 node.path.clone(),
                 node.label.clone(),
                 node.tags.clone(),
-                node.priority,
+                node.intent,
                 node.assignee.clone(),
             )
         };
@@ -196,7 +196,7 @@ impl PkbSearchServer {
                 template_title: template_label,
                 template_body: body,
                 tags: template_tags,
-                priority: template_priority,
+                intent: template_intent,
                 project: template_project,
                 parent: template_parent,
                 consequence,
@@ -846,7 +846,7 @@ impl PkbSearchServer {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!(
                     "Invalid status \"{status}\". Must be one of: merge_ready, done, review, blocked, cancelled, partial.{suggestion}\n\
-                     For non-terminal updates (priority, tags, assignee), use update_task instead."
+                     For non-terminal updates (intent, tags, assignee), use update_task instead."
                 )),
                 data: None,
             });
@@ -1301,10 +1301,10 @@ impl PkbSearchServer {
             });
         }
 
-        // task_1381381c: agents must not originate priority bands via decompose_task.
-        if let Some(bad) = subtasks.iter().find(|st| st.get("priority").is_some()) {
+        // task_1381381c: agents must not originate intent bands via decompose_task.
+        if let Some(bad) = subtasks.iter().find(|st| st.get("intent").is_some() || st.get("priority").is_some()) {
             let title = bad.get("title").and_then(|v| v.as_str()).unwrap_or("<untitled>");
-            return Err(Self::reject_agent_priority(&format!(
+            return Err(Self::reject_agent_intent(&format!(
                 "decompose_task (subtask '{title}')"
             )));
         }
@@ -1480,8 +1480,9 @@ impl PkbSearchServer {
                 title: title.to_string(),
                 id: Some(subtask_ids[i].clone()),
                 parent: Some(parent_id.to_string()),
-                priority: subtask
-                    .get("priority")
+                intent: subtask
+                    .get("intent")
+                    .or_else(|| subtask.get("priority"))
                     .and_then(|v| v.as_i64())
                     .map(|v| v as i32),
                 tags: subtask

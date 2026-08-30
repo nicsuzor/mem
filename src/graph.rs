@@ -83,7 +83,7 @@ pub enum DeadlineBand {
 pub struct FocusTieBreakers {
     pub downstream_weight_x10: i64,
     pub age_staleness: i64,
-    pub effective_priority: i32,
+    pub effective_intent: i32,
     pub order: i32,
     pub id: String,
 }
@@ -113,8 +113,8 @@ impl FocusTuple {
             "tie_breakers.downstream_weight"
         } else if self.tie_breakers.age_staleness != other.tie_breakers.age_staleness {
             "tie_breakers.age_staleness"
-        } else if self.tie_breakers.effective_priority != other.tie_breakers.effective_priority {
-            "tie_breakers.effective_priority"
+        } else if self.tie_breakers.effective_intent != other.tie_breakers.effective_intent {
+            "tie_breakers.effective_intent"
         } else if self.tie_breakers.order != other.tie_breakers.order {
             "tie_breakers.order"
         } else if self.tie_breakers.id != other.tie_breakers.id {
@@ -146,7 +146,7 @@ impl Ord for FocusTuple {
             .then_with(|| self.tie_breakers.downstream_weight_x10.cmp(&other.tie_breakers.downstream_weight_x10))
             .then_with(|| self.tie_breakers.age_staleness.cmp(&other.tie_breakers.age_staleness))
             // Inverted for higher-is-better tuple Ord
-            .then_with(|| other.tie_breakers.effective_priority.cmp(&self.tie_breakers.effective_priority))
+            .then_with(|| other.tie_breakers.effective_intent.cmp(&self.tie_breakers.effective_intent))
             .then_with(|| other.tie_breakers.order.cmp(&self.tie_breakers.order))
             .then_with(|| other.tie_breakers.id.cmp(&self.tie_breakers.id))
     }
@@ -257,7 +257,7 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consolidated_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i32>,
+    pub intent: Option<i32>,
     #[serde(skip_serializing_if = "is_zero_i32")]
     pub order: i32,
     /// Parent, **as resolved against the graph**. `compute_inverses` overwrites
@@ -443,11 +443,11 @@ pub struct GraphNode {
     /// 1.0 if blocking any in_progress, 0.5 if blocking any active, else 0.0.
     #[serde(skip)]
     pub blocking_urgency: f64,
-    /// Computed: min priority across self + full downstream cone (blocks, soft_blocks, children).
-    /// Used for filtering/sorting — a P2 blocker of a P0 gets effective_priority=0.
+    /// Computed: min intent across self + full downstream cone (blocks, soft_blocks, children).
+    /// Used for filtering/sorting — a P2 blocker of a P0 gets effective_intent=0.
     /// Never written back to frontmatter; skip serialization to avoid polluting YAML.
     #[serde(skip)]
-    pub effective_priority: Option<i32>,
+    pub effective_intent: Option<i32>,
     /// Computed: lexicographic urgency propagation.
     /// Formula: Urgency = S_lex * W_edge * f(Slack)
     #[serde(default, skip_serializing_if = "is_zero_f64")]
@@ -700,9 +700,14 @@ pub fn is_valid_node_type(node_type: &str) -> bool {
     VALID_NODE_TYPES.contains(&node_type)
 }
 
-/// Returns true if the priority is within the valid range [0, 4].
+/// Returns true if the intent is within the valid range [0, 4].
+pub fn is_valid_intent(intent: i32) -> bool {
+    (0..=4).contains(&intent)
+}
+
+/// Legacy alias for is_valid_intent.
 pub fn is_valid_priority(priority: i32) -> bool {
-    (0..=4).contains(&priority)
+    is_valid_intent(priority)
 }
 
 /// Returns true if the effort string is a valid duration (e.g., "1d", "2h", "1w", "0.5d").
@@ -1190,9 +1195,14 @@ impl GraphNode {
                 .and_then(|v| v.as_str())
                 .map(|s| resolve_status_alias(s).to_string())
         });
-        let priority = fm
+        let intent = fm
             .as_ref()
-            .and_then(|f| f.get("priority").and_then(|v| v.as_i64()).map(|v| v as i32));
+            .and_then(|f| {
+                f.get("intent")
+                    .or_else(|| f.get("priority"))
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32)
+            });
         let order = fm
             .as_ref()
             .and_then(|f| f.get("order").and_then(|v| v.as_i64()).map(|v| v as i32))
@@ -1581,7 +1591,7 @@ impl GraphNode {
             status,
             consolidated: doc.consolidated,
             consolidated_at: doc.consolidated_at.clone(),
-            priority,
+            intent,
             order,
             parent_raw: parent.clone(),
             parent,
@@ -1643,7 +1653,7 @@ impl GraphNode {
             scope: 0,
             uncertainty: 0.0,
             criticality: 0.0,
-            effective_priority: None,
+            effective_intent: None,
             urgency: 0.0,
             edge_template,
             parse_warnings,
@@ -1910,5 +1920,28 @@ mod target_prototype_tests {
         let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
         assert_eq!(n.node_type, None);
         assert!(n.parse_warnings.is_empty());
+    }
+
+    #[test]
+    fn legacy_priority_frontmatter_parses_as_intent() {
+        let fm_legacy = json!({
+            "id": "task-legacy-01",
+            "title": "Legacy Priority Task",
+            "status": "ready",
+            "project": "aops",
+            "priority": 1,
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm_legacy));
+        assert_eq!(n.intent, Some(1));
+
+        let fm_new = json!({
+            "id": "task-new-01",
+            "title": "New Intent Task",
+            "status": "ready",
+            "project": "aops",
+            "intent": 0,
+        });
+        let n2 = GraphNode::from_pkb_document(&doc_with_fm(fm_new));
+        assert_eq!(n2.intent, Some(0));
     }
 }

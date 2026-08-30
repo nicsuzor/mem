@@ -170,7 +170,7 @@ pub fn batch_merge(
     // Collect data from merged tasks
     let mut all_tags: HashSet<String> = canonical.tags.iter().cloned().collect();
     let mut all_depends_on: HashSet<String> = canonical.depends_on.iter().cloned().collect();
-    let best_priority = canonical.priority.unwrap_or(4);
+    let best_intent = canonical.intent.unwrap_or(4);
     let mut children_to_reparent: Vec<String> = Vec::new();
     let mut backlinks_to_update: Vec<(String, String)> = Vec::new(); // (node_id, field) to repoint
     // Source ids successfully archived — appended to the canonical node's
@@ -305,17 +305,17 @@ pub fn batch_merge(
         );
     }
 
-    // Keep highest priority (lowest number)
-    let final_priority = merge_ids
+    // Keep highest intent (lowest number)
+    let final_intent = merge_ids
         .iter()
         .filter_map(|id| graph.resolve(id))
-        .filter_map(|n| n.priority)
-        .chain(std::iter::once(best_priority))
+        .filter_map(|n| n.intent)
+        .chain(std::iter::once(best_intent))
         .min()
         .unwrap_or(2);
     canonical_updates.insert(
-        "priority".to_string(),
-        serde_json::Value::Number(final_priority.into()),
+        "intent".to_string(),
+        serde_json::Value::Number(final_intent.into()),
     );
 
     if !merged_ids_for_supersedes.is_empty() {
