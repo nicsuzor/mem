@@ -956,6 +956,17 @@ fn check_frontmatter(
                 });
             }
         }
+
+        // Triage lint: missing acceptance criteria (demoted from scoring proxy in Phase 3)
+        if node_type == "task" && !graph::detect_acceptance_criteria(content) {
+            diags.push(Diagnostic {
+                severity: Severity::Style,
+                rule: "task-missing-ac",
+                message: "Task has no acceptance criteria heading ('Acceptance Criteria', 'done when', etc.) — required for inbox task readiness".into(),
+                line: None,
+                fixable: false,
+            });
+        }
     }
 }
 
