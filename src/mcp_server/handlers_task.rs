@@ -382,10 +382,9 @@ impl PkbSearchServer {
         let mut res = self.handle_get_task(&get_args).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!(
-                "create_task wrote {} but the new node is not yet visible in the graph \
+                "create_task wrote {task_id} but the new node is not yet visible in the graph \
                  (id={task_id}). Underlying lookup error: {}. \
                  The file is on disk — retry get_task in a moment.",
-                path.display(),
                 e.message,
             )),
             data: None,
@@ -439,8 +438,7 @@ impl PkbSearchServer {
             return Err(McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!(
-                    "Task file not found on disk: {}",
-                    abs_path.display()
+                    "Task file not found on disk for ID '{id}'"
                 )),
                 data: None,
             });

@@ -538,7 +538,8 @@ impl PkbSearchServer {
         let res = serde_json::json!({
             "success": true,
             "created_nodes": report.created_nodes.iter().map(|(id, path)| {
-                serde_json::json!({ "id": id, "path": path.to_string_lossy() })
+                let filename = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                serde_json::json!({ "id": id, "filename": filename })
             }).collect::<Vec<_>>(),
             "updated_nodes": report.updated_nodes,
             "updated_edges": report.updated_edges,
