@@ -270,12 +270,29 @@ impl PkbSearchServer {
                         .collect()
                 })
                 .unwrap_or_default(),
+            soft_depends_on: args
+                .get("soft_depends_on")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
             assignee: args
                 .get("assignee")
                 .and_then(|v| v.as_str())
                 .map(String::from),
             complexity: args
                 .get("complexity")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            effort: args
+                .get("effort")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            consequence: args
+                .get("consequence")
                 .and_then(|v| v.as_str())
                 .map(String::from),
             source: args

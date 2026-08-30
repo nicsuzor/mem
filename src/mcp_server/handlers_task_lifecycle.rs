@@ -167,6 +167,7 @@ impl PkbSearchServer {
             .unwrap_or_default();
 
         let depends_on = crate::graph::parse_string_array(&fm, "depends_on");
+        let soft_depends_on = crate::graph::parse_string_array(&fm, "soft_depends_on");
 
         let goal_type = fm
             .get("goal_type")
@@ -201,6 +202,7 @@ impl PkbSearchServer {
                 consequence,
                 contributes_to,
                 depends_on,
+                soft_depends_on,
                 goal_type,
                 severity,
                 stakeholder,
@@ -1473,6 +1475,7 @@ impl PkbSearchServer {
                     })
                     .unwrap_or_default(),
                 depends_on,
+                soft_depends_on: Vec::new(),
                 assignee: subtask
                     .get("assignee")
                     .and_then(|v| v.as_str())

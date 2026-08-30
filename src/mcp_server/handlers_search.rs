@@ -435,7 +435,9 @@ impl PkbSearchServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: from"),
+                message: Cow::from(
+                    "Missing required parameter: from. Example: pkb_trace(from=\"node-a\", to=\"node-b\")",
+                ),
                 data: None,
             })?;
 
@@ -444,7 +446,9 @@ impl PkbSearchServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: to"),
+                message: Cow::from(
+                    "Missing required parameter: to. Example: pkb_trace(from=\"node-a\", to=\"node-b\")",
+                ),
                 data: None,
             })?;
 

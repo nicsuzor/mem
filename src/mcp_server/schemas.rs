@@ -50,7 +50,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false).destructive(true)),
             Tool::new(
                 "search",
-                "Hybrid semantic + graph-proximity search across the personal knowledge base. Use this for general discovery and finding related knowledge. Supports proximity boosting.",
+                "Hybrid semantic + graph-proximity search across the personal knowledge base. Uses ONNX embeddings (~100-300ms, an order of magnitude slower than direct id reads like get_document/get_task). If a search times out under high load, back off and retry rather than rewording — latency is compute-bound embedding generation, not query mismatch. Use this for general discovery and finding related knowledge. Supports proximity boosting.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -102,7 +102,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "task_search",
-                "Semantic search filtered to actionable tasks. Returns results with rich graph context including status and dependencies. Done/cancelled tasks are hidden by default — when you're looking for work to do, completed tasks are noise; pass `include_done=true` to override. Use `type: \"epic\"` to find container tasks (with context and subtasks) rather than leaf tasks.",
+                "Semantic search filtered to actionable tasks. Uses ONNX embeddings (~100-300ms, an order of magnitude slower than direct id reads like get_task). If a search times out under load, back off and retry rather than rewording. Returns results with rich graph context including status and dependencies. Done/cancelled tasks are hidden by default — when you're looking for work to do, completed tasks are noise; pass `include_done=true` to override. Use `type: \"epic\"` to find container tasks (with context and subtasks) rather than leaf tasks.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -163,20 +163,21 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Only `title` is required; `parent` and `project` are optional but recommended — omitted tasks inherit the nearest ancestor's project and become orphans without a parent. Supports the verbal contribution-weight scale via `contributes_to` and severity-based prioritization. Parent/child cycles are rejected at write time.",
+                "Create a new task markdown file with YAML frontmatter. `title` and `parent` are required (only root-able types like epic, learn, goal, target may omit parent). `project` is optional — omitted tasks inherit the nearest ancestor's project. Supports the verbal contribution-weight scale via `contributes_to` and severity-based prioritization. Parent/child cycles are rejected at write time.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Task title (also accepts `task_title` as alias)" },
                         "task_title": { "type": "string", "description": "Alias for title" },
                         "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
-                        "parent": { "type": "string", "description": "Parent task ID" },
+                        "parent": { "type": "string", "description": "Parent task ID (required for tasks; only epic, learn, goal, target may omit)" },
                         "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See specs/ranking.md §2.1 and §4.6." },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                         "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of tasks that must complete before this one is unblocked" },
+                        "soft_depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of tasks that this task soft-depends on (informational/advisory dependency)" },
                         "assignee": { "type": "string", "description": "Who is responsible for this task" },
-                        "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L')" },
-                        "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w'. Parser converts to days." },
+                        "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L'). For duration strings like '1d'/'2h', use effort instead." },
+                        "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w' (minimum '1h'). For size labels like 'S'/'M'/'L', use complexity instead." },
                         "consequence": { "type": "string", "description": "Narrative description of what happens if this task is not done or fails." },
                         "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes. SEV4 is lexicographic." },
                         "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
@@ -195,7 +196,7 @@ impl PkbSearchServer {
                         "release_summary": { "type": "string", "description": "Detailed technical summary, if creating this task as part of a release/handover" },
                         "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this task contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": \"expected\"}]. Supports `inherits_from` to copy fields from a prototype edge." }
                     },
-                    "required": ["title"]
+                    "required": ["title", "parent"]
                 }))
                 .unwrap(),
             )
@@ -258,8 +259,12 @@ impl PkbSearchServer {
                         "priority": { "type": "integer", "description": "Priority band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents must NOT originate a non-default band — leave unset (defaults to P3). Set only when Nic expressly directs a band. Express importance via `contributes_to` `stated_weight`, never priority. See specs/ranking.md §2.1 and §4.6." },
                         "parent": { "type": "string", "description": "Parent document ID" },
                         "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of documents that must complete before this one is unblocked" },
+                        "soft_depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of documents/tasks that this document soft-depends on" },
                         "assignee": { "type": "string", "description": "Who is responsible for this document" },
-                        "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L')" },
+                        "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L'). For duration strings like '1d'/'2h', use effort instead." },
+                        "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w' (minimum '1h'). For size labels like 'S'/'M'/'L', use complexity instead." },
+                        "consequence": { "type": "string", "description": "Narrative description of what happens if this task/doc is not done or fails." },
+                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this document contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": \"expected\"}]." },
                         "source": { "type": "string", "description": "Source context" },
                         "due": { "type": "string", "description": "Due date" },
                         "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
@@ -485,6 +490,10 @@ impl PkbSearchServer {
                     "properties": {
                         "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, title)" },
                         "updates": { "type": "object", "description": "Optional nested form. JSON object of fields to update (null to remove a field). If omitted, any top-level fields other than id/updates are treated as fields to update." },
+                        "completion_evidence": { "type": "string", "description": "Required when setting status='done': describe what was done before completing this task" },
+                        "unparent": { "type": "boolean", "description": "Pass true to remove a task's parent" },
+                        "allow_missing_parent": { "type": "boolean", "description": "Allow setting a parent ID that does not yet exist in PKB (proceeds with warning)" },
+                        "force": { "type": "boolean", "description": "Allow reparenting under a closed parent task" },
                         "recursive": { "type": "boolean", "description": "When setting status to done/cancelled/archived, cascade-close all open descendant tasks. Default: false (rejects if open children exist)." }
                     },
                     "required": ["id"]
@@ -495,7 +504,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().idempotent(true)),
             Tool::new(
                 "retrieve_memory",
-                "Find relevant memories, insights, or observations by semantic similarity. Returns full content for the top matches.",
+                "Find relevant memories, insights, or observations by semantic similarity using ONNX embeddings (~100-300ms, slower than direct id reads like get_document). If a search times out under load, back off and retry rather than rewording. Returns full content for the top matches.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {

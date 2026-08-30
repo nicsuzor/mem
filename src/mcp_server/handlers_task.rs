@@ -40,6 +40,7 @@ impl PkbSearchServer {
                 "priority",
                 "tags",
                 "depends_on",
+                "soft_depends_on",
                 "assignee",
                 "complexity",
                 "effort",
@@ -119,6 +120,15 @@ impl PkbSearchServer {
                 .unwrap_or_default(),
             depends_on: args
                 .get("depends_on")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            soft_depends_on: args
+                .get("soft_depends_on")
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
@@ -240,7 +250,8 @@ impl PkbSearchServer {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
                     "Missing required parameter: parent. Tasks must have a parent node. \
-                     Only goal, target, epic, and learn types can be root-level.",
+                     Only goal, target, epic, and learn types can be root-level. \
+                     Example: create_task(title=\"...\", parent=\"epic-12345678\") or pass type=\"epic\".",
                 ),
                 data: suggested_parents,
             });
@@ -1734,9 +1745,10 @@ impl PkbSearchServer {
             if !evidence.chars().any(|c| !c.is_whitespace()) {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(
-                        "completion_evidence is required when setting status to done. Describe what was done before completing this task.",
-                    ),
+                    message: Cow::from(format!(
+                        "completion_evidence is required when setting status to done. Describe what was done before completing this task. \
+                         Example: update_task(id=\"{id}\", status=\"done\", completion_evidence=\"...\") or prefer release_task(id=\"{id}\", status=\"done\", summary=\"...\")."
+                    )),
                     data: None,
                 });
             }

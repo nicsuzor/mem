@@ -45,7 +45,8 @@ impl PkbSearchServer {
         let ev = evidence.ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(
-                "completion_evidence is required. Describe what was done before completing this task.",
+                "completion_evidence is required. Describe what was done before completing this task. \
+                 Example: complete_task(id=\"...\", completion_evidence=\"...\")",
             ),
             data: None,
         })?;
@@ -53,7 +54,8 @@ impl PkbSearchServer {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
-                    "completion_evidence is required. Describe what was done before completing this task.",
+                    "completion_evidence is required. Describe what was done before completing this task. \
+                     Example: complete_task(id=\"...\", completion_evidence=\"...\")",
                 ),
                 data: None,
             });
