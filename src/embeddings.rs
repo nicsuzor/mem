@@ -1746,5 +1746,69 @@ After the code.";
         assert!(!tmp.exists(), "Temp .part file must no longer exist after rename");
         assert_eq!(std::fs::read(&dest).unwrap(), full_payload);
     }
+
+    #[test]
+    fn find_model_prefers_quantized() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let quant_path = temp_dir.path().join("model_quantized.onnx");
+        let unquant_path = temp_dir.path().join("model.onnx");
+
+        std::fs::write(&quant_path, b"dummy quantized model").unwrap();
+        std::fs::write(&unquant_path, b"dummy unquantized model").unwrap();
+
+        let chosen = EmbeddingConfig::find_model(temp_dir.path());
+        assert_eq!(chosen, Some("model_quantized.onnx".to_string()));
+    }
+
+    #[test]
+    fn find_model_falls_back_to_unquantized() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let unquant_path = temp_dir.path().join("model.onnx");
+
+        std::fs::write(&unquant_path, b"dummy unquantized model").unwrap();
+
+        let chosen = EmbeddingConfig::find_model(temp_dir.path());
+        assert_eq!(chosen, Some("model.onnx".to_string()));
+    }
+
+    #[test]
+    fn find_model_returns_none_when_empty() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let chosen = EmbeddingConfig::find_model(temp_dir.path());
+        assert_eq!(chosen, None);
+    }
+
+    #[test]
+    fn aops_model_path_override_honoured() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let custom_model = temp_dir.path().join("model_quantized.onnx");
+        std::fs::write(&custom_model, b"dummy quantized model").unwrap();
+
+        let custom_path_str = temp_dir.path().to_str().unwrap();
+        std::env::set_var("AOPS_MODEL_PATH", custom_path_str);
+
+        let config = EmbeddingConfig::from_env();
+        std::env::remove_var("AOPS_MODEL_PATH");
+
+        assert_eq!(config.model_path, temp_dir.path().join("model_quantized.onnx"));
+        assert_eq!(config.tokenizer_path, temp_dir.path().join("tokenizer.json"));
+    }
+
+    #[test]
+    fn cache_dir_and_models_dir_structure() {
+        let cache_dir = get_cache_dir();
+        assert!(
+            cache_dir.ends_with("aops"),
+            "Expected cache_dir to end with 'aops', got {:?}",
+            cache_dir
+        );
+
+        let models_dir = get_models_dir();
+        assert!(
+            models_dir.ends_with(PathBuf::from("aops").join("models").join("bge-m3")),
+            "Expected models_dir to end with 'aops/models/bge-m3', got {:?}",
+            models_dir
+        );
+    }
 }
 
