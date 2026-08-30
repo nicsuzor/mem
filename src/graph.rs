@@ -185,7 +185,7 @@ pub struct ContributesTo {
     /// (present in well-formed entries; not validated at write time).
     #[serde(alias = "why", default)]
     pub justification: String,
-    /// Current decayed weight value (computed at runtime).
+    /// Current decayed weight value (persisted, unread field; parked dormant).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_weight: Option<f64>,
     /// Resolved target node ID (computed at build time, not serialized).
@@ -197,7 +197,7 @@ pub struct ContributesTo {
     /// Longitudinal calibration history (Brier scores).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub brier_history: Vec<f64>,
-    /// Last interaction timestamp (feeds decay trigger).
+    /// Last interaction timestamp (age-based, not attention-based; feeds dormant decay trigger).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_interacted: Option<String>,
     /// Stated-Revealed Divergence signal.
@@ -421,15 +421,18 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classification: Option<String>,
     /// True if the body contains acceptance criteria (## Acceptance Criteria, done when, etc.).
-    /// Detected during parsing; used as an uncertainty input.
+    /// Used for inbox -> ready classification gate.
     #[serde(default, skip_serializing_if = "is_false")]
     pub has_acceptance_criteria: bool,
+    /// True if the document contains an open epistemic question / investigation.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_open_question: bool,
     /// Subtree size: recursive count of all descendants via parent-child edges.
     /// Computed during graph build (after inverse relationships are resolved).
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub scope: i32,
-    /// Residual ambiguity score [0.0–1.0]. Composite of: no acceptance criteria,
-    /// unresolved scope (has children), unresolved deps, sparse body, confidence override.
+    /// Residual epistemic uncertainty score [0.0–1.0].
+    /// Driven by explicit elicited confidence (1.0 - confidence) or open question signal.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub uncertainty: f64,
     /// Normalized impact score [0.0–1.0]. Derived from downstream_weight, pagerank,
@@ -1001,6 +1004,143 @@ pub fn detect_acceptance_criteria(body: &str) -> bool {
 }
 
 // ===========================================================================
+// Open question & confidence parsing (Phase 3 Honest Uncertainty)
+// ===========================================================================
+
+/// Parse confidence from frontmatter JSON value.
+///
+/// Accepts:
+/// - Numeric float/int: 0.0 - 1.0 (clamped)
+/// - Verbal anchor string: "certain", "probable", "expected", "fifty-fifty", "uncertain", "improbable", "impossible"
+/// - Numeric string: "0.85"
+/// - Structured map: {"value": ..., "why": ...} or {"score": ..., "justification": ...}
+pub fn parse_confidence(val: &serde_json::Value) -> Option<f64> {
+    match val {
+        serde_json::Value::Number(n) => n.as_f64().map(|f| f.clamp(0.0, 1.0)),
+        serde_json::Value::String(s) => parse_verbal_confidence(s),
+        serde_json::Value::Object(map) => {
+            map.get("value")
+                .or_else(|| map.get("stated_confidence"))
+                .or_else(|| map.get("score"))
+                .or_else(|| map.get("confidence"))
+                .and_then(parse_confidence)
+        }
+        _ => None,
+    }
+}
+
+/// Map verbal confidence terms to non-linear anchors.
+///
+/// Renooij-Witteman verbal scale:
+/// - Certain / Almost Certain: 1.00
+/// - Probable / Very Probable / Highly Likely: 0.85
+/// - Expected / Likely: 0.75
+/// - Fifty-Fifty / Even Chance: 0.50
+/// - Uncertain / Possible / Perhaps / Maybe: 0.25
+/// - Improbable / Unlikely / Very Unlikely / Almost Impossible: 0.15
+/// - Impossible / None: 0.00
+pub fn parse_verbal_confidence(s: &str) -> Option<f64> {
+    let trimmed = s.trim();
+    if let Ok(f) = trimmed.parse::<f64>() {
+        return Some(f.clamp(0.0, 1.0));
+    }
+    match trimmed.to_lowercase().as_str() {
+        "certain" | "almost certain" => Some(1.00),
+        "very probable" | "probable" | "highly likely" => Some(0.85),
+        "expected" | "likely" => Some(0.75),
+        "fifty-fifty" | "even chance" => Some(0.50),
+        "uncertain" | "possible" | "perhaps" | "maybe" => Some(0.25),
+        "improbable" | "unlikely" | "very unlikely" | "almost impossible" => Some(0.15),
+        "impossible" | "none" => Some(0.00),
+        _ => None,
+    }
+}
+
+/// Return true if the body contains signals indicating an open epistemic question / investigation.
+///
+/// Looks for:
+/// - Open questions headings ("## Open Question", "## Questions", "## Research Questions", etc.)
+///   with non-empty content below them.
+/// - Explicit inquiry checklist items (`- [ ] ?`, `- [ ] Investigate...`, `- [ ] Determine whether...`).
+/// - Inquiry patterns ("open question:", "spike:", "hypothesis:", "to determine whether", etc.).
+///
+/// Rejects:
+/// - Empty questions sections (anti-gaming defense against empty `## Open Questions` headers).
+/// - Explicitly settled / resolved / closed sections (e.g. `## Adhesive — settled`, "question is closed", "settled question").
+pub fn detect_open_question(body: &str) -> bool {
+    let lower = body.to_lowercase();
+
+    // Check if the whole text indicates the question is settled/closed with no open questions
+    let has_settled_overall = lower.contains("question is closed")
+        || lower.contains("question is settled")
+        || lower.contains("settled question")
+        || lower.contains("question resolved")
+        || lower.contains("question is resolved");
+
+    let lines: Vec<&str> = body.lines().collect();
+    let mut in_open_section = false;
+    let mut section_has_content = false;
+    let mut found_valid_open_section = false;
+
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            if in_open_section && section_has_content {
+                found_valid_open_section = true;
+                break;
+            }
+            in_open_section = false;
+            section_has_content = false;
+
+            let h_lower = trimmed.to_lowercase();
+            let is_settled_header = h_lower.contains("settled")
+                || h_lower.contains("resolved")
+                || h_lower.contains("closed")
+                || h_lower.contains("decided")
+                || h_lower.contains("answered");
+
+            if !is_settled_header {
+                let header_text = trimmed.trim_start_matches('#').trim();
+                let ht_lower = header_text.to_lowercase();
+                if ht_lower.starts_with("open question")
+                    || ht_lower.starts_with("question")
+                    || ht_lower.starts_with("research question")
+                    || ht_lower.starts_with("spike question")
+                    || ht_lower.starts_with("uncertaint")
+                    || ht_lower.starts_with("hypothesis")
+                    || ht_lower == "open issues"
+                {
+                    in_open_section = true;
+                }
+            }
+        } else if in_open_section {
+            if !trimmed.is_empty() && trimmed != "---" && !trimmed.starts_with("<!--") {
+                section_has_content = true;
+            }
+        }
+    }
+
+    if in_open_section && section_has_content {
+        found_valid_open_section = true;
+    }
+
+    if found_valid_open_section {
+        return true;
+    }
+
+    if has_settled_overall {
+        return false;
+    }
+
+    // Pattern checks across body
+    static OPEN_PATTERNS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(?:- \[[ x]\]\s*\?|open question:|spike question:|investigate whether|to determine whether|unknown whether|hypothes(?:is|es):)").unwrap()
+    });
+
+    OPEN_PATTERNS.is_match(body)
+}
+
+// ===========================================================================
 // GraphNode construction
 // ===========================================================================
 
@@ -1017,6 +1157,8 @@ impl GraphNode {
             .and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
         let id = task_id.clone().unwrap_or_else(|| fallback_id(&doc.path));
 
+        let mut parse_warnings: Vec<ParseWarning> = Vec::new();
+
         // Raw frontmatter type, before legacy coercion. Needed below for the
         // permalink fallback that only ever applied to old project containers.
         let raw_node_type = fm
@@ -1025,13 +1167,24 @@ impl GraphNode {
         // `type: project` is retired (project = polecat.yaml routing slug, not
         // a node type). Legacy files keep parsing but are treated as epics for
         // all structural purposes; `pkb lint` nags toward reclassification.
-        let node_type = raw_node_type.as_deref().map(|t| {
-            if t == "project" {
-                "epic".to_string()
-            } else {
-                t.to_string()
+        // If an `id:` is present on an untyped node, default to "task" and emit
+        // a parse warning so it is indexed into list_tasks/ranking rather than
+        // silently vanishing (mem_ef704bd4).
+        let node_type = match raw_node_type.as_deref() {
+            Some("project") => Some("epic".to_string()),
+            Some(t) => Some(t.to_string()),
+            None => {
+                if task_id.is_some() {
+                    parse_warnings.push(ParseWarning {
+                        field: "type".to_string(),
+                        message: "missing 'type' field on id-bearing node; defaulted to 'task'".to_string(),
+                    });
+                    Some("task".to_string())
+                } else {
+                    None
+                }
             }
-        });
+        };
         let status = fm.as_ref().and_then(|f| {
             f.get("status")
                 .and_then(|v| v.as_str())
@@ -1063,7 +1216,6 @@ impl GraphNode {
                 .and_then(|v| v.as_str())
                 .map(String::from)
         });
-        let mut parse_warnings: Vec<ParseWarning> = Vec::new();
 
         // Severity: integer 0..=4. Anything else is rejected with a structured warning.
         let severity = match fm.as_ref().and_then(|f| f.get("severity")) {
@@ -1273,7 +1425,23 @@ impl GraphNode {
             .map(|s| s.trim().to_string());
         let confidence = fm
             .as_ref()
-            .and_then(|f| f.get("confidence").and_then(|v| v.as_f64()));
+            .and_then(|f| f.get("confidence"))
+            .and_then(parse_confidence);
+        let has_open_question = fm
+            .as_ref()
+            .and_then(|f| {
+                f.get("open_question")
+                    .or_else(|| f.get("has_open_question"))
+                    .and_then(|v| v.as_bool())
+                    .or_else(|| {
+                        f.get("open_questions").and_then(|v| match v {
+                            serde_json::Value::Array(a) => Some(!a.is_empty()),
+                            serde_json::Value::Bool(b) => Some(*b),
+                            _ => None,
+                        })
+                    })
+            })
+            .unwrap_or_else(|| detect_open_question(&doc.body));
         let supersedes = fm
             .as_ref()
             .map(|f| parse_string_array(f, "supersedes"))
@@ -1471,6 +1639,7 @@ impl GraphNode {
             voi_value: None,
             classification,
             has_acceptance_criteria,
+            has_open_question,
             scope: 0,
             uncertainty: 0.0,
             criticality: 0.0,
@@ -1713,5 +1882,33 @@ mod target_prototype_tests {
             .parse_warnings
             .iter()
             .any(|w| w.field == "edge_template.severity"));
+    }
+
+    #[test]
+    fn untyped_node_with_id_defaults_to_task_with_warning() {
+        let fm = json!({
+            "id": "task-untyped-01",
+            "title": "Untyped Task",
+            "status": "ready",
+            "project": "aops",
+            "priority": 2,
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.id, "task-untyped-01");
+        assert_eq!(n.node_type.as_deref(), Some("task"));
+        assert_eq!(n.parse_warnings.len(), 1);
+        assert_eq!(n.parse_warnings[0].field, "type");
+        assert!(n.parse_warnings[0].message.contains("missing 'type' field"));
+    }
+
+    #[test]
+    fn untyped_node_without_id_has_no_type_and_no_warning() {
+        let fm = json!({
+            "title": "General Note",
+            "tags": ["reference"],
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.node_type, None);
+        assert!(n.parse_warnings.is_empty());
     }
 }
