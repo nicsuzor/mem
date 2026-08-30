@@ -88,7 +88,7 @@ fn test_no_dead_spec_references_in_tool_schemas() {
 fn test_tool_descriptions_enumerate_all_eight_focus_score_components() {
     let tools = PkbSearchServer::get_all_tools();
     let expected_components = [
-        "priority",
+        "intent",
         "severity",
         "deadline",
         "age",

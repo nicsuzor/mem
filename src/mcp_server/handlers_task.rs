@@ -160,6 +160,7 @@ impl PkbSearchServer {
                 "task_title",
                 "id",
                 "parent",
+                "intent",
                 "priority",
                 "tags",
                 "depends_on",
@@ -228,8 +229,9 @@ impl PkbSearchServer {
                 .get("parent")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            priority: args
-                .get("priority")
+            intent: args
+                .get("intent")
+                .or_else(|| args.get("priority"))
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32),
             tags: args
@@ -779,8 +781,8 @@ impl PkbSearchServer {
             "contributes_to": contributes_to,
             "contributed_by": node.contributed_by,
             "follow_up_tasks": node.follow_up_tasks,
-            "priority": node.priority.unwrap_or(4),
-            "effective_priority": node.effective_priority.unwrap_or(node.priority.unwrap_or(4)),
+            "intent": node.intent.unwrap_or(4),
+            "effective_intent": node.effective_intent.unwrap_or(node.intent.unwrap_or(4)),
             "focus_score": node.focus_score,
             "blocked": graph.is_blocked(&node.id),
             "signals": {
@@ -940,7 +942,7 @@ impl PkbSearchServer {
                         if *printed < limit {
                             let indent = "  ".repeat(depth);
                             let status = child.status.as_deref().unwrap_or("-");
-                            let pri = child.priority.map(|p| format!("P{p} ")).unwrap_or_default();
+                            let pri = child.intent.map(|p| format!("P{p} ")).unwrap_or_default();
                             let cid = child.task_id.as_deref().unwrap_or(&child.id);
                             // Display-only session/agent identity (D1: soft, non-blocking —
                             // reviewer-vs-executor separation visible on reads, never enforced).
@@ -1000,8 +1002,9 @@ impl PkbSearchServer {
 
     pub(crate) fn handle_list_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let status_filter = parse_status_filter(args.get("status"))?;
-        let priority = args
-            .get("priority")
+        let intent = args
+            .get("intent")
+            .or_else(|| args.get("priority"))
             .and_then(|v| v.as_i64())
             .map(|v| v as i32);
         let severity = args
@@ -1108,8 +1111,8 @@ impl PkbSearchServer {
             });
         }
 
-        if let Some(pri) = priority {
-            tasks.retain(|t| t.effective_priority.unwrap_or(4) <= pri);
+        if let Some(pri) = intent {
+            tasks.retain(|t| t.effective_intent.unwrap_or(4) <= pri);
         }
         if let Some(sev) = severity {
             tasks.retain(|t| t.severity == Some(sev));
@@ -1268,8 +1271,8 @@ impl PkbSearchServer {
                         "id": t.task_id.as_deref().unwrap_or(&t.id),
                         "title": t.label,
                         "status": t.status.as_deref().unwrap_or("unknown"),
-                        "priority": t.priority.unwrap_or(4),
-                        "effective_priority": t.effective_priority.unwrap_or(t.priority.unwrap_or(4)),
+                        "intent": t.intent.unwrap_or(4),
+                        "effective_intent": t.effective_intent.unwrap_or(t.intent.unwrap_or(4)),
                         "focus_score": t.focus_score,
                         "blocked": graph.is_blocked(&t.id),
                         "signals": {
@@ -1438,7 +1441,7 @@ impl PkbSearchServer {
                         i + 1,
                         id,
                         t.status.as_deref().unwrap_or("-"),
-                        t.priority.unwrap_or(4),
+                        t.intent.unwrap_or(4),
                         weight,
                         crit,
                         urg,
@@ -1452,7 +1455,7 @@ impl PkbSearchServer {
                         i + 1,
                         id,
                         t.status.as_deref().unwrap_or("-"),
-                        t.priority.unwrap_or(4),
+                        t.intent.unwrap_or(4),
                         weight,
                         crit,
                         urg,
@@ -1477,7 +1480,7 @@ impl PkbSearchServer {
             };
             for (i, t) in tasks.iter().enumerate() {
                 let id = t.task_id.as_deref().unwrap_or(&t.id);
-                let pri = t.priority.unwrap_or(4);
+                let pri = t.intent.unwrap_or(4);
                 let status_str = t.status.as_deref().unwrap_or("-");
                 if has_superseded_by.is_some() {
                     let superseded_str = if t.superseded_by.is_empty() { "-".to_string() } else { t.superseded_by.join(", ") };
@@ -1593,9 +1596,9 @@ impl PkbSearchServer {
             updates.insert("parent".to_string(), serde_json::Value::Null);
         }
 
-        // task_1381381c: agents must not originate priority bands via update_task.
-        if updates.contains_key("priority") {
-            return Err(Self::reject_agent_priority("update_task"));
+        // task_1381381c: agents must not originate intent bands via update_task.
+        if updates.contains_key("intent") || updates.contains_key("priority") {
+            return Err(Self::reject_agent_intent("update_task"));
         }
 
         // Reject unknown update fields instead of silently writing them into
@@ -1607,6 +1610,7 @@ impl PkbSearchServer {
             "title",
             "status",
             "type",
+            "intent",
             "priority",
             "tags",
             "parent",
@@ -2072,11 +2076,11 @@ impl PkbSearchServer {
             all_tasks
         };
 
-        let mut by_priority: std::collections::HashMap<i32, usize> =
+        let mut by_intent: std::collections::HashMap<i32, usize> =
             std::collections::HashMap::new();
         for task in &ready {
-            let p = task.priority.unwrap_or(4);
-            *by_priority.entry(p).or_insert(0) += 1;
+            let p = task.intent.unwrap_or(4);
+            *by_intent.entry(p).or_insert(0) += 1;
         }
 
         // Compute deadline counts across all tasks (scoped to project if provided)
@@ -2106,11 +2110,11 @@ impl PkbSearchServer {
         let mut summary = serde_json::json!({
             "ready": ready.len(),
             "blocked": blocked.len(),
-            "by_priority": {
-                "p0": by_priority.get(&0).copied().unwrap_or(0),
-                "p1": by_priority.get(&1).copied().unwrap_or(0),
-                "p2": by_priority.get(&2).copied().unwrap_or(0),
-                "p3": by_priority.get(&3).copied().unwrap_or(0),
+            "by_intent": {
+                "p0": by_intent.get(&0).copied().unwrap_or(0),
+                "p1": by_intent.get(&1).copied().unwrap_or(0),
+                "p2": by_intent.get(&2).copied().unwrap_or(0),
+                "p3": by_intent.get(&3).copied().unwrap_or(0),
             },
             "deadlines": {
                 "overdue": overdue,

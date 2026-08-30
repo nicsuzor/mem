@@ -315,7 +315,7 @@ pub fn merge_live_into_canvas(
                     node_id: Some(nid.clone()),
                     node_type: ln.node_type.clone(),
                     status: ln.status.clone(),
-                    priority: ln.priority,
+                    intent: ln.intent,
                     parent: ln.parent.clone(),
                     is_pkb_managed: Some(true),
                     ..Default::default()
@@ -429,7 +429,7 @@ pub fn sync_diff_to_disk(
             let task_fields = document_crud::TaskFields {
                 title: added.title.clone(),
                 status: Some(added.status.clone()),
-                priority: added.priority,
+                intent: added.intent,
                 parent: added.parent.clone(),
                 tags: added.tags.clone(),
                 ..Default::default()
@@ -440,7 +440,7 @@ pub fn sync_diff_to_disk(
                 title: added.title.clone(),
                 doc_type: added.node_type.clone(),
                 status: Some(added.status.clone()),
-                priority: added.priority,
+                intent: added.intent,
                 parent: added.parent.clone(),
                 tags: added.tags.clone(),
                 ..Default::default()
@@ -488,10 +488,10 @@ pub fn sync_diff_to_disk(
                 serde_json::Value::String(status.clone()),
             );
         }
-        if let Some(ref prio_opt) = updated.priority {
+        if let Some(ref prio_opt) = updated.intent {
             match prio_opt {
-                Some(p) => updates.insert("priority".to_string(), serde_json::json!(p)),
-                None => updates.insert("priority".to_string(), serde_json::Value::Null),
+                Some(p) => updates.insert("intent".to_string(), serde_json::json!(p)),
+                None => updates.insert("intent".to_string(), serde_json::Value::Null),
             };
         }
         if let Some(ref parent_opt) = updated.parent {
@@ -703,7 +703,7 @@ mod tests {
             title: "Newly Created Task".to_string(),
             node_type: "task".to_string(),
             status: "ready".to_string(),
-            priority: Some(1),
+            intent: Some(1),
             parent: None,
             tags: vec!["frontend".to_string()],
             x: 100.0,

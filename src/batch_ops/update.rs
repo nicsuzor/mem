@@ -49,13 +49,13 @@ pub fn batch_update(
                             }
                         }
                     }
-                    "priority" => {
+                    "intent" | "priority" => {
                         if let Some(p) = value.as_i64() {
-                            if !crate::graph::is_valid_priority(p as i32) {
+                            if !crate::graph::is_valid_intent(p as i32) {
                                 summary.errors.push(TaskError {
                                     id: "".to_string(),
                                     error: format!(
-                                        "Invalid priority: {}. Must be between 0 and 4.",
+                                        "Invalid intent: {}. Must be between 0 and 4.",
                                         p
                                     ),
                                 });

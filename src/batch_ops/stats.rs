@@ -81,8 +81,8 @@ pub struct GraphStats {
     pub flat_tasks: usize,
     /// Tasks not modified in >60 days
     pub stale_count: usize,
-    /// Count per priority level
-    pub priority_distribution: HashMap<String, usize>,
+    /// Count per intent level
+    pub intent_distribution: HashMap<String, usize>,
     /// Count per document type
     pub type_distribution: HashMap<String, usize>,
     /// Epics not connected (Model B) to a `target`/`goal` via a `contributes_to`
@@ -125,18 +125,18 @@ impl GraphStats {
             out.push_str(&format!("  {:<16} {}\n", status, count));
         }
 
-        // Priority breakdown
-        out.push_str("\nPriority breakdown:\n");
-        let mut priorities: Vec<_> = self.priority_distribution.iter().collect();
-        priorities.sort_by_key(|(k, _)| k.parse::<i32>().unwrap_or(99));
-        for (priority, count) in &priorities {
-            let label = match priority.as_str() {
+        // Intent breakdown
+        out.push_str("\nIntent breakdown:\n");
+        let mut intents: Vec<_> = self.intent_distribution.iter().collect();
+        intents.sort_by_key(|(k, _)| k.parse::<i32>().unwrap_or(99));
+        for (intent, count) in &intents {
+            let label = match intent.as_str() {
                 "0" => "P0 (critical)",
                 "1" => "P1 (intended)",
                 "2" => "P2 (active)",
                 "3" => "P3 (planned)",
                 "4" => "P4 (backlog)",
-                _ => priority,
+                _ => intent,
             };
             out.push_str(&format!("  {:<20} {}\n", label, count));
         }
@@ -196,7 +196,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
     let stale_threshold = 60i64;
 
     let mut status_counts: HashMap<String, usize> = HashMap::new();
-    let mut priority_distribution: HashMap<String, usize> = HashMap::new();
+    let mut intent_distribution: HashMap<String, usize> = HashMap::new();
     let mut type_distribution: HashMap<String, usize> = HashMap::new();
     let mut total_tasks = 0usize;
     let mut orphan_count = 0usize;
@@ -245,10 +245,10 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
             continue;
         }
 
-        // Priority
-        let priority = node.priority.unwrap_or(4);
-        *priority_distribution
-            .entry(priority.to_string())
+        // Intent
+        let intent = node.intent.unwrap_or(4);
+        *intent_distribution
+            .entry(intent.to_string())
             .or_insert(0) += 1;
 
         // Type
@@ -347,7 +347,7 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         max_depth,
         flat_tasks,
         stale_count,
-        priority_distribution,
+        intent_distribution,
         type_distribution,
         disconnected_epics,
         projects_without_goals,

@@ -227,17 +227,17 @@ fn test_roundtrip_fidelity() {
     assert!(card_node_ids.contains(&"target-v1".to_string()));
     assert!(card_node_ids.contains(&"area-platform".to_string()));
 
-    // Verify status and priority parsing fidelity
+    // Verify status and intent parsing fidelity
     let t1_card = canvas.cards.iter().find(|c| c.node_id.as_deref() == Some("task-t1")).unwrap();
     assert_eq!(t1_card.status.as_deref(), Some("ready"));
-    assert_eq!(t1_card.priority, Some(1));
+    assert_eq!(t1_card.intent, Some(1));
     assert_eq!(t1_card.title, "Build Schema");
     assert_eq!(t1_card.parent.as_deref(), Some("epic-core"));
     assert!(t1_card.tags.contains(&"schema".to_string()));
 
     let t3_card = canvas.cards.iter().find(|c| c.node_id.as_deref() == Some("task-t3")).unwrap();
     assert_eq!(t3_card.status.as_deref(), Some("done"));
-    assert_eq!(t3_card.priority, Some(3));
+    assert_eq!(t3_card.intent, Some(3));
 
     // Verify color styling matches unified matrix
     let epic_style = node_color_style(Some("active"), Some("epic"));
@@ -335,7 +335,7 @@ fn test_safe_arrow_typing_and_typed_prefixes() {
         title: title.to_string(),
         node_type: Some("task".to_string()),
         status: Some("ready".to_string()),
-        priority: Some(1),
+        intent: Some(1),
         parent: None,
         tags: vec![],
         frame_id: None,
@@ -350,7 +350,7 @@ fn test_safe_arrow_typing_and_typed_prefixes() {
                 node_id: Some(id.to_string()),
                 node_type: Some("task".to_string()),
                 status: Some("ready".to_string()),
-                priority: Some(1),
+                intent: Some(1),
                 parent: None,
                 tags: vec![],
                 edge_type: None,
@@ -588,7 +588,7 @@ fn test_bounded_archimedean_spiral_placement() {
             node_id: Some("task-t1".to_string()),
             node_type: Some("task".to_string()),
             status: Some("ready".to_string()),
-            priority: Some(1),
+            intent: Some(1),
             parent: None,
             tags: vec![],
             edge_type: None,
@@ -718,7 +718,7 @@ fn test_clipboard_duplicate_id_handling() {
             node_id: Some("task-t1".to_string()),
             node_type: Some("task".to_string()),
             status: Some("ready".to_string()),
-            priority: Some(1),
+            intent: Some(1),
             parent: None,
             tags: vec![],
             edge_type: None,

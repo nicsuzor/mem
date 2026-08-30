@@ -253,8 +253,9 @@ impl PkbSearchServer {
                 .get("status")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            priority: args
-                .get("priority")
+            intent: args
+                .get("intent")
+                .or_else(|| args.get("priority"))
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32),
             parent: args

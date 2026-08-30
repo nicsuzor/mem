@@ -8,7 +8,7 @@ pub struct ContextNode {
     pub label: String,
     pub node_type: Option<String>,
     pub status: Option<String>,
-    pub priority: Option<i32>,
+    pub intent: Option<i32>,
 }
 
 /// Structured local graph context for a node, usable by both CLI and dashboard views.
@@ -42,7 +42,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
         label: node.label.clone(),
         node_type: node.node_type.clone(),
         status: node.status.clone(),
-        priority: node.priority,
+        intent: node.intent,
     };
 
     // Walk parent chain (with cycle detection)
@@ -60,7 +60,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
                 label: parent.label.clone(),
                 node_type: parent.node_type.clone(),
                 status: parent.status.clone(),
-                priority: parent.priority,
+                intent: parent.intent,
             });
             parent_id = parent.parent.as_deref();
         } else {
@@ -82,7 +82,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
                     label: n.label.clone(),
                     node_type: n.node_type.clone(),
                     status: n.status.clone(),
-                    priority: n.priority,
+                    intent: n.intent,
                 })
                 .collect()
         } else {
@@ -103,7 +103,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
             label: n.label.clone(),
             node_type: n.node_type.clone(),
             status: n.status.clone(),
-            priority: n.priority,
+            intent: n.intent,
         })
         .collect();
 
@@ -116,7 +116,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
             label: n.label.clone(),
             node_type: n.node_type.clone(),
             status: n.status.clone(),
-            priority: n.priority,
+            intent: n.intent,
         })
         .collect();
 
@@ -129,7 +129,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
             label: n.label.clone(),
             node_type: n.node_type.clone(),
             status: n.status.clone(),
-            priority: n.priority,
+            intent: n.intent,
         })
         .collect();
 
@@ -143,7 +143,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
             label: n.label.clone(),
             node_type: n.node_type.clone(),
             status: n.status.clone(),
-            priority: n.priority,
+            intent: n.intent,
         })
         .collect();
 
@@ -156,7 +156,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
             label: n.label.clone(),
             node_type: n.node_type.clone(),
             status: n.status.clone(),
-            priority: n.priority,
+            intent: n.intent,
         })
         .collect();
 
@@ -170,7 +170,7 @@ pub fn get_local_context(gs: &GraphStore, node_id: &str) -> Option<LocalContext>
             label: n.label.clone(),
             node_type: n.node_type.clone(),
             status: n.status.clone(),
-            priority: n.priority,
+            intent: n.intent,
         })
         .collect();
 
