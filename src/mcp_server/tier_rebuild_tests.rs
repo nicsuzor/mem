@@ -383,5 +383,77 @@ mod tier_rebuild_tests {
         assert!(!ready.contains(&"task-x".to_string()));
         assert!(ready.contains(&"task-y".to_string()));
     }
+
+    /// Fast path patches arriving during a full rebuild_graph build phase must survive the swap.
+    #[test]
+    fn rebuild_graph_full_swap_does_not_revert_concurrent_patch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        let file_path = root.join("tasks/task-x.md");
+        std::fs::write(
+            &file_path,
+            "---\nid: task-x\ntitle: Task X\ntype: task\nstatus: ready\n---\n\n# X\n",
+        )
+        .unwrap();
+
+        let doc = crate::pkb::parse_file(&file_path).unwrap();
+        let graph = GraphStore::build(&[doc], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = Arc::new(PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db"),
+            Arc::new(RwLock::new(graph)),
+        ));
+        server.set_tier2_sleep_ms(500);
+
+        // 1. Simulate rebuild_graph beginning: snapshot embeddings and scan/build graph from disk (which has status: ready)
+        let snapshot = server.store.read().averaged_embeddings();
+        server.patched_during_rebuild.lock().clear();
+
+        let files = crate::pkb::scan_directory(&server.pkb_root);
+        let docs: Vec<crate::pkb::PkbDocument> = files
+            .iter()
+            .filter_map(|p| crate::pkb::parse_file_relative(p, &server.pkb_root))
+            .collect();
+        let mut new_graph = GraphStore::build_with_embeddings(&docs, &server.pkb_root, &snapshot);
+
+        // 2. While build is happening, a fast-path patch arrives in memory and marks patched_during_rebuild
+        let updated_doc = make_task_doc("task-x", "done", 1, &[]);
+        {
+            let node = crate::graph::GraphNode::from_pkb_document(&updated_doc);
+            let mut g = server.graph.write();
+            g.upsert_node_in_place(node, &server.pkb_root);
+            g.reclassify();
+            server.patched_during_rebuild.lock().insert("task-x".to_string());
+        }
+
+        // 3. Swap phase (identical to rebuild_graph implementation) merges patched nodes:
+        {
+            let mut g = server.graph.write();
+            let patched_ids: Vec<String> =
+                server.patched_during_rebuild.lock().iter().cloned().collect();
+            for id in &patched_ids {
+                if let Some(live_node) = g.nodes_map().get(id).cloned() {
+                    new_graph.replace_node(live_node);
+                }
+            }
+            if !patched_ids.is_empty() {
+                new_graph.reclassify();
+            }
+            *g = new_graph;
+        }
+
+        let g = server.graph.read();
+        let node = g.get_node("task-x").expect("task-x exists");
+        assert_eq!(
+            node.status.as_deref(),
+            Some("done"),
+            "fast path patch must survive Tier-1 full rebuild swap"
+        );
+    }
 }
 

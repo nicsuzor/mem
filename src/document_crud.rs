@@ -1473,6 +1473,10 @@ fn first_duplicate_top_level_key(raw: &str) -> Option<String> {
 /// Special handling: if `updates` contains a `body` or `content` key, the value
 /// is written to the markdown body section (after `---`) rather than frontmatter.
 pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>) -> Result<()> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+
     use gray_matter::engine::YAML;
     use gray_matter::Matter;
 
@@ -4780,6 +4784,24 @@ mod tests {
         );
     }
 
+    /// Empty updates map must be a no-op: no write, modified not bumped.
+    #[test]
+    fn update_document_empty_updates_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-empty.md");
+        let initial_content = "---\nid: task-empty1\ntitle: Empty Updates\ntype: task\nstatus: ready\nmodified: 2020-01-01T00:00:00Z\n---\n\n# Body\n";
+        std::fs::write(&path, initial_content).unwrap();
+
+        let updates = HashMap::new();
+        update_document(&path, updates).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after, initial_content,
+            "file must be completely untouched when updates map is empty"
+        );
+    }
+
     /// End-to-end through the MCP write path: `expand_special_update_keys`
     /// must NOT swallow a `null` value as a no-op (the #1908 root cause), so a
     /// `priority: null` update flows through to `update_document` and the field
@@ -5833,12 +5855,10 @@ pub fn merge_node(
                 "status".to_string(),
                 serde_json::Value::String("done".to_string()),
             );
-            if let Err(e) = update_document(src_path, updates) {
-                eprintln!("Warning: failed to archive {}: {}", src_id, e);
-            } else {
-                nodes_archived += 1;
-                modified_paths.push(src_path.clone());
-            }
+            update_document(src_path, updates)
+                .with_context(|| format!("Failed to archive source node '{src_id}'"))?;
+            nodes_archived += 1;
+            modified_paths.push(src_path.clone());
         } else {
             nodes_archived += 1;
         }
@@ -5863,18 +5883,14 @@ pub fn merge_node(
                         merged.into_iter().map(serde_json::Value::String).collect(),
                     ),
                 );
-                if let Err(e) = update_document(path, updates) {
-                    eprintln!(
-                        "Warning: failed to record supersedes on canonical {}: {}",
-                        canonical_id, e
-                    );
-                } else {
-                    modified_paths.push(path.clone());
-                }
+                update_document(path, updates).with_context(|| {
+                    format!("Failed to record supersedes on canonical '{canonical_id}'")
+                })?;
+                modified_paths.push(path.clone());
             }
         } else {
-            eprintln!(
-                "Warning: canonical node '{}' not found on disk; supersedes not recorded",
+            anyhow::bail!(
+                "Canonical node '{}' not found on disk; supersedes not recorded",
                 canonical_id
             );
         }

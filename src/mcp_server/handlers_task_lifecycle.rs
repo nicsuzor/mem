@@ -450,12 +450,16 @@ impl PkbSearchServer {
                 "status".to_string(),
                 serde_json::Value::String("done".to_string()),
             );
-            for (_, desc_path) in &open_descs {
-                if let Err(e) =
-                    crate::document_crud::update_document(desc_path, desc_updates.clone())
-                {
-                    tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
-                } else if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root)
+            for (desc_id, desc_path) in &open_descs {
+                crate::document_crud::update_document(desc_path, desc_updates.clone())
+                    .map_err(|e| McpError {
+                        code: ErrorCode::INTERNAL_ERROR,
+                        message: Cow::from(format!(
+                            "Failed to recursively close child task '{desc_id}': {e}"
+                        )),
+                        data: None,
+                    })?;
+                if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root)
                 {
                     self.rebuild_graph_for_pkb_document(&doc);
                     self.try_upsert_document(&doc);
@@ -1008,19 +1012,21 @@ impl PkbSearchServer {
 
             // Phase 1: rewrite descendant files + parse them. Sequential — the
             // file writes are I/O bound and not worth rayon for typical
-            // cascades (<100 docs). Errors are logged and skipped.
-            let parsed_descs: Vec<crate::pkb::PkbDocument> = recursive_close_descs
-                .iter()
-                .filter_map(|(_, desc_path)| {
-                    if let Err(e) =
-                        crate::document_crud::update_document(desc_path, desc_updates.clone())
-                    {
-                        tracing::warn!("recursive close: failed to update {:?}: {}", desc_path, e);
-                        return None;
-                    }
-                    crate::pkb::parse_file_relative(desc_path, &self.pkb_root)
-                })
-                .collect();
+            // cascades (<100 docs). Errors fail loud instead of being silently skipped.
+            let mut parsed_descs: Vec<crate::pkb::PkbDocument> = Vec::with_capacity(recursive_close_descs.len());
+            for (desc_id, desc_path) in &recursive_close_descs {
+                crate::document_crud::update_document(desc_path, desc_updates.clone())
+                    .map_err(|e| McpError {
+                        code: ErrorCode::INTERNAL_ERROR,
+                        message: Cow::from(format!(
+                            "Failed to recursively close child task '{desc_id}': {e}"
+                        )),
+                        data: None,
+                    })?;
+                if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
+                    parsed_descs.push(doc);
+                }
+            }
 
             if !parsed_descs.is_empty() {
                 // Phase 2: single graph write lock — patch all nodes, then one
