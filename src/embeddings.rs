@@ -1680,6 +1680,74 @@ After the code.";
     }
 
     #[test]
+    fn test_find_model_ignores_partial_downloads() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let dir_path = temp_dir.path();
+
+        // Create partial download files
+        std::fs::write(dir_path.join(".model.onnx.part"), b"partial data").unwrap();
+        std::fs::write(dir_path.join("model.onnx.part"), b"partial data").unwrap();
+        std::fs::write(dir_path.join(".model_quantized.onnx.part"), b"partial data").unwrap();
+
+        // Incomplete .part files must NOT be detected as valid cached models
+        assert_eq!(
+            EmbeddingConfig::find_model(dir_path),
+            None,
+            "find_model must ignore .part files"
+        );
+
+        // When complete model is present, find_model should detect it
+        std::fs::write(dir_path.join("model.onnx"), b"complete model").unwrap();
+        assert_eq!(
+            EmbeddingConfig::find_model(dir_path),
+            Some("model.onnx".to_string()),
+            "find_model should detect complete model.onnx"
+        );
+
+        // When quantized model is present, find_model prefers quantized
+        std::fs::write(dir_path.join("model_quantized.onnx"), b"quantized model").unwrap();
+        assert_eq!(
+            EmbeddingConfig::find_model(dir_path),
+            Some("model_quantized.onnx".to_string()),
+            "find_model should prefer model_quantized.onnx"
+        );
+    }
+
+    #[test]
+    fn test_atomic_download_simulation_interrupted_and_retry() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let models_dir = temp_dir.path();
+        let filename = "model.onnx";
+        let dest = models_dir.join(filename);
+        let tmp = models_dir.join(format!(".{filename}.part"));
+
+        // Step 1: Simulate interrupted download (leaves .part file, dest does not exist)
+        std::fs::write(&tmp, b"incomplete payload").unwrap();
+        assert!(!dest.exists(), "Interrupted download must not leave final destination file");
+        assert!(tmp.exists(), "Interrupted download leaves .part file");
+
+        // Step 2: Simulate subsequent run logic from download_models()
+        // 2a. dest.exists() is false, so download proceeds
+        assert!(!dest.exists());
+
+        // 2b. Clean up leftover partial download
+        let _ = std::fs::remove_file(&tmp);
+        assert!(!tmp.exists(), "Previous .part file must be cleaned up");
+
+        // 2c. Write new payload to temp file
+        let full_payload = b"full completed onnx weights and graph data";
+        std::fs::write(&tmp, full_payload).unwrap();
+
+        // 2d. Atomically rename to final destination
+        std::fs::rename(&tmp, &dest).unwrap();
+
+        // 2e. Assert final destination exists with full payload, tmp is gone
+        assert!(dest.exists(), "Destination file must exist after successful rename");
+        assert!(!tmp.exists(), "Temp .part file must no longer exist after rename");
+        assert_eq!(std::fs::read(&dest).unwrap(), full_payload);
+    }
+
+    #[test]
     fn find_model_prefers_quantized() {
         let temp_dir = tempfile::tempdir().unwrap();
         let quant_path = temp_dir.path().join("model_quantized.onnx");
@@ -1743,3 +1811,4 @@ After the code.";
         );
     }
 }
+

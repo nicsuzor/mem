@@ -150,14 +150,15 @@ pub fn get_consolidation_cluster(
 pub fn apply_consolidation_batch(
     ctx: &mut BatchContext,
     seed_id: &str,
-    updates: HashMap<String, HashMap<String, JsonValue>>,
+    mut updates: HashMap<String, HashMap<String, JsonValue>>,
     dry_run: bool,
 ) -> Result<BatchSummary> {
     let mut summary = BatchSummary::new("consolidation", dry_run);
 
-    if updates.is_empty() {
-        return Ok(summary);
-    }
+    // Ensure the seed node is always included in the updates to be marked consolidated
+    let seed_entry = updates.entry(seed_id.to_string()).or_default();
+    seed_entry.insert("consolidated".to_string(), JsonValue::Bool(true));
+    seed_entry.insert("consolidated_at".to_string(), JsonValue::String(chrono::Utc::now().to_rfc3339()));
 
     // Deterministic write order: sort updates by node_id.
     let mut sorted_updates: Vec<(String, HashMap<String, JsonValue>)> = updates.into_iter().collect();
@@ -210,13 +211,7 @@ pub fn apply_consolidation_batch(
     }
 
     // Apply updates in deterministic order
-    for (node_id, mut upds) in sorted_updates {
-        // If this is the seed node, ensure we mark it consolidated
-        if node_id == seed_id {
-            upds.insert("consolidated".to_string(), JsonValue::Bool(true));
-            upds.insert("consolidated_at".to_string(), JsonValue::String(chrono::Utc::now().to_rfc3339()));
-        }
-
+    for (node_id, upds) in sorted_updates {
         let node_label = ctx.graph.get_node(&node_id).map(|n| n.label.clone()).unwrap_or_default();
 
         if let Err(e) = ctx.update_task(&node_id, upds) {
@@ -546,5 +541,127 @@ mod tests {
         // Restore permissions for cleanup
         std::fs::set_permissions(&sub1, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::set_permissions(&sub2, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn test_consolidation_empty_updates_marks_seed_consolidated() {
+        let (dir, graph) = setup_test_pkb();
+        let pkb_root = dir.path();
+
+        let mut ctx = BatchContext::new(&graph, pkb_root);
+        let summary = apply_consolidation_batch(&mut ctx, "seed-1", HashMap::new(), false)
+            .expect("empty updates batch should succeed");
+
+        assert_eq!(summary.matched, 1);
+        assert_eq!(summary.changed, 1);
+        assert_eq!(summary.tasks.len(), 1);
+        assert_eq!(summary.tasks[0].id, "seed-1");
+        assert_eq!(summary.tasks[0].action, "consolidated");
+
+        // Verify disk content
+        let seed_content = std::fs::read_to_string(pkb_root.join("seed.md")).unwrap();
+        assert!(seed_content.contains("consolidated: true"));
+        assert!(seed_content.contains("consolidated_at:"));
+    }
+
+    #[test]
+    fn test_consolidation_updates_omitting_seed_marks_seed_consolidated() {
+        let (dir, graph) = setup_test_pkb();
+        let pkb_root = dir.path();
+
+        let mut updates = HashMap::new();
+        let mut t1_upd = HashMap::new();
+        t1_upd.insert("priority".to_string(), JsonValue::Number(1.into()));
+        updates.insert("target-1".to_string(), t1_upd);
+
+        let mut ctx = BatchContext::new(&graph, pkb_root);
+        let summary = apply_consolidation_batch(&mut ctx, "seed-1", updates, false)
+            .expect("batch omitting seed should succeed");
+
+        assert_eq!(summary.matched, 2);
+        assert_eq!(summary.changed, 2);
+
+        // Verify seed-1 is marked consolidated on disk
+        let seed_content = std::fs::read_to_string(pkb_root.join("seed.md")).unwrap();
+        assert!(seed_content.contains("consolidated: true"));
+        assert!(seed_content.contains("consolidated_at:"));
+
+        // Verify target-1 received its update
+        let t1_content = std::fs::read_to_string(pkb_root.join("target1.md")).unwrap();
+        assert!(t1_content.contains("priority: 1"));
+    }
+
+    #[test]
+    fn test_consecutive_auto_seed_selections_pick_different_nodes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+
+        // Write three unconsolidated notes with different created dates
+        std::fs::write(
+            pkb_root.join("doc1.md"),
+            "---\nid: doc-1\ntitle: Doc 1\ntype: note\ncreated: 2026-08-01T00:00:00Z\n---\n# Doc 1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("doc2.md"),
+            "---\nid: doc-2\ntitle: Doc 2\ntype: note\ncreated: 2026-08-02T00:00:00Z\n---\n# Doc 2\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("doc3.md"),
+            "---\nid: doc-3\ntitle: Doc 3\ntype: note\ncreated: 2026-08-03T00:00:00Z\n---\n# Doc 3\n",
+        )
+        .unwrap();
+
+        let vector_store = VectorStore::new(3);
+
+        // Iteration 1: Auto-seed selects doc-1 (oldest)
+        let graph1 = GraphStore::build_from_directory(pkb_root);
+        let cluster1 = get_consolidation_cluster(&graph1, &vector_store, None, 10, 5, pkb_root)
+            .expect("should find first unconsolidated seed");
+        let seed1 = cluster1["seed_id"].as_str().expect("seed_id present");
+        assert_eq!(seed1, "doc-1", "first auto-seed selection should be oldest node doc-1");
+
+        // Apply consolidation batch on doc-1 with empty updates
+        let mut ctx1 = BatchContext::new(&graph1, pkb_root);
+        apply_consolidation_batch(&mut ctx1, seed1, HashMap::new(), false)
+            .expect("apply batch 1 should succeed");
+
+        // Iteration 2: Auto-seed selects doc-2 (doc-1 is consolidated)
+        let graph2 = GraphStore::build_from_directory(pkb_root);
+        let cluster2 = get_consolidation_cluster(&graph2, &vector_store, None, 10, 5, pkb_root)
+            .expect("should find second unconsolidated seed");
+        let seed2 = cluster2["seed_id"].as_str().expect("seed_id present");
+        assert_ne!(seed1, seed2, "consecutive auto-seed selections must not return the same node");
+        assert_eq!(seed2, "doc-2", "second auto-seed selection should be doc-2");
+
+        // Apply consolidation batch on doc-2 with updates for doc-3 only (omitting seed doc-2)
+        let mut doc3_upds = HashMap::new();
+        doc3_upds.insert("title".to_string(), JsonValue::String("Doc 3 Updated".to_string()));
+        let mut updates2 = HashMap::new();
+        updates2.insert("doc-3".to_string(), doc3_upds);
+
+        let mut ctx2 = BatchContext::new(&graph2, pkb_root);
+        apply_consolidation_batch(&mut ctx2, seed2, updates2, false)
+            .expect("apply batch 2 should succeed");
+
+        // Iteration 3: Auto-seed selects doc-3 (doc-1 and doc-2 are consolidated)
+        let graph3 = GraphStore::build_from_directory(pkb_root);
+        let cluster3 = get_consolidation_cluster(&graph3, &vector_store, None, 10, 5, pkb_root)
+            .expect("should find third unconsolidated seed");
+        let seed3 = cluster3["seed_id"].as_str().expect("seed_id present");
+        assert_ne!(seed2, seed3, "consecutive auto-seed selections must not return the same node");
+        assert_eq!(seed3, "doc-3", "third auto-seed selection should be doc-3");
+
+        // Apply consolidation batch on doc-3
+        let mut ctx3 = BatchContext::new(&graph3, pkb_root);
+        apply_consolidation_batch(&mut ctx3, seed3, HashMap::new(), false)
+            .expect("apply batch 3 should succeed");
+
+        // Iteration 4: All nodes consolidated -> auto-seed returns error
+        let graph4 = GraphStore::build_from_directory(pkb_root);
+        let err = get_consolidation_cluster(&graph4, &vector_store, None, 10, 5, pkb_root)
+            .expect_err("should return error when no unconsolidated nodes exist");
+        assert!(err.to_string().contains("No unconsolidated nodes found"));
     }
 }

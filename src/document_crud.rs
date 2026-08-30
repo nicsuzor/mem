@@ -1253,14 +1253,47 @@ fn materialise_one_edge(pkb_root: &Path, edge: serde_json::Value) -> serde_json:
 /// long prose and multi-paragraph content belongs in the markdown document body.
 pub const DEFAULT_MAX_FRONTMATTER_SCALAR_LEN: usize = 500;
 
+thread_local! {
+    static THREAD_MAX_FRONTMATTER_SCALAR_LEN: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 /// Return the active maximum character length for scalar string values in frontmatter.
-/// Reads from the `MEM_MAX_FRONTMATTER_SCALAR_LEN` environment variable if set,
+/// Reads from a thread-local scoped override if active (via [`with_max_frontmatter_scalar_len`]),
+/// then from the `MEM_MAX_FRONTMATTER_SCALAR_LEN` environment variable if set,
 /// falling back to [`DEFAULT_MAX_FRONTMATTER_SCALAR_LEN`].
 pub fn max_frontmatter_scalar_len() -> usize {
-    std::env::var("MEM_MAX_FRONTMATTER_SCALAR_LEN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_MAX_FRONTMATTER_SCALAR_LEN)
+    THREAD_MAX_FRONTMATTER_SCALAR_LEN.with(|c| {
+        if let Some(val) = c.get() {
+            return val;
+        }
+        std::env::var("MEM_MAX_FRONTMATTER_SCALAR_LEN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_MAX_FRONTMATTER_SCALAR_LEN)
+    })
+}
+
+/// Run a closure with a thread-scoped override for the maximum frontmatter scalar length.
+/// This allows tests and specific operations to configure custom thresholds without
+/// mutating process-global environment variables across concurrent threads.
+pub fn with_max_frontmatter_scalar_len<F, R>(max_len: usize, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    struct ResetGuard(Option<usize>);
+    impl Drop for ResetGuard {
+        fn drop(&mut self) {
+            THREAD_MAX_FRONTMATTER_SCALAR_LEN.with(|c| c.set(self.0));
+        }
+    }
+
+    let prev = THREAD_MAX_FRONTMATTER_SCALAR_LEN.with(|c| {
+        let prev = c.get();
+        c.set(Some(max_len));
+        prev
+    });
+    let _guard = ResetGuard(prev);
+    f()
 }
 
 /// Validate that a single scalar string field does not exceed `max_len`.
@@ -5145,7 +5178,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_document_tunable_threshold_via_env() {
+    fn test_update_document_tunable_threshold_via_scoped_override() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("task-env.md");
         std::fs::write(
@@ -5154,13 +5187,11 @@ mod tests {
         )
         .unwrap();
 
-        // With env var set to 100
-        std::env::set_var("MEM_MAX_FRONTMATTER_SCALAR_LEN", "100");
+        // With scoped threshold set to 100 on current thread without mutating process-global env
         let str_150 = "x".repeat(150);
         let mut updates = HashMap::new();
         updates.insert("consequence".to_string(), serde_json::json!(str_150));
-        let res = update_document(&path, updates);
-        std::env::remove_var("MEM_MAX_FRONTMATTER_SCALAR_LEN");
+        let res = with_max_frontmatter_scalar_len(100, || update_document(&path, updates));
 
         assert!(res.is_err(), "must reject when exceeding tuned threshold (100)");
         let err_msg = res.unwrap_err().to_string();
@@ -5168,6 +5199,16 @@ mod tests {
             err_msg.contains("maximum is 100"),
             "error must mention configured maximum: {err_msg}"
         );
+    }
+
+    #[test]
+    fn test_with_max_frontmatter_scalar_len_scoped_isolation() {
+        assert_eq!(max_frontmatter_scalar_len(), DEFAULT_MAX_FRONTMATTER_SCALAR_LEN);
+        let inside = with_max_frontmatter_scalar_len(42, || {
+            max_frontmatter_scalar_len()
+        });
+        assert_eq!(inside, 42);
+        assert_eq!(max_frontmatter_scalar_len(), DEFAULT_MAX_FRONTMATTER_SCALAR_LEN);
     }
 
     #[test]

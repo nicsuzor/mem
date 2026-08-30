@@ -1,3 +1,5 @@
+// Parked dormant by ruling, no caller by design.
+
 use crate::batch_ops::{BatchContext, BatchSummary};
 use crate::graph::ContributesTo;
 use crate::pkb;

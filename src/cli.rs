@@ -558,10 +558,6 @@ enum Commands {
     #[command(subcommand)]
     Excalidraw(ExcalidrawCommands),
 
-    /// Background maintenance operations
-    #[command(subcommand)]
-    Maintenance(MaintenanceCommands),
-
     /// One-shot data migrations over the PKB
     #[command(subcommand)]
     Migrate(MigrateCommands),
@@ -646,19 +642,6 @@ enum Commands {
         /// Similarity threshold (0.0-1.0, default: 0.85)
         #[arg(short, long, default_value_t = 0.85)]
         threshold: f64,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum MaintenanceCommands {
-    /// Run exponential decay on edge weights
-    Decay {
-        /// Decay constant lambda (default: 0.05)
-        #[arg(long, default_value_t = 0.05)]
-        lambda: f64,
-        /// Show what would change without saving
-        #[arg(long)]
-        dry_run: bool,
     },
 }
 
@@ -1104,7 +1087,6 @@ async fn main() -> Result<()> {
             | Commands::Batch(BatchCommands::CreateEpics { .. })
             | Commands::Batch(BatchCommands::Reclassify { .. })
             | Commands::Migrate(MigrateCommands::TargetParents { .. })
-            | Commands::Maintenance(MaintenanceCommands::Decay { .. })
     );
     if disables_gpu && std::env::var("AOPS_GPU").is_err() {
         std::env::set_var("AOPS_GPU", "0");
@@ -1117,7 +1099,6 @@ async fn main() -> Result<()> {
             | Commands::BenchReindex { .. }
             | Commands::Add { .. }
             | Commands::Forget { .. }
-            | Commands::Maintenance { .. }
     );
 
     let mut _index_lock = if needs_exclusive_lock {
@@ -1597,7 +1578,7 @@ async fn main() -> Result<()> {
                     visible.insert(cid.as_str());
                 }
 
-                // Sort siblings — context nodes first, then tasks by priority/weight
+                // Sort siblings — context nodes first (by label), then tasks by canonical focus ranking
                 fn sort_siblings(nodes: &mut [&graph::GraphNode], context_ids: &HashSet<String>) {
                     nodes.sort_by(|a, b| {
                         let a_ctx = context_ids.contains(&a.id);
@@ -1606,16 +1587,7 @@ async fn main() -> Result<()> {
                             (true, false) => std::cmp::Ordering::Less,
                             (false, true) => std::cmp::Ordering::Greater,
                             (true, true) => a.label.cmp(&b.label),
-                            (false, false) => a
-                                .priority
-                                .unwrap_or(2)
-                                .cmp(&b.priority.unwrap_or(4))
-                                .then(
-                                    b.downstream_weight
-                                        .partial_cmp(&a.downstream_weight)
-                                        .unwrap_or(std::cmp::Ordering::Equal),
-                                )
-                                .then(a.label.cmp(&b.label)),
+                            (false, false) => graph_store::GraphStore::focus_cmp(a, b),
                         }
                     });
                 }
@@ -3240,27 +3212,6 @@ async fn main() -> Result<()> {
             handle_excalidraw_command(excalidraw_cmd, &pkb_root, &db_path)?;
         }
 
-        Commands::Maintenance(maintenance_cmd) => {
-            let graph = load_graph(&pkb_root, &db_path, None);
-            let mut ctx = mem::batch_ops::BatchContext::new(&graph, &pkb_root);
-            
-            match maintenance_cmd {
-                MaintenanceCommands::Decay { lambda, dry_run } => {
-                    let summary = mem::batch_ops::decay::run_decay(&mut ctx, lambda, dry_run)?;
-                    if !dry_run && summary.changed > 0 {
-                        println!("Applied edge weight decay to {} nodes.", summary.changed);
-                        
-                        // Force graph sync. Because `update_task` inside `run_decay` does NOT automatically
-                        // trigger a graph rebuild when run via CLI in a short-lived process, we do it
-                        // implicitly by re-indexing or relying on the persistent store updating.
-                        // However, since we mutated files, the background watcher or next `pkb` run
-                        // will pick it up and trigger graph re-calc.
-                    }
-                    println!("{}", summary.display());
-                }
-            }
-        }
-
         Commands::Migrate(migrate_cmd) => {
             handle_migrate_command(migrate_cmd, &pkb_root)?;
         }
@@ -4494,9 +4445,7 @@ fn format_complexity(complexity: &str) -> String {
     format!("{}[{complexity}]{}", colors::DIM, colors::RESET)
 }
 
-/// Pick the top `max` focus tasks.
-///
-/// Ranking delegates to the canonical scorer: `focus_score` is computed once by
+/// Format a single task line for terminal display.
 fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     let pri = task.priority.unwrap_or(4);
     let color = pri_color(pri);

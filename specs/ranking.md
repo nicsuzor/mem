@@ -194,7 +194,12 @@ Ranking is produced by the explicit 4-component tuple `FocusTuple`:
 - **Theoretical Range**: `0` to `5000`.
 - **Observed Range**: `0` to `~1500`.
 - **Default (absent input)**: `0` (non-leaf tasks produce `None`).
-- **Zeroing conditions**: Non-leaf task (`leaf == false`), complete/cancelled status, no downstream dependents, or `dep_resolution_ratio == 0`.
+- **Gating Conditions (Phase 3)**:
+  Requires two conjunctive conditions independently:
+  1. **Open question**: Content-judged inquiry / open question or explicit confidence `< 1.0` (on the task itself or in its downstream unblocking cone). Settled questions (e.g. craft glue) produce zero VoI.
+  2. **Downstream divergence**: Unblocking cone must contain $\ge 2$ distinct reachable nodes or direct blocks (branching paths). Purely linear, unbranching chains produce zero VoI.
+  Neither condition alone earns the bonus.
+- **Zeroing conditions**: Non-leaf task (`leaf == false`), complete/cancelled status, no open question, no downstream divergence, or `dep_resolution_ratio == 0`.
 - **Consumers**: `compute_focus_scores`.
 
 ---
@@ -271,28 +276,31 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Consumers**: `compute_focus_scores`, `focus_picks`, `get_task` / `list_tasks` signals.
 
 ### 4.4. `voi_value` (Value of Information)
-- **Code reference**: `src/graph_store.rs:2950–3030`
+- **Code reference**: `src/graph_store.rs:3144–3215`
 - **Formula**:
   Only computed for leaf tasks (`leaf == true`):
-  $$\\text{VoI}(x) = \\min\\left(K_{\\text{VOI}}, K_{\\text{VOI}} \\times 1.0 \\times \\text{dep\\_resolution\\_ratio}(x) \\times \\frac{\\sum_{t \\in \\text{cone}_{\\text{Unblocking}}(x)} \\frac{1}{\\text{depth}(t)} \\cdot \\text{base\\_weight}(t) \\cdot \\text{edge\\_factor}(t) \\cdot \\text{uncertainty}(t)}{\\max(\\text{effort\\_days}, \\text{VOI\\_EFFORT\\_NEUTRAL\\_DAYS})}\\right)$$
+  $$\text{VoI}(x) = \begin{cases} \min\left(K_{\text{VOI}}, K_{\text{VOI}} \times 1.0 \times \text{dep\_resolution\_ratio}(x) \times \frac{\sum_{t \in \text{cone}_{\text{Unblocking}}(x)} \frac{1}{\text{depth}(t)} \cdot \text{base\_weight}(t) \cdot \text{edge\_factor}(t) \cdot \text{uncertainty}(t)}{\max(\text{effort\_days}, \text{VOI\_EFFORT\_NEUTRAL\_DAYS})}\right) & \text{if } C_{\text{open}}(x) \land C_{\text{divergence}}(x) \\ 0.0 & \text{otherwise} \end{cases}$$
   where:
-  - $K_{\\text{VOI}} = 5000.0$
-  - $\\text{VOI\\_EFFORT\\_NEUTRAL\\_DAYS} = 3.0$
-  - $\\text{dep\\_resolution\\_ratio}(x) = \\frac{\\text{completed\\_deps}(x)}{\\text{total\\_deps}(x)}$ (or $1.0$ if no dependencies).
-  - $\\text{cone}_{\\text{Unblocking}}(x)$ traverses `blocks`, `soft_blocks`, and parent $\\to$ child (excludes reverse `contributes_to`).
+  - $K_{\text{VOI}} = 5000.0$
+  - $\text{VOI\_EFFORT\_NEUTRAL\_DAYS} = 3.0$
+  - $\text{dep\_resolution\_ratio}(x) = \frac{\text{completed\_deps}(x)}{\text{total\_deps}(x)}$ (or $1.0$ if no dependencies).
+  - $\text{cone}_{\text{Unblocking}}(x)$ traverses `blocks`, `soft_blocks`, and parent $\to$ child (excludes reverse `contributes_to`).
+  - **Conjunctive Gating Conditions (Phase 3)**:
+    - $C_{\text{open}}(x)$: Task itself has an open question (`has_open_question = true` or `confidence < 1.0`), OR its unblocking cone contains an open question.
+    - $C_{\text{divergence}}(x)$: Unblocking cone has branching paths ($|\text{cone}| \ge 2$ or $|\text{blocks}| \ge 2$).
+    - Both conditions are independently required; neither alone earns the bonus.
 - **Theoretical Range**: `0.0` to `5000.0` (or `None` for non-leaf tasks).
 - **Consumers**: `compute_focus_scores`, `get_task` / `list_tasks` signals.
 
 ### 4.5. `uncertainty`
-- **Code reference**: `src/graph_store.rs:3265–3324`
-- **Formula**:
-  - If `confidence` is explicitly set: $\\text{uncertainty} = \\text{clamp}(1.0 - \\text{confidence}, 0.0, 1.0)$.
-  - Else, composite heuristic:
-    $$\\text{uncertainty} = \\text{clamp}(u_{\\text{ac}} + u_{\\text{children}} + u_{\\text{deps}} + u_{\\text{body}}, 0.0, 1.0)$$
-    - $u_{\\text{ac}} = 0.30$ if `!has_acceptance_criteria`, else $0.0$
-    - $u_{\\text{children}} = 0.15$ if `!children.is_empty()`, else $0.0$
-    - $u_{\\text{deps}} = 0.25 \\times (1.0 - \\text{dep\\_resolution\\_ratio})$ if `!depends_on.is_empty()`, else $0.0$
-    - $u_{\\text{body}} = 0.10 \\times \\left(1.0 - \\min\\left(\\frac{\\text{word\\_count}}{100.0}, 1.0\\right)\\right)$
+- **Code reference**: `src/graph_store.rs:3458–3470`
+- **Formula (Phase 3 Honest Uncertainty)**:
+  Uncertainty strictly measures epistemic variance, decoupled from documentation completeness:
+  - If `confidence` is explicitly set: $\text{uncertainty} = \text{clamp}(1.0 - \text{confidence}, 0.0, 1.0)$.
+    Supports numeric floats and Renooij-Witteman verbal anchors ("certain": 1.00, "probable": 0.85, "expected": 0.75, "fifty-fifty": 0.50, "uncertain": 0.25, "improbable": 0.15, "impossible": 0.00).
+  - Else if `has_open_question` is `true`: $\text{uncertainty} = 0.50$ (default fifty-fifty epistemic uncertainty for an open question).
+  - Else: $\text{uncertainty} = 0.0$ (settled / certain).
+  - **Demotion**: Missing acceptance criteria, body length, and child count feed NO score path (demoted to triage lint `task-missing-ac` in `src/lint.rs`).
 - **Theoretical Range**: $[0.0, 1.0]$.
 - **Consumers**: `compute_voi_term`, `get_task` / `list_tasks` signals.
 

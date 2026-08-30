@@ -382,10 +382,9 @@ impl PkbSearchServer {
         let mut res = self.handle_get_task(&get_args).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!(
-                "create_task wrote {} but the new node is not yet visible in the graph \
+                "create_task wrote {task_id} but the new node is not yet visible in the graph \
                  (id={task_id}). Underlying lookup error: {}. \
                  The file is on disk — retry get_task in a moment.",
-                path.display(),
                 e.message,
             )),
             data: None,
@@ -439,8 +438,7 @@ impl PkbSearchServer {
             return Err(McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!(
-                    "Task file not found on disk: {}",
-                    abs_path.display()
+                    "Task file not found on disk for ID '{id}'"
                 )),
                 data: None,
             });
@@ -503,9 +501,9 @@ impl PkbSearchServer {
 
         // Build relationship context from graph
         let resolve_ref = |rid: &str| -> serde_json::Value {
-            if let Some(n) = graph.get_node(rid) {
+            if let Some(n) = graph.resolve(rid) {
                 serde_json::json!({
-                    "id": rid,
+                    "id": n.id,
                     "title": n.label,
                     "status": n.status,
                 })
@@ -525,9 +523,9 @@ impl PkbSearchServer {
             .children
             .iter()
             .map(|c| {
-                if let Some(n) = graph.get_node(c) {
+                if let Some(n) = graph.resolve(c) {
                     serde_json::json!({
-                        "id": c,
+                        "id": n.id,
                         "title": n.label,
                         "status": n.status,
                         "assignee": n.assignee,
@@ -545,9 +543,9 @@ impl PkbSearchServer {
             .subtasks
             .iter()
             .map(|sid| {
-                if let Some(n) = graph.get_node(sid) {
+                if let Some(n) = graph.resolve(sid) {
                     serde_json::json!({
-                        "id": sid,
+                        "id": n.id,
                         "title": n.label,
                         "status": n.status,
                         // Display-only session/agent identity (D1: soft, non-blocking —
@@ -737,12 +735,11 @@ impl PkbSearchServer {
 
         for (dep_id, depth) in &tree {
             let indent = "  ".repeat(*depth);
-            let label = graph
-                .get_node(dep_id)
+            let dep_node = graph.resolve(dep_id);
+            let label = dep_node
                 .map(|n| n.label.as_str())
                 .unwrap_or("?");
-            let status = graph
-                .get_node(dep_id)
+            let status = dep_node
                 .and_then(|n| n.status.as_deref())
                 .unwrap_or("?");
             output.push_str(&format!("{indent}- `{dep_id}` [{status}] {label}\n"));
@@ -1242,10 +1239,10 @@ impl PkbSearchServer {
                 if !t.depends_on.is_empty() {
                     out.push_str("**Blocked by:**\n");
                     for dep in &t.depends_on {
+                        let dep_node = graph.resolve(dep);
                         let dep_label =
-                            graph.get_node(dep).map(|n| n.label.as_str()).unwrap_or("?");
-                        let dep_status = graph
-                            .get_node(dep)
+                            dep_node.map(|n| n.label.as_str()).unwrap_or("?");
+                        let dep_status = dep_node
                             .and_then(|n| n.status.as_deref())
                             .unwrap_or("?");
                         out.push_str(&format!("- `{}` [{}] {}\n", dep, dep_status, dep_label));

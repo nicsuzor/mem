@@ -567,7 +567,8 @@ impl GraphStore {
     }
 
     /// Collect IDs of all descendants (recursive via children) whose status is open
-    /// (not done, cancelled, or archived). Used to enforce open-children constraint
+    /// (not done, cancelled, or archived), excluding `node_type: template` (which are
+    /// perpetual meta-definitions that are never 'done'). Used to enforce open-children constraint
     /// before closing a parent.
     pub fn open_descendants(&self, id: &str) -> Vec<String> {
         let mut result = Vec::new();
@@ -582,7 +583,9 @@ impl GraphStore {
                 continue;
             }
             if let Some(child) = self.get_node(&child_id) {
-                if !crate::graph::is_closed_for_hierarchy(child.status.as_deref()) {
+                if child.node_type.as_deref() != Some("template")
+                    && !crate::graph::is_closed_for_hierarchy(child.status.as_deref())
+                {
                     result.push(child_id.clone());
                 }
                 stack.extend(child.children.iter().cloned());
@@ -889,7 +892,8 @@ impl GraphStore {
     }
 
     pub fn is_blocked(&self, id: &str) -> bool {
-        self.blocked.iter().any(|s| s == id)
+        let lower = id.to_lowercase();
+        self.blocked.iter().any(|s| s.to_lowercase() == lower)
     }
 
     /// Canonical default ordering for any flat task/node result set.
@@ -934,11 +938,10 @@ impl GraphStore {
             .nodes
             .values()
             .filter(|n| {
-                let is_actionable = n
-                    .node_type
-                    .as_deref()
-                    .map(|t| ACTIONABLE_TYPES.contains(&t))
-                    .unwrap_or(false);
+                let is_actionable = match n.node_type.as_deref() {
+                    Some(t) => ACTIONABLE_TYPES.contains(&t),
+                    None => n.task_id.is_some(),
+                };
                 if !is_actionable {
                     return false;
                 }
@@ -1016,10 +1019,12 @@ impl GraphStore {
         let mut result = Vec::new();
         let mut visited = HashSet::new();
         let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        queue.push_back((id.to_string(), 0));
+        let start_id = self.resolve(id).map(|n| n.id.as_str()).unwrap_or(id);
+        queue.push_back((start_id.to_string(), 0));
 
         while let Some((current_id, depth)) = queue.pop_front() {
-            if !visited.insert(current_id.clone()) {
+            let lower = current_id.to_lowercase();
+            if !visited.insert(lower) {
                 continue;
             }
             if depth > 0 {
@@ -1028,9 +1033,9 @@ impl GraphStore {
             if depth >= max_depth {
                 continue;
             }
-            if let Some(node) = self.nodes.get(&current_id) {
+            if let Some(node) = self.resolve(&current_id) {
                 for dep_id in &node.depends_on {
-                    if !visited.contains(dep_id) {
+                    if !visited.contains(&dep_id.to_lowercase()) {
                         queue.push_back((dep_id.clone(), depth + 1));
                     }
                 }
@@ -1054,10 +1059,12 @@ impl GraphStore {
         let mut result = Vec::new();
         let mut visited = HashSet::new();
         let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        queue.push_back((id.to_string(), 0));
+        let start_id = self.resolve(id).map(|n| n.id.as_str()).unwrap_or(id);
+        queue.push_back((start_id.to_string(), 0));
 
         while let Some((current_id, depth)) = queue.pop_front() {
-            if !visited.insert(current_id.clone()) {
+            let lower = current_id.to_lowercase();
+            if !visited.insert(lower) {
                 continue;
             }
             if depth > 0 {
@@ -1066,9 +1073,9 @@ impl GraphStore {
             if depth >= max_depth {
                 continue;
             }
-            if let Some(node) = self.nodes.get(&current_id) {
+            if let Some(node) = self.resolve(&current_id) {
                 for blocked_id in &node.blocks {
-                    if !visited.contains(blocked_id) {
+                    if !visited.contains(&blocked_id.to_lowercase()) {
                         queue.push_back((blocked_id.clone(), depth + 1));
                     }
                 }
@@ -2397,16 +2404,33 @@ fn compute_inverses(
         .map(|n| n.id.clone())
         .collect();
 
-    // Resolve contributes_to.resolved_to on each node
+    // Resolve contributes_to.resolved_to on each node, and canonicalize frontmatter references to actual node IDs
     for node in nodes.iter_mut() {
         for ct in node.contributes_to.iter_mut() {
             ct.resolved_to = resolve_ct_ref(&ct.to, id_map, path_to_id);
+        }
+        for dep in node.depends_on.iter_mut() {
+            if let Some(target_id) = graph::resolve_ref(dep, id_map, path_to_id) {
+                *dep = target_id;
+            }
+        }
+        for sdep in node.soft_depends_on.iter_mut() {
+            if let Some(target_id) = graph::resolve_ref(sdep, id_map, path_to_id) {
+                *sdep = target_id;
+            }
+        }
+        for c in node.closes.iter_mut() {
+            if let Some(target_id) = graph::resolve_ref(c, id_map, path_to_id) {
+                *c = target_id;
+            }
         }
     }
 
     // Collect updates to avoid borrow issues
     let mut block_updates: Vec<(usize, String)> = Vec::new(); // (target_idx, source_id)
     let mut soft_block_updates: Vec<(usize, String)> = Vec::new();
+    let mut dep_updates: Vec<(usize, String)> = Vec::new();
+    let mut soft_dep_updates: Vec<(usize, String)> = Vec::new();
     let mut children_updates: Vec<(usize, String)> = Vec::new();
     let mut subtask_updates: Vec<(usize, String)> = Vec::new();
     let mut contributed_by_updates: Vec<(usize, String)> = Vec::new();
@@ -2425,10 +2449,16 @@ fn compute_inverses(
                 if let Some(&idx) = id_to_idx.get(&edge.target) {
                     block_updates.push((idx, edge.source.clone()));
                 }
+                if let Some(&idx) = id_to_idx.get(&edge.source) {
+                    dep_updates.push((idx, edge.target.clone()));
+                }
             }
             EdgeType::SoftDependsOn => {
                 if let Some(&idx) = id_to_idx.get(&edge.target) {
                     soft_block_updates.push((idx, edge.source.clone()));
+                }
+                if let Some(&idx) = id_to_idx.get(&edge.source) {
+                    soft_dep_updates.push((idx, edge.target.clone()));
                 }
             }
             EdgeType::Parent => {
@@ -2469,6 +2499,16 @@ fn compute_inverses(
     for (idx, blocked_id) in soft_block_updates {
         if !nodes[idx].soft_blocks.contains(&blocked_id) {
             nodes[idx].soft_blocks.push(blocked_id);
+        }
+    }
+    for (idx, dep_id) in dep_updates {
+        if !nodes[idx].depends_on.contains(&dep_id) {
+            nodes[idx].depends_on.push(dep_id);
+        }
+    }
+    for (idx, sdep_id) in soft_dep_updates {
+        if !nodes[idx].soft_depends_on.contains(&sdep_id) {
+            nodes[idx].soft_depends_on.push(sdep_id);
         }
     }
     for (idx, child_id) in children_updates {
@@ -3175,22 +3215,49 @@ fn compute_voi_term(nodes: &mut [GraphNode]) {
             dep_resolution_ratio = resolved_deps as f64 / total_deps as f64;
         }
 
-        // Downstream cone: one deduped walk from x. With no dependents the cone is
-        // empty and the sum is 0 → VoI = 0 (legacy zero-condition, re-keyed AC-9).
+        // Walk downstream cone to count reachable nodes, check downstream uncertainty, and sum weights
         let mut sum_downstream = 0.0;
+        let mut cone_node_count = 0;
+        let mut cone_has_open_question = false;
+
         walk_cone(
             i,
             &adj,
             &mut visited,
             &mut queue,
             |tid, depth, edge_factor| {
+                cone_node_count += 1;
                 let bw = base_weights[tid];
+                let tid_unc = uncertainties[tid];
+                if tid_unc > 0.0 || nodes[tid].has_open_question {
+                    cone_has_open_question = true;
+                }
                 if bw > 0.0 {
                     let depth_decay = 1.0 / (depth as f64);
-                    sum_downstream += depth_decay * bw * edge_factor * uncertainties[tid];
+                    let effective_unc = if tid_unc > 0.0 {
+                        tid_unc
+                    } else {
+                        uncertainties[i]
+                    };
+                    sum_downstream += depth_decay * bw * edge_factor * effective_unc;
                 }
             },
         );
+
+        // Condition 1: Open Question (self or downstream cone)
+        let has_open_question = node.has_open_question
+            || uncertainties[i] > 0.0
+            || (node.confidence.is_some() && node.confidence.unwrap() < 1.0)
+            || cone_has_open_question;
+
+        // Condition 2: Downstream Divergence (branching: >= 2 nodes in cone or >= 2 direct blocks)
+        let has_downstream_divergence = cone_node_count >= 2 || node.blocks.len() >= 2;
+
+        // Conjunctive gating: BOTH conditions independently required — neither alone earns bonus
+        if !has_open_question || !has_downstream_divergence {
+            voi_values[i] = Some(0.0);
+            continue;
+        }
 
         // Default and floor are the same constant, so an `effort` estimate can
         // only ever discount VoI, never inflate it. See VOI_EFFORT_NEUTRAL_DAYS.
@@ -3447,62 +3514,25 @@ fn count_descendants<'a>(
 
 /// Compute uncertainty [0.0–1.0] for each node.
 ///
-/// Composite of: missing acceptance criteria, unresolved scope (has children),
-/// unresolved hard dependencies, and sparse body content.
-/// If `node.confidence` is set, it overrides: uncertainty = 1.0 - confidence.
+/// In Phase 3, uncertainty measures epistemic variance (honest uncertainty),
+/// NOT documentation hygiene or metadata completeness.
 ///
-/// Called after `compute_inverses` (children populated) and node statuses are final.
+/// Inputs:
+/// 1. Elicited confidence (`node.confidence`): primary numeric input.
+///    uncertainty = clamp(1.0 - confidence, 0.0, 1.0)
+/// 2. Open question (`node.has_open_question`): defaults to 0.50 (fifty-fifty) if confidence is unset.
+/// 3. Otherwise: 0.0 (certain).
+///
+/// Missing acceptance criteria, body length, and child count feed NO score path.
 fn compute_uncertainty(nodes: &mut [GraphNode]) {
-    // Snapshot dep statuses to avoid borrow conflict
-    let status_map: HashMap<&str, Option<&str>> = nodes
-        .iter()
-        .map(|n| (n.id.as_str(), n.status.as_deref()))
-        .collect();
-
-    let mut uncertainties = Vec::with_capacity(nodes.len());
-
-    for node in nodes.iter() {
-        // Confidence override: user explicitly rated confidence
+    for node in nodes.iter_mut() {
         if let Some(conf) = node.confidence {
-            uncertainties.push((1.0 - conf).clamp(0.0, 1.0));
-            continue;
+            node.uncertainty = (1.0 - conf).clamp(0.0, 1.0);
+        } else if node.has_open_question {
+            node.uncertainty = 0.50;
+        } else {
+            node.uncertainty = 0.0;
         }
-
-        let mut u = 0.0_f64;
-
-        // No acceptance criteria → unclear completion condition
-        if !node.has_acceptance_criteria {
-            u += 0.30;
-        }
-
-        // Has children → scope not yet fully resolved
-        if !node.children.is_empty() {
-            u += 0.15;
-        }
-
-        // Unresolved hard dependencies → completion path still open
-        if !node.depends_on.is_empty() {
-            let resolved = node
-                .depends_on
-                .iter()
-                .filter(|dep_id| {
-                    let status = status_map.get(dep_id.as_str()).copied().flatten();
-                    graph::is_completed(status)
-                })
-                .count();
-            let ratio = resolved as f64 / node.depends_on.len() as f64;
-            u += (1.0 - ratio) * 0.25;
-        }
-
-        // Sparse body → little context available
-        let body_score = (node.word_count as f64 / 100.0).min(1.0);
-        u += (1.0 - body_score) * 0.10;
-
-        uncertainties.push(u.clamp(0.0, 1.0));
-    }
-
-    for (node, u) in nodes.iter_mut().zip(uncertainties) {
-        node.uncertainty = u;
     }
 }
 
@@ -3536,7 +3566,7 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
     let completed_ids: HashSet<String> = nodes
         .iter()
         .filter(|(_, n)| graph::is_completed(n.status.as_deref()))
-        .map(|(id, _)| id.clone())
+        .map(|(id, _)| id.to_lowercase())
         .collect();
 
     // Phase 1: identify directly blocked tasks (unmet deps or explicit status)
@@ -3547,11 +3577,10 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
         if node.task_id.is_none() {
             continue;
         }
-        let is_actionable = node
-            .node_type
-            .as_deref()
-            .map(|t| ACTIONABLE_TYPES.contains(&t))
-            .unwrap_or(false);
+        let is_actionable = match node.node_type.as_deref() {
+            Some(t) => ACTIONABLE_TYPES.contains(&t),
+            None => true,
+        };
         if !is_actionable {
             continue;
         }
@@ -3561,7 +3590,7 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
         }
         task_ids.push(id.clone());
 
-        let has_unmet = node.depends_on.iter().any(|d| !completed_ids.contains(d));
+        let has_unmet = node.depends_on.iter().any(|d| !completed_ids.contains(&d.to_lowercase()));
         if has_unmet || status == "blocked" {
             directly_blocked.insert(id.clone());
         }
@@ -3632,10 +3661,10 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
         .iter()
         .filter(|(_, n)| {
             n.task_id.is_some()
-                && n.node_type
-                    .as_deref()
-                    .map(|t| ACTIONABLE_TYPES.contains(&t))
-                    .unwrap_or(false)
+                && match n.node_type.as_deref() {
+                    Some(t) => ACTIONABLE_TYPES.contains(&t),
+                    None => true,
+                }
         })
         .filter(|(_, n)| match &n.parent {
             None => true,
@@ -3744,11 +3773,10 @@ fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
         if node.status.is_none() {
             continue;
         }
-        let is_actionable = node
-            .node_type
-            .as_deref()
-            .map(|t| ACTIONABLE_TYPES.contains(&t))
-            .unwrap_or(false);
+        let is_actionable = match node.node_type.as_deref() {
+            Some(t) => ACTIONABLE_TYPES.contains(&t),
+            None => node.task_id.is_some(),
+        };
         if !is_actionable {
             continue;
         }
@@ -5142,6 +5170,80 @@ mod tests {
         // task-a should be blocked (depends on task-b which isn't done)
         let task_a_id = graph.resolve("task-a").unwrap().id.clone();
         assert!(blocked.iter().any(|n| n.id == task_a_id));
+    }
+
+    #[test]
+    fn test_blocker_resolution_case_insensitive() {
+        // Reproduce academicOps #547:
+        // Blocker task has lowercase id: "academicops-d067e425", status: "done"
+        // Downstream tasks reference it with mixed case: "academicOps-d067e425" or uppercase
+        let docs = vec![
+            make_doc(
+                "tasks/academicops-d067e425.md",
+                "Upstream Done Task",
+                "task",
+                "done",
+                "academicops-d067e425",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/academicops-4a31fae0.md",
+                "Downstream Task A",
+                "task",
+                "ready",
+                "academicops-4a31fae0",
+                None,
+                &["academicOps-d067e425"],
+            ),
+            make_doc(
+                "tasks/academicops-2200e5e8.md",
+                "Downstream Task B",
+                "task",
+                "ready",
+                "academicops-2200e5e8",
+                None,
+                &["ACADEMICOPS-D067E425"],
+            ),
+            make_doc(
+                "tasks/open-blocker.md",
+                "Open Blocker Task",
+                "task",
+                "inbox",
+                "open-blocker-1234",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/blocked-task.md",
+                "Blocked Task",
+                "task",
+                "ready",
+                "blocked-task-5678",
+                None,
+                &["OPEN-BLOCKER-1234"],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        // 1. Downstream tasks depending on completed blocker (with mixed case) must NOT be blocked
+        assert!(!graph.is_blocked("academicops-4a31fae0"), "task-4a31fae0 should not be blocked");
+        assert!(!graph.is_blocked("academicops-2200e5e8"), "task-2200e5e8 should not be blocked");
+        assert!(graph.ready.contains(&"academicops-4a31fae0".to_string()), "task-4a31fae0 should be in ready queue");
+        assert!(graph.ready.contains(&"academicops-2200e5e8".to_string()), "task-2200e5e8 should be in ready queue");
+
+        // 2. Downstream task depending on open blocker (with mixed case) MUST be blocked
+        assert!(graph.is_blocked("blocked-task-5678"), "blocked-task-5678 should be blocked");
+        assert!(graph.blocked.contains(&"blocked-task-5678".to_string()), "blocked-task-5678 should be in blocked list");
+
+        // 3. Blocks relationship symmetry is populated on the blocker
+        let upstream = graph.resolve("academicops-d067e425").unwrap();
+        assert!(upstream.blocks.contains(&"academicops-4a31fae0".to_string()));
+        assert!(upstream.blocks.contains(&"academicops-2200e5e8".to_string()));
+
+        // 4. Depends_on relationship on downstream task is canonicalized
+        let downstream_a = graph.resolve("academicops-4a31fae0").unwrap();
+        assert_eq!(downstream_a.depends_on, vec!["academicops-d067e425"]);
     }
 
     // ── reachable ──
@@ -7054,7 +7156,11 @@ mod tests {
         //      a small estimate earns no bonus; see VOI_EFFORT_NEUTRAL_DAYS.)
         let spike_modest = make_spike("spike-modest", "1d");
         let dep_modest = make_dependent("dep-modest", "spike-modest", 0.5);
-        let dep_modest_child = child_of("kid-m", "dep-modest");
+        let dep_modest_child = with_fm(
+            child_of("kid-m", "dep-modest"),
+            "confidence",
+            serde_json::json!(0.6), // uncertainty = 0.40
+        );
 
         // --- Cap: dependent uncertainty 1.0 and P0 (base_weight 5.0), two children,
         //     spike effort 1d.
@@ -7067,8 +7173,16 @@ mod tests {
             "priority",
             serde_json::json!(0),
         );
-        let dep_extreme_c1 = child_of("kid-e1", "dep-extreme");
-        let dep_extreme_c2 = child_of("kid-e2", "dep-extreme");
+        let dep_extreme_c1 = with_fm(
+            child_of("kid-e1", "dep-extreme"),
+            "confidence",
+            serde_json::json!(0.6), // uncertainty = 0.40
+        );
+        let dep_extreme_c2 = with_fm(
+            child_of("kid-e2", "dep-extreme"),
+            "confidence",
+            serde_json::json!(0.6), // uncertainty = 0.40
+        );
 
         // --- Zero uncertainty: the ENTIRE cone is certain -> VoI 0. Uncertainty is
         //     now read per visited node, so the child must be certain too; a certain
@@ -7230,6 +7344,8 @@ mod tests {
             id: id.to_string(),
             status: Some("active".to_string()),
             priority: Some(priority),
+            confidence: Some(1.0 - uncertainty),
+            has_open_question: uncertainty > 0.0,
             uncertainty,
             leaf: true,
             effort: Some("10d".to_string()),
@@ -7467,19 +7583,29 @@ mod tests {
     ///   voi(X) = 5000 × 1.0 × 0.5 / 10 (effort) = 250
     #[test]
     fn test_voi_credits_unblocking_a_leaf_dependent() {
-        let mut nodes = vec![cone_node("leafdep-x", 3, 0.5), cone_node("leafdep-y", 3, 0.5)];
+        let mut nodes = vec![
+            cone_node("leafdep-x", 3, 0.5),
+            cone_node("leafdep-y", 3, 0.5),
+            cone_node("leafdep-z", 3, 0.5),
+        ];
         cone_blocks(&mut nodes, "leafdep-x", "leafdep-y");
+        cone_blocks(&mut nodes, "leafdep-x", "leafdep-z");
 
         compute_downstream_metrics(&mut nodes);
         compute_voi_term(&mut nodes);
 
         let x = cone_get(&nodes, "leafdep-x");
         let y = cone_get(&nodes, "leafdep-y");
+        let z = cone_get(&nodes, "leafdep-z");
 
         // Preconditions that make this a clean isolation of the defect.
         assert_eq!(
             y.downstream_weight, 0.0,
             "Y must be a true leaf with an empty cone for this test to isolate the defect"
+        );
+        assert_eq!(
+            z.downstream_weight, 0.0,
+            "Z must be a true leaf with an empty cone for this test to isolate the defect"
         );
         assert!(x.leaf, "X must pass the leaf gate");
         assert!(
@@ -7487,12 +7613,12 @@ mod tests {
             "X must have no unresolved deps, so dep_resolution_ratio is 1.0, not 0"
         );
 
+        // sum_downstream(X) = Y@d1 (0.5) + Z@d1 (0.5) = 1.0
+        // voi(X) = 5000 * 1.0 * 1.0 / 10 = 500.0
         assert_eq!(
             x.voi_value.unwrap_or(0.0),
-            250.0,
-            "unblocking a valuable leaf must carry VoI; the previous term scored this 0 \
-             because it multiplied by the dependent's cone rather than including the \
-             dependent itself"
+            500.0,
+            "unblocking valuable leaves with divergence must carry VoI"
         );
     }
 
@@ -7628,15 +7754,20 @@ mod tests {
              contributes_to weight rides on it"
         );
 
-        // Sanity: the same target DOES earn VoI once something actually depends on it.
+        // Sanity: the same target DOES earn VoI once something actually depends on it with divergence.
         target.id = "chan-target2".to_string();
-        let mut nodes2 = vec![target, cone_node("chan-dependent", 3, 0.5)];
-        cone_blocks(&mut nodes2, "chan-target2", "chan-dependent");
+        let mut nodes2 = vec![
+            target,
+            cone_node("chan-dep1", 3, 0.5),
+            cone_node("chan-dep2", 3, 0.5),
+        ];
+        cone_blocks(&mut nodes2, "chan-target2", "chan-dep1");
+        cone_blocks(&mut nodes2, "chan-target2", "chan-dep2");
         compute_downstream_metrics(&mut nodes2);
         compute_voi_term(&mut nodes2);
         assert!(
             cone_get(&nodes2, "chan-target2").voi_value.unwrap_or(0.0) > 0.0,
-            "a real dependent must still produce VoI"
+            "a real dependent with divergence must produce VoI"
         );
     }
 
@@ -7654,21 +7785,26 @@ mod tests {
     /// above it discount VoI proportionally.
     #[test]
     fn test_effort_estimate_never_inflates_voi() {
-        // X unblocks Y; only X's `effort` varies between runs.
+        // X unblocks Y and Z (divergence); only X's `effort` varies between runs.
         let voi_for = |effort: Option<&str>| -> f64 {
-            let mut nodes = vec![cone_node("eff-x", 3, 0.5), cone_node("eff-y", 3, 0.5)];
+            let mut nodes = vec![
+                cone_node("eff-x", 3, 0.5),
+                cone_node("eff-y", 3, 0.5),
+                cone_node("eff-z", 3, 0.5),
+            ];
             nodes[0].effort = effort.map(|e| e.to_string());
             cone_blocks(&mut nodes, "eff-x", "eff-y");
+            cone_blocks(&mut nodes, "eff-x", "eff-z");
             compute_downstream_metrics(&mut nodes);
             compute_voi_term(&mut nodes);
             cone_get(&nodes, "eff-x").voi_value.unwrap_or(0.0)
         };
 
-        // sum_downstream = Y@d1 (1/1 × base 1.0 × factor 1.0 × unc 0.5) = 0.5
-        // baseline (no estimate) = 5000 × 0.5 / 3 = 833.33…
+        // sum_downstream = Y@d1 (0.5) + Z@d1 (0.5) = 1.0
+        // baseline (no estimate) = 5000 × 1.0 / 3 = 1666.666…
         let unestimated = voi_for(None);
         assert!(
-            (unestimated - 5000.0 * 0.5 / VOI_EFFORT_NEUTRAL_DAYS).abs() < 1e-9,
+            (unestimated - 5000.0 * 1.0 / VOI_EFFORT_NEUTRAL_DAYS).abs() < 1e-9,
             "unestimated must divide by the neutral point, got {unestimated}"
         );
 
@@ -7677,14 +7813,14 @@ mod tests {
             let v = voi_for(Some(e));
             assert!(
                 (v - unestimated).abs() < 1e-9,
-                "effort {e:?} changed VoI from {unestimated} to {v}; an estimate at or                  below the neutral point must not move the score"
+                "effort {e:?} changed VoI from {unestimated} to {v}; an estimate at or below the neutral point must not move the score"
             );
         }
 
         // Estimates above the neutral point still discount, proportionally.
         let week = voi_for(Some("1w")); // 7 days
         assert!(
-            (week - 5000.0 * 0.5 / 7.0).abs() < 1e-9,
+            (week - 5000.0 * 1.0 / 7.0).abs() < 1e-9,
             "a genuinely large estimate must still discount VoI, got {week}"
         );
         assert!(
@@ -8920,6 +9056,421 @@ mod tests {
         // wikilink/markdown syntax in task-a's title must survive verbatim
         // inside the quoted label (not special in DOT, just needs quote-safety).
         assert!(dot.contains("[[wikilink]]"), "markdown/wikilink syntax must appear in output: {dot}");
+    }
+
+    #[test]
+    fn test_open_descendants_excludes_templates() {
+        let docs = vec![
+            make_doc(
+                "tasks/parent.md",
+                "Parent Task",
+                "task",
+                "ready",
+                "task-parent",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/child-task.md",
+                "Child Task",
+                "task",
+                "ready",
+                "task-child",
+                Some("task-parent"),
+                &[],
+            ),
+            make_doc(
+                "tasks/child-template.md",
+                "Child Template",
+                "template",
+                "ready",
+                "tpl-child",
+                Some("task-parent"),
+                &[],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let descs = graph.open_descendants("task-parent");
+        assert!(
+            descs.contains(&"task-child".to_string()),
+            "open child task must be in open_descendants"
+        );
+        assert!(
+            !descs.contains(&"tpl-child".to_string()),
+            "template child must not be in open_descendants"
+        );
+    }
+
+    // ── Phase 3 Honest Uncertainty Tests ────────────────────────────────────
+
+    #[test]
+    fn test_craft_glue_settled_question_fixture_ranks_below_open_nodes() {
+        let root = Path::new("/tmp/test-craft-glue");
+
+        // Craft glue fixture: body explicitly records question as settled.
+        // No AC heading. Blocks two downstream installation tasks.
+        let mut craft_glue = make_doc(
+            "tasks/craft-glue.md",
+            "Glue copper panel with craft glue",
+            "task",
+            "ready",
+            "craft-glue",
+            None,
+            &[],
+        );
+        craft_glue.body = r#"## Checklist
+- [ ] Glue the bare copper sheet to its fibre cement backboard with standard craft glue
+
+## Adhesive — settled
+Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are superseded: the original plan's contact cement (never used), and PVA recorded in April. The April adhesion test that passed remains real evidence that a craft-type PVA-family glue bonds acceptably to the porous fibre cement — it is the reason this question is closed rather than open.
+"#.to_string();
+        {
+            let mut fm = craft_glue.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("priority".to_string(), serde_json::json!(3));
+            craft_glue.frontmatter = Some(serde_json::Value::Object(fm));
+        }
+
+        // Downstream tasks blocked by craft-glue
+        let panel_1 = make_doc(
+            "tasks/panel-1.md",
+            "Install copper splashback panel 1",
+            "task",
+            "ready",
+            "panel-1",
+            None,
+            &["craft-glue"],
+        );
+        let panel_2 = make_doc(
+            "tasks/panel-2.md",
+            "Install copper splashback panel 2",
+            "task",
+            "ready",
+            "panel-2",
+            None,
+            &["craft-glue"],
+        );
+
+        // Genuinely open spike: investigating adhesive thermal tolerance
+        // Has open question and blocks 2 downstream tasks
+        let mut open_spike = make_doc(
+            "tasks/open-spike.md",
+            "Spike: adhesive thermal cycling tolerance",
+            "task",
+            "ready",
+            "open-spike",
+            None,
+            &[],
+        );
+        open_spike.body = r#"## Open Questions
+- Will the craft glue hold under 80C thermal cycling behind the cooktop?
+- What degradation occurs after 100 heat cycles?
+"#.to_string();
+        {
+            let mut fm = open_spike.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("priority".to_string(), serde_json::json!(3));
+            fm.insert("confidence".to_string(), serde_json::json!("fifty-fifty"));
+            open_spike.frontmatter = Some(serde_json::Value::Object(fm));
+        }
+
+        let dep_spike_1 = make_doc(
+            "tasks/dep-spike-1.md",
+            "Cooktop splashback install",
+            "task",
+            "ready",
+            "dep-spike-1",
+            None,
+            &["open-spike"],
+        );
+        let dep_spike_2 = make_doc(
+            "tasks/dep-spike-2.md",
+            "Cooktop seal application",
+            "task",
+            "ready",
+            "dep-spike-2",
+            None,
+            &["open-spike"],
+        );
+
+        let docs = vec![craft_glue, panel_1, panel_2, open_spike, dep_spike_1, dep_spike_2];
+        let graph = GraphStore::build(&docs, root);
+
+        let cg_node = graph.get_node("craft-glue").unwrap();
+        let os_node = graph.get_node("open-spike").unwrap();
+
+        // Craft glue has NO open question (settled) -> VoI = 0.0
+        assert_eq!(cg_node.has_open_question, false);
+        assert_eq!(cg_node.voi_value.unwrap_or(0.0), 0.0, "settled craft-glue must earn 0 VoI");
+
+        // Genuinely open spike has open question -> VoI > 0.0
+        assert_eq!(os_node.has_open_question, true);
+        assert!(os_node.voi_value.unwrap_or(0.0) > 0.0, "open spike must earn positive VoI");
+
+        // Craft glue ranks below genuinely open node
+        let cg_score = cg_node.focus_score.unwrap_or(0);
+        let os_score = os_node.focus_score.unwrap_or(0);
+        assert!(
+            cg_score < os_score,
+            "settled craft glue (score {}) must rank below open spike (score {})",
+            cg_score, os_score
+        );
+    }
+
+    #[test]
+    fn test_phase3_two_conjunctive_conditions_independently_required() {
+        let root = Path::new("/tmp/test-conjunctive");
+
+        // 1. Open question ALONE (no downstream divergence — single linear dependent)
+        let mut open_no_divergence = make_doc(
+            "tasks/open-no-div.md",
+            "Open investigation linear",
+            "task",
+            "ready",
+            "open-no-div",
+            None,
+            &[],
+        );
+        open_no_divergence.body = "## Open Questions\n- What is the optimum batch size?\n".to_string();
+
+        let linear_dep = make_doc(
+            "tasks/linear-dep.md",
+            "Linear dependent",
+            "task",
+            "ready",
+            "linear-dep",
+            None,
+            &["open-no-div"],
+        );
+
+        // 2. Downstream divergence ALONE (blocks 2 tasks, but question is settled / confidence: 1.0)
+        let mut div_no_open = make_doc(
+            "tasks/div-no-open.md",
+            "Settled task with divergence",
+            "task",
+            "ready",
+            "div-no-open",
+            None,
+            &[],
+        );
+        div_no_open.body = "## Adhesive — settled\nEverything is confirmed and closed.\n".to_string();
+        {
+            let mut fm = div_no_open.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("confidence".to_string(), serde_json::json!("certain"));
+            div_no_open.frontmatter = Some(serde_json::Value::Object(fm));
+        }
+
+        let div_dep_1 = make_doc(
+            "tasks/div-dep-1.md",
+            "Divergent dep 1",
+            "task",
+            "ready",
+            "div-dep-1",
+            None,
+            &["div-no-open"],
+        );
+        let div_dep_2 = make_doc(
+            "tasks/div-dep-2.md",
+            "Divergent dep 2",
+            "task",
+            "ready",
+            "div-dep-2",
+            None,
+            &["div-no-open"],
+        );
+
+        // 3. BOTH open question AND downstream divergence
+        let mut both_open_and_div = make_doc(
+            "tasks/both.md",
+            "Spike with divergence",
+            "task",
+            "ready",
+            "both",
+            None,
+            &[],
+        );
+        both_open_and_div.body = "## Open Questions\n- Which protocol performs best under load?\n".to_string();
+        {
+            let mut fm = both_open_and_div.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("confidence".to_string(), serde_json::json!(0.5));
+            both_open_and_div.frontmatter = Some(serde_json::Value::Object(fm));
+        }
+
+        let both_dep_1 = make_doc(
+            "tasks/both-dep-1.md",
+            "Both dep 1",
+            "task",
+            "ready",
+            "both-dep-1",
+            None,
+            &["both"],
+        );
+        let both_dep_2 = make_doc(
+            "tasks/both-dep-2.md",
+            "Both dep 2",
+            "task",
+            "ready",
+            "both-dep-2",
+            None,
+            &["both"],
+        );
+
+        let docs = vec![
+            open_no_divergence, linear_dep,
+            div_no_open, div_dep_1, div_dep_2,
+            both_open_and_div, both_dep_1, both_dep_2,
+        ];
+        let graph = GraphStore::build(&docs, root);
+
+        let node_open_only = graph.get_node("open-no-div").unwrap();
+        let node_div_only = graph.get_node("div-no-open").unwrap();
+        let node_both = graph.get_node("both").unwrap();
+
+        assert_eq!(
+            node_open_only.voi_value.unwrap_or(0.0), 0.0,
+            "open question alone with no downstream divergence must earn 0 VoI"
+        );
+        assert_eq!(
+            node_div_only.voi_value.unwrap_or(0.0), 0.0,
+            "downstream divergence alone with no open question must earn 0 VoI"
+        );
+        assert!(
+            node_both.voi_value.unwrap_or(0.0) > 0.0,
+            "both open question and downstream divergence must earn positive VoI"
+        );
+    }
+
+    #[test]
+    fn test_phase3_elicited_confidence_verbal_anchors() {
+        assert_eq!(crate::graph::parse_verbal_confidence("certain"), Some(1.00));
+        assert_eq!(crate::graph::parse_verbal_confidence("almost certain"), Some(1.00));
+        assert_eq!(crate::graph::parse_verbal_confidence("very probable"), Some(0.85));
+        assert_eq!(crate::graph::parse_verbal_confidence("probable"), Some(0.85));
+        assert_eq!(crate::graph::parse_verbal_confidence("highly likely"), Some(0.85));
+        assert_eq!(crate::graph::parse_verbal_confidence("expected"), Some(0.75));
+        assert_eq!(crate::graph::parse_verbal_confidence("likely"), Some(0.75));
+        assert_eq!(crate::graph::parse_verbal_confidence("fifty-fifty"), Some(0.50));
+        assert_eq!(crate::graph::parse_verbal_confidence("even chance"), Some(0.50));
+        assert_eq!(crate::graph::parse_verbal_confidence("uncertain"), Some(0.25));
+        assert_eq!(crate::graph::parse_verbal_confidence("possible"), Some(0.25));
+        assert_eq!(crate::graph::parse_verbal_confidence("perhaps"), Some(0.25));
+        assert_eq!(crate::graph::parse_verbal_confidence("maybe"), Some(0.25));
+        assert_eq!(crate::graph::parse_verbal_confidence("improbable"), Some(0.15));
+        assert_eq!(crate::graph::parse_verbal_confidence("unlikely"), Some(0.15));
+        assert_eq!(crate::graph::parse_verbal_confidence("very unlikely"), Some(0.15));
+        assert_eq!(crate::graph::parse_verbal_confidence("impossible"), Some(0.00));
+        assert_eq!(crate::graph::parse_verbal_confidence("none"), Some(0.00));
+
+        // Structured JSON object with mandatory prose why/justification
+        let structured_obj = serde_json::json!({
+            "value": "probable",
+            "why": "Preliminary benchmarks show 85% pass rate under stress."
+        });
+        assert_eq!(crate::graph::parse_confidence(&structured_obj), Some(0.85));
+    }
+
+    #[test]
+    fn test_phase3_score_independence_and_monotonicity() {
+        let root = Path::new("/tmp/test-independence");
+
+        // 1. Adding AC to a task cannot lower any other task's rank (monotonicity)
+        let mut task_a = make_doc(
+            "tasks/task-a.md",
+            "Task A",
+            "task",
+            "ready",
+            "task-a",
+            None,
+            &[],
+        );
+        task_a.body = "## Context\nDoing some critical work.\n".to_string();
+
+        let mut blocker = make_doc(
+            "tasks/blocker.md",
+            "Blocker task",
+            "task",
+            "ready",
+            "blocker",
+            None,
+            &[],
+        );
+        blocker.body = "## Open Questions\n- Investigation required\n".to_string();
+
+        let mut blocked_1 = make_doc(
+            "tasks/blocked-1.md",
+            "Blocked task 1",
+            "task",
+            "ready",
+            "blocked-1",
+            None,
+            &["blocker"],
+        );
+        blocked_1.body = "## Context\nNo AC yet.\n".to_string();
+
+        let mut blocked_2 = make_doc(
+            "tasks/blocked-2.md",
+            "Blocked task 2",
+            "task",
+            "ready",
+            "blocked-2",
+            None,
+            &["blocker"],
+        );
+
+        let docs_before = vec![task_a.clone(), blocker.clone(), blocked_1.clone(), blocked_2.clone()];
+        let graph_before = GraphStore::build(&docs_before, root);
+        let blocker_score_before = graph_before.get_node("blocker").unwrap().focus_score.unwrap();
+        let blocker_voi_before = graph_before.get_node("blocker").unwrap().voi_value.unwrap();
+
+        // Now add AC heading to blocked_1: "## Acceptance Criteria\n- [ ] Done when tests pass\n"
+        blocked_1.body = "## Acceptance Criteria\n- [ ] Done when tests pass\n".to_string();
+
+        let docs_after = vec![task_a, blocker.clone(), blocked_1, blocked_2.clone()];
+        let graph_after = GraphStore::build(&docs_after, root);
+        let blocker_score_after = graph_after.get_node("blocker").unwrap().focus_score.unwrap();
+        let blocker_voi_after = graph_after.get_node("blocker").unwrap().voi_value.unwrap();
+
+        // Adding AC to blocked_1 cannot lower blocker's VoI or focus score
+        assert_eq!(
+            blocker_voi_after, blocker_voi_before,
+            "adding AC to a downstream task must NOT change upstream VoI"
+        );
+        assert!(
+            blocker_score_after >= blocker_score_before,
+            "adding AC to a downstream task cannot lower upstream rank"
+        );
+
+        // 2. Decomposing a task (adding children) cannot destroy VoI or raise uncertainty
+        let child_doc = make_doc(
+            "tasks/child-decomp.md",
+            "Decomposed subtask",
+            "task",
+            "ready",
+            "child-decomp",
+            Some("blocked-2"),
+            &[],
+        );
+        let docs_decomp = vec![
+            make_doc("tasks/task-a.md", "Task A", "task", "ready", "task-a", None, &[]),
+            blocker,
+            make_doc("tasks/blocked-1.md", "Blocked task 1", "task", "ready", "blocked-1", None, &["blocker"]),
+            blocked_2,
+            child_doc,
+        ];
+        let graph_decomp = GraphStore::build(&docs_decomp, root);
+        let b2_node = graph_decomp.get_node("blocked-2").unwrap();
+        assert_eq!(
+            b2_node.uncertainty, 0.0,
+            "decomposing (adding children) must not raise uncertainty on parent task"
+        );
+    }
+
+    #[test]
+    fn test_phase3_ready_classification_unchanged() {
+        assert_eq!(is_ready_status("inbox", false), false, "inbox without AC is not ready");
+        assert_eq!(is_ready_status("inbox", true), true, "inbox with AC is ready");
+        assert_eq!(is_ready_status("ready", false), true, "ready without AC is ready");
+        assert_eq!(is_ready_status("ready", true), true, "ready with AC is ready");
+        assert_eq!(is_ready_status("queued", false), true, "queued is ready");
+        assert_eq!(is_ready_status("done", true), false, "done is not ready");
     }
 }
 
