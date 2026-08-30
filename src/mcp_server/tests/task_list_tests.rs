@@ -1207,3 +1207,168 @@ use super::*;
         );
     }
 
+    #[test]
+    fn test_list_tasks_array_valued_status_filter() {
+        let server = build_test_server();
+
+        // 1. Filter with array of single status ["ready"]
+        let res_single = server
+            .handle_list_tasks(&json!({"status": ["ready"], "format": "json"}))
+            .unwrap();
+        let tasks_single = extract_task_objects(&res_single);
+        assert!(!tasks_single.is_empty(), "Should return ready tasks");
+        for t in &tasks_single {
+            assert_eq!(t.get("status").and_then(|s| s.as_str()), Some("ready"));
+        }
+
+        // 2. Filter with array of multiple statuses ["ready", "in_progress"]
+        let res_multi = server
+            .handle_list_tasks(&json!({"status": ["ready", "in_progress"], "format": "json"}))
+            .unwrap();
+        let tasks_multi = extract_task_objects(&res_multi);
+        assert!(!tasks_multi.is_empty(), "Should return tasks in ready or in_progress");
+        for t in &tasks_multi {
+            let st = t.get("status").and_then(|s| s.as_str()).unwrap();
+            assert!(
+                st == "ready" || st == "in_progress",
+                "Task status must be ready or in_progress, got {st}"
+            );
+        }
+
+        // 3. Filter with array containing closed status ["done"]
+        let res_done = server
+            .handle_list_tasks(&json!({"status": ["done"], "format": "json"}))
+            .unwrap();
+        let tasks_done = extract_task_objects(&res_done);
+        assert!(!tasks_done.is_empty(), "Explicit array status done must surface done tasks");
+        for t in &tasks_done {
+            assert_eq!(t.get("status").and_then(|s| s.as_str()), Some("done"));
+        }
+
+        // 4. Filter with array combining open and closed statuses ["ready", "done"]
+        let res_ready_done = server
+            .handle_list_tasks(&json!({"status": ["ready", "done"], "format": "json"}))
+            .unwrap();
+        let tasks_ready_done = extract_task_objects(&res_ready_done);
+        assert!(!tasks_ready_done.is_empty());
+        let mut has_ready = false;
+        let mut has_done = false;
+        for t in &tasks_ready_done {
+            let st = t.get("status").and_then(|s| s.as_str()).unwrap();
+            assert!(
+                st == "ready" || st == "done",
+                "Task status must be ready or done, got {st}"
+            );
+            if st == "ready" { has_ready = true; }
+            if st == "done" { has_done = true; }
+        }
+        assert!(has_ready, "Should contain ready tasks");
+        assert!(has_done, "Should contain done tasks");
+    }
+
+    #[test]
+    fn test_list_tasks_comma_separated_status_filter() {
+        let server = build_test_server();
+
+        let res = server
+            .handle_list_tasks(&json!({"status": "ready, in_progress", "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&res);
+        assert!(!tasks.is_empty(), "Should return matching tasks");
+        for t in &tasks {
+            let st = t.get("status").and_then(|s| s.as_str()).unwrap();
+            assert!(
+                st == "ready" || st == "in_progress",
+                "Task status must be ready or in_progress, got {st}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_list_tasks_array_with_comma_separated_status_filter() {
+        let server = build_test_server();
+
+        let res = server
+            .handle_list_tasks(&json!({"status": ["ready, in_progress", "review"], "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&res);
+        assert!(!tasks.is_empty(), "Should return matching tasks");
+        for t in &tasks {
+            let st = t.get("status").and_then(|s| s.as_str()).unwrap();
+            assert!(
+                st == "ready" || st == "in_progress" || st == "review",
+                "Task status must be ready, in_progress, or review, got {st}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_list_tasks_invalid_status_types_and_values_rejected() {
+        let server = build_test_server();
+
+        // 1. Non-string, non-array status filter type: integer
+        let err_int = server
+            .handle_list_tasks(&json!({"status": 123}))
+            .unwrap_err();
+        assert_eq!(err_int.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_int.message.contains("Invalid status filter type"));
+
+        // 2. Non-string, non-array status filter type: bool
+        let err_bool = server
+            .handle_list_tasks(&json!({"status": true}))
+            .unwrap_err();
+        assert_eq!(err_bool.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_bool.message.contains("Invalid status filter type"));
+
+        // 3. Non-string, non-array status filter type: object
+        let err_obj = server
+            .handle_list_tasks(&json!({"status": {}}))
+            .unwrap_err();
+        assert_eq!(err_obj.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_obj.message.contains("Invalid status filter type"));
+
+        // 4. Array with non-string element
+        let err_arr_elem = server
+            .handle_list_tasks(&json!({"status": ["ready", 42]}))
+            .unwrap_err();
+        assert_eq!(err_arr_elem.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_arr_elem.message.contains("Invalid status filter element: expected string"));
+
+        // 5. Invalid status string value
+        let err_val = server
+            .handle_list_tasks(&json!({"status": "not_a_real_status"}))
+            .unwrap_err();
+        assert_eq!(err_val.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_val.message.contains("Invalid status filter \"not_a_real_status\""));
+
+        // 6. Array containing an invalid status string value
+        let err_arr_val = server
+            .handle_list_tasks(&json!({"status": ["ready", "bogus_status"]}))
+            .unwrap_err();
+        assert_eq!(err_arr_val.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_arr_val.message.contains("Invalid status filter \"bogus_status\""));
+
+        // 7. Empty string
+        let err_empty = server
+            .handle_list_tasks(&json!({"status": ""}))
+            .unwrap_err();
+        assert_eq!(err_empty.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_empty.message.contains("Invalid status filter"));
+    }
+
+    #[test]
+    fn test_list_tasks_empty_array_status_filter_returns_empty() {
+        let server = build_test_server();
+
+        let res = server
+            .handle_list_tasks(&json!({"status": [], "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&res);
+        assert!(
+            tasks.is_empty(),
+            "An empty array status filter must match nothing (never silently match everything), got {} tasks",
+            tasks.len()
+        );
+    }
+
+

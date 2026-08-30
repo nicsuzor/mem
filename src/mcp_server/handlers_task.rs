@@ -12,6 +12,129 @@ use crate::graph_store::GraphStore;
 
 use super::{PkbSearchServer, MAX_RESULTS, GOAL_TYPE_ENUM};
 
+/// Parse and validate the `status` filter parameter for `list_tasks`.
+/// Supports:
+/// - A single status string: `"ready"`
+/// - A comma-separated status string: `"ready,in_progress"`
+/// - An array of status strings: `["ready", "in_progress"]`
+/// - An array of comma-separated status strings: `["ready,in_progress", "review"]`
+///
+/// Returns `Ok(None)` if status is omitted or null.
+/// Returns `Ok(Some(Vec<String>))` with lowercase status strings.
+/// Returns `Err(McpError)` with `INVALID_PARAMS` if any status is invalid or type is not string/array of strings.
+pub(crate) fn parse_status_filter(val: Option<&JsonValue>) -> Result<Option<Vec<String>>, McpError> {
+    let Some(v) = val else {
+        return Ok(None);
+    };
+    if v.is_null() {
+        return Ok(None);
+    }
+    let mut statuses = Vec::new();
+    match v {
+        JsonValue::String(s) => {
+            let s_trimmed = s.trim();
+            if s_trimmed.is_empty() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Invalid status filter \"{s}\". Must be one of the stored status values: {}.",
+                        crate::graph::VALID_STATUSES.join(", ")
+                    )),
+                    data: None,
+                });
+            }
+            for part in s_trimmed.split(',') {
+                let trimmed = part.trim();
+                if trimmed.is_empty() {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Invalid status filter \"{part}\". Must be one of the stored status values: {}.",
+                            crate::graph::VALID_STATUSES.join(", ")
+                        )),
+                        data: None,
+                    });
+                }
+                let lower = trimmed.to_ascii_lowercase();
+                if !crate::graph::is_valid_status(&lower) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Invalid status filter \"{trimmed}\". Must be one of the stored status values: {}.",
+                            crate::graph::VALID_STATUSES.join(", ")
+                        )),
+                        data: None,
+                    });
+                }
+                statuses.push(lower);
+            }
+        }
+        JsonValue::Array(arr) => {
+            for item in arr {
+                match item {
+                    JsonValue::String(s) => {
+                        let s_trimmed = s.trim();
+                        if s_trimmed.is_empty() {
+                            return Err(McpError {
+                                code: ErrorCode::INVALID_PARAMS,
+                                message: Cow::from(format!(
+                                    "Invalid status filter \"{s}\". Must be one of the stored status values: {}.",
+                                    crate::graph::VALID_STATUSES.join(", ")
+                                )),
+                                data: None,
+                            });
+                        }
+                        for part in s_trimmed.split(',') {
+                            let trimmed = part.trim();
+                            if trimmed.is_empty() {
+                                return Err(McpError {
+                                    code: ErrorCode::INVALID_PARAMS,
+                                    message: Cow::from(format!(
+                                        "Invalid status filter \"{part}\". Must be one of the stored status values: {}.",
+                                        crate::graph::VALID_STATUSES.join(", ")
+                                    )),
+                                    data: None,
+                                });
+                            }
+                            let lower = trimmed.to_ascii_lowercase();
+                            if !crate::graph::is_valid_status(&lower) {
+                                return Err(McpError {
+                                    code: ErrorCode::INVALID_PARAMS,
+                                    message: Cow::from(format!(
+                                        "Invalid status filter \"{trimmed}\". Must be one of the stored status values: {}.",
+                                        crate::graph::VALID_STATUSES.join(", ")
+                                    )),
+                                    data: None,
+                                });
+                            }
+                            statuses.push(lower);
+                        }
+                    }
+                    _ => {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(format!(
+                                "Invalid status filter element: expected string, got {item}"
+                            )),
+                            data: None,
+                        });
+                    }
+                }
+            }
+        }
+        _ => {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "Invalid status filter type: expected string or array of strings, got {v}"
+                )),
+                data: None,
+            });
+        }
+    }
+    Ok(Some(statuses))
+}
+
 impl PkbSearchServer {
     pub(crate) fn handle_create_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         // Accept `title` (preferred) or `task_title` (alias — some skill docs use this name)
@@ -876,7 +999,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_list_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let status = args.get("status").and_then(|v| v.as_str());
+        let status_filter = parse_status_filter(args.get("status"))?;
         let priority = args
             .get("priority")
             .and_then(|v| v.as_i64())
@@ -934,44 +1057,25 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
 
-        // mem_e6245fc2: `status=<S>` must filter strictly on the node's
-        // stored frontmatter `status` field. It previously did not:
-        // `status="ready"`/`status="blocked"` matched a *computed* leaf/
-        // unmet-deps set instead of the literal stored value (so a node
-        // stored `ready` but computed-blocked would vanish from
-        // `status="ready"`, and vice versa), and every other value was
-        // alias-resolved before comparison, so `status="archived"` silently
-        // returned the entire `done` set (`archived` resolves to `done`)
-        // instead of the correctly-empty archived set. An unsupported/
-        // unknown status value is now rejected outright rather than
-        // silently substituted for a different, larger set.
-        if let Some(s) = status {
-            if !crate::graph::is_valid_status(&s.to_ascii_lowercase()) {
-                return Err(McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!(
-                        "Invalid status filter \"{s}\". Must be one of the stored status values: {}.",
-                        crate::graph::VALID_STATUSES.join(", ")
-                    )),
-                    data: None,
-                });
-            }
-        }
-
         // Retained only to choose which markdown rendering template / empty
         // message to use below — no longer used to select a computed task set.
-        let is_ready = status
-            .map(|s| s.eq_ignore_ascii_case("ready"))
+        let is_ready = status_filter
+            .as_ref()
+            .map(|statuses| statuses.len() == 1 && statuses[0] == "ready")
             .unwrap_or(false);
-        let is_blocked = status
-            .map(|s| s.eq_ignore_ascii_case("blocked"))
+        let is_blocked = status_filter
+            .as_ref()
+            .map(|statuses| statuses.len() == 1 && statuses[0] == "blocked")
             .unwrap_or(false);
 
         // Hide terminal tasks by default unless explicitly requested via status or include_done
-        let is_explicit_closed_status = status
-            .map(|s| {
-                let canonical = crate::graph::resolve_status_alias(s);
-                canonical == "done" || canonical == "cancelled"
+        let is_explicit_closed_status = status_filter
+            .as_ref()
+            .map(|statuses| {
+                statuses.iter().any(|s| {
+                    let canonical = crate::graph::resolve_status_alias(s);
+                    canonical == "done" || canonical == "cancelled"
+                })
             })
             .unwrap_or(false);
         let query_include_done = include_done || is_explicit_closed_status;
@@ -983,11 +1087,11 @@ impl PkbSearchServer {
         };
 
         let mut tasks: Vec<_> = base_nodes.into_iter().collect();
-        if let Some(s) = status {
+        if let Some(ref statuses) = status_filter {
             tasks.retain(|t| {
                 t.status
                     .as_deref()
-                    .map(|st| st.eq_ignore_ascii_case(s))
+                    .map(|st| statuses.iter().any(|s| st.eq_ignore_ascii_case(s)))
                     .unwrap_or(false)
             });
         }

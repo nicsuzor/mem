@@ -443,7 +443,13 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "project": { "type": "string", "description": "Filter by project slug or any polecat.yaml alias (case-insensitive). Returns tasks whose project field (own or inherited from the nearest ancestor that set one) matches." },
-                        "status": { "type": "string", "description": "Filter by the node's stored frontmatter status value (exact match, case-insensitive) — never a computed set. One of: inbox, ready, queued, in_progress, review, merge_ready, blocked, paused, someday, partial, done, cancelled. 'ready' matches only nodes literally stored with status: ready (not a leaf/unblocked computation); 'blocked' matches only nodes literally stored with status: blocked (not the computed unmet-deps set — see the top-level `blocked` field on each row for that)." },
+                        "status": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ],
+                            "description": "Filter by the node's stored frontmatter status value (exact match, case-insensitive) — never a computed set. Accepts a single status (e.g. 'ready'), a comma-separated list (e.g. 'ready,in_progress'), or an array of statuses (e.g. ['ready', 'in_progress']). One of: inbox, ready, queued, in_progress, review, merge_ready, blocked, paused, someday, partial, done, cancelled. 'ready' matches only nodes literally stored with status: ready (not a leaf/unblocked computation); 'blocked' matches only nodes literally stored with status: blocked (not the computed unmet-deps set — see the top-level `blocked` field on each row for that)."
+                        },
                         "priority": { "type": "integer", "description": "Filter to tasks whose effective priority (own or any downstream task via blocks/parent) ≤ N. E.g. priority=0 returns every task that touches a P0, including its blockers." },
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
