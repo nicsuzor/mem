@@ -684,6 +684,19 @@ impl PkbSearchServer {
     /// Release a task to a handoff/terminal status with required summary.
     /// Create an ad-hoc task for a session release when no ID is provided.
     pub(crate) fn create_adhoc_task(&self, args: &JsonValue) -> Result<String, McpError> {
+        let project = args
+            .get("project")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Missing required parameter: project. Ad-hoc tasks created via release_task require a project parameter for filing (e.g. project=\"aops\").",
+                ),
+                data: None,
+            })?;
+
         let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
         // Truncate summary to 200 chars for title
@@ -750,7 +763,7 @@ impl PkbSearchServer {
         let fields = crate::document_crud::TaskFields {
             title,
             parent: Some(parent_id),
-            project: Some("adhoc-sessions".to_string()),
+            project: Some(project.to_string()),
             tags: vec!["adhoc".to_string(), "session-release".to_string()],
             session_id: session_id_opt.map(String::from),
             issue_url: args
@@ -775,44 +788,33 @@ impl PkbSearchServer {
 
         let path =
             crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
-                code: ErrorCode::INTERNAL_ERROR,
+                code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Failed to create ad-hoc task: {e}")),
                 data: None,
             })?;
 
-        // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4")
-        static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").unwrap()
-        });
-        let id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| ID_RE.find(s).map(|m| m.as_str()).unwrap_or(s))
-            .unwrap_or("task-unknown")
-            .to_string();
-
-        // Update graph and vector DB
-        if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+        // Extract ID directly from parsed frontmatter
+        let id = if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+            let doc_id = doc.id();
             self.rebuild_graph_for_pkb_document(&doc);
             self.try_upsert_document(&doc);
+            doc_id
         } else {
             self.rebuild_graph();
-        }
+            static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+                regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z0-9_]+-[0-9a-f]{8})").unwrap()
+            });
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| ID_RE.find(s).map(|m| m.as_str()).unwrap_or(s))
+                .unwrap_or("task-unknown")
+                .to_string()
+        };
+
         Ok(id)
     }
 
     pub(crate) fn handle_release_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let mut created_id = None;
-        let id_val = match args.get("id").and_then(|v| v.as_str()) {
-            Some(id) if !id.is_empty() => id.to_string(),
-            _ => {
-                let nid = self.create_adhoc_task(args)?;
-                created_id = Some(nid.clone());
-                nid
-            }
-        };
-        let id = &id_val;
-
         let status = args
             .get("status")
             .and_then(|v| v.as_str())
@@ -870,6 +872,17 @@ impl PkbSearchServer {
                 data: None,
             });
         }
+
+        let mut created_id = None;
+        let id_val = match args.get("id").and_then(|v| v.as_str()) {
+            Some(id) if !id.is_empty() => id.to_string(),
+            _ => {
+                let nid = self.create_adhoc_task(args)?;
+                created_id = Some(nid.clone());
+                nid
+            }
+        };
+        let id = &id_val;
 
         let pr_url = args.get("pr_url").and_then(|v| v.as_str());
         let branch = args.get("branch").and_then(|v| v.as_str());

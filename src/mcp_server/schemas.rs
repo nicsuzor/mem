@@ -409,11 +409,12 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false).idempotent(true)),
             Tool::new(
                 "release_task",
-                "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled, partial). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created. Evidence-or-failure-reason contract: `summary` is always required; releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
+                "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled, partial). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` is always required; releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title). If omitted, an ad-hoc task is created." },
+                        "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (e.g. 'aops', 'mem'). Required when 'id' is omitted (ad-hoc task creation); optional when 'id' is provided." },
                         "status": {
                             "type": "string",
                             "enum": ["merge_ready", "done", "review", "blocked", "cancelled", "partial"],
