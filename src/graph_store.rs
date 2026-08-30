@@ -937,11 +937,10 @@ impl GraphStore {
             .nodes
             .values()
             .filter(|n| {
-                let is_actionable = n
-                    .node_type
-                    .as_deref()
-                    .map(|t| ACTIONABLE_TYPES.contains(&t))
-                    .unwrap_or(false);
+                let is_actionable = match n.node_type.as_deref() {
+                    Some(t) => ACTIONABLE_TYPES.contains(&t),
+                    None => n.task_id.is_some(),
+                };
                 if !is_actionable {
                     return false;
                 }
@@ -3540,11 +3539,10 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
         if node.task_id.is_none() {
             continue;
         }
-        let is_actionable = node
-            .node_type
-            .as_deref()
-            .map(|t| ACTIONABLE_TYPES.contains(&t))
-            .unwrap_or(false);
+        let is_actionable = match node.node_type.as_deref() {
+            Some(t) => ACTIONABLE_TYPES.contains(&t),
+            None => true,
+        };
         if !is_actionable {
             continue;
         }
@@ -3625,10 +3623,10 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
         .iter()
         .filter(|(_, n)| {
             n.task_id.is_some()
-                && n.node_type
-                    .as_deref()
-                    .map(|t| ACTIONABLE_TYPES.contains(&t))
-                    .unwrap_or(false)
+                && match n.node_type.as_deref() {
+                    Some(t) => ACTIONABLE_TYPES.contains(&t),
+                    None => true,
+                }
         })
         .filter(|(_, n)| match &n.parent {
             None => true,
@@ -3737,11 +3735,10 @@ fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
         if node.status.is_none() {
             continue;
         }
-        let is_actionable = node
-            .node_type
-            .as_deref()
-            .map(|t| ACTIONABLE_TYPES.contains(&t))
-            .unwrap_or(false);
+        let is_actionable = match node.node_type.as_deref() {
+            Some(t) => ACTIONABLE_TYPES.contains(&t),
+            None => node.task_id.is_some(),
+        };
         if !is_actionable {
             continue;
         }
