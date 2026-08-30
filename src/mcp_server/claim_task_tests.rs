@@ -347,6 +347,7 @@ project: aops
 
         let result = server
             .handle_release_task(&serde_json::json!({
+                "project": "adhoc-sessions",
                 "status": "done",
                 "summary": "Fixed the retry logic in queue consumer",
                 "session_id": "abc12345",
@@ -422,6 +423,7 @@ project: aops
 
         let r1 = server
             .handle_release_task(&serde_json::json!({
+                "project": "adhoc-sessions",
                 "status": "done",
                 "summary": "First task in this session",
                 "session_id": sid,
@@ -429,6 +431,7 @@ project: aops
             .unwrap();
         let r2 = server
             .handle_release_task(&serde_json::json!({
+                "project": "adhoc-sessions",
                 "status": "done",
                 "summary": "Second task in this session",
                 "session_id": sid,
@@ -519,6 +522,7 @@ project: aops
 
         let result = server
             .handle_release_task(&serde_json::json!({
+                "project": "adhoc-sessions",
                 "status": "done",
                 "summary": "Some ad-hoc work with no session tracking",
             }))
@@ -547,6 +551,158 @@ project: aops
             parent,
             crate::document_crud::ADHOC_SESSIONS_ROOT_ID,
             "without session_id, task should fall back to adhoc-sessions root; parent={parent}"
+        );
+    }
+
+    #[test]
+    fn test_adhoc_release_missing_project_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let err = server
+            .handle_release_task(&serde_json::json!({
+                "status": "done",
+                "summary": "Some ad-hoc work without project parameter",
+            }))
+            .unwrap_err();
+
+        assert!(
+            err.message.contains("Missing required parameter: project"),
+            "ad-hoc release without project must fail with missing project parameter error, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_adhoc_release_empty_project_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let err = server
+            .handle_release_task(&serde_json::json!({
+                "project": "   ",
+                "status": "done",
+                "summary": "Some ad-hoc work with whitespace project parameter",
+            }))
+            .unwrap_err();
+
+        assert!(
+            err.message.contains("Missing required parameter: project"),
+            "ad-hoc release with empty project must fail, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_adhoc_release_with_long_summary_produces_short_id_and_bounded_filename() {
+        // Regression test for mem-4a068cea:
+        // release_task(status="done", summary=<500-char prose>) with no id
+        // must produce an ID stem <= ~50 chars and on-disk filename stem within bound.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let long_summary = "triaged remaining 7 e2e failures in tests e2e test all invocation paths py post pr 921 polecat yaml ssot mapped to existing tasks task ac3e547b workspace bind mount scope 4 2 run only and task 376fd490 python viz subagent tools and cut 3 new tasks aops 4434236d entrypoint sh detached launch missing tests 1 1 aops f394236e run command test expects error but gets subagent launch and aops 9a871234 other long prose description that exceeds several hundred characters in length to thoroughly test slug truncation and bounded id stem generation";
+        assert!(long_summary.len() > 400);
+
+        let result = server
+            .handle_release_task(&serde_json::json!({
+                "project": "adhoc-sessions",
+                "status": "done",
+                "summary": long_summary,
+            }))
+            .expect("release_task with long summary and project should succeed");
+
+        let text: String = result
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let task_id = val.get("id").and_then(|v| v.as_str()).unwrap().to_string();
+
+        // 1. ID stem must be short (<= 50 chars), matching create_task convention
+        assert!(
+            task_id.len() <= 50,
+            "created task ID must be <= 50 chars, got {} (length {})",
+            task_id,
+            task_id.len()
+        );
+        assert!(
+            task_id.starts_with("adhoc_sessions_"),
+            "task ID should start with project prefix, got {task_id}"
+        );
+
+        // 2. The task file must exist on disk with bounded filename
+        let tasks_dir = root.join("tasks");
+        let entries: Vec<_> = std::fs::read_dir(&tasks_dir)
+            .unwrap()
+            .map(|r| r.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+
+        let matching_file = entries
+            .iter()
+            .find(|f| f.starts_with(&task_id))
+            .expect("task file starting with task_id must exist on disk");
+
+        // Filename stem (excluding .md) has slug capped at 80 chars
+        let stem = matching_file.strip_suffix(".md").unwrap();
+        let slug_part = stem.strip_prefix(&format!("{task_id}-")).unwrap_or(stem);
+        assert!(
+            slug_part.len() <= 80,
+            "slug portion of filename must be <= 80 chars, got {} (length {})",
+            slug_part,
+            slug_part.len()
+        );
+
+        // 3. Frontmatter id matches the short/truncated form
+        let file_content = std::fs::read_to_string(tasks_dir.join(matching_file)).unwrap();
+        assert!(
+            file_content.contains(&format!("id: {task_id}")),
+            "frontmatter id must match generated task_id: {file_content}"
+        );
+        assert!(
+            file_content.contains("project: adhoc-sessions"),
+            "frontmatter project must be adhoc-sessions: {file_content}"
+        );
+        assert!(
+            file_content.contains("status: done"),
+            "frontmatter status must be done: {file_content}"
         );
     }
 
