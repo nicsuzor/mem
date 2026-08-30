@@ -567,7 +567,8 @@ impl GraphStore {
     }
 
     /// Collect IDs of all descendants (recursive via children) whose status is open
-    /// (not done, cancelled, or archived). Used to enforce open-children constraint
+    /// (not done, cancelled, or archived), excluding `node_type: template` (which are
+    /// perpetual meta-definitions that are never 'done'). Used to enforce open-children constraint
     /// before closing a parent.
     pub fn open_descendants(&self, id: &str) -> Vec<String> {
         let mut result = Vec::new();
@@ -582,7 +583,9 @@ impl GraphStore {
                 continue;
             }
             if let Some(child) = self.get_node(&child_id) {
-                if !crate::graph::is_closed_for_hierarchy(child.status.as_deref()) {
+                if child.node_type.as_deref() != Some("template")
+                    && !crate::graph::is_closed_for_hierarchy(child.status.as_deref())
+                {
                     result.push(child_id.clone());
                 }
                 stack.extend(child.children.iter().cloned());
@@ -8920,6 +8923,49 @@ mod tests {
         // wikilink/markdown syntax in task-a's title must survive verbatim
         // inside the quoted label (not special in DOT, just needs quote-safety).
         assert!(dot.contains("[[wikilink]]"), "markdown/wikilink syntax must appear in output: {dot}");
+    }
+
+    #[test]
+    fn test_open_descendants_excludes_templates() {
+        let docs = vec![
+            make_doc(
+                "tasks/parent.md",
+                "Parent Task",
+                "task",
+                "ready",
+                "task-parent",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/child-task.md",
+                "Child Task",
+                "task",
+                "ready",
+                "task-child",
+                Some("task-parent"),
+                &[],
+            ),
+            make_doc(
+                "tasks/child-template.md",
+                "Child Template",
+                "template",
+                "ready",
+                "tpl-child",
+                Some("task-parent"),
+                &[],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let descs = graph.open_descendants("task-parent");
+        assert!(
+            descs.contains(&"task-child".to_string()),
+            "open child task must be in open_descendants"
+        );
+        assert!(
+            !descs.contains(&"tpl-child".to_string()),
+            "template child must not be in open_descendants"
+        );
     }
 }
 
