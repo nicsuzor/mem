@@ -1017,6 +1017,8 @@ impl GraphNode {
             .and_then(|f| f.get("id").and_then(|v| v.as_str()).map(String::from));
         let id = task_id.clone().unwrap_or_else(|| fallback_id(&doc.path));
 
+        let mut parse_warnings: Vec<ParseWarning> = Vec::new();
+
         // Raw frontmatter type, before legacy coercion. Needed below for the
         // permalink fallback that only ever applied to old project containers.
         let raw_node_type = fm
@@ -1025,13 +1027,24 @@ impl GraphNode {
         // `type: project` is retired (project = polecat.yaml routing slug, not
         // a node type). Legacy files keep parsing but are treated as epics for
         // all structural purposes; `pkb lint` nags toward reclassification.
-        let node_type = raw_node_type.as_deref().map(|t| {
-            if t == "project" {
-                "epic".to_string()
-            } else {
-                t.to_string()
+        // If an `id:` is present on an untyped node, default to "task" and emit
+        // a parse warning so it is indexed into list_tasks/ranking rather than
+        // silently vanishing (mem_ef704bd4).
+        let node_type = match raw_node_type.as_deref() {
+            Some("project") => Some("epic".to_string()),
+            Some(t) => Some(t.to_string()),
+            None => {
+                if task_id.is_some() {
+                    parse_warnings.push(ParseWarning {
+                        field: "type".to_string(),
+                        message: "missing 'type' field on id-bearing node; defaulted to 'task'".to_string(),
+                    });
+                    Some("task".to_string())
+                } else {
+                    None
+                }
             }
-        });
+        };
         let status = fm.as_ref().and_then(|f| {
             f.get("status")
                 .and_then(|v| v.as_str())
@@ -1063,7 +1076,6 @@ impl GraphNode {
                 .and_then(|v| v.as_str())
                 .map(String::from)
         });
-        let mut parse_warnings: Vec<ParseWarning> = Vec::new();
 
         // Severity: integer 0..=4. Anything else is rejected with a structured warning.
         let severity = match fm.as_ref().and_then(|f| f.get("severity")) {
@@ -1713,5 +1725,33 @@ mod target_prototype_tests {
             .parse_warnings
             .iter()
             .any(|w| w.field == "edge_template.severity"));
+    }
+
+    #[test]
+    fn untyped_node_with_id_defaults_to_task_with_warning() {
+        let fm = json!({
+            "id": "task-untyped-01",
+            "title": "Untyped Task",
+            "status": "ready",
+            "project": "aops",
+            "priority": 2,
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.id, "task-untyped-01");
+        assert_eq!(n.node_type.as_deref(), Some("task"));
+        assert_eq!(n.parse_warnings.len(), 1);
+        assert_eq!(n.parse_warnings[0].field, "type");
+        assert!(n.parse_warnings[0].message.contains("missing 'type' field"));
+    }
+
+    #[test]
+    fn untyped_node_without_id_has_no_type_and_no_warning() {
+        let fm = json!({
+            "title": "General Note",
+            "tags": ["reference"],
+        });
+        let n = GraphNode::from_pkb_document(&doc_with_fm(fm));
+        assert_eq!(n.node_type, None);
+        assert!(n.parse_warnings.is_empty());
     }
 }

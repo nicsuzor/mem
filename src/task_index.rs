@@ -82,11 +82,10 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
             Some(id) => id.clone(),
             None => continue,
         };
-        let is_actionable = node
-            .node_type
-            .as_deref()
-            .map(|t| crate::graph_store::ACTIONABLE_TYPES.contains(&t))
-            .unwrap_or(false);
+        let is_actionable = match node.node_type.as_deref() {
+            Some(t) => crate::graph_store::ACTIONABLE_TYPES.contains(&t),
+            None => true, // Untyped id-bearing node defaults to actionable ("task")
+        };
         if !is_actionable {
             continue;
         }
@@ -294,5 +293,48 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
         roots,
         ready,
         blocked,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pkb::PkbDocument;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_build_mcp_index_includes_untyped_node_with_id() {
+        let mut fm = serde_json::Map::new();
+        fm.insert("id".to_string(), json!("task-untyped-42"));
+        fm.insert("title".to_string(), json!("Untyped Work Item"));
+        fm.insert("status".to_string(), json!("ready"));
+
+        let doc = PkbDocument {
+            path: PathBuf::from("tasks/untyped-work.md"),
+            title: "Untyped Work Item".to_string(),
+            tags: vec![],
+            doc_type: None,
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "# Untyped Work Item\nSome description.".to_string(),
+            content_hash: "h1".to_string(),
+            file_hash: "h1".to_string(),
+            frontmatter: Some(serde_json::Value::Object(fm)),
+        };
+
+        let store = GraphStore::build(&[doc], Path::new("/tmp/test-pkb"));
+        let index = build_mcp_index(&store, Path::new("/tmp/test-pkb"));
+
+        assert!(
+            index.tasks.contains_key("task-untyped-42"),
+            "untyped task with id should be indexed in McpIndex"
+        );
+        let entry = index.tasks.get("task-untyped-42").unwrap();
+        assert_eq!(entry.task_type, "task");
+        assert_eq!(entry.title, "Untyped Work Item");
+        assert_eq!(entry.status, "ready");
     }
 }
