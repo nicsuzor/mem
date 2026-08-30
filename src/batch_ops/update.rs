@@ -68,7 +68,7 @@ pub fn batch_update(
                             if !crate::graph::is_valid_effort(e) {
                                 summary.errors.push(TaskError {
                                     id: "".to_string(),
-                                    error: format!("Invalid effort: {}. Expected duration string like '1d', '2h', '1w'.", e),
+                                    error: format!("Invalid effort: {}. Expected duration string like '1d', '2h', '1w' (minimum '1h'). For size labels like 'S', 'M', 'L', use 'complexity' instead.", e),
                                 });
                                 return summary;
                             }

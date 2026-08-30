@@ -55,8 +55,11 @@ pub struct DocumentFields {
     pub priority: Option<i32>,
     pub parent: Option<String>,
     pub depends_on: Vec<String>,
+    pub soft_depends_on: Vec<String>,
     pub assignee: Option<String>,
     pub complexity: Option<String>,
+    pub effort: Option<String>,
+    pub consequence: Option<String>,
     pub source: Option<String>,
     pub due: Option<String>,
     pub confidence: Option<f64>,
@@ -79,6 +82,7 @@ pub struct TaskFields {
     pub priority: Option<i32>,
     pub tags: Vec<String>,
     pub depends_on: Vec<String>,
+    pub soft_depends_on: Vec<String>,
     pub assignee: Option<String>,
     pub complexity: Option<String>,
     pub effort: Option<String>,
@@ -163,6 +167,15 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     for dep in &fields.depends_on {
         validate_str_scalar("depends_on", dep, max_len)?;
     }
+    for dep in &fields.soft_depends_on {
+        validate_str_scalar("soft_depends_on", dep, max_len)?;
+    }
+    if let Some(ref s) = fields.effort {
+        validate_str_scalar("effort", s, max_len)?;
+    }
+    if let Some(ref s) = fields.consequence {
+        validate_str_scalar("consequence", s, max_len)?;
+    }
 
     // Validation
     if !crate::graph::is_valid_node_type(&fields.doc_type) {
@@ -178,6 +191,14 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     if let Some(priority) = fields.priority {
         if !crate::graph::is_valid_priority(priority) {
             anyhow::bail!("Invalid priority: {}. Must be between 0 and 4.", priority);
+        }
+    }
+    if let Some(ref effort) = fields.effort {
+        if !crate::graph::is_valid_effort(effort) {
+            anyhow::bail!(
+                "Invalid effort: {}. Expected duration like '1d', '2h', '1w' (minimum '1h'). For size labels like 'S', 'M', 'L', use 'complexity' instead.",
+                effort
+            );
         }
     }
 
@@ -280,12 +301,30 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         }
     }
 
+    if !fields.soft_depends_on.is_empty() {
+        fm.push_str("soft_depends_on:\n");
+        for dep in &fields.soft_depends_on {
+            fm.push_str(&format!("  - {}\n", dep));
+        }
+    }
+
     if let Some(ref assignee) = fields.assignee {
         fm.push_str(&format!("assignee: {}\n", assignee));
     }
 
     if let Some(ref complexity) = fields.complexity {
         fm.push_str(&format!("complexity: {}\n", complexity));
+    }
+
+    if let Some(ref effort) = fields.effort {
+        fm.push_str(&format!("effort: {}\n", effort));
+    }
+
+    if let Some(ref consequence) = fields.consequence {
+        fm.push_str(&format!(
+            "consequence: \"{}\"\n",
+            yaml_escape_double_quoted(consequence)
+        ));
     }
 
     if let Some(ref source) = fields.source {
@@ -540,6 +579,9 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     for dep in &fields.depends_on {
         validate_str_scalar("depends_on", dep, max_len)?;
     }
+    for dep in &fields.soft_depends_on {
+        validate_str_scalar("soft_depends_on", dep, max_len)?;
+    }
     for fut in &fields.follow_up_tasks {
         validate_str_scalar("follow_up_tasks", fut, max_len)?;
     }
@@ -562,7 +604,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     if let Some(ref effort) = fields.effort {
         if !crate::graph::is_valid_effort(effort) {
             anyhow::bail!(
-                "Invalid effort: {}. Expected duration like '1d', '2h', '1w'.",
+                "Invalid effort: {}. Expected duration like '1d', '2h', '1w' (minimum '1h'). For size labels like 'S', 'M', 'L', use 'complexity' instead.",
                 effort
             );
         }
@@ -668,6 +710,13 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     if !fields.depends_on.is_empty() {
         fm.push_str("depends_on:\n");
         for dep in &fields.depends_on {
+            fm.push_str(&format!("  - {}\n", dep));
+        }
+    }
+
+    if !fields.soft_depends_on.is_empty() {
+        fm.push_str("soft_depends_on:\n");
+        for dep in &fields.soft_depends_on {
             fm.push_str(&format!("  - {}\n", dep));
         }
     }
@@ -783,6 +832,8 @@ pub struct TemplateInstanceFields {
     pub contributes_to: Vec<serde_json::Value>,
     /// Depends_on inherited from the template frontmatter.
     pub depends_on: Vec<String>,
+    /// Soft_depends_on inherited from the template frontmatter.
+    pub soft_depends_on: Vec<String>,
     /// Goal_type inherited from the template frontmatter.
     pub goal_type: Option<String>,
     /// Severity inherited from the template frontmatter.
@@ -826,6 +877,9 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     }
     for dep in &fields.depends_on {
         validate_str_scalar("depends_on", dep, max_len)?;
+    }
+    for dep in &fields.soft_depends_on {
+        validate_str_scalar("soft_depends_on", dep, max_len)?;
     }
 
     // Validate + canonicalize the inherited project slug against polecat.yaml,
@@ -933,6 +987,13 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     if !fields.depends_on.is_empty() {
         fm.push_str("depends_on:\n");
         for dep in &fields.depends_on {
+            fm.push_str(&format!("  - {}\n", dep));
+        }
+    }
+
+    if !fields.soft_depends_on.is_empty() {
+        fm.push_str("soft_depends_on:\n");
+        for dep in &fields.soft_depends_on {
             fm.push_str(&format!("  - {}\n", dep));
         }
     }
@@ -1600,7 +1661,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
                 if let Some(e) = value.as_str() {
                     if !crate::graph::is_valid_effort(e) {
                         anyhow::bail!(
-                            "Invalid effort: {}. Expected duration like '1d', '2h', '1w'.",
+                            "Invalid effort: {}. Expected duration like '1d', '2h', '1w' (minimum '1h'). For size labels like 'S', 'M', 'L', use 'complexity' instead.",
                             e
                         );
                     }
