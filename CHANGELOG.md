@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.84](https://github.com/nicsuzor/mem/compare/mem-v0.3.83...mem-v0.3.84) (2026-08-30)
+
+
+### Features
+
+* **cli:** unship pkb maintenance decay subcommand and park decay dormant ([6230852](https://github.com/nicsuzor/mem/commit/62308521a4c85d89b9e13274559f11b4f15d7ee3))
+* **cli:** unship pkb maintenance decay subcommand and park decay dormant ([f0a1c5c](https://github.com/nicsuzor/mem/commit/f0a1c5c464dfc27f1fc2a8905b62f3d57cadfa38))
+* **mcp:** scope task_summary counts to project parameter and reject unsupported parameters ([cdd3ec0](https://github.com/nicsuzor/mem/commit/cdd3ec02dde67b0aab4c3f2d5609e716a12531c2))
+* **mcp:** scope task_summary counts to project parameter and reject unsupported parameters ([d2a4fc9](https://github.com/nicsuzor/mem/commit/d2a4fc963bbe3ced6479dc517ae624b53bae2456))
+* **ranking:** implement Phase 3 honest uncertainty (task_e9667ac7) ([c744232](https://github.com/nicsuzor/mem/commit/c744232514d158fac4af475a15d7e55d702c668c))
+* **ranking:** implement Phase 3 honest uncertainty with open question and divergence signals ([b3589cf](https://github.com/nicsuzor/mem/commit/b3589cf7e16ada98953681d561b0113973a1e7c9))
+
+
+### Bug Fixes
+
+* **batch:** ensure seed is always marked consolidated in apply_consolidation_batch ([#546](https://github.com/nicsuzor/mem/issues/546)) ([07e1640](https://github.com/nicsuzor/mem/commit/07e1640a81456f9ae53f2378024289d06409a561))
+* **cli:** unify task tree sibling sorting with canonical GraphStore focus_cmp ([#548](https://github.com/nicsuzor/mem/issues/548)) ([fb0f5fa](https://github.com/nicsuzor/mem/commit/fb0f5fa4c5ff8400d16a85c11d1cb786c329775a))
+* **document_crud:** eliminate MEM_MAX_FRONTMATTER_SCALAR_LEN test race via thread-scoped override (mem_frontmatter_env_flake) ([#547](https://github.com/nicsuzor/mem/issues/547)) ([da6cc13](https://github.com/nicsuzor/mem/commit/da6cc13c0f23bcabf71d1389c2edd5abc3150473))
+* **graph_store:** exclude node_type template from open_descendants close guard ([fcc3430](https://github.com/nicsuzor/mem/commit/fcc34301f3a26903527bc7ccb79abafd2b357e20))
+* **graph_store:** exclude node_type: template from open_descendants close guard ([a036ced](https://github.com/nicsuzor/mem/commit/a036ced53f20630149663123ea9cde86a9793596))
+* **lint:** flag and fix non-canonical project aliases; regression tests for write-path canonicalization ([#544](https://github.com/nicsuzor/mem/issues/544)) ([6dd8236](https://github.com/nicsuzor/mem/commit/6dd82362dbb720057dced9cee4a33627dc5dcbcf))
+* **mcp:** declare schemas truthfully and include corrected-call examples (mem-ffe1b138) ([b281403](https://github.com/nicsuzor/mem/commit/b281403336220576d87db699f0cf084cd1158dbe))
+* **mcp:** declare schemas truthfully and include corrected-call examples (mem-ffe1b138) ([9ffdd0f](https://github.com/nicsuzor/mem/commit/9ffdd0fa0792928a8253e4c7d67cb8126cbc30d9))
+* **mcp:** prevent server-side file path disclosure across MCP endpoints ([#539](https://github.com/nicsuzor/mem/issues/539)) ([412bd2f](https://github.com/nicsuzor/mem/commit/412bd2f2c76655b938a8194d2fb0c25f2401ab10))
+* **resolver:** normalize blocker and dependency resolution to be case-insensitive ([#549](https://github.com/nicsuzor/mem/issues/549)) ([dcc35e8](https://github.com/nicsuzor/mem/commit/dcc35e847c1fe3d1c5fb3328d1b866be02b0b13a))
+* **task_index:** default untyped id-bearing nodes to type 'task' with parse warning ([71d0d57](https://github.com/nicsuzor/mem/commit/71d0d5769e37da174d43fadc7ea51c02073f6c63))
+* **task_index:** default untyped id-bearing nodes to type 'task' with parse warning ([d4d13fa](https://github.com/nicsuzor/mem/commit/d4d13fae5eb87f577fad53752179642055ee2188))
+* **vectordb:** enforce dimension check and persistence on legacy migration, spec format policy (mem_28b17f48) ([#551](https://github.com/nicsuzor/mem/issues/551)) ([018e950](https://github.com/nicsuzor/mem/commit/018e950cf986eac1ba12952932f653d9b4d947d5))
+
+
+### Tests
+
+* **concurrency:** add AC1 and AC2 git-verified concurrency acceptance tests (mem_7451158a) ([1a5cf11](https://github.com/nicsuzor/mem/commit/1a5cf11ebd77bdd78dd48b6e4a56ebed892c5736))
+* **concurrency:** add AC1 and AC2 git-verified concurrency acceptance tests (mem_7451158a) ([e622541](https://github.com/nicsuzor/mem/commit/e622541c5d92023707ec1ef9756f3e3e1ada732c))
+* **embeddings:** add unit tests for atomic model downloads and .part handling ([9ef4858](https://github.com/nicsuzor/mem/commit/9ef48587d5e1e58297c707feb052fc722287eb9d))
+* **embeddings:** add unit tests for atomic model downloads and .part handling (mem-3c716f2b) ([9e67d33](https://github.com/nicsuzor/mem/commit/9e67d335b8975e4aafb197bf57c5875d8887d85e))
+* **embeddings:** add unit tests for OS model cache paths, quantized model preference, and AOPS_MODEL_PATH override ([823366a](https://github.com/nicsuzor/mem/commit/823366a90467b9637b87ac949cb467eb6f589168))
+* **embeddings:** add unit tests for OS model cache paths, quantized model preference, and AOPS_MODEL_PATH override (mem-9527cd62) ([dbf0098](https://github.com/nicsuzor/mem/commit/dbf009826f85da5db61584f5e8321b27c22af28a))
+* **mcp_server:** add regression test for mem_bc1ed756 ([5721025](https://github.com/nicsuzor/mem/commit/57210253a457e7aa126db6ba9e6d3d10853d42e1))
+* **mcp_server:** add regression test for mem_bc1ed756 (unblocked non-leaf stored-ready node reachable via status=ready) ([773dcc4](https://github.com/nicsuzor/mem/commit/773dcc4bda240deb4ab0dc684931eb81e8a6f009))
+
 ## [0.3.83](https://github.com/nicsuzor/mem/compare/mem-v0.3.82...mem-v0.3.83) (2026-08-28)
 
 
