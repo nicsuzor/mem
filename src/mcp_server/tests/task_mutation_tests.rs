@@ -1742,6 +1742,77 @@ use super::*;
     }
 
     #[test]
+    fn test_blocker_resolution_case_insensitive_mcp() {
+        // Blocker task has lowercase id: "academicops-d067e425", status: "done"
+        // Downstream tasks reference it with mixed case: "academicOps-d067e425"
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/academicops-d067e425.md",
+                "---\nid: academicops-d067e425\ntitle: Upstream Blocker\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Upstream Blocker\n",
+            ),
+            (
+                "tasks/academicops-4a31fae0.md",
+                "---\nid: academicops-4a31fae0\ntitle: Downstream Task A\ntype: task\nstatus: ready\ndepends_on: [academicOps-d067e425]\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Downstream Task A\n",
+            ),
+            (
+                "tasks/open-blocker.md",
+                "---\nid: open-blocker-1234\ntitle: Open Blocker\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Open Blocker\n",
+            ),
+            (
+                "tasks/blocked-task.md",
+                "---\nid: blocked-task-5678\ntitle: Blocked Task B\ntype: task\nstatus: blocked\ndepends_on: [OPEN-BLOCKER-1234]\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Blocked Task B\n",
+            ),
+        ]);
+
+        // 1. Task A depending on done blocker with mixed-case ID must NOT be blocked
+        let ready_list = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+            .unwrap();
+        let ready_objs = extract_task_objects(&ready_list);
+        let task_a = ready_objs
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("academicops-4a31fae0"))
+            .expect("academicops-4a31fae0 must be present in ready tasks");
+        assert_eq!(
+            task_a.get("blocked").and_then(|v| v.as_bool()),
+            Some(false),
+            "task depending on done blocker must have blocked=false"
+        );
+
+        // 2. get_task on task A resolves the dependency title and status despite mixed-case reference
+        let get_a = server
+            .handle_get_task(&json!({"id": "academicops-4a31fae0"}))
+            .unwrap();
+        let get_a_text = get_a.content[0].as_text().unwrap().text.as_str();
+        assert!(
+            get_a_text.contains("Upstream Blocker"),
+            "get_task must resolve dependency title; got: {get_a_text}"
+        );
+        assert!(
+            get_a_text.contains("done"),
+            "get_task must resolve dependency status as done; got: {get_a_text}"
+        );
+
+        // 3. Task B depending on open blocker (mixed-case) is blocked, and list_tasks renders blocker status correctly
+        let list_blocked_text = server
+            .handle_list_tasks(&json!({"status": "blocked", "format": "markdown"}))
+            .unwrap();
+        let md_out = list_blocked_text.content[0].as_text().unwrap().text.as_str();
+        assert!(
+            md_out.contains("blocked-task-5678"),
+            "blocked-task-5678 should appear in list_tasks blocked markdown view"
+        );
+        assert!(
+            !md_out.contains("[?] ?"),
+            "blocked view must not render '[?] ?' for resolvable blocker; got: {md_out}"
+        );
+        assert!(
+            md_out.contains("Open Blocker"),
+            "blocked view should show blocker title; got: {md_out}"
+        );
+    }
+
+    #[test]
     fn test_list_tasks_status_archived_is_rejected_not_aliased_to_done() {
         let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/task-done.md",

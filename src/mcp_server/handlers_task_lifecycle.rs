@@ -357,12 +357,12 @@ impl PkbSearchServer {
             if unblocked.len() >= 5 {
                 break;
             }
-            let Some(dep) = graph.get_node(dep_id) else {
+            let Some(dep) = graph.resolve(dep_id) else {
                 continue;
             };
-            if !graph.is_blocked(dep_id) && !is_completed(dep.status.as_deref()) {
+            if !graph.is_blocked(&dep.id) && !is_completed(dep.status.as_deref()) {
                 unblocked.push(serde_json::json!({
-                    "id": dep_id,
+                    "id": dep.id,
                     "title": title_of(dep),
                 }));
             }

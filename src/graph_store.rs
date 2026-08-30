@@ -892,7 +892,8 @@ impl GraphStore {
     }
 
     pub fn is_blocked(&self, id: &str) -> bool {
-        self.blocked.iter().any(|s| s == id)
+        let lower = id.to_lowercase();
+        self.blocked.iter().any(|s| s.to_lowercase() == lower)
     }
 
     /// Canonical default ordering for any flat task/node result set.
@@ -1018,10 +1019,12 @@ impl GraphStore {
         let mut result = Vec::new();
         let mut visited = HashSet::new();
         let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        queue.push_back((id.to_string(), 0));
+        let start_id = self.resolve(id).map(|n| n.id.as_str()).unwrap_or(id);
+        queue.push_back((start_id.to_string(), 0));
 
         while let Some((current_id, depth)) = queue.pop_front() {
-            if !visited.insert(current_id.clone()) {
+            let lower = current_id.to_lowercase();
+            if !visited.insert(lower) {
                 continue;
             }
             if depth > 0 {
@@ -1030,9 +1033,9 @@ impl GraphStore {
             if depth >= max_depth {
                 continue;
             }
-            if let Some(node) = self.nodes.get(&current_id) {
+            if let Some(node) = self.resolve(&current_id) {
                 for dep_id in &node.depends_on {
-                    if !visited.contains(dep_id) {
+                    if !visited.contains(&dep_id.to_lowercase()) {
                         queue.push_back((dep_id.clone(), depth + 1));
                     }
                 }
@@ -1056,10 +1059,12 @@ impl GraphStore {
         let mut result = Vec::new();
         let mut visited = HashSet::new();
         let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        queue.push_back((id.to_string(), 0));
+        let start_id = self.resolve(id).map(|n| n.id.as_str()).unwrap_or(id);
+        queue.push_back((start_id.to_string(), 0));
 
         while let Some((current_id, depth)) = queue.pop_front() {
-            if !visited.insert(current_id.clone()) {
+            let lower = current_id.to_lowercase();
+            if !visited.insert(lower) {
                 continue;
             }
             if depth > 0 {
@@ -1068,9 +1073,9 @@ impl GraphStore {
             if depth >= max_depth {
                 continue;
             }
-            if let Some(node) = self.nodes.get(&current_id) {
+            if let Some(node) = self.resolve(&current_id) {
                 for blocked_id in &node.blocks {
-                    if !visited.contains(blocked_id) {
+                    if !visited.contains(&blocked_id.to_lowercase()) {
                         queue.push_back((blocked_id.clone(), depth + 1));
                     }
                 }
@@ -2399,16 +2404,33 @@ fn compute_inverses(
         .map(|n| n.id.clone())
         .collect();
 
-    // Resolve contributes_to.resolved_to on each node
+    // Resolve contributes_to.resolved_to on each node, and canonicalize frontmatter references to actual node IDs
     for node in nodes.iter_mut() {
         for ct in node.contributes_to.iter_mut() {
             ct.resolved_to = resolve_ct_ref(&ct.to, id_map, path_to_id);
+        }
+        for dep in node.depends_on.iter_mut() {
+            if let Some(target_id) = graph::resolve_ref(dep, id_map, path_to_id) {
+                *dep = target_id;
+            }
+        }
+        for sdep in node.soft_depends_on.iter_mut() {
+            if let Some(target_id) = graph::resolve_ref(sdep, id_map, path_to_id) {
+                *sdep = target_id;
+            }
+        }
+        for c in node.closes.iter_mut() {
+            if let Some(target_id) = graph::resolve_ref(c, id_map, path_to_id) {
+                *c = target_id;
+            }
         }
     }
 
     // Collect updates to avoid borrow issues
     let mut block_updates: Vec<(usize, String)> = Vec::new(); // (target_idx, source_id)
     let mut soft_block_updates: Vec<(usize, String)> = Vec::new();
+    let mut dep_updates: Vec<(usize, String)> = Vec::new();
+    let mut soft_dep_updates: Vec<(usize, String)> = Vec::new();
     let mut children_updates: Vec<(usize, String)> = Vec::new();
     let mut subtask_updates: Vec<(usize, String)> = Vec::new();
     let mut contributed_by_updates: Vec<(usize, String)> = Vec::new();
@@ -2427,10 +2449,16 @@ fn compute_inverses(
                 if let Some(&idx) = id_to_idx.get(&edge.target) {
                     block_updates.push((idx, edge.source.clone()));
                 }
+                if let Some(&idx) = id_to_idx.get(&edge.source) {
+                    dep_updates.push((idx, edge.target.clone()));
+                }
             }
             EdgeType::SoftDependsOn => {
                 if let Some(&idx) = id_to_idx.get(&edge.target) {
                     soft_block_updates.push((idx, edge.source.clone()));
+                }
+                if let Some(&idx) = id_to_idx.get(&edge.source) {
+                    soft_dep_updates.push((idx, edge.target.clone()));
                 }
             }
             EdgeType::Parent => {
@@ -2471,6 +2499,16 @@ fn compute_inverses(
     for (idx, blocked_id) in soft_block_updates {
         if !nodes[idx].soft_blocks.contains(&blocked_id) {
             nodes[idx].soft_blocks.push(blocked_id);
+        }
+    }
+    for (idx, dep_id) in dep_updates {
+        if !nodes[idx].depends_on.contains(&dep_id) {
+            nodes[idx].depends_on.push(dep_id);
+        }
+    }
+    for (idx, sdep_id) in soft_dep_updates {
+        if !nodes[idx].soft_depends_on.contains(&sdep_id) {
+            nodes[idx].soft_depends_on.push(sdep_id);
         }
     }
     for (idx, child_id) in children_updates {
@@ -3528,7 +3566,7 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
     let completed_ids: HashSet<String> = nodes
         .iter()
         .filter(|(_, n)| graph::is_completed(n.status.as_deref()))
-        .map(|(id, _)| id.clone())
+        .map(|(id, _)| id.to_lowercase())
         .collect();
 
     // Phase 1: identify directly blocked tasks (unmet deps or explicit status)
@@ -3552,7 +3590,7 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
         }
         task_ids.push(id.clone());
 
-        let has_unmet = node.depends_on.iter().any(|d| !completed_ids.contains(d));
+        let has_unmet = node.depends_on.iter().any(|d| !completed_ids.contains(&d.to_lowercase()));
         if has_unmet || status == "blocked" {
             directly_blocked.insert(id.clone());
         }
@@ -5132,6 +5170,80 @@ mod tests {
         // task-a should be blocked (depends on task-b which isn't done)
         let task_a_id = graph.resolve("task-a").unwrap().id.clone();
         assert!(blocked.iter().any(|n| n.id == task_a_id));
+    }
+
+    #[test]
+    fn test_blocker_resolution_case_insensitive() {
+        // Reproduce academicOps #547:
+        // Blocker task has lowercase id: "academicops-d067e425", status: "done"
+        // Downstream tasks reference it with mixed case: "academicOps-d067e425" or uppercase
+        let docs = vec![
+            make_doc(
+                "tasks/academicops-d067e425.md",
+                "Upstream Done Task",
+                "task",
+                "done",
+                "academicops-d067e425",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/academicops-4a31fae0.md",
+                "Downstream Task A",
+                "task",
+                "ready",
+                "academicops-4a31fae0",
+                None,
+                &["academicOps-d067e425"],
+            ),
+            make_doc(
+                "tasks/academicops-2200e5e8.md",
+                "Downstream Task B",
+                "task",
+                "ready",
+                "academicops-2200e5e8",
+                None,
+                &["ACADEMICOPS-D067E425"],
+            ),
+            make_doc(
+                "tasks/open-blocker.md",
+                "Open Blocker Task",
+                "task",
+                "inbox",
+                "open-blocker-1234",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/blocked-task.md",
+                "Blocked Task",
+                "task",
+                "ready",
+                "blocked-task-5678",
+                None,
+                &["OPEN-BLOCKER-1234"],
+            ),
+        ];
+        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+
+        // 1. Downstream tasks depending on completed blocker (with mixed case) must NOT be blocked
+        assert!(!graph.is_blocked("academicops-4a31fae0"), "task-4a31fae0 should not be blocked");
+        assert!(!graph.is_blocked("academicops-2200e5e8"), "task-2200e5e8 should not be blocked");
+        assert!(graph.ready.contains(&"academicops-4a31fae0".to_string()), "task-4a31fae0 should be in ready queue");
+        assert!(graph.ready.contains(&"academicops-2200e5e8".to_string()), "task-2200e5e8 should be in ready queue");
+
+        // 2. Downstream task depending on open blocker (with mixed case) MUST be blocked
+        assert!(graph.is_blocked("blocked-task-5678"), "blocked-task-5678 should be blocked");
+        assert!(graph.blocked.contains(&"blocked-task-5678".to_string()), "blocked-task-5678 should be in blocked list");
+
+        // 3. Blocks relationship symmetry is populated on the blocker
+        let upstream = graph.resolve("academicops-d067e425").unwrap();
+        assert!(upstream.blocks.contains(&"academicops-4a31fae0".to_string()));
+        assert!(upstream.blocks.contains(&"academicops-2200e5e8".to_string()));
+
+        // 4. Depends_on relationship on downstream task is canonicalized
+        let downstream_a = graph.resolve("academicops-4a31fae0").unwrap();
+        assert_eq!(downstream_a.depends_on, vec!["academicops-d067e425"]);
     }
 
     // ── reachable ──
