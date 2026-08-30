@@ -203,7 +203,7 @@ The `justification` field follows intelligence tradecraft ICD 203. A single sent
 
 Every edge is a **belief**, not a fact: "I currently think task T contributes to O with weight W, as of this edit, because `why`." This framing is load-bearing for calibration: drift, audit, fallibility, prototype inheritance, and the side-log all derive from treating edges as dated estimates.
 
-History does **not** live on the edge itself. Edges stay as lightweight YAML list items on the source task. Belief-drift history (Brier scores, decay checkpoints) lives in a side-log, written only when the calibration ritual fires (deferred — see §References).
+History does **not** live on the edge itself. Edges stay as lightweight YAML list items on the source task. Belief-drift history (Brier scores, decay checkpoints) lives in a side-log, written only when the calibration ritual fires (defers the calibration ritual, not the decay computation — see §References).
 
 Reified edges-as-nodes rejected: breaks Obsidian's markdown grain, noisies the graph view, pays calibration cost before the ritual earns its keep.
 

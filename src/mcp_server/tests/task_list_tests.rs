@@ -994,6 +994,77 @@ use super::*;
     }
 
     #[test]
+    fn test_untyped_node_with_id_is_indexed_in_list_tasks_and_emits_parse_warning() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        write_test_polecat_yaml(root);
+
+        let mut fm_untyped = serde_json::Map::new();
+        fm_untyped.insert("id".to_string(), json!("aops-untyped-test"));
+        fm_untyped.insert("title".to_string(), json!("Untyped Test Work Node"));
+        fm_untyped.insert("status".to_string(), json!("ready"));
+        fm_untyped.insert("project".to_string(), json!("aops"));
+        fm_untyped.insert("priority".to_string(), json!(2));
+
+        let tasks_dir = root.join("tasks");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+        let file_path = tasks_dir.join("aops-untyped-test.md");
+        std::fs::write(
+            &file_path,
+            "---\nid: aops-untyped-test\ntitle: \"Untyped Test Work Node\"\nstatus: ready\nproject: aops\npriority: 2\n---\n\n# Untyped Test Work Node\nBody content\n",
+        )
+        .unwrap();
+
+        let doc_untyped = PkbDocument {
+            path: file_path,
+            title: "Untyped Test Work Node".to_string(),
+            tags: vec![],
+            doc_type: None,
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "# Untyped Test Work Node\nBody content".to_string(),
+            content_hash: "h2".to_string(),
+            file_hash: "h2".to_string(),
+            frontmatter: Some(serde_json::Value::Object(fm_untyped)),
+        };
+
+        let graph = GraphStore::build(&[doc_untyped], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // 1. Regression test: untyped work node with `id` is indexed and appears in list_tasks
+        let res_list = server
+            .handle_list_tasks(&json!({"format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&res_list);
+        assert_eq!(tasks.len(), 1);
+        let t0 = &tasks[0];
+        assert_eq!(t0.get("id").and_then(|v| v.as_str()), Some("aops-untyped-test"));
+        assert_eq!(t0.get("node_type").and_then(|v| v.as_str()), Some("task"));
+
+        // 2. Acceptance criteria: a parse_warning is emitted when this default fires
+        let res_get = server
+            .handle_get_task(&json!({"id": "aops-untyped-test"}))
+            .unwrap();
+        let get_text = res_get.content[0].raw.as_text().unwrap().text.as_str();
+        let get_val: serde_json::Value = serde_json::from_str(get_text).unwrap();
+        let warnings = get_val.get("parse_warnings").and_then(|w| w.as_array()).expect("parse_warnings array must exist");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].get("field").and_then(|f| f.as_str()), Some("type"));
+        assert!(warnings[0].get("message").and_then(|m| m.as_str()).unwrap().contains("missing 'type' field"));
+    }
+
+    #[test]
     fn test_task_summary_global_and_project_scoping_regression() {
         let docs = vec![
             make_container_doc("projects/p1.md", "Project One", "p1", "proj-one"),
@@ -1135,6 +1206,4 @@ use super::*;
             err3.message
         );
     }
-
-
 

@@ -82,11 +82,10 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
             Some(id) => id.clone(),
             None => continue,
         };
-        let is_actionable = node
-            .node_type
-            .as_deref()
-            .map(|t| crate::graph_store::ACTIONABLE_TYPES.contains(&t))
-            .unwrap_or(false);
+        let is_actionable = match node.node_type.as_deref() {
+            Some(t) => crate::graph_store::ACTIONABLE_TYPES.contains(&t),
+            None => true, // Untyped id-bearing node defaults to actionable ("task")
+        };
         if !is_actionable {
             continue;
         }
@@ -134,6 +133,10 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
     // Compute bidirectional relationship symmetry
     // (same logic as original build_mcp_index in main.rs)
     let task_ids: Vec<String> = entries.keys().cloned().collect();
+    let task_id_map: HashMap<String, String> = entries
+        .keys()
+        .map(|k| (k.to_lowercase(), k.clone()))
+        .collect();
 
     // Collect inverse updates
     let mut parent_updates: Vec<(String, String)> = Vec::new();
@@ -148,39 +151,39 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
             // parent -> children symmetry (exclude subtasks — they travel with parent separately)
             if entry.task_type != "subtask" {
                 if let Some(ref parent_id) = entry.parent {
-                    if entries.contains_key(parent_id) {
-                        child_updates.push((parent_id.clone(), tid.clone()));
+                    if let Some(canonical_parent) = task_id_map.get(&parent_id.to_lowercase()) {
+                        child_updates.push((canonical_parent.clone(), tid.clone()));
                     }
                 }
             }
             // children -> parent symmetry
             for child_id in &entry.children {
-                if entries.contains_key(child_id) {
-                    parent_updates.push((child_id.clone(), tid.clone()));
+                if let Some(canonical_child) = task_id_map.get(&child_id.to_lowercase()) {
+                    parent_updates.push((canonical_child.clone(), tid.clone()));
                 }
             }
             // depends_on -> blocks symmetry
             for dep_id in &entry.depends_on {
-                if entries.contains_key(dep_id) {
-                    block_updates.push((dep_id.clone(), tid.clone()));
+                if let Some(canonical_dep) = task_id_map.get(&dep_id.to_lowercase()) {
+                    block_updates.push((canonical_dep.clone(), tid.clone()));
                 }
             }
             // blocks -> depends_on symmetry
             for blocker_id in &entry.blocks {
-                if entries.contains_key(blocker_id) {
-                    dep_updates.push((blocker_id.clone(), tid.clone()));
+                if let Some(canonical_blocker) = task_id_map.get(&blocker_id.to_lowercase()) {
+                    dep_updates.push((canonical_blocker.clone(), tid.clone()));
                 }
             }
             // soft_depends_on -> soft_blocks symmetry
             for sdep_id in &entry.soft_depends_on {
-                if entries.contains_key(sdep_id) {
-                    soft_block_updates.push((sdep_id.clone(), tid.clone()));
+                if let Some(canonical_sdep) = task_id_map.get(&sdep_id.to_lowercase()) {
+                    soft_block_updates.push((canonical_sdep.clone(), tid.clone()));
                 }
             }
             // soft_blocks -> soft_depends_on symmetry
             for sblocker_id in &entry.soft_blocks {
-                if entries.contains_key(sblocker_id) {
-                    soft_dep_updates.push((sblocker_id.clone(), tid.clone()));
+                if let Some(canonical_sblocker) = task_id_map.get(&sblocker_id.to_lowercase()) {
+                    soft_dep_updates.push((canonical_sblocker.clone(), tid.clone()));
                 }
             }
         }
@@ -239,7 +242,7 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
     let completed_ids: HashSet<String> = entries
         .iter()
         .filter(|(_, e)| graph::is_completed(Some(e.status.as_str())))
-        .map(|(id, _)| id.clone())
+        .map(|(id, _)| id.to_lowercase())
         .collect();
 
     let mut ready: Vec<String> = Vec::new();
@@ -252,7 +255,7 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
         let unmet: Vec<&String> = entry
             .depends_on
             .iter()
-            .filter(|d| !completed_ids.contains(*d))
+            .filter(|d| !completed_ids.contains(&d.to_lowercase()))
             .collect();
         if !unmet.is_empty() || entry.status == "blocked" {
             blocked.push(tid.clone());
@@ -294,5 +297,110 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
         roots,
         ready,
         blocked,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pkb::PkbDocument;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_build_mcp_index_includes_untyped_node_with_id() {
+        let mut fm = serde_json::Map::new();
+        fm.insert("id".to_string(), json!("task-untyped-42"));
+        fm.insert("title".to_string(), json!("Untyped Work Item"));
+        fm.insert("status".to_string(), json!("ready"));
+
+        let doc = PkbDocument {
+            path: PathBuf::from("tasks/untyped-work.md"),
+            title: "Untyped Work Item".to_string(),
+            tags: vec![],
+            doc_type: None,
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "# Untyped Work Item\nSome description.".to_string(),
+            content_hash: "h1".to_string(),
+            file_hash: "h1".to_string(),
+            frontmatter: Some(serde_json::Value::Object(fm)),
+        };
+
+        let store = GraphStore::build(&[doc], Path::new("/tmp/test-pkb"));
+        let index = build_mcp_index(&store, Path::new("/tmp/test-pkb"));
+
+        assert!(
+            index.tasks.contains_key("task-untyped-42"),
+            "untyped task with id should be indexed in McpIndex"
+        );
+        let entry = index.tasks.get("task-untyped-42").unwrap();
+        assert_eq!(entry.task_type, "task");
+        assert_eq!(entry.title, "Untyped Work Item");
+        assert_eq!(entry.status, "ready");
+    }
+
+    #[test]
+    fn test_task_index_blocker_resolution_case_insensitive() {
+        let mut fm_done = serde_json::Map::new();
+        fm_done.insert("id".to_string(), json!("academicops-d067e425"));
+        fm_done.insert("title".to_string(), json!("Done Blocker"));
+        fm_done.insert("status".to_string(), json!("done"));
+
+        let mut fm_downstream = serde_json::Map::new();
+        fm_downstream.insert("id".to_string(), json!("academicops-4a31fae0"));
+        fm_downstream.insert("title".to_string(), json!("Downstream Task"));
+        fm_downstream.insert("status".to_string(), json!("ready"));
+        fm_downstream.insert("depends_on".to_string(), json!(["academicOps-d067e425"]));
+
+        let doc_done = PkbDocument {
+            path: PathBuf::from("tasks/academicops-d067e425.md"),
+            title: "Done Blocker".to_string(),
+            tags: vec![],
+            doc_type: Some("task".to_string()),
+            status: Some("done".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "# Done Blocker".to_string(),
+            content_hash: "h1".to_string(),
+            file_hash: "h1".to_string(),
+            frontmatter: Some(serde_json::Value::Object(fm_done)),
+        };
+
+        let doc_downstream = PkbDocument {
+            path: PathBuf::from("tasks/academicops-4a31fae0.md"),
+            title: "Downstream Task".to_string(),
+            tags: vec![],
+            doc_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "# Downstream Task".to_string(),
+            content_hash: "h2".to_string(),
+            file_hash: "h2".to_string(),
+            frontmatter: Some(serde_json::Value::Object(fm_downstream)),
+        };
+
+        let store = GraphStore::build(&[doc_done, doc_downstream], Path::new("/tmp/test-pkb"));
+        let index = build_mcp_index(&store, Path::new("/tmp/test-pkb"));
+
+        assert!(
+            index.ready.contains(&"academicops-4a31fae0".to_string()),
+            "task with mixed-case completed dependency must be ready in index"
+        );
+        assert!(
+            !index.blocked.contains(&"academicops-4a31fae0".to_string()),
+            "task with mixed-case completed dependency must not be blocked in index"
+        );
+
+        let blocker_entry = index.tasks.get("academicops-d067e425").unwrap();
+        assert!(
+            blocker_entry.blocks.contains(&"academicops-4a31fae0".to_string()),
+            "blocker should have downstream task in blocks"
+        );
     }
 }

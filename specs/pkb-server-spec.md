@@ -318,6 +318,17 @@ Markdown body content.
 
 Binary vector database at `$ACA_DATA/pkb_vectors.bin`. Contains BGE-M3 embeddings (1024 dimensions). This is a derived cache — can be rebuilt from files at any time.
 
+#### Persisted Format & Schema Evolution Policy
+
+1. **Version Field & Layout**: The binary store (`pkb_vectors.bin`) uses `bincode` (1.3) positional serialization for `VectorStore`, encoding `documents` (`HashMap<String, DocumentEntry>`) and `dimension` (`usize`). The store does not currently carry an explicit leading `version` field. Because `bincode` is positional, changes to `DocumentEntry`'s field order or count break binary deserialization.
+2. **Default Disposition on Break**: The default disposition for any format break is **discard-and-reindex**, not migrate. Because `pkb_vectors.bin` is a derived cache fully rebuildable from markdown notes on disk at any startup or reindex, the cost of a format break is one-time re-embedding wall time with zero risk of durable data loss.
+3. **Single PR Rule**: Any schema format break and its handling (whether clean discard-and-reindex or migration) must ship together in **one** pull request, never as a chaser.
+4. **Migration Conditions**: If an explicit migration pathway is authored (such as the legacy `OldVectorStore` fallback for historical snapshots), it must strictly satisfy all four conditions:
+   - A leading `version` field (or explicit discrimination) evaluated before structural decoding, rather than relying on decode failure cascades that grow unbounded with no lifecycle for dropping past tiers;
+   - Embedding dimension check enforced on the migrated store across all execution paths (`dimension == expected`), falling back to a fresh store on mismatch;
+   - An immediate `save` of the migrated store to disk so migration does not re-run on subsequent read-only startups;
+   - A fixture round-trip test against a checked-in pre-break binary file exercising the real migration and discrimination path.
+
 ### Knowledge Graph
 
 In-memory graph built from frontmatter relationships and wikilinks on each startup/reindex. Not persisted separately — rebuilt from files.

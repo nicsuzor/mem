@@ -1741,6 +1741,133 @@ use super::*;
         );
     }
 
+    // ── mem_bc1ed756: a node with stored status: ready, at least one child,
+    // and all depends_on targets closed (non-leaf unblocked stored-ready)
+    // is reachable by status="ready" (and has blocked: false in JSON output).
+
+    #[test]
+    fn test_list_tasks_status_ready_includes_unblocked_non_leaf_node() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-dep-closed.md",
+                "---\nid: task-dep-closed\ntitle: Closed Dependency\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Closed Dependency\n",
+            ),
+            (
+                "tasks/task-parent-ready.md",
+                "---\nid: task-parent-ready\ntitle: Parent Ready Task\ntype: task\nstatus: ready\ndepends_on: [task-dep-closed]\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent Ready Task\n",
+            ),
+            (
+                "tasks/task-child.md",
+                "---\nid: task-child\ntitle: Child Task\ntype: task\nstatus: queued\nparent: task-parent-ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child Task\n",
+            ),
+        ]);
+
+        let result = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&result);
+        let parent = tasks
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-parent-ready"))
+            .expect("unblocked non-leaf stored-ready node must be returned by status=\"ready\"");
+
+        assert_eq!(
+            parent.get("status").and_then(|v| v.as_str()),
+            Some("ready"),
+            "task-parent-ready status must be ready"
+        );
+        assert_eq!(
+            parent.get("blocked").and_then(|v| v.as_bool()),
+            Some(false),
+            "unblocked task-parent-ready must have blocked: false"
+        );
+
+        // Also test markdown output format returns the non-leaf ready task
+        let res_md = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "markdown"}))
+            .unwrap();
+        let md_text = res_md
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(
+            md_text.contains("task-parent-ready"),
+            "markdown status=\"ready\" output must include unblocked non-leaf task-parent-ready: {md_text}"
+        );
+    }
+
+    #[test]
+    fn test_blocker_resolution_case_insensitive_mcp() {
+        // Blocker task has lowercase id: "academicops-d067e425", status: "done"
+        // Downstream tasks reference it with mixed case: "academicOps-d067e425"
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/academicops-d067e425.md",
+                "---\nid: academicops-d067e425\ntitle: Upstream Blocker\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Upstream Blocker\n",
+            ),
+            (
+                "tasks/academicops-4a31fae0.md",
+                "---\nid: academicops-4a31fae0\ntitle: Downstream Task A\ntype: task\nstatus: ready\ndepends_on: [academicOps-d067e425]\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Downstream Task A\n",
+            ),
+            (
+                "tasks/open-blocker.md",
+                "---\nid: open-blocker-1234\ntitle: Open Blocker\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Open Blocker\n",
+            ),
+            (
+                "tasks/blocked-task.md",
+                "---\nid: blocked-task-5678\ntitle: Blocked Task B\ntype: task\nstatus: blocked\ndepends_on: [OPEN-BLOCKER-1234]\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Blocked Task B\n",
+            ),
+        ]);
+
+        // 1. Task A depending on done blocker with mixed-case ID must NOT be blocked
+        let ready_list = server
+            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+            .unwrap();
+        let ready_objs = extract_task_objects(&ready_list);
+        let task_a = ready_objs
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("academicops-4a31fae0"))
+            .expect("academicops-4a31fae0 must be present in ready tasks");
+        assert_eq!(
+            task_a.get("blocked").and_then(|v| v.as_bool()),
+            Some(false),
+            "task depending on done blocker must have blocked=false"
+        );
+
+        // 2. get_task on task A resolves the dependency title and status despite mixed-case reference
+        let get_a = server
+            .handle_get_task(&json!({"id": "academicops-4a31fae0"}))
+            .unwrap();
+        let get_a_text = get_a.content[0].as_text().unwrap().text.as_str();
+        assert!(
+            get_a_text.contains("Upstream Blocker"),
+            "get_task must resolve dependency title; got: {get_a_text}"
+        );
+        assert!(
+            get_a_text.contains("done"),
+            "get_task must resolve dependency status as done; got: {get_a_text}"
+        );
+
+        // 3. Task B depending on open blocker (mixed-case) is blocked, and list_tasks renders blocker status correctly
+        let list_blocked_text = server
+            .handle_list_tasks(&json!({"status": "blocked", "format": "markdown"}))
+            .unwrap();
+        let md_out = list_blocked_text.content[0].as_text().unwrap().text.as_str();
+        assert!(
+            md_out.contains("blocked-task-5678"),
+            "blocked-task-5678 should appear in list_tasks blocked markdown view"
+        );
+        assert!(
+            !md_out.contains("[?] ?"),
+            "blocked view must not render '[?] ?' for resolvable blocker; got: {md_out}"
+        );
+        assert!(
+            md_out.contains("Open Blocker"),
+            "blocked view should show blocker title; got: {md_out}"
+        );
+    }
+
     #[test]
     fn test_list_tasks_status_archived_is_rejected_not_aliased_to_done() {
         let (_tmp, server) = build_disk_backed_server(&[(
@@ -2075,4 +2202,155 @@ use super::*;
             !ids2.contains(&"task-late-utc".to_string()),
             "since=2026-08-18 must exclude a task whose UTC modified date is still 2026-08-17, got {ids2:?}"
         );
+    }
+
+    #[test]
+    fn test_mcp_endpoints_never_disclose_server_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        std::fs::create_dir_all(root.join("memories")).unwrap();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        write_test_polecat_yaml(root);
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db.bin");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let root_str = root.to_str().unwrap();
+
+        // 1. handle_create_document
+        let create_doc_res = server
+            .handle_create_document(&json!({
+                "title": "Doc Without Path Leak",
+                "type": "note",
+                "body": "Body content"
+            }))
+            .unwrap();
+        let doc_text: String = create_doc_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert!(doc_text.starts_with("Document created: "));
+        assert!(!doc_text.contains(root_str), "Must not leak root path");
+        assert!(!doc_text.contains(".md"), "Must not leak file extension in path");
+
+        // 2. handle_create_memory
+        let create_mem_res = server
+            .handle_create_memory(&json!({
+                "title": "Memory Without Path Leak",
+                "body": "Memory body"
+            }))
+            .unwrap();
+        let mem_text: String = create_mem_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert!(mem_text.starts_with("Memory created: "));
+        assert!(!mem_text.contains(root_str), "Must not leak root path");
+        assert!(!mem_text.contains(".md"), "Must not leak file extension in path");
+
+        // 3. handle_delete_document
+        // First create a doc to delete
+        let _del_target_res = server
+            .handle_create_document(&json!({
+                "title": "Doc To Delete",
+                "type": "note",
+                "id": "note-todelete"
+            }))
+            .unwrap();
+        let del_res = server
+            .handle_delete_document(&json!({
+                "id": "note-todelete"
+            }))
+            .unwrap();
+        let del_text: String = del_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert_eq!(del_text, "Deleted: Doc To Delete (`note-todelete`)");
+        assert!(!del_text.contains(root_str), "Must not leak root path");
+
+        // 4. handle_decompose_task
+        let parent_res = server
+            .handle_create_task(&json!({
+                "title": "Parent For Decompose",
+                "type": "task",
+                "project": "proj-alpha",
+                "parent": "proj-alpha",
+                "allow_missing_parent": true,
+            }))
+            .unwrap();
+        let parent_text: String = parent_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        let parent_val: serde_json::Value = serde_json::from_str(&parent_text).unwrap();
+        let parent_id = parent_val.get("id").unwrap().as_str().unwrap();
+
+        let decomp_res = server
+            .handle_decompose_task(&json!({
+                "parent_id": parent_id,
+                "subtasks": [
+                    { "title": "Subtask 1", "type": "task" },
+                    { "title": "Subtask 2", "type": "task" }
+                ]
+            }))
+            .unwrap();
+        let decomp_text: String = decomp_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert!(!decomp_text.contains(root_str), "Must not leak root path");
+        assert!(!decomp_text.contains(".md"), "Must not leak .md extension");
+
+        // 5. handle_sync_excalidraw created_nodes output shape
+        let dummy_canvas = json!({
+            "type": "excalidraw",
+            "version": 2,
+            "source": "https://excalidraw.com",
+            "elements": [],
+            "appState": { "viewBackgroundColor": "#ffffff", "gridSize": null },
+            "files": {}
+        });
+        let sync_res = server
+            .handle_sync_excalidraw(&json!({
+                "canvas": dummy_canvas.to_string(),
+                "dry_run": false
+            }))
+            .unwrap();
+        let sync_text: String = sync_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert!(!sync_text.contains(root_str), "Must not leak root path");
+        assert!(!sync_text.contains("\"path\":"), "Must not leak path key in created_nodes");
+
+        // 6. get_document file not found error does not leak path
+        let get_doc_err = server
+            .handle_get_document(&json!({ "id": "non-existent-id" }))
+            .unwrap_err();
+        assert!(!get_doc_err.message.contains(root_str));
+        assert!(!get_doc_err.message.contains("/"));
+
+        // 7. get_task file not found error does not leak path
+        let get_task_err = server
+            .handle_get_task(&json!({ "id": "non-existent-task" }))
+            .unwrap_err();
+        assert!(!get_task_err.message.contains(root_str));
+        assert!(!get_task_err.message.contains("/"));
     }
