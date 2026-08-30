@@ -48,8 +48,7 @@ impl PkbSearchServer {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!(
-                    "File not found for ID '{query}': {}",
-                    path.display()
+                    "File not found for ID '{query}'"
                 )),
                 data: None,
             });
@@ -181,6 +180,15 @@ impl PkbSearchServer {
         let elapsed_parse = t.elapsed();
         tracing::debug!(target: "perf::create_memory", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
 
+        let filename = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mem_id = parsed
+            .as_ref()
+            .map(|d| d.id())
+            .unwrap_or_else(|| filename.clone());
+
         if let Some(doc) = parsed {
             let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
@@ -204,8 +212,7 @@ impl PkbSearchServer {
         tracing::debug!(target: "perf::create_memory", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Memory created: `{}`",
-            path.display()
+            "Memory created: `{filename}` (`{mem_id}`)"
         ))]))
     }
 
@@ -337,6 +344,15 @@ impl PkbSearchServer {
         let elapsed_parse = t.elapsed();
         tracing::debug!(target: "perf::create_document", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
 
+        let filename = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let doc_id = parsed
+            .as_ref()
+            .map(|d| d.id())
+            .unwrap_or_else(|| filename.clone());
+
         if let Some(doc) = parsed {
             let t = std::time::Instant::now();
             self.rebuild_graph_for_pkb_document(&doc);
@@ -359,7 +375,7 @@ impl PkbSearchServer {
 
         tracing::debug!(target: "perf::create_document", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
-        let mut msg = format!("Document created: `{}`", path.display());
+        let mut msg = format!("Document created: `{filename}` (`{doc_id}`)");
         if !warnings.is_empty() {
             msg.push_str("\n\nHierarchy warnings:\n");
             for w in &warnings {
@@ -906,7 +922,7 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Deleted: {} (`{}`)",
             label,
-            abs_path.display()
+            node_id
         ))]))
     }
 

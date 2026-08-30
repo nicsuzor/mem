@@ -2076,3 +2076,154 @@ use super::*;
             "since=2026-08-18 must exclude a task whose UTC modified date is still 2026-08-17, got {ids2:?}"
         );
     }
+
+    #[test]
+    fn test_mcp_endpoints_never_disclose_server_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        std::fs::create_dir_all(root.join("memories")).unwrap();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        write_test_polecat_yaml(root);
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db.bin");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let root_str = root.to_str().unwrap();
+
+        // 1. handle_create_document
+        let create_doc_res = server
+            .handle_create_document(&json!({
+                "title": "Doc Without Path Leak",
+                "type": "note",
+                "body": "Body content"
+            }))
+            .unwrap();
+        let doc_text: String = create_doc_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert!(doc_text.starts_with("Document created: "));
+        assert!(!doc_text.contains(root_str), "Must not leak root path");
+        assert!(!doc_text.contains(".md"), "Must not leak file extension in path");
+
+        // 2. handle_create_memory
+        let create_mem_res = server
+            .handle_create_memory(&json!({
+                "title": "Memory Without Path Leak",
+                "body": "Memory body"
+            }))
+            .unwrap();
+        let mem_text: String = create_mem_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert!(mem_text.starts_with("Memory created: "));
+        assert!(!mem_text.contains(root_str), "Must not leak root path");
+        assert!(!mem_text.contains(".md"), "Must not leak file extension in path");
+
+        // 3. handle_delete_document
+        // First create a doc to delete
+        let _del_target_res = server
+            .handle_create_document(&json!({
+                "title": "Doc To Delete",
+                "type": "note",
+                "id": "note-todelete"
+            }))
+            .unwrap();
+        let del_res = server
+            .handle_delete_document(&json!({
+                "id": "note-todelete"
+            }))
+            .unwrap();
+        let del_text: String = del_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert_eq!(del_text, "Deleted: Doc To Delete (`note-todelete`)");
+        assert!(!del_text.contains(root_str), "Must not leak root path");
+
+        // 4. handle_decompose_task
+        let parent_res = server
+            .handle_create_task(&json!({
+                "title": "Parent For Decompose",
+                "type": "task",
+                "project": "proj-alpha",
+                "parent": "proj-alpha",
+                "allow_missing_parent": true,
+            }))
+            .unwrap();
+        let parent_text: String = parent_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        let parent_val: serde_json::Value = serde_json::from_str(&parent_text).unwrap();
+        let parent_id = parent_val.get("id").unwrap().as_str().unwrap();
+
+        let decomp_res = server
+            .handle_decompose_task(&json!({
+                "parent_id": parent_id,
+                "subtasks": [
+                    { "title": "Subtask 1", "type": "task" },
+                    { "title": "Subtask 2", "type": "task" }
+                ]
+            }))
+            .unwrap();
+        let decomp_text: String = decomp_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert!(!decomp_text.contains(root_str), "Must not leak root path");
+        assert!(!decomp_text.contains(".md"), "Must not leak .md extension");
+
+        // 5. handle_sync_excalidraw created_nodes output shape
+        let dummy_canvas = json!({
+            "type": "excalidraw",
+            "version": 2,
+            "source": "https://excalidraw.com",
+            "elements": [],
+            "appState": { "viewBackgroundColor": "#ffffff", "gridSize": null },
+            "files": {}
+        });
+        let sync_res = server
+            .handle_sync_excalidraw(&json!({
+                "canvas": dummy_canvas.to_string(),
+                "dry_run": false
+            }))
+            .unwrap();
+        let sync_text: String = sync_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert!(!sync_text.contains(root_str), "Must not leak root path");
+        assert!(!sync_text.contains("\"path\":"), "Must not leak path key in created_nodes");
+
+        // 6. get_document file not found error does not leak path
+        let get_doc_err = server
+            .handle_get_document(&json!({ "id": "non-existent-id" }))
+            .unwrap_err();
+        assert!(!get_doc_err.message.contains(root_str));
+        assert!(!get_doc_err.message.contains("/"));
+
+        // 7. get_task file not found error does not leak path
+        let get_task_err = server
+            .handle_get_task(&json!({ "id": "non-existent-task" }))
+            .unwrap_err();
+        assert!(!get_task_err.message.contains(root_str));
+        assert!(!get_task_err.message.contains("/"));
+    }

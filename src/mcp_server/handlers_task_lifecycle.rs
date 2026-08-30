@@ -248,7 +248,12 @@ impl PkbSearchServer {
         let instance_id = instance_path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| instance_path.display().to_string());
+            .unwrap_or_else(|| {
+                instance_path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            });
 
         let get_args = serde_json::json!({ "id": instance_id });
         self.handle_get_task(&get_args).map_err(|e| McpError {
@@ -1413,7 +1418,7 @@ impl PkbSearchServer {
             });
         }
 
-        let mut created: Vec<(String, String)> = Vec::new();
+        let mut created: Vec<(String, String, PathBuf)> = Vec::new();
         static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
             regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").expect("valid static regex")
         });
@@ -1554,14 +1559,17 @@ impl PkbSearchServer {
                         .unwrap_or_else(|| stem.to_string())
                 })
                 .unwrap_or_default();
-            created.push((id_str, path.display().to_string()));
+            let filename = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            created.push((id_str, filename, path));
         }
 
         let mut docs = Vec::new();
         let mut failed = false;
-        for (_id_str, path_str) in &created {
-            let path = std::path::PathBuf::from(path_str);
-            if let Some(doc) = crate::pkb::parse_file_relative(&path, &self.pkb_root) {
+        for (_id_str, _filename, path) in &created {
+            if let Some(doc) = crate::pkb::parse_file_relative(path, &self.pkb_root) {
                 docs.push(doc);
             } else {
                 tracing::warn!(
@@ -1584,8 +1592,8 @@ impl PkbSearchServer {
             "**Created {} subtasks under `{parent_id}`:**\n\n",
             created.len()
         );
-        for (id_str, path) in &created {
-            output.push_str(&format!("- `{id_str}` — `{path}`\n"));
+        for (id_str, filename, _path) in &created {
+            output.push_str(&format!("- `{id_str}` — `{filename}`\n"));
         }
 
         if severity_warning {
