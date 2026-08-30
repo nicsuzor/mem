@@ -164,21 +164,28 @@ pub enum PreparedUpsert {
 
 /// Legacy vector store snapshot used for 1-step backwards compatibility migration.
 ///
+/// See `specs/pkb-server-spec.md` § Vector Store (Persisted Format & Schema Evolution Policy)
+/// for the authoritative format evolution policy.
+///
 /// **Schema Migration Protocol**:
 /// Because `bincode` is a positional binary format, adding, removing, or reordering fields in
 /// [`DocumentEntry`] breaks binary deserialization of existing vector stores on disk.
 ///
-/// When making a breaking structural change to [`DocumentEntry`]:
-/// 1. `OldDocumentEntry` must snapshot the **previous** `DocumentEntry` schema before your change.
-/// 2. `VectorStore::load_or_create` will fail the primary [`VectorStore`] deserialization and fall back
-///    to `OldVectorStore`, mapping salvaged fields into the new `DocumentEntry` schema.
+/// The default disposition on a format break is discard-and-reindex. Where a legacy migration
+/// pathway is maintained (like [`OldVectorStore`]):
+/// 1. `OldDocumentEntry` snapshots the previous `DocumentEntry` schema.
+/// 2. `VectorStore::load_or_create` falls back to `OldVectorStore` on primary decode failure,
+///    verifies matching embedding dimension, maps salvaged fields into the new schema, and
+///    persists the upgraded store to disk.
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
 struct OldVectorStore {
     documents: HashMap<String, OldDocumentEntry>,
     dimension: usize,
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
 struct OldDocumentEntry {
     #[serde(with = "path_serde")]
     path: PathBuf,
@@ -428,37 +435,52 @@ impl VectorStore {
                 Err(e) => {
                     tracing::info!("Failed to deserialize vector store as new schema ({e}). Attempting legacy migration...");
                     if let Ok(old_store) = bincode::deserialize::<OldVectorStore>(&data) {
-                        tracing::info!(
-                            "Successfully migrated vector DB from legacy format. Salvaged {} documents.",
-                            old_store.documents.len()
-                        );
-                        let mut new_store = Self::new(old_store.dimension);
-                        for (key, old_entry) in old_store.documents {
-                            new_store.documents.insert(
-                                key,
-                                DocumentEntry {
-                                    path: old_entry.path,
-                                    title: old_entry.title,
-                                    doc_type: old_entry.doc_type,
-                                    status: old_entry.status,
-                                    tags: old_entry.tags,
-                                    id: old_entry.id,
-                                    date: old_entry.date,
-                                    consolidated: None, // New fields initialized
-                                    consolidated_at: None, // New fields initialized
-                                    modified: old_entry.modified,
-                                    confidence: old_entry.confidence,
-                                    content_hash: old_entry.content_hash,
-                                    file_hash: old_entry.file_hash,
-                                    body_hash: old_entry.body_hash,
-                                    chunk_embeddings: old_entry.chunk_embeddings,
-                                    chunk_texts: old_entry.chunk_texts,
-                                    body_chunks: old_entry.body_chunks,
-                                },
+                        if old_store.dimension != dimension {
+                            tracing::warn!(
+                                "Vector store dimension mismatch in legacy store: stored={}, expected={}. \
+                                 Creating fresh store (full reindex required).",
+                                old_store.dimension,
+                                dimension
                             );
+                            Self::new(dimension)
+                        } else {
+                            tracing::info!(
+                                "Successfully migrated vector DB from legacy format. Salvaged {} documents.",
+                                old_store.documents.len()
+                            );
+                            let mut new_store = Self::new(dimension);
+                            for (key, old_entry) in old_store.documents {
+                                new_store.documents.insert(
+                                    key,
+                                    DocumentEntry {
+                                        path: old_entry.path,
+                                        title: old_entry.title,
+                                        doc_type: old_entry.doc_type,
+                                        status: old_entry.status,
+                                        tags: old_entry.tags,
+                                        id: old_entry.id,
+                                        date: old_entry.date,
+                                        consolidated: None, // New fields initialized
+                                        consolidated_at: None, // New fields initialized
+                                        modified: old_entry.modified,
+                                        confidence: old_entry.confidence,
+                                        content_hash: old_entry.content_hash,
+                                        file_hash: old_entry.file_hash,
+                                        body_hash: old_entry.body_hash,
+                                        chunk_embeddings: old_entry.chunk_embeddings,
+                                        chunk_texts: old_entry.chunk_texts,
+                                        body_chunks: old_entry.body_chunks,
+                                    },
+                                );
+                            }
+
+                            // Persist the migrated store immediately so subsequent runs do not re-migrate
+                            if let Err(e) = new_store.save(path) {
+                                tracing::warn!("Failed to persist migrated vector store to {path:?}: {e}");
+                            }
+
+                            new_store
                         }
-                        
-                        new_store
                     } else {
                         tracing::warn!("Failed to deserialize vector store entirely: {e}. Creating new.");
                         Self::new(dimension)
@@ -2117,5 +2139,95 @@ mod tests {
         let loaded = VectorStore::load_or_create(&db_path, 3).unwrap();
         assert_eq!(loaded.get_entry("t1").unwrap().title, "T1 Final");
         assert_eq!(loaded.get_entry("t1").unwrap().status.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn test_legacy_store_migration_and_dimension_check() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let legacy_fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/legacy_v1_store.bin");
+
+        // 1. Verify the checked-in fixture exists on disk
+        assert!(
+            legacy_fixture_path.exists(),
+            "checked-in legacy vector store fixture must exist at {}",
+            legacy_fixture_path.display()
+        );
+
+        let fixture_bytes = std::fs::read(&legacy_fixture_path).unwrap();
+
+        // 2. Primary VectorStore deserialize MUST fail because fixture is in pre-break layout
+        // (missing consolidated/consolidated_at fields)
+        let primary_result = bincode::deserialize::<VectorStore>(&fixture_bytes);
+        assert!(
+            primary_result.is_err(),
+            "Primary VectorStore deserialize must fail on legacy fixture binary"
+        );
+
+        // 3. Fallback OldVectorStore deserialize MUST succeed
+        let legacy_result = bincode::deserialize::<OldVectorStore>(&fixture_bytes);
+        assert!(
+            legacy_result.is_ok(),
+            "OldVectorStore deserialize must succeed on legacy fixture binary"
+        );
+
+        // 4. Test load_or_create with matching dimension (3):
+        // Copy fixture to a temp location so we can test loading and in-place save
+        let test_db_path = dir.path().join("pkb_vectors.bin");
+        std::fs::write(&test_db_path, &fixture_bytes).unwrap();
+
+        let migrated = VectorStore::load_or_create(&test_db_path, 3).unwrap();
+        assert_eq!(migrated.dimension, 3);
+        assert_eq!(migrated.len(), 2);
+
+        let doc1 = migrated.get_entry("legacy-task-1").expect("legacy-task-1 present");
+        assert_eq!(doc1.title, "Legacy Task 1");
+        assert_eq!(doc1.doc_type.as_deref(), Some("task"));
+        assert_eq!(doc1.status.as_deref(), Some("active"));
+        assert_eq!(doc1.tags, vec!["legacy", "vectordb"]);
+        assert_eq!(doc1.consolidated, None);
+        assert_eq!(doc1.consolidated_at, None);
+        assert_eq!(doc1.chunk_embeddings, vec![vec![1.0, 0.0, 0.0]]);
+
+        let doc2 = migrated.get_entry("legacy-note-2").expect("legacy-note-2 present");
+        assert_eq!(doc2.title, "Legacy Note 2");
+        assert_eq!(doc2.doc_type.as_deref(), Some("note"));
+        assert_eq!(doc2.status, None);
+        assert_eq!(doc2.tags, vec!["notes"]);
+        assert_eq!(doc2.consolidated, None);
+        assert_eq!(doc2.consolidated_at, None);
+        assert_eq!(doc2.chunk_embeddings, vec![vec![0.0, 1.0, 0.0]]);
+
+        // 5. Verify the migrated store was persisted in the new VectorStore schema format:
+        // Reading the file now MUST deserialize cleanly as VectorStore directly
+        let persisted_bytes = std::fs::read(&test_db_path).unwrap();
+        let reload_as_new = bincode::deserialize::<VectorStore>(&persisted_bytes);
+        assert!(
+            reload_as_new.is_ok(),
+            "Persisted vector store must cleanly deserialize as new VectorStore schema without migration fallback"
+        );
+
+        // 6. Test dimension mismatch on legacy store (expected 1024, legacy is 3):
+        let mismatch_db_path = dir.path().join("pkb_vectors_mismatch.bin");
+        std::fs::write(&mismatch_db_path, &fixture_bytes).unwrap();
+
+        let mismatch_store = VectorStore::load_or_create(&mismatch_db_path, 1024).unwrap();
+        assert_eq!(mismatch_store.dimension, 1024);
+        assert!(
+            mismatch_store.is_empty(),
+            "Dimension mismatch in legacy store must discard and create fresh empty store"
+        );
+
+        // 7. Test corrupted store bytes (neither VectorStore nor OldVectorStore):
+        let corrupt_db_path = dir.path().join("pkb_vectors_corrupt.bin");
+        std::fs::write(&corrupt_db_path, &[0xFF, 0xFE, 0xFD, 0xFC, 0x00, 0x01]).unwrap();
+
+        let corrupt_store = VectorStore::load_or_create(&corrupt_db_path, 3).unwrap();
+        assert_eq!(corrupt_store.dimension, 3);
+        assert!(
+            corrupt_store.is_empty(),
+            "Corrupted binary must discard and create fresh empty store"
+        );
     }
 }
