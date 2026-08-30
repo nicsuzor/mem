@@ -2959,7 +2959,7 @@ Body.\n",
         let task_file = root.join("task-11223344.md");
         std::fs::write(
             &task_file,
-            "---\nid: task-11223344\ntitle: Test Alias\ntype: task\nstatus: ready\nparent: goal-11223344\nproject: academicOps\n---\n\nBody.\n",
+            "---\nid: task-11223344\ntitle: Test Alias\ntype: task\nstatus: ready\nparent: goal-11223344\nproject: academicOps\n---\n\nBody.\n\n## Acceptance criteria\n- Verified\n",
         )
         .unwrap();
 
@@ -3017,7 +3017,7 @@ Body.\n",
         let task_file = root.join("task-11223355.md");
         std::fs::write(
             &task_file,
-            "---\nid: task-11223355\ntitle: Test Unreg\ntype: task\nstatus: ready\nparent: goal-11223355\nproject: non-existent-project\n---\n\nBody.\n",
+            "---\nid: task-11223355\ntitle: Test Unreg\ntype: task\nstatus: ready\nparent: goal-11223355\nproject: non-existent-project\n---\n\nBody.\n\n## Acceptance criteria\n- Verified\n",
         )
         .unwrap();
 

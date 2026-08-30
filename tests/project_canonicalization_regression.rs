@@ -284,7 +284,7 @@ fn test_regression_reproduce_split_from_hand_written_variant_and_lint_fix() {
     // Node 1: stored cleanly as canonical `aops`
     fs::write(
         root.join("tasks/aops-11111111.md"),
-        "---\nid: aops-11111111\ntitle: Canonical Task\ntype: task\nstatus: ready\nparent: epic-12345678\nproject: aops\n---\n\nBody.\n",
+        "---\nid: aops-11111111\ntitle: Canonical Task\ntype: task\nstatus: ready\nparent: epic-12345678\nproject: aops\n---\n\nBody.\n\n## Acceptance criteria\n- Verified\n",
     )
     .unwrap();
 
@@ -292,7 +292,7 @@ fn test_regression_reproduce_split_from_hand_written_variant_and_lint_fix() {
     let variant_file = root.join("tasks/aops-22222222.md");
     fs::write(
         &variant_file,
-        "---\nid: aops-22222222\ntitle: Variant Task\ntype: task\nstatus: ready\nparent: epic-12345678\nproject: academicOps\n---\n\nBody.\n",
+        "---\nid: aops-22222222\ntitle: Variant Task\ntype: task\nstatus: ready\nparent: epic-12345678\nproject: academicOps\n---\n\nBody.\n\n## Acceptance criteria\n- Verified\n",
     )
     .unwrap();
 
