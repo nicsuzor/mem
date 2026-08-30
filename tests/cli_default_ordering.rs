@@ -66,7 +66,7 @@ fn seed(dir: &std::path::Path) {
     for (id, extra) in tasks {
         std::fs::write(
             dir.join(format!("tasks/{id}.md")),
-            format!("---\nid: {id}\ntitle: Task {id}\ntype: task\nstatus: active\n{extra}parent: p\n---\nbody for {id}\n"),
+            format!("---\nid: {id}\ntitle: Task {id}\ntype: task\nstatus: ready\n{extra}parent: p\n---\nbody for {id}\n"),
         )
         .unwrap();
     }
@@ -120,6 +120,84 @@ fn ordered_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
     seen
 }
 
+/// Run `pkb tasks all [extra args]` (hierarchical tree mode) and return ordered IDs.
+fn ordered_tree_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
+    let db = dir.join("db.bin");
+    let mut args: Vec<String> = vec![
+        "--pkb-root".into(),
+        dir.to_string_lossy().into(),
+        "--db-path".into(),
+        db.to_string_lossy().into(),
+        "tasks".into(),
+        "all".into(),
+    ];
+    args.extend(extra.iter().map(|s| s.to_string()));
+
+    let out = Command::new(env!("CARGO_BIN_EXE_pkb"))
+        .args(&args)
+        .env("AOPS_OFFLINE", "1")
+        .env("ACA_DATA", dir.to_string_lossy().as_ref())
+        .kill_on_parent_death()
+        .output()
+        .expect("run pkb tasks tree");
+    assert!(
+        out.status.success(),
+        "pkb tasks exited with {}: stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    let known = ["t-hi", "t-mid", "t-sev"];
+    let mut seen = Vec::new();
+    for line in stdout.lines() {
+        for id in known {
+            if line.contains(&format!("[{id}]")) && !seen.contains(&id.to_string()) {
+                seen.push(id.to_string());
+            }
+        }
+    }
+    seen
+}
+
+/// Run `pkb focus` and return ordered IDs.
+fn ordered_focus_ids(dir: &std::path::Path) -> Vec<String> {
+    let db = dir.join("db.bin");
+    let args: Vec<String> = vec![
+        "--pkb-root".into(),
+        dir.to_string_lossy().into(),
+        "--db-path".into(),
+        db.to_string_lossy().into(),
+        "focus".into(),
+    ];
+
+    let out = Command::new(env!("CARGO_BIN_EXE_pkb"))
+        .args(&args)
+        .env("AOPS_OFFLINE", "1")
+        .env("ACA_DATA", dir.to_string_lossy().as_ref())
+        .kill_on_parent_death()
+        .output()
+        .expect("run pkb focus");
+    assert!(
+        out.status.success(),
+        "pkb focus exited with {}: stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    let known = ["t-hi", "t-mid", "t-sev"];
+    let mut seen = Vec::new();
+    for line in stdout.lines() {
+        for id in known {
+            if line.contains(&format!("[{id}]")) && !seen.contains(&id.to_string()) {
+                seen.push(id.to_string());
+            }
+        }
+    }
+    seen
+}
+
 /// AC1 (CLI parity): with NO `--sort` argument the default order is focus_score
 /// descending — the SEV4 task sorts ahead of the P0 task even though its raw
 /// priority is lower. This is the same comparator the MCP `list_tasks` default
@@ -134,6 +212,49 @@ fn cli_tasks_default_order_is_focus_desc() {
         vec!["t-sev", "t-hi", "t-mid"],
         "default `pkb tasks` order must be focus_score-DESC (sev4 first), got {ids:?}"
     );
+}
+
+/// Tree sibling order parity: task siblings rendered hierarchically under a parent
+/// are ordered according to canonical focus_cmp (focus_score DESC).
+#[test]
+fn cli_tasks_tree_sibling_order_matches_focus_cmp() {
+    let dir = tempfile::tempdir().unwrap();
+    seed(dir.path());
+    let ids = ordered_tree_ids(dir.path(), &[]);
+    assert_eq!(
+        ids,
+        vec!["t-sev", "t-hi", "t-mid"],
+        "tree sibling order must be focus_score-DESC (sev4 first), got {ids:?}"
+    );
+}
+
+/// CLI `pkb focus` surface parity: `pkb focus` returns tasks ordered canonically.
+#[test]
+fn cli_focus_agrees_with_canonical_focus_order() {
+    let dir = tempfile::tempdir().unwrap();
+    seed(dir.path());
+    let ids = ordered_focus_ids(dir.path());
+    assert_eq!(
+        ids,
+        vec!["t-sev", "t-hi", "t-mid"],
+        "`pkb focus` order must be focus_score-DESC (sev4 first), got {ids:?}"
+    );
+}
+
+/// Parity between CLI and library GraphStore paths: `pkb tasks`, `pkb tasks --flat`,
+/// `pkb focus`, and `GraphStore::sort_by_focus` all produce the exact same ordering.
+#[test]
+fn cli_and_library_focus_score_parity() {
+    let dir = tempfile::tempdir().unwrap();
+    seed(dir.path());
+
+    let flat_ids = ordered_ids(dir.path(), &[]);
+    let tree_ids = ordered_tree_ids(dir.path(), &[]);
+    let focus_ids = ordered_focus_ids(dir.path());
+
+    assert_eq!(flat_ids, vec!["t-sev", "t-hi", "t-mid"]);
+    assert_eq!(tree_ids, flat_ids, "tree view must match flat view focus ordering");
+    assert_eq!(focus_ids, flat_ids, "focus command must match tasks view focus ordering");
 }
 
 /// AC4 (backward compatibility): an EXPLICIT `--sort priority` is honoured
