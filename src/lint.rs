@@ -1139,6 +1139,39 @@ fn remove_key_from_frontmatter(fm_text: &str, target_key: &str) -> String {
     lines.join("\n")
 }
 
+/// Replace a non-canonical project alias in YAML frontmatter with the canonical slug.
+fn fix_project_alias(content: &str, old_proj: &str, new_proj: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut in_fm = false;
+    let mut replaced = false;
+    for line in content.lines() {
+        if line.trim() == "---" {
+            in_fm = !in_fm;
+            lines.push(line.to_string());
+            continue;
+        }
+        if in_fm && !replaced {
+            let trimmed = line.trim();
+            if trimmed.starts_with("project:") {
+                let val_part = trimmed.strip_prefix("project:").unwrap().trim();
+                let stripped_val = val_part.trim_matches(|c| c == '"' || c == '\'');
+                if stripped_val == old_proj {
+                    let indent = line.len() - line.trim_start().len();
+                    lines.push(format!("{:indent$}project: {}", "", new_proj, indent = indent));
+                    replaced = true;
+                    continue;
+                }
+            }
+        }
+        lines.push(line.to_string());
+    }
+    let mut res = lines.join("\n");
+    if content.ends_with('\n') {
+        res.push('\n');
+    }
+    res
+}
+
 /// Apply fixes surgically — line-level edits only, preserving key order and formatting.
 fn apply_fixes(
     content: &str,
@@ -1747,7 +1780,10 @@ pub fn lint_directory(
     // builtin slug). The registry is loaded once for the whole run; when no
     // polecat.yaml is locatable, non-builtin values are flagged (mem cannot
     // vouch for a slug it cannot check — same rule the write paths enforce).
-    let project_slug_diags: HashMap<PathBuf, Diagnostic> = {
+    let (project_slug_diags, project_alias_fixes): (
+        HashMap<PathBuf, Diagnostic>,
+        HashMap<PathBuf, (String, String)>,
+    ) = {
         let registry = match crate::polecat_config::PolecatRegistry::load(pkb_root) {
             Ok(r) => r,
             Err(e) => {
@@ -1755,7 +1791,10 @@ pub fn lint_directory(
                 None
             }
         };
-        files
+        let mut diags_map = HashMap::new();
+        let mut fixes_map = HashMap::new();
+
+        let entries: Vec<(PathBuf, Diagnostic, Option<(String, String)>)> = files
             .par_iter()
             .filter_map(|p| {
                 let content = std::fs::read_to_string(p).ok()?;
@@ -1770,7 +1809,26 @@ pub fn lint_directory(
                     return None;
                 }
                 match crate::polecat_config::resolve_with(registry.as_ref(), project_val) {
-                    Ok(_) => None,
+                    Ok(canonical) => {
+                        if canonical != project_val {
+                            Some((
+                                p.clone(),
+                                Diagnostic {
+                                    severity: Severity::Style,
+                                    rule: "fm-project-alias",
+                                    message: format!(
+                                        "Project '{}' should be canonical '{}'",
+                                        project_val, canonical
+                                    ),
+                                    line: None,
+                                    fixable: true,
+                                },
+                                Some((project_val.to_string(), canonical)),
+                            ))
+                        } else {
+                            None
+                        }
+                    }
                     Err(e) => Some((
                         p.clone(),
                         Diagnostic {
@@ -1780,10 +1838,19 @@ pub fn lint_directory(
                             line: None,
                             fixable: false,
                         },
+                        None,
                     )),
                 }
             })
-            .collect()
+            .collect();
+
+        for (path, diag, fix_info) in entries {
+            diags_map.insert(path.clone(), diag);
+            if let Some(fix_pair) = fix_info {
+                fixes_map.insert(path, fix_pair);
+            }
+        }
+        (diags_map, fixes_map)
     };
 
     // Pre-fix pass: collect ID renames needed (old_id → new_id) before per-file fixes
@@ -1845,6 +1912,18 @@ pub fn lint_directory(
         }
         if let Some(diag) = project_slug_diags.get(&r.path) {
             r.diagnostics.push(diag.clone());
+        }
+        if fix {
+            if let Some((old_proj, new_proj)) = project_alias_fixes.get(&r.path) {
+                let base_content = match r.fixed_content.as_deref() {
+                    Some(s) => s.to_string(),
+                    None => std::fs::read_to_string(&r.path).unwrap_or_default(),
+                };
+                let fixed = fix_project_alias(&base_content, old_proj, new_proj);
+                if fixed != base_content || r.fixed_content.is_some() {
+                    r.fixed_content = Some(fixed);
+                }
+            }
         }
     }
 
@@ -1946,7 +2025,9 @@ pub fn lint_directory(
                 r.diagnostics.push(diag.clone());
             }
             if let Some(diag) = project_slug_diags.get(&r.path) {
-                r.diagnostics.push(diag.clone());
+                if diag.rule != "fm-project-alias" || !project_alias_fixes.contains_key(&r.path) {
+                    r.diagnostics.push(diag.clone());
+                }
             }
         }
         let summary = LintSummary::from_results(&results);
@@ -2845,5 +2926,115 @@ Body.\n",
             !diags.iter().any(|d| d.rule == "fm-block-scalar-whitespace"),
             "should not flag a block scalar with no leading blank lines, got: {diags:?}"
         );
+    }
+
+    #[test]
+    fn test_lint_directory_flags_and_fixes_project_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("polecat.yaml"),
+            "projects:\n  aops:\n    aliases: [academicOps, acaops]\nproject_aliases:\n  ao: aops\n",
+        )
+        .unwrap();
+
+        let goal_file = root.join("goal-11223344.md");
+        std::fs::write(
+            &goal_file,
+            "---\nid: goal-11223344\ntitle: Root Goal\ntype: goal\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
+        )
+        .unwrap();
+
+        let task_file = root.join("task-11223344.md");
+        std::fs::write(
+            &task_file,
+            "---\nid: task-11223344\ntitle: Test Alias\ntype: task\nstatus: ready\nparent: goal-11223344\nproject: academicOps\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        // 1. Lint without fix: should flag fm-project-alias
+        let (results, summary) = lint_directory(root, false, false);
+        assert_eq!(summary.files_with_issues, 1);
+        let task_res = results.iter().find(|r| r.path == task_file).unwrap();
+        assert!(
+            task_res
+                .diagnostics
+                .iter()
+                .any(|d| d.rule == "fm-project-alias"
+                    && d.message.contains("Project 'academicOps' should be canonical 'aops'")),
+            "expected fm-project-alias diagnostic, got: {:?}",
+            task_res.diagnostics
+        );
+
+        // 2. Lint with fix: should produce fixed content and fix file
+        let (results_fix, _) = lint_directory(root, true, false);
+        let written = write_fixes(&results_fix);
+        assert_eq!(written, 1);
+
+        let content_after = std::fs::read_to_string(&task_file).unwrap();
+        assert!(
+            content_after.contains("project: aops"),
+            "project should be canonicalized to 'aops', got:\n{content_after}"
+        );
+        assert!(
+            !content_after.contains("academicOps"),
+            "academicOps should be replaced, got:\n{content_after}"
+        );
+
+        // 3. Post-fix lint should have 0 issues
+        let (_, clean_summary) = lint_directory(root, false, false);
+        assert_eq!(clean_summary.files_with_issues, 0);
+    }
+
+    #[test]
+    fn test_lint_directory_flags_unregistered_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("polecat.yaml"),
+            "projects:\n  aops: {}\n",
+        )
+        .unwrap();
+
+        let goal_file = root.join("goal-11223355.md");
+        std::fs::write(
+            &goal_file,
+            "---\nid: goal-11223355\ntitle: Root Goal\ntype: goal\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
+        )
+        .unwrap();
+
+        let task_file = root.join("task-11223355.md");
+        std::fs::write(
+            &task_file,
+            "---\nid: task-11223355\ntitle: Test Unreg\ntype: task\nstatus: ready\nparent: goal-11223355\nproject: non-existent-project\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let (results, summary) = lint_directory(root, false, false);
+        assert_eq!(summary.files_with_issues, 1);
+        let task_res = results.iter().find(|r| r.path == task_file).unwrap();
+        assert!(
+            task_res
+                .diagnostics
+                .iter()
+                .any(|d| d.rule == "fm-unregistered-project"),
+            "expected fm-unregistered-project diagnostic, got: {:?}",
+            task_res.diagnostics
+        );
+    }
+
+    #[test]
+    fn test_fix_project_alias_quoted_and_unquoted() {
+        let content1 = "---\nid: t1\nproject: \"academicOps\"\ntitle: T1\n---\n\nBody\n";
+        let fixed1 = fix_project_alias(content1, "academicOps", "aops");
+        assert_eq!(fixed1, "---\nid: t1\nproject: aops\ntitle: T1\n---\n\nBody\n");
+
+        let content2 = "---\nid: t2\nproject: 'academicOps'\ntitle: T2\n---\n\nBody\n";
+        let fixed2 = fix_project_alias(content2, "academicOps", "aops");
+        assert_eq!(fixed2, "---\nid: t2\nproject: aops\ntitle: T2\n---\n\nBody\n");
+
+        let content3 = "---\nid: t3\nproject: academicOps\ntitle: T3\n---\n\nBody\n";
+        let fixed3 = fix_project_alias(content3, "academicOps", "aops");
+        assert_eq!(fixed3, "---\nid: t3\nproject: aops\ntitle: T3\n---\n\nBody\n");
     }
 }
