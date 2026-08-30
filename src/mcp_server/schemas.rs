@@ -835,7 +835,9 @@ impl PkbSearchServer {
                 "Get high-level dashboard metrics: counts of 'ready' vs 'blocked' tasks, and priority breakdowns. Use for situational awareness.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
-                    "properties": {}
+                    "properties": {
+                        "project": { "type": "string", "description": "Filter summary to a specific project slug or polecat.yaml alias (case-insensitive)" }
+                    }
                 }))
                 .unwrap(),
             )
