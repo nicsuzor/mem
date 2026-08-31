@@ -13,6 +13,7 @@ use super::{PkbSearchServer, ReindexStatus, MAX_RESULTS, DRY_RUN_WARNING};
 
 impl PkbSearchServer {
     pub(crate) fn handle_get_network_metrics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -56,6 +57,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_top_n_by_metric(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let metric = args
             .get("metric")
             .and_then(|v| v.as_str())
@@ -350,6 +352,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_graph_json(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let graph = self.graph.read();
         let json = graph.output_json().map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -361,6 +364,7 @@ impl PkbSearchServer {
     }
 
     pub fn handle_graph_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let node_id = args.get("node_id").and_then(|v| v.as_str());
         let hops = args
             .get("hops")
@@ -378,6 +382,7 @@ impl PkbSearchServer {
     }
 
     pub fn handle_export_graph(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let focus = args.get("focus").and_then(|v| v.as_str());
         let max_depth = args
             .get("max_depth")
@@ -396,6 +401,7 @@ impl PkbSearchServer {
     }
 
     pub fn handle_diff_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let canvas_str = args
             .get("canvas")
             .and_then(|v| v.as_str())
@@ -552,6 +558,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_graph_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let graph = self.graph.read();
         let stats = crate::batch_ops::stats::graph_stats(&graph);
         drop(graph);
@@ -564,6 +571,7 @@ impl PkbSearchServer {
         &self,
         args: &JsonValue,
     ) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let threshold_days = args
             .get("threshold_days")
             .and_then(|v| v.as_i64())
@@ -866,6 +874,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_get_consolidation_cluster(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let seed_id = args.get("seed_id").and_then(|v| v.as_str());
         let max_nodes = args.get("max_nodes").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
         let vector_top_k = args.get("vector_top_k").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
