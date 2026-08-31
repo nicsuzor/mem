@@ -57,6 +57,7 @@ pub struct ReindexStatus {
 pub struct PkbSearchServer {
     pub(crate) store: Arc<RwLock<VectorStore>>,
     pub(crate) embedder: Arc<Embedder>,
+    pub(crate) reranker: Arc<crate::rerank::CrossEncoderReranker>,
     pub(crate) pkb_root: PathBuf,
     pub(crate) db_path: PathBuf,
     pub(crate) graph: Arc<RwLock<GraphStore>>,
@@ -140,9 +141,13 @@ impl PkbSearchServer {
         db_path: PathBuf,
         graph: Arc<RwLock<GraphStore>>,
     ) -> Self {
+        let reranker = Arc::new(crate::rerank::CrossEncoderReranker::new(
+            crate::rerank::RerankerConfig::default(),
+        ));
         Self {
             store,
             embedder,
+            reranker,
             pkb_root,
             db_path,
             graph,
