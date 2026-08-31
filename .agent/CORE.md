@@ -120,6 +120,9 @@ Single-doc CRUD operations patch the graph in place on the request thread and de
 
 Bulk paths (`rebuild_graph()`, batch finalize, reindex) still run the full synchronous pipeline. The graph is **in-memory only** — it does not persist; it is reconstructed at startup via `GraphStore::build_from_directory` (~300 ms for a typical PKB). Only the vector store persists to `{db_path}` (bincode) plus `{db_path}.lock` for the cross-process advisory lock.
 
+### Self-invalidating graph cache (validate-on-read)
+Read paths automatically validate the cached in-memory graph against on-disk state via `ensure_graph_fresh()` (`mem_65c8e8fe` / `mem_3c018681`). A fast stat-only scan (`scan_generation()`, ~32–45ms for 8,000 files) computes the current disk `GenerationStamp` (file count + max mtime). If an external write occurred (git-sync sidecar pull, CLI mutation, or direct editor change), the mismatch triggers an automatic in-place graph rebuild (`rebuild_graph()`) before the read executes. `refresh_graph` remains available as an explicit escape hatch.
+
 ### Flexible ID resolution
 `GraphStore::resolve(query)` tries: exact ID match -> case-insensitive resolution map (id, task_id, filename stem, title, permalink). Used by most task/document tools.
 

@@ -100,8 +100,7 @@ The server computes deterministic metrics (counts, depths, degrees). It does NOT
 
 - **Immediate Feedback**: CLI commands (search, tasks, status) respond in <500ms for typical PKBs (<5,000 nodes).
 - **Search Latency**: MCP hybrid search returns results within 2 seconds.
-- **Always Available**: The server is stateless and starts in <1s.
-- **Staleness is signalled, not silent**: the in-memory graph index can disagree with disk (a write from another `pkb mcp` process, or a file synced/edited outside MCP, that this process's graph never observed). `get_task` self-heals a stale-by-id read by reparsing the file and patching the graph in place before responding. `list_tasks`/`task_summary` cannot self-heal a *missing* node the same way (they'd need a full directory walk per call to know what they're missing), so they instead compare the disk file count against the in-memory node count and attach an `index_warning` (JSON) or a `WARNING:` line (markdown) when they disagree, naming `refresh_graph` as the fix. A result with no warning is not a disk-truth guarantee for every field (derived metrics like `focus_score`/`downstream_weight` still lag the coalesced background rebuild by design — see `mem` `CORE.md`), but membership and `status` are no longer silently wrong.
+- **Self-invalidating graph index (validate-on-read)**: the in-memory graph index validates on-disk freshness against a fast stat-only generation stamp (`file_count` + `max_mtime`, ~32–45ms for 8,000 files). If an external write occurs (a write from another `pkb mcp` process, git-sync sidecar, CLI mutation, or direct text edit), read operations (`list_tasks`, `get_task`, `task_search`, `task_summary`, etc.) automatically invalidate and rebuild the graph before responding. `refresh_graph` remains available as an explicit escape hatch but is no longer a precondition for freshness.
 
 ### Data Integrity & Portability
 

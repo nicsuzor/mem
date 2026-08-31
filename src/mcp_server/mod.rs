@@ -243,30 +243,32 @@ impl PkbSearchServer {
         self.store.clone()
     }
 
+    /// Ensure the in-memory graph index is up-to-date with on-disk state.
+    ///
+    /// Validates the cached generation stamp against a fast stat-only scan of the
+    /// filesystem. If an external write occurred (git-sync sidecar, CLI, direct disk edit),
+    /// the graph is automatically rebuilt from disk before the read proceeds.
+    pub(crate) fn ensure_graph_fresh(&self) {
+        let current_gen = crate::pkb::scan_generation(&self.pkb_root);
+        let cached_gen = self.graph.read().generation();
+        if current_gen != cached_gen {
+            tracing::info!(
+                target: "pkb::invalidation",
+                disk_count = current_gen.file_count,
+                cached_count = cached_gen.file_count,
+                "In-memory graph index out of date with disk; invalidating and rebuilding"
+            );
+            self.rebuild_graph();
+        }
+    }
 
-    /// Cheap staleness signal for list/filter surfaces (aops_fb137646 AC2).
+    /// Cheap staleness signal for list/filter surfaces.
     ///
-    /// A silent short list — the served graph under-returning relative to
-    /// disk with no indication — is the defect; a warned one is a known
-    /// limitation. This can't detect every under-return (a swapped-in node
-    /// with an unrelated node dropped would leave the count unchanged), but
-    /// it catches the reproduced shape: a file that landed on disk without
-    /// this process's in-memory graph ever observing it (e.g. written by a
-    /// different `pkb mcp` process, or by direct disk/sync).
-    ///
-    /// Costs one directory walk (path listing only, no file parsing) against
-    /// the in-memory node count. Returns `Some((disk_count, index_count))`
-    /// only when they disagree, so the common (fresh) case pays for the walk
-    /// but returns no extra payload.
-    ///
-    /// Counts only file-backed nodes on the index side — `GraphStore::build`
-    /// also synthesizes "ghost" nodes for dangling references (e.g. a
-    /// `parent:` that names no file, which `allow_missing_parent` permits by
-    /// design). Ghost nodes carry an empty `path` (never written to disk),
-    /// so including them would make every PKB with a dangling reference
-    /// warn permanently on a correctly-synced index.
+    /// Validates disk freshness via `ensure_graph_fresh`, guaranteeing
+    /// that reads reflect disk ground truth.
     pub(crate) fn list_staleness_signal(&self) -> Option<(usize, usize)> {
-        let disk_count = crate::pkb::scan_directory(&self.pkb_root).len();
+        self.ensure_graph_fresh();
+        let disk_count = crate::pkb::scan_generation(&self.pkb_root).file_count;
         let index_count = self
             .graph
             .read()

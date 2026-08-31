@@ -86,6 +86,8 @@ pub struct GraphStore {
     roots: Vec<String>,
     /// Lowercase (id | filename stem | title | permalink) → canonical node ID
     resolution_map: HashMap<String, String>,
+    /// Generation stamp recorded at build/patch time for validate-on-read cache invalidation
+    generation: crate::pkb::GenerationStamp,
 }
 
 /// Document types considered actionable work items in task trees and dashboards.
@@ -548,6 +550,8 @@ impl GraphStore {
         let resolution_map = build_resolution_map(&node_map);
         tracing::debug!(target: "perf::graph_rebuild", phase = "resolution_map", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
+        let generation = crate::pkb::scan_generation(pkb_root);
+
         GraphStore {
             nodes: node_map,
             edges,
@@ -555,12 +559,23 @@ impl GraphStore {
             blocked,
             roots,
             resolution_map,
+            generation,
         }
     }
 
     // -----------------------------------------------------------------------
     // Query API
     // -----------------------------------------------------------------------
+
+    /// Generation stamp recorded at build/patch time.
+    pub fn generation(&self) -> crate::pkb::GenerationStamp {
+        self.generation
+    }
+
+    /// Set generation stamp (e.g. after in-place mutation or sync).
+    pub fn set_generation(&mut self, gen: crate::pkb::GenerationStamp) {
+        self.generation = gen;
+    }
 
     pub fn get_node(&self, id: &str) -> Option<&GraphNode> {
         self.nodes.get(id)
@@ -818,6 +833,7 @@ impl GraphStore {
         claim_weak(&mut self.resolution_map, new_node.label.to_lowercase());
 
         self.nodes.insert(new_node.id.clone(), new_node);
+        self.generation = crate::pkb::scan_generation(pkb_root);
     }
 
     /// Cheap in-place removal. Drops the node from `nodes`; stale edges and

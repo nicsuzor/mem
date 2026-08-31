@@ -550,6 +550,7 @@ impl PkbSearchServer {
     /// *all* non-template nodes instead of falling through to the original
     /// in-place claim. See `mem_e8f3aa17` / `task_9d568b1b`.
     pub(crate) fn handle_get_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -818,6 +819,7 @@ impl PkbSearchServer {
     // =========================================================================
 
     pub(crate) fn handle_get_dependency_tree(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -885,6 +887,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_get_task_children(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let id = args
             .get("id")
             .and_then(|v| v.as_str())

@@ -14,6 +14,7 @@ use super::{PkbSearchServer, MAX_RESULTS};
 
 impl PkbSearchServer {
     pub(crate) fn handle_claim_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let id = args
             .get("id")
             .and_then(|v| v.as_str())

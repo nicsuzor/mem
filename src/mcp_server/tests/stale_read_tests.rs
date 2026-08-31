@@ -160,8 +160,12 @@ fn test_get_task_no_op_when_cache_already_fresh() {
 /// nothing this process's incremental patching would have seen). AC2 says
 /// this must not be a *silent* short list: `list_tasks` must carry a signal
 /// the caller can branch on.
+/// Reproduces Repro A on aops_fb137646 and validates mem_3c018681:
+/// An untracked file lands on disk (external write from git-sync sidecar, CLI,
+/// or direct disk edit). A subsequent `list_tasks` must automatically self-invalidate
+/// and return the new file without requiring `refresh_graph`.
 #[test]
-fn test_list_tasks_warns_when_disk_has_untracked_file() {
+fn test_list_tasks_self_invalidates_and_returns_untracked_file() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("tasks")).unwrap();
@@ -179,10 +183,7 @@ fn test_list_tasks_warns_when_disk_has_untracked_file() {
         Arc::new(RwLock::new(graph)),
     );
 
-    // Seed one task the index *does* know about, through the normal MCP
-    // path, so the post-mismatch list below is non-empty and actually
-    // exercises the JSON `index_warning` field rather than the separate
-    // (also-checked) empty-result path.
+    // Seed one task through normal MCP path
     server
         .handle_create_task(&json!({
             "title": "Tracked task",
@@ -193,7 +194,6 @@ fn test_list_tasks_warns_when_disk_has_untracked_file() {
         }))
         .unwrap();
 
-    // Sanity: disk and index agree at this point, so no warning yet.
     let clean = server
         .handle_list_tasks(&json!({"format": "json", "include_done": true}))
         .unwrap();
@@ -203,18 +203,21 @@ fn test_list_tasks_warns_when_disk_has_untracked_file() {
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
-        !clean_text.contains("index_warning") && !clean_text.contains("WARNING"),
-        "a matching disk and index must not warn: {clean_text}"
+        clean_text.contains("Tracked task"),
+        "initial list must contain tracked task"
     );
 
-    // A second file lands on disk that the in-memory graph never sees (no
-    // create_task call, no refresh_graph — exactly the untracked-write shape).
+    // Sleep briefly so mtime advances
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    // An untracked file lands on disk
     std::fs::write(
         root.join("tasks/untracked-task.md"),
         "---\nid: untracked-task\ntitle: Untracked\ntype: task\nstatus: in_progress\nproject: proj-test\n---\n\nBody.\n",
     )
     .unwrap();
 
+    // With self-invalidation, list_tasks automatically discovers the new file
     let after = server
         .handle_list_tasks(&json!({"format": "json", "include_done": true}))
         .unwrap();
@@ -224,13 +227,11 @@ fn test_list_tasks_warns_when_disk_has_untracked_file() {
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
-        after_text.contains("index_warning"),
-        "list_tasks must warn when disk has a file the index never saw, not \
-         silently return a short list: {after_text}"
+        after_text.contains("untracked-task") && after_text.contains("Untracked"),
+        "list_tasks must automatically self-invalidate and return the untracked file: {after_text}"
     );
 
-    // Markdown format must carry the same signal — the JSON field alone
-    // doesn't help the default (markdown) caller.
+    // Markdown format also discovers the new file
     let after_md = server
         .handle_list_tasks(&json!({"format": "markdown", "include_done": true}))
         .unwrap();
@@ -240,7 +241,76 @@ fn test_list_tasks_warns_when_disk_has_untracked_file() {
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
-        after_md_text.contains("WARNING"),
-        "markdown-format list_tasks must also warn: {after_md_text}"
+        after_md_text.contains("Untracked") && after_md_text.contains("untracked-task"),
+        "markdown list_tasks must return the untracked file: {after_md_text}"
     );
 }
+
+/// Tests same-count node swap (delete 1 file, add 1 file) with self-invalidation.
+#[test]
+fn test_list_tasks_self_invalidates_on_same_count_node_swap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    write_test_polecat_yaml(root);
+
+    let graph = GraphStore::build(&[], root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let db_path = root.join("db");
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        db_path,
+        Arc::new(RwLock::new(graph)),
+    );
+
+    let task1_file = root.join("tasks/task-one.md");
+    std::fs::write(
+        &task1_file,
+        "---\nid: task-one\ntitle: Task One\ntype: task\nstatus: ready\nproject: proj-test\n---\n",
+    )
+    .unwrap();
+
+    let list1 = server
+        .handle_list_tasks(&json!({"format": "json", "include_done": true}))
+        .unwrap();
+    let list1_text = list1
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(list1_text.contains("task-one"));
+
+    // Sleep so mtime advances
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    // Delete task-one and create task-two (total count remains 1)
+    std::fs::remove_file(&task1_file).unwrap();
+    let task2_file = root.join("tasks/task-two.md");
+    std::fs::write(
+        &task2_file,
+        "---\nid: task-two\ntitle: Task Two\ntype: task\nstatus: ready\nproject: proj-test\n---\n",
+    )
+    .unwrap();
+
+    let list2 = server
+        .handle_list_tasks(&json!({"format": "json", "include_done": true}))
+        .unwrap();
+    let list2_text = list2
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+
+    assert!(
+        list2_text.contains("task-two"),
+        "list_tasks must find newly swapped-in node: {list2_text}"
+    );
+    assert!(
+        !list2_text.contains("task-one"),
+        "list_tasks must NOT contain deleted node: {list2_text}"
+    );
+}
+

@@ -250,6 +250,93 @@ pub fn scan_directory(root: &Path) -> Vec<PathBuf> {
     paths
 }
 
+/// Generation stamp representing the on-disk state of markdown files in the PKB.
+///
+/// Used for validate-on-read cache invalidation (mem_65c8e8fe / mem_3c018681).
+/// Detects additions, deletions, renames, and modifications without requiring
+/// a background watcher or full graph rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GenerationStamp {
+    /// Total count of markdown files discovered on disk.
+    pub file_count: usize,
+    /// Maximum filesystem modification timestamp across all markdown files.
+    pub max_mtime: std::time::SystemTime,
+}
+
+impl Default for GenerationStamp {
+    fn default() -> Self {
+        Self {
+            file_count: 0,
+            max_mtime: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+}
+
+impl GenerationStamp {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+}
+
+/// Fast stat-only scan of a directory to compute its GenerationStamp (file count + max mtime).
+///
+/// Bypasses string allocations and full path collections, checking dirent and mtime directly.
+/// Respects hidden and common ignored directories (.git, .obsidian, .venv, node_modules,
+/// .claude, .aops, __pycache__, .agent, .worktrees, target).
+pub fn scan_generation(root: &Path) -> GenerationStamp {
+    let mut file_count = 0;
+    let mut max_mtime = std::time::SystemTime::UNIX_EPOCH;
+
+    fn walk(dir: &Path, file_count: &mut usize, max_mtime: &mut std::time::SystemTime) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return; };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else { continue; };
+            let file_name = entry.file_name();
+            let bytes = file_name.as_encoded_bytes();
+
+            if bytes.starts_with(b".") {
+                continue;
+            }
+
+            if file_type.is_dir() {
+                if matches!(
+                    bytes,
+                    b"node_modules"
+                        | b".venv"
+                        | b"__pycache__"
+                        | b"target"
+                        | b".git"
+                        | b".worktrees"
+                        | b".obsidian"
+                        | b".claude"
+                        | b".agent"
+                        | b".aops"
+                ) {
+                    continue;
+                }
+                walk(&entry.path(), file_count, max_mtime);
+            } else if file_type.is_file() || file_type.is_symlink() {
+                if bytes.ends_with(b".md") {
+                    *file_count += 1;
+                    if let Ok(meta) = entry.metadata() {
+                        if let Ok(mtime) = meta.modified() {
+                            if mtime > *max_mtime {
+                                *max_mtime = mtime;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    walk(root, &mut file_count, &mut max_mtime);
+    GenerationStamp {
+        file_count,
+        max_mtime,
+    }
+}
+
 /// Derive a fallback ID from a file path (filename stem, no extension).
 ///
 /// Used only when reading documents that lack an explicit `id` in frontmatter.
@@ -379,5 +466,41 @@ mod tests {
         assert_eq!(doc.frontmatter, None);
         assert!(doc.body.starts_with("id: x\n"));
     }
+
+    #[test]
+    fn test_scan_generation_detects_mutations_and_swaps() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let stamp0 = scan_generation(root);
+        assert_eq!(stamp0.file_count, 0);
+
+        // Add 2 files
+        let f1 = root.join("doc1.md");
+        let f2 = root.join("doc2.md");
+        std::fs::write(&f1, "---\nid: doc1\n---\n").unwrap();
+        std::fs::write(&f2, "---\nid: doc2\n---\n").unwrap();
+
+        let stamp1 = scan_generation(root);
+        assert_eq!(stamp1.file_count, 2);
+        assert!(stamp1.max_mtime > std::time::SystemTime::UNIX_EPOCH);
+
+        // In-place edit updates max_mtime
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        std::fs::write(&f1, "---\nid: doc1\nstatus: done\n---\n").unwrap();
+        let stamp2 = scan_generation(root);
+        assert_eq!(stamp2.file_count, 2);
+        assert!(stamp2.max_mtime > stamp1.max_mtime);
+
+        // Same-count swap: delete doc2, add doc3
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        std::fs::remove_file(&f2).unwrap();
+        let f3 = root.join("doc3.md");
+        std::fs::write(&f3, "---\nid: doc3\n---\n").unwrap();
+        let stamp3 = scan_generation(root);
+        assert_eq!(stamp3.file_count, 2);
+        assert!(stamp3.max_mtime > stamp2.max_mtime);
+    }
 }
+
 

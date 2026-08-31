@@ -13,6 +13,7 @@ use super::{PkbSearchServer, MAX_RESULTS};
 
 impl PkbSearchServer {
     pub(crate) fn handle_task_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
@@ -275,6 +276,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_pkb_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
@@ -430,6 +432,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_pkb_trace(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let from = args
             .get("from")
             .and_then(|v| v.as_str())
@@ -500,6 +503,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_pkb_orphans(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -626,6 +630,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_get_semantic_neighbors(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -676,6 +681,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_search_by_tag(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let tags: Vec<String> = args
             .get("tags")
             .and_then(|v| v.as_array())
@@ -737,6 +743,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_find_duplicates(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("both");
         let mode = crate::batch_ops::duplicates::DuplicateMode::from_str(mode_str);

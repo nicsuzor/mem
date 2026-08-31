@@ -13,6 +13,7 @@ use super::{PkbSearchServer, MAX_RESULTS};
 
 impl PkbSearchServer {
     pub(crate) fn handle_get_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         if args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -952,6 +953,7 @@ impl PkbSearchServer {
     /// `cascade_closed` is the number of descendants closed by a recursive cascade
     /// (0 when the close was non-recursive).
     pub(crate) fn handle_retrieve_memory(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
@@ -1082,6 +1084,7 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_list_memories(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
         let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize).min(MAX_RESULTS);
         let tags: Option<Vec<String>> = args.get("tags").and_then(|v| v.as_array()).map(|arr| {
             arr.iter()
