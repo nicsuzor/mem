@@ -6,6 +6,7 @@
 #![deny(clippy::print_stdout)]
 
 pub mod batch_ops;
+pub mod cmd;
 pub mod distance;
 pub mod document_crud;
 pub mod embeddings;

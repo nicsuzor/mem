@@ -959,7 +959,7 @@ fn detect_stale_local_pkb(pkb_root: &std::path::Path) -> Option<String> {
 
     // Try to find the most recent git commit timestamp under pkb_root.
     // If git is unavailable or the dir is not a repo, fall back to "warn".
-    let output = std::process::Command::new("git")
+    let output = mem::cmd::BoundedCommand::new("git")
         .arg("-C")
         .arg(pkb_root)
         .args(["log", "-1", "--format=%ct"])
