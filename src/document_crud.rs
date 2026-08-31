@@ -1735,6 +1735,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
     let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
     let body = new_body_text
         .as_deref()
+        .map(extract_body_content)
         .unwrap_or_else(|| result.content.trim());
 
     let new_content = format!("---\n{}---\n\n{}\n", yaml, body);
@@ -1909,6 +1910,52 @@ fn split_raw_frontmatter_and_body(content: &str) -> SplitFrontmatter<'_> {
     } else {
         SplitFrontmatter::Unterminated
     }
+}
+
+/// Extract the true prose body from input that may contain leading YAML frontmatter
+/// (e.g. from an agent echoing full document content or verbatim `get_document` output).
+///
+/// If the input starts with a frontmatter block `---...---` (optionally preceded by a markdown
+/// heading such as `## Title\n\n` from `get_document`), the frontmatter block (and title wrapper)
+/// is stripped so that rewriting a document whose frontmatter is preserved does not duplicate
+/// the YAML block into the body.
+///
+/// If no frontmatter block is present, the input is returned unchanged, preserving byte-identity.
+pub fn extract_body_content(input: &str) -> &str {
+    let clean = input.strip_prefix('\u{feff}').unwrap_or(input);
+    let trimmed_start = clean.trim_start_matches(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n');
+
+    // Case 1: Starts directly with frontmatter delimiter `---`
+    if let SplitFrontmatter::Present(raw_fm, body) = split_raw_frontmatter_and_body(trimmed_start) {
+        if serde_yaml::from_str::<serde_json::Value>(&raw_fm)
+            .map(|v| v.is_object())
+            .unwrap_or(false)
+        {
+            return body.trim_start_matches(|c| c == '\r' || c == '\n');
+        }
+    }
+
+    // Case 2: Starts with a markdown heading followed by `---` frontmatter block (e.g. get_document output `## <Title>\n\n---\n...\n---`)
+    if trimmed_start.starts_with('#') {
+        let mut lines = trimmed_start.split_inclusive('\n');
+        if let Some(first_line) = lines.next() {
+            let first_trimmed = first_line.trim();
+            if first_trimmed.starts_with('#') {
+                let rest = &trimmed_start[first_line.len()..];
+                let rest_trimmed = rest.trim_start_matches(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n');
+                if let SplitFrontmatter::Present(raw_fm, body) = split_raw_frontmatter_and_body(rest_trimmed) {
+                    if serde_yaml::from_str::<serde_json::Value>(&raw_fm)
+                        .map(|v| v.is_object())
+                        .unwrap_or(false)
+                    {
+                        return body.trim_start_matches(|c| c == '\r' || c == '\n');
+                    }
+                }
+            }
+        }
+    }
+
+    input
 }
 
 /// Insert one or more single-line observations (bulleted; optionally timestamped)
@@ -2528,7 +2575,12 @@ pub fn rewrite_body(
     let file_content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read: {}", path.display()))?;
 
-    let trimmed_body = new_body.trim_end_matches('\n');
+    let body_to_write = if preserve_frontmatter {
+        extract_body_content(new_body)
+    } else {
+        new_body
+    };
+    let trimmed_body = body_to_write.trim_end_matches('\n');
 
     let (new_content, body_chars_before, body_chars_after, modified) = if !preserve_frontmatter {
         // No frontmatter to key a precondition off in this mode — CAS is
@@ -4339,6 +4391,149 @@ mod tests {
             !content.contains("---"),
             "frontmatter should be gone when preserve_frontmatter=false"
         );
+    }
+
+    // =====================================================================
+    // Frontmatter duplication regression tests (mem_a1a743a2)
+    // =====================================================================
+
+    #[test]
+    fn test_extract_body_content_all_shapes() {
+        // 1. Raw markdown file with frontmatter
+        let raw = "---\nid: test-1\ntitle: Test\n---\n\n## Real Body\n\nContent here.\n";
+        assert_eq!(
+            extract_body_content(raw),
+            "## Real Body\n\nContent here.\n"
+        );
+
+        // 2. get_document output format (## Title\n\n---\n...\n---)
+        let get_doc = "## Test Document\n\n---\nid: test-1\ntitle: Test Document\ntype: observation\n---\n\nWRITER-B-MARKER\nline2";
+        assert_eq!(
+            extract_body_content(get_doc),
+            "WRITER-B-MARKER\nline2"
+        );
+
+        // 3. Normal prose starting with markdown heading
+        let prose_heading = "## Real Section\n\nThis is normal markdown.\n";
+        assert_eq!(
+            extract_body_content(prose_heading),
+            prose_heading
+        );
+
+        // 4. Plain body
+        let plain = "Simple body text without headings or frontmatter.";
+        assert_eq!(
+            extract_body_content(plain),
+            plain
+        );
+
+        // 5. Body with horizontal rule in middle
+        let with_hr = "Section 1\n\n---\n\nSection 2";
+        assert_eq!(
+            extract_body_content(with_hr),
+            with_hr
+        );
+    }
+
+    #[test]
+    fn rewrite_body_with_get_document_wrapper_does_not_duplicate_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "AC4 Scratch Fixture".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("mem".to_string()),
+            body: Some("Old body content".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+
+        // Simulate an agent reading via get_document and submitting update_body
+        let get_doc_payload = "\
+## AC4 Scratch Fixture\n\n\
+---\n\
+id: task-001\n\
+title: AC4 Scratch Fixture\n\
+type: task\n\
+project: mem\n\
+parent: parent-001\n\
+modified: 2026-08-31T01:37:26.529977728+00:00\n\
+last_modified: 2026-08-31T01:37:26.529980323+00:00\n\
+---\n\n\
+WRITER-B-FRESH-MARKER\n\
+read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
+
+        rewrite_body(&path, get_doc_payload, true, None).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+
+        // 1. Assert exactly two '---' delimiters exist on disk (one frontmatter block)
+        let delimiter_count = content.lines().filter(|l| l.trim() == "---").count();
+        assert_eq!(
+            delimiter_count, 2,
+            "on-disk file must contain exactly one frontmatter block (2 delimiter lines), but found {delimiter_count}.\nContent:\n{content}"
+        );
+
+        // 2. Assert no second YAML frontmatter block or duplicate id/title exists in body
+        assert!(
+            !content.contains("## AC4 Scratch Fixture\n\n---"),
+            "body must not contain duplicated get_document header/frontmatter block.\nContent:\n{content}"
+        );
+
+        // 3. Assert the intended body is preserved cleanly
+        assert!(
+            content.contains("WRITER-B-FRESH-MARKER\nread_timestamp_utc: 2026-08-31T01:38:00.370857830Z"),
+            "intended body content must be preserved.\nContent:\n{content}"
+        );
+
+        // 4. Assert frontmatter has updated modified timestamp
+        let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+        let parsed = matter.parse(&content);
+        let fm = parsed.data.unwrap().deserialize::<serde_json::Value>().unwrap();
+        assert_eq!(fm.get("title").and_then(|v| v.as_str()), Some("AC4 Scratch Fixture"));
+        assert_ne!(
+            fm.get("modified").and_then(|v| v.as_str()),
+            Some("2026-08-31T01:37:26.529977728+00:00")
+        );
+    }
+
+    #[test]
+    fn rewrite_body_with_raw_frontmatter_in_new_body_does_not_duplicate_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let fields = TaskFields {
+            title: "Task 1".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("mem".to_string()),
+            body: Some("Old body".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).unwrap();
+
+        let raw_payload = "\
+---\n\
+id: task-001\n\
+title: Task 1\n\
+modified: 2026-08-31T01:00:00Z\n\
+---\n\n\
+Clean new body without duplicates\n";
+
+        rewrite_body(&path, raw_payload, true, None).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+
+        let delimiter_count = content.lines().filter(|l| l.trim() == "---").count();
+        assert_eq!(
+            delimiter_count, 2,
+            "on-disk file must contain exactly one frontmatter block (2 delimiter lines), but found {delimiter_count}.\nContent:\n{content}"
+        );
+        assert!(content.contains("Clean new body without duplicates"));
     }
 
     // =====================================================================
