@@ -939,9 +939,11 @@ impl PkbSearchServer {
         }
 
         // Reject closing a task with open children unless recursive=true.
-        // Applies to any status that closes for hierarchy (done, cancelled, archived).
+        // Applies to terminal success statuses: done, merge_ready.
+        // Escalation / handback statuses (blocked, cancelled, review, partial)
+        // do not reject open children so escalation paths stay open.
         let recursive_close_descs: Vec<(String, std::path::PathBuf)> =
-            if crate::graph::is_closed_for_hierarchy(Some(status)) {
+            if status == "done" || status == "merge_ready" {
                 let recursive = args
                     .get("recursive")
                     .and_then(|v| v.as_bool())

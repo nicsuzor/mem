@@ -1251,6 +1251,151 @@ use super::*;
         }
     }
 
+    // ── epic-50b5ade9.2: release_task rejects terminal status (done, merge_ready) when task has open subtasks
+    #[test]
+    fn test_release_task_rejects_done_and_merge_ready_with_open_children() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-parent.md",
+                "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent\n",
+            ),
+            (
+                "tasks/task-child.md",
+                "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child\n",
+            ),
+        ]);
+
+        for terminal_status in ["done", "merge_ready"] {
+            let err = server
+                .handle_release_task(&json!({
+                    "id": "task-parent",
+                    "status": terminal_status,
+                    "summary": format!("Attempting to release parent as {terminal_status}"),
+                }))
+                .expect_err(&format!("{terminal_status} must be rejected when child is open"));
+
+            assert!(
+                matches!(err.code, ErrorCode::INVALID_PARAMS),
+                "status={terminal_status}: should be INVALID_PARAMS, got: {:?}",
+                err.code
+            );
+            let msg = err.message.to_string();
+            assert!(
+                msg.contains("open child task(s)") && msg.contains("task-child"),
+                "status={terminal_status}: error should name open child ID 'task-child'; got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_release_task_allows_blocked_and_cancelled_with_open_children() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-parent.md",
+                "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent\n",
+            ),
+            (
+                "tasks/task-child.md",
+                "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child\n",
+            ),
+        ]);
+
+        // blocked must succeed regardless of open children (with blocker or reason)
+        let res_blocked = server
+            .handle_release_task(&json!({
+                "id": "task-parent",
+                "status": "blocked",
+                "summary": "Escalating as blocked.",
+                "blocker": "waiting on external decision",
+            }))
+            .expect("release_task(status=blocked) with open children must succeed");
+        assert!(!res_blocked.is_error.unwrap_or(false));
+
+        // cancelled must succeed regardless of open children (with reason)
+        let (_tmp2, server2) = build_disk_backed_server(&[
+            (
+                "tasks/task-parent2.md",
+                "---\nid: task-parent2\ntitle: Parent 2\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent 2\n",
+            ),
+            (
+                "tasks/task-child2.md",
+                "---\nid: task-child2\ntitle: Child 2\ntype: task\nstatus: ready\nparent: task-parent2\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child 2\n",
+            ),
+        ]);
+        let res_cancelled = server2
+            .handle_release_task(&json!({
+                "id": "task-parent2",
+                "status": "cancelled",
+                "summary": "Cancelling parent.",
+                "reason": "project direction pivoted",
+            }))
+            .expect("release_task(status=cancelled) with open children must succeed");
+        assert!(!res_cancelled.is_error.unwrap_or(false));
+    }
+
+    #[test]
+    fn test_release_task_succeeds_once_children_closed_or_with_recursive() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-parent.md",
+                "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent\n",
+            ),
+            (
+                "tasks/task-child.md",
+                "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child\n",
+            ),
+        ]);
+
+        // First leg: parent release is refused
+        server
+            .handle_release_task(&json!({
+                "id": "task-parent",
+                "status": "done",
+                "summary": "Trying done while child open",
+            }))
+            .expect_err("must be refused while child is open");
+
+        // Close the child task
+        server
+            .handle_release_task(&json!({
+                "id": "task-child",
+                "status": "done",
+                "summary": "Child completed cleanly.",
+            }))
+            .expect("closing child must succeed");
+
+        // Second leg: same parent release now succeeds
+        let res = server
+            .handle_release_task(&json!({
+                "id": "task-parent",
+                "status": "done",
+                "summary": "Parent now completed cleanly.",
+            }))
+            .expect("parent release must succeed once child is closed");
+        assert!(!res.is_error.unwrap_or(false));
+
+        // Also test recursive=true cascade
+        let (_tmp3, server3) = build_disk_backed_server(&[
+            (
+                "tasks/task-p3.md",
+                "---\nid: task-p3\ntitle: Parent 3\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent 3\n",
+            ),
+            (
+                "tasks/task-c3.md",
+                "---\nid: task-c3\ntitle: Child 3\ntype: task\nstatus: ready\nparent: task-p3\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child 3\n",
+            ),
+        ]);
+        let res_rec = server3
+            .handle_release_task(&json!({
+                "id": "task-p3",
+                "status": "merge_ready",
+                "summary": "Releasing parent and cascading to children.",
+                "recursive": true,
+            }))
+            .expect("recursive=true must cascade close open children");
+        assert!(!res_rec.is_error.unwrap_or(false));
+    }
+
     /// refresh_graph must reflect new files written to disk after server startup.
     #[test]
     fn test_refresh_graph_reflects_disk_changes() {
