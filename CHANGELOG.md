@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.85](https://github.com/nicsuzor/mem/compare/mem-v0.3.84...mem-v0.3.85) (2026-08-31)
+
+
+### Bug Fixes
+
+* **document_crud:** strip duplicate frontmatter in update_body and update_document ([a7e5aa0](https://github.com/nicsuzor/mem/commit/a7e5aa0d33ee8d45e4679a76a2e464e6c5f8f80a))
+* **document_crud:** strip duplicate frontmatter in update_body and update_document ([bd85bdd](https://github.com/nicsuzor/mem/commit/bd85bdd0cff133429900cefa92dc5b74082ce985))
+
 ## [0.3.84](https://github.com/nicsuzor/mem/compare/mem-v0.3.83...mem-v0.3.84) (2026-08-31)
 
 
