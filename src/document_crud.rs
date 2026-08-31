@@ -391,6 +391,9 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     atomic_write_file(&path, &fm, "create_document")
         .with_context(|| format!("Failed to write file: {}", path.display()))?;
 
+    let commit_msg = format!("create({}): {} - {}", fields.doc_type, id, fields.title);
+    let _ = git_commit_file(&path, &commit_msg);
+
     Ok(path)
 }
 
@@ -476,6 +479,9 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
     atomic_write_file(&path, &fm, "create_subtask")
         .with_context(|| format!("Failed to write sub-task file: {}", path.display()))?;
 
+    let commit_msg = format!("create(task): {} - {}", id, fields.title);
+    let _ = git_commit_file(&path, &commit_msg);
+
     Ok(path)
 }
 
@@ -510,6 +516,7 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
         "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: epic\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nlast_modified: {local_now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
     atomic_write_file(&adhoc_path, &content, "ensure_adhoc_sessions_root")?;
+    let _ = git_commit_file(&adhoc_path, "create(project): adhoc-sessions - Ad-hoc sessions root");
     Ok(())
 }
 
@@ -803,6 +810,9 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     atomic_write_file(&path, &fm, "create_task")
         .with_context(|| format!("Failed to write task file: {}", path.display()))?;
 
+    let commit_msg = format!("create(task): {} - {}", id, fields.title);
+    let _ = git_commit_file(&path, &commit_msg);
+
     Ok(path)
 }
 
@@ -1048,6 +1058,9 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     atomic_write_file(&path, &fm, "instantiate_template")
         .with_context(|| format!("Failed to write instance file: {}", path.display()))?;
 
+    let commit_msg = format!("instantiate(template): {} - {}", instance_id, fields.template_title);
+    let _ = git_commit_file(&path, &commit_msg);
+
     Ok(path)
 }
 
@@ -1162,6 +1175,9 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
 
     atomic_write_file(&path, &fm, "create_memory")
         .with_context(|| format!("Failed to write memory file: {}", path.display()))?;
+
+    let commit_msg = format!("create(memory): {} - {}", id, fields.title);
+    let _ = git_commit_file(&path, &commit_msg);
 
     Ok(path)
 }
@@ -1628,7 +1644,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
 
     // Apply updates, routing body/content keys to the markdown body instead of frontmatter
     let mut new_body_text: Option<String> = None;
-    for (key, value) in updates {
+    for (key, value) in &updates {
         if FRONTMATTER_EXCLUDED_KEYS.contains(&key.as_str()) {
             // Prefer "body" over "content" if both are provided
             if key == "body" || new_body_text.is_none() {
@@ -1638,7 +1654,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         }
 
         // Validate scalar lengths for all frontmatter fields
-        validate_scalar_lengths(&key, &value, max_frontmatter_scalar_len())?;
+        validate_scalar_lengths(key, value, max_frontmatter_scalar_len())?;
 
         // Validation for updated fields
         match key.as_str() {
@@ -1700,7 +1716,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         }
 
         if value.is_null() {
-            fm.remove(&key);
+            fm.remove(key);
         } else if key == "contributes_to" {
             // Materialise `inherits_from:` edge inheritance at write time (one-time copy).
             // Infer pkb_root from the file path: <pkb_root>/<subdir>/<file.md>.
@@ -1710,14 +1726,14 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from("."));
             let edges = match value {
-                serde_json::Value::Array(arr) => arr,
+                serde_json::Value::Array(arr) => arr.clone(),
                 serde_json::Value::Null => Vec::new(),
-                other => vec![other],
+                other => vec![other.clone()],
             };
             let resolved = materialise_edge_inheritance(&pkb_root, edges);
-            fm.insert(key, serde_json::Value::Array(resolved));
+            fm.insert(key.clone(), serde_json::Value::Array(resolved));
         } else {
-            fm.insert(key, value);
+            fm.insert(key.clone(), value.clone());
         }
     }
 
@@ -1740,6 +1756,19 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
 
     let new_content = format!("---\n{}---\n\n{}\n", yaml, body);
     atomic_write_file(path, &new_content, "update_document")?;
+
+    let doc_id = fm
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string()
+        });
+    let commit_msg = format_update_commit_msg(&doc_id, &updates);
+    let _ = git_commit_file(path, &commit_msg);
 
     Ok(())
 }
@@ -1839,6 +1868,148 @@ pub(crate) fn atomic_write_file(path: &Path, content: &str, op_name: &str) -> Re
         let _ = dir_file.sync_all();
     }
     Ok(())
+}
+
+/// Helper to find the git repository root by walking up parent directories.
+pub fn find_repo_root(path: &Path) -> Option<PathBuf> {
+    let mut current = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()?.to_path_buf()
+    };
+    loop {
+        if current.join(".git").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn ensure_git_identity(cmd: &mut crate::cmd::BoundedCommand) {
+    let author_name = std::env::var("GIT_AUTHOR_NAME")
+        .or_else(|_| std::env::var("GIT_USER"))
+        .unwrap_or_else(|_| "pkb".to_string());
+    let author_email = std::env::var("GIT_AUTHOR_EMAIL")
+        .unwrap_or_else(|_| "pkb@academicops.local".to_string());
+    let committer_name = std::env::var("GIT_COMMITTER_NAME")
+        .or_else(|_| std::env::var("GIT_USER"))
+        .unwrap_or_else(|_| "pkb".to_string());
+    let committer_email = std::env::var("GIT_COMMITTER_EMAIL")
+        .unwrap_or_else(|_| "pkb@academicops.local".to_string());
+
+    cmd.env("GIT_AUTHOR_NAME", author_name);
+    cmd.env("GIT_AUTHOR_EMAIL", author_email);
+    cmd.env("GIT_COMMITTER_NAME", committer_name);
+    cmd.env("GIT_COMMITTER_EMAIL", committer_email);
+}
+
+/// Stage and commit specific paths in a git repository with an atomic message.
+///
+/// If `repo_root` is not a git repository (or .git does not exist), this is a no-op returning `Ok(())`.
+pub fn git_commit_paths(repo_root: &Path, paths: &[&Path], message: &str) -> Result<()> {
+    if !repo_root.join(".git").exists() {
+        return Ok(());
+    }
+
+    let mut add_cmd = crate::cmd::BoundedCommand::new("git");
+    add_cmd.current_dir(repo_root);
+    add_cmd.arg("add");
+    add_cmd.arg("-A");
+    add_cmd.arg("--");
+    for p in paths {
+        add_cmd.arg(p);
+    }
+    ensure_git_identity(&mut add_cmd);
+
+    let add_out = match add_cmd.output() {
+        Ok(out) => out,
+        Err(e) => {
+            tracing::warn!("git add failed to execute: {}", e);
+            return Ok(());
+        }
+    };
+    if !add_out.status.success() {
+        tracing::warn!(
+            "git add failed (status {:?}): {}",
+            add_out.status,
+            String::from_utf8_lossy(&add_out.stderr)
+        );
+        return Ok(());
+    }
+
+    let mut diff_cmd = crate::cmd::BoundedCommand::new("git");
+    diff_cmd.current_dir(repo_root);
+    diff_cmd.args(["diff", "--cached", "--quiet"]);
+    let diff_out = match diff_cmd.output() {
+        Ok(out) => out,
+        Err(e) => {
+            tracing::warn!("git diff --cached failed to execute: {}", e);
+            return Ok(());
+        }
+    };
+    if diff_out.status.success() {
+        // Exit code 0 means no changes staged
+        return Ok(());
+    }
+
+    let mut commit_cmd = crate::cmd::BoundedCommand::new("git");
+    commit_cmd.current_dir(repo_root);
+    commit_cmd.args(["commit", "-m", message]);
+    ensure_git_identity(&mut commit_cmd);
+
+    let commit_out = match commit_cmd.output() {
+        Ok(out) => out,
+        Err(e) => {
+            tracing::warn!("git commit failed to execute: {}", e);
+            return Ok(());
+        }
+    };
+    if !commit_out.status.success() {
+        tracing::warn!(
+            "git commit failed (status {:?}): {}",
+            commit_out.status,
+            String::from_utf8_lossy(&commit_out.stderr)
+        );
+    } else {
+        tracing::info!("git commit succeeded: {}", message);
+    }
+
+    Ok(())
+}
+
+/// Helper to commit a single file change to git if inside a repository.
+pub fn git_commit_file(path: &Path, message: &str) -> Result<()> {
+    if let Some(repo_root) = find_repo_root(path) {
+        git_commit_paths(&repo_root, &[path], message)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn format_update_commit_msg(id: &str, updates: &HashMap<String, serde_json::Value>) -> String {
+    let mut parts = Vec::new();
+    if let Some(val) = updates.get("status") {
+        if let Some(s) = val.as_str() {
+            parts.push(format!("status: {}", s));
+        }
+    }
+    if let Some(val) = updates.get("parent") {
+        if let Some(p) = val.as_str() {
+            parts.push(format!("parent: {}", p));
+        }
+    }
+    if let Some(val) = updates.get("title") {
+        if let Some(t) = val.as_str() {
+            parts.push(format!("title: {}", t));
+        }
+    }
+    if parts.is_empty() {
+        let mut keys: Vec<&str> = updates.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        parts.push(keys.join(", "));
+    }
+    format!("update({}): {}", id, parts.join(", "))
 }
 
 /// Result of an `add_observations` operation.
@@ -2175,6 +2346,19 @@ pub fn add_observations(
 
     atomic_write_file(path, &new_file_content, "add_observations")?;
 
+    let doc_id = fm
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string()
+        });
+    let commit_msg = format!("observations({}): add {} observation(s)", doc_id, formatted_obs_lines.len());
+    let _ = git_commit_file(path, &commit_msg);
+
     Ok(AddObservationsResult {
         added_count: formatted_obs_lines.len(),
         body_chars_before,
@@ -2376,6 +2560,19 @@ pub fn delete_observations(
 
     atomic_write_file(path, &new_file_content, "delete_observations")?;
 
+    let doc_id = fm
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string()
+        });
+    let commit_msg = format!("observations({}): delete {} observation(s)", doc_id, deleted_count);
+    let _ = git_commit_file(path, &commit_msg);
+
     Ok(DeleteObservationsResult {
         deleted_count,
         body_chars_before,
@@ -2438,6 +2635,12 @@ pub fn edit_body(
 
         if !dry_run {
             atomic_write_file(path, &new_content, "edit_body")?;
+            let doc_id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document");
+            let commit_msg = format!("edit({}): body", doc_id);
+            let _ = git_commit_file(path, &commit_msg);
         }
 
         return Ok(EditBodyResult {
@@ -2540,6 +2743,19 @@ pub fn edit_body(
     };
 
     atomic_write_file(path, &new_content, "edit_body")?;
+
+    let doc_id = fm
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string()
+        });
+    let commit_msg = format!("edit({}): body", doc_id);
+    let _ = git_commit_file(path, &commit_msg);
 
     Ok(EditBodyResult {
         body_chars_before,
@@ -2665,6 +2881,32 @@ pub fn rewrite_body(
     };
 
     atomic_write_file(path, &new_content, "rewrite_body")?;
+
+    let doc_id = if preserve_frontmatter {
+        let matter = Matter::<YAML>::new();
+        matter
+            .parse(&file_content)
+            .data
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+            .and_then(|v| {
+                v.get("id")
+                    .and_then(|id| id.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("document")
+                    .to_string()
+            })
+    } else {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("document")
+            .to_string()
+    };
+    let commit_msg = format!("rewrite({}): body", doc_id);
+    let _ = git_commit_file(path, &commit_msg);
 
     Ok(RewriteBodyResult {
         body_chars_before,
@@ -2821,6 +3063,23 @@ pub fn append_to_document(
     let new_content = format!("---\n{}---\n\n{}\n", yaml, new_body.trim());
     atomic_write_file(path, &new_content, "append_to_document")?;
 
+    let doc_id = fm
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string()
+        });
+    let commit_msg = format!(
+        "append({}): {}",
+        doc_id,
+        section.as_deref().unwrap_or("body")
+    );
+    let _ = git_commit_file(path, &commit_msg);
+
     Ok(new_modified)
 }
 
@@ -2828,6 +3087,9 @@ pub fn append_to_document(
 ///
 /// Returns the absolute path that was deleted (for VectorStore cleanup).
 pub fn delete_document(path: &Path) -> Result<PathBuf> {
+    use gray_matter::engine::YAML;
+    use gray_matter::Matter;
+
     let abs_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -2838,8 +3100,33 @@ pub fn delete_document(path: &Path) -> Result<PathBuf> {
         anyhow::bail!("File not found: {}", abs_path.display());
     }
 
+    let matter = Matter::<YAML>::new();
+    let doc_id = std::fs::read_to_string(&abs_path)
+        .ok()
+        .and_then(|content| {
+            let parsed = matter.parse(&content);
+            parsed
+                .data
+                .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+                .and_then(|v| {
+                    v.get("id")
+                        .and_then(|id| id.as_str())
+                        .map(|s| s.to_string())
+                })
+        })
+        .unwrap_or_else(|| {
+            abs_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string()
+        });
+
     std::fs::remove_file(&abs_path)
         .with_context(|| format!("Failed to delete: {}", abs_path.display()))?;
+
+    let commit_msg = format!("delete({}): {}", doc_id, abs_path.display());
+    let _ = git_commit_file(&abs_path, &commit_msg);
 
     Ok(abs_path)
 }
