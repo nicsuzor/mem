@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.84](https://github.com/nicsuzor/mem/compare/mem-v0.3.83...mem-v0.3.84) (2026-08-31)
+
+
+### Features
+
+* **cli:** unship pkb maintenance decay subcommand and park decay dormant ([6230852](https://github.com/nicsuzor/mem/commit/62308521a4c85d89b9e13274559f11b4f15d7ee3))
+* **cli:** unship pkb maintenance decay subcommand and park decay dormant ([f0a1c5c](https://github.com/nicsuzor/mem/commit/f0a1c5c464dfc27f1fc2a8905b62f3d57cadfa38))
+* **graph:** self-invalidating graph index via validate-on-read generation stamp (mem_65c8e8fe, mem_3c018681) ([b2fb436](https://github.com/nicsuzor/mem/commit/b2fb436733f207b3dd0a3d5a9d5537683766baed))
+* **graph:** self-invalidating graph index via validate-on-read generation stamp (mem_65c8e8fe, mem_3c018681) ([85b363b](https://github.com/nicsuzor/mem/commit/85b363b3dd91d571dcde92159dceaaa3f6c791ae))
+* **mcp:** scope task_summary counts to project parameter and reject unsupported parameters ([cdd3ec0](https://github.com/nicsuzor/mem/commit/cdd3ec02dde67b0aab4c3f2d5609e716a12531c2))
+* **mcp:** scope task_summary counts to project parameter and reject unsupported parameters ([d2a4fc9](https://github.com/nicsuzor/mem/commit/d2a4fc963bbe3ced6479dc517ae624b53bae2456))
+* **pkb:** structural rename priority -&gt; intent across mem backend and schemas ([ae34531](https://github.com/nicsuzor/mem/commit/ae34531cfd0d91d79d22cd4526dd6d9ddd266f66))
+* **pkb:** structural rename priority -&gt; intent across mem backend and schemas ([17a5fa0](https://github.com/nicsuzor/mem/commit/17a5fa0cf03556f94e392a420f72119b3ef70491))
+* **ranking:** implement Phase 3 honest uncertainty (task_e9667ac7) ([c744232](https://github.com/nicsuzor/mem/commit/c744232514d158fac4af475a15d7e55d702c668c))
+* **ranking:** implement Phase 3 honest uncertainty with open question and divergence signals ([b3589cf](https://github.com/nicsuzor/mem/commit/b3589cf7e16ada98953681d561b0113973a1e7c9))
+* **search:** BM25 lexical index, RRF rank fusion, and cross-encoder reranking ([23ab21a](https://github.com/nicsuzor/mem/commit/23ab21ace13df1d51247070d49ad323424bb694b))
+* **search:** implement BM25 lexical index, RRF rank fusion, and local cross-encoder reranking ([09ca101](https://github.com/nicsuzor/mem/commit/09ca101c48ceb51cfa81ca52d9190c1d2215920b))
+
+
+### Bug Fixes
+
+* **batch:** ensure seed is always marked consolidated in apply_consolidation_batch ([#546](https://github.com/nicsuzor/mem/issues/546)) ([07e1640](https://github.com/nicsuzor/mem/commit/07e1640a81456f9ae53f2378024289d06409a561))
+* **cli:** unify task tree sibling sorting with canonical GraphStore focus_cmp ([#548](https://github.com/nicsuzor/mem/issues/548)) ([fb0f5fa](https://github.com/nicsuzor/mem/commit/fb0f5fa4c5ff8400d16a85c11d1cb786c329775a))
+* **cmd:** bound shell and process command execution under enforced timeouts ([55b513b](https://github.com/nicsuzor/mem/commit/55b513b5bea1548c404366acf9ecf5a83570b297))
+* **cmd:** bound shell and process execution under enforced timeouts (mem_104b1a0d, task_fc70eaef) ([4792d50](https://github.com/nicsuzor/mem/commit/4792d502e5517639f1c6a2ea122bdf57716ceb63))
+* **document_crud:** eliminate MEM_MAX_FRONTMATTER_SCALAR_LEN test race via thread-scoped override (mem_frontmatter_env_flake) ([#547](https://github.com/nicsuzor/mem/issues/547)) ([da6cc13](https://github.com/nicsuzor/mem/commit/da6cc13c0f23bcabf71d1389c2edd5abc3150473))
+* **document_crud:** fail closed on malformed frontmatter terminator ([f7fe844](https://github.com/nicsuzor/mem/commit/f7fe844fd08247d259dd025f99ad1457721bb6dc))
+* **document_crud:** fail closed on malformed frontmatter terminator (mem_00e9a699) ([96a4267](https://github.com/nicsuzor/mem/commit/96a4267f22b7c9f7b37064e0a10e01bc5185fb7f))
+* **durability:** harden write path against silent loss and stale index no-ops (mem_6249c2dd) ([f049752](https://github.com/nicsuzor/mem/commit/f0497520756aaf49f99c2918e9545562a4fbd3fc))
+* **durability:** harden write path against silent loss and stale index no-ops (mem_6249c2dd) ([23571e0](https://github.com/nicsuzor/mem/commit/23571e0e37cb0cbdb6e7b59b4c6f056239811b95))
+* **graph_store:** exclude node_type template from open_descendants close guard ([fcc3430](https://github.com/nicsuzor/mem/commit/fcc34301f3a26903527bc7ccb79abafd2b357e20))
+* **graph_store:** exclude node_type: template from open_descendants close guard ([a036ced](https://github.com/nicsuzor/mem/commit/a036ced53f20630149663123ea9cde86a9793596))
+* **lint:** flag and fix non-canonical project aliases; regression tests for write-path canonicalization ([#544](https://github.com/nicsuzor/mem/issues/544)) ([6dd8236](https://github.com/nicsuzor/mem/commit/6dd82362dbb720057dced9cee4a33627dc5dcbcf))
+* **mcp:** declare schemas truthfully and include corrected-call examples (mem-ffe1b138) ([b281403](https://github.com/nicsuzor/mem/commit/b281403336220576d87db699f0cf084cd1158dbe))
+* **mcp:** declare schemas truthfully and include corrected-call examples (mem-ffe1b138) ([9ffdd0f](https://github.com/nicsuzor/mem/commit/9ffdd0fa0792928a8253e4c7d67cb8126cbc30d9))
+* **mcp:** prevent ghost nodes from resolving to PKB root directory ([88ed08d](https://github.com/nicsuzor/mem/commit/88ed08d536d86a269306c2b935385e0a39da71b4))
+* **mcp:** prevent ghost nodes from resolving to PKB root directory ([39f295e](https://github.com/nicsuzor/mem/commit/39f295e19bb13d6f261d4ee633fc6d6ff1744606))
+* **mcp:** prevent server-side file path disclosure across MCP endpoints ([#539](https://github.com/nicsuzor/mem/issues/539)) ([412bd2f](https://github.com/nicsuzor/mem/commit/412bd2f2c76655b938a8194d2fb0c25f2401ab10))
+* **mcp:** reject release_task terminal status (done/merge_ready) with open subtasks (epic-50b5ade9.2) ([8259b70](https://github.com/nicsuzor/mem/commit/8259b70ce2ba3feaa39d7bdcf767d9c87ba959a3))
+* **mcp:** reject release_task terminal status (done/merge_ready) with open subtasks (epic-50b5ade9.2) ([#566](https://github.com/nicsuzor/mem/issues/566)) ([f86d187](https://github.com/nicsuzor/mem/commit/f86d1871e0de5de19f4b392c03c2c4105edae618))
+* **mcp:** reject release_task terminal status with open subtasks (epic-50b5ade9.2) ([464d995](https://github.com/nicsuzor/mem/commit/464d995a9afa189a0d4d9fefc3bde00be569d9e5))
+* **mcp:** release_task adhoc — short IDs + required project parameter (mem-4a068cea) ([#558](https://github.com/nicsuzor/mem/issues/558)) ([bab20f0](https://github.com/nicsuzor/mem/commit/bab20f0c15e005bb801be1c915a68247158a856b))
+* **mcp:** support array-valued and comma-separated status filters in list_tasks (mem-6b531d57) ([f3ccd83](https://github.com/nicsuzor/mem/commit/f3ccd83c10e380ec3c831b4defaab384347b66fa))
+* **mcp:** support array-valued and comma-separated status filters in list_tasks (mem-6b531d57) ([3f53074](https://github.com/nicsuzor/mem/commit/3f5307434eba0ebfaa96b52f529534f417993f96))
+* **pkb:** ensure synchronous durable writes and disk-index consistency ([1a8c22a](https://github.com/nicsuzor/mem/commit/1a8c22ab05214d9c6bbd1b87535aac60c7f088a6))
+* **pkb:** ensure synchronous durable writes and disk-index consistency ([a3826c0](https://github.com/nicsuzor/mem/commit/a3826c00de2fc0b57bfb7713e78c3947f241641c))
+* **resolver:** normalize blocker and dependency resolution to be case-insensitive ([#549](https://github.com/nicsuzor/mem/issues/549)) ([dcc35e8](https://github.com/nicsuzor/mem/commit/dcc35e847c1fe3d1c5fb3328d1b866be02b0b13a))
+* **task_index:** default untyped id-bearing nodes to type 'task' with parse warning ([71d0d57](https://github.com/nicsuzor/mem/commit/71d0d5769e37da174d43fadc7ea51c02073f6c63))
+* **task_index:** default untyped id-bearing nodes to type 'task' with parse warning ([d4d13fa](https://github.com/nicsuzor/mem/commit/d4d13fae5eb87f577fad53752179642055ee2188))
+* **vectordb:** enforce dimension check and persistence on legacy migration, spec format policy (mem_28b17f48) ([#551](https://github.com/nicsuzor/mem/issues/551)) ([018e950](https://github.com/nicsuzor/mem/commit/018e950cf986eac1ba12952932f653d9b4d947d5))
+
+
+### Tests
+
+* **concurrency:** add AC1 and AC2 git-verified concurrency acceptance tests (mem_7451158a) ([1a5cf11](https://github.com/nicsuzor/mem/commit/1a5cf11ebd77bdd78dd48b6e4a56ebed892c5736))
+* **concurrency:** add AC1 and AC2 git-verified concurrency acceptance tests (mem_7451158a) ([e622541](https://github.com/nicsuzor/mem/commit/e622541c5d92023707ec1ef9756f3e3e1ada732c))
+* **embeddings:** add unit tests for atomic model downloads and .part handling ([9ef4858](https://github.com/nicsuzor/mem/commit/9ef48587d5e1e58297c707feb052fc722287eb9d))
+* **embeddings:** add unit tests for atomic model downloads and .part handling (mem-3c716f2b) ([9e67d33](https://github.com/nicsuzor/mem/commit/9e67d335b8975e4aafb197bf57c5875d8887d85e))
+* **embeddings:** add unit tests for OS model cache paths, quantized model preference, and AOPS_MODEL_PATH override ([823366a](https://github.com/nicsuzor/mem/commit/823366a90467b9637b87ac949cb467eb6f589168))
+* **embeddings:** add unit tests for OS model cache paths, quantized model preference, and AOPS_MODEL_PATH override (mem-9527cd62) ([dbf0098](https://github.com/nicsuzor/mem/commit/dbf009826f85da5db61584f5e8321b27c22af28a))
+* **mcp_server:** add regression test for mem_bc1ed756 ([5721025](https://github.com/nicsuzor/mem/commit/57210253a457e7aa126db6ba9e6d3d10853d42e1))
+* **mcp_server:** add regression test for mem_bc1ed756 (unblocked non-leaf stored-ready node reachable via status=ready) ([773dcc4](https://github.com/nicsuzor/mem/commit/773dcc4bda240deb4ab0dc684931eb81e8a6f009))
+
 ## [0.3.83](https://github.com/nicsuzor/mem/compare/mem-v0.3.82...mem-v0.3.83) (2026-08-28)
 
 
