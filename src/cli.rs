@@ -1197,13 +1197,16 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode_query(&query_text)?;
-            let results = store.read().search(
+            let reranker = mem::rerank::CrossEncoderReranker::new(mem::rerank::RerankerConfig::default());
+            let results = store.read().search_hybrid(
+                &query_text,
                 &query_embedding,
                 limit,
                 &pkb_root,
                 since.as_deref(),
                 before.as_deref(),
                 doc_type.as_deref(),
+                Some(&reranker),
             );
 
             if results.is_empty() {
@@ -3170,6 +3173,25 @@ async fn main() -> Result<()> {
                     expected_misses: vec![],
                     max_rank: 5,
                 },
+                // Exact literal identifier queries (PR number, env var, task ID, function)
+                eval::GoldenQuery {
+                    query: "PR #520",
+                    expected_hits: vec!["note_daffbdf2"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                eval::GoldenQuery {
+                    query: "AOPS_MODEL_PATH",
+                    expected_hits: vec!["embeddings"],
+                    expected_misses: vec![],
+                    max_rank: 3,
+                },
+                eval::GoldenQuery {
+                    query: "mem_7cc72ed8",
+                    expected_hits: vec!["mem_7cc72ed8"],
+                    expected_misses: vec![],
+                    max_rank: 1,
+                },
                 // Conceptual/semantic bridge queries
                 eval::GoldenQuery {
                     query: "fail-fast philosophy",
@@ -3199,8 +3221,12 @@ async fn main() -> Result<()> {
                 },
             ];
 
-            let summary = eval::evaluate(&store_read, embedder, &queries, &pkb_root, top_k);
-            print!("{}", eval::format_report(&summary, "current index"));
+            let baseline = eval::evaluate_with_mode(&store_read, embedder, &queries, &pkb_root, top_k, eval::EvalMode::VectorOnly);
+            let hybrid = eval::evaluate_with_mode(&store_read, embedder, &queries, &pkb_root, top_k, eval::EvalMode::HybridReranked);
+
+            println!("{}", eval::format_report(&baseline, "Vector-Only Baseline"));
+            println!("{}", eval::format_report(&hybrid, "Hybrid BM25 + Vector + Rerank"));
+            println!("{}", eval::format_comparison(&baseline, &hybrid));
         }
 
         Commands::Batch(batch_cmd) => {

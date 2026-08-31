@@ -6,6 +6,7 @@
 #![deny(clippy::print_stdout)]
 
 pub mod batch_ops;
+pub mod bm25;
 pub mod distance;
 pub mod document_crud;
 pub mod embeddings;
@@ -21,6 +22,8 @@ pub mod metrics;
 pub mod migrations;
 pub mod pkb;
 pub mod polecat_config;
+pub mod rerank;
+pub mod rrf;
 pub mod task_index;
 pub mod telemetry;
 pub mod udiff;

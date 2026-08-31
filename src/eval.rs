@@ -57,6 +57,15 @@ pub struct EvalSummary {
     pub query_results: Vec<QueryResult>,
 }
 
+/// Search mode for evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalMode {
+    VectorOnly,
+    Bm25Only,
+    Hybrid,
+    HybridReranked,
+}
+
 /// Run evaluation against a vector store with golden queries.
 pub fn evaluate(
     store: &vectordb::VectorStore,
@@ -65,18 +74,61 @@ pub fn evaluate(
     pkb_root: &std::path::Path,
     k: usize,
 ) -> EvalSummary {
+    evaluate_with_mode(store, embedder, queries, pkb_root, k, EvalMode::HybridReranked)
+}
+
+/// Run evaluation against a vector store with golden queries and a specific search mode.
+pub fn evaluate_with_mode(
+    store: &vectordb::VectorStore,
+    embedder: &embeddings::Embedder,
+    queries: &[GoldenQuery],
+    pkb_root: &std::path::Path,
+    k: usize,
+    mode: EvalMode,
+) -> EvalSummary {
     let mut query_results = Vec::new();
+    let reranker = if mode == EvalMode::HybridReranked {
+        Some(crate::rerank::CrossEncoderReranker::new(crate::rerank::RerankerConfig::default()))
+    } else {
+        None
+    };
 
     for gq in queries {
-        let query_emb = match embedder.encode_query(gq.query) {
-            Ok(emb) => emb,
-            Err(e) => {
-                eprintln!("Failed to encode query '{}': {e}", gq.query);
-                continue;
+        let results = match mode {
+            EvalMode::VectorOnly => {
+                let query_emb = match embedder.encode_query(gq.query) {
+                    Ok(emb) => emb,
+                    Err(e) => {
+                        eprintln!("Failed to encode query '{}': {e}", gq.query);
+                        continue;
+                    }
+                };
+                store.search(&query_emb, k, pkb_root, None, None, None)
+            }
+            EvalMode::Bm25Only => {
+                store.search_bm25(gq.query, k, pkb_root, None, None, None)
+            }
+            EvalMode::Hybrid => {
+                let query_emb = match embedder.encode_query(gq.query) {
+                    Ok(emb) => emb,
+                    Err(e) => {
+                        eprintln!("Failed to encode query '{}': {e}", gq.query);
+                        continue;
+                    }
+                };
+                store.search_hybrid(gq.query, &query_emb, k, pkb_root, None, None, None, None)
+            }
+            EvalMode::HybridReranked => {
+                let query_emb = match embedder.encode_query(gq.query) {
+                    Ok(emb) => emb,
+                    Err(e) => {
+                        eprintln!("Failed to encode query '{}': {e}", gq.query);
+                        continue;
+                    }
+                };
+                store.search_hybrid(gq.query, &query_emb, k, pkb_root, None, None, None, reranker.as_ref())
             }
         };
-
-        let results = store.search(&query_emb, k, pkb_root, None, None, None);
 
         // Find ranks of expected hits
         let mut best_hit_rank: Option<usize> = None;

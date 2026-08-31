@@ -64,7 +64,16 @@ impl PkbSearchServer {
         } else {
             limit * 3
         };
-        let results = store.search(&query_embedding, fetch_limit, &self.pkb_root, since, before, None);
+        let results = store.search_hybrid(
+            query,
+            &query_embedding,
+            fetch_limit,
+            &self.pkb_root,
+            since,
+            before,
+            None,
+            Some(&self.reranker),
+        );
 
         let graph = self.graph.read();
 
@@ -308,13 +317,15 @@ impl PkbSearchServer {
         } else {
             limit * 2
         };
-        let results = store.search(
+        let results = store.search_hybrid(
+            query,
             &query_embedding,
             fetch_limit,
             &self.pkb_root,
             since,
             before,
             doc_type,
+            Some(&self.reranker),
         );
 
         // Build proximity boost map if boost_id provided
