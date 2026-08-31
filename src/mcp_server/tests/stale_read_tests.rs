@@ -244,3 +244,211 @@ fn test_list_tasks_warns_when_disk_has_untracked_file() {
         "markdown-format list_tasks must also warn: {after_md_text}"
     );
 }
+
+/// Regression test for mem_65496f77:
+/// PKB MCP writes (`update_body`, `update_task`) must flush synchronously to disk
+/// and update in-memory state so that an immediate read-after-write (`get_document`,
+/// `get_task`, `list_tasks`) observes the written data without delay.
+#[test]
+fn test_read_after_write_synchronous_visibility_for_update_body_and_update_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    write_test_polecat_yaml(root);
+
+    let graph = GraphStore::build(&[], root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let db_path = root.join("db");
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        db_path,
+        Arc::new(RwLock::new(graph)),
+    );
+
+    // 1. Create a task via MCP
+    let created = server
+        .handle_create_task(&json!({
+            "title": "Synchronous flush task",
+            "type": "task",
+            "project": "proj-test",
+            "parent": "proj-test",
+            "allow_missing_parent": true,
+        }))
+        .unwrap();
+    let id = task_json(&created)
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+
+    let abs_path = {
+        let g = server.graph.read();
+        let node = g.resolve(&id).unwrap();
+        server.abs_path(&node.path)
+    };
+
+    // 2. update_body must be immediately readable from disk and via get_document / get_task
+    let updated_body_text = "Updated body content with section header\n\n## Details\nSynchronous flush confirmed.";
+    let update_body_res = server
+        .handle_update_body(&json!({
+            "id": id,
+            "new_body": updated_body_text,
+        }))
+        .unwrap();
+    assert!(update_body_res.is_error.is_none() || update_body_res.is_error == Some(false));
+
+    // Immediate on-disk check (file must have been synced synchronously)
+    let disk_content = std::fs::read_to_string(&abs_path).expect("read task file from disk");
+    assert!(
+        disk_content.contains("Synchronous flush confirmed."),
+        "disk file must contain updated body immediately after update_body returns: {disk_content}"
+    );
+
+    // Immediate get_document check
+    let get_doc_res = server.handle_get_document(&json!({"id": id})).unwrap();
+    let get_doc_text = get_doc_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(
+        get_doc_text.contains("Synchronous flush confirmed."),
+        "get_document must observe updated body immediately: {get_doc_text}"
+    );
+
+    // Immediate get_task check
+    let get_task_res = server.handle_get_task(&json!({"id": id})).unwrap();
+    let get_task_text = get_task_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(
+        get_task_text.contains("Synchronous flush confirmed."),
+        "get_task must observe updated body immediately: {get_task_text}"
+    );
+
+    // 3. update_task must be immediately readable from disk, get_task, and list_tasks
+    let update_task_res = server
+        .handle_update_task(&json!({
+            "id": id,
+            "updates": {
+                "status": "done",
+                "completion_evidence": "Regression test verified synchronous flush.",
+            }
+        }))
+        .unwrap();
+    assert!(update_task_res.is_error.is_none() || update_task_res.is_error == Some(false));
+
+    // Immediate on-disk check for status
+    let disk_doc = crate::pkb::parse_file_relative(&abs_path, root).expect("parse relative");
+    assert_eq!(
+        disk_doc.status.as_deref(),
+        Some("done"),
+        "disk file status must be 'done' immediately after update_task returns"
+    );
+
+    // Immediate get_task check for status
+    let get_task_done = server.handle_get_task(&json!({"id": id})).unwrap();
+    let get_task_done_json = task_json(&get_task_done);
+    assert_eq!(
+        get_task_done_json.get("status").and_then(|v| v.as_str()),
+        Some("done"),
+        "get_task must return status 'done' immediately"
+    );
+
+    // Immediate list_tasks check for status
+    let list_res = server
+        .handle_list_tasks(&json!({
+            "status": "done",
+            "format": "json",
+            "include_done": true,
+        }))
+        .unwrap();
+    let list_json = task_json(&list_res);
+    let tasks_arr = list_json
+        .get("tasks")
+        .and_then(|t| t.as_array())
+        .expect("tasks array");
+    let found = tasks_arr
+        .iter()
+        .any(|t| t.get("id").and_then(|v| v.as_str()) == Some(id.as_str()));
+    assert!(
+        found,
+        "list_tasks(status=done) must find the task immediately after update_task: {list_json}"
+    );
+}
+
+/// Regression test for refresh_graph reporting unparseable/skipped files and closing index staleness gap
+#[test]
+fn test_refresh_graph_closes_disk_gap_and_reports_unparseable_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    write_test_polecat_yaml(root);
+
+    let graph = GraphStore::build(&[], root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let db_path = root.join("db");
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        db_path,
+        Arc::new(RwLock::new(graph)),
+    );
+
+    // Valid task 1
+    server
+        .handle_create_task(&json!({
+            "title": "Task 1",
+            "type": "task",
+            "project": "proj-test",
+            "parent": "proj-test",
+            "allow_missing_parent": true,
+        }))
+        .unwrap();
+
+    // Valid task 2 written directly to disk
+    std::fs::write(
+        root.join("tasks/task-2.md"),
+        "---\nid: task-2\ntitle: Task 2\ntype: task\nstatus: ready\nproject: proj-test\n---\n\nBody.\n",
+    )
+    .unwrap();
+
+    // Call refresh_graph
+    let refresh_res = server.handle_refresh_graph(&json!({})).unwrap();
+    let refresh_json = task_json(&refresh_res);
+    assert_eq!(refresh_json.get("ok").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        refresh_json.get("scanned_files").and_then(|v| v.as_u64()),
+        Some(2)
+    );
+    assert_eq!(
+        refresh_json.get("parsed_documents").and_then(|v| v.as_u64()),
+        Some(2)
+    );
+    assert_eq!(
+        refresh_json.get("unparseable_or_skipped_files").and_then(|v| v.as_u64()),
+        Some(0)
+    );
+
+    // Verify list_tasks has no staleness warning
+    let list_res = server
+        .handle_list_tasks(&json!({"format": "json", "include_done": true}))
+        .unwrap();
+    let list_text = list_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(
+        !list_text.contains("index_warning"),
+        "list_tasks must not warn after refresh_graph: {list_text}"
+    );
+}
+

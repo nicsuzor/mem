@@ -128,6 +128,16 @@ pub struct PkbSearchServer {
     pub(crate) embed_worker_running: Arc<std::sync::atomic::AtomicBool>,
     /// Last reindex timestamp and outcome.
     pub(crate) last_reindex: Arc<RwLock<ReindexStatus>>,
+    /// Stats from the last disk scan and graph rebuild.
+    pub(crate) last_rebuild_stats: Arc<RwLock<RebuildStats>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(dead_code)]
+pub(crate) struct RebuildStats {
+    pub scanned_files: usize,
+    pub parsed_documents: usize,
+    pub loaded_nodes: usize,
 }
 
 pub(crate) const DRY_RUN_WARNING: &str = "DRY RUN — no files modified. Pass dry_run=false to execute.\n\n";
@@ -140,6 +150,14 @@ impl PkbSearchServer {
         db_path: PathBuf,
         graph: Arc<RwLock<GraphStore>>,
     ) -> Self {
+        let initial_scanned = crate::pkb::scan_directory(&pkb_root).len();
+        let initial_loaded = graph.read().node_count();
+        let initial_file_backed = graph
+            .read()
+            .nodes_map()
+            .values()
+            .filter(|n| !n.path.as_os_str().is_empty())
+            .count();
         Self {
             store,
             embedder,
@@ -163,6 +181,11 @@ impl PkbSearchServer {
             last_reindex: Arc::new(RwLock::new(ReindexStatus {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 outcome: "ok".to_string(),
+            })),
+            last_rebuild_stats: Arc::new(RwLock::new(RebuildStats {
+                scanned_files: initial_scanned,
+                parsed_documents: initial_file_backed,
+                loaded_nodes: initial_loaded,
             })),
         }
     }
@@ -267,6 +290,10 @@ impl PkbSearchServer {
     /// warn permanently on a correctly-synced index.
     pub(crate) fn list_staleness_signal(&self) -> Option<(usize, usize)> {
         let disk_count = crate::pkb::scan_directory(&self.pkb_root).len();
+        let last_stats = *self.last_rebuild_stats.read();
+        if disk_count == last_stats.scanned_files {
+            return None;
+        }
         let index_count = self
             .graph
             .read()
@@ -284,12 +311,14 @@ impl PkbSearchServer {
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
     /// Full rebuild of the graph store from disk (for batch operations).
     ///
+    /// Returns (scanned_files_count, parsed_documents_count, loaded_nodes_count).
+    ///
     /// Concurrency: takes the store read lock just long enough to snapshot
     /// the per-document averaged embeddings, then drops it. The (slow)
     /// scan + parse + similarity-edge build runs against the snapshot with
     /// no store lock held — concurrent writers can proceed during the
     /// rebuild instead of blocking behind it.
-    pub(crate) fn rebuild_graph(&self) {
+    pub(crate) fn rebuild_graph(&self) -> (usize, usize, usize) {
         let _t_snap = std::time::Instant::now();
         let snapshot = self.store.read().averaged_embeddings();
         tracing::debug!(
@@ -304,13 +333,15 @@ impl PkbSearchServer {
         self.patched_during_rebuild.lock().clear();
 
         let files = crate::pkb::scan_directory(&self.pkb_root);
+        let scanned = files.len();
         let docs: Vec<crate::pkb::PkbDocument> = files
             .par_iter()
             .filter_map(|p| crate::pkb::parse_file_relative(p, &self.pkb_root))
             .collect();
+        let parsed = docs.len();
 
         let mut new_graph = GraphStore::build_with_embeddings(&docs, &self.pkb_root, &snapshot);
-        {
+        let loaded = {
             let mut g = self.graph.write();
             let patched_ids: Vec<String> =
                 self.patched_during_rebuild.lock().iter().cloned().collect();
@@ -322,12 +353,20 @@ impl PkbSearchServer {
             if !patched_ids.is_empty() {
                 new_graph.reclassify();
             }
+            let count = new_graph.node_count();
             *g = new_graph;
-        }
+            count
+        };
         *self.last_reindex.write() = ReindexStatus {
             timestamp: chrono::Utc::now().to_rfc3339(),
             outcome: "ok".to_string(),
         };
+        *self.last_rebuild_stats.write() = RebuildStats {
+            scanned_files: scanned,
+            parsed_documents: parsed,
+            loaded_nodes: loaded,
+        };
+        (scanned, parsed, loaded)
     }
 
     /// Synchronous fast path after a single file changed.
