@@ -300,8 +300,8 @@ fn download_onnx_runtime() -> Result<PathBuf> {
         let mut file = std::fs::File::create(&zip_file)?;
         std::io::copy(&mut reader, &mut file)?;
 
-        // Extract using tar.exe
-        let status = std::process::Command::new("tar.exe")
+        // Extract using tar.exe under bounded timeout
+        let status = crate::cmd::BoundedCommand::new("tar.exe")
             .args(&[
                 "-xf",
                 zip_file.to_str().unwrap(),
