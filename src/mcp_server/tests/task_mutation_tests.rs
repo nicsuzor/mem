@@ -2306,6 +2306,60 @@ use super::*;
         );
     }
 
+    #[test]
+    fn test_update_body_with_get_document_wrapper_does_not_duplicate_frontmatter() {
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-ac4.md",
+            "---\nid: task-ac4\ntitle: AC4 Task\ntype: task\nstatus: ready\nmodified: 2026-08-31T01:37:26.529977728+00:00\ncreated: 2026-08-31T01:37:26.529977728+00:00\n---\n\nInitial body.\n",
+        )]);
+        let path = tmp.path().join("tasks/task-ac4.md");
+
+        // Simulate an agent that read via get_document and submits the full text
+        let get_doc_payload = "\
+## AC4 Task\n\n\
+---\n\
+id: task-ac4\n\
+title: AC4 Task\n\
+type: task\n\
+status: ready\n\
+modified: 2026-08-31T01:37:26.529977728+00:00\n\
+created: 2026-08-31T01:37:26.529977728+00:00\n\
+---\n\n\
+WRITER-B-FRESH-MARKER\n\
+read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
+
+        let res = server.handle_update_body(&json!({
+            "id": "task-ac4",
+            "new_body": get_doc_payload,
+        })).expect("update_body must succeed");
+
+        assert!(res.is_error.is_none() || res.is_error == Some(false));
+
+        let disk_content = std::fs::read_to_string(&path).unwrap();
+        let delimiter_count = disk_content.lines().filter(|l| l.trim() == "---").count();
+        assert_eq!(
+            delimiter_count, 2,
+            "must contain exactly one frontmatter block (2 delimiter lines), but found {delimiter_count}.\nDisk content:\n{disk_content}"
+        );
+        assert!(
+            !disk_content.contains("## AC4 Task\n\n---"),
+            "must not contain duplicated frontmatter header in body.\nDisk content:\n{disk_content}"
+        );
+        assert!(
+            disk_content.contains("WRITER-B-FRESH-MARKER"),
+            "must contain intended body content.\nDisk content:\n{disk_content}"
+        );
+
+        // Immediate get_document read back must have clean body
+        let get_doc = server.handle_get_document(&json!({"id": "task-ac4"})).unwrap();
+        let get_doc_text = get_doc.content.first().and_then(|c| c.as_text()).unwrap().text.clone();
+        let get_doc_delim_count = get_doc_text.lines().filter(|l| l.trim() == "---").count();
+        assert_eq!(
+            get_doc_delim_count, 2,
+            "get_document must reflect exactly one frontmatter block.\nGot:\n{get_doc_text}"
+        );
+    }
+
     // ── aops_81bbdd77: `since=`/`before=` compare the UTC calendar date of
     // `modified`, not a local one. Pin that explicitly: a task modified late
     // in the UTC day (which is still "yesterday" in a UTC+ timezone at local
