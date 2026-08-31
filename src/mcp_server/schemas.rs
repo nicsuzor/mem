@@ -429,7 +429,7 @@ impl PkbSearchServer {
                         "issue_url": { "type": "string", "description": "External issue/ticket URL" },
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
                         "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." },
-                        "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks when releasing as done or cancelled. Default: false." }
+                        "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks when releasing as done or merge_ready. Default: false." }
                     },
                     "required": ["status", "summary"]
                 }))
