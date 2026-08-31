@@ -1397,31 +1397,47 @@ pub fn validate_scalar_lengths(key: &str, val: &serde_json::Value, max_len: usiz
 /// If any of these appear in `updates`, they update the body section instead of frontmatter.
 const FRONTMATTER_EXCLUDED_KEYS: &[&str] = &["body", "content"];
 
+/// Classification of raw YAML frontmatter in a document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RawFrontmatter {
+    /// No leading frontmatter delimiter at all (safe to treat as plain markdown).
+    None,
+    /// Well-formed frontmatter block enclosed between opening and closing `---` delimiters.
+    Present(String),
+    /// File opens with `---` on line 1, but has no valid closing `---` delimiter line
+    /// (e.g. malformed terminator `---# Title`, or EOF without closing delimiter).
+    Unterminated,
+}
+
 /// Extract the raw YAML text of a document's frontmatter block — the lines
 /// between the opening `---` (which must be the very first line, modulo a BOM)
 /// and the next line that is exactly `---`.
 ///
-/// Returns `None` when the file has no frontmatter block at all (no leading
-/// delimiter, or no closing delimiter). Used by `update_document` to tell the
-/// difference between "no frontmatter" and "frontmatter that failed to parse"
-/// so the latter can fail loud instead of being clobbered (Bug 1, task-d802855c).
-fn extract_raw_frontmatter(content: &str) -> Option<String> {
+/// Distinguishes between:
+/// - `RawFrontmatter::None` when the file has no leading `---` delimiter (safe).
+/// - `RawFrontmatter::Present(raw)` when enclosed by a valid closing `---` line.
+/// - `RawFrontmatter::Unterminated` when the file opens with `---` but has no valid closing `---` line.
+///
+/// Used by `update_document` and other writers to tell the difference between
+/// "genuinely no frontmatter" and "frontmatter that failed to parse / has malformed terminator"
+/// so the latter fails loud instead of being silently clobbered (Bug 1, task-d802855c & mem_00e9a699).
+fn extract_raw_frontmatter(content: &str) -> RawFrontmatter {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     let mut lines = content.lines();
     match lines.next() {
         Some(first) if first.trim_end() == "---" => {}
-        _ => return None,
+        _ => return RawFrontmatter::None,
     }
     let mut block = String::new();
     for line in lines {
         if line.trim_end() == "---" {
-            return Some(block);
+            return RawFrontmatter::Present(block);
         }
         block.push_str(line);
         block.push('\n');
     }
-    // No closing delimiter — not a well-formed frontmatter block.
-    None
+    // Opening delimiter existed, but no closing delimiter found.
+    RawFrontmatter::Unterminated
 }
 
 /// Scan raw frontmatter for the first duplicated top-level mapping key.
@@ -1493,65 +1509,79 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
 
-    // Bug 1 (task-d802855c): refuse to clobber unparseable frontmatter.
+    // Bug 1 (task-d802855c) & mem_00e9a699: refuse to clobber unparseable or unterminated frontmatter.
     //
     // gray_matter silently yields `data: None` when the frontmatter block is
     // invalid YAML — most commonly duplicate keys produced by a line-based
-    // merge of two task files (e.g. `status: ready` + `status: cancelled`).
+    // merge of two task files (e.g. `status: ready` + `status: cancelled`), OR
+    // when the frontmatter terminator is malformed (e.g. `---# Title`).
     // The old code then fell back to an EMPTY map and rewrote the file with
     // only the fields the caller was changing, destroying id/title/type/
-    // depends_on/parent/tags. Detect "has a non-empty frontmatter block but it
-    // didn't parse" and fail loud instead of writing a destructive subset.
+    // depends_on/parent/tags. Detect "has an unterminated frontmatter block" or
+    // "has a non-empty frontmatter block but it didn't parse" and fail loud instead
+    // of writing a destructive subset.
     if fm.is_empty() {
-        if let Some(raw) = extract_raw_frontmatter(&content) {
-            if !raw.trim().is_empty() {
-                // Duplicate top-level keys are the canonical recurrence: git's
-                // default line merge of two task files interleaves both sides'
-                // frontmatter into doubled keys (e.g. `status: ready` +
-                // `status: cancelled`). serde_yaml would silently take the last
-                // value — potentially the WRONG side of the conflict — so we
-                // refuse outright and let a human restore from server truth.
-                if let Some(dup) = first_duplicate_top_level_key(&raw) {
-                    anyhow::bail!(
-                        "Refusing to update {}: frontmatter has a duplicate top-level key '{}', \
-                         which usually means a bad line-based merge of two task files. Restore the \
-                         frontmatter from server truth (or fix it by hand) before updating — writing \
-                         now would silently resolve the conflict and could drop fields.",
-                        path.display(),
-                        dup
-                    );
-                }
-                match serde_yaml::from_str::<serde_json::Value>(&raw) {
-                    // gray_matter choked but serde_yaml can parse it — recover
-                    // the full map so the round-trip preserves every key. This
-                    // heals legacy single-value issues (e.g. a folded embedded
-                    // newline) without losing id/title/type.
-                    Ok(serde_json::Value::Object(map)) if !map.is_empty() => {
-                        fm = map;
-                    }
-                    // Genuinely empty / comment-only frontmatter — nothing to
-                    // lose, proceed with the (empty) map.
-                    Ok(serde_json::Value::Null) | Ok(serde_json::Value::Object(_)) => {}
-                    // Frontmatter is a scalar/array, not a mapping — refuse.
-                    Ok(_) => {
+        match extract_raw_frontmatter(&content) {
+            RawFrontmatter::Unterminated => {
+                anyhow::bail!(
+                    "Refusing to update {}: frontmatter opens with '---' but has no valid closing \
+                     '---' delimiter (e.g. malformed or glued terminator). Restore the frontmatter \
+                     from server truth (or fix it by hand) before updating — writing now would destroy \
+                     id/title/type and other fields.",
+                    path.display()
+                );
+            }
+            RawFrontmatter::Present(raw) => {
+                if !raw.trim().is_empty() {
+                    // Duplicate top-level keys are the canonical recurrence: git's
+                    // default line merge of two task files interleaves both sides'
+                    // frontmatter into doubled keys (e.g. `status: ready` +
+                    // `status: cancelled`). serde_yaml would silently take the last
+                    // value — potentially the WRONG side of the conflict — so we
+                    // refuse outright and let a human restore from server truth.
+                    if let Some(dup) = first_duplicate_top_level_key(&raw) {
                         anyhow::bail!(
-                            "Refusing to update {}: existing frontmatter is not a key/value mapping. \
-                             Fix the frontmatter by hand before updating.",
-                            path.display()
-                        );
-                    }
-                    // Real parse failure (bad indentation, unclosed flow, …).
-                    Err(e) => {
-                        anyhow::bail!(
-                            "Refusing to update {}: existing frontmatter could not be parsed ({}). \
-                             Restore the frontmatter from server truth (or fix it by hand) before \
-                             updating — writing now would destroy id/title/type and other fields.",
+                            "Refusing to update {}: frontmatter has a duplicate top-level key '{}', \
+                             which usually means a bad line-based merge of two task files. Restore the \
+                             frontmatter from server truth (or fix it by hand) before updating — writing \
+                             now would silently resolve the conflict and could drop fields.",
                             path.display(),
-                            e
+                            dup
                         );
+                    }
+                    match serde_yaml::from_str::<serde_json::Value>(&raw) {
+                        // gray_matter choked but serde_yaml can parse it — recover
+                        // the full map so the round-trip preserves every key. This
+                        // heals legacy single-value issues (e.g. a folded embedded
+                        // newline) without losing id/title/type.
+                        Ok(serde_json::Value::Object(map)) if !map.is_empty() => {
+                            fm = map;
+                        }
+                        // Genuinely empty / comment-only frontmatter — nothing to
+                        // lose, proceed with the (empty) map.
+                        Ok(serde_json::Value::Null) | Ok(serde_json::Value::Object(_)) => {}
+                        // Frontmatter is a scalar/array, not a mapping — refuse.
+                        Ok(_) => {
+                            anyhow::bail!(
+                                "Refusing to update {}: existing frontmatter is not a key/value mapping. \
+                                 Fix the frontmatter by hand before updating.",
+                                path.display()
+                            );
+                        }
+                        // Real parse failure (bad indentation, unclosed flow, …).
+                        Err(e) => {
+                            anyhow::bail!(
+                                "Refusing to update {}: existing frontmatter could not be parsed ({}). \
+                                 Restore the frontmatter from server truth (or fix it by hand) before \
+                                 updating — writing now would destroy id/title/type and other fields.",
+                                path.display(),
+                                e
+                            );
+                        }
                     }
                 }
             }
+            RawFrontmatter::None => {}
         }
     }
 
@@ -1817,13 +1847,25 @@ pub struct DeleteObservationsResult {
 ///
 /// Untouched body content is byte-identical after the operation (no reformatting).
 /// Writes atomically under the `expected_modified` CAS contract.
+/// Classification of raw YAML frontmatter and body split.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SplitFrontmatter<'a> {
+    /// No leading frontmatter delimiter at all (safe to treat as plain markdown body).
+    NoFrontmatter(&'a str),
+    /// Well-formed frontmatter block and body slice.
+    Present(String, &'a str),
+    /// File opens with `---` on line 1, but has no valid closing `---` delimiter line.
+    Unterminated,
+}
+
 /// Split a document into its raw YAML frontmatter text and raw body slice.
 ///
-/// Returns `(Some(raw_frontmatter), raw_body)` if the document has a well-formed
-/// frontmatter block, or `(None, raw_body)` if there is no frontmatter.
-/// The `raw_body` slice starts immediately after the closing `---` line delimiter,
-/// preserving all subsequent bytes verbatim.
-fn split_raw_frontmatter_and_body(content: &str) -> (Option<String>, &str) {
+/// Distinguishes between:
+/// - `SplitFrontmatter::NoFrontmatter(raw_body)` if there is no leading `---` line.
+/// - `SplitFrontmatter::Present(raw_fm, raw_body)` if the document has a well-formed frontmatter block.
+///   The `raw_body` slice starts immediately after the closing `---` line delimiter.
+/// - `SplitFrontmatter::Unterminated` if the document begins with `---` but has no valid closing `---` line.
+fn split_raw_frontmatter_and_body(content: &str) -> SplitFrontmatter<'_> {
     let clean = content.strip_prefix('\u{feff}').unwrap_or(content);
     let mut offset = 0;
     let mut lines = clean.split_inclusive('\n');
@@ -1831,7 +1873,7 @@ fn split_raw_frontmatter_and_body(content: &str) -> (Option<String>, &str) {
         Some(first) if first.trim_end() == "---" => {
             offset += first.len();
         }
-        _ => return (None, content),
+        _ => return SplitFrontmatter::NoFrontmatter(content),
     }
 
     let mut fm_block = String::new();
@@ -1847,9 +1889,9 @@ fn split_raw_frontmatter_and_body(content: &str) -> (Option<String>, &str) {
 
     if found_closing {
         let prefix_len = content.len() - clean.len();
-        (Some(fm_block), &content[prefix_len + offset..])
+        SplitFrontmatter::Present(fm_block, &content[prefix_len + offset..])
     } else {
-        (None, content)
+        SplitFrontmatter::Unterminated
     }
 }
 
@@ -1902,7 +1944,18 @@ pub fn add_observations(
     let file_content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read: {}", path.display()))?;
 
-    let (raw_fm, body) = split_raw_frontmatter_and_body(&file_content);
+    let (raw_fm, body) = match split_raw_frontmatter_and_body(&file_content) {
+        SplitFrontmatter::Unterminated => {
+            anyhow::bail!(
+                "Refusing to update {}: frontmatter opens with '---' but has no valid closing \
+                 '---' delimiter (e.g. malformed or glued terminator). Restore the frontmatter \
+                 from server truth (or fix it by hand) before updating.",
+                path.display()
+            );
+        }
+        SplitFrontmatter::Present(fm, b) => (Some(fm), b),
+        SplitFrontmatter::NoFrontmatter(b) => (None, b),
+    };
 
     let matter = Matter::<YAML>::new();
     let parsed = matter.parse(&file_content);
@@ -2094,7 +2147,18 @@ pub fn delete_observations(
     let file_content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read: {}", path.display()))?;
 
-    let (raw_fm, body) = split_raw_frontmatter_and_body(&file_content);
+    let (raw_fm, body) = match split_raw_frontmatter_and_body(&file_content) {
+        SplitFrontmatter::Unterminated => {
+            anyhow::bail!(
+                "Refusing to update {}: frontmatter opens with '---' but has no valid closing \
+                 '---' delimiter (e.g. malformed or glued terminator). Restore the frontmatter \
+                 from server truth (or fix it by hand) before updating.",
+                path.display()
+            );
+        }
+        SplitFrontmatter::Present(fm, b) => (Some(fm), b),
+        SplitFrontmatter::NoFrontmatter(b) => (None, b),
+    };
 
     let matter = Matter::<YAML>::new();
     let parsed = matter.parse(&file_content);
@@ -2333,6 +2397,41 @@ pub fn edit_body(
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
 
+    if fm.is_empty() {
+        match extract_raw_frontmatter(&file_content) {
+            RawFrontmatter::Unterminated => {
+                anyhow::bail!(
+                    "Refusing to edit {}: frontmatter opens with '---' but has no valid closing '---' delimiter. \
+                     Restore the frontmatter from server truth (or fix it by hand) before editing.",
+                    path.display()
+                );
+            }
+            RawFrontmatter::Present(raw) if !raw.trim().is_empty() => {
+                if let Some(dup) = first_duplicate_top_level_key(&raw) {
+                    anyhow::bail!(
+                        "Refusing to edit {}: frontmatter has a duplicate top-level key '{}'",
+                        path.display(),
+                        dup
+                    );
+                }
+                match serde_yaml::from_str::<serde_json::Value>(&raw) {
+                    Ok(serde_json::Value::Object(map)) if !map.is_empty() => {
+                        fm = map;
+                    }
+                    Ok(serde_json::Value::Null) | Ok(serde_json::Value::Object(_)) => {}
+                    _ => {
+                        anyhow::bail!(
+                            "Refusing to edit {}: existing frontmatter could not be parsed. \
+                             Restore the frontmatter from server truth (or fix it by hand) before editing.",
+                            path.display()
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     if let Some(expected) = expected_modified {
         let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
         if actual != expected {
@@ -2435,6 +2534,41 @@ pub fn rewrite_body(
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default();
 
+        if fm.is_empty() {
+            match extract_raw_frontmatter(&file_content) {
+                RawFrontmatter::Unterminated => {
+                    anyhow::bail!(
+                        "Refusing to rewrite body of {}: frontmatter opens with '---' but has no valid closing '---' delimiter. \
+                         Restore the frontmatter from server truth (or fix it by hand) before rewriting.",
+                        path.display()
+                    );
+                }
+                RawFrontmatter::Present(raw) if !raw.trim().is_empty() => {
+                    if let Some(dup) = first_duplicate_top_level_key(&raw) {
+                        anyhow::bail!(
+                            "Refusing to rewrite body of {}: frontmatter has a duplicate top-level key '{}'",
+                            path.display(),
+                            dup
+                        );
+                    }
+                    match serde_yaml::from_str::<serde_json::Value>(&raw) {
+                        Ok(serde_json::Value::Object(map)) if !map.is_empty() => {
+                            fm = map;
+                        }
+                        Ok(serde_json::Value::Null) | Ok(serde_json::Value::Object(_)) => {}
+                        _ => {
+                            anyhow::bail!(
+                                "Refusing to rewrite body of {}: existing frontmatter could not be parsed. \
+                                 Restore the frontmatter from server truth (or fix it by hand) before rewriting.",
+                                path.display()
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         if let Some(expected) = expected_modified {
             let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
             if actual != expected {
@@ -2507,6 +2641,41 @@ pub fn append_to_document(
         .and_then(|d| d.deserialize::<serde_json::Value>().ok())
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
+
+    if fm.is_empty() {
+        match extract_raw_frontmatter(&file_content) {
+            RawFrontmatter::Unterminated => {
+                anyhow::bail!(
+                    "Refusing to append to {}: frontmatter opens with '---' but has no valid closing '---' delimiter. \
+                     Restore the frontmatter from server truth (or fix it by hand) before appending.",
+                    path.display()
+                );
+            }
+            RawFrontmatter::Present(raw) if !raw.trim().is_empty() => {
+                if let Some(dup) = first_duplicate_top_level_key(&raw) {
+                    anyhow::bail!(
+                        "Refusing to append to {}: frontmatter has a duplicate top-level key '{}'",
+                        path.display(),
+                        dup
+                    );
+                }
+                match serde_yaml::from_str::<serde_json::Value>(&raw) {
+                    Ok(serde_json::Value::Object(map)) if !map.is_empty() => {
+                        fm = map;
+                    }
+                    Ok(serde_json::Value::Null) | Ok(serde_json::Value::Object(_)) => {}
+                    _ => {
+                        anyhow::bail!(
+                            "Refusing to append to {}: existing frontmatter could not be parsed. \
+                             Restore the frontmatter from server truth (or fix it by hand) before appending.",
+                            path.display()
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
     if let Some(expected) = expected_modified {
         let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
@@ -5023,13 +5192,172 @@ mod tests {
     #[test]
     fn extract_raw_frontmatter_handles_block_and_no_block() {
         // Well-formed block: returns the inner YAML, sans delimiters.
-        let raw = extract_raw_frontmatter("---\nid: x\ntitle: T\n---\n\nbody\n").unwrap();
-        assert!(raw.contains("id: x") && raw.contains("title: T"));
-        assert!(!raw.contains("---"));
-        // No leading delimiter -> no block.
-        assert!(extract_raw_frontmatter("# just a heading\n").is_none());
-        // Opening delimiter but no closing -> not well-formed.
-        assert!(extract_raw_frontmatter("---\nid: x\nno closing\n").is_none());
+        let raw = extract_raw_frontmatter("---\nid: x\ntitle: T\n---\n\nbody\n");
+        assert_eq!(
+            raw,
+            RawFrontmatter::Present("id: x\ntitle: T\n".to_string())
+        );
+        // No leading delimiter -> no block (safe case).
+        assert_eq!(
+            extract_raw_frontmatter("# just a heading\n"),
+            RawFrontmatter::None
+        );
+        // Opening delimiter but no closing -> Unterminated (must NOT be treated as None/safe).
+        assert_eq!(
+            extract_raw_frontmatter("---\nid: x\nno closing\n"),
+            RawFrontmatter::Unterminated
+        );
+        // Glued terminator (e.g. ---# Title) -> Unterminated.
+        assert_eq!(
+            extract_raw_frontmatter("---\nid: x\n---# Title\n"),
+            RawFrontmatter::Unterminated
+        );
+    }
+
+    // ── mem_00e9a699: malformed / unterminated frontmatter must fail closed ──
+
+    /// A file whose frontmatter terminator is malformed (e.g. `---# Title` from
+    /// mem_b620ad30 or manual edit) must NOT be rewritten from an empty frontmatter map.
+    /// update_document must fail loud and leave disk bytes completely untouched.
+    #[test]
+    fn update_document_refuses_to_clobber_glued_frontmatter_terminator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-glued.md");
+        let original = "---\nid: task-glued1\ntitle: Glued Title Defect\ntype: task\nstatus: ready\nparent: epic-01dba8f8\ntags:\n  - pkb\n  - write-path\ndepends_on:\n  - task-upstream\n---# Title\n\n# Body content\n";
+        std::fs::write(&path, original).unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("status".to_string(), serde_json::json!("in_progress"));
+        let res = update_document(&path, updates);
+
+        assert!(
+            res.is_err(),
+            "update on malformed/glued frontmatter terminator must fail closed"
+        );
+        let err_msg = format!("{:#}", res.unwrap_err());
+        assert!(
+            err_msg.contains("no valid closing '---' delimiter"),
+            "error message must describe the delimiter issue, got: {err_msg}"
+        );
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after, original,
+            "file on disk must remain byte-for-byte identical after refusal"
+        );
+        assert!(after.contains("id: task-glued1"), "id must survive on disk");
+        assert!(after.contains("title: Glued Title Defect"), "title must survive on disk");
+        assert!(after.contains("type: task"), "type must survive on disk");
+        assert!(after.contains("parent: epic-01dba8f8"), "parent must survive on disk");
+        assert!(after.contains("tags:"), "tags must survive on disk");
+        assert!(after.contains("depends_on:"), "depends_on must survive on disk");
+    }
+
+    /// A file with leading `---` but no closing delimiter at all must fail closed.
+    #[test]
+    fn update_document_refuses_to_clobber_unterminated_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("task-unclosed.md");
+        let original = "---\nid: task-unclosed1\ntitle: Unclosed\ntype: task\nstatus: ready\nparent: epic-1\n";
+        std::fs::write(&path, original).unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("status".to_string(), serde_json::json!("in_progress"));
+        let res = update_document(&path, updates);
+
+        assert!(
+            res.is_err(),
+            "update on unclosed frontmatter must fail closed"
+        );
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after, original,
+            "file on disk must remain byte-for-byte identical after refusal"
+        );
+    }
+
+    /// Safe case (AC3): A document with no leading `---` at all must still write successfully.
+    #[test]
+    fn update_document_succeeds_on_document_with_no_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("plain-note.md");
+        let original = "# Plain Document\n\nThis document has no frontmatter.\n";
+        std::fs::write(&path, original).unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("status".to_string(), serde_json::json!("in_progress"));
+        let res = update_document(&path, updates);
+
+        assert!(
+            res.is_ok(),
+            "update on document without frontmatter must succeed (safe case)"
+        );
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("status: in_progress"), "status must be written in frontmatter");
+        assert!(after.contains("# Plain Document"), "body must be preserved");
+    }
+
+    /// `add_observations` and `delete_observations` must fail closed on glued frontmatter.
+    #[test]
+    fn observations_crud_refuses_glued_frontmatter_terminator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("obs-glued.md");
+        let original = "---\nid: obs-glued1\ntitle: Observations Glued\ntype: task\nstatus: in_progress\nmodified: 2026-08-31T00:00:00Z\n---# Title\n\n## Observations\n- Old observation\n";
+        std::fs::write(&path, original).unwrap();
+
+        // add_observations refusal
+        let add_res = add_observations(
+            &path,
+            &["New observation".to_string()],
+            Some("Observations"),
+            false,
+            None,
+        );
+        assert!(
+            add_res.is_err(),
+            "add_observations must fail closed on glued frontmatter"
+        );
+        let after_add = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after_add, original,
+            "disk must remain byte-identical after add_observations failure"
+        );
+
+        // delete_observations refusal
+        let del_res = delete_observations(
+            &path,
+            &["Old observation".to_string()],
+            None,
+        );
+        assert!(
+            del_res.is_err(),
+            "delete_observations must fail closed on glued frontmatter"
+        );
+        let after_del = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after_del, original,
+            "disk must remain byte-identical after delete_observations failure"
+        );
+    }
+
+    /// `edit_body` and `rewrite_body` must fail closed on glued frontmatter when preserve_frontmatter is true.
+    #[test]
+    fn edit_and_rewrite_body_refuse_glued_frontmatter_terminator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("body-glued.md");
+        let original = "---\nid: body-glued1\ntitle: Body Glued\ntype: task\nstatus: in_progress\n---# Title\n\nOriginal body\n";
+        std::fs::write(&path, original).unwrap();
+
+        let rewrite_res = rewrite_body(&path, "New body", true, None);
+        assert!(
+            rewrite_res.is_err(),
+            "rewrite_body must fail closed on glued frontmatter when preserving frontmatter"
+        );
+        let after_rewrite = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after_rewrite, original,
+            "disk must remain byte-identical after rewrite_body failure"
+        );
     }
 
     #[test]
