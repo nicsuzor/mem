@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 mod path_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -220,6 +221,9 @@ pub struct VectorStore {
     documents: HashMap<String, DocumentEntry>,
     /// Embedding dimension
     dimension: usize,
+    /// In-memory BM25 lexical index
+    #[serde(skip)]
+    bm25: Arc<parking_lot::RwLock<crate::bm25::Bm25Index>>,
 }
 
 /// Helper to check if a document's doc_type matches an optional type filter string.
@@ -285,6 +289,7 @@ impl VectorStore {
         Self {
             documents: HashMap::new(),
             dimension,
+            bm25: Arc::new(parking_lot::RwLock::new(crate::bm25::Bm25Index::new())),
         }
     }
 
@@ -503,6 +508,8 @@ impl VectorStore {
         if wal.exists() {
             let _ = store.replay_wal(&wal);
         }
+
+        store.sync_bm25_all();
 
         Ok(store)
     }
@@ -738,6 +745,37 @@ impl VectorStore {
         Ok(PreparedUpsert::Full(Box::new(entry)))
     }
 
+    /// Synchronize the in-memory BM25 index with all documents currently in the store.
+    pub fn sync_bm25_all(&self) {
+        let mut bm25 = self.bm25.write();
+        bm25.clear();
+        for entry in self.documents.values() {
+            let body_text = if !entry.chunk_texts.is_empty() {
+                entry.chunk_texts.join(" ")
+            } else {
+                String::new()
+            };
+            let snippet = entry.body_chunks.first().cloned().unwrap_or_else(|| {
+                entry.chunk_texts.first().cloned().unwrap_or_default()
+            });
+            let chunk_text = snippet.clone();
+            bm25.upsert(
+                &entry.id,
+                entry.path.clone(),
+                &entry.title,
+                entry.doc_type.clone(),
+                entry.status.clone(),
+                entry.tags.clone(),
+                entry.modified.clone(),
+                entry.date.clone(),
+                entry.confidence,
+                snippet,
+                chunk_text,
+                &body_text,
+            );
+        }
+    }
+
     /// Apply a [`PreparedUpsert`] under a brief write lock.
     ///
     /// `MetadataOnly` is a cheap HashMap mutation; `Full` is a single
@@ -758,6 +796,25 @@ impl VectorStore {
                     entry.modified = patch.modified;
                     entry.confidence = patch.confidence;
                     entry.file_hash = Some(patch.file_hash);
+
+                    let body_text = entry.chunk_texts.join(" ");
+                    let snippet = entry.body_chunks.first().cloned().unwrap_or_else(|| {
+                        entry.chunk_texts.first().cloned().unwrap_or_default()
+                    });
+                    self.bm25.write().upsert(
+                        &entry.id,
+                        entry.path.clone(),
+                        &entry.title,
+                        entry.doc_type.clone(),
+                        entry.status.clone(),
+                        entry.tags.clone(),
+                        entry.modified.clone(),
+                        entry.date.clone(),
+                        entry.confidence,
+                        snippet.clone(),
+                        snippet,
+                        &body_text,
+                    );
                 } else {
                     // Race: the entry was removed between prepare and apply.
                     // Drop the patch — there's nothing to update.
@@ -768,6 +825,24 @@ impl VectorStore {
                 }
             }
             PreparedUpsert::Full(entry) => {
+                let body_text = entry.chunk_texts.join(" ");
+                let snippet = entry.body_chunks.first().cloned().unwrap_or_else(|| {
+                    entry.chunk_texts.first().cloned().unwrap_or_default()
+                });
+                self.bm25.write().upsert(
+                    &entry.id,
+                    entry.path.clone(),
+                    &entry.title,
+                    entry.doc_type.clone(),
+                    entry.status.clone(),
+                    entry.tags.clone(),
+                    entry.modified.clone(),
+                    entry.date.clone(),
+                    entry.confidence,
+                    snippet.clone(),
+                    snippet,
+                    &body_text,
+                );
                 self.documents.insert(entry.id.clone(), *entry);
             }
         }
@@ -800,13 +875,13 @@ impl VectorStore {
         let norm_path = PathBuf::from(doc.path.to_string_lossy().replace('\\', "/"));
 
         let entry = DocumentEntry {
-            path: norm_path,
+            path: norm_path.clone(),
             title: doc.title.clone(),
             doc_type: doc.doc_type.clone(),
             status: doc.status.clone(),
             tags: doc.tags.clone(),
             id: canonical_id.clone(),
-            date,
+            date: date.clone(),
             consolidated: doc.consolidated,
             consolidated_at: doc.consolidated_at.clone(),
             modified: doc.modified.clone(),
@@ -815,9 +890,28 @@ impl VectorStore {
             file_hash: Some(doc.file_hash.clone()),
             body_hash: Some(body_hash),
             chunk_embeddings,
-            chunk_texts: chunks,
-            body_chunks,
+            chunk_texts: chunks.clone(),
+            body_chunks: body_chunks.clone(),
         };
+
+        let body_text = chunks.join(" ");
+        let snippet = body_chunks.first().cloned().unwrap_or_else(|| {
+            chunks.first().cloned().unwrap_or_default()
+        });
+        self.bm25.write().upsert(
+            &canonical_id,
+            norm_path,
+            &doc.title,
+            doc.doc_type.clone(),
+            doc.status.clone(),
+            doc.tags.clone(),
+            doc.modified.clone(),
+            date,
+            confidence,
+            snippet.clone(),
+            snippet,
+            &body_text,
+        );
 
         self.documents.insert(canonical_id, entry);
     }
@@ -826,6 +920,7 @@ impl VectorStore {
     ///
     /// Returns true if the document was found and removed.
     pub fn remove(&mut self, id: &str) -> bool {
+        self.bm25.write().remove(id);
         self.documents.remove(id).is_some()
     }
 
@@ -835,12 +930,65 @@ impl VectorStore {
         existing_ids: &std::collections::HashSet<String>,
     ) -> usize {
         let before = self.documents.len();
-        self.documents.retain(|id, _| existing_ids.contains(id));
+        let mut bm25 = self.bm25.write();
+        self.documents.retain(|id, _| {
+            let keep = existing_ids.contains(id);
+            if !keep {
+                bm25.remove(id);
+            }
+            keep
+        });
         let removed = before - self.documents.len();
         if removed > 0 {
             tracing::info!("Removed {removed} deleted documents from index");
         }
         removed
+    }
+
+    /// Lexical BM25 search
+    pub fn search_bm25(
+        &self,
+        query: &str,
+        limit: usize,
+        pkb_root: &Path,
+        since: Option<&str>,
+        before: Option<&str>,
+        type_filter: Option<&str>,
+    ) -> Vec<SearchResult> {
+        self.bm25.read().search(query, limit, pkb_root, since, before, type_filter)
+    }
+
+    /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via Reciprocal Rank Fusion (RRF).
+    /// If a reranker is provided, scores and re-orders the fused candidates.
+    pub fn search_hybrid(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        limit: usize,
+        pkb_root: &Path,
+        since: Option<&str>,
+        before: Option<&str>,
+        type_filter: Option<&str>,
+        reranker: Option<&crate::rerank::CrossEncoderReranker>,
+    ) -> Vec<SearchResult> {
+        let fetch_limit = (limit * 3).max(20);
+        let vector_results = self.search(query_embedding, fetch_limit, pkb_root, since, before, type_filter);
+        let bm25_results = self.search_bm25(query, fetch_limit, pkb_root, since, before, type_filter);
+
+        let config = crate::rrf::RrfConfig {
+            k: crate::rrf::DEFAULT_RRF_K,
+            vector_weight: crate::rrf::DEFAULT_VECTOR_WEIGHT,
+            bm25_weight: crate::rrf::DEFAULT_BM25_WEIGHT,
+        };
+
+        let mut fused = crate::rrf::fuse_rrf(vector_results, bm25_results, &config, fetch_limit);
+
+        if let Some(r) = reranker {
+            r.rerank(query, &mut fused, limit);
+        }
+
+        fused.truncate(limit);
+        fused
     }
 
     /// Semantic search: find the top-k most similar documents to a query.
