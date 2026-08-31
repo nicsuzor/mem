@@ -411,11 +411,15 @@ impl PkbSearchServer {
                 "full" => {
                     // Read full document from disk
                     let abs_path = node
-                        .map(|n| self.abs_path(&n.path))
-                        .unwrap_or_else(|| r.path.clone());
-                    match std::fs::read_to_string(&abs_path) {
-                        Ok(content) => std::borrow::Cow::Owned(content),
-                        Err(_) => std::borrow::Cow::Borrowed(&r.chunk_text),
+                        .and_then(|n| self.abs_path_for_node(n, None).ok())
+                        .unwrap_or_else(|| if r.path.as_os_str().is_empty() { PathBuf::new() } else { r.path.clone() });
+                    if !abs_path.as_os_str().is_empty() {
+                        match std::fs::read_to_string(&abs_path) {
+                            Ok(content) => std::borrow::Cow::Owned(content),
+                            Err(_) => std::borrow::Cow::Borrowed(&r.chunk_text),
+                        }
+                    } else {
+                        std::borrow::Cow::Borrowed(&r.chunk_text)
                     }
                 }
                 _ => std::borrow::Cow::Borrowed(&r.chunk_text), // "chunk" (default)

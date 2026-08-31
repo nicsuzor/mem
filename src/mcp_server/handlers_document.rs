@@ -34,7 +34,8 @@ impl PkbSearchServer {
         let (path, label) = {
             let graph = self.graph.read();
             if let Some(node) = graph.resolve(query) {
-                (self.abs_path(&node.path), node.label.clone())
+                let abs_path = self.abs_path_for_node(node, Some(&graph))?;
+                (abs_path, node.label.clone())
             } else {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
@@ -495,7 +496,7 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        let abs_path = self.abs_path(&node.path);
+        let abs_path = self.abs_path_for_node(node, Some(&graph))?;
         let label = node.label.clone();
         drop(graph);
 
@@ -577,7 +578,7 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            (self.abs_path(&node.path), node.label.clone())
+            (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
         };
 
         let result = crate::document_crud::rewrite_body(
@@ -654,7 +655,7 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            (self.abs_path(&node.path), node.label.clone())
+            (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
         };
 
         let result = crate::document_crud::edit_body(
@@ -744,7 +745,7 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            (self.abs_path(&node.path), node.label.clone())
+            (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
         };
 
         let result = crate::document_crud::add_observations(
@@ -825,7 +826,7 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            (self.abs_path(&node.path), node.label.clone())
+            (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
         };
 
         let result = crate::document_crud::delete_observations(
@@ -906,7 +907,7 @@ impl PkbSearchServer {
             }
         }
 
-        let abs_path = self.abs_path(&node.path);
+        let abs_path = self.abs_path_for_node(node, Some(&graph))?;
         let label = node.label.clone();
         let node_id = node.id.clone();
         let rel_path = node.path.to_string_lossy().to_string();
@@ -1055,16 +1056,18 @@ impl PkbSearchServer {
             // Show full body for memories (typically short)
             let abs_path = graph
                 .get_node(&r.id)
-                .map(|n| self.abs_path(&n.path))
-                .unwrap_or_else(|| r.path.clone());
-            if let Ok(content) = std::fs::read_to_string(&abs_path) {
-                let body = if content.starts_with("---") {
-                    content.splitn(3, "---").nth(2).unwrap_or("").trim()
-                } else {
-                    content.trim()
-                };
-                if !body.is_empty() {
-                    output.push_str(&format!("\n{body}\n"));
+                .and_then(|n| self.abs_path_for_node(n, Some(&graph)).ok())
+                .unwrap_or_else(|| if r.path.as_os_str().is_empty() { PathBuf::new() } else { r.path.clone() });
+            if !abs_path.as_os_str().is_empty() {
+                if let Ok(content) = std::fs::read_to_string(&abs_path) {
+                    let body = if content.starts_with("---") {
+                        content.splitn(3, "---").nth(2).unwrap_or("").trim()
+                    } else {
+                        content.trim()
+                    };
+                    if !body.is_empty() {
+                        output.push_str(&format!("\n{body}\n"));
+                    }
                 }
             }
             output.push('\n');

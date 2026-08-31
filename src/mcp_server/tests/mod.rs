@@ -15,6 +15,7 @@ mod task_list_tests;
 mod task_mutation_tests;
 mod tag_date_filter_tests;
 mod stale_read_tests;
+mod ghost_node_tests;
 
 
 pub(crate) fn make_doc(

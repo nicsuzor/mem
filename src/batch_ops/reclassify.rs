@@ -76,6 +76,19 @@ pub fn batch_reclassify(
             continue;
         }
 
+        if node.path.as_os_str().is_empty() {
+            summary.skipped += 1;
+            summary.tasks.push(TaskAction {
+                id: id.clone(),
+                title: node.label.clone(),
+                action: "skipped".to_string(),
+                detail: Some("ghost node (no backing file on disk)".to_string()),
+                old_value: None,
+                new_value: None,
+            });
+            continue;
+        }
+
         let abs_path = if node.path.is_absolute() {
             node.path.clone()
         } else {

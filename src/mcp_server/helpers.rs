@@ -19,6 +19,82 @@ impl PkbSearchServer {
         }
     }
 
+    /// Construct a diagnostic `McpError` for a ghost node (an ID referenced in the
+    /// graph that has no backing file on disk).
+    ///
+    /// The error message names the referrer count and up to 3 referencing
+    /// nodes/edge types, avoiding path disclosure while providing an actionable diagnosis.
+    pub(crate) fn ghost_node_error(id: &str, graph: Option<&crate::graph_store::GraphStore>) -> McpError {
+        let msg = if let Some(g) = graph {
+            let incoming = g.get_incoming_edges(id);
+            let count = incoming.len();
+            if count == 0 {
+                format!(
+                    "'{id}' is a ghost node: present in graph but has no file on disk. Restore it or repair references to it."
+                )
+            } else {
+                let referrers: Vec<String> = incoming
+                    .iter()
+                    .take(3)
+                    .map(|e| format!("{} ({})", e.source, e.edge_type.as_str()))
+                    .collect();
+                let ref_summary = referrers.join(", ");
+                if count == 1 {
+                    format!(
+                        "'{id}' is a ghost node: referenced by 1 document ({ref_summary}) but has no file on disk. Restore it or repair the referring field."
+                    )
+                } else if count <= 3 {
+                    format!(
+                        "'{id}' is a ghost node: referenced by {count} documents ({ref_summary}) but has no file on disk. Restore it or repair the referring fields."
+                    )
+                } else {
+                    format!(
+                        "'{id}' is a ghost node: referenced by {count} documents (e.g. {ref_summary}) but has no file on disk. Restore it or repair the referring fields."
+                    )
+                }
+            }
+        } else {
+            format!(
+                "'{id}' is a ghost node: present in graph but has no file on disk. Restore it or repair references to it."
+            )
+        };
+
+        McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(msg),
+            data: None,
+        }
+    }
+
+    /// Resolve a `GraphNode`'s path to an absolute path, rejecting ghost nodes
+    /// (empty `node.path`) with a descriptive, actionable error.
+    ///
+    /// This is the central choke point for node path resolution in the MCP server.
+    pub(crate) fn abs_path_for_node(
+        &self,
+        node: &crate::graph::GraphNode,
+        graph: Option<&crate::graph_store::GraphStore>,
+    ) -> Result<PathBuf, McpError> {
+        if node.path.as_os_str().is_empty() {
+            return Err(Self::ghost_node_error(&node.id, graph));
+        }
+        Ok(self.abs_path(&node.path))
+    }
+
+    /// Resolve a relative path to absolute, rejecting empty paths with a ghost node error.
+    pub(crate) fn abs_path_checked(
+        &self,
+        rel: &Path,
+        node_id: Option<&str>,
+        graph: Option<&crate::graph_store::GraphStore>,
+    ) -> Result<PathBuf, McpError> {
+        if rel.as_os_str().is_empty() {
+            let id = node_id.unwrap_or("<unknown>");
+            return Err(Self::ghost_node_error(id, graph));
+        }
+        Ok(self.abs_path(rel))
+    }
+
     /// Optionally truncate a document/task body to at most `max_bytes` bytes,
     /// on a UTF-8-safe boundary, appending a marker noting the true size.
     /// `max_bytes: None` (the default in every caller) is a no-op — full-body

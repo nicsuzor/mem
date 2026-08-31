@@ -188,6 +188,10 @@ impl<'a> BatchContext<'a> {
             .get_node(node_id)
             .context(format!("Node not found: {node_id}"))?;
 
+        if node.path.as_os_str().is_empty() {
+            anyhow::bail!("Cannot update ghost node '{node_id}': no backing file on disk");
+        }
+
         let abs_path = self.abs_path(&node.path);
         if !abs_path.exists() {
             anyhow::bail!(
@@ -207,6 +211,10 @@ impl<'a> BatchContext<'a> {
             .graph
             .get_node(node_id)
             .context(format!("Node not found: {node_id}"))?;
+
+        if node.path.as_os_str().is_empty() {
+            anyhow::bail!("Cannot append to ghost node '{node_id}': no backing file on disk");
+        }
 
         let abs_path = self.abs_path(&node.path);
         document_crud::append_to_document(&abs_path, content, None, None)?;
