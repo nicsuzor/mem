@@ -122,6 +122,9 @@ pub fn get_consolidation_cluster(
     // Fetch Full content for these nodes
     let mut nodes_payload = Vec::new();
     for n in result_nodes {
+        if n.path.as_os_str().is_empty() {
+            continue;
+        }
         let abs_path = if n.path.is_absolute() {
             n.path.clone()
         } else {
@@ -173,6 +176,10 @@ pub fn apply_consolidation_batch(
             .graph
             .get_node(node_id)
             .ok_or_else(|| anyhow::anyhow!("Node not found in graph: {node_id}"))?;
+
+        if node.path.as_os_str().is_empty() {
+            anyhow::bail!("Cannot consolidate ghost node {node_id}: no backing file on disk");
+        }
 
         let abs_path = if node.path.is_absolute() {
             node.path.clone()

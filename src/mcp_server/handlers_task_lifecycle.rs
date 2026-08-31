@@ -137,7 +137,7 @@ impl PkbSearchServer {
         };
 
         // Read template file to get body + frontmatter project/parent fields.
-        let abs_path = self.abs_path(&template_path);
+        let abs_path = self.abs_path_checked(&template_path, Some(&template_id), None)?;
         let content = std::fs::read_to_string(&abs_path).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to read template file: {e}")),
@@ -415,7 +415,7 @@ impl PkbSearchServer {
             .filter_map(|desc_id| {
                 graph
                     .get_node(&desc_id)
-                    .map(|n| (desc_id, self.abs_path(&n.path)))
+                    .and_then(|n| self.abs_path_for_node(n, Some(&graph)).ok().map(|p| (desc_id, p)))
             })
             .collect();
 
@@ -434,7 +434,7 @@ impl PkbSearchServer {
             });
         }
 
-        let abs_path = self.abs_path(&node.path);
+        let abs_path = self.abs_path_for_node(node, Some(&graph))?;
         let label = node.label.clone();
         let node_id = node.id.clone();
         drop(graph);
@@ -955,7 +955,7 @@ impl PkbSearchServer {
                     .filter_map(|desc_id| {
                         graph
                             .get_node(&desc_id)
-                            .map(|n| (desc_id, self.abs_path(&n.path)))
+                            .and_then(|n| self.abs_path_for_node(n, Some(&graph)).ok().map(|p| (desc_id, p)))
                     })
                     .collect();
                 if !open_descs.is_empty() && !recursive {
@@ -1007,7 +1007,7 @@ impl PkbSearchServer {
             }
         }
 
-        let abs_path = self.abs_path(&node.path);
+        let abs_path = self.abs_path_for_node(node, Some(&graph))?;
         let label = node.label.clone();
         let node_id = node.id.clone();
         drop(graph);
@@ -1323,6 +1323,9 @@ impl PkbSearchServer {
                     });
                 }
                 Some(node) => {
+                    if node.path.as_os_str().is_empty() {
+                        return Err(Self::ghost_node_error(&node.id, Some(&graph)));
+                    }
                     if node.task_id.is_none() {
                         return Err(McpError {
                             code: ErrorCode::INVALID_PARAMS,
@@ -1345,7 +1348,7 @@ impl PkbSearchServer {
                     // Read parent's raw frontmatter `project` field so subtasks can inherit it.
                     // GraphNode.project is a computed ancestor label, not the frontmatter value.
                     let parent_project =
-                        crate::pkb::parse_file_relative(&self.abs_path(&node.path), &self.pkb_root)
+                        crate::pkb::parse_file_relative(&self.abs_path_for_node(node, Some(&graph))?, &self.pkb_root)
                             .and_then(|doc| doc.frontmatter)
                             .and_then(|fm| {
                                 fm.get("project").and_then(|v| v.as_str()).map(String::from)

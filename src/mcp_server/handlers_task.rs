@@ -567,7 +567,7 @@ impl PkbSearchServer {
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
         })?;
-        let abs_path = self.abs_path(&node.path);
+        let abs_path = self.abs_path_for_node(node, Some(&graph))?;
         let cached_status = node.status.clone();
         drop(graph);
 
@@ -1549,7 +1549,7 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            (self.abs_path(&node.path), node.id.clone())
+            (self.abs_path_for_node(node, Some(&graph))?, node.id.clone())
         };
 
         // Accept two forms for convenience:
@@ -1799,7 +1799,7 @@ impl PkbSearchServer {
                         .filter_map(|desc_id| {
                             graph
                                 .get_node(&desc_id)
-                                .map(|n| (desc_id, self.abs_path(&n.path)))
+                                .and_then(|n| self.abs_path_for_node(n, Some(&graph)).ok().map(|p| (desc_id, p)))
                         })
                         .collect()
                 };
