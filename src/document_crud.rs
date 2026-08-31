@@ -509,12 +509,7 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
     let content = format!(
         "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: epic\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nlast_modified: {local_now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
-    std::fs::write(&adhoc_path, content).with_context(|| {
-        format!(
-            "Failed to write adhoc-sessions root: {}",
-            adhoc_path.display()
-        )
-    })?;
+    atomic_write_file(&adhoc_path, &content, "ensure_adhoc_sessions_root")?;
     Ok(())
 }
 
@@ -1800,11 +1795,23 @@ impl std::fmt::Display for SelectorNotFound {
 
 impl std::error::Error for SelectorNotFound {}
 
-/// Helper to write a file atomically via temp file in the same directory and rename.
+/// Helper to write a file atomically via temp file in the same directory, sync to storage, and rename.
 pub(crate) fn atomic_write_file(path: &Path, content: &str, op_name: &str) -> Result<()> {
+    use std::io::Write;
     let dir = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Could not get parent directory for {}", path.display()))?;
+    if path.exists() {
+        if let Ok(meta) = path.metadata() {
+            if meta.permissions().readonly() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("Permission denied: {} is read-only", path.display()),
+                ))
+                .with_context(|| format!("Failed to write to read-only file {}", path.display()));
+            }
+        }
+    }
     static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let target_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unnamed");
     let tmp_path = dir.join(format!(
@@ -1814,12 +1821,21 @@ pub(crate) fn atomic_write_file(path: &Path, content: &str, op_name: &str) -> Re
         TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         target_name
     ));
-    std::fs::write(&tmp_path, content.as_bytes())
-        .with_context(|| format!("Failed to write temp file {}", tmp_path.display()))?;
+    {
+        let mut file = std::fs::File::create(&tmp_path)
+            .with_context(|| format!("Failed to create temp file {}", tmp_path.display()))?;
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("Failed to write temp file {}", tmp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("Failed to sync temp file {}", tmp_path.display()))?;
+    }
     if let Err(e) = std::fs::rename(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e)
             .with_context(|| format!("Failed to rename temp file to {}", path.display()));
+    }
+    if let Ok(dir_file) = std::fs::File::open(dir) {
+        let _ = dir_file.sync_all();
     }
     Ok(())
 }
@@ -6160,7 +6176,7 @@ pub fn merge_node(
                 // caller cannot tell a refused write from a completed one, which
                 // is the same "asserts an outcome it never checked" failure this
                 // whole change is about.
-                std::fs::write(file_path, &new_content).with_context(|| {
+                atomic_write_file(file_path, &new_content, "merge_node").with_context(|| {
                     format!(
                         "merge_node: failed to redirect references in {}",
                         file_path.display()

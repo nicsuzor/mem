@@ -813,12 +813,19 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_refresh_graph(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
-        self.rebuild_graph();
-        let node_count = self.graph.read().node_count();
+        let (scanned, parsed, node_count) = self.rebuild_graph();
+        let skipped = scanned.saturating_sub(parsed);
         let json = serde_json::json!({
             "ok": true,
             "node_count": node_count,
-            "message": format!("Graph index rebuilt from disk. {node_count} nodes loaded.")
+            "scanned_files": scanned,
+            "parsed_documents": parsed,
+            "unparseable_or_skipped_files": skipped,
+            "message": if skipped > 0 {
+                format!("Graph index rebuilt from disk. {node_count} nodes loaded ({parsed} valid documents from {scanned} scanned files; {skipped} unparseable or skipped files).")
+            } else {
+                format!("Graph index rebuilt from disk. {node_count} nodes loaded.")
+            }
         });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&json)
