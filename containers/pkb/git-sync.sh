@@ -33,14 +33,8 @@ if [ -f ".git/MERGE_HEAD" ]; then
     rm -f ".git/MERGE_HEAD"
 fi
 
-# Commit any local changes
-git add -A
-if ! git diff --cached --quiet; then
-    git commit -m "auto: sync $(date -u +%Y-%m-%d\ %H:%M)"
-fi
-
-# Merge rather than rebase: a killed merge is cleanly recoverable by the
-# preflight above, and `ort` auto-resolves conflicts between mechanical
-# auto-sync snapshots — whereas partial-rebase replay state does not.
+# Pull remote commits and push local commits to keep hosts in sync.
+# Commits are made atomically at the point of write by PKB tooling;
+# git-sync no longer creates blanket "auto: sync" commits.
 git pull --no-rebase --no-edit
 git push
