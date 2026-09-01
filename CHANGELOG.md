@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.86](https://github.com/nicsuzor/mem/compare/mem-v0.3.85...mem-v0.3.86) (2026-09-01)
+
+
+### Features
+
+* **crud:** atomic message-bearing git commits on PKB writes ([70efe7d](https://github.com/nicsuzor/mem/commit/70efe7da2fe5ffd1a2ccd2d774d5d570d613a810))
+* **crud:** atomic message-bearing git commits on PKB writes ([b192af7](https://github.com/nicsuzor/mem/commit/b192af705d7d5139a1e36362c0843f6a98a9c861))
+
 ## [0.3.85](https://github.com/nicsuzor/mem/compare/mem-v0.3.84...mem-v0.3.85) (2026-08-31)
 
 
