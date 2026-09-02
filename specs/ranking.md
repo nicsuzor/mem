@@ -47,10 +47,14 @@ canonical node sort (node id ASC)
   → compute_uncertainty
   → compute_voi_term
   → compute_blocking_urgency
-  → compute_urgency
+  → compute_urgency              (also populates chain_slack — §4.3a)
+  → compute_value_lineage        (§4.11, Phase 2)
+  → compute_unlock_breadth       (§4.10, Phase 2)
   → compute_focus_scores
   → classify_tasks
 ```
+
+`compute_value_lineage` and `compute_unlock_breadth` are both pure, single-hop, per-node scans over fields already finalised earlier in the pipeline (`resolved_to`, `urgency`, `voi_value`) — neither is a new whole-graph BFS/cone-walk mechanism alongside the two that already exist (the downstream cone walk in `compute_downstream_metrics`/`compute_voi_term`, and the urgency-propagation relaxation in `compute_urgency`).
 
 ### 1.1. Canonical Node Ordering & Rebuild Determinism
 
@@ -68,8 +72,8 @@ Ranking is produced by the explicit 4-component tuple `FocusTuple`:
 
 1. **`severity_gate`**: Non-linear catastrophic obligation override (`Catastrophic` for SEV4-committed, else `Normal`).
 2. **`deadline_band`**: Discrete calendar float band (`Overdue` > `Imminent` > `Urgent` > `Approaching` > `None`).
-3. **`cost_of_delay`**: Commensurable dynamic pressure combining `priority_base`, fine-grained `deadline_score`, `stakeholder_waiting`, `urgency_term`, and `voi_term`.
-4. **`tie_breakers`**: Deterministic tie-breaking signals (`downstream_weight × 10`, `age_staleness_bonus`, `effective_priority`, `order`, `id`).
+3. **`cost_of_delay`**: Commensurable dynamic pressure combining `priority_base`, fine-grained `deadline_score`, `stakeholder_waiting`, `urgency_term`, `voi_term`, and (Phase 2) `value_lineage_term`.
+4. **`tie_breakers`**: Deterministic tie-breaking signals (`downstream_weight × 10`, (Phase 2) `unlock_breadth × 10`, `age_staleness_bonus`, `effective_priority`, `order`, `id`).
 
 ```
 +---------------------------------------------------------------------------------------------------+
@@ -84,8 +88,13 @@ Ranking is produced by the explicit 4-component tuple `FocusTuple`:
 | 7. urgency_term            | round(node.urgency)                               | 0 – 10,000+      |
 | 8. voi_term                | round(node.voi_value) (leaf nodes only)           | 0 – 5,000        |
 | 9. affordable_loss         | Non-compensatory filter zeroing unaffordable tasks| Bool filter      |
+| 10. value_lineage_term     | round(node.value_lineage); see §4.11 (Phase 2)    | 0 – 10,000       |
+| 11. unlock_breadth × 10    | (node.unlock_breadth * 10.0) as i64; tie-breaker, | 0 – ∞ (§4.10)    |
+|                            | not cost_of_delay (Phase 2)                       |                  |
 +---------------------------------------------------------------------------------------------------+
 ```
+
+Term 10, `value_lineage_term`, is the fix for the failure terms 5/11 cannot be: `downstream_weight × 10` and `unlock_breadth × 10` are both deliberately capped, shallow, tie-breaker-only signals (§4.1, §4.10), so the sanctioned importance channel (`contributes_to`) needed a term that lives inside `cost_of_delay` itself, at comparable magnitude to `priority_base`/`urgency_term`, to be able to move a ranking at all (§3, §4.11).
 
 ### 2.1. Priority Base (`priority_base`)
 - **Code reference**: `src/graph_store.rs:1699–1703`
@@ -202,11 +211,19 @@ Ranking is produced by the explicit 4-component tuple `FocusTuple`:
 - **Zeroing conditions**: Non-leaf task (`leaf == false`), complete/cancelled status, no open question, no downstream divergence, or `dep_resolution_ratio == 0`.
 - **Consumers**: `compute_focus_scores`.
 
+### 2.9. Value Lineage Term (`value_lineage_term`) — Phase 2
+- **Code reference**: `compute_value_lineage`, `src/graph_store.rs`; folded into `cost_of_delay` in `compute_cost_of_delay`.
+- **Formula**: $\text{term} = \text{round}(\text{node.value\_lineage})$ as `i64`. See §4.11 for how `node.value_lineage` itself is computed.
+- **Theoretical Range**: `0` to `10,000` (a Critical/1.00 standing weight × a Certain/1.00 edge × full/1.0 confidence).
+- **Observed Range**: `0` for every node as of this phase landing — no target has been priced yet (`pkb-standing-weight-elicitation-instrument` §"Current state"). Elicited standing weights are not a prerequisite for this mechanism to exist; they are a prerequisite for it to produce a nonzero number on the live PKB.
+- **Default (absent input)**: `0` — a contributor with no `contributes_to` edge to a priced committed target, or a target with no `standing_weight` elicited, contributes nothing. No inference, no default weight (Zero Defaults / Zero Inference).
+- **Consumers**: `compute_focus_scores`.
+
 ---
 
 ## 3. Disparity Between Theoretical Caps and Observed Ranges
 
-The eight additive terms carry widely disparate theoretical caps versus realised empirical dynamics:
+The eight additive terms carry widely disparate theoretical caps versus realised empirical dynamics. This was the diagnosed failure Phase 2 exists to fix for the graph/importance channel specifically: `downstream_weight × 10` (a tie-breaker, not `cost_of_delay`) contributed at most ~53 observed points against a scale running to ~11,000, while `contributes_to` — the sanctioned channel by which agents are instructed to express importance instead of setting priority bands — reached the score only through that same ~53-point term. `value_lineage_term` (§2.9, §4.11) is the repair: it enters `cost_of_delay` directly, at the same 0–10,000 order of magnitude as `priority_base`/`urgency_term`, so it can actually move a ranking.
 
 | Term | Theoretical Range | Observed Range (Typical) |
 | --- | --- | --- |
@@ -214,11 +231,13 @@ The eight additive terms carry widely disparate theoretical caps versus realised
 | `deadline_score` | 0 – 12,000 | 0 – 12,000 |
 | `priority_base` | 0 – 10,000 | 0 – 10,000 |
 | `urgency_term` | 0 – 10,000 | 0 – 10,000 |
+| `value_lineage_term` | 0 – 10,000 | 0 (unpriced — §2.9) |
 | `stakeholder_waiting` | 0 – 8,000 | 0 – 8,000 |
 | `voi_term` | 0 – 5,000 | 0 – ~1,500 |
 | `age_staleness_bonus` | 0 – 200 | 0 – 200 |
-| `downstream_weight × 10` | 0 – $\infty$ | 0 – ~500 |
-| **`focus_score` Composite** | **0 – ~145,200** | **0 – ~11,000+** |
+| `downstream_weight × 10` (tie-breaker) | 0 – $\infty$ | 0 – ~500 |
+| `unlock_breadth × 10` (tie-breaker) | 0 – $\infty$ | not yet measured on the live PKB |
+| **`focus_score` Composite** | **0 – ~155,200** | **0 – ~11,000+** |
 
 ---
 
@@ -262,7 +281,7 @@ In addition to `focus_score`, `mem` computes several topological and network mea
     - If `severity == 4` and `goal_type == "committed"`: $S_{\\text{lex}} = 10000.0$ (lexicographic override).
     - Else: $S_{\\text{lex}} = 10^{\\min(\\text{severity}, 3)}$ (e.g. SEV0 $\\to 1$, SEV1 $\\to 10$, SEV2 $\\to 100$, SEV3 $\\to 1000$).
   - Slack Calculation: $\\text{slack}(x) = (\\text{due} - \\text{today}).\\text{num\\_days}() - \\text{effort\\_days}$. Default unconstrained slack is $100.0$ days.
-  - Urgency Propagation: Urgency propagates backward from blocked tasks to blockers over BFS paths up to depth 20:
+  - Urgency Propagation: Urgency propagates backward from blocked tasks to blockers **by relaxation** (Phase 2; previously a single-pass BFS — see 4.3a) over paths up to depth 20:
     - `blocks`: factor $1.0$
     - `soft_blocks`: factor $0.3$
     - `children` (parent $\\to$ child): factor $0.5$
@@ -274,6 +293,16 @@ In addition to `focus_score`, `mem` computes several topological and network mea
   - Completed nodes have $\\text{urgency} = 0.0$.
 - **Theoretical Range**: $0.0$ to $10,000.0$.
 - **Consumers**: `compute_focus_scores`, `focus_picks`, `get_task` / `list_tasks` signals.
+
+### 4.3a. Chain Slack (`chain_slack`) and the V9 Relaxation Fix — Phase 2
+- **Code reference**: `compute_urgency`, `src/graph_store.rs` (same function as §4.3 — one traversal, two published outputs, "no fourth graph computation").
+- **What it is**: $\text{min\_slack}(x)$ from §4.3, in days, exposed as its own field (`node.chain_slack`) rather than only as an internal input to $f(\text{Slack})$. CPM-style: the minimum float/slack found anywhere in the blocking chain reachable from $x$.
+- **The V9 fix**: the traversal in §4.3 used to mark a neighbour visited **on enqueue** and never revisit it, in a per-start-node BFS. Because $\text{propagated\_s\_lex}$ depends on *which path* reached a node (`s_lex[t] × path_factor`), whichever path arrived **first** permanently fixed the factor used — a stronger path discovered later (higher `path_factor`, e.g. a direct `blocks` chain found two hops after a `soft_blocks` shortcut) could never correct it upward. This under-counted urgency without any error or warning.
+  - **Fix**: the traversal now relaxes on strict improvement — a node is (re-)enqueued whenever a larger `path_factor` than any seen so far for it is found in *this* start node's traversal, replacing the old "visited once" gate with a `best_factor` array. `propagated_s_lex` therefore always reflects the strongest path across the whole traversal.
+  - **The min-slack half needed no such fix.** A node's own slack does not depend on `path_factor` — visiting it once already gave the correct minimum. Only the $S_{\text{lex}}$ half was defective; the fix does not touch how `min_slack` is computed, only how the shared traversal revisits nodes.
+  - **Termination**: every edge factor is in $[0.0, 1.0]$, so `path_factor` is non-increasing with depth; the number of distinct strict improvements per node is bounded, and the pre-existing depth-20 cap bounds it further.
+- **Theoretical Range**: $[-\infty, 100.0]$ in practice; $100.0$ is the "unconstrained" sentinel (no due date reachable within the depth cap).
+- **Consumers**: `compute_urgency` (§4.3, internally), `get_task` / `list_tasks` signals.
 
 ### 4.4. `voi_value` (Value of Information)
 - **Code reference**: `src/graph_store.rs:3144–3215`
@@ -325,6 +354,28 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Degrees**: Count of `in_degree` and `out_degree` over all edge types.
 - **Consumers**: `compute_criticality`, `top_n_by_metric`, `get_network_metrics`.
 
+### 4.10. `unlock_breadth` — Phase 2
+- **Code reference**: `compute_unlock_breadth`, `src/graph_store.rs`.
+- **Definition**: The cost-of-delay-weighted mass of what completing this node would *directly* unblock. **It is NOT a count of unblocked nodes** — the same discipline §4.1 already applies to `downstream_weight`.
+- **Formula**: For node $x$, and each $t$ in $x$'s `blocks` list:
+  $$\text{unlock\_breadth}(x) = \sum_{t \,:\, \text{last\_blocker}(x, t)} \text{cost\_of\_delay}(t)$$
+  where $\text{last\_blocker}(x, t)$ is true iff $t$ is not already completed and every id in $t$'s hard `depends_on` **other than** $x$ is itself in a completed status — i.e. finishing $x$ actually flips $t$ from blocked to unblocked, not merely removes one of several open blockers. Soft dependencies are excluded (they do not gate ready/blocked classification, §8.1–8.2). $\text{cost\_of\_delay}(t)$ is the exact same function used for $t$'s own tuple (`compute_cost_of_delay`, §2), so the two can never define "cost of delay" two different ways.
+- **Deliberately shallow (one hop)**: multi-hop cascades are `downstream_weight`'s job (parent plan Phase 2: "one shallow metric kept").
+- **Theoretical Range**: $[0.0, \infty)$ — same reason `downstream_weight` is unbounded (§4.1); in practice bounded by the number and cost-of-delay of a node's direct dependents.
+- **Consumers**: `compute_focus_scores` (`tie_breakers.unlock_breadth_x10` — a tie-breaker, **not** `cost_of_delay`; see the note at the end of §3), `get_task` / `list_tasks` signals.
+
+### 4.11. `value_lineage` — Phase 2
+- **Code reference**: `compute_value_lineage`, `src/graph_store.rs`.
+- **Definition**: Standing weight elicited on a committed target/goal node, flowing multiplicatively to this node via its own `contributes_to` edges. This is the mechanism the doctrine in §7 and the parent plan's "Nic prices the destinations; the system prices the routes" require.
+- **Formula**:
+  $$\text{value\_lineage}(x) = K_{\text{VL}} \times \text{confidence}(x) \times \sum_{\substack{ct \,\in\, x.\text{contributes\_to} \\ \text{goal\_type}(ct.\text{target}) = \text{committed}}} ct.\text{numeric\_weight}() \times \text{standing\_weight}(ct.\text{target})$$
+  where $K_{\text{VL}} = 10{,}000$ (§2.9), $\text{confidence}(x)$ defaults to $1.0$ when unset (mirrors `compute_uncertainty`'s existing "missing confidence, no open question ⇒ certain" default — a default on the *contributor's* stated confidence, never on the target's `standing_weight`, which is strictly `None`-means-zero), and a target contributes nothing to the sum unless it both carries `goal_type: committed` and has a priced `standing_weight` (`pkb-standing-weight-elicitation-instrument` §1 scope guard; "Zero Defaults / Zero Inference").
+- **One hop only**: this walks a node's own `contributes_to` edges directly. It does not chain transitively through a contributor's own further `contributes_to` edges — a contributor of a contributor of a priced target is not credited unless it also has its own direct edge to a priced target. This keeps the computation a local per-node scan, not a new cone-walk mechanism ("no fourth graph computation").
+- **Sibling-contributor combination semantics (settled)**: independent and additive. Multiple nodes contributing to the same target are each scored off their own edge alone — nothing reduces a contributor's credit because other contributors also point at the same target. This is a deliberate rejection of a Birnbaum-style reliability combination (cut sets, structure functions) across sibling edges, consistent with the parent plan's "Explicitly not building: Birnbaum importance proper" and §7's existing disclaimer that the verbal scale computes no such thing. See §7 for the corrected gloss this setting fixes.
+- **Theoretical Range**: `0` to `10,000` per contributing edge (§2.9); a node with edges to multiple priced targets sums across them.
+- **Observed Range**: `0` for every node as of this phase landing — no target has been priced yet.
+- **Consumers**: `compute_focus_scores` (`cost_of_delay`, §2.9 — **not** a tie-breaker; this is the term that must be able to move a ranking), `get_task` / `list_tasks` signals.
+
 ---
 
 ## 5. Standing Doctrine on Graph Metrics
@@ -335,7 +386,7 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 This doctrine is grounded in four structural realities:
 
 1. **Incommensurable Units:** PageRank, betweenness, and criticality are unitless structural measures over heterogeneous edges. They have no natural exchange rate with cost-of-delay or time urgency.
-2. **Redundant Causal Information:** The actionable structural content of the graph is already captured directly in interpretable domain units — bottleneck urgency is captured by chain slack and LST; strategic importance is captured by target value lineage. Betweenness and PageRank are merely correlational shadows of those causal paths.
+2. **Redundant Causal Information:** The actionable structural content of the graph is already captured directly in interpretable domain units — bottleneck urgency is captured by chain slack and LST (§4.3, §4.3a); strategic importance is captured by target value lineage (§4.11). Betweenness and PageRank are merely correlational shadows of those causal paths.
 3. **Snapshot Incomparability:** Normalized criticality ($\\text{raw} / \\max(\\text{raw})$) changes scale whenever the max node changes, making values incomparable across time snapshots.
 4. **Authoring Artifacts:** On a mixed-edge personal knowledge graph, high graph centrality frequently reflects authoring habits or incomplete decomposition rather than real-world task value. They serve as a valuable **gardening lens** (identifying decomposition smells, promotion candidates, or structural hubs) rather than a dynamic operational rank.
 
@@ -367,13 +418,18 @@ The `contributes_to.weight` (or `stated_weight`) field implements a **verbal con
 | Certain / Almost Certain | `"certain"`, `"almost certain"` | **1.00** | Critical path / single point of failure |
 | Probable / Very Probable | `"probable"`, `"very probable"`, `"highly likely"` | **0.85** | Strong primary contributor |
 | Expected / Likely | `"expected"`, `"likely"` | **0.75** | Standard intended contributor |
-| Fifty-Fifty / Even Chance | `"fifty-fifty"`, `"even chance"` | **0.50** | Moderate contributor; redundancy exists |
+| Fifty-Fifty / Even Chance | `"fifty-fifty"`, `"even chance"` | **0.50** | Moderate, genuinely uncertain contribution — a coin-flip call on *this edge alone* |
 | Uncertain / Possible | `"uncertain"`, `"possible"`, `"perhaps"`, `"maybe"` | **0.25** | Exploratory or optional contribution |
 | Improbable / Unlikely | `"improbable"`, `"unlikely"`, `"very unlikely"` | **0.15** | Minor marginal contribution |
 | Impossible / None | `"impossible"`, `"none"` | **0.00** | No contribution |
-| *Unrecognized / Default* | *any other string or empty* | **0.30** | Default soft contribution |
+| *Unrecognized* | *any non-empty string not in this table* | **rejected** | `ParseWarning` at parse time (`GraphNode::from_pkb_document`, field `contributes_to.stated_weight`); contributes `0.0`, never a fabricated default |
+| *Unstated* | *omitted, or empty string* | **0.00** | Not an error — a deliberately unstated edge — but still `0.0`, not a "soft" default |
 
 > **Note on Naming:** This is an **elicitation scale** for human/agent calibration. It is **not** a computational Birnbaum structural reliability model (it computes no cut sets, partial derivatives, or multi-contributor Boolean structure functions). In all agent-facing schemas and documentation, it is referred to as the **verbal contribution-weight scale**.
+
+> **Corrected (Phase 2): the fifty-fifty gloss and sibling-contributor semantics.** The fifty-fifty row previously read "moderate contributor; redundancy exists" — wording that reads as a claim about the graph's *combinatorial structure* (that other contributors exist and can substitute for this one), which only has computational meaning if the system combines sibling contributors' weights against each other. It does not, and per the Naming note above and the parent plan's "Explicitly not building: Birnbaum importance proper (structure functions, cut sets, partial derivatives)", it deliberately never will. Value lineage (§4.11) settles this: sibling contributors to the same target are scored **independently and additively** — each contributor's credit depends only on its own edge, its own confidence, and the target's standing weight, never on how many other edges also point at that target. The corrected reading of "fifty-fifty" is purely an elicitation instruction for *this one edge*: state 0.50 when you, the author of this specific edge, are genuinely unsure this contribution will land — not as a claim about the wider graph.
+>
+> **Two previously-silent behaviours are now explicit rejections, not defaults.** An empty/omitted `stated_weight` was always meant to be a neutral "unstated" edge, but `numeric_weight()`'s catch-all silently mapped it — and any *misspelled or invented* verbal term — to the same `0.30` "soft contribution" value, with no warning either way. As of Phase 2 the catch-all is `0.0`, and a non-empty term that fails to match this table is flagged via the same `ParseWarning` mechanism `severity`/`goal_type` already use (`src/graph.rs`), surfaced through the existing linter/`/maintain` parse_warnings channel (no new surfacing mechanism). A genuinely omitted weight is not flagged — omitting a weight is not a mistake.
 
 ---
 
@@ -417,7 +473,9 @@ All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) u
   - `test_urgency_propagation` (`graph_store.rs:5545`)
   - `test_compute_voi_term` (`graph_store.rs:6249`)
   - `tests/cli_default_ordering.rs`
-- **Model Validation Does NOT Exist**: These tests verify only that *the code executes what the code specifies*. They do not constitute empirical validation, calibration against real user outcomes, or backtesting of queue throughput. Genuinely untested at the mechanism level are the `slack = 0` and `slack = 30` step boundaries and the ready comparator against live queues.
+  - Phase 2 (chain slack, unlock breadth, value lineage) constructed-graph tests, all in `src/graph_store.rs`'s test module, immediately after `test_urgency_propagation`:
+    `test_chain_slack_relaxation_finds_true_minimum_across_path_lengths` (AC1), `test_urgency_first_path_bfs_defect_fixed` (AC2, the V9 regression test), `test_unlock_breadth_is_cost_of_delay_weighted_not_a_count` (AC3), `test_value_lineage_materially_differentiates_targets_by_standing_weight` (AC4, includes a `focus_cmp` rank-movement assertion), `test_sibling_contributors_to_same_target_are_independent_not_combined` (AC6), `test_stated_weight_out_of_scale_rejected_at_parse_time_not_defaulted` / `test_stated_weight_omitted_is_silently_zero_no_warning` (AC5), `test_standing_weight_out_of_range_rejected`, `test_criticality_never_enters_cost_of_delay` (AC7, executable companion to the grep-based verification).
+- **Model Validation Does NOT Exist**: These tests verify only that *the code executes what the code specifies*. They do not constitute empirical validation, calibration against real user outcomes, or backtesting of queue throughput. Genuinely untested at the mechanism level are the `slack = 0` and `slack = 30` step boundaries and the ready comparator against live queues. Phase 2's `value_lineage_term` is likewise untested against live-corpus outcomes — no target has been priced yet, so there is nothing on the live PKB to measure (§2.9, §4.11).
 
 ---
 
@@ -426,9 +484,13 @@ All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) u
 | Measure | Consumers in Codebase |
 | --- | --- |
 | `focus_score` | Primary sort in `list_tasks`, `get_task`, `focus_picks`, `pkb tasks` CLI, `pkb list` CLI. |
-| `downstream_weight` | `compute_focus_scores`, `compute_criticality`, `top_n_by_metric`, `get_network_metrics`, `list_tasks` ready table. |
+| `downstream_weight` | `compute_focus_scores` (tie-breaker), `compute_criticality`, `top_n_by_metric`, `get_network_metrics`, `list_tasks` ready table. |
 | `criticality` | `top_n_by_metric`, `get_network_metrics`, `get_task` / `list_tasks` `signals: {}`, overwhelm dashboard (`focusBreakdown.ts`, `prepareGraphData.ts`). |
-| `urgency` | `compute_focus_scores`, `focus_picks`, `get_task` / `list_tasks` `signals: {}`. |
+| `urgency` | `compute_focus_scores` (`cost_of_delay`), `focus_picks`, `get_task` / `list_tasks` `signals: {}`. |
+| `chain_slack` | `compute_urgency` (internally, feeds `f(Slack)`), `get_task` / `list_tasks` `signals: {}`. |
+| `unlock_breadth` | `compute_focus_scores` (`tie_breakers.unlock_breadth_x10` — tie-breaker only, not `cost_of_delay`), `get_task` / `list_tasks` `signals: {}`. |
+| `value_lineage` | `compute_focus_scores` (`cost_of_delay`), `get_task` / `list_tasks` `signals: {}`. |
+| `standing_weight` | Read by `compute_value_lineage`; elicited/written only via hand-edited frontmatter as of this phase (no MCP write-tool wiring — out of scope, elicitation session not yet run). |
 | `voi_value` | `compute_focus_scores`, `get_task` / `list_tasks` `signals: {}`. |
 | `uncertainty` | `compute_voi_term`, `get_task` / `list_tasks` `signals: {}`. |
 | `effective_priority` | `focus_cmp` tie-breaker, `classify_tasks` ready sorting, `list_tasks` filter. |
