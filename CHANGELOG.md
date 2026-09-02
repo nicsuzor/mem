@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.87](https://github.com/nicsuzor/mem/compare/mem-v0.3.86...mem-v0.3.87) (2026-09-02)
+
+
+### Features
+
+* **ranking:** Phase 2 — chain slack, unlock breadth, value lineage ([0cad71d](https://github.com/nicsuzor/mem/commit/0cad71decc840343835707ef1710f937a32b603c))
+* **ranking:** Phase 2 — chain slack, unlock breadth, value lineage ([9336a16](https://github.com/nicsuzor/mem/commit/9336a166f6bf5c40987503ce56f98eadc59cf859))
+
+
+### Bug Fixes
+
+* **ranking:** match §1 prose pinned-commit to frontmatter ([9fb8279](https://github.com/nicsuzor/mem/commit/9fb82797a493f8f61d9158ef092a7032e39673ec))
+* **write-path:** batch_update now shares update_task's frontmatter allowlist ([0a02a9f](https://github.com/nicsuzor/mem/commit/0a02a9f461bb34bcc79f9f9598a5f77a34b5a4cf))
+* **write-path:** batch_update shares update_task's frontmatter allowlist ([9446302](https://github.com/nicsuzor/mem/commit/9446302fb9c2aca00cfe7c1efdd65aff16ae6cd7))
+
+
+### Documentation
+
+* **ranking:** pin spec to the Phase 2 commit it now describes ([9530685](https://github.com/nicsuzor/mem/commit/9530685ac9beaf739156ba41f92023617d28ea59))
+
 ## [0.3.86](https://github.com/nicsuzor/mem/compare/mem-v0.3.85...mem-v0.3.86) (2026-09-01)
 
 
