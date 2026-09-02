@@ -101,6 +101,7 @@ pub struct TaskFields {
     pub follow_up_tasks: Vec<String>,
     pub release_summary: Option<String>,
     pub contributes_to: Vec<serde_json::Value>,
+    pub classification: Option<String>,
 }
 
 /// Fields for creating a new memory.
@@ -748,6 +749,13 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     if let Some(ref gt) = fields.goal_type {
         append_goal_type_field(&mut fm, gt);
+    }
+
+    if let Some(ref classification) = fields.classification {
+        fm.push_str(&format!(
+            "classification: \"{}\"\n",
+            yaml_escape_double_quoted(classification)
+        ));
     }
 
     if let Some(ref stakeholder) = fields.stakeholder {

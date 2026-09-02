@@ -1568,6 +1568,10 @@ impl PkbSearchServer {
                 follow_up_tasks: vec![],
                 release_summary: None,
                 contributes_to: vec![],
+                classification: subtask
+                    .get("classification")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
             };
 
             let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {

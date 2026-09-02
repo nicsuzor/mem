@@ -181,6 +181,7 @@ impl PkbSearchServer {
                         "consequence": { "type": "string", "description": "Narrative description of what happens if this task is not done or fails." },
                         "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes. SEV4 is lexicographic." },
                         "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
+                        "classification": { "type": "string", "description": "Optional content classification: bug | feature | spike | chore | refactor | docs | milestone | action." },
                         "body": { "type": "string", "description": "Markdown body" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },

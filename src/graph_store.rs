@@ -1602,26 +1602,80 @@ impl GraphStore {
             .count()
     }
 
-    /// Validate that assigning `proposed_parent` as the parent of `child` would not
-    /// create a circular parent/child relationship.
+    /// Check if adding a hard dependency edge (DependsOn or Parent) from `from` to `to`
+    /// would create a cycle using Tarjan's SCC.
     ///
-    /// Walks the existing parent chain upward from `proposed_parent`. If the walk
-    /// reaches `child`, the assignment would close a cycle and is rejected. Self-
-    /// parenting (`child == proposed_parent`) is also rejected.
+    /// Hard dependencies (DependsOn + Parent) must form a DAG. Cycles in this subgraph
+    /// represent decomposition errors and are rejected at write time.
+    pub fn would_create_hard_cycle(&self, from: &str, to: &str) -> Result<(), String> {
+        self.would_create_hard_cycle_multi(from, &[to])
+    }
+
+    /// Check if adding multiple hard dependency edges from `from` to `targets`
+    /// would create a cycle using Tarjan's SCC.
+    pub fn would_create_hard_cycle_multi(&self, from: &str, targets: &[&str]) -> Result<(), String> {
+        let from_id = self
+            .resolve(from)
+            .map(|n| n.id.clone())
+            .unwrap_or_else(|| from.to_string());
+
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+        for edge in &self.edges {
+            if matches!(edge.edge_type, EdgeType::DependsOn | EdgeType::Parent) {
+                adjacency
+                    .entry(edge.source.clone())
+                    .or_default()
+                    .push(edge.target.clone());
+            }
+        }
+
+        for &to in targets {
+            let to_id = self
+                .resolve(to)
+                .map(|n| n.id.clone())
+                .unwrap_or_else(|| to.to_string());
+
+            if from_id == to_id {
+                return Err(format!(
+                    "A task cannot be its own parent or depend on itself (id '{from_id}')."
+                ));
+            }
+
+            adjacency
+                .entry(from_id.clone())
+                .or_default()
+                .push(to_id.clone());
+        }
+
+        let sccs = tarjan_scc(&adjacency);
+        for scc in sccs {
+            if scc.len() > 1 && (scc.contains(&from_id) || targets.iter().any(|t| {
+                let tid = self.resolve(t).map(|n| n.id.clone()).unwrap_or_else(|| t.to_string());
+                scc.contains(&tid)
+            })) {
+                return Err(format!(
+                    "Adding hard dependency on '{from_id}' would create a circular dependency cycle: [{}]. Hard dependencies (DependsOn + Parent) must be a DAG.",
+                    scc.join(" -> ")
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate that assigning `proposed_parent` as the parent of `child` would not
+    /// create a circular parent/child or hard dependency relationship.
+    ///
+    /// Evaluates the hard dependency graph (Parent + DependsOn) via Tarjan's SCC.
+    /// Self-parenting (`child == proposed_parent`) is rejected immediately.
     ///
     /// Both IDs are resolved through `GraphStore::resolve` so callers may pass any
     /// alias the resolver accepts (canonical ID, filename stem, permalink, etc.).
-    /// If a node cannot be resolved, this function returns `Ok(())` — reference
-    /// integrity is the caller's responsibility (see existing parent-exists checks).
-    ///
-    /// Parent/child must be a DAG. Other relationship types (depends_on, blocks,
-    /// soft_blocks, etc.) are unaffected and may remain circular.
     pub fn would_create_parent_cycle(
         &self,
         child: &str,
         proposed_parent: &str,
     ) -> Result<(), String> {
-        // Resolve both endpoints to canonical IDs when possible.
         let child_id = self
             .resolve(child)
             .map(|n| n.id.clone())
@@ -1637,32 +1691,12 @@ impl GraphStore {
             ));
         }
 
-        // Walk upward from the proposed parent. If we reach `child_id`, the
-        // assignment would close a cycle. A visited set guards against pre-
-        // existing cycles in the graph.
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut current = parent_id.clone();
-        loop {
-            if !visited.insert(current.clone()) {
-                // Pre-existing cycle in the parent chain — bail out without
-                // false-positive cycle reporting against `child`.
-                return Ok(());
-            }
-            if current == child_id {
-                return Err(format!(
-                    "Setting parent of '{child_id}' to '{parent_id}' would create a circular \
-                     parent/child relationship (parent chain reaches '{child_id}'). Parent/child \
-                     hierarchy must be a DAG."
-                ));
-            }
-            match self.nodes.get(&current).and_then(|n| n.parent.clone()) {
-                Some(next) => {
-                    let resolved = self.resolve(&next).map(|n| n.id.clone()).unwrap_or(next);
-                    current = resolved;
-                }
-                None => return Ok(()),
-            }
-        }
+        self.would_create_hard_cycle(&child_id, &parent_id).map_err(|e| {
+            format!(
+                "Setting parent of '{child_id}' to '{parent_id}' would create a circular \
+                 parent/child relationship ({e}). Parent/child and hard dependency hierarchy must be a DAG."
+            )
+        })
     }
 
     /// Find all parent-only cycles in the graph.
@@ -7482,6 +7516,67 @@ mod tests {
     fn find_parent_cycles_empty_when_dag() {
         let g = build_parent_chain_graph();
         assert!(g.find_parent_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_hard_cycle_depends_on_two_node() {
+        let docs = vec![
+            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &["task-b"]),
+            make_doc("tasks/b.md", "Task B", "task", "active", "task-b", None, &[]),
+        ];
+        let g = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let err = g.would_create_hard_cycle("task-b", "task-a").unwrap_err();
+        assert!(err.contains("circular dependency cycle"), "got: {err}");
+    }
+
+    #[test]
+    fn test_hard_cycle_depends_on_transitive() {
+        let docs = vec![
+            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &["task-b"]),
+            make_doc("tasks/b.md", "Task B", "task", "active", "task-b", None, &["task-c"]),
+            make_doc("tasks/c.md", "Task C", "task", "active", "task-c", None, &[]),
+        ];
+        let g = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let err = g.would_create_hard_cycle("task-c", "task-a").unwrap_err();
+        assert!(err.contains("circular dependency cycle"), "got: {err}");
+    }
+
+    #[test]
+    fn test_hard_cycle_mixed_parent_depends_on() {
+        // task-a has parent task-b (edge task-a -> task-b)
+        // task-b depends on task-c (edge task-b -> task-c)
+        // Attempting to make task-c depend on task-a (edge task-c -> task-a) closes cycle: task-a -> task-b -> task-c -> task-a
+        let docs = vec![
+            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", Some("task-b"), &[]),
+            make_doc("tasks/b.md", "Task B", "epic", "active", "task-b", None, &["task-c"]),
+            make_doc("tasks/c.md", "Task C", "task", "active", "task-c", None, &[]),
+        ];
+        let g = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let err = g.would_create_hard_cycle("task-c", "task-a").unwrap_err();
+        assert!(err.contains("circular dependency cycle"), "got: {err}");
+    }
+
+    #[test]
+    fn test_hard_cycle_self_depends_on_rejected() {
+        let docs = vec![
+            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &[]),
+        ];
+        let g = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let err = g.would_create_hard_cycle("task-a", "task-a").unwrap_err();
+        assert!(err.contains("cannot be its own parent or depend on itself"), "got: {err}");
+    }
+
+    #[test]
+    fn test_hard_cycle_dag_allowed() {
+        // Diamond graph: A -> B, A -> C, B -> D, C -> D
+        let docs = vec![
+            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &["task-b", "task-c"]),
+            make_doc("tasks/b.md", "Task B", "task", "active", "task-b", None, &["task-d"]),
+            make_doc("tasks/c.md", "Task C", "task", "active", "task-c", None, &["task-d"]),
+            make_doc("tasks/d.md", "Task D", "task", "active", "task-d", None, &[]),
+        ];
+        let g = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        assert!(g.would_create_hard_cycle("task-a", "task-d").is_ok());
     }
 
     // ── focus_score with urgency term ───────────────────────────────────────

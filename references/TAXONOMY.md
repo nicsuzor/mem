@@ -128,11 +128,13 @@ The primary node types in the PKB:
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
 | **goal**     | An identity-level commitment (why). Out of the work tree — never a parent, never parented. Unquantifiable: no `severity`/`consequence`/`due`. Distinct from `target` (NOT an alias). See three-tier model below. |
 | **target**   | A countable, measurable milestone (what) — done / not done. Out of the work tree — never a parent, never parented. Carries `severity` (SEV0–SEV4) + `consequence` (+ optional `due`). Distinct from `goal` (NOT an alias). See three-tier model below. |
-| **project**  | A discrete thing we work on — a noun with defined scope and boundaries                                                               |
 | **epic**     | A bundle of related work that together achieves an aim — a verb                                                                      |
 | **task**     | A discrete deliverable, completable in a single focused session                                                                      |
 | **learn**    | Observational tracking — a spike, discovery, or noted finding. Not directly actionable; resolves by decomposing into follow-up tasks |
+| **pr**       | Pull request tracking node — represents an external pull request deliverable                                                         |
 | **template** | A reusable workflow template — not a work item itself. Calling `claim_task` on a template creates a datestamped task instance. Templates are never entered into the ready queue and are excluded from all actionable-work counts. |
+
+> **Note on `project`**: "Project" is an operational routing field (`project: <slug>`) and an emergent label over high-scope property ranges, not a separate structural node type in `VALID_NODE_TYPES`. Actionable work items belong to `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`).
 
 The `classification` field carries additional semantic subtypes (bug, feature, spike, chore, etc.) without multiplying top-level types.
 

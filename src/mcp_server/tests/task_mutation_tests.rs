@@ -2665,3 +2665,119 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
             err.message
         );
     }
+
+    #[test]
+    fn test_hard_cycle_rejected_on_update_task() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-a.md",
+                "---\nid: task-a\ntitle: Task A\ntype: task\nstatus: ready\ndepends_on: [task-b]\n---\n\n# Task A\n",
+            ),
+            (
+                "tasks/task-b.md",
+                "---\nid: task-b\ntitle: Task B\ntype: task\nstatus: ready\n---\n\n# Task B\n",
+            ),
+        ]);
+
+        // Attempting to make task-b depend on task-a creates a hard cycle task-a -> task-b -> task-a
+        let err = server
+            .handle_update_task(&json!({
+                "id": "task-b",
+                "depends_on": ["task-a"],
+            }))
+            .unwrap_err();
+
+        assert!(
+            err.message.contains("circular dependency cycle"),
+            "error message should explain cycle rejection: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_hard_cycle_rejected_on_create_task() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-a.md",
+                "---\nid: task-a\ntitle: Task A\ntype: task\nstatus: ready\ndepends_on: [task-b]\n---\n\n# Task A\n",
+            ),
+        ]);
+
+        // Attempting to create task-b with depends_on: ["task-a"] when task-a depends on task-b
+        let err = server
+            .handle_create_task(&json!({
+                "id": "task-b",
+                "title": "Task B",
+                "type": "task",
+                "parent": "task-a",
+                "allow_missing_parent": true,
+                "depends_on": ["task-a"],
+            }))
+            .unwrap_err();
+
+        assert!(
+            err.message.contains("circular"),
+            "error message should explain cycle rejection: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_classification_field_create_get_list_update_roundtrip() {
+        let (_tmp, server) = build_disk_backed_server(&[]);
+
+        // 1. Create task with classification: "bug"
+        let create_res = server
+            .handle_create_task(&json!({
+                "id": "task-bug-1",
+                "title": "Fix critical race condition",
+                "type": "task",
+                "parent": "epic-root",
+                "classification": "bug",
+                "allow_missing_parent": true,
+            }))
+            .unwrap();
+
+        let create_text = create_res.content[0].raw.as_text().unwrap().text.clone();
+        assert!(create_text.contains("task-bug-1"));
+
+        // 2. get_task must return classification
+        let get_res = server
+            .handle_get_task(&json!({ "id": "task-bug-1" }))
+            .unwrap();
+        let get_text = get_res.content[0].raw.as_text().unwrap().text.clone();
+        let get_json: serde_json::Value = serde_json::from_str(&get_text).unwrap();
+        assert_eq!(get_json["classification"], "bug");
+        assert!(get_json["signals"]["criticality"].is_number());
+        assert!(get_json["signals"]["scope"].is_number());
+        assert!(get_json["signals"]["uncertainty"].is_number());
+
+        // 3. list_tasks must return classification
+        let list_res = server
+            .handle_list_tasks(&json!({ "format": "json" }))
+            .unwrap();
+        let list_text = list_res.content[0].raw.as_text().unwrap().text.clone();
+        let list_json: serde_json::Value = serde_json::from_str(&list_text).unwrap();
+        let found = list_json["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == "task-bug-1")
+            .expect("created task should be in list_tasks");
+        assert_eq!(found["classification"], "bug");
+
+        // 4. update_task with classification: "spike"
+        server
+            .handle_update_task(&json!({
+                "id": "task-bug-1",
+                "classification": "spike",
+            }))
+            .unwrap();
+
+        let get_res2 = server
+            .handle_get_task(&json!({ "id": "task-bug-1" }))
+            .unwrap();
+        let get_text2 = get_res2.content[0].raw.as_text().unwrap().text.clone();
+        let get_json2: serde_json::Value = serde_json::from_str(&get_text2).unwrap();
+        assert_eq!(get_json2["classification"], "spike");
+    }
