@@ -56,6 +56,22 @@ impl PkbSearchServer {
             });
         }
 
+        // task_5f2c5fa6 (aops_fdf19283): a resolved path that exists but is a
+        // directory (a document/directory name collision) must not fall
+        // through to a bare EISDIR from read_to_string below.
+        if path.is_dir() {
+            let rel = path.strip_prefix(&self.pkb_root).unwrap_or(&path).display();
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "'{query}' resolves to a directory, not a file, at '{rel}' — a document/directory \
+                     name collision. There is no file to read for this id. Rename or remove the \
+                     colliding directory, or repair the index entry for '{query}'."
+                )),
+                data: None,
+            });
+        }
+
         let content = std::fs::read_to_string(&path).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to read file: {e}")),

@@ -1409,6 +1409,7 @@ impl PkbSearchServer {
             "get_stats" => self.handle_get_stats(args),
             "status" => self.handle_status(args),
             "refresh_graph" => self.handle_refresh_graph(args),
+            "repair_index_orphans" => self.handle_repair_index_orphans(args),
             "get_consolidation_cluster" => self.handle_get_consolidation_cluster(args),
             "apply_consolidation_batch" => self.handle_apply_consolidation_batch(args),
             _ => Err(McpError {

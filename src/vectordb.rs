@@ -90,6 +90,24 @@ pub struct DocumentEntry {
     pub body_chunks: Vec<String>,
 }
 
+/// An index entry whose backing document is absent from disk — a stale
+/// embedding surviving deletion (or move) of its source file. Distinct from
+/// a graph-referenced "ghost node" (an id named in another document's
+/// `parent`/`depends_on` field with no file): this class has no graph
+/// referrer at all, so it is invisible to `pkb_orphans` and only shows up as
+/// a search hit that resolves to nothing on every by-id lookup.
+///
+/// See `find_orphaned_entries` and the `repair_index_orphans` MCP tool.
+#[derive(Debug, Clone, Serialize)]
+pub struct OrphanedIndexEntry {
+    pub id: String,
+    pub title: String,
+    pub doc_type: Option<String>,
+    /// Path as stored in the index (relative to pkb_root unless the entry
+    /// predates path normalization).
+    pub path: String,
+}
+
 /// Search result returned from queries
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -1159,6 +1177,41 @@ impl VectorStore {
         self.documents.get(path)
     }
 
+    /// Scan every index entry and return those whose backing file is no
+    /// longer a regular file on disk (deleted, or replaced by a directory).
+    ///
+    /// This is the detection half of the ghost-search-hit defect class
+    /// (task_5f2c5fa6): a document can be deleted (or its file replaced)
+    /// without the vector store being told, because only a full reindex
+    /// (`remove_deleted_by_ids`, driven by a directory scan) reconciles the
+    /// store against disk — `refresh_graph`/`ensure_graph_fresh` rebuild the
+    /// *graph* from disk but never touch the vector index. The surviving
+    /// entry keeps matching queries in `search`/`search_by_tag` forever,
+    /// with no lookup path that can ever resolve it again.
+    ///
+    /// Uses `is_file()` rather than `exists()` so a path that now resolves
+    /// to a directory (a name collision, not merely "gone") is also flagged
+    /// — either way there is nothing for a by-id read to open.
+    pub fn find_orphaned_entries(&self, pkb_root: &Path) -> Vec<OrphanedIndexEntry> {
+        self.documents
+            .values()
+            .filter(|entry| {
+                let abs = if entry.path.is_absolute() {
+                    entry.path.clone()
+                } else {
+                    pkb_root.join(&entry.path)
+                };
+                !abs.is_file()
+            })
+            .map(|entry| OrphanedIndexEntry {
+                id: entry.id.clone(),
+                title: entry.title.clone(),
+                doc_type: entry.doc_type.clone(),
+                path: entry.path.to_string_lossy().into_owned(),
+            })
+            .collect()
+    }
+
     /// Count documents whose `chunk_embeddings` is empty.
     ///
     /// Such entries can never match a query (the search loop never enters
@@ -1367,6 +1420,75 @@ mod tests {
         let root = Path::new("/pkb");
         let results = store.list_documents(Some("nonexistent"), None, None, root);
         assert!(results.is_empty());
+    }
+
+    // ── find_orphaned_entries (task_5f2c5fa6) ──
+
+    #[test]
+    fn test_find_orphaned_entries_flags_entry_with_no_backing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        // Live entry: file actually on disk.
+        std::fs::write(root.join("tasks/task-abc.md"), "live").unwrap();
+        // "mem-001" and "note-xyz" (from build_test_store) have no backing
+        // file anywhere under `root` — they are the orphans under test.
+        let store = build_test_store();
+
+        let orphans = store.find_orphaned_entries(root);
+        let orphan_ids: std::collections::HashSet<&str> =
+            orphans.iter().map(|o| o.id.as_str()).collect();
+
+        assert!(
+            !orphan_ids.contains("task-abc"),
+            "entry backed by a real file must not be flagged: {orphan_ids:?}"
+        );
+        assert!(
+            orphan_ids.contains("mem-001"),
+            "entry with no backing file must be flagged: {orphan_ids:?}"
+        );
+    }
+
+    #[test]
+    fn test_find_orphaned_entries_empty_when_all_backed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        std::fs::create_dir_all(root.join("memories")).unwrap();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join("tasks/task-abc.md"), "live").unwrap();
+        std::fs::write(root.join("memories/mem-001.md"), "live").unwrap();
+        std::fs::write(root.join("notes/note-xyz.md"), "live").unwrap();
+        let store = build_test_store();
+
+        let orphans = store.find_orphaned_entries(root);
+        assert!(
+            orphans.is_empty(),
+            "every entry has a backing file, expected no orphans: {orphans:?}"
+        );
+    }
+
+    #[test]
+    fn test_find_orphaned_entries_flags_path_replaced_by_directory() {
+        // A path that now resolves to a directory (not merely "gone") must
+        // also be flagged — is_file() is false either way, and there is
+        // nothing for a by-id read to open. Regression coverage for the
+        // aops_fdf19283 collision class (task_5f2c5fa6 checklist item 3).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("memories")).unwrap();
+        std::fs::create_dir_all(root.join("tasks/task-abc.md")).unwrap(); // dir, not file
+        std::fs::write(root.join("memories/mem-001.md"), "live").unwrap();
+        let store = build_test_store();
+
+        let orphans = store.find_orphaned_entries(root);
+        let orphan_ids: std::collections::HashSet<&str> =
+            orphans.iter().map(|o| o.id.as_str()).collect();
+        assert!(
+            orphan_ids.contains("task-abc"),
+            "path replaced by a directory must be flagged: {orphan_ids:?}"
+        );
+        assert!(!orphan_ids.contains("mem-001"));
     }
 
     // ── search ──

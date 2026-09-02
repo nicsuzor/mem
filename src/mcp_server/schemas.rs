@@ -995,6 +995,28 @@ impl PkbSearchServer {
             )
             .with_title("Refresh Graph Index")
             .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
+                "repair_index_orphans",
+                "Detect (and, on request, repair) orphaned semantic-index entries: ids returned by `search`/`search_by_tag` \
+                 whose backing document no longer exists on disk. A deleted or moved document can leave a stale embedding \
+                 behind — `refresh_graph` cannot fix this, since it rebuilds the graph from disk but never touches the \
+                 vector index — so the ghost entry keeps resurfacing in search results with no `get_task`/`get_document` \
+                 path that can ever reach it again. Call with dry_run=true (default) to list orphans without changing the \
+                 index; call with dry_run=false to purge them.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "If true (default), only report orphaned entries — no index mutation. If false, purge every orphaned entry found.",
+                            "default": true
+                        }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("Repair Orphaned Index Entries")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
         ]
     }
 }
