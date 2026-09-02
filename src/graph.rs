@@ -1171,12 +1171,25 @@ pub fn parse_verbal_confidence(s: &str) -> Option<f64> {
 pub fn detect_open_question(body: &str) -> bool {
     let lower = body.to_lowercase();
 
-    // Check if the whole text indicates the question is settled/closed with no open questions
+    // Check if the whole text indicates the question is settled/closed with no open questions.
+    //
+    // Anti-gaming (mem_b320cf42, bypass 1 — mem_7b139fb6 attack F): this MUST be
+    // evaluated before the section scan below, not only in a post-loop fallback.
+    // The section scan below returns early (`found_valid_open_section`) as soon as
+    // it sees a plausible open-question heading with any content, which previously
+    // meant the settled-phrase check further down was dead code whenever the
+    // settled phrase appeared *inside* a matched section — the exact phrase
+    // "question is settled" typed under an "## Open Questions" heading still
+    // returned `true`, defeating the defense it was meant to invoke.
     let has_settled_overall = lower.contains("question is closed")
         || lower.contains("question is settled")
         || lower.contains("settled question")
         || lower.contains("question resolved")
         || lower.contains("question is resolved");
+
+    if has_settled_overall {
+        return false;
+    }
 
     let lines: Vec<&str> = body.lines().collect();
     let mut in_open_section = false;
@@ -1215,7 +1228,17 @@ pub fn detect_open_question(body: &str) -> bool {
                 }
             }
         } else if in_open_section {
-            if !trimmed.is_empty() && trimmed != "---" && !trimmed.starts_with("<!--") {
+            // Anti-gaming (mem_b320cf42, bypass 1 — mem_7b139fb6 attack A): any
+            // non-empty line used to count as section content, so a heading match
+            // followed by a single filler word (e.g. "tbd") earned the full bonus.
+            // Content must now plausibly read as an actual inquiry: a literal
+            // question, or text invoking an investigation/uncertainty term drawn
+            // from the same vocabulary as `OPEN_PATTERNS` below.
+            if !trimmed.is_empty()
+                && trimmed != "---"
+                && !trimmed.starts_with("<!--")
+                && looks_like_open_question_content(trimmed)
+            {
                 section_has_content = true;
             }
         }
@@ -1229,16 +1252,29 @@ pub fn detect_open_question(body: &str) -> bool {
         return true;
     }
 
-    if has_settled_overall {
-        return false;
-    }
-
     // Pattern checks across body
     static OPEN_PATTERNS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?i)(?:- \[[ x]\]\s*\?|open question:|spike question:|investigate whether|to determine whether|unknown whether|hypothes(?:is|es):)").unwrap()
     });
 
     OPEN_PATTERNS.is_match(body)
+}
+
+/// Anti-gaming content gate for `detect_open_question` (mem_b320cf42, bypass 1).
+///
+/// A line inside an "open question"-style section only counts as genuine section
+/// content if it plausibly reads as an actual inquiry — a literal question, or
+/// text invoking an investigation/uncertainty verb drawn from the same
+/// vocabulary as `OPEN_PATTERNS` — rather than arbitrary non-empty filler.
+fn looks_like_open_question_content(line: &str) -> bool {
+    if line.ends_with('?') {
+        return true;
+    }
+    static INQUIRY_WORDS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(investigat|determin|unclear|unsure|unknown|hypothes|uncertain)")
+            .unwrap()
+    });
+    INQUIRY_WORDS.is_match(line)
 }
 
 // ===========================================================================
@@ -1586,21 +1622,14 @@ impl GraphNode {
             .as_ref()
             .and_then(|f| f.get("confidence"))
             .and_then(parse_confidence);
-        let has_open_question = fm
-            .as_ref()
-            .and_then(|f| {
-                f.get("open_question")
-                    .or_else(|| f.get("has_open_question"))
-                    .and_then(|v| v.as_bool())
-                    .or_else(|| {
-                        f.get("open_questions").and_then(|v| match v {
-                            serde_json::Value::Array(a) => Some(!a.is_empty()),
-                            serde_json::Value::Bool(b) => Some(*b),
-                            _ => None,
-                        })
-                    })
-            })
-            .unwrap_or_else(|| detect_open_question(&doc.body));
+        // Anti-gaming (mem_b320cf42, bypass 3 — mem_7b139fb6 attack J): `has_open_question`
+        // is derived exclusively from body content via `detect_open_question`. This
+        // used to also accept a bare frontmatter `open_question` / `has_open_question`
+        // boolean, or a non-empty `open_questions` array, as an alternate route that
+        // skipped body detection entirely — letting a single frontmatter line with an
+        // empty body earn the same VoI bonus as a genuinely documented spike (the
+        // cheapest of the confirmed gaming attacks: zero body edits required).
+        let has_open_question = detect_open_question(&doc.body);
         let supersedes = fm
             .as_ref()
             .map(|f| parse_string_array(f, "supersedes"))

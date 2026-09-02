@@ -3303,10 +3303,26 @@ fn compute_voi_term(nodes: &mut [GraphNode]) {
         );
 
         // Condition 1: Open Question (self or downstream cone)
-        let has_open_question = node.has_open_question
-            || uncertainties[i] > 0.0
-            || (node.confidence.is_some() && node.confidence.unwrap() < 1.0)
-            || cone_has_open_question;
+        //
+        // Anti-gaming (mem_b320cf42, bypass 2 — mem_7b139fb6 attacks C/I): a bare
+        // numeric/verbal `confidence` value must NOT independently satisfy this
+        // condition. It used to via two redundant routes — `uncertainties[i] > 0.0`
+        // and the explicit `confidence.is_some() && confidence < 1.0` check — both
+        // of which fire off `compute_uncertainty`'s `1.0 - confidence` regardless of
+        // whether `has_open_question` is genuinely true, letting an uncorroborated
+        // `confidence: 0.01` with an empty body outscore a real documented spike.
+        // `confidence` still legitimately scales VoI *magnitude* once gated (see
+        // `effective_unc` above); it just can no longer act as the gate itself.
+        //
+        // Scope note: this only closes the confirmed attacks, which all applied
+        // the bare confidence value to the subject node itself. `cone_has_open_question`
+        // above still treats a downstream node's `tid_unc > 0.0` as open-question
+        // evidence, so the identical loophole is reachable one hop away by planting
+        // the confidence claim on a dependent instead. That propagation path is
+        // depended on by `test_compute_voi_term`'s legitimate confidence-driven
+        // magnitude fixtures and was not one of mem_7b139fb6's confirmed attacks,
+        // so closing it is left out of scope here — see mem_b320cf42 follow-up note.
+        let has_open_question = node.has_open_question || cone_has_open_question;
 
         // Condition 2: Downstream Divergence (branching: >= 2 nodes in cone or >= 2 direct blocks)
         let has_downstream_divergence = cone_node_count >= 2 || node.blocks.len() >= 2;
@@ -10144,6 +10160,178 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         assert_eq!(is_ready_status("ready", true), true, "ready with AC is ready");
         assert_eq!(is_ready_status("queued", false), true, "queued is ready");
         assert_eq!(is_ready_status("done", true), false, "done is not ready");
+    }
+
+    // ── Anti-gaming regression tests (mem_b320cf42) ─────────────────────────
+    //
+    // Close the three confirmed gaming bypasses in the adversarial review at
+    // mem_7b139fb6 (verdict: FAIL). Each test below reproduces the reviewer's
+    // attack shape (1 subject node + 2 trivial downstream dependents, so
+    // has_downstream_divergence is trivially satisfied and the only variable
+    // under test is condition 1 / has_open_question).
+
+    #[test]
+    fn test_bypass1_heading_filler_and_settled_reorder_closed() {
+        let root = Path::new("/tmp/test-bypass1");
+
+        // Attack A (mem_7b139fb6): a heading matching the open-question prefix
+        // set followed by a single filler word used to earn the full bonus with
+        // zero real inquiry content.
+        let mut filler_heading = make_doc(
+            "tasks/filler-heading.md",
+            "Filler heading spike",
+            "task",
+            "ready",
+            "filler-heading",
+            None,
+            &[],
+        );
+        filler_heading.body = "## Questions\ntbd\n".to_string();
+
+        let fh_dep_1 = make_doc(
+            "tasks/fh-dep-1.md", "FH dep 1", "task", "ready", "fh-dep-1", None, &["filler-heading"],
+        );
+        let fh_dep_2 = make_doc(
+            "tasks/fh-dep-2.md", "FH dep 2", "task", "ready", "fh-dep-2", None, &["filler-heading"],
+        );
+
+        // Attack F (mem_7b139fb6): the exact "question is settled" phrase typed
+        // *inside* a matched Open Questions section used to be dead code, because
+        // the section-scan short-circuit returned true before the settled check
+        // ever ran — even though the section content otherwise reads as genuine
+        // inquiry content (a real question, an "unclear" cue).
+        let mut dead_settled_check = make_doc(
+            "tasks/dead-settled.md",
+            "Dead settled-check spike",
+            "task",
+            "ready",
+            "dead-settled",
+            None,
+            &[],
+        );
+        dead_settled_check.body =
+            "## Open Questions\nIs this still unclear? The question is settled now, no further work needed.\n"
+                .to_string();
+
+        let ds_dep_1 = make_doc(
+            "tasks/ds-dep-1.md", "DS dep 1", "task", "ready", "ds-dep-1", None, &["dead-settled"],
+        );
+        let ds_dep_2 = make_doc(
+            "tasks/ds-dep-2.md", "DS dep 2", "task", "ready", "ds-dep-2", None, &["dead-settled"],
+        );
+
+        let docs = vec![
+            filler_heading, fh_dep_1, fh_dep_2,
+            dead_settled_check, ds_dep_1, ds_dep_2,
+        ];
+        let graph = GraphStore::build(&docs, root);
+
+        let fh_node = graph.get_node("filler-heading").unwrap();
+        assert_eq!(
+            fh_node.has_open_question, false,
+            "a heading match plus one filler word must not count as an open question"
+        );
+        assert_eq!(
+            fh_node.voi_value.unwrap_or(0.0), 0.0,
+            "filler-heading spike must earn 0 VoI"
+        );
+
+        let ds_node = graph.get_node("dead-settled").unwrap();
+        assert_eq!(
+            ds_node.has_open_question, false,
+            "an explicitly settled question inside a matched section must not count as open, regardless of scan order"
+        );
+        assert_eq!(
+            ds_node.voi_value.unwrap_or(0.0), 0.0,
+            "explicitly-settled spike must earn 0 VoI"
+        );
+    }
+
+    #[test]
+    fn test_bypass2_bare_confidence_without_open_question_earns_no_voi() {
+        let root = Path::new("/tmp/test-bypass2");
+
+        // Attacks C/I (mem_7b139fb6): a bare numeric `confidence` value with an
+        // empty body and no genuine open question used to independently satisfy
+        // condition 1 via compute_uncertainty's `1.0 - confidence`, letting an
+        // uncorroborated low-confidence claim outscore a real documented spike
+        // (attack I: 1650 vs the genuine-spike control's 833.33).
+        let mut bare_confidence = make_doc(
+            "tasks/bare-confidence.md",
+            "Bare confidence claim",
+            "task",
+            "ready",
+            "bare-confidence",
+            None,
+            &[],
+        );
+        {
+            let mut fm = bare_confidence.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("confidence".to_string(), serde_json::json!(0.01));
+            bare_confidence.frontmatter = Some(serde_json::Value::Object(fm));
+        }
+        // body stays empty — no corroborating open-question content.
+
+        let bc_dep_1 = make_doc(
+            "tasks/bc-dep-1.md", "BC dep 1", "task", "ready", "bc-dep-1", None, &["bare-confidence"],
+        );
+        let bc_dep_2 = make_doc(
+            "tasks/bc-dep-2.md", "BC dep 2", "task", "ready", "bc-dep-2", None, &["bare-confidence"],
+        );
+
+        let docs = vec![bare_confidence, bc_dep_1, bc_dep_2];
+        let graph = GraphStore::build(&docs, root);
+
+        let bc_node = graph.get_node("bare-confidence").unwrap();
+        assert_eq!(
+            bc_node.voi_value.unwrap_or(0.0), 0.0,
+            "a bare confidence claim with no genuine open question must earn 0 VoI, not outscore a real spike"
+        );
+    }
+
+    #[test]
+    fn test_bypass3_frontmatter_open_question_flag_does_not_bypass_body_detection() {
+        let root = Path::new("/tmp/test-bypass3");
+
+        // Attack J (mem_7b139fb6): a bare frontmatter `open_question: true` flag
+        // with an empty body used to skip body detection entirely and earn the
+        // full VoI bonus for zero body edits — the cheapest of the confirmed
+        // gaming attacks.
+        let mut frontmatter_flag = make_doc(
+            "tasks/frontmatter-flag.md",
+            "Frontmatter flag only",
+            "task",
+            "ready",
+            "frontmatter-flag",
+            None,
+            &[],
+        );
+        {
+            let mut fm = frontmatter_flag.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            fm.insert("open_question".to_string(), serde_json::json!(true));
+            frontmatter_flag.frontmatter = Some(serde_json::Value::Object(fm));
+        }
+        // body stays empty.
+
+        let ff_dep_1 = make_doc(
+            "tasks/ff-dep-1.md", "FF dep 1", "task", "ready", "ff-dep-1", None, &["frontmatter-flag"],
+        );
+        let ff_dep_2 = make_doc(
+            "tasks/ff-dep-2.md", "FF dep 2", "task", "ready", "ff-dep-2", None, &["frontmatter-flag"],
+        );
+
+        let docs = vec![frontmatter_flag, ff_dep_1, ff_dep_2];
+        let graph = GraphStore::build(&docs, root);
+
+        let ff_node = graph.get_node("frontmatter-flag").unwrap();
+        assert_eq!(
+            ff_node.has_open_question, false,
+            "a bare frontmatter open_question flag with no body content must not set has_open_question"
+        );
+        assert_eq!(
+            ff_node.voi_value.unwrap_or(0.0), 0.0,
+            "a frontmatter-only open_question flag must earn 0 VoI"
+        );
     }
 }
 
