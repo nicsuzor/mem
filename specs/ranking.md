@@ -4,7 +4,7 @@ title: "PKB Ranking & Prioritisation Specification"
 type: spec
 status: approved
 created: 2026-08-25
-pinned_commit: d187656ca69e16b85d75b1726ec031d43429883a
+pinned_commit: 9336a166f6bf5c40987503ce56f98eadc59cf859
 tags:
   - ranking
   - focus-score
