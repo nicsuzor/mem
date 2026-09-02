@@ -517,10 +517,28 @@ pub fn generate_excalidraw_scene(
     edges: &[Edge],
     config: &LayoutConfig,
 ) -> ExcalidrawFile {
+    // Status filter: someday and cancelled are not drawn at all
+    let active_nodes: Vec<GraphNode> = nodes
+        .iter()
+        .filter(|n| !is_excluded_status(n.status.as_deref()))
+        .cloned()
+        .collect();
+    let active_ids: HashSet<String> = active_nodes.iter().map(|n| n.id.clone()).collect();
+    let active_edges: Vec<Edge> = edges
+        .iter()
+        .filter(|e| active_ids.contains(&e.source) && active_ids.contains(&e.target))
+        .cloned()
+        .collect();
+
+    let mut node_dimensions: HashMap<String, (f64, f64)> = HashMap::new();
+    for node in &active_nodes {
+        node_dimensions.insert(node.id.clone(), compute_card_dimensions(node));
+    }
+
     let positions = if config.layout_type.as_str() == "radial" {
-        compute_radial_layout(nodes, edges, config)
+        compute_radial_layout(&active_nodes, &active_edges, config)
     } else {
-        compute_sugiyama_layout(nodes, edges, config)
+        compute_sugiyama_layout(&active_nodes, &active_edges, config)
     };
 
     let mut elements: Vec<ExcalidrawElement> = Vec::new();
@@ -528,7 +546,7 @@ pub fn generate_excalidraw_scene(
 
     // Group child nodes by parent for Frame generation
     let mut parent_to_children: HashMap<String, Vec<String>> = HashMap::new();
-    for node in nodes {
+    for node in &active_nodes {
         if let Some(ref pid) = node.parent {
             parent_to_children
                 .entry(pid.clone())
@@ -604,14 +622,19 @@ pub fn generate_excalidraw_scene(
     }
 
     // 2. Generate Cards (Rectangle/Diamond) and Container-Bound Text
-    for node in nodes {
+    for node in &active_nodes {
         let (x, y) = positions.get(&node.id).copied().unwrap_or((100.0, 100.0));
-        let card_id = format!("card-{}", node.id);
+        let (card_w, card_h) = node_dimensions
+            .get(&node.id)
+            .copied()
+            .unwrap_or((config.card_width, config.card_height));
+        let card_id = node.id.clone();
         let text_id = format!("text-{}", node.id);
         card_elem_map.insert(node.id.clone(), card_id.clone());
 
         let color_style =
             node_color_style(node.status.as_deref(), node.node_type.as_deref());
+        let red_ring = is_red_ring(node.stakeholder.is_some(), node.status.as_deref());
 
         // Card Container Shape
         let mut card_elem = ExcalidrawElement::default();
@@ -623,14 +646,19 @@ pub fn generate_excalidraw_scene(
         };
         card_elem.x = x;
         card_elem.y = y;
-        card_elem.width = config.card_width;
-        card_elem.height = config.card_height;
+        card_elem.width = card_w;
+        card_elem.height = card_h;
         card_elem.background_color = color_style.bg_color.to_string();
-        card_elem.stroke_color = color_style.stroke_color.to_string();
+        if red_ring {
+            card_elem.stroke_color = "#e03131".to_string();
+            card_elem.stroke_width = 2.5;
+        } else {
+            card_elem.stroke_color = color_style.stroke_color.to_string();
+            card_elem.stroke_width = 1.5;
+        }
         card_elem.stroke_style = color_style.stroke_style.to_string();
         card_elem.fill_style = color_style.fill_style.to_string();
         card_elem.opacity = color_style.opacity as f64;
-        card_elem.stroke_width = 1.5;
         card_elem.frame_id = node_to_frame.get(&node.id).cloned();
         card_elem.bound_elements = Some(vec![BoundElement {
             id: text_id.clone(),
@@ -651,26 +679,67 @@ pub fn generate_excalidraw_scene(
         });
 
         // Formatted Bound Text Element
-        let title_line = truncate_title(&node.label, 36);
-        let status_str = node.status.as_deref().unwrap_or("inbox").to_uppercase();
+        let status_raw = node.status.as_deref().unwrap_or("inbox");
+        let status_str = status_raw.to_uppercase();
         let prio_str = node
             .intent
             .map(|p| format!("P{}", p))
             .unwrap_or_default();
-        let header = if prio_str.is_empty() {
-            format!("[{}]", status_str)
-        } else {
-            format!("[{} · {}]", status_str, prio_str)
+        let is_in_progress = status_raw.eq_ignore_ascii_case("in_progress")
+            || status_raw.eq_ignore_ascii_case("active")
+            || status_raw.eq_ignore_ascii_case("doing");
+
+        let header = match (!prio_str.is_empty(), is_in_progress) {
+            (true, true) => format!("[{} · {} · now]", status_str, prio_str),
+            (true, false) => format!("[{} · {}]", status_str, prio_str),
+            (false, true) => format!("[{} · now]", status_str),
+            (false, false) => format!("[{}]", status_str),
         };
+
+        let mut markers = Vec::new();
+        if node.focus_score.unwrap_or(0) >= 1000 {
+            markers.push("START".to_string());
+        }
+        if node.contributes_to.iter().any(|c| {
+            c.to == "targ_4e2cc92a"
+                || c.resolved_to.as_deref() == Some("targ_4e2cc92a")
+                || c.to.contains("targ_4e2cc92a")
+        }) {
+            markers.push("LSL".to_string());
+        }
+        if node.project.as_deref() == Some("admin") {
+            markers.push("WORK".to_string());
+        }
+        if let Some(ref eff) = node.effort {
+            if !eff.is_empty() {
+                markers.push(eff.clone());
+            }
+        }
+
+        let markers_line = if markers.is_empty() {
+            String::new()
+        } else {
+            format!("\n[{}]", markers.join(" · "))
+        };
+
+        let title_line = truncate_title(&node.label, 36);
         let tag_str = if node.tags.is_empty() {
             String::new()
         } else {
             format!(
                 "\n{}",
-                truncate_title(&node.tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" "), 32)
+                truncate_title(
+                    &node
+                        .tags
+                        .iter()
+                        .map(|t| format!("#{}", t))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    32
+                )
             )
         };
-        let text_content = format!("{}\n{}{}", header, title_line, tag_str);
+        let text_content = format!("{}{}\n{}{}", header, markers_line, title_line, tag_str);
 
         let mut text_elem = ExcalidrawElement::default();
         text_elem.id = text_id;
@@ -684,8 +753,8 @@ pub fn generate_excalidraw_scene(
         text_elem.vertical_align = Some("middle".to_string());
         text_elem.x = x + 8.0;
         text_elem.y = y + 8.0;
-        text_elem.width = config.card_width - 16.0;
-        text_elem.height = config.card_height - 16.0;
+        text_elem.width = card_w - 16.0;
+        text_elem.height = card_h - 16.0;
         text_elem.stroke_color = "#1e1e1e".to_string();
         text_elem.frame_id = node_to_frame.get(&node.id).cloned();
 
@@ -694,7 +763,7 @@ pub fn generate_excalidraw_scene(
     }
 
     // 3. Generate Arrows with Normalized Port Bindings
-    for edge in edges {
+    for edge in &active_edges {
         let (Some(&source_pos), Some(&target_pos)) =
             (positions.get(&edge.source), positions.get(&edge.target))
         else {
@@ -707,6 +776,15 @@ pub fn generate_excalidraw_scene(
             continue;
         };
 
+        let (source_w, source_h) = node_dimensions
+            .get(&edge.source)
+            .copied()
+            .unwrap_or((config.card_width, config.card_height));
+        let (target_w, target_h) = node_dimensions
+            .get(&edge.target)
+            .copied()
+            .unwrap_or((config.card_width, config.card_height));
+
         let dx = target_pos.0 - source_pos.0;
         let dy = target_pos.1 - source_pos.1;
 
@@ -716,10 +794,10 @@ pub fn generate_excalidraw_scene(
             (
                 PORT_OUT,
                 PORT_IN,
-                source_pos.0 + config.card_width,
-                source_pos.1 + config.card_height * 0.5,
+                source_pos.0 + source_w,
+                source_pos.1 + source_h * 0.5,
                 target_pos.0,
-                target_pos.1 + config.card_height * 0.5,
+                target_pos.1 + target_h * 0.5,
             )
         } else if dx < 0.0 {
             // Flow from right to left: In -> Out
@@ -727,18 +805,18 @@ pub fn generate_excalidraw_scene(
                 PORT_IN,
                 PORT_OUT,
                 source_pos.0,
-                source_pos.1 + config.card_height * 0.5,
-                target_pos.0 + config.card_width,
-                target_pos.1 + config.card_height * 0.5,
+                source_pos.1 + source_h * 0.5,
+                target_pos.0 + target_w,
+                target_pos.1 + target_h * 0.5,
             )
         } else if dy > 0.0 {
             // Same column, target below: Bottom -> Top
             (
                 PORT_BOTTOM,
                 PORT_TOP,
-                source_pos.0 + config.card_width * 0.5,
-                source_pos.1 + config.card_height,
-                target_pos.0 + config.card_width * 0.5,
+                source_pos.0 + source_w * 0.5,
+                source_pos.1 + source_h,
+                target_pos.0 + target_w * 0.5,
                 target_pos.1,
             )
         } else {
@@ -746,10 +824,10 @@ pub fn generate_excalidraw_scene(
             (
                 PORT_TOP,
                 PORT_BOTTOM,
-                source_pos.0 + config.card_width * 0.5,
+                source_pos.0 + source_w * 0.5,
                 source_pos.1,
-                target_pos.0 + config.card_width * 0.5,
-                target_pos.1 + config.card_height,
+                target_pos.0 + target_w * 0.5,
+                target_pos.1 + target_h,
             )
         };
 

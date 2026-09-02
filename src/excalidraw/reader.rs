@@ -14,7 +14,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 static STATUS_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*\[\s*([A-Za-z0-9_-]+)(?:\s*·\s*[Pp]?(\d+))?\s*\]\s*").unwrap()
+    Regex::new(r"^\s*\[\s*([A-Za-z0-9_-]+)(?:\s*·\s*[Pp]?(\d+))?(?:\s*·\s*([^\]]+))?\s*\]\s*").unwrap()
+});
+
+static MARKERS_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*\[\s*(?:(?:START|LSL|WORK|now|\d+[hdwms])(?:\s*·\s*|\s*,\s*|\s+)?)+\s*\]\s*$").unwrap()
 });
 
 static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#([a-zA-Z0-9_\-]+)").unwrap());
@@ -448,6 +452,11 @@ fn parse_card_text(raw_text: &str) -> (Option<String>, Option<i32>, String, Vec<
                     tags.push(t.as_str().to_string());
                 }
             }
+            continue;
+        }
+
+        // Skip marker line if present (e.g. [START · LSL · WORK · 1h])
+        if MARKERS_LINE_RE.is_match(trimmed) {
             continue;
         }
 
