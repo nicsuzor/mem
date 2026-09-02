@@ -581,6 +581,27 @@ impl PkbSearchServer {
             });
         }
 
+        // task_5f2c5fa6 (aops_fdf19283): the resolved path can exist but be a
+        // directory, not a file — a document/directory name collision. Left
+        // unchecked, the read below fails with a bare EISDIR ("Is a
+        // directory (os error 21)") that names neither the id nor the
+        // collision. Name it explicitly instead.
+        if abs_path.is_dir() {
+            let rel = abs_path
+                .strip_prefix(&self.pkb_root)
+                .unwrap_or(&abs_path)
+                .display();
+            return Err(McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!(
+                    "'{id}' resolves to a directory, not a file, at '{rel}' — a document/directory \
+                     name collision. There is no file to read for this id. Rename or remove the \
+                     colliding directory, or repair the index entry for '{id}'."
+                )),
+                data: None,
+            });
+        }
+
         // Self-heal (aops_fb137646 AC3): a by-id read must return the state
         // actually on disk, not a cached status that a prior write's
         // in-place patch failed to land (same-process race) or that this

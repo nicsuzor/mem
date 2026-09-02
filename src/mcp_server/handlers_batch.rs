@@ -833,6 +833,86 @@ impl PkbSearchServer {
         )]))
     }
 
+    /// Detect and (optionally) repair orphaned semantic-index entries: an id
+    /// returned by `search`/`search_by_tag` whose backing document is absent
+    /// from disk. `refresh_graph` cannot fix this — it rebuilds the *graph*
+    /// from disk and never touches the vector index, so a stale embedding
+    /// for a deleted document survives it and keeps resurfacing in search
+    /// with no `get_task`/`get_document`/`update_task` path that can ever
+    /// reach it again (task_5f2c5fa6).
+    ///
+    /// `dry_run` (default true) only reports; `dry_run: false` purges each
+    /// orphan via the same WAL-logged `Remove` + `store.remove` sequence
+    /// `try_remove_document` uses for an ordinary delete, then persists.
+    pub(crate) fn handle_repair_index_orphans(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
+
+        let orphans = self.store.read().find_orphaned_entries(&self.pkb_root);
+
+        if orphans.is_empty() {
+            let json = serde_json::json!({
+                "ok": true,
+                "orphan_count": 0,
+                "dry_run": dry_run,
+                "orphans": [],
+                "message": "No orphaned index entries found — every index entry resolves to a file on disk.",
+            });
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&json).unwrap_or_default(),
+            )]));
+        }
+
+        let plural = if orphans.len() == 1 { "y" } else { "ies" };
+
+        if dry_run {
+            let json = serde_json::json!({
+                "ok": true,
+                "orphan_count": orphans.len(),
+                "dry_run": true,
+                "orphans": orphans,
+                "message": format!(
+                    "{} orphaned index entr{plural} found (index entry present, no backing file on disk). \
+                     Call again with dry_run=false to purge.",
+                    orphans.len(),
+                ),
+            });
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&json).unwrap_or_default(),
+            )]));
+        }
+
+        let ids: Vec<String> = orphans.iter().map(|o| o.id.clone()).collect();
+        let wal_path = self.wal_path();
+        for id in &ids {
+            if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
+                &wal_path,
+                &crate::vectordb::WalRecord::Remove(id.clone()),
+            ) {
+                tracing::error!(
+                    "repair_index_orphans: failed to append remove to WAL for {id}: {e}"
+                );
+            }
+        }
+        {
+            let mut store = self.store.write();
+            for id in &ids {
+                store.remove(id);
+            }
+        }
+        self.save_store();
+
+        let json = serde_json::json!({
+            "ok": true,
+            "orphan_count": orphans.len(),
+            "dry_run": false,
+            "purged": orphans,
+            "message": format!("Purged {} orphaned index entr{plural}.", orphans.len()),
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap_or_default(),
+        )]))
+    }
+
     pub(crate) fn handle_apply_consolidation_batch(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let seed_id = args.get("seed_id").and_then(|v| v.as_str()).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,

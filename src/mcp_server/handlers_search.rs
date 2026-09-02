@@ -181,6 +181,18 @@ impl PkbSearchServer {
                         node.scope, node.uncertainty, node.criticality
                     ));
                 }
+            } else {
+                // task_5f2c5fa6: no graph node for this id. If the index
+                // entry's own backing file is also gone, this is an
+                // orphaned index entry — label it rather than silently
+                // dropping the ID line.
+                output.push_str(&format!("**ID:** `{}`\n", r.id));
+                if !r.path.as_os_str().is_empty() && !r.path.is_file() {
+                    output.push_str(
+                        "**⚠ ORPHANED INDEX ENTRY:** no backing document on disk for this id — \
+                         get_task/get_document will not find it. Repair with `repair_index_orphans`.\n",
+                    );
+                }
             }
             output.push('\n');
         }
@@ -398,6 +410,12 @@ impl PkbSearchServer {
                 .or_else(|| node.and_then(|n| n.node_type.as_deref()))
                 .unwrap_or("untyped");
             let is_task = crate::graph::TASK_TYPES.contains(&node_type);
+            // task_5f2c5fa6: an index entry can outlive its backing file (a
+            // deleted/moved document that only a full reindex — not
+            // refresh_graph — reconciles away). Label it in the hit itself
+            // so a reader doesn't chase an id that resolves nowhere; repair
+            // via repair_index_orphans.
+            let is_orphaned = !r.path.as_os_str().is_empty() && !r.path.is_file();
 
             output.push_str(&format!(
                 "### {}. {} (score: {:.3})\n",
@@ -407,6 +425,12 @@ impl PkbSearchServer {
             ));
             output.push_str(&format!("**ID:** `{display_id}`\n"));
             output.push_str(&format!("**Type:** {node_type}\n"));
+            if is_orphaned {
+                output.push_str(
+                    "**⚠ ORPHANED INDEX ENTRY:** no backing document on disk for this id — \
+                     get_task/get_document will not find it. Repair with `repair_index_orphans`.\n",
+                );
+            }
             // Only actionable task nodes carry actionable task status (AC3 / aops_9d3be3b3)
             if is_task {
                 if let Some(status) = node.and_then(|n| n.status.as_deref()) {
@@ -751,7 +775,13 @@ impl PkbSearchServer {
             }
             output.push_str(&format!(" ({})", r.tags.join(", ")));
             let id = &r.id;
-            output.push_str(&format!(" — `{id}`\n"));
+            output.push_str(&format!(" — `{id}`"));
+            // task_5f2c5fa6: flag an index entry whose backing document is
+            // gone rather than presenting it as an ordinary hit.
+            if !r.path.as_os_str().is_empty() && !r.path.is_file() {
+                output.push_str(" — **⚠ ORPHANED INDEX ENTRY (no backing document; repair with `repair_index_orphans`)**");
+            }
+            output.push('\n');
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))

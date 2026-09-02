@@ -88,6 +88,7 @@ src/
 - `get_semantic_neighbors` — nodes semantically similar to a given node by embedding proximity
 - `detect_weight_divergence` — `contributes_to` edges with high stated weight but stale/zero source-task activity
 - `refresh_graph` — synchronously rebuild in-memory graph index from disk (no ONNX re-embed)
+- `repair_index_orphans` — detect (`dry_run: true`, default) or purge (`dry_run: false`) semantic-index entries whose backing document is gone; `refresh_graph` cannot fix these, since it rebuilds the graph from disk but never touches the vector index (`task_5f2c5fa6`)
 
 ### Batch Operations
 - `batch_update` — bulk update frontmatter fields
