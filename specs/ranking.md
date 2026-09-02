@@ -149,6 +149,44 @@ Term 10, `value_lineage_term`, is the fix for the failure terms 5/11 cannot be: 
 - **Zeroing conditions**: `due` is absent or unparseable, or `days_until > 30` and $\text{ratio} \le 0.5$.
 - **Consumers**: `compute_focus_scores`.
 
+### 2.3a. Courtesy-Review Decay (task_e2afd38e)
+
+Without this term, an overdue `due` date is a **permanent, unconditional override**: `deadline_band == Overdue` sorts ahead of every non-overdue band regardless of `cost_of_delay` magnitude (§1 — the tuple compares `deadline_band` before `cost_of_delay`), and `deadline_score` caps at `12000` after 20 days overdue and never falls again. A task nobody ever closes out — a standing courtesy review-invitation, a recurring nag with a stale `due` — therefore outranks live work forever, growing more entrenched, never less, the longer it is ignored. Empirically confirmed live on 2026-09-02: `task_f1f59685` (due 2026-09-01, `focus_score` 10237) outranked `teaching` (no `due`, `focus_score` 50021, `urgency` 50000) in `list_tasks(status="ready")` purely on `deadline_band` — a ~1-day-overdue task with modest stakes beat a P1/P2 epic with 5000× the propagated urgency. `task_f1f59685` is correctly *unaffected* by the mechanism below (it is inside the 20-day grace window and carries a real `stakeholder`); the example is cited to show the band-dominance property this term exists to bound is live and material, not hypothetical.
+
+- **Code reference**: `src/graph_store.rs`, inside `compute_cost_of_delay`'s `days_until < 0` branch (immediately after `deadline_score`/`deadline_band` are set).
+- **Gate — applies only when a node is judged to carry no real stakes**, checked via signals the engine already reads for other terms (never a new field, never a tag someone has to remember to apply):
+  ```
+  has_real_stakes = downstream_weight > 0.0
+      OR stakeholder.is_some()
+      OR is_human_gate()
+      OR urgency > 50.0          // no severity propagated to it (§4.3): while
+                                  // overdue f(slack) == 10.0 for every node, so
+                                  // urgency ≈ 10 × propagated_S_lex; 50 sits
+                                  // strictly between the SEV0 floor (~10) and
+                                  // the SEV1 floor (~100)
+      OR intent < 2               // Nic-curated P0/P1 override (§2.1)
+  ```
+  A node escapes decay the instant it acquires any of these through a channel the model already treats as authoritative: becoming a real blocker, being named a stakeholder, being wired to a severity-bearing target via `contributes_to`, or being promoted by Nic. `stated_weight` and `intent` are themselves closed to agents — pauli/Nic only, per `kb_pauli_prioritisation_doctrine` §5 — so a task cannot quietly game itself out of decay by editing its own frontmatter.
+  - **`severity` and `consequence` are deliberately excluded from this gate.** `kb_pauli_prioritisation_doctrine` §4 is explicit that `consequence` is explanatory prose the ranking engine must never read, and that `severity` belongs to target nodes, never tasks — a task-level `severity` read here would silently no-op on every correctly modelled task (which never carries one) while also being a second, new violation of the same rule.
+- **Formula** (only when `!has_real_stakes` and `days_overdue > 20`):
+  ```
+  decay_days = min(days_overdue - 20, 100)
+  decay_frac = decay_days / 100.0                       // 0.0 .. 1.0
+  deadline_score_after = deadline_score - round(deadline_score * decay_frac)
+  deadline_band_after  = Overdue      if decay_frac < 0.25
+                        = Imminent    if decay_frac < 0.5
+                        = Urgent      if decay_frac < 0.75
+                        = Approaching if decay_frac < 1.0
+                        = None        otherwise
+  ```
+  The first 20 days overdue are untouched for every node, stakes or none — this matches the point at which the pre-existing ramp itself already saturates at `12000`, so nothing changes for a task freshly overdue. Past that, both terms decay together and smoothly over the following 100 days, landing at **exactly** the values a task with no `due` at all would get (`deadline_score == 0`, `DeadlineBand::None`) once fully decayed at 120 days overdue — an expired courtesy review is ranked as what it functionally is: undated. Nothing is hidden, filtered, or deleted; it keeps surfacing in every list, just without the permanent band override.
+- **Theoretical range**: `deadline_score` as §2.3; `deadline_band` additionally reachable at any of the five values for an overdue, no-stakes node (not just `Overdue`).
+- **Default / zeroing conditions**: no-op (`has_real_stakes == true`, or `days_overdue <= 20`, or no `due` at all — falls through to §2.3 unchanged).
+- **Consumers**: `compute_focus_scores` (same call site as §2.3; not a separate pipeline stage).
+- **Rejected alternatives** (recorded per `.agent/CORE.md` — specs document approved current state, not the road not taken, so the reasoning lives here only because the originating task required it be recorded where the model is documented):
+  - **An explicit `courtesy: true` frontmatter tag.** Rejected on curation-burden grounds: every task-creation path in this system (`create_task`, `claim_task`, `decompose_task`, `batch_create_epics`, ad-hoc creation via `release_task`) can mint a courtesy-shaped task, and a tag only helps the instances someone remembers to label — which is precisely the failure mode that let the two originating example tasks crowd in the first place (neither was tagged). This flips if the system gains a single, enforced choke point for review-shaped task creation (e.g. a dedicated review-invitation template) where tagging could be applied at creation time and never bypassed; no such choke point exists today.
+  - **Blanket overdue decay (decay every overdue task, stakes or none).** Rejected: it fails the requirement that a real hard deadline must still bite, and repeats — at the deadline-band layer instead of the edge-weight layer — the exact mistake the standing-weight/edge-decay mechanism was rejected for (`pkb-prioritisation-evolution-plan`, "Decay: parked dormant" ruling, 2026-08-28): shipping a signal that measures a node's age, under an "attention" or "importance" label, rather than anything real about the node.
+
 ### 2.4. Age / Staleness Bonus (`age_staleness_bonus`)
 - **Code reference**: `src/graph_store.rs:1754–1766`
 - **Formula**:
