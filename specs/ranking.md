@@ -16,7 +16,7 @@ tags:
 
 # PKB Ranking & Prioritisation Specification
 
-This document is the canonical specification for task prioritisation, focus scoring, graph centrality metrics, and queue ordering in `mem`. It describes the ranking machinery **as it actually ships at commit `d187656ca69e16b85d75b1726ec031d43429883a`**.
+This document is the canonical specification for task prioritisation, focus scoring, graph centrality metrics, and queue ordering in `mem`. It describes the ranking machinery **as it actually ships at commit `9336a166f6bf5c40987503ce56f98eadc59cf859`**.
 
 Per `.agents/CORE.md`, this specification documents approved current state only.
 
@@ -361,6 +361,7 @@ In addition to `focus_score`, `mem` computes several topological and network mea
   $$\text{unlock\_breadth}(x) = \sum_{t \,:\, \text{last\_blocker}(x, t)} \text{cost\_of\_delay}(t)$$
   where $\text{last\_blocker}(x, t)$ is true iff $t$ is not already completed and every id in $t$'s hard `depends_on` **other than** $x$ is itself in a completed status — i.e. finishing $x$ actually flips $t$ from blocked to unblocked, not merely removes one of several open blockers. Soft dependencies are excluded (they do not gate ready/blocked classification, §8.1–8.2). $\text{cost\_of\_delay}(t)$ is the exact same function used for $t$'s own tuple (`compute_cost_of_delay`, §2), so the two can never define "cost of delay" two different ways.
 - **Deliberately shallow (one hop)**: multi-hop cascades are `downstream_weight`'s job (parent plan Phase 2: "one shallow metric kept").
+- Each dependent's `cost_of_delay(t)` is defensively clamped to `>= 0` before summing (`.max(0)`); in practice every component of `cost_of_delay` is already non-negative, so this never changes a live value — it only guards against a future term with a signed contribution silently making `unlock_breadth` negative.
 - **Theoretical Range**: $[0.0, \infty)$ — same reason `downstream_weight` is unbounded (§4.1); in practice bounded by the number and cost-of-delay of a node's direct dependents.
 - **Consumers**: `compute_focus_scores` (`tie_breakers.unlock_breadth_x10` — a tie-breaker, **not** `cost_of_delay`; see the note at the end of §3), `get_task` / `list_tasks` signals.
 
