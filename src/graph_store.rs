@@ -1773,6 +1773,90 @@ impl GraphStore {
                     deadline_band = crate::graph::DeadlineBand::Overdue;
                     deadline_points = 8000 + std::cmp::min((-days_until) * 200, 4000);
                     deadline_ramp_fired = true;
+
+                    // Courtesy-review decay (task_e2afd38e, specs/ranking.md §2.3a).
+                    //
+                    // Without this, an overdue `due` date is a permanent, unconditional
+                    // override: `deadline_band == Overdue` sorts ahead of every
+                    // non-overdue band regardless of `cost_of_delay` magnitude (the tuple
+                    // compares `deadline_band` before `cost_of_delay` — see
+                    // `crate::graph::FocusTuple::cmp`), and `deadline_points` caps at
+                    // 12000 after 20 days overdue and never falls again. A due date on a
+                    // task nobody ever closes out (a standing courtesy review-invitation,
+                    // a recurring nudge) therefore outranks live work forever, growing
+                    // more entrenched — never less — the longer it is ignored.
+                    //
+                    // Decay applies only to a task this doctrine already treats as
+                    // carrying no real stakes, checked via signals the ranking engine
+                    // already reads for other terms (never a new field, never a tag
+                    // someone has to remember to apply):
+                    //   - nothing depends on it (`downstream_weight == 0`);
+                    //   - nobody is named as waiting and it is not a structurally
+                    //     identified human gate (`stakeholder`, `is_human_gate()`);
+                    //   - no severity propagates to it from any target via
+                    //     `contributes_to`/`blocks`/`children` (`urgency` stays at the
+                    //     no-propagation floor even though `f(slack) == 10.0` while
+                    //     overdue — see `compute_urgency`);
+                    //   - Nic has not curated it to P0/P1 (`intent`).
+                    // A task acquires any of these by becoming a real blocker, being
+                    // named a stakeholder, being wired to a severity-bearing target, or
+                    // being promoted by Nic — every route requires a truthful claim the
+                    // model already treats as load-bearing elsewhere, not a cosmetic
+                    // label. `stated_weight` and `intent` are themselves closed to
+                    // agents (pauli/Nic only) per `kb_pauli_prioritisation_doctrine` §5,
+                    // so a task cannot quietly game itself out of decay.
+                    //
+                    // `consequence` is deliberately NOT part of this gate: doctrine
+                    // (`kb_pauli_prioritisation_doctrine` §4.2) is explicit that
+                    // `consequence` is explanatory prose, never read by the ranking
+                    // engine — reading it here would be a new violation of that rule,
+                    // not a fix. `severity` is likewise not read directly off the task:
+                    // doctrine reserves `severity` for target nodes and requires it reach
+                    // a task only via propagated `urgency`, so checking `node.severity`
+                    // here would silently no-op on every correctly-modelled task.
+                    //
+                    // The first `COURTESY_GRACE_DAYS` overdue are unaffected (matches
+                    // the existing ramp's own cap point, so nothing changes for a task
+                    // freshly overdue). Past that, both `deadline_points` and
+                    // `deadline_band` decay together and smoothly over the following
+                    // `COURTESY_DECAY_WINDOW_DAYS`, landing at exactly the values a task
+                    // with no `due` at all would get (`deadline_points == 0`,
+                    // `DeadlineBand::None`) once fully decayed — an expired courtesy
+                    // review is ranked as what it functionally is: undated. Nothing is
+                    // hidden or deleted; it keeps surfacing, just without the permanent
+                    // override.
+                    const COURTESY_GRACE_DAYS: i64 = 20;
+                    const COURTESY_DECAY_WINDOW_DAYS: i64 = 100;
+                    const COURTESY_URGENCY_CEILING: f64 = 50.0;
+
+                    let has_real_stakes = node.downstream_weight > 0.0
+                        || node.stakeholder.is_some()
+                        || node.is_human_gate()
+                        || node.urgency > COURTESY_URGENCY_CEILING
+                        || intent_val < 2;
+
+                    if !has_real_stakes {
+                        let days_overdue = -days_until;
+                        if days_overdue > COURTESY_GRACE_DAYS {
+                            let decay_days =
+                                (days_overdue - COURTESY_GRACE_DAYS).min(COURTESY_DECAY_WINDOW_DAYS);
+                            let decay_frac =
+                                decay_days as f64 / COURTESY_DECAY_WINDOW_DAYS as f64;
+
+                            deadline_points -= (deadline_points as f64 * decay_frac) as i64;
+                            deadline_band = if decay_frac < 0.25 {
+                                crate::graph::DeadlineBand::Overdue
+                            } else if decay_frac < 0.5 {
+                                crate::graph::DeadlineBand::Imminent
+                            } else if decay_frac < 0.75 {
+                                crate::graph::DeadlineBand::Urgent
+                            } else if decay_frac < 1.0 {
+                                crate::graph::DeadlineBand::Approaching
+                            } else {
+                                crate::graph::DeadlineBand::None
+                            };
+                        }
+                    }
                 } else {
                     let ratio = effort_days as f64 / (days_until.max(1) as f64);
                     if ratio >= 1.0 {
@@ -9447,6 +9531,195 @@ mod tests {
                 i + 1
             );
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Courtesy-review decay (task_e2afd38e, specs/ranking.md §2.3a)
+    // -------------------------------------------------------------------
+
+    /// Build a structurally-inert overdue node: no downstream weight, no
+    /// stakeholder/human-gate, no propagated urgency, default (P4) intent —
+    /// i.e. a task the courtesy-decay gate should treat as carrying no real
+    /// stakes. `days_overdue` is relative to `Utc::now()` so the test stays
+    /// deterministic regardless of when it runs (matches the existing
+    /// `test_phase1_deadline_band_hierarchy` convention).
+    fn inert_overdue_node(id: &str, days_overdue: i64) -> crate::graph::GraphNode {
+        use chrono::Utc;
+        let today = Utc::now().date_naive();
+        let due = (today - chrono::Duration::days(days_overdue))
+            .format("%Y-%m-%d")
+            .to_string();
+        let mut n = crate::graph::GraphNode::default();
+        n.id = id.to_string();
+        n.due = Some(due);
+        n
+    }
+
+    #[test]
+    fn test_courtesy_decay_grace_period_unaffected() {
+        use crate::graph::DeadlineBand;
+
+        // 10 days overdue is inside the 20-day grace window: behaviour must
+        // be byte-identical to the pre-existing (undecayed) ramp.
+        let mut nodes = vec![inert_overdue_node("t-grace", 10)];
+        GraphStore::compute_focus_scores(&mut nodes);
+        let tuple = nodes[0].focus_tuple.as_ref().unwrap();
+        assert_eq!(tuple.deadline_band, DeadlineBand::Overdue);
+        assert_eq!(tuple.cost_of_delay, 8000 + 10 * 200); // unchanged ramp formula
+    }
+
+    #[test]
+    fn test_courtesy_decay_inert_task_decays_past_grace() {
+        use crate::graph::DeadlineBand;
+
+        // 81 days overdue mirrors the reconstructed real-world shape of
+        // task-d2d0b835 (P2 review-invitation courtesy task, due 2026-06-13,
+        // ~81 days overdue as of 2026-09-02 — the node itself no longer
+        // exists in the PKB to query directly; see PR/report for the
+        // reconstruction caveat). decay_frac = (81-20)/100 = 0.61 -> Urgent.
+        let inert = inert_overdue_node("t-inert-81", 81);
+        let mut real = inert_overdue_node("t-real-81", 81);
+        real.stakeholder = Some("editor@journal.example".to_string()); // real stakes
+
+        let mut nodes = vec![inert, real];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        let inert_tuple = nodes[0].focus_tuple.as_ref().unwrap();
+        let real_tuple = nodes[1].focus_tuple.as_ref().unwrap();
+
+        // Structurally-inert task decays out of the Overdue band...
+        assert_eq!(inert_tuple.deadline_band, DeadlineBand::Urgent);
+        assert!(
+            inert_tuple.cost_of_delay < 12000,
+            "decayed cost_of_delay should drop below the old permanent cap, got {}",
+            inert_tuple.cost_of_delay
+        );
+
+        // ...while the otherwise-identical task with a real stakeholder does
+        // not move at all: same band, same capped cost_of_delay as today.
+        assert_eq!(real_tuple.deadline_band, DeadlineBand::Overdue);
+        assert_eq!(real_tuple.cost_of_delay, 8000 + 4000 + 2000); // capped deadline + stakeholder base
+
+        // And the real task now outranks the decayed courtesy task purely on
+        // deadline_band, which is exactly the crowding fix: before this
+        // patch both were `Overdue` and tied on the band; the courtesy task
+        // no longer gets to compete in that tier at all.
+        assert_eq!(
+            GraphStore::focus_cmp(&nodes[1], &nodes[0]),
+            std::cmp::Ordering::Less,
+            "real-stakes task must outrank the decayed courtesy task"
+        );
+    }
+
+    #[test]
+    fn test_courtesy_decay_fully_decayed_matches_no_due_date() {
+        use crate::graph::{DeadlineBand, GraphNode};
+
+        // 140 days overdue is past grace (20) + full window (100) = 120:
+        // fully decayed. Must land on EXACTLY the same tuple a task with no
+        // `due` field at all would get.
+        let decayed = inert_overdue_node("t-decayed-140", 140);
+        let mut undated = GraphNode::default();
+        undated.id = "t-undated".to_string();
+
+        let mut nodes = vec![decayed, undated];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        let decayed_tuple = nodes[0].focus_tuple.as_ref().unwrap().clone();
+        let undated_tuple = nodes[1].focus_tuple.as_ref().unwrap().clone();
+
+        assert_eq!(decayed_tuple.deadline_band, DeadlineBand::None);
+        assert_eq!(decayed_tuple.cost_of_delay, undated_tuple.cost_of_delay);
+        assert_eq!(decayed_tuple.deadline_band, undated_tuple.deadline_band);
+    }
+
+    #[test]
+    fn test_courtesy_decay_escape_via_downstream_weight() {
+        use crate::graph::DeadlineBand;
+
+        // Nothing else distinguishes this from the decaying fixture except
+        // that something depends on it (downstream_weight > 0) — a real
+        // blocker in the graph. Decay must not apply.
+        let mut n = inert_overdue_node("t-blocker", 81);
+        n.downstream_weight = 1.5;
+
+        let mut nodes = vec![n];
+        GraphStore::compute_focus_scores(&mut nodes);
+        let tuple = nodes[0].focus_tuple.as_ref().unwrap();
+        assert_eq!(tuple.deadline_band, DeadlineBand::Overdue);
+        assert_eq!(tuple.cost_of_delay, 8000 + 4000); // capped, undecayed
+    }
+
+    #[test]
+    fn test_courtesy_decay_escape_via_human_gate() {
+        use crate::graph::DeadlineBand;
+
+        // `status == "review"` makes `is_human_gate()` true (a structurally
+        // identified human decision gate) — decay must not apply even though
+        // no explicit `stakeholder` name is set.
+        let mut n = inert_overdue_node("t-gate", 81);
+        n.status = Some("review".to_string());
+
+        let mut nodes = vec![n];
+        GraphStore::compute_focus_scores(&mut nodes);
+        let tuple = nodes[0].focus_tuple.as_ref().unwrap();
+        assert_eq!(tuple.deadline_band, DeadlineBand::Overdue);
+    }
+
+    #[test]
+    fn test_courtesy_decay_escape_via_propagated_urgency() {
+        use crate::graph::DeadlineBand;
+
+        // Simulates a task with real severity propagated onto it from a
+        // target via `contributes_to`/`blocks` (computed upstream of
+        // `compute_focus_scores` by `compute_urgency` in the real pipeline;
+        // set directly here since this test exercises `compute_focus_scores`
+        // in isolation, matching the other Phase-1 tests in this module).
+        let mut n = inert_overdue_node("t-urgent-propagated", 81);
+        n.urgency = 1000.0; // SEV2-equivalent propagated severity while overdue
+
+        let mut nodes = vec![n];
+        GraphStore::compute_focus_scores(&mut nodes);
+        let tuple = nodes[0].focus_tuple.as_ref().unwrap();
+        assert_eq!(tuple.deadline_band, DeadlineBand::Overdue);
+    }
+
+    #[test]
+    fn test_courtesy_decay_escape_via_curated_p1_intent() {
+        use crate::graph::DeadlineBand;
+
+        // Nic-curated P1 (intent = 1) is a deliberate human override
+        // (kb_pauli_prioritisation_doctrine §5: "Mechanism 1 (intent) is
+        // Nic's Curated Field") and must never be silently decayed.
+        let mut n = inert_overdue_node("t-p1", 81);
+        n.intent = Some(1);
+
+        let mut nodes = vec![n];
+        GraphStore::compute_focus_scores(&mut nodes);
+        let tuple = nodes[0].focus_tuple.as_ref().unwrap();
+        assert_eq!(tuple.deadline_band, DeadlineBand::Overdue);
+    }
+
+    #[test]
+    fn test_courtesy_decay_does_not_read_severity_or_consequence() {
+        use crate::graph::DeadlineBand;
+
+        // kb_pauli_prioritisation_doctrine §4.2: `severity` is target-only
+        // (never set directly on a task) and `consequence` is explanatory
+        // prose the ranking engine must never read. A courtesy-decay gate
+        // that keyed off either would (a) silently no-op on every correctly
+        // modelled task, since well-formed tasks never carry `severity`, and
+        // (b) introduce a new doctrine violation. Setting them on an
+        // otherwise fully inert node must NOT block decay.
+        let mut n = inert_overdue_node("t-severity-consequence", 81);
+        n.severity = Some(3); // doctrine violation if it were set on a real task; decay must ignore it anyway
+        n.consequence = Some("This looks important but is explanatory prose only.".to_string());
+
+        let mut nodes = vec![n];
+        GraphStore::compute_focus_scores(&mut nodes);
+        let tuple = nodes[0].focus_tuple.as_ref().unwrap();
+        // Still decays: severity/consequence are not part of the gate.
+        assert_eq!(tuple.deadline_band, DeadlineBand::Urgent);
     }
 
     #[test]
