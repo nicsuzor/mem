@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.88](https://github.com/nicsuzor/mem/compare/mem-v0.3.87...mem-v0.3.88) (2026-09-02)
+
+
+### Bug Fixes
+
+* **mcp:** detect, label, and repair orphaned semantic-index entries ([303a621](https://github.com/nicsuzor/mem/commit/303a62141253d1f16ad65e05e97666510b2f302c))
+
 ## [0.3.87](https://github.com/nicsuzor/mem/compare/mem-v0.3.86...mem-v0.3.87) (2026-09-02)
 
 
