@@ -912,6 +912,16 @@ pub const ACTIVE_STATUSES: &[&str] = &[
 /// Statuses that represent blocked work.
 pub const BLOCKED_STATUSES: &[&str] = &["blocked"];
 
+/// Statuses that are a handback rather than a clean success. Releasing to one
+/// of these requires a stated failure reason (or `blocker`, for `blocked`) —
+/// the "evidence or a stated failure reason" contract's failure-path half.
+/// Canonical home for this list: both `release_task` (single-node MCP path,
+/// via `PkbSearchServer::FAILURE_HANDBACK_STATUSES`, aliased to this const)
+/// and `batch_update` (bulk path, `mem_84b21efc`) enforce against the same
+/// list so a bulk write cannot silently produce a terminal node with no
+/// record of why when the single-node path would have refused it.
+pub const FAILURE_HANDBACK_STATUSES: &[&str] = &["blocked", "cancelled", "review", "partial"];
+
 /// Returns true if the status represents a completed/finished state.
 pub fn is_completed(status: Option<&str>) -> bool {
     status

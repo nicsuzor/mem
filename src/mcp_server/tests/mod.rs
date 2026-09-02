@@ -16,6 +16,7 @@ mod task_mutation_tests;
 mod tag_date_filter_tests;
 mod stale_read_tests;
 mod ghost_node_tests;
+mod batch_update_allowlist_tests;
 mod orphan_index_tests;
 
 

@@ -31,6 +31,66 @@ pub fn batch_update(
 
     let updates_map = match updates.as_object() {
         Some(m) => {
+            // Reject unknown update fields — mirrors `update_task`'s guard.
+            // Without this, `batch_update` was a second, unguarded entry
+            // point onto `update_document`: any frontmatter key `update_task`
+            // refuses (e.g. `released_at`, before it was added to the shared
+            // allowlist) was still writable, and null-clearable, through this
+            // path. See `mem_84b21efc`.
+            if let Err(unknown) = crate::document_crud::validate_update_keys(m) {
+                summary.errors.push(TaskError {
+                    id: "".to_string(),
+                    error: format!(
+                        "Unknown keys in batch_update: {:?}. These are not recognized task \
+                         fields and would otherwise be written verbatim into the YAML header.",
+                        unknown
+                    ),
+                });
+                return summary;
+            }
+
+            // Evidence-or-failure-reason contract, bulk half: `release_task`
+            // refuses to release a single node to a handback status
+            // (blocked/cancelled/review/partial) without a non-empty
+            // `reason` (or `blocker`, for `blocked`). `batch_update` writes
+            // `status` directly with no equivalent check, so a bulk call
+            // could silently cancel/block N nodes with no record of why —
+            // see `mem_84b21efc` (survey: 72/114 cancelled nodes carry no
+            // reason anywhere in frontmatter or body). Enforced once here
+            // (not per-node) since `updates_map`'s `status` is the same for
+            // every matched node in a single batch call.
+            if let Some(status) = m.get("status").and_then(|v| v.as_str()) {
+                if crate::graph::FAILURE_HANDBACK_STATUSES.contains(&status) {
+                    let has_reason = m
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false);
+                    let has_blocker = status == "blocked"
+                        && m
+                            .get("blocker")
+                            .and_then(|v| v.as_str())
+                            .map(|s| !s.trim().is_empty())
+                            .unwrap_or(false);
+                    if !has_reason && !has_blocker {
+                        let field_hint = if status == "blocked" {
+                            "reason or blocker"
+                        } else {
+                            "reason"
+                        };
+                        summary.errors.push(TaskError {
+                            id: "".to_string(),
+                            error: format!(
+                                "batch_update to status=\"{status}\" requires a non-empty \
+                                 {field_hint} in `updates` (applies to every matched node). \
+                                 Describe why before releasing in bulk."
+                            ),
+                        });
+                        return summary;
+                    }
+                }
+            }
+
             // Early validation of update fields
             for (key, value) in m {
                 match key.as_str() {

@@ -1637,54 +1637,10 @@ impl PkbSearchServer {
         // a caller's typo'd or invented field name — e.g. `body_append`,
         // guessing at append-like semantics that don't exist on this tool —
         // lands verbatim as a YAML key in the task header.
-        const UPDATE_KNOWN_KEYS: &[&str] = &[
-            "title",
-            "status",
-            "type",
-            "intent",
-            "priority",
-            "tags",
-            "parent",
-            "depends_on",
-            "soft_depends_on",
-            "blocks",
-            "soft_blocks",
-            "assignee",
-            "complexity",
-            "effort",
-            "consequence",
-            "severity",
-            "goal_type",
-            "body",
-            "content",
-            "stakeholder",
-            "waiting_since",
-            "due",
-            "project",
-            "session_id",
-            "issue_url",
-            "follow_up_tasks",
-            "release_summary",
-            "contributes_to",
-            "supersedes",
-            "superseded_by",
-            "blocked",
-            "blocker",
-            "reason",
-            "completion_evidence",
-            "evidence",
-            "pr_url",
-            "_add_tags",
-            "_remove_tags",
-            "_add_depends_on",
-            "_remove_depends_on",
-        ];
-        let unknown: Vec<&str> = updates
-            .keys()
-            .map(|k| k.as_str())
-            .filter(|k| !UPDATE_KNOWN_KEYS.contains(k))
-            .collect();
-        if !unknown.is_empty() {
+        //
+        // Allowlist lives at `document_crud::UPDATE_KNOWN_KEYS`, shared with
+        // `batch_update` — see `mem_84b21efc`.
+        if let Err(unknown) = crate::document_crud::validate_update_keys(&updates) {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!(

@@ -113,8 +113,11 @@ impl PkbSearchServer {
     }
 
     /// Statuses that are a handback rather than a clean success. Releasing to
-    /// one of these requires a stated failure reason.
-    pub(crate) const FAILURE_HANDBACK_STATUSES: &[&str] = &["blocked", "cancelled", "review", "partial"];
+    /// one of these requires a stated failure reason. Canonical list lives at
+    /// `crate::graph::FAILURE_HANDBACK_STATUSES` so `batch_update` (which
+    /// cannot see this `impl` block) enforces the identical set — see
+    /// `mem_84b21efc`.
+    pub(crate) const FAILURE_HANDBACK_STATUSES: &[&str] = crate::graph::FAILURE_HANDBACK_STATUSES;
 
     /// Validate that completion_evidence is present and non-empty.
     pub(crate) fn require_evidence(evidence: Option<&str>) -> Result<&str, McpError> {

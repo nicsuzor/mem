@@ -6733,6 +6733,87 @@ pub fn merge_node(
 
 // ── Special Keys Expansion ──────────────────────────────────────────────────────────
 
+/// Caller-writable frontmatter keys for the `update_task` / `batch_update` MCP
+/// write paths. Canonical home for the allowlist both tools enforce —
+/// previously `update_task` (`src/mcp_server/handlers_task.rs`) held its own
+/// private copy of this list while `batch_update` (`src/batch_ops/update.rs`)
+/// enforced none at all, so any key `update_task` refused was still writable
+/// (and null-clearable) through `batch_update`. See `mem_84b21efc`.
+///
+/// Without this guard, a caller's typo'd or invented field name — e.g.
+/// `body_append`, guessing at append-like semantics that don't exist on this
+/// tool — lands verbatim as a YAML key in the task header.
+///
+/// `released_at` is deliberately included: it is the timestamp `release_task`
+/// stamps on release, and GitHub `nicsuzor/mem#574` documents a legitimate
+/// need to clear it when a release was wrong (un-releasing a phantom
+/// completion) — `release_task`'s sibling fields `release_summary`, `pr_url`,
+/// and `session_id` were already on this list unrestricted, so `released_at`
+/// joins them on the same terms rather than gaining a bespoke "clear-only"
+/// carve-out this list has no mechanism for elsewhere.
+pub const UPDATE_KNOWN_KEYS: &[&str] = &[
+    "title",
+    "status",
+    "type",
+    "intent",
+    "priority",
+    "tags",
+    "parent",
+    "depends_on",
+    "soft_depends_on",
+    "blocks",
+    "soft_blocks",
+    "assignee",
+    "complexity",
+    "effort",
+    "consequence",
+    "severity",
+    "goal_type",
+    "body",
+    "content",
+    "stakeholder",
+    "waiting_since",
+    "due",
+    "project",
+    "session_id",
+    "issue_url",
+    "follow_up_tasks",
+    "release_summary",
+    "released_at",
+    "contributes_to",
+    "supersedes",
+    "superseded_by",
+    "blocked",
+    "blocker",
+    "reason",
+    "completion_evidence",
+    "evidence",
+    "pr_url",
+    "_add_tags",
+    "_remove_tags",
+    "_add_depends_on",
+    "_remove_depends_on",
+];
+
+/// Reject any key not on [`UPDATE_KNOWN_KEYS`]. Shared by `update_task` and
+/// `batch_update` so the two entry points onto `update_document` cannot drift
+/// apart again — see `mem_84b21efc`. Returns the offending keys (order
+/// preserved) so callers can compose their own error message/type.
+pub fn validate_update_keys(
+    updates_map: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), Vec<String>> {
+    let unknown: Vec<String> = updates_map
+        .keys()
+        .filter(|k| !UPDATE_KNOWN_KEYS.contains(&k.as_str()))
+        .cloned()
+        .collect();
+    if unknown.is_empty() {
+        Ok(())
+    } else {
+        Err(unknown)
+    }
+}
+
 /// Expand special update keys like `_add_depends_on` and `_remove_tags` into effective document state updates.
 pub fn expand_special_update_keys(
     node: &crate::graph::GraphNode,
