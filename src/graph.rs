@@ -82,6 +82,14 @@ pub enum DeadlineBand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FocusTieBreakers {
     pub downstream_weight_x10: i64,
+    /// Cost-of-delay-weighted mass of what completing this node would
+    /// directly unblock (`node.unlock_breadth`), scaled ×10 for the same
+    /// integer-tuple reason `downstream_weight_x10` is. Deliberately a
+    /// tie-breaker, not a `cost_of_delay` term: it is a shallow, one-hop
+    /// signal (parent plan Phase 2, "one shallow metric kept"), unlike
+    /// `value_lineage`, which the sanctioned importance channel needs inside
+    /// `cost_of_delay` itself to move rankings at all.
+    pub unlock_breadth_x10: i64,
     pub age_staleness: i64,
     pub effective_intent: i32,
     pub order: i32,
@@ -111,6 +119,8 @@ impl FocusTuple {
             "cost_of_delay"
         } else if self.tie_breakers.downstream_weight_x10 != other.tie_breakers.downstream_weight_x10 {
             "tie_breakers.downstream_weight"
+        } else if self.tie_breakers.unlock_breadth_x10 != other.tie_breakers.unlock_breadth_x10 {
+            "tie_breakers.unlock_breadth"
         } else if self.tie_breakers.age_staleness != other.tie_breakers.age_staleness {
             "tie_breakers.age_staleness"
         } else if self.tie_breakers.effective_intent != other.tie_breakers.effective_intent {
@@ -133,6 +143,7 @@ impl FocusTuple {
         gate_pts
             + self.cost_of_delay
             + self.tie_breakers.downstream_weight_x10
+            + self.tie_breakers.unlock_breadth_x10
             + self.tie_breakers.age_staleness
     }
 }
@@ -144,6 +155,7 @@ impl Ord for FocusTuple {
             .then_with(|| self.deadline_band.cmp(&other.deadline_band))
             .then_with(|| self.cost_of_delay.cmp(&other.cost_of_delay))
             .then_with(|| self.tie_breakers.downstream_weight_x10.cmp(&other.tie_breakers.downstream_weight_x10))
+            .then_with(|| self.tie_breakers.unlock_breadth_x10.cmp(&other.tie_breakers.unlock_breadth_x10))
             .then_with(|| self.tie_breakers.age_staleness.cmp(&other.tie_breakers.age_staleness))
             // Inverted for higher-is-better tuple Ord
             .then_with(|| other.tie_breakers.effective_intent.cmp(&self.tie_breakers.effective_intent))
@@ -177,8 +189,13 @@ pub struct ContributesTo {
     /// for backward-compatibility with older PKB entries.
     #[serde(alias = "target")]
     pub to: String,
-    /// Verbal weight term (e.g. "Expected", "Probable", "Certain").
-    /// Defaults to empty string (maps to 0.3 soft-contribution weight).
+    /// Verbal weight term (e.g. "Expected", "Probable", "Certain"). Defaults
+    /// to empty string when omitted, which is a neutral "unstated" edge —
+    /// `numeric_weight()` returns 0.0 for it, not a fabricated default. A
+    /// *non-empty* term that fails to match the recognized verbal scale is
+    /// rejected at parse time (`GraphNode::from_pkb_document` pushes a
+    /// `ParseWarning`, field `contributes_to.stated_weight`) rather than
+    /// silently defaulting to 0.3 — see `ContributesTo::is_recognized_weight`.
     #[serde(alias = "weight", default)]
     pub stated_weight: String,
     /// Single-sentence justification for the weight. Optional in parsing
@@ -225,8 +242,43 @@ impl ContributesTo {
             "uncertain" | "possible" | "perhaps" | "maybe" => 0.25,
             "improbable" | "unlikely" | "very unlikely" | "almost impossible" => 0.15,
             "impossible" | "none" => 0.00,
-            _ => 0.3, // default "soft" contribution for unknown terms
+            // Out-of-scale input (empty, or a non-empty term that doesn't match
+            // the verbal scale) contributes zero rather than a fabricated 0.3
+            // "soft" default. A non-empty unrecognized term is additionally
+            // flagged via `ParseWarning` at parse time — see
+            // `GraphNode::from_pkb_document` and `is_recognized_weight`.
+            _ => 0.0,
         }
+    }
+
+    /// Whether `s` (already expected lowercase-trimmed by the caller) is one
+    /// of the recognized verbal contribution-weight terms. Used at parse
+    /// time to distinguish a genuine typo/garbage `stated_weight` (rejected
+    /// with a `ParseWarning`) from a deliberately empty/unstated one (silently
+    /// zero, no warning — omitting a weight is not an error).
+    pub fn is_recognized_weight(s: &str) -> bool {
+        matches!(
+            s,
+            "certain"
+                | "almost certain"
+                | "very probable"
+                | "probable"
+                | "highly likely"
+                | "expected"
+                | "likely"
+                | "fifty-fifty"
+                | "even chance"
+                | "uncertain"
+                | "possible"
+                | "perhaps"
+                | "maybe"
+                | "improbable"
+                | "unlikely"
+                | "very unlikely"
+                | "almost impossible"
+                | "impossible"
+                | "none"
+        )
     }
 }
 
@@ -452,6 +504,40 @@ pub struct GraphNode {
     /// Formula: Urgency = S_lex * W_edge * f(Slack)
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub urgency: f64,
+    /// Standing weight elicited on a committed target/goal node (Phase 2,
+    /// `pkb-standing-weight-elicitation-instrument`). `None` means unpriced —
+    /// value lineage propagates zero from an unpriced target rather than
+    /// inferring a default ("Zero Defaults / Zero Inference" doctrine). Only
+    /// honoured when `goal_type == "committed"` (the instrument's scope
+    /// guard); see `compute_value_lineage`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub standing_weight: Option<f64>,
+    /// CPM-style chain slack, in days: the minimum slack found anywhere in
+    /// this node's blocking chain (`blocks`, `soft_blocks`, `children`,
+    /// `contributes_to`), computed by relaxation in `compute_urgency` (the
+    /// same traversal `urgency`'s S_lex propagation uses — no separate
+    /// computation). 100.0 is the "unconstrained" sentinel: no due date is
+    /// reachable within `MAX_URGENCY_PROPAGATION_DEPTH` hops. Always
+    /// serialized (unlike the other derived f64 fields below) because 0.0 is
+    /// itself a load-bearing value here (due today, zero float) that must
+    /// never be silently dropped from output.
+    #[serde(default)]
+    pub chain_slack: f64,
+    /// Cost-of-delay-weighted mass of what completing this node would
+    /// directly (one hop) unblock. **NOT a count of unblocked nodes** — see
+    /// `compute_unlock_breadth`. Deliberately shallow; multi-hop propagation
+    /// is `downstream_weight`'s job, not this one's.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub unlock_breadth: f64,
+    /// Value lineage: standing target weight flowing multiplicatively to
+    /// this node via its own `contributes_to` edges — `contribution size
+    /// (edge stated_weight) × confidence discount × target standing_weight`,
+    /// already scaled into cost-of-delay points (see `compute_value_lineage`
+    /// for the scale constant and rationale). One hop only: propagates from
+    /// a priced target directly to its contributors, not transitively
+    /// through further `contributes_to` chains.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub value_lineage: f64,
     /// Edge template for `type: prototype` nodes (spec multi-parent-edges §1.6).
     /// Resolved at edge-creation time per §2.5.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1280,6 +1366,39 @@ impl GraphNode {
             }
             None => None,
         };
+
+        // standing_weight: float 0.0..=1.0, elicited only on committed
+        // targets/goals (pkb-standing-weight-elicitation-instrument §1 scope
+        // guard). Out-of-range or wrong-type input is rejected with a
+        // ParseWarning rather than clamped or defaulted — "Zero Defaults /
+        // Zero Inference" applies to this field above all others, since it is
+        // the one input Nic prices by hand.
+        let standing_weight = match fm.as_ref().and_then(|f| f.get("standing_weight")) {
+            Some(v) => {
+                if let Some(n) = v.as_f64() {
+                    if (0.0..=1.0).contains(&n) {
+                        Some(n)
+                    } else {
+                        parse_warnings.push(ParseWarning {
+                            field: "standing_weight".to_string(),
+                            message: format!(
+                                "standing_weight {n} out of range; expected float 0.0..=1.0"
+                            ),
+                        });
+                        None
+                    }
+                } else if !v.is_null() {
+                    parse_warnings.push(ParseWarning {
+                        field: "standing_weight".to_string(),
+                        message: format!("standing_weight must be a float 0.0..=1.0; got {v}"),
+                    });
+                    None
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
         // edge_template: nested object on `type: prototype` nodes (spec §1.6).
         // Each sub-field is validated with the same rules as the corresponding
         // top-level field on a target node.
@@ -1379,6 +1498,26 @@ impl GraphNode {
             .and_then(|f| f.get("contributes_to"))
             .and_then(|v| serde_json::from_value::<Vec<ContributesTo>>(v.clone()).ok())
             .unwrap_or_default();
+        // Reject out-of-scale stated_weight at parse time instead of silently
+        // defaulting to 0.3 (`ContributesTo::numeric_weight`'s catch-all is
+        // 0.0). A genuinely empty/omitted weight is not an error — it's a
+        // deliberately unstated edge — so only a *non-empty* term that fails
+        // to match the verbal scale is flagged.
+        for ct in &contributes_to {
+            let w = ct.stated_weight.trim();
+            if !w.is_empty() && !ContributesTo::is_recognized_weight(&w.to_lowercase()) {
+                parse_warnings.push(ParseWarning {
+                    field: "contributes_to.stated_weight".to_string(),
+                    message: format!(
+                        "stated_weight \"{}\" (edge to \"{}\") is not a recognized verbal \
+                         contribution-weight term {{certain, probable, expected, fifty-fifty, \
+                         uncertain, improbable, impossible}}; treated as zero contribution, not \
+                         defaulted to 0.3",
+                        ct.stated_weight, ct.to
+                    ),
+                });
+            }
+        }
         let follow_up_tasks = fm
             .as_ref()
             .map(|f| parse_string_array(f, "follow_up_tasks"))
@@ -1655,6 +1794,10 @@ impl GraphNode {
             criticality: 0.0,
             effective_intent: None,
             urgency: 0.0,
+            standing_weight,
+            chain_slack: 100.0,
+            unlock_breadth: 0.0,
+            value_lineage: 0.0,
             edge_template,
             parse_warnings,
         }

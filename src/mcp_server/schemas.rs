@@ -194,7 +194,7 @@ impl PkbSearchServer {
                         "issue_url": { "type": "string", "description": "External issue/ticket URL to link on the task" },
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of related follow-up tasks" },
                         "release_summary": { "type": "string", "description": "Detailed technical summary, if creating this task as part of a release/handover" },
-                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this task contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": \"expected\"}]. Supports `inherits_from` to copy fields from a prototype edge." }
+                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this task contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": \"expected\"}]. `stated_weight` MUST be one of the recognized verbal contribution-weight terms: certain (1.00), probable (0.85), expected (0.75), fifty-fifty (0.50), uncertain (0.25), improbable (0.15), impossible (0.00). An unrecognized term is rejected at parse time (recorded as a parse_warning) and contributes zero weight rather than a fabricated default — omit the field entirely if genuinely unstated. Supports `inherits_from` to copy fields from a prototype edge." }
                     },
                     "required": ["title", "parent"]
                 }))
@@ -264,7 +264,7 @@ impl PkbSearchServer {
                         "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L'). For duration strings like '1d'/'2h', use effort instead." },
                         "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w' (minimum '1h'). For size labels like 'S'/'M'/'L', use complexity instead." },
                         "consequence": { "type": "string", "description": "Narrative description of what happens if this task/doc is not done or fails." },
-                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this document contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": \"expected\"}]." },
+                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this document contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": \"expected\"}]. `stated_weight` MUST be one of the recognized verbal contribution-weight terms: certain (1.00), probable (0.85), expected (0.75), fifty-fifty (0.50), uncertain (0.25), improbable (0.15), impossible (0.00). An unrecognized term is rejected at parse time (recorded as a parse_warning) and contributes zero weight rather than a fabricated default — omit the field entirely if genuinely unstated." },
                         "source": { "type": "string", "description": "Source context" },
                         "due": { "type": "string", "description": "Due date" },
                         "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },

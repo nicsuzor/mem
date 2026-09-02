@@ -490,6 +490,17 @@ impl GraphStore {
         compute_voi_term(&mut nodes);
         tracing::debug!(target: "perf::graph_rebuild", phase = "voi_term", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
+        // 8c. Compute value lineage (standing target weight -> contributors)
+        // and unlock breadth (cost-of-delay-weighted mass of what completing
+        // a node directly unblocks). Both are pure per-node scans over
+        // fields already finalised above (urgency, voi_value, resolved_to);
+        // unlock breadth additionally needs value_lineage folded into each
+        // target's own cost-of-delay first, hence the ordering.
+        let _t = std::time::Instant::now();
+        compute_value_lineage(&mut nodes);
+        compute_unlock_breadth(&mut nodes);
+        tracing::debug!(target: "perf::graph_rebuild", phase = "value_lineage_unlock_breadth", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
+
         // 9. Compute focus scores
         let _t = std::time::Instant::now();
         Self::compute_focus_scores(&mut nodes);
@@ -730,6 +741,9 @@ impl GraphStore {
             new_node.effective_intent = old.effective_intent;
             new_node.urgency = old.urgency;
             new_node.blocking_urgency = old.blocking_urgency;
+            new_node.chain_slack = old.chain_slack;
+            new_node.unlock_breadth = old.unlock_breadth;
+            new_node.value_lineage = old.value_lineage;
             new_node.focus_score = old.focus_score;
             new_node.focus_tuple = old.focus_tuple.clone();
             new_node.affordable_loss_filtered = old.affordable_loss_filtered;
@@ -1718,6 +1732,124 @@ impl GraphStore {
         Ok(written)
     }
 
+    /// Deadline band + cost-of-delay index for a single node. Pure function of
+    /// fields already computed earlier in the pipeline (`urgency`,
+    /// `voi_value`, `value_lineage`) plus raw frontmatter (`intent`, `due`,
+    /// `effort`, `stakeholder`, `waiting_since`, `created`).
+    ///
+    /// This is the **single source** of the cost-of-delay arithmetic — both
+    /// `compute_focus_scores` (a node's own tuple) and `compute_unlock_breadth`
+    /// (what a blocker's completion is worth to its dependents) call this, so
+    /// the two can never drift apart into two different definitions of "cost
+    /// of delay".
+    fn compute_cost_of_delay(
+        node: &GraphNode,
+        today: chrono::NaiveDate,
+    ) -> (crate::graph::DeadlineBand, i64) {
+        let intent_val = node.intent.unwrap_or(4);
+        let intent_pressure: i64 = match intent_val {
+            0 => 10000,
+            1 => 5000,
+            _ => 0,
+        };
+
+        let mut deadline_band = crate::graph::DeadlineBand::None;
+        let mut deadline_points: i64 = 0;
+        let mut deadline_ramp_fired = false;
+
+        if let Some(ref due) = node.due {
+            let len = std::cmp::min(10, due.len());
+            if let Ok(due_date) =
+                chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+            {
+                let days_until = (due_date - today).num_days();
+                let effort_days = node
+                    .effort
+                    .as_deref()
+                    .and_then(crate::graph::parse_effort_days)
+                    .unwrap_or(3);
+
+                if days_until < 0 {
+                    deadline_band = crate::graph::DeadlineBand::Overdue;
+                    deadline_points = 8000 + std::cmp::min((-days_until) * 200, 4000);
+                    deadline_ramp_fired = true;
+                } else {
+                    let ratio = effort_days as f64 / (days_until.max(1) as f64);
+                    if ratio >= 1.0 {
+                        deadline_band = crate::graph::DeadlineBand::Imminent;
+                        deadline_points = 6000;
+                        deadline_ramp_fired = true;
+                    } else if ratio > 0.5 {
+                        deadline_band = crate::graph::DeadlineBand::Urgent;
+                        deadline_points = 2000 + ((ratio - 0.5) * 8000.0) as i64;
+                        deadline_ramp_fired = true;
+                    } else if days_until <= 30 {
+                        deadline_band = crate::graph::DeadlineBand::Approaching;
+                        deadline_points = (ratio * 4000.0) as i64;
+                        deadline_ramp_fired = deadline_points > 0;
+                    } else {
+                        deadline_band = crate::graph::DeadlineBand::None;
+                        deadline_points = 0;
+                        deadline_ramp_fired = false;
+                    }
+                }
+            }
+        }
+
+        let mut stakeholder_waiting: i64 = 0;
+        // Stakeholder waiting urgency & Human gate urgency: someone external is waiting
+        // on this task, or a structurally-identified human gate is awaiting decision/review.
+        // Base +2000 (someone is waiting / human decision required), growing +200/day, capped at +8000 total.
+        //
+        // The per-day growth is the *lateness* signal. When a hard `due` already
+        // fired the deadline ramp, that lateness is counted there — so we suppress
+        // the per-day growth and keep only the +2000 base, avoiding the additive
+        // double-count of one "late to an external party" fact (mem-830588f3). The
+        // ramp's distinct job is the "I promised, but there's no formal deadline"
+        // case, which has no `due` and so keeps its full time-growth.
+        let is_waiting_or_human_gate = node.stakeholder.is_some() || node.is_human_gate();
+        if is_waiting_or_human_gate {
+            if deadline_ramp_fired {
+                // Deadline ramp already counts lateness; keep only the base.
+                stakeholder_waiting = 2000;
+            } else {
+                let anchor = node.waiting_since.as_ref().or(node.created.as_ref());
+                if let Some(anchor_str) = anchor {
+                    let len = std::cmp::min(10, anchor_str.len());
+                    if let Ok(anchor_date) = chrono::NaiveDate::parse_from_str(
+                        &anchor_str[..anchor_str.floor_char_boundary(len)],
+                        "%Y-%m-%d",
+                    ) {
+                        let days = (today - anchor_date).num_days().max(0);
+                        stakeholder_waiting = 2000 + std::cmp::min(days * 200, 6000);
+                    } else {
+                        stakeholder_waiting = 2000; // stakeholder/gate set but unparseable date
+                    }
+                } else {
+                    stakeholder_waiting = 2000; // stakeholder/gate set but no date at all
+                }
+            }
+        }
+
+        let urgency_term = node.urgency.round() as i64;
+        let voi_term = node.voi_value.map(|v| v.round() as i64).unwrap_or(0);
+        // Value lineage (Phase 2): the sanctioned importance channel
+        // (contributes_to -> a priced committed target) enters cost_of_delay
+        // directly, already scaled by K_VALUE_LINEAGE in
+        // `compute_value_lineage` so it can carry real weight instead of the
+        // ~53-point cap `downstream_weight` was limited to (specs/ranking.md §3).
+        let value_lineage_term = node.value_lineage.round() as i64;
+
+        let cost_of_delay = intent_pressure
+            + deadline_points
+            + stakeholder_waiting
+            + urgency_term
+            + voi_term
+            + value_lineage_term;
+
+        (deadline_band, cost_of_delay)
+    }
+
     /// Compute focus scores and sort tuples for all nodes.
     ///
     /// Evaluates the canonical sort tuple:
@@ -1750,55 +1882,7 @@ impl GraphStore {
                 crate::graph::SeverityGate::Normal
             };
 
-            let intent_pressure: i64 = match intent_val {
-                0 => 10000,
-                1 => 5000,
-                _ => 0,
-            };
-
-            let mut deadline_band = crate::graph::DeadlineBand::None;
-            let mut deadline_points: i64 = 0;
-            let mut deadline_ramp_fired = false;
-
-            if let Some(ref due) = node.due {
-                let len = std::cmp::min(10, due.len());
-                if let Ok(due_date) = chrono::NaiveDate::parse_from_str(
-                    &due[..due.floor_char_boundary(len)],
-                    "%Y-%m-%d",
-                ) {
-                    let days_until = (due_date - today).num_days();
-                    let effort_days = node
-                        .effort
-                        .as_deref()
-                        .and_then(crate::graph::parse_effort_days)
-                        .unwrap_or(3);
-
-                    if days_until < 0 {
-                        deadline_band = crate::graph::DeadlineBand::Overdue;
-                        deadline_points = 8000 + std::cmp::min((-days_until) * 200, 4000);
-                        deadline_ramp_fired = true;
-                    } else {
-                        let ratio = effort_days as f64 / (days_until.max(1) as f64);
-                        if ratio >= 1.0 {
-                            deadline_band = crate::graph::DeadlineBand::Imminent;
-                            deadline_points = 6000;
-                            deadline_ramp_fired = true;
-                        } else if ratio > 0.5 {
-                            deadline_band = crate::graph::DeadlineBand::Urgent;
-                            deadline_points = 2000 + ((ratio - 0.5) * 8000.0) as i64;
-                            deadline_ramp_fired = true;
-                        } else if days_until <= 30 {
-                            deadline_band = crate::graph::DeadlineBand::Approaching;
-                            deadline_points = (ratio * 4000.0) as i64;
-                            deadline_ramp_fired = deadline_points > 0;
-                        } else {
-                            deadline_band = crate::graph::DeadlineBand::None;
-                            deadline_points = 0;
-                            deadline_ramp_fired = false;
-                        }
-                    }
-                }
-            }
+            let (deadline_band, cost_of_delay) = Self::compute_cost_of_delay(node, today);
 
             let mut age_staleness: i64 = 0;
             if intent_val >= 2 {
@@ -1815,53 +1899,11 @@ impl GraphStore {
                 }
             }
             let downstream_weight_x10 = (node.downstream_weight * 10.0) as i64;
-
-            let mut stakeholder_waiting: i64 = 0;
-            // Stakeholder waiting urgency & Human gate urgency: someone external is waiting
-            // on this task, or a structurally-identified human gate is awaiting decision/review.
-            // Base +2000 (someone is waiting / human decision required), growing +200/day, capped at +8000 total.
-            //
-            // The per-day growth is the *lateness* signal. When a hard `due` already
-            // fired the deadline ramp, that lateness is counted there — so we suppress
-            // the per-day growth and keep only the +2000 base, avoiding the additive
-            // double-count of one "late to an external party" fact (mem-830588f3). The
-            // ramp's distinct job is the "I promised, but there's no formal deadline"
-            // case, which has no `due` and so keeps its full time-growth.
-            let is_waiting_or_human_gate = node.stakeholder.is_some() || node.is_human_gate();
-            if is_waiting_or_human_gate {
-                if deadline_ramp_fired {
-                    // Deadline ramp already counts lateness; keep only the base.
-                    stakeholder_waiting = 2000;
-                } else {
-                    let anchor = node.waiting_since.as_ref().or(node.created.as_ref());
-                    if let Some(anchor_str) = anchor {
-                        let len = std::cmp::min(10, anchor_str.len());
-                        if let Ok(anchor_date) = chrono::NaiveDate::parse_from_str(
-                            &anchor_str[..anchor_str.floor_char_boundary(len)],
-                            "%Y-%m-%d",
-                        ) {
-                            let days = (today - anchor_date).num_days().max(0);
-                            stakeholder_waiting = 2000 + std::cmp::min(days * 200, 6000);
-                        } else {
-                            stakeholder_waiting = 2000; // stakeholder/gate set but unparseable date
-                        }
-                    } else {
-                        stakeholder_waiting = 2000; // stakeholder/gate set but no date at all
-                    }
-                }
-            }
-
-            let urgency_term = node.urgency.round() as i64;
-            let voi_term = node.voi_value.map(|v| v.round() as i64).unwrap_or(0);
-
-            let cost_of_delay = intent_pressure
-                + deadline_points
-                + stakeholder_waiting
-                + urgency_term
-                + voi_term;
+            let unlock_breadth_x10 = (node.unlock_breadth * 10.0) as i64;
 
             let tie_breakers = crate::graph::FocusTieBreakers {
                 downstream_weight_x10,
+                unlock_breadth_x10,
                 age_staleness,
                 effective_intent: node.effective_intent.unwrap_or(4),
                 order: node.order,
@@ -3414,26 +3456,47 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
         })
         .collect();
 
-    // 3. Compute propagated S_lex and LST via BFS
+    // 3. Compute propagated S_lex and LST by relaxation (CPM-style chain slack).
+    //
+    // V9 fix: the S_lex half of this traversal used to mark a neighbour
+    // visited on first enqueue and never revisit it, so whichever path
+    // reached a node *first* permanently fixed the `path_factor` used for
+    // `s_lex[tid] * path_factor` — a later-discovered, stronger path (higher
+    // factor) to the same node could never correct it upward. `best_factor`
+    // replaces the visited-on-enqueue gate with a strict-improvement gate: a
+    // node is (re-)enqueued whenever a larger path_factor than any seen so
+    // far is found, so the propagated S_lex always reflects the strongest
+    // path across the whole traversal, not just the first one discovered.
+    // Termination is guaranteed because every edge factor is in [0.0, 1.0],
+    // so path_factor is non-increasing with depth and the number of distinct
+    // strict improvements per node is bounded; the existing depth cap bounds
+    // it further. The min-slack half needs no such change — a node's own
+    // slack does not depend on path_factor, so visiting it once already gave
+    // the correct minimum (this half was verified correct and is untouched
+    // in effect, only carried along in the same relaxation loop).
     let mut propagated_s_lex = s_lex.clone();
     let mut min_slacks = slacks.clone();
 
-    let mut visited = vec![false; num_nodes];
+    let mut best_factor = vec![-1.0_f64; num_nodes];
     let mut queue = VecDeque::new();
 
     for start_idx in 0..num_nodes {
-        visited.fill(false);
-        visited[start_idx] = true;
+        best_factor.fill(-1.0);
         queue.clear();
 
         for &(neighbor_idx, factor) in &adj[start_idx] {
-            if !visited[neighbor_idx] {
-                visited[neighbor_idx] = true;
+            if factor > best_factor[neighbor_idx] {
+                best_factor[neighbor_idx] = factor;
                 queue.push_back((neighbor_idx, factor, 1u32));
             }
         }
 
         while let Some((tid, path_factor, depth)) = queue.pop_front() {
+            // A stronger relaxation may have superseded this queue entry
+            // since it was pushed; skip the stale one.
+            if path_factor < best_factor[tid] {
+                continue;
+            }
             // Update max propagated S_lex * path weight
             let s = s_lex[tid] * path_factor;
             if s > propagated_s_lex[start_idx] {
@@ -3447,9 +3510,10 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
             // Limit traversal depth to 20 to bound work on long chains.
             if depth < MAX_URGENCY_PROPAGATION_DEPTH {
                 for &(next_idx, next_factor) in &adj[tid] {
-                    if !visited[next_idx] {
-                        visited[next_idx] = true;
-                        queue.push_back((next_idx, path_factor * next_factor, depth + 1));
+                    let new_factor = path_factor * next_factor;
+                    if new_factor > best_factor[next_idx] {
+                        best_factor[next_idx] = new_factor;
+                        queue.push_back((next_idx, new_factor, depth + 1));
                     }
                 }
             }
@@ -3460,6 +3524,13 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
     const SAFE_HORIZON: f64 = 30.0;
     let k = 10.0_f64.ln() / SAFE_HORIZON;
     for i in 0..num_nodes {
+        // Chain slack (outcome 1): the same min-slack relaxation above,
+        // exposed in days as its own diagnostic field. Set unconditionally
+        // (including for completed nodes) — it is informational and does not
+        // itself gate anything; only `urgency`/`focus_tuple` are gated on
+        // completion.
+        nodes[i].chain_slack = min_slacks[i];
+
         if graph::is_completed(nodes[i].status.as_deref()) {
             nodes[i].urgency = 0.0;
             continue;
@@ -3484,6 +3555,150 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
         } else {
             nodes[i].urgency = propagated_s_lex[i] * f_s;
         }
+    }
+}
+
+/// Scale constant turning a raw `[0.0, 1.0]`-ish value-lineage product into
+/// cost-of-delay points comparable with `priority_base`/`urgency_term`
+/// (specs/ranking.md §2). Chosen to match their shared 10,000-point ceiling:
+/// a Critical (1.00) standing weight, a Certain (1.00) edge, and full (1.0)
+/// confidence together produce exactly 10,000 — enough to move a ranking,
+/// unlike the ~53-point cap `downstream_weight` was limited to before this
+/// phase (the diagnosed failure this phase exists to fix).
+const K_VALUE_LINEAGE: f64 = 10000.0;
+
+/// Value lineage (outcome 4): standing weight elicited on a committed
+/// target/goal node flows multiplicatively to its direct `contributes_to`
+/// contributors — `contribution size (edge stated_weight) × confidence
+/// discount × target standing_weight`, scaled by [`K_VALUE_LINEAGE`].
+///
+/// **One hop only.** This walks each node's own `contributes_to` edges
+/// directly; it does not chain transitively through a contributor's own
+/// further `contributes_to` edges. Standing weight is priced on committed
+/// targets specifically (the elicitation instrument's scope guard); a
+/// contributor of a contributor of a priced target is not itself credited
+/// unless it also has a direct edge to a priced target. This keeps the
+/// computation a local per-node scan rather than a new cone-walk mechanism.
+///
+/// **Sibling-contributor semantics (outcome 6):** independent and additive.
+/// Multiple nodes contributing to the same target are each scored off their
+/// own edge alone; nothing here reduces a contributor's credit because
+/// other contributors also point at the same target. This is a deliberate
+/// rejection of a Birnbaum-style reliability combination (cut sets,
+/// structure functions) across sibling edges — the parent plan explicitly
+/// rules that out ("Explicitly not building: Birnbaum importance proper"),
+/// and specs/ranking.md §7 already disclaims it for the verbal scale itself.
+/// The "redundancy exists" wording on the fifty-fifty anchor (§7) is
+/// corrected in the same change that adds this function, precisely because
+/// it read as implying the cross-edge combination this function does not do.
+///
+/// Confidence discount defaults to `1.0` (no discount) when a contributor's
+/// own `confidence` is unset, mirroring `compute_uncertainty`'s existing
+/// "missing confidence, no open question => certain" default — this is a
+/// default on the *contributor's* stated confidence, not on the *target's*
+/// standing weight, which stays strictly `None`-means-zero (Zero Defaults /
+/// Zero Inference, pkb-standing-weight-elicitation-instrument §1).
+fn compute_value_lineage(nodes: &mut [GraphNode]) {
+    // Only committed targets/goals are eligible to be priced (elicitation
+    // instrument §1 scope guard) — a standing_weight parsed on a
+    // non-committed goal_type is ignored here (defense in depth; nothing
+    // upstream currently writes it there, but this keeps the doctrine true
+    // even if it does).
+    let standing_weights: HashMap<&str, f64> = nodes
+        .iter()
+        .filter(|n| n.goal_type.as_deref() == Some("committed"))
+        .filter_map(|n| n.standing_weight.map(|w| (n.id.as_str(), w)))
+        .collect();
+
+    let mut lineage = vec![0.0_f64; nodes.len()];
+    if !standing_weights.is_empty() {
+        for (i, n) in nodes.iter().enumerate() {
+            let confidence = n.confidence.unwrap_or(1.0);
+            let mut total = 0.0_f64;
+            for ct in &n.contributes_to {
+                let Some(target_id) = ct.resolved_to.as_deref() else {
+                    continue;
+                };
+                let Some(&target_weight) = standing_weights.get(target_id) else {
+                    continue;
+                };
+                total += ct.numeric_weight() * confidence * target_weight;
+            }
+            lineage[i] = total * K_VALUE_LINEAGE;
+        }
+    }
+
+    for (node, v) in nodes.iter_mut().zip(lineage) {
+        node.value_lineage = v;
+    }
+}
+
+/// Unlock breadth (outcome 3): the cost-of-delay-weighted mass of what
+/// completing this node would directly unblock. **Not a count of unblocked
+/// nodes** — a node that directly unblocks one SEV4-committed, due-today
+/// task is worth more than one that unblocks five unscheduled P4 backlog
+/// items, and this field says so in the same currency as everything else in
+/// `cost_of_delay`.
+///
+/// Deliberately shallow (one hop): for each node `x`, and each `t` in
+/// `x.blocks` (x is a direct blocker of t), `t` counts toward `x`'s unlock
+/// breadth only if `x` is the *last* unmet hard dependency — i.e. every
+/// other id in `t.depends_on` is already in a completed status. Finishing
+/// `x` must actually flip `t` from blocked to unblocked for `t` to count;
+/// merely being *one of several* blockers is not "unlocking" it yet. Soft
+/// dependencies are excluded — they don't gate the ready/blocked
+/// classification (specs/ranking.md §8.1-8.2), so completing a soft-blocker
+/// doesn't unblock anything in the sense this field measures.
+///
+/// Multi-hop cascades (x unblocks t, which in turn would unblock further
+/// tasks) are intentionally out of scope — that is `downstream_weight`'s
+/// job. Parent plan Phase 2: "one shallow metric kept: unlock breadth".
+fn compute_unlock_breadth(nodes: &mut [GraphNode]) {
+    let today = chrono::Utc::now().date_naive();
+    let completed: HashSet<&str> = graph::COMPLETED_STATUSES.iter().copied().collect();
+    let id_to_idx: HashMap<&str, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.as_str(), i))
+        .collect();
+
+    // Cost-of-delay for every node, computed once. Pure function of fields
+    // already finalised earlier in the pipeline (urgency, voi_value,
+    // value_lineage), so this is a single extra O(N) pass, not a
+    // recomputation of the whole tuple.
+    let cod: Vec<i64> = nodes
+        .iter()
+        .map(|n| GraphStore::compute_cost_of_delay(n, today).1)
+        .collect();
+
+    let mut breadth = vec![0.0_f64; nodes.len()];
+    for (i, n) in nodes.iter().enumerate() {
+        for target_id in &n.blocks {
+            let Some(&t_idx) = id_to_idx.get(target_id.as_str()) else {
+                continue;
+            };
+            let target = &nodes[t_idx];
+            if completed.contains(target.status.as_deref().unwrap_or("")) {
+                continue;
+            }
+            let last_blocker = target.depends_on.iter().filter(|d| d.as_str() != n.id).all(|d| {
+                id_to_idx
+                    .get(d.as_str())
+                    .map(|&di| completed.contains(nodes[di].status.as_deref().unwrap_or("")))
+                    // A dangling/unresolved dependency reference cannot be
+                    // confirmed complete; treat conservatively as still
+                    // blocking so `x` is not credited with an unlock it
+                    // cannot actually deliver alone.
+                    .unwrap_or(false)
+            });
+            if last_blocker {
+                breadth[i] += cod[t_idx].max(0) as f64;
+            }
+        }
+    }
+
+    for (node, b) in nodes.iter_mut().zip(breadth) {
+        node.unlock_breadth = b;
     }
 }
 
@@ -6537,6 +6752,447 @@ mod tests {
             "in_progress task with SEV4 committed urgency must appear in focus_picks via status-independent scan");
     }
 
+    // ── Phase 2: chain slack, unlock breadth, value lineage ──────────────────
+
+    /// AC1: chain slack must be the true minimum across the whole blocking
+    /// chain, found by relaxation, regardless of how many hops away it is —
+    /// not just whichever due date is fewest hops from the start node.
+    #[test]
+    fn test_chain_slack_relaxation_finds_true_minimum_across_path_lengths() {
+        let today = chrono::Utc::now().date_naive();
+        let due_in = |d: i64| {
+            (today + chrono::Duration::try_days(d).unwrap())
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+
+        let root = GraphNode {
+            id: "root".to_string(),
+            status: Some("ready".to_string()),
+            blocks: vec!["near".to_string(), "mid1".to_string()],
+            ..Default::default()
+        };
+        // Near: 1 hop away, generous slack (20 - 3 = 17 days).
+        let near = GraphNode {
+            id: "near".to_string(),
+            status: Some("ready".to_string()),
+            due: Some(due_in(20)),
+            effort: Some("3d".to_string()),
+            ..Default::default()
+        };
+        let mid1 = GraphNode {
+            id: "mid1".to_string(),
+            status: Some("ready".to_string()),
+            blocks: vec!["mid2".to_string()],
+            ..Default::default()
+        };
+        let mid2 = GraphNode {
+            id: "mid2".to_string(),
+            status: Some("ready".to_string()),
+            blocks: vec!["far".to_string()],
+            ..Default::default()
+        };
+        // Far: 3 hops away, the tightest slack in the whole chain (4 - 3 = 1 day).
+        let far = GraphNode {
+            id: "far".to_string(),
+            status: Some("ready".to_string()),
+            due: Some(due_in(4)),
+            effort: Some("3d".to_string()),
+            ..Default::default()
+        };
+
+        let mut nodes = vec![root, near, mid1, mid2, far];
+        compute_urgency(&mut nodes);
+
+        let root_slack = nodes.iter().find(|n| n.id == "root").unwrap().chain_slack;
+        assert!(
+            (root_slack - 1.0).abs() < 1e-9,
+            "chain_slack must be the minimum across the whole chain (far, 3 hops, slack=1), \
+             not the nearer node's slack (near, 1 hop, slack=17); got {root_slack}"
+        );
+    }
+
+    /// AC2: the V9 first-path BFS defect. A weak DIRECT edge (soft_blocks,
+    /// factor 0.3) is discovered first in BFS seeding order; a strong
+    /// INDIRECT edge (blocks -> blocks, combined factor 1.0) to the *same*
+    /// target is discovered one hop later. The pre-fix code marked the
+    /// target visited on the weak edge's enqueue and could never correct
+    /// upward when the stronger path arrived — so adding a weak edge that
+    /// happens to be discovered first must not be able to suppress the
+    /// urgency the strong, pre-existing path should confer.
+    #[test]
+    fn test_urgency_first_path_bfs_defect_fixed() {
+        let mut x = GraphNode {
+            id: "x".to_string(),
+            status: Some("ready".to_string()),
+            ..Default::default()
+        };
+        let m = GraphNode {
+            id: "m".to_string(),
+            status: Some("ready".to_string()),
+            blocks: vec!["target".to_string()],
+            ..Default::default()
+        };
+        let target = GraphNode {
+            id: "target".to_string(),
+            status: Some("ready".to_string()),
+            severity: Some(3), // s_lex = 10^3 = 1000 (not committed, no lexicographic override)
+            ..Default::default()
+        };
+        // Indirect, strong path: x --blocks(1.0)--> m --blocks(1.0)--> target (combined 1.0).
+        x.blocks.push("m".to_string());
+        // Direct, weak path to the SAME target: x --soft_blocks(0.3)--> target.
+        // `compute_urgency`'s adjacency builder iterates `blocks` before
+        // `soft_blocks`, so `m` is pushed into x's adjacency before `target`,
+        // reproducing the exact discovery order the defect needs.
+        x.soft_blocks.push("target".to_string());
+
+        let mut nodes = vec![x, m, target];
+        compute_urgency(&mut nodes);
+
+        // x has no due date: slack defaults to the unconstrained sentinel (100.0).
+        let k = 10.0_f64.ln() / 30.0;
+        let f_s = (k * (30.0 - 100.0)).exp();
+        let correct = 1000.0 * f_s; // via the strong path (s_lex=1000 x factor=1.0)
+        let buggy = 300.0 * f_s; // what the pre-fix code returned (s_lex=1000 x factor=0.3)
+
+        let xu = nodes.iter().find(|n| n.id == "x").unwrap().urgency;
+        assert!(
+            (xu - correct).abs() < 1e-6,
+            "urgency must reflect the strong (indirect, higher path_factor) route to target: \
+             expected {correct} (the pre-fix defect would have produced {buggy} via the weak \
+             direct edge alone), got {xu}"
+        );
+    }
+
+    /// AC3: `unlock_breadth` is a cost-of-delay-*weighted mass*, not a count.
+    /// `x` directly blocks three tasks: `low` (zero cost of delay, fully
+    /// unblocked by x alone), `high` (P0, cost of delay 10,000, fully
+    /// unblocked by x alone), and `partial` (also P0, but has a second,
+    /// still-open blocker — so completing x does NOT actually unblock it). A
+    /// raw count would read 3 (or wrongly include `partial`); the weighted
+    /// mass must be exactly `high`'s cost of delay.
+    #[test]
+    fn test_unlock_breadth_is_cost_of_delay_weighted_not_a_count() {
+        let x = GraphNode {
+            id: "x".to_string(),
+            status: Some("ready".to_string()),
+            blocks: vec!["low".to_string(), "high".to_string(), "partial".to_string()],
+            ..Default::default()
+        };
+        let low = GraphNode {
+            id: "low".to_string(),
+            status: Some("ready".to_string()),
+            depends_on: vec!["x".to_string()],
+            ..Default::default()
+        };
+        let high = GraphNode {
+            id: "high".to_string(),
+            status: Some("ready".to_string()),
+            depends_on: vec!["x".to_string()],
+            intent: Some(0), // P0 -> intent_pressure 10000
+            ..Default::default()
+        };
+        let other_blocker = GraphNode {
+            id: "other-blocker".to_string(),
+            status: Some("ready".to_string()), // still open
+            ..Default::default()
+        };
+        let partial = GraphNode {
+            id: "partial".to_string(),
+            status: Some("ready".to_string()),
+            depends_on: vec!["x".to_string(), "other-blocker".to_string()],
+            intent: Some(0), // same weight as `high` if it counted -- it must not
+            ..Default::default()
+        };
+
+        let mut nodes = vec![x, low, high, other_blocker, partial];
+        compute_unlock_breadth(&mut nodes);
+
+        let breadth = nodes.iter().find(|n| n.id == "x").unwrap().unlock_breadth;
+        assert!(
+            (breadth - 10000.0).abs() < 1e-6,
+            "expected exactly `high`'s cost of delay (10000): `low` contributes 0, and \
+             `partial` must be excluded (still has an unmet dependency on `other-blocker`) even \
+             though x also blocks it -- a raw count would read 3 or wrongly include partial; \
+             got {breadth}"
+        );
+    }
+
+    fn ct_edge(to: &str, stated_weight: &str) -> crate::graph::ContributesTo {
+        crate::graph::ContributesTo {
+            to: to.to_string(),
+            stated_weight: stated_weight.to_string(),
+            justification: String::new(),
+            current_weight: None,
+            resolved_to: Some(to.to_string()),
+            inherits_from: None,
+            brier_history: Vec::new(),
+            last_interacted: None,
+            anomaly_flag: false,
+        }
+    }
+
+    /// AC4: value lineage must materially (not sub-1%) differentiate
+    /// contributors by their target's standing weight, stated in advance:
+    /// `c-high` (-> target standing_weight 1.00) must score exactly
+    /// `1.0 x 1.0 x 1.00 x K_VALUE_LINEAGE = 10000`; `c-low` (-> target
+    /// standing_weight 0.05) must score exactly `500`. That is a 20x
+    /// separation, and it must be strong enough to actually move the rank
+    /// (`focus_cmp`), not just an internal number nothing reads.
+    #[test]
+    fn test_value_lineage_materially_differentiates_targets_by_standing_weight() {
+        let t_high = GraphNode {
+            id: "t-high".to_string(),
+            status: Some("ready".to_string()),
+            goal_type: Some("committed".to_string()),
+            standing_weight: Some(1.0),
+            ..Default::default()
+        };
+        let t_low = GraphNode {
+            id: "t-low".to_string(),
+            status: Some("ready".to_string()),
+            goal_type: Some("committed".to_string()),
+            standing_weight: Some(0.05),
+            ..Default::default()
+        };
+        let c_high = GraphNode {
+            id: "c-high".to_string(),
+            status: Some("ready".to_string()),
+            confidence: Some(1.0),
+            contributes_to: vec![ct_edge("t-high", "Certain")],
+            ..Default::default()
+        };
+        let c_low = GraphNode {
+            id: "c-low".to_string(),
+            status: Some("ready".to_string()),
+            confidence: Some(1.0),
+            contributes_to: vec![ct_edge("t-low", "Certain")],
+            ..Default::default()
+        };
+
+        let mut nodes = vec![t_high, t_low, c_high, c_low];
+        compute_value_lineage(&mut nodes);
+
+        let vl = |nodes: &[GraphNode], id: &str| nodes.iter().find(|n| n.id == id).unwrap().value_lineage;
+        let vl_high = vl(&nodes, "c-high");
+        let vl_low = vl(&nodes, "c-low");
+
+        assert!(
+            (vl_high - 10000.0).abs() < 1e-6,
+            "expected 1.0 (Certain) x 1.0 (confidence) x 1.00 (standing_weight) x 10000, got {vl_high}"
+        );
+        assert!(
+            (vl_low - 500.0).abs() < 1e-6,
+            "expected 1.0 (Certain) x 1.0 (confidence) x 0.05 (standing_weight) x 10000, got {vl_low}"
+        );
+        assert!(
+            vl_high > vl_low * 19.0,
+            "differently-weighted targets must produce material (here >=19x), not sub-1%, \
+             separation; got high={vl_high} low={vl_low}"
+        );
+
+        // And it must actually move the rank, per the parent plan's mandate
+        // that the sanctioned importance channel reach the score with real
+        // gain, not just an internal number nothing reads.
+        GraphStore::compute_focus_scores(&mut nodes);
+        let ordering = GraphStore::focus_cmp(
+            nodes.iter().find(|n| n.id == "c-high").unwrap(),
+            nodes.iter().find(|n| n.id == "c-low").unwrap(),
+        );
+        assert_eq!(
+            ordering,
+            std::cmp::Ordering::Less,
+            "c-high (contributes to the heavier-weighted target) must outrank c-low despite \
+             otherwise identical fields"
+        );
+    }
+
+    /// AC6: sibling-contributor combination semantics. Two independent nodes
+    /// contribute to the *same* target with the same verbal weight. Each
+    /// must receive full, independent credit — nothing here reduces a
+    /// contributor's credit because another contributor also points at the
+    /// same target (no Birnbaum-style cut-set/structure-function reduction
+    /// across sibling edges; see the corrected §7 gloss in specs/ranking.md
+    /// and the parent plan's "Explicitly not building" list).
+    #[test]
+    fn test_sibling_contributors_to_same_target_are_independent_not_combined() {
+        let target = GraphNode {
+            id: "t-shared".to_string(),
+            status: Some("ready".to_string()),
+            goal_type: Some("committed".to_string()),
+            standing_weight: Some(1.0),
+            ..Default::default()
+        };
+        let sib_a = GraphNode {
+            id: "sib-a".to_string(),
+            status: Some("ready".to_string()),
+            confidence: Some(1.0),
+            contributes_to: vec![ct_edge("t-shared", "Certain")],
+            ..Default::default()
+        };
+        let sib_b = GraphNode {
+            id: "sib-b".to_string(),
+            status: Some("ready".to_string()),
+            confidence: Some(1.0),
+            contributes_to: vec![ct_edge("t-shared", "Certain")],
+            ..Default::default()
+        };
+
+        let mut nodes = vec![target, sib_a, sib_b];
+        compute_value_lineage(&mut nodes);
+
+        let a = nodes.iter().find(|n| n.id == "sib-a").unwrap().value_lineage;
+        let b = nodes.iter().find(|n| n.id == "sib-b").unwrap().value_lineage;
+        assert!((a - 10000.0).abs() < 1e-6, "sib-a must get full, undiminished credit, got {a}");
+        assert!((b - 10000.0).abs() < 1e-6, "sib-b must get full, undiminished credit, got {b}");
+        assert_eq!(
+            a, b,
+            "sibling contributors to the same target must each receive full, independent \
+             credit -- the presence of another contributor must not reduce either one's"
+        );
+    }
+
+    /// AC5 (part 1): a non-empty `stated_weight` that fails to match the
+    /// verbal contribution-weight scale is rejected at parse time — recorded
+    /// as a `ParseWarning` and contributing zero, never the legacy 0.3
+    /// "soft" default.
+    #[test]
+    fn test_stated_weight_out_of_scale_rejected_at_parse_time_not_defaulted() {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), serde_json::json!("garbage weight test"));
+        fm.insert("type".to_string(), serde_json::json!("task"));
+        fm.insert("id".to_string(), serde_json::json!("garbage-weight-task"));
+        fm.insert(
+            "contributes_to".to_string(),
+            serde_json::json!([{"to": "some-target", "stated_weight": "super duper critical"}]),
+        );
+        let doc = PkbDocument {
+            path: std::path::PathBuf::from("tasks/garbage-weight-task.md"),
+            title: "garbage weight test".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test".to_string(),
+            file_hash: "test".to_string(),
+        };
+        let node = GraphNode::from_pkb_document(&doc);
+
+        assert_eq!(
+            node.contributes_to[0].numeric_weight(),
+            0.0,
+            "an unrecognized stated_weight must contribute zero, not the legacy 0.3 default"
+        );
+        assert!(
+            node
+                .parse_warnings
+                .iter()
+                .any(|w| w.field == "contributes_to.stated_weight"),
+            "an unrecognized non-empty stated_weight must be flagged via ParseWarning, not \
+             silently accepted; got warnings: {:?}",
+            node.parse_warnings
+        );
+    }
+
+    /// AC5 (part 2): a genuinely *omitted* `stated_weight` is not an error —
+    /// it's a deliberately unstated edge — so it must be silently zero with
+    /// no ParseWarning.
+    #[test]
+    fn test_stated_weight_omitted_is_silently_zero_no_warning() {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), serde_json::json!("unstated weight test"));
+        fm.insert("type".to_string(), serde_json::json!("task"));
+        fm.insert("id".to_string(), serde_json::json!("unstated-weight-task"));
+        fm.insert(
+            "contributes_to".to_string(),
+            serde_json::json!([{"to": "some-target"}]),
+        );
+        let doc = PkbDocument {
+            path: std::path::PathBuf::from("tasks/unstated-weight-task.md"),
+            title: "unstated weight test".to_string(),
+            body: String::new(),
+            doc_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test".to_string(),
+            file_hash: "test".to_string(),
+        };
+        let node = GraphNode::from_pkb_document(&doc);
+
+        assert_eq!(node.contributes_to[0].numeric_weight(), 0.0);
+        assert!(
+            node.parse_warnings.is_empty(),
+            "an omitted stated_weight is not an error and must not be flagged; got {:?}",
+            node.parse_warnings
+        );
+    }
+
+    /// `standing_weight` out-of-range input is rejected the same way
+    /// `severity`/`goal_type` already are — flagged, not clamped or defaulted
+    /// (Zero Defaults / Zero Inference applies most strongly to this field).
+    #[test]
+    fn test_standing_weight_out_of_range_rejected() {
+        let mut fm = serde_json::Map::new();
+        fm.insert("title".to_string(), serde_json::json!("overpriced target"));
+        fm.insert("type".to_string(), serde_json::json!("target"));
+        fm.insert("id".to_string(), serde_json::json!("overpriced-target"));
+        fm.insert("goal_type".to_string(), serde_json::json!("committed"));
+        fm.insert("standing_weight".to_string(), serde_json::json!(1.5));
+        let doc = PkbDocument {
+            path: std::path::PathBuf::from("targets/overpriced-target.md"),
+            title: "overpriced target".to_string(),
+            body: String::new(),
+            doc_type: Some("target".to_string()),
+            status: Some("ready".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            tags: vec![],
+            frontmatter: Some(serde_json::Value::Object(fm)),
+            content_hash: "test".to_string(),
+            file_hash: "test".to_string(),
+        };
+        let node = GraphNode::from_pkb_document(&doc);
+
+        assert_eq!(node.standing_weight, None);
+        assert!(
+            node.parse_warnings.iter().any(|w| w.field == "standing_weight"),
+            "out-of-range standing_weight must be flagged, not clamped or defaulted; got {:?}",
+            node.parse_warnings
+        );
+    }
+
+    /// AC7 (score-path guard): `criticality` must never enter `cost_of_delay`.
+    /// A node with sky-high criticality but nothing else must still score a
+    /// cost_of_delay of exactly 0 -- a companion, executable version of the
+    /// grep-based verification recorded in the PR/release notes.
+    #[test]
+    fn test_criticality_never_enters_cost_of_delay() {
+        let today = chrono::Utc::now().date_naive();
+        let node = GraphNode {
+            id: "high-criticality".to_string(),
+            status: Some("ready".to_string()),
+            criticality: 1.0,
+            pagerank: 1.0,
+            betweenness: 1.0,
+            ..Default::default()
+        };
+        let (_, cost_of_delay) = GraphStore::compute_cost_of_delay(&node, today);
+        assert_eq!(
+            cost_of_delay, 0,
+            "criticality/pagerank/betweenness must never enter cost_of_delay; got {cost_of_delay}"
+        );
+    }
+
     // ── Weight Divergence Detection ──────────────────────────────────────────
 
     #[test]
@@ -8615,6 +9271,7 @@ mod tests {
             cost_of_delay: 5000,
             tie_breakers: FocusTieBreakers {
                 downstream_weight_x10: 10,
+                unlock_breadth_x10: 0,
                 age_staleness: 20,
                 effective_intent: 1,
                 order: 0,
