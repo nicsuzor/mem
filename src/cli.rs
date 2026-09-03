@@ -3927,6 +3927,30 @@ fn handle_excalidraw_command(
             hops,
         } => {
             let gs = load_graph(pkb_root, db_path, None);
+            if output_path.exists() {
+                if let Ok(existing_str) = std::fs::read_to_string(&output_path) {
+                    if let Ok(existing_file) =
+                        serde_json::from_str::<excalidraw::ExcalidrawFile>(&existing_str)
+                    {
+                        let all_ids: Vec<String> = if let Some(ref f) = focus {
+                            let resolved = gs.resolve(f).map(|n| n.id.as_str()).unwrap_or(f);
+                            let (nodes, _) = excalidraw::extract_ego_subgraph(&gs, resolved, hops);
+                            nodes.into_iter().map(|n| n.id).collect()
+                        } else {
+                            gs.nodes().map(|n| n.id.clone()).collect()
+                        };
+                        let merged =
+                            excalidraw::merge_canvas_with_live(&existing_file, &gs, &all_ids)?;
+                        let content = serde_json::to_string_pretty(&merged)?;
+                        std::fs::write(&output_path, content)?;
+                        println!(
+                            "Updated existing Excalidraw canvas (merged live state, preserved hand positions) -> {}",
+                            output_path.display()
+                        );
+                        return Ok(());
+                    }
+                }
+            }
             let (content, n_nodes, n_edges) = gs.output_excalidraw(focus.as_deref(), hops)?;
             std::fs::write(&output_path, content)?;
             println!(

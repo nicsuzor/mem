@@ -18,6 +18,7 @@ use mem::graph_store::GraphStore;
 use mem::mcp_server::PkbSearchServer;
 use mem::vectordb::VectorStore;
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -246,7 +247,7 @@ fn test_roundtrip_fidelity() {
 
     let ready_style = node_color_style(Some("ready"), Some("task"));
     assert_eq!(ready_style.stroke_color, "#2b8a3e");
-    assert_eq!(ready_style.bg_color, "#d3f9d8");
+    assert_eq!(ready_style.bg_color, "#e8f0e6");
 
     // 3-Way Diff against live graph: must have ZERO unexpected mutations
     let base_snap = BaseSnapshot::from_canvas(&canvas);
@@ -1579,4 +1580,582 @@ fn test_preserve_custom_card_styling_e2e() {
         t1_card_changed.stroke_color, done_palette.stroke_color,
         "Stroke color must update to done palette on status transition"
     );
+}
+
+// ===========================================================================
+// Test 11: Real Export Encoding Registry Conformance (kb_a5392b83)
+// ===========================================================================
+
+#[test]
+fn test_real_export_encoding_registry_conformance() {
+    let ws = tempfile::tempdir().expect("tempdir");
+    let pkb_root = ws.path();
+
+    fs::write(
+        pkb_root.join("polecat.yaml"),
+        "projects:\n  admin: {}\n  infra: {}\n  testproj: {}\n",
+    )
+    .unwrap();
+
+    let dirs = ["epics", "tasks", "targets"];
+    for d in &dirs {
+        fs::create_dir_all(pkb_root.join(d)).unwrap();
+    }
+
+    // 1. Target node -> Tier A (380px), Gold fill (#ecdcab), Gold stroke (#f59f00)
+    fs::write(
+        pkb_root.join("targets/targ_4e2cc92a.md"),
+        "---\n\
+         id: targ_4e2cc92a\n\
+         title: \"Long Service Leave\"\n\
+         type: target\n\
+         status: ready\n\
+         priority: 1\n\
+         project: infra\n\
+         ---\n# Long Service Leave\n",
+    )
+    .unwrap();
+
+    // 2. P2 Epic -> Tier L (300px), Epic style (#edf2ff, #4c6ef5)
+    fs::write(
+        pkb_root.join("epics/epic-p2.md"),
+        "---\n\
+         id: epic-p2\n\
+         title: \"Infrastructure Revamp\"\n\
+         type: epic\n\
+         status: ready\n\
+         priority: 2\n\
+         project: infra\n\
+         ---\n# Infrastructure Revamp\n",
+    )
+    .unwrap();
+
+    // 3. P2 Task with effort 2h -> Tier M (240px), Green ready (#e8f0e6, #2b8a3e), effort 2h
+    fs::write(
+        pkb_root.join("tasks/task-p2.md"),
+        "---\n\
+         id: task-p2\n\
+         title: \"Configure Pipeline\"\n\
+         type: task\n\
+         status: ready\n\
+         priority: 2\n\
+         effort: 2h\n\
+         project: testproj\n\
+         parent: epic-p2\n\
+         ---\n# Configure Pipeline\n",
+    )
+    .unwrap();
+
+    // 4. P4 Task in_progress -> Tier S (200px), Deep green (#a3d3a3), now chip
+    fs::write(
+        pkb_root.join("tasks/task-p4.md"),
+        "---\n\
+         id: task-p4\n\
+         title: \"Glue Copper Panel\"\n\
+         type: task\n\
+         status: in_progress\n\
+         priority: 4\n\
+         effort: 1h\n\
+         project: testproj\n\
+         parent: epic-p2\n\
+         ---\n# Glue Copper Panel\n",
+    )
+    .unwrap();
+
+    // 5. Task with stakeholder (waiting on Nic) -> Red ring (#e03131, strokeWidth 2.5)
+    fs::write(
+        pkb_root.join("tasks/task-stakeholder.md"),
+        "---\n\
+         id: task-stakeholder\n\
+         title: \"AFR Live Presentation\"\n\
+         type: task\n\
+         status: ready\n\
+         priority: 2\n\
+         stakeholder: \"Saba Hayat, AFR Live\"\n\
+         project: testproj\n\
+         parent: epic-p2\n\
+         ---\n# AFR Live Presentation\n",
+    )
+    .unwrap();
+
+    // 6. Task with status review -> Red ring (#e03131, strokeWidth 2.5)
+    fs::write(
+        pkb_root.join("tasks/task-review.md"),
+        "---\n\
+         id: task-review\n\
+         title: \"PR Review Session\"\n\
+         type: task\n\
+         status: review\n\
+         priority: 2\n\
+         project: testproj\n\
+         parent: epic-p2\n\
+         ---\n# PR Review Session\n",
+    )
+    .unwrap();
+
+    // 7. Task with project: admin -> WORK marker
+    fs::write(
+        pkb_root.join("tasks/task-admin.md"),
+        "---\n\
+         id: task-admin\n\
+         title: \"Tax and Invoicing\"\n\
+         type: task\n\
+         status: ready\n\
+         priority: 3\n\
+         project: admin\n\
+         parent: epic-p2\n\
+         ---\n# Tax and Invoicing\n",
+    )
+    .unwrap();
+
+    // 8. Task contributing to targ_4e2cc92a -> LSL marker
+    fs::write(
+        pkb_root.join("tasks/task-lsl.md"),
+        "---\n\
+         id: task-lsl\n\
+         title: \"Savings Milestones\"\n\
+         type: task\n\
+         status: ready\n\
+         priority: 3\n\
+         contributes_to:\n\
+           - to: targ_4e2cc92a\n\
+             weight: probable\n\
+         project: testproj\n\
+         parent: epic-p2\n\
+         ---\n# Savings Milestones\n",
+    )
+    .unwrap();
+
+    // 9. Paused task -> Amber fill (#ffe9bf, #e8590c)
+    fs::write(
+        pkb_root.join("tasks/task-paused.md"),
+        "---\n\
+         id: task-paused\n\
+         title: \"Firmware Bluetooth\"\n\
+         type: task\n\
+         status: paused\n\
+         priority: 3\n\
+         project: testproj\n\
+         parent: epic-p2\n\
+         ---\n# Firmware Bluetooth\n",
+    )
+    .unwrap();
+
+    // 10. Inbox task -> Violet fill (#efe8f5), dashed border
+    fs::write(
+        pkb_root.join("tasks/task-inbox.md"),
+        "---\n\
+         id: task-inbox\n\
+         title: \"Explore RISC-V\"\n\
+         type: task\n\
+         status: inbox\n\
+         priority: 3\n\
+         project: testproj\n\
+         parent: epic-p2\n\
+         ---\n# Explore RISC-V\n",
+    )
+    .unwrap();
+
+    // 11. Done task -> Grey fill (#ededed)
+    fs::write(
+        pkb_root.join("tasks/task-done.md"),
+        "---\n\
+         id: task-done\n\
+         title: \"Order PCB boards\"\n\
+         type: task\n\
+         status: done\n\
+         priority: 3\n\
+         project: testproj\n\
+         parent: epic-p2\n\
+         ---\n# Order PCB boards\n",
+    )
+    .unwrap();
+
+    // 12. Someday and cancelled tasks -> Must NOT be drawn
+    fs::write(
+        pkb_root.join("tasks/task-someday.md"),
+        "---\n\
+         id: task-someday\n\
+         title: \"Learn Rust Async\"\n\
+         type: task\n\
+         status: someday\n\
+         priority: 4\n\
+         project: testproj\n\
+         ---\n# Learn Rust Async\n",
+    )
+    .unwrap();
+    fs::write(
+        pkb_root.join("tasks/task-cancelled.md"),
+        "---\n\
+         id: task-cancelled\n\
+         title: \"Old Prototype\"\n\
+         type: task\n\
+         status: cancelled\n\
+         priority: 4\n\
+         project: testproj\n\
+         ---\n# Old Prototype\n",
+    )
+    .unwrap();
+
+    let mut gs = GraphStore::build_from_directory(pkb_root);
+    // Wire focus score >= 1000 for START marker and 1-tier bump on task-p4
+    if let Some(mut n) = gs.get_node("task-p4").cloned() {
+        n.focus_score = Some(1500);
+        gs.replace_node(n);
+    }
+
+    // Export scene to Excalidraw JSON
+    let all_ids: Vec<String> = gs.nodes().map(|n| n.id.clone()).collect();
+    let excal_file = export_subgraph(&gs, &all_ids, None).expect("export subgraph");
+
+    // Filter out cards (rectangles/diamonds/ellipses with matching pkb node id, ignoring frames)
+    let find_card = |id: &str| -> &ExcalidrawElement {
+        excal_file
+            .elements
+            .iter()
+            .find(|e| (e.id == id || e.custom_data.as_ref().and_then(|c| c.pkb.as_ref()).and_then(|p| p.node_id.as_deref()) == Some(id)) && e.element_type != "frame")
+            .unwrap_or_else(|| panic!("Card for node {id} must exist in exported scene"))
+    };
+    let find_text = |id: &str| -> &ExcalidrawElement {
+        let text_id = format!("text-{id}");
+        excal_file
+            .elements
+            .iter()
+            .find(|e| e.id == text_id || e.container_id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("Bound text for node {id} must exist"))
+    };
+
+    // 1. Target node: Tier A (380px), Gold fill (#ecdcab), Gold stroke (#f59f00), element ID == node ID
+    let card_target = find_card("targ_4e2cc92a");
+    assert_eq!(card_target.id, "targ_4e2cc92a", "Element ID must equal node ID");
+    assert_eq!(card_target.width, CARD_WIDTH_A, "Target node must use Tier A (380px)");
+    assert_eq!(card_target.background_color, "#ecdcab", "Target must have gold fill");
+    assert_eq!(card_target.stroke_color, "#f59f00", "Target must have gold stroke");
+
+    // 2. P2 Epic: Tier L (300px), Epic colors (#edf2ff, #4c6ef5)
+    let card_epic = find_card("epic-p2");
+    assert_eq!(card_epic.id, "epic-p2", "Element ID must equal node ID");
+    assert_eq!(card_epic.width, CARD_WIDTH_L, "P2 Epic must use Tier L (300px)");
+    assert_eq!(card_epic.background_color, "#edf2ff");
+    assert_eq!(card_epic.stroke_color, "#4c6ef5");
+
+    // 3. P2 Task: Tier M (240px), Ready green (#e8f0e6, #2b8a3e), effort 2h
+    let card_p2 = find_card("task-p2");
+    assert_eq!(card_p2.id, "task-p2", "Element ID must equal node ID");
+    assert_eq!(card_p2.width, CARD_WIDTH_M, "P2 Task must use Tier M (240px)");
+    assert_eq!(card_p2.background_color, "#e8f0e6", "Ready fill must be #e8f0e6");
+    assert_eq!(card_p2.stroke_color, "#2b8a3e");
+    let text_p2 = find_text("task-p2");
+    let raw_text_p2 = text_p2.text.as_deref().unwrap();
+    assert!(raw_text_p2.contains("[READY · P2]"));
+    assert!(raw_text_p2.contains("2h"), "Effort badge must be present");
+
+    // 4. P4 Task with focus_score >= 1000: Bumped from S (200px) to M (240px), deep green (#a3d3a3), now chip, START marker
+    let card_p4 = find_card("task-p4");
+    assert_eq!(card_p4.id, "task-p4", "Element ID must equal node ID");
+    assert_eq!(card_p4.width, CARD_WIDTH_M, "P4 with focus_score >= 1000 must be bumped to Tier M (240px)");
+    assert_eq!(card_p4.background_color, "#a3d3a3", "In-progress fill must be deep green #a3d3a3");
+    let text_p4 = find_text("task-p4");
+    let raw_text_p4 = text_p4.text.as_deref().unwrap();
+    assert!(raw_text_p4.contains("now"), "In-progress card must carry 'now' chip");
+    assert!(raw_text_p4.contains("START"), "Focus score >= 1000 card must carry START marker");
+
+    // 5. Stakeholder task: Red ring (#e03131, strokeWidth 2.5)
+    let card_stakeholder = find_card("task-stakeholder");
+    assert_eq!(card_stakeholder.id, "task-stakeholder");
+    assert_eq!(card_stakeholder.stroke_color, "#e03131", "Stakeholder task must carry red ring");
+    assert_eq!(card_stakeholder.stroke_width, 2.5);
+
+    // 6. Review task: Red ring (#e03131, strokeWidth 2.5)
+    let card_review = find_card("task-review");
+    assert_eq!(card_review.id, "task-review");
+    assert_eq!(card_review.stroke_color, "#e03131", "Review task must carry red ring");
+    assert_eq!(card_review.stroke_width, 2.5);
+
+    // 7. Admin task: WORK marker
+    let text_admin = find_text("task-admin");
+    assert!(text_admin.text.as_deref().unwrap().contains("WORK"), "project: admin must produce WORK marker");
+
+    // 8. Contributes to targ_4e2cc92a: LSL marker
+    let text_lsl = find_text("task-lsl");
+    assert!(text_lsl.text.as_deref().unwrap().contains("LSL"), "contributes_to targ_4e2cc92a must produce LSL marker");
+
+    // 9. Paused task: Amber fill (#ffe9bf, #e8590c)
+    let card_paused = find_card("task-paused");
+    assert_eq!(card_paused.background_color, "#ffe9bf", "Paused fill must be amber #ffe9bf");
+    assert_eq!(card_paused.stroke_color, "#e8590c");
+
+    // 10. Inbox task: Violet fill (#efe8f5), dashed border
+    let card_inbox = find_card("task-inbox");
+    assert_eq!(card_inbox.background_color, "#efe8f5", "Inbox fill must be violet #efe8f5");
+    assert_eq!(card_inbox.stroke_style, "dashed", "Inbox card must have dashed border");
+
+    // 11. Done task: Grey fill (#ededed)
+    let card_done = find_card("task-done");
+    assert_eq!(card_done.background_color, "#ededed", "Done fill must be grey #ededed");
+
+    // 12. Someday and cancelled tasks: MUST NOT BE DRAWN
+    assert!(!excal_file.elements.iter().any(|e| e.id == "task-someday" || e.custom_data.as_ref().and_then(|c| c.pkb.as_ref()).and_then(|p| p.node_id.as_deref()) == Some("task-someday")), "task-someday must not be drawn");
+    assert!(!excal_file.elements.iter().any(|e| e.id == "task-cancelled" || e.custom_data.as_ref().and_then(|c| c.pkb.as_ref()).and_then(|p| p.node_id.as_deref()) == Some("task-cancelled")), "task-cancelled must not be drawn");
+}
+
+// ===========================================================================
+// Test 12: Moved Element Identity in Diff & Sync (Not Add + Delete)
+// ===========================================================================
+
+#[test]
+fn test_moved_element_identified_by_id_not_add_plus_delete() {
+    let ws = create_test_pkb_workspace();
+    let mut gs = GraphStore::build_from_directory(ws.path());
+
+    // Export graph to Excalidraw JSON
+    let (excal_json, _, _) = gs.output_excalidraw(None, 2).expect("export excalidraw");
+    let mut file: ExcalidrawFile = serde_json::from_str(&excal_json).unwrap();
+    let base_snap = BaseSnapshot::from_file(&file);
+
+    // User moves task-t1 to a new hand-laid position (1200.0, 950.0)
+    for elem in &mut file.elements {
+        if elem.id == "task-t1" || elem.custom_data.as_ref().and_then(|c| c.pkb.as_ref()).and_then(|p| p.node_id.as_deref()) == Some("task-t1") {
+            elem.x = 1200.0;
+            elem.y = 950.0;
+        }
+    }
+
+    // Parse modified canvas
+    let canvas = CanvasReader::parse_file(file.clone());
+
+    // Compute 3-way diff
+    let diff = diff_canvas(Some(&base_snap), &gs, &canvas).expect("compute diff");
+
+    // CRITICAL: Moving an element must NOT generate an add and a delete!
+    assert!(
+        diff.added_nodes.is_empty(),
+        "Moved element must NOT be reported as an added node, got: {:?}",
+        diff.added_nodes
+    );
+    assert!(
+        diff.removed_from_canvas.is_empty(),
+        "Moved element must NOT be reported as removed from canvas, got: {:?}",
+        diff.removed_from_canvas
+    );
+    assert!(
+        diff.updated_nodes.is_empty(),
+        "Moved element with unchanged frontmatter must NOT produce updated_nodes, got: {:?}",
+        diff.updated_nodes
+    );
+
+    // It MUST be recognized as a visual mutation
+    assert_eq!(diff.visual_mutations.len(), 1);
+    assert_eq!(diff.visual_mutations[0].node_id, "task-t1");
+    assert_eq!(diff.visual_mutations[0].x, 1200.0);
+    assert_eq!(diff.visual_mutations[0].y, 950.0);
+
+    // Syncing this diff must write ZERO changes to disk
+    let report = sync_canvas(ws.path(), &mut gs, &diff, false).expect("sync canvas");
+    assert!(report.created_nodes.is_empty());
+    assert!(report.updated_nodes.is_empty());
+}
+
+// ===========================================================================
+// Test 13: Hand-Laid Positions and Annotations Survive Sync & Export
+// ===========================================================================
+
+#[test]
+fn test_hand_laid_positions_and_annotations_survive_sync_and_export() {
+    let ws = create_test_pkb_workspace();
+    let gs = GraphStore::build_from_directory(ws.path());
+
+    // Construct a canvas with deliberate hand positions and handwritten annotations
+    let mut file = ExcalidrawFile::default();
+
+    // 1. Hand-placed card for task-t1 at (1337.0, 4242.0)
+    let mut card_t1 = ExcalidrawElement::default();
+    card_t1.id = "task-t1".to_string();
+    card_t1.element_type = "rectangle".to_string();
+    card_t1.x = 1337.0;
+    card_t1.y = 4242.0;
+    card_t1.width = CARD_WIDTH_M;
+    card_t1.height = CARD_HEIGHT;
+    card_t1.background_color = "#e8f0e6".to_string();
+    card_t1.stroke_color = "#2b8a3e".to_string();
+    card_t1.custom_data = Some(CustomData {
+        pkb: Some(PkbCustomData {
+            node_id: Some("task-t1".to_string()),
+            is_pkb_managed: Some(true),
+            ..Default::default()
+        }),
+        extra: HashMap::new(),
+    });
+
+    // 2. Hand-placed card for task-t2 at (1800.0, 4242.0)
+    let mut card_t2 = ExcalidrawElement::default();
+    card_t2.id = "task-t2".to_string();
+    card_t2.element_type = "rectangle".to_string();
+    card_t2.x = 1800.0;
+    card_t2.y = 4242.0;
+    card_t2.width = CARD_WIDTH_M;
+    card_t2.height = CARD_HEIGHT;
+    card_t2.background_color = "#a3d3a3".to_string();
+    card_t2.stroke_color = "#237032".to_string();
+    card_t2.custom_data = Some(CustomData {
+        pkb: Some(PkbCustomData {
+            node_id: Some("task-t2".to_string()),
+            is_pkb_managed: Some(true),
+            ..Default::default()
+        }),
+        extra: HashMap::new(),
+    });
+
+    // 3. Handwritten canvas note / annotation (freedraw / text note)
+    let mut hand_note = ExcalidrawElement::default();
+    hand_note.id = "note-handwritten-1".to_string();
+    hand_note.element_type = "text".to_string();
+    hand_note.text = Some("Nic: the map is multidimensional space".to_string());
+    hand_note.x = 1337.0;
+    hand_note.y = 4150.0;
+    hand_note.width = 300.0;
+    hand_note.height = 30.0;
+
+    file.elements.push(card_t1);
+    file.elements.push(card_t2);
+    file.elements.push(hand_note);
+
+    let canvas_path = ws.path().join("personal-projects-map.excalidraw");
+    fs::write(&canvas_path, serde_json::to_string_pretty(&file).unwrap()).unwrap();
+
+    // Now simulate live sync / merge via merge_canvas_with_live
+    let target_ids = vec!["task-t1".to_string(), "task-t2".to_string()];
+    let merged_file = merge_canvas_with_live(&file, &gs, &target_ids).expect("merge canvas with live");
+
+    // Assert that hand-placed positions survive intact
+    let merged_t1 = merged_file.elements.iter().find(|e| e.id == "task-t1").unwrap();
+    assert_eq!(merged_t1.x, 1337.0, "Hand-placed x coordinate must survive intact");
+    assert_eq!(merged_t1.y, 4242.0, "Hand-placed y coordinate must survive intact");
+
+    let merged_t2 = merged_file.elements.iter().find(|e| e.id == "task-t2").unwrap();
+    assert_eq!(merged_t2.x, 1800.0, "Hand-placed x coordinate must survive intact");
+    assert_eq!(merged_t2.y, 4242.0, "Hand-placed y coordinate must survive intact");
+
+    // Assert that handwritten annotation survives intact
+    let merged_note = merged_file.elements.iter().find(|e| e.id == "note-handwritten-1");
+    assert!(merged_note.is_some(), "Handwritten canvas note must survive merge intact");
+    assert_eq!(merged_note.unwrap().text.as_deref(), Some("Nic: the map is multidimensional space"));
+}
+
+// ===========================================================================
+// Test 14: Personal Projects Live Consumer Roundtrip
+// ===========================================================================
+
+#[test]
+fn test_personal_projects_live_consumer_roundtrip() {
+    let ws = tempfile::tempdir().expect("tempdir");
+    let pkb_root = ws.path();
+
+    fs::write(
+        pkb_root.join("polecat.yaml"),
+        "projects:\n  personal: {}\n  admin: {}\n",
+    )
+    .unwrap();
+
+    for d in &["epics", "tasks", "targets"] {
+        fs::create_dir_all(pkb_root.join(d)).unwrap();
+    }
+
+    // Seed target anchor
+    fs::write(
+        pkb_root.join("targets/target-personal.md"),
+        "---\n\
+         id: target-personal\n\
+         title: \"Personal Independence Target\"\n\
+         type: target\n\
+         status: ready\n\
+         priority: 1\n\
+         project: personal\n\
+         ---\n# Personal Independence Target\n",
+    )
+    .unwrap();
+
+    // Seed container epic
+    fs::write(
+        pkb_root.join("epics/epic-personal.md"),
+        "---\n\
+         id: epic-personal\n\
+         title: \"Personal Projects\"\n\
+         type: epic\n\
+         status: in_progress\n\
+         priority: 2\n\
+         project: personal\n\
+         contributes_to:\n\
+           - to: target-personal\n\
+             weight: certain\n\
+         ---\n# Personal Projects\n",
+    )
+    .unwrap();
+
+    // Seed tasks
+    fs::write(
+        pkb_root.join("tasks/task-a.md"),
+        "---\n\
+         id: task-a\n\
+         title: \"Solar Battery Monitor\"\n\
+         type: task\n\
+         status: in_progress\n\
+         priority: 2\n\
+         effort: 3d\n\
+         project: personal\n\
+         parent: epic-personal\n\
+         ---\n# Solar Battery Monitor\n",
+    )
+    .unwrap();
+
+    fs::write(
+        pkb_root.join("tasks/task-b.md"),
+        "---\n\
+         id: task-b\n\
+         title: \"Irrigation Controller\"\n\
+         type: task\n\
+         status: ready\n\
+         priority: 3\n\
+         project: personal\n\
+         parent: epic-personal\n\
+         ---\n# Irrigation Controller\n",
+    )
+    .unwrap();
+
+    let mut gs = GraphStore::build_from_directory(pkb_root);
+
+    // 1. Export via GraphStore output_excalidraw
+    let (excal_json, n_nodes, _) = gs.output_excalidraw(None, 2).expect("export excalidraw");
+    assert_eq!(n_nodes, 4);
+
+    let parsed_file: ExcalidrawFile = serde_json::from_str(&excal_json).unwrap();
+    let base_snap = BaseSnapshot::from_file(&parsed_file);
+
+    // 2. Parse through CanvasReader
+    let mut canvas = CanvasReader::parse_file(parsed_file);
+
+    // 3. Move cards by hand in Excalidraw
+    for card in &mut canvas.cards {
+        if card.element_id == "task-a" || card.node_id.as_deref() == Some("task-a") {
+            card.x = 2500.0;
+            card.y = 1200.0;
+        }
+    }
+
+    // 4. Compute 3-way diff
+    let diff = diff_canvas(Some(&base_snap), &gs, &canvas).expect("compute diff");
+    assert!(diff.added_nodes.is_empty(), "No nodes should be added");
+    assert!(diff.removed_from_canvas.is_empty(), "No nodes should be removed");
+    assert_eq!(diff.visual_mutations.len(), 1, "Moving task-a should be recognized as a visual mutation");
+
+    // 5. Sync to disk: verify no unintended mutations occur
+    let report = sync_canvas(pkb_root, &mut gs, &diff, false).expect("sync canvas");
+    assert!(report.created_nodes.is_empty());
+    assert!(report.updated_nodes.is_empty());
+
+    // 6. Verify round-trip state through GraphStore rebuild
+    let gs_rebuilt = GraphStore::build_from_directory(pkb_root);
+    assert_eq!(gs_rebuilt.node_count(), 4);
+    assert_eq!(gs_rebuilt.get_node("task-a").unwrap().status.as_deref(), Some("in_progress"));
+    assert_eq!(gs_rebuilt.get_node("task-b").unwrap().status.as_deref(), Some("ready"));
 }

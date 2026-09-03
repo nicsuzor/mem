@@ -11,7 +11,11 @@ use std::collections::HashMap;
 // Layout & Styling Constants
 // ===========================================================================
 
-pub const CARD_WIDTH: f64 = 240.0;
+pub const CARD_WIDTH_S: f64 = 200.0;
+pub const CARD_WIDTH_M: f64 = 240.0;
+pub const CARD_WIDTH_L: f64 = 300.0;
+pub const CARD_WIDTH_A: f64 = 380.0;
+pub const CARD_WIDTH: f64 = CARD_WIDTH_M;
 pub const CARD_HEIGHT: f64 = 84.0;
 pub const FRAME_PADDING: f64 = 32.0;
 pub const FRAME_HEADER_HEIGHT: f64 = 40.0;
@@ -57,6 +61,76 @@ impl ElementColorStyle {
             opacity,
         }
     }
+}
+
+/// Returns true if a status should be excluded from visual rendering.
+pub fn is_excluded_status(status: Option<&str>) -> bool {
+    match status.map(|s| s.to_lowercase()).as_deref() {
+        Some("someday") | Some("cancelled") | Some("abandoned") => true,
+        _ => false,
+    }
+}
+
+/// Returns true if the node should receive a prominent red ring (someone waiting on Nic).
+pub fn is_red_ring(has_stakeholder: bool, status: Option<&str>) -> bool {
+    has_stakeholder
+        || status.map_or(false, |s| {
+            s.eq_ignore_ascii_case("review") || s.eq_ignore_ascii_case("testing")
+        })
+}
+
+/// Computes card width and height dimensions based on size tiers and focus score bump.
+pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
+    let t = node.node_type.as_deref().unwrap_or("task").to_lowercase();
+    let is_anchor = t == "target"
+        || t == "goal"
+        || t == "root"
+        || t == "anchor"
+        || node.id.starts_with("targ_")
+        || node.id.starts_with("target-");
+
+    if is_anchor {
+        return (CARD_WIDTH_A, CARD_HEIGHT);
+    }
+
+    let p = node.effective_intent.or(node.intent).unwrap_or(3);
+    let is_container = t == "epic" || t == "area" || t == "project";
+
+    let base_tier = if is_container {
+        if p <= 2 {
+            "L"
+        } else {
+            "M"
+        }
+    } else {
+        if p <= 3 {
+            "M"
+        } else {
+            "S"
+        }
+    };
+
+    // Focus score >= 1000 bump
+    let focus_score = node.focus_score.unwrap_or(0);
+    let bumped_tier = if focus_score >= 1000 {
+        match base_tier {
+            "S" => "M",
+            "M" => "L",
+            "L" => "A",
+            _ => "A",
+        }
+    } else {
+        base_tier
+    };
+
+    let w = match bumped_tier {
+        "A" => CARD_WIDTH_A,
+        "L" => CARD_WIDTH_L,
+        "M" => CARD_WIDTH_M,
+        "S" => CARD_WIDTH_S,
+        _ => CARD_WIDTH_M,
+    };
+    (w, CARD_HEIGHT)
 }
 
 /// Returns the visual styling for a node given its status and type.
@@ -117,7 +191,6 @@ pub fn node_preset_style(preset: &str) -> ElementColorStyle {
     }
 
     match p.as_str() {
-
         "hero" => ElementColorStyle::new("#fff3bf", "#f59f00", "solid", "solid", 100),
         "sticky" => ElementColorStyle::new("#fff9db", "#f08c00", "solid", "hachure", 100),
         "zone" => ElementColorStyle::new("#edf2ff", "#4c6ef5", "dashed", "solid", 30),
@@ -126,7 +199,6 @@ pub fn node_preset_style(preset: &str) -> ElementColorStyle {
     }
 }
 
-
 pub fn node_color_style(status: Option<&str>, node_type: Option<&str>) -> ElementColorStyle {
     let t = node_type.unwrap_or("task").to_lowercase();
     let s = status.unwrap_or("inbox").to_lowercase();
@@ -134,9 +206,10 @@ pub fn node_color_style(status: Option<&str>, node_type: Option<&str>) -> Elemen
     // Specific structural node types
     match t.as_str() {
         "epic" => return ElementColorStyle::new("#edf2ff", "#4c6ef5", "solid", "solid", 100),
+        "target" | "goal" | "root" | "anchor" => {
+            return ElementColorStyle::new("#ecdcab", "#f59f00", "solid", "solid", 100)
+        }
         "area" => return ElementColorStyle::new("#e3fafc", "#0c8599", "solid", "solid", 100),
-        "target" => return ElementColorStyle::new("#fff3bf", "#f59f00", "solid", "solid", 100),
-        "goal" => return ElementColorStyle::new("#ffec99", "#e67700", "solid", "solid", 100),
         "learn" => return ElementColorStyle::new("#e6fcf5", "#099268", "solid", "solid", 100),
         "memory" | "note" | "insight" => {
             return ElementColorStyle::new("#fff9db", "#f08c00", "solid", "solid", 100)
@@ -146,24 +219,24 @@ pub fn node_color_style(status: Option<&str>, node_type: Option<&str>) -> Elemen
 
     // Status-driven styling for tasks and general items
     match s.as_str() {
-        "ready" => ElementColorStyle::new("#d3f9d8", "#2b8a3e", "solid", "solid", 100),
-        "queued" => ElementColorStyle::new("#e6fcf5", "#099268", "solid", "solid", 100),
+        "ready" => ElementColorStyle::new("#e8f0e6", "#2b8a3e", "solid", "solid", 100),
+        "queued" => ElementColorStyle::new("#a3d3a3", "#237032", "solid", "solid", 100),
         "active" | "in_progress" | "doing" => {
-            ElementColorStyle::new("#d0ebff", "#1971c2", "solid", "solid", 100)
+            ElementColorStyle::new("#a3d3a3", "#237032", "solid", "solid", 100)
         }
-        "blocked" | "waiting" => {
-            ElementColorStyle::new("#ffe8cc", "#e8590c", "solid", "solid", 100)
+        "blocked" | "waiting" | "paused" => {
+            ElementColorStyle::new("#ffe9bf", "#e8590c", "solid", "solid", 100)
         }
         "review" | "testing" => {
-            ElementColorStyle::new("#f3d9fa", "#862e9c", "solid", "solid", 100)
+            ElementColorStyle::new("#efe8f5", "#e03131", "solid", "solid", 100)
         }
-        "done" | "completed" | "released" => {
-            ElementColorStyle::new("#e9ecef", "#adb5bd", "solid", "solid", 60)
+        "done" | "completed" | "released" | "merge_ready" => {
+            ElementColorStyle::new("#ededed", "#adb5bd", "solid", "solid", 60)
         }
-        "cancelled" | "abandoned" => {
+        "cancelled" | "abandoned" | "someday" => {
             ElementColorStyle::new("#faecec", "#fa5252", "dashed", "solid", 60)
         }
-        _ => ElementColorStyle::new("#f1f3f5", "#868e96", "solid", "solid", 100), // inbox / draft
+        _ => ElementColorStyle::new("#efe8f5", "#862e9c", "dashed", "solid", 100), // inbox / draft
     }
 }
 
@@ -664,14 +737,64 @@ mod tests {
     #[test]
     fn test_color_matrix() {
         let ready_style = node_color_style(Some("ready"), Some("task"));
-        assert_eq!(ready_style.bg_color, "#d3f9d8");
+        assert_eq!(ready_style.bg_color, "#e8f0e6");
+        assert_eq!(ready_style.stroke_color, "#2b8a3e");
 
-        let epic_style = node_color_style(Some("inbox"), Some("epic"));
-        assert_eq!(epic_style.bg_color, "#edf2ff");
+        let active_style = node_color_style(Some("in_progress"), Some("task"));
+        assert_eq!(active_style.bg_color, "#a3d3a3");
+
+        let paused_style = node_color_style(Some("paused"), Some("task"));
+        assert_eq!(paused_style.bg_color, "#ffe9bf");
+
+        let inbox_style = node_color_style(Some("inbox"), Some("task"));
+        assert_eq!(inbox_style.bg_color, "#efe8f5");
+        assert_eq!(inbox_style.stroke_style, "dashed");
+
+        let done_style = node_color_style(Some("done"), Some("task"));
+        assert_eq!(done_style.bg_color, "#ededed");
+
+        let anchor_style = node_color_style(Some("ready"), Some("target"));
+        assert_eq!(anchor_style.bg_color, "#ecdcab");
 
         let (stroke, style, width) = edge_color_style("depends_on");
         assert_eq!(stroke, "#e03131");
         assert_eq!(style, "solid");
         assert_eq!(width, 2.0);
+    }
+
+    #[test]
+    fn test_card_dimensions_and_red_ring() {
+        use crate::graph::GraphNode;
+
+        let mut n_target = GraphNode::default();
+        n_target.id = "targ_123".to_string();
+        n_target.node_type = Some("target".to_string());
+        assert_eq!(compute_card_dimensions(&n_target), (CARD_WIDTH_A, CARD_HEIGHT));
+
+        let mut n_epic_p2 = GraphNode::default();
+        n_epic_p2.node_type = Some("epic".to_string());
+        n_epic_p2.intent = Some(2);
+        assert_eq!(compute_card_dimensions(&n_epic_p2), (CARD_WIDTH_L, CARD_HEIGHT));
+
+        let mut n_task_p2 = GraphNode::default();
+        n_task_p2.node_type = Some("task".to_string());
+        n_task_p2.intent = Some(2);
+        assert_eq!(compute_card_dimensions(&n_task_p2), (CARD_WIDTH_M, CARD_HEIGHT));
+
+        let mut n_task_p4 = GraphNode::default();
+        n_task_p4.node_type = Some("task".to_string());
+        n_task_p4.intent = Some(4);
+        assert_eq!(compute_card_dimensions(&n_task_p4), (CARD_WIDTH_S, CARD_HEIGHT));
+
+        // Focus score bump >= 1000: S -> M, M -> L
+        n_task_p4.focus_score = Some(1200);
+        assert_eq!(compute_card_dimensions(&n_task_p4), (CARD_WIDTH_M, CARD_HEIGHT));
+
+        n_task_p2.focus_score = Some(1500);
+        assert_eq!(compute_card_dimensions(&n_task_p2), (CARD_WIDTH_L, CARD_HEIGHT));
+
+        assert!(is_red_ring(true, Some("ready")));
+        assert!(is_red_ring(false, Some("review")));
+        assert!(!is_red_ring(false, Some("ready")));
     }
 }
