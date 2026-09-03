@@ -265,6 +265,28 @@ pub fn batch_merge(
         all_depends_on.remove(merge_id);
     }
 
+    // Check for hard dependency cycles across all merged dependencies and reparenting
+    let mut proposed_edges: Vec<(&str, &str)> = Vec::new();
+    for dep in &all_depends_on {
+        proposed_edges.push((&canonical_id, dep.as_str()));
+    }
+    for child_id in &children_to_reparent {
+        proposed_edges.push((child_id.as_str(), &canonical_id));
+    }
+    for (node_id, field) in &backlinks_to_update {
+        if field == "parent" || field == "depends_on" {
+            proposed_edges.push((node_id.as_str(), &canonical_id));
+        }
+    }
+
+    if let Err(msg) = graph.would_create_hard_cycle_edges(&proposed_edges) {
+        summary.errors.push(TaskError {
+            id: canonical_id.clone(),
+            error: format!("batch_merge rejected: {msg}"),
+        });
+        return summary;
+    }
+
     if dry_run {
         // Report what would happen to canonical
         summary.tasks.push(TaskAction {

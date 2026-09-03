@@ -183,6 +183,7 @@ impl PkbSearchServer {
                 "follow_up_tasks",
                 "release_summary",
                 "contributes_to",
+                "classification",
                 "allow_missing_parent",
                 "force",
             ];
@@ -324,6 +325,10 @@ impl PkbSearchServer {
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.clone())
                 .unwrap_or_default(),
+            classification: args
+                .get("classification")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         };
 
         // Hierarchy validation: actionable tasks must have a parent. Strategic
@@ -449,6 +454,20 @@ impl PkbSearchServer {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Reject hard dependency cycles for explicit id and depends_on.
+        if let Some(ref child_id) = fields.id {
+            let graph = self.graph.read();
+            for dep in &fields.depends_on {
+                if let Err(msg) = graph.would_create_hard_cycle(child_id, dep) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
                 }
             }
         }
@@ -790,6 +809,7 @@ impl PkbSearchServer {
             "id": node.task_id.as_deref().unwrap_or(&node.id),
             "status": node.status,
             "project": node.project,
+            "classification": node.classification,
             "frontmatter": frontmatter,
             "body": body,
             "depends_on": depends_on,
@@ -1299,6 +1319,7 @@ impl PkbSearchServer {
                         "id": t.task_id.as_deref().unwrap_or(&t.id),
                         "title": t.label,
                         "status": t.status.as_deref().unwrap_or("unknown"),
+                        "classification": t.classification,
                         "intent": t.intent.unwrap_or(4),
                         "effective_intent": t.effective_intent.unwrap_or(t.intent.unwrap_or(4)),
                         "focus_score": t.focus_score,
@@ -1637,7 +1658,6 @@ impl PkbSearchServer {
         // a caller's typo'd or invented field name — e.g. `body_append`,
         // guessing at append-like semantics that don't exist on this tool —
         // lands verbatim as a YAML key in the task header.
-        //
         // Allowlist lives at `document_crud::UPDATE_KNOWN_KEYS`, shared with
         // `batch_update` — see `mem_84b21efc`.
         if let Err(unknown) = crate::document_crud::validate_update_keys(&updates) {
@@ -1763,6 +1783,24 @@ impl PkbSearchServer {
                     )),
                     data: None,
                 });
+            }
+        }
+
+        // Reject hard dependency cycles when updating depends_on or _add_depends_on.
+        if let Some(deps_val) = updates.get("depends_on").or_else(|| updates.get("_add_depends_on")) {
+            let targets = crate::graph::parse_string_array(
+                &serde_json::json!({ "depends_on": deps_val.clone() }),
+                "depends_on",
+            );
+            let graph = self.graph.read();
+            for dep in &targets {
+                if let Err(msg) = graph.would_create_hard_cycle(id, dep) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
             }
         }
 

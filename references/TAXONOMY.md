@@ -104,12 +104,12 @@ These ranges map conventional labels to computed property values. They are **gui
 
 | Label       | Scope | Uncertainty | Typical behaviour                                     |
 | ----------- | ----- | ----------- | ----------------------------------------------------- |
-| **goal**    | > 50  | > 0.7       | Target distribution — defines what success looks like |
-| **project** | > 15  | varies      | Partition of goal space — a coherent body of work     |
+| **goal**    | > 50  | > 0.7       | Strategic commitment — defines identity & why (out-of-tree) |
+| **target**  | varies| < 0.5       | Countable, measurable milestone carrying severity (out-of-tree) |
 | **epic**    | 3–20  | < 0.5       | Sufficient statistic for execution — what to do       |
 | **task**    | 0–3   | < 0.3       | Near-zero entropy — ready to act                      |
 
-A node with scope 25 but clear acceptance criteria and resolved dependencies might be a well-decomposed epic, not a project. The label is a human-facing shorthand; the properties are authoritative.
+A node with scope 25 but clear acceptance criteria and resolved dependencies might be a well-decomposed epic. The label is a human-facing shorthand; the properties are authoritative.
 
 **Why not fixed depth?** Forcing work into exactly 4 levels causes two failure modes:
 
@@ -128,11 +128,13 @@ The primary node types in the PKB:
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
 | **goal**     | An identity-level commitment (why). Out of the work tree — never a parent, never parented. Unquantifiable: no `severity`/`consequence`/`due`. Distinct from `target` (NOT an alias). See three-tier model below. |
 | **target**   | A countable, measurable milestone (what) — done / not done. Out of the work tree — never a parent, never parented. Carries `severity` (SEV0–SEV4) + `consequence` (+ optional `due`). Distinct from `goal` (NOT an alias). See three-tier model below. |
-| **project**  | A discrete thing we work on — a noun with defined scope and boundaries                                                               |
 | **epic**     | A bundle of related work that together achieves an aim — a verb                                                                      |
 | **task**     | A discrete deliverable, completable in a single focused session                                                                      |
 | **learn**    | Observational tracking — a spike, discovery, or noted finding. Not directly actionable; resolves by decomposing into follow-up tasks |
+| **pr**       | Pull request tracking node — represents an external pull request deliverable                                                         |
 | **template** | A reusable workflow template — not a work item itself. Calling `claim_task` on a template creates a datestamped task instance. Templates are never entered into the ready queue and are excluded from all actionable-work counts. |
+
+> **Note on `project`**: "Project" is an operational routing field (`project: <slug>`) and an emergent label over high-scope property ranges, not a separate structural node type in `VALID_NODE_TYPES`. Actionable work items belong to `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`).
 
 The `classification` field carries additional semantic subtypes (bug, feature, spike, chore, etc.) without multiplying top-level types.
 
@@ -307,7 +309,7 @@ A task is ready when every one of its DependsOn edges points to a completed node
 
 ### 5. The hierarchy provides context
 
-Each level answers "why?" in terms of its parent. A task's purpose is explained by its epic. An epic's purpose is explained by its project. A project's purpose is explained by its goal. If you can't trace this chain, something is misplaced.
+Each level answers "why?" in terms of its parent. A task's purpose is explained by its epic or parent container; work traces to milestones/targets and strategic goals via `contributes_to`. If you can't trace this chain, something is misplaced.
 
 ### 6. Workflows orchestrate; skills execute; skills are fungible
 
@@ -321,8 +323,8 @@ Workflows define WHAT steps to take and in WHAT order. Skills define HOW to exec
 
 | Question                                                    | Answer       |
 | ----------------------------------------------------------- | ------------ |
-| Scope > 50, uncertainty > 0.7?                              | **Goal**     |
-| Scope > 15, coherent body of work toward a goal?            | **Project**  |
+| Strategic identity-level commitment (why)?                  | **Goal**     |
+| Measurable milestone carrying severity (what)?              | **Target**   |
 | Scope 3–20, uncertainty < 0.5, can be reviewed as one unit? | **Epic**     |
 | Scope 0–3, uncertainty < 0.3, single-session deliverable?   | **Task**     |
 | Discovery or spike — not directly actionable?               | **Learn**    |
