@@ -6801,6 +6801,7 @@ pub const UPDATE_KNOWN_KEYS: &[&str] = &[
     "_remove_tags",
     "_add_depends_on",
     "_remove_depends_on",
+    "classification",
 ];
 
 /// Reject any key not on [`UPDATE_KNOWN_KEYS`]. Shared by `update_task` and

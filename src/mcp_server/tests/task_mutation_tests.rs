@@ -2781,3 +2781,114 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
         let get_json2: serde_json::Value = serde_json::from_str(&get_text2).unwrap();
         assert_eq!(get_json2["classification"], "spike");
     }
+
+    #[test]
+    fn test_hard_cycle_rejected_on_decompose_task() {
+        let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/epic-parent.md",
+                "---\nid: epic-parent\ntitle: Epic Parent\ntype: epic\nstatus: ready\n---\n\n# Epic Parent\n",
+            ),
+        ]);
+
+        // Subtasks forming a cycle among themselves ($1 depends on $2, $2 depends on $1)
+        let err = server
+            .handle_decompose_task(&json!({
+                "parent_id": "epic-parent",
+                "subtasks": [
+                    { "title": "Subtask 1", "depends_on": ["$2"] },
+                    { "title": "Subtask 2", "depends_on": ["$1"] },
+                ]
+            }))
+            .unwrap_err();
+
+        assert!(
+            err.message.contains("Circular dependency detected") || err.message.contains("circular"),
+            "error should indicate cycle rejection: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_hard_cycle_rejected_on_batch_merge() {
+        let (tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-a.md",
+                "---\nid: task-a\ntitle: Task A\ntype: task\nstatus: ready\ndepends_on: [task-b]\n---\n\n# Task A\n",
+            ),
+            (
+                "tasks/task-b.md",
+                "---\nid: task-b\ntitle: Task B\ntype: task\nstatus: ready\n---\n\n# Task B\n",
+            ),
+            (
+                "tasks/task-c.md",
+                "---\nid: task-c\ntitle: Task C\ntype: task\nstatus: ready\ndepends_on: [task-a]\n---\n\n# Task C\n",
+            ),
+        ]);
+
+        // Merging task-c into task-b would give task-b a dependency on task-a.
+        // But task-a already depends on task-b, which would create a cycle: task-b -> task-a -> task-b.
+        let graph = server.graph.read();
+        let summary = crate::batch_ops::duplicates::batch_merge(
+            &graph,
+            tmp.path(),
+            "task-b",
+            &["task-c".to_string()],
+            false,
+        );
+
+        assert!(
+            !summary.errors.is_empty(),
+            "batch_merge should fail with cycle error"
+        );
+        assert!(
+            summary.errors[0].error.contains("circular dependency cycle")
+                || summary.errors[0].error.contains("DAG"),
+            "error should explain DAG cycle: {}",
+            summary.errors[0].error
+        );
+    }
+
+    #[test]
+    fn test_hard_cycle_rejected_on_batch_create_epics() {
+        let (tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-root.md",
+                "---\nid: task-root\ntitle: Root Task\ntype: task\nstatus: ready\ndepends_on: [task-child]\n---\n\n# Root Task\n",
+            ),
+            (
+                "tasks/task-child.md",
+                "---\nid: task-child\ntitle: Child Task\ntype: task\nstatus: ready\n---\n\n# Child Task\n",
+            ),
+        ]);
+
+        // Creating an epic under task-root that reparents task-child would mean:
+        // task-child -> epic -> task-root.
+        // But task-root depends on task-child, creating cycle: task-root -> task-child -> epic -> task-root.
+        let graph = server.graph.read();
+        let summary = crate::batch_ops::epics::batch_create_epics(
+            &graph,
+            tmp.path(),
+            Some("task-root"),
+            &[crate::batch_ops::epics::EpicDef {
+                title: "Cycle Epic".to_string(),
+                task_ids: vec!["task-child".to_string()],
+                intent: None,
+                id: Some("epic-cycle".to_string()),
+                depends_on: vec![],
+                body: None,
+            }],
+            false,
+        );
+
+        assert!(
+            !summary.errors.is_empty(),
+            "batch_create_epics should fail with cycle error"
+        );
+        assert!(
+            summary.errors[0].error.contains("circular dependency cycle")
+                || summary.errors[0].error.contains("DAG"),
+            "error should explain DAG cycle: {}",
+            summary.errors[0].error
+        );
+    }

@@ -1452,10 +1452,11 @@ impl PkbSearchServer {
 
         let mut severity_warning = false;
 
-        // Second pass: create tasks with resolved dependencies
-        for (i, subtask) in subtasks.iter().enumerate() {
-            let title = subtask.get("title").and_then(|v| v.as_str()).unwrap(); // validated in first pass
+        // Pre-resolve dependencies and check for hard dependency cycles across all subtasks
+        let mut resolved_deps_per_subtask: Vec<Vec<String>> = Vec::with_capacity(subtasks.len());
+        let mut proposed_edges: Vec<(String, String)> = Vec::new();
 
+        for (i, subtask) in subtasks.iter().enumerate() {
             let mut depends_on: Vec<String> = subtask
                 .get("depends_on")
                 .and_then(|v| v.as_array())
@@ -1466,21 +1467,45 @@ impl PkbSearchServer {
                 })
                 .unwrap_or_default();
 
-            // Resolve sibling cross-references
             for dep in depends_on.iter_mut() {
-                // 1. Positional references: $1, $2, etc. (1-indexed)
                 if dep.starts_with('$') {
                     if let Ok(idx) = dep[1..].parse::<usize>() {
                         if idx > 0 && idx <= subtask_ids.len() {
                             *dep = subtask_ids[idx - 1].clone();
                         }
                     }
-                }
-                // 2. Title references (exact case-insensitive match on sibling title)
-                else if let Some(sid) = title_to_id.get(&dep.to_lowercase()) {
+                } else if let Some(sid) = title_to_id.get(&dep.to_lowercase()) {
                     *dep = sid.clone();
                 }
             }
+
+            proposed_edges.push((subtask_ids[i].clone(), parent_id.to_string()));
+            for dep in &depends_on {
+                proposed_edges.push((subtask_ids[i].clone(), dep.clone()));
+            }
+
+            resolved_deps_per_subtask.push(depends_on);
+        }
+
+        {
+            let graph = self.graph.read();
+            let edges_refs: Vec<(&str, &str)> = proposed_edges
+                .iter()
+                .map(|(f, t)| (f.as_str(), t.as_str()))
+                .collect();
+            if let Err(msg) = graph.would_create_hard_cycle_edges(&edges_refs) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!("Circular dependency detected in decompose_task: {msg}")),
+                    data: None,
+                });
+            }
+        }
+
+        // Second pass: create tasks with resolved dependencies
+        for (i, subtask) in subtasks.iter().enumerate() {
+            let title = subtask.get("title").and_then(|v| v.as_str()).unwrap(); // validated in first pass
+            let depends_on = std::mem::take(&mut resolved_deps_per_subtask[i]);
 
             let fields = crate::document_crud::TaskFields {
                 title: title.to_string(),

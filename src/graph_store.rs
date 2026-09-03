@@ -1614,11 +1614,13 @@ impl GraphStore {
     /// Check if adding multiple hard dependency edges from `from` to `targets`
     /// would create a cycle using Tarjan's SCC.
     pub fn would_create_hard_cycle_multi(&self, from: &str, targets: &[&str]) -> Result<(), String> {
-        let from_id = self
-            .resolve(from)
-            .map(|n| n.id.clone())
-            .unwrap_or_else(|| from.to_string());
+        let edges: Vec<(&str, &str)> = targets.iter().map(|&t| (from, t)).collect();
+        self.would_create_hard_cycle_edges(&edges)
+    }
 
+    /// Check if adding a batch of hard dependency edges (DependsOn or Parent)
+    /// would create a cycle using Tarjan's SCC.
+    pub fn would_create_hard_cycle_edges(&self, extra_edges: &[(&str, &str)]) -> Result<(), String> {
         let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
         for edge in &self.edges {
             if matches!(edge.edge_type, EdgeType::DependsOn | EdgeType::Parent) {
@@ -1629,7 +1631,13 @@ impl GraphStore {
             }
         }
 
-        for &to in targets {
+        let mut touched_nodes: HashSet<String> = HashSet::new();
+
+        for &(from, to) in extra_edges {
+            let from_id = self
+                .resolve(from)
+                .map(|n| n.id.clone())
+                .unwrap_or_else(|| from.to_string());
             let to_id = self
                 .resolve(to)
                 .map(|n| n.id.clone())
@@ -1641,20 +1649,20 @@ impl GraphStore {
                 ));
             }
 
+            touched_nodes.insert(from_id.clone());
+            touched_nodes.insert(to_id.clone());
+
             adjacency
-                .entry(from_id.clone())
+                .entry(from_id)
                 .or_default()
-                .push(to_id.clone());
+                .push(to_id);
         }
 
         let sccs = tarjan_scc(&adjacency);
         for scc in sccs {
-            if scc.len() > 1 && (scc.contains(&from_id) || targets.iter().any(|t| {
-                let tid = self.resolve(t).map(|n| n.id.clone()).unwrap_or_else(|| t.to_string());
-                scc.contains(&tid)
-            })) {
+            if scc.len() > 1 && scc.iter().any(|id| touched_nodes.contains(id)) {
                 return Err(format!(
-                    "Adding hard dependency on '{from_id}' would create a circular dependency cycle: [{}]. Hard dependencies (DependsOn + Parent) must be a DAG.",
+                    "Adding hard dependencies would create a circular dependency cycle: [{}]. Hard dependencies (DependsOn + Parent) must be a DAG.",
                     scc.join(" -> ")
                 ));
             }
