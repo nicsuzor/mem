@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.89](https://github.com/nicsuzor/mem/compare/mem-v0.3.88...mem-v0.3.89) (2026-09-02)
+
+
+### Bug Fixes
+
+* **ranking:** close 3 confirmed gaming bypasses in Phase 3 VoI open-question signal ([043c4fc](https://github.com/nicsuzor/mem/commit/043c4fc6c0e177d82e70c00af9bdf56e04ae90cb))
+* **ranking:** close 3 confirmed gaming bypasses in Phase 3 VoI open-question signal ([92244bd](https://github.com/nicsuzor/mem/commit/92244bd2ffc07b7a05baa66a051955a8b72315b2))
+* **ranking:** decay deadline_band/deadline_score for stakeless overdue tasks ([4b4c40f](https://github.com/nicsuzor/mem/commit/4b4c40fc7205f41612881546c80af7683841302a))
+* **ranking:** decay deadline_band/deadline_score for stakeless overdue tasks ([739815d](https://github.com/nicsuzor/mem/commit/739815d06908837f618ad4ad61d220b6aa7d2024))
+
 ## [0.3.88](https://github.com/nicsuzor/mem/compare/mem-v0.3.87...mem-v0.3.88) (2026-09-02)
 
 
