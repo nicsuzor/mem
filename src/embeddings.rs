@@ -791,6 +791,13 @@ pub struct Embedder {
 
 impl Embedder {
     pub fn new() -> Result<Self> {
+        if std::env::var("AOPS_DUMMY_EMBEDDER")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false)
+        {
+            return Ok(Self::new_dummy());
+        }
+
         let offline = std::env::var("AOPS_OFFLINE")
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false);

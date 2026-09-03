@@ -111,6 +111,7 @@ fn stdio_session_sequential(aca_path: &std::path::Path, messages: &[String]) -> 
     let mut child = Command::new(pkb_binary())
         .args(["mcp"])
         .env("ACA_DATA", aca_path)
+        .env("AOPS_DUMMY_EMBEDDER", "1")
         .env("AOPS_OFFLINE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
