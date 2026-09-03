@@ -1,14 +1,11 @@
 use super::*;
 use crate::embeddings::Embedder;
-use crate::graph::GraphNode;
 use crate::graph_store::GraphStore;
 use crate::pkb::PkbDocument;
 use crate::vectordb::VectorStore;
 use parking_lot::RwLock;
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 mod task_list_tests;

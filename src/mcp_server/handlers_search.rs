@@ -1,13 +1,9 @@
-use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
-use rmcp::{ErrorData as McpError, ServerHandler};
+use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use crate::graph_store::GraphStore;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 use super::{PkbSearchServer, MAX_RESULTS};
 
@@ -634,7 +630,7 @@ impl PkbSearchServer {
             if total > max {
                 output.push_str(&format!("\n...and {} more\n", total - max));
             }
-            output.push_str("\n");
+            output.push('\n');
         }
 
         if !lint_warnings.is_empty() {
@@ -1025,6 +1021,7 @@ mod title_match_ranking_tests {
 #[cfg(test)]
 mod search_status_projection_tests {
     use super::*;
+    use parking_lot::RwLock;
     use crate::embeddings::{Embedder, EMBEDDING_DIM};
     use crate::graph_store::GraphStore;
     use crate::vectordb::VectorStore;

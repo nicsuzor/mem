@@ -10,7 +10,7 @@ use crate::document_crud;
 use crate::excalidraw::diff::GraphDiff;
 use crate::excalidraw::reader::{CanvasCard, CanvasReader};
 use crate::excalidraw::schema::*;
-use crate::graph::{EdgeType, GraphNode};
+use crate::graph::EdgeType;
 use crate::graph_store::GraphStore;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -423,7 +423,7 @@ pub fn sync_diff_to_disk(
     // 1. Process Added Nodes -> create markdown document files
     for added in &diff.added_nodes {
         let is_task = added.node_type == "task";
-        let has_parent = added.parent.as_deref().map_or(false, |p| !p.is_empty());
+        let has_parent = added.parent.as_deref().is_some_and(|p| !p.is_empty());
 
         let result = if is_task && has_parent {
             let task_fields = document_crud::TaskFields {
@@ -610,11 +610,7 @@ pub fn sync_diff_to_disk(
                                         .filter_map(|x| x.as_str().map(String::from))
                                         .collect(),
                                 )
-                            } else if let Some(s) = v.as_str() {
-                                Some(vec![s.to_string()])
-                            } else {
-                                None
-                            }
+                            } else { v.as_str().map(|s| vec![s.to_string()]) }
                         })
                         .unwrap_or_else(|| source_node.depends_on.clone())
                 } else {
@@ -656,6 +652,7 @@ pub fn sync_diff_to_disk(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::GraphNode;
 
     #[test]
     fn test_spiral_placement_no_collision() {

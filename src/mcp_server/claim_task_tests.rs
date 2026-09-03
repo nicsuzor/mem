@@ -1,12 +1,10 @@
 use super::*;
 #[cfg(test)]
-#[cfg(test)]
 mod claim_task_tests {
     use super::*;
     use crate::embeddings::Embedder;
     use crate::graph_store::GraphStore;
     use crate::vectordb::VectorStore;
-    use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
 

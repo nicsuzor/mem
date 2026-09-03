@@ -261,7 +261,7 @@ fn spawn_http_mcp(mut cmd: Command) -> (Child, u16) {
                     let url = &line[start..];
                     if let Some(end) = url.find("/mcp") {
                         let host_port = &url[..end];
-                        if let Some(port_str) = host_port.split(':').last() {
+                        if let Some(port_str) = host_port.split(':').next_back() {
                             if let Ok(port) = port_str.parse::<u16>() {
                                 let _ = tx.send(port);
                                 sent = true;
@@ -676,7 +676,7 @@ fn test_http_multiple_tools() {
     let server = HttpServer::start();
     let (session_id, _) = http_initialize(server.port);
 
-    let tools = vec![
+    let tools = [
         ("graph_stats", json!({})),
         ("task_summary", json!({})),
         ("list_tasks", json!({"limit": 3})),
@@ -740,7 +740,7 @@ fn test_http_error_missing_session_id() {
 
     // Server should reject with 4xx, NOT crash
     assert!(
-        status >= 400 && status < 500,
+        (400..500).contains(&status),
         "expected 4xx for missing session ID, got {status}"
     );
     assert!(server.is_alive(), "server crashed after missing session ID");
@@ -758,7 +758,7 @@ fn test_http_error_invalid_session_id() {
     );
 
     assert!(
-        status == 404 || (status >= 400 && status < 500),
+        status == 404 || (400..500).contains(&status),
         "expected 404 for invalid session ID, got {status}"
     );
     assert!(server.is_alive(), "server crashed after invalid session ID");
@@ -901,6 +901,7 @@ fn test_http_seeded_search_returns_seeded_doc() {
 
     // Forcibly target the local daemon
 
+    #[allow(clippy::redundant_closure_call)]
     let result = (|| -> Value {
         let (status, headers, body) = http_post(port, &initialize_request(1), None);
         assert_eq!(status, 200, "initialize failed: {body}");

@@ -120,11 +120,11 @@ pub fn index_pkb(
                 existing
                     .content_hash
                     .as_deref()
-                    .map_or(false, |h| h == doc.content_hash)
+                    .is_some_and(|h| h == doc.content_hash)
                     || existing
                         .body_hash
                         .as_deref()
-                        .map_or(false, |h| h == doc.content_hash)
+                        .is_some_and(|h| h == doc.content_hash)
             } else {
                 false
             }
@@ -271,7 +271,7 @@ mod stdout_guard {
             let path = entry.path();
             if path.is_dir() {
                 check_dir(&path, src_root, allow_list, violations);
-            } else if path.extension().map_or(false, |e| e == "rs") {
+            } else if path.extension().is_some_and(|e| e == "rs") {
                 let rel = path.strip_prefix(src_root).unwrap_or(&path);
                 let filename = rel.to_string_lossy();
                 if allow_list.iter().any(|a| filename.ends_with(a)) {

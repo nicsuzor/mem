@@ -2094,7 +2094,7 @@ fn split_raw_frontmatter_and_body(content: &str) -> SplitFrontmatter<'_> {
 /// If no frontmatter block is present, the input is returned unchanged, preserving byte-identity.
 pub fn extract_body_content(input: &str) -> &str {
     let clean = input.strip_prefix('\u{feff}').unwrap_or(input);
-    let trimmed_start = clean.trim_start_matches(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n');
+    let trimmed_start = clean.trim_start_matches([' ', '\t', '\r', '\n']);
 
     // Case 1: Starts directly with frontmatter delimiter `---`
     if let SplitFrontmatter::Present(raw_fm, body) = split_raw_frontmatter_and_body(trimmed_start) {
@@ -2102,7 +2102,7 @@ pub fn extract_body_content(input: &str) -> &str {
             .map(|v| v.is_object())
             .unwrap_or(false)
         {
-            return body.trim_start_matches(|c| c == '\r' || c == '\n');
+            return body.trim_start_matches(['\r', '\n']);
         }
     }
 
@@ -2113,13 +2113,13 @@ pub fn extract_body_content(input: &str) -> &str {
             let first_trimmed = first_line.trim();
             if first_trimmed.starts_with('#') {
                 let rest = &trimmed_start[first_line.len()..];
-                let rest_trimmed = rest.trim_start_matches(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n');
+                let rest_trimmed = rest.trim_start_matches([' ', '\t', '\r', '\n']);
                 if let SplitFrontmatter::Present(raw_fm, body) = split_raw_frontmatter_and_body(rest_trimmed) {
                     if serde_yaml::from_str::<serde_json::Value>(&raw_fm)
                         .map(|v| v.is_object())
                         .unwrap_or(false)
                     {
-                        return body.trim_start_matches(|c| c == '\r' || c == '\n');
+                        return body.trim_start_matches(['\r', '\n']);
                     }
                 }
             }
@@ -3076,7 +3076,7 @@ pub fn append_to_document(
     let commit_msg = format!(
         "append({}): {}",
         doc_id,
-        section.as_deref().unwrap_or("body")
+        section.unwrap_or("body")
     );
     let _ = git_commit_file(path, &commit_msg);
 
@@ -3189,7 +3189,7 @@ pub fn sanitize_prefix(prefix: &str) -> String {
         .to_lowercase();
     // Collapse consecutive hyphens and underscores, then join with underscore
     let collapsed: String = sanitized
-        .split(|c| c == '-' || c == '_')
+        .split(['-', '_'])
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("_");
@@ -4251,7 +4251,7 @@ mod tests {
         for i in 1..=7 {
             body.push_str(&format!("## Section {i}\n\n"));
             body.push_str(
-                &format!("Some prose content for section {i}. ")
+                format!("Some prose content for section {i}. ")
                     .repeat(20)
                     .trim(),
             );
@@ -4497,8 +4497,8 @@ mod tests {
 
             let barrier = Arc::new(Barrier::new(THREADS));
             let mut handles = Vec::new();
-            for i in 0..THREADS {
-                let p = paths[i].clone();
+            for (i, path) in paths.iter().enumerate().take(THREADS) {
+                let p = path.clone();
                 let b = Arc::clone(&barrier);
                 handles.push(std::thread::spawn(move || {
                     let body = format!("## body of node {i} round {round}\n");
@@ -4510,8 +4510,8 @@ mod tests {
                 h.join().unwrap();
             }
 
-            for i in 0..THREADS {
-                let got = fs::read_to_string(&paths[i]).unwrap();
+            for (i, path) in paths.iter().enumerate().take(THREADS) {
+                let got = fs::read_to_string(path).unwrap();
                 assert!(
                     got.contains(&format!("body of node {i} round {round}")),
                     "round {round}: node_{i}.md does not hold its own body — \

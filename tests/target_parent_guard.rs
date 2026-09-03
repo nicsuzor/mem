@@ -185,11 +185,9 @@ fn batch_reparent_rejects_target() {
 // ── Migration ─────────────────────────────────────────────────────────────
 
 /// Seed a graph exercising every migration branch:
-///   * task-child  — parent under a target (→ migrated)
-///   * task-both   — parent under a target AND already contributes_to it (→ parent
-///                   dropped, no duplicate edge)
-///   * task-legit  — legitimate task-parent + a contributes_to to a *different*
-///                   target (→ untouched)
+///   * task-child — parent under a target (→ migrated)
+///   * task-both — parent under a target AND already contributes_to it (→ parent dropped, no duplicate edge)
+///   * task-legit — legitimate task-parent + a contributes_to to a *different* target (→ untouched)
 fn seed_migration() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     write(tmp.path(), "polecat.yaml", "projects:\n  aops: {}\n");

@@ -144,7 +144,7 @@ pub fn evaluate_with_mode(
                 if rel_path.contains(expected) {
                     hits_found += 1;
                     let rank_1 = rank + 1;
-                    if best_hit_rank.map_or(true, |prev| rank_1 < prev) {
+                    if best_hit_rank.is_none_or(|prev| rank_1 < prev) {
                         best_hit_rank = Some(rank_1);
                     }
                     break;

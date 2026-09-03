@@ -140,9 +140,9 @@ impl CanvasReader {
             match elem.element_type.as_str() {
                 "rectangle" | "diamond" | "ellipse" => {
                     // Check if card or user shape
-                    if elem.custom_data.as_ref().map_or(false, |c| {
-                        c.pkb.as_ref().map_or(false, |p| p.node_id.is_some())
-                    }) || elem.bound_elements.as_ref().map_or(false, |b| {
+                    if elem.custom_data.as_ref().is_some_and(|c| {
+                        c.pkb.as_ref().is_some_and(|p| p.node_id.is_some())
+                    }) || elem.bound_elements.as_ref().is_some_and(|b| {
                         b.iter().any(|x| x.element_type == "text")
                     }) {
                         card_elements.push(elem.clone());

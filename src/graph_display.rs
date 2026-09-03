@@ -281,7 +281,7 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
 
     // --- Dependencies ---
     if !ctx.depends_on.is_empty() {
-        lines.push(format!("    \x1b[2mdepends on:\x1b[0m"));
+        lines.push("    \x1b[2mdepends on:\x1b[0m".to_string());
         for dep in &ctx.depends_on {
             lines.push(format!("      \x1b[33m← {}\x1b[0m", fmt_node(dep)));
         }
@@ -289,7 +289,7 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
 
     // --- Blocks ---
     if !ctx.blocks.is_empty() {
-        lines.push(format!("    \x1b[2mblocks:\x1b[0m"));
+        lines.push("    \x1b[2mblocks:\x1b[0m".to_string());
         for blocked in &ctx.blocks {
             lines.push(format!("      \x1b[36m→ {}\x1b[0m", fmt_node(blocked)));
         }
@@ -297,14 +297,14 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
 
     // --- Contributions ---
     if !ctx.contributes_to.is_empty() {
-        lines.push(format!("    \x1b[2mcontributes to:\x1b[0m"));
+        lines.push("    \x1b[2mcontributes to:\x1b[0m".to_string());
         for target in &ctx.contributes_to {
             lines.push(format!("      \x1b[1;34m↗ {}\x1b[0m", fmt_node(target)));
         }
     }
 
     if !ctx.contributed_by.is_empty() {
-        lines.push(format!("    \x1b[2mcontributed by:\x1b[0m"));
+        lines.push("    \x1b[2mcontributed by:\x1b[0m".to_string());
         for source in &ctx.contributed_by {
             lines.push(format!("      \x1b[34m↙ {}\x1b[0m", fmt_node(source)));
         }
@@ -312,7 +312,7 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
 
     // --- Similar to ---
     if !ctx.similar_to.is_empty() {
-        lines.push(format!("    \x1b[2msimilar to:\x1b[0m"));
+        lines.push("    \x1b[2msimilar to:\x1b[0m".to_string());
         for sim in &ctx.similar_to {
             lines.push(format!("      \x1b[2m≈ {}\x1b[0m", fmt_node(sim)));
         }
@@ -320,7 +320,7 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
 
     // --- Children ---
     if !ctx.children.is_empty() {
-        lines.push(format!("    \x1b[2mchildren:\x1b[0m"));
+        lines.push("    \x1b[2mchildren:\x1b[0m".to_string());
         for (i, child) in ctx.children.iter().enumerate() {
             let is_last = i == ctx.children.len() - 1 && ctx.children_total <= ctx.children.len();
             let branch = if is_last { "└─" } else { "├─" };

@@ -59,11 +59,8 @@ impl ElementColorStyle {
     }
 }
 
-/// Returns the visual styling for a node given its status and type.
-
-/// Returns visual styling presets for a node based on its preset string.
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 #[derive(Deserialize)]
@@ -492,7 +489,7 @@ impl Default for ExcalidrawElement {
 impl ExcalidrawElement {
     pub fn is_card(&self) -> bool {
         (self.element_type == "rectangle" || self.element_type == "diamond" || self.element_type == "ellipse")
-            && self.custom_data.as_ref().map_or(false, |c| c.pkb.as_ref().map_or(false, |p| p.node_id.is_some()))
+            && self.custom_data.as_ref().is_some_and(|c| c.pkb.as_ref().is_some_and(|p| p.node_id.is_some()))
     }
 
     pub fn is_frame(&self) -> bool {

@@ -315,8 +315,8 @@ pub fn scan_generation(root: &Path) -> GenerationStamp {
                     continue;
                 }
                 walk(&entry.path(), file_count, max_mtime);
-            } else if file_type.is_file() || file_type.is_symlink() {
-                if bytes.ends_with(b".md") {
+            } else if (file_type.is_file() || file_type.is_symlink())
+                && bytes.ends_with(b".md") {
                     *file_count += 1;
                     if let Ok(meta) = entry.metadata() {
                         if let Ok(mtime) = meta.modified() {
@@ -326,7 +326,6 @@ pub fn scan_generation(root: &Path) -> GenerationStamp {
                         }
                     }
                 }
-            }
         }
     }
 

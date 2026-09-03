@@ -643,8 +643,6 @@ use super::*;
 
     // ── task_search: schema advertises include_done ──
 
-    #[test]
-
     // ── Closed-parent validation (task-8f232401) ──────────────────────────────
 
     #[test]

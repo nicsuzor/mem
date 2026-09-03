@@ -1,13 +1,8 @@
-use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
-use rmcp::{ErrorData as McpError, ServerHandler};
+use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use crate::graph_store::GraphStore;
+use std::path::PathBuf;
 
 use super::{PkbSearchServer, MAX_RESULTS};
 
@@ -343,8 +338,7 @@ impl PkbSearchServer {
                 .map(String::from),
             contributes_to: args
                 .get("contributes_to")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.clone())
+                .and_then(|v| v.as_array()).cloned()
                 .unwrap_or_default(),
         };
 

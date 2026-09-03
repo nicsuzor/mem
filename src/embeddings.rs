@@ -205,9 +205,8 @@ fn download_models() -> Result<PathBuf> {
         // Write to a temp file, then atomically rename — a partial download
         // will never be mistaken for a complete one on the next run.
         let mut file = std::fs::File::create(&tmp)?;
-        let bytes = std::io::copy(&mut reader, &mut file).map_err(|e| {
+        let bytes = std::io::copy(&mut reader, &mut file).inspect_err(|_e| {
             let _ = std::fs::remove_file(&tmp);
-            e
         })?;
         drop(file);
         std::fs::rename(&tmp, &dest)
@@ -985,7 +984,7 @@ impl Embedder {
                 .map(|batch| {
                     let r = self.encode_single_batch(batch, pool);
                     let completed = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    if completed % 10 == 0 || completed == total_batches {
+                    if completed.is_multiple_of(10) || completed == total_batches {
                         let pct = (completed * 100) / total_batches;
                         let chunks_done = (completed * max_batch).min(total_texts);
                         tracing::debug!("Embedded {chunks_done}/{total_texts} chunks ({pct}%)");

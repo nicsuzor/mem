@@ -113,8 +113,7 @@ pub fn run_analysis(graph: &GraphStore, store: &VectorStore, threshold: f64) -> 
             .map(|e| e.target.clone())
             .collect();
 
-        for j in (i + 1)..n {
-            let node_b = nodes[j];
+        for node_b in nodes.iter().skip(i + 1) {
             let emb_b = match embedding_map.get(&node_b.id) {
                 Some(e) => e,
                 None => continue,

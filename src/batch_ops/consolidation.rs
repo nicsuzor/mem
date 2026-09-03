@@ -1,12 +1,10 @@
 use crate::document_crud;
-use crate::graph::GraphNode;
 use crate::graph_store::GraphStore;
 use crate::pkb;
 use crate::vectordb::VectorStore;
 use crate::batch_ops::{BatchContext, BatchSummary, TaskAction};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
 use serde_json::Value as JsonValue;
 
 /// Get a subgraph of related notes for a consolidation batch.
@@ -74,12 +72,11 @@ pub fn get_consolidation_cluster(
         }
     } else {
         for (_, entry) in vector_store.documents() {
-            if entry.id == seed_node.id || entry.path == seed_node.path {
-                if !entry.chunk_embeddings.is_empty() {
+            if (entry.id == seed_node.id || entry.path == seed_node.path)
+                && !entry.chunk_embeddings.is_empty() {
                     seed_embedding = Some(entry.chunk_embeddings[0].clone());
                     break;
                 }
-            }
         }
     }
 
@@ -384,7 +381,7 @@ mod tests {
         updates.insert("target-2".to_string(), t2_upd);
 
         let mut ctx = BatchContext::new(&graph, pkb_root);
-        let err = apply_consolidation_batch(&mut ctx, "seed-1", updates, false)
+        let _err = apply_consolidation_batch(&mut ctx, "seed-1", updates, false)
             .expect_err("should error on unreadable file");
 
         assert_eq!(

@@ -3,7 +3,7 @@
 //! Rules are PKB-specific: frontmatter schema validation, status/type canonicalization,
 //! YAML key ordering, markdown hygiene, and cross-reference integrity.
 
-use crate::graph::{self, VALID_NODE_TYPES, VALID_STATUSES};
+use crate::graph::{self, VALID_NODE_TYPES};
 use crate::pkb;
 use gray_matter::engine::YAML;
 use gray_matter::Matter;
@@ -932,8 +932,8 @@ fn check_frontmatter(
         // Parentless node check: severity depends on whether the node has children.
         // A node with children (scope > 0) but no parent is likely a structural gap.
         // A standalone leaf with no parent is valid under the information-theoretic model.
-        if node_type == "task" || node_type == "epic" {
-            if !fm.contains_key("parent") {
+        if (node_type == "task" || node_type == "epic")
+            && !fm.contains_key("parent") {
                 let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let has_children = children_set.map(|cs| cs.contains(node_id)).unwrap_or(false);
                 let (severity, message) = if has_children {
@@ -955,7 +955,6 @@ fn check_frontmatter(
                     fixable: false,
                 });
             }
-        }
 
         // Triage lint: missing acceptance criteria (demoted from scoring proxy in Phase 3)
         if node_type == "task" && !graph::detect_acceptance_criteria(content) {
@@ -1356,8 +1355,8 @@ fn apply_fixes(
                 }
 
                 // Add to depends_on
-                if !tasks_to_add.is_empty() {
-                    if result.starts_with("---\n") {
+                if !tasks_to_add.is_empty()
+                    && result.starts_with("---\n") {
                         if let Some(fm_end_rel) = result[3..].find("\n---") {
                             let fm_end = fm_end_rel + 3;
                             let fm_section = &result[4..fm_end];
@@ -1396,7 +1395,6 @@ fn apply_fixes(
                             result = format!("---\n{}---{}", new_fm, &result[fm_end + 4..]);
                         }
                     }
-                }
 
                 // Add to body as prose
                 if !prose_to_add.is_empty() {
@@ -2170,11 +2168,10 @@ pub fn rename_id(pkb_root: &Path, old_id: &str, new_id: &str) -> Result<(usize, 
             refs_updated += 1;
         }
 
-        if modified {
-            if std::fs::write(file_path, &new_content).is_ok() {
+        if modified
+            && std::fs::write(file_path, &new_content).is_ok() {
                 files_modified += 1;
             }
-        }
     }
 
     Ok((files_modified, refs_updated))

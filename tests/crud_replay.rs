@@ -87,7 +87,7 @@ fn test_create_get_indexer_bind_replay() {
         }))
         .expect("bench_create_task failed");
 
-    assert!(res.content.len() > 0, "Expected non-empty response content");
+    assert!(!res.content.is_empty(), "Expected non-empty response content");
 
     // Immediately resolve the node in the graph.
     // If there were index lag/race, resolve() or get_node() would return None.

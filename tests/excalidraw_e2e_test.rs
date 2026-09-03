@@ -288,7 +288,7 @@ fn test_non_destructive_canvas_removal() {
         let is_t2_text = elem
             .text
             .as_ref()
-            .map_or(false, |t| t.contains("Implement Layout Engine"));
+            .is_some_and(|t| t.contains("Implement Layout Engine"));
         !is_t2 && !is_t2_text
     });
     assert!(excal_file.elements.len() < initial_elem_count);
@@ -457,7 +457,7 @@ fn test_safe_arrow_typing_and_typed_prefixes() {
 
     // Verify task-t1 frontmatter on disk now has depends_on task-t3
     let t1_content = fs::read_to_string(ws.path().join("tasks/task-t1.md")).unwrap();
-    assert!(report.rejected_cycles.len() > 0);
+    assert!(!report.rejected_cycles.is_empty());
     assert!(!t1_content.contains("task-t3"));
 }
 

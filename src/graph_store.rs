@@ -397,7 +397,7 @@ impl GraphStore {
         let mut ghost_nodes = Vec::with_capacity(sorted_referenced_ids.len() / 4);
         for ref_id in sorted_referenced_ids {
             let lower = ref_id.to_lowercase();
-            if !id_map.contains_key(&lower) {
+            if let std::collections::hash_map::Entry::Vacant(e) = id_map.entry(lower) {
                 let mut ghost = GraphNode::default();
                 ghost.id = ref_id.clone();
                 ghost.label = ref_id.clone();
@@ -417,7 +417,7 @@ impl GraphStore {
 
                 let virtual_path = format!("/virtual/{}", ref_id);
                 path_to_id.insert(virtual_path.clone(), ref_id.clone());
-                id_map.insert(lower, virtual_path);
+                e.insert(virtual_path);
                 ghost_nodes.push(ghost);
             }
         }
@@ -768,7 +768,7 @@ impl GraphStore {
         let reparented = old_parent_id != new_parent_id;
         let renamed = old_node_id
             .as_ref()
-            .map_or(false, |old_id| old_id != &new_node.id);
+            .is_some_and(|old_id| old_id != &new_node.id);
 
         if reparented || renamed {
             if let Some(ref old_pid) = old_parent_id {
@@ -1505,7 +1505,7 @@ impl GraphStore {
             components.push(component);
         }
 
-        components.sort_by(|a, b| b.len().cmp(&a.len()));
+        components.sort_by_key(|b| std::cmp::Reverse(b.len()));
         components
     }
 
@@ -2037,11 +2037,10 @@ impl GraphStore {
                     .map(|s| s.eq_ignore_ascii_case("review"))
                     .unwrap_or(false);
                 let is_unblocked = !self.is_blocked(&node.id);
-                if is_review || is_unblocked {
-                    if candidate_ids.insert(node.id.as_str()) {
+                if (is_review || is_unblocked)
+                    && candidate_ids.insert(node.id.as_str()) {
                         candidates.push(node);
                     }
-                }
             }
         }
 
@@ -4127,14 +4126,13 @@ fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
             EdgeType::Parent
             | EdgeType::DependsOn
             | EdgeType::SoftDependsOn
-            | EdgeType::ContributesTo => {
-                if all_ids.contains(edge.target.as_str()) {
+            | EdgeType::ContributesTo
+                if all_ids.contains(edge.target.as_str()) => {
                     upstream_of
                         .entry(edge.source.as_str())
                         .or_default()
                         .push(edge.target.as_str());
                 }
-            }
             _ => {}
         }
     }
@@ -4756,7 +4754,7 @@ mod tests {
     ///   epic-p0 (P2) with child p0-task (P0, active)
     ///   unrelated (P3, active) -- standalone
     fn build_priority_test_graph() -> GraphStore {
-        let mut make_with_intent = |path: &str,
+        let make_with_intent = |path: &str,
                                       title: &str,
                                       id: &str,
                                       intent: i32,
@@ -4952,7 +4950,7 @@ mod tests {
         let graph = build_test_graph();
         let node = graph.resolve("task a");
         assert!(node.is_some());
-        assert_eq!(node.unwrap().id.contains("task"), true);
+        assert!(node.unwrap().id.contains("task"));
     }
 
     #[test]
@@ -5872,7 +5870,7 @@ mod tests {
         node5.due = Some(in_5d.format("%Y-%m-%d").to_string());
 
         // Scenario 6: No due date: unchanged (0 deadline component)
-        let mut node6 = GraphNode::default();
+        let node6 = GraphNode::default();
 
         let mut nodes = vec![
             node1,
@@ -6664,7 +6662,7 @@ mod tests {
 
     #[test]
     fn test_sev4_lexicographic_sorting() {
-        let mut make_with_sev = |id: &str, priority: i32, severity: Option<i32>| -> PkbDocument {
+        let make_with_sev = |id: &str, priority: i32, severity: Option<i32>| -> PkbDocument {
             let mut fm = serde_json::Map::new();
             fm.insert("title".to_string(), serde_json::json!(id));
             fm.insert("type".to_string(), serde_json::json!("task"));
@@ -6807,7 +6805,7 @@ mod tests {
         let aspirational = graph.get_node("target-aspirational").unwrap();
         let contrib = graph.get_node("contrib").unwrap();
         let overdue = graph.get_node("target-overdue-committed").unwrap();
-        let inprogress = graph.get_node("inprogress-urgent").unwrap();
+        let _inprogress = graph.get_node("inprogress-urgent").unwrap();
 
         // 1. SEV4 committed: urgency = 10000 * f(slack=2) >> 10000
         //    f(2) = exp(ln(10)/30*(30-2)) = 10^(28/30) ≈ 8.610, so urgency ≈ 86100
@@ -9363,7 +9361,7 @@ mod tests {
 
     #[test]
     fn test_phase1_sort_tuple_inspectability_and_explain_diff() {
-        use crate::graph::{DeadlineBand, FocusTieBreakers, FocusTuple, GraphNode, SeverityGate};
+        use crate::graph::{DeadlineBand, FocusTieBreakers, FocusTuple, SeverityGate};
 
         let t1 = FocusTuple {
             severity_gate: SeverityGate::Catastrophic,
@@ -9407,7 +9405,7 @@ mod tests {
 
     #[test]
     fn test_phase1_severity_gate_and_no_double_count() {
-        use crate::graph::{DeadlineBand, GraphNode, SeverityGate};
+        use crate::graph::{GraphNode, SeverityGate};
 
         let mut sev4_committed = GraphNode::default();
         sev4_committed.id = "sev4-task".to_string();
@@ -9450,12 +9448,12 @@ mod tests {
         let mut nodes = vec![normal_task, unaffordable_task];
         GraphStore::compute_focus_scores(&mut nodes);
 
-        assert_eq!(nodes[0].affordable_loss_filtered, false);
+        assert!(!nodes[0].affordable_loss_filtered);
         assert!(nodes[0].focus_tuple.is_some());
         assert!(nodes[0].focus_score.is_some());
 
         // Unaffordable task is zeroed out by the non-compensatory filter
-        assert_eq!(nodes[1].affordable_loss_filtered, true);
+        assert!(nodes[1].affordable_loss_filtered);
         assert!(nodes[1].focus_tuple.is_none());
         assert!(nodes[1].focus_score.is_none());
 
@@ -10160,11 +10158,11 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         let os_node = graph.get_node("open-spike").unwrap();
 
         // Craft glue has NO open question (settled) -> VoI = 0.0
-        assert_eq!(cg_node.has_open_question, false);
+        assert!(!cg_node.has_open_question);
         assert_eq!(cg_node.voi_value.unwrap_or(0.0), 0.0, "settled craft-glue must earn 0 VoI");
 
         // Genuinely open spike has open question -> VoI > 0.0
-        assert_eq!(os_node.has_open_question, true);
+        assert!(os_node.has_open_question);
         assert!(os_node.voi_value.unwrap_or(0.0) > 0.0, "open spike must earn positive VoI");
 
         // Craft glue ranks below genuinely open node
@@ -10367,7 +10365,7 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         );
         blocked_1.body = "## Context\nNo AC yet.\n".to_string();
 
-        let mut blocked_2 = make_doc(
+        let blocked_2 = make_doc(
             "tasks/blocked-2.md",
             "Blocked task 2",
             "task",
@@ -10427,12 +10425,12 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
 
     #[test]
     fn test_phase3_ready_classification_unchanged() {
-        assert_eq!(is_ready_status("inbox", false), false, "inbox without AC is not ready");
-        assert_eq!(is_ready_status("inbox", true), true, "inbox with AC is ready");
-        assert_eq!(is_ready_status("ready", false), true, "ready without AC is ready");
-        assert_eq!(is_ready_status("ready", true), true, "ready with AC is ready");
-        assert_eq!(is_ready_status("queued", false), true, "queued is ready");
-        assert_eq!(is_ready_status("done", true), false, "done is not ready");
+        assert!(!is_ready_status("inbox", false), "inbox without AC is not ready");
+        assert!(is_ready_status("inbox", true), "inbox with AC is ready");
+        assert!(is_ready_status("ready", false), "ready without AC is ready");
+        assert!(is_ready_status("ready", true), "ready with AC is ready");
+        assert!(is_ready_status("queued", false), "queued is ready");
+        assert!(!is_ready_status("done", true), "done is not ready");
     }
 
     // ── Anti-gaming regression tests (mem_b320cf42) ─────────────────────────
@@ -10500,8 +10498,8 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         let graph = GraphStore::build(&docs, root);
 
         let fh_node = graph.get_node("filler-heading").unwrap();
-        assert_eq!(
-            fh_node.has_open_question, false,
+        assert!(
+            !fh_node.has_open_question,
             "a heading match plus one filler word must not count as an open question"
         );
         assert_eq!(
@@ -10510,8 +10508,8 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         );
 
         let ds_node = graph.get_node("dead-settled").unwrap();
-        assert_eq!(
-            ds_node.has_open_question, false,
+        assert!(
+            !ds_node.has_open_question,
             "an explicitly settled question inside a matched section must not count as open, regardless of scan order"
         );
         assert_eq!(
@@ -10597,8 +10595,8 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         let graph = GraphStore::build(&docs, root);
 
         let ff_node = graph.get_node("frontmatter-flag").unwrap();
-        assert_eq!(
-            ff_node.has_open_question, false,
+        assert!(
+            !ff_node.has_open_question,
             "a bare frontmatter open_question flag with no body content must not set has_open_question"
         );
         assert_eq!(

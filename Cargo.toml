@@ -2,7 +2,7 @@
 name = "mem"
 version = "0.3.88"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.91"
 license = "GPL-3.0-or-later"
 publish = false
 description = "Fast-indexer and PKB semantic search MCP server"
@@ -19,6 +19,17 @@ path = "src/cli.rs"
 [[bin]]
 name = "pkb-excalidraw"
 path = "src/bin/pkb_excalidraw.rs"
+
+[lints.clippy]
+too_many_arguments = "allow"
+module_inception = "allow"
+field_reassign_with_default = "allow"
+large_enum_variant = "allow"
+type_complexity = "allow"
+doc_lazy_continuation = "allow"
+empty_docs = "allow"
+expect_fun_call = "allow"
+uninlined_format_args = "allow"
 
 
 

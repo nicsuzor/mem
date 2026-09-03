@@ -1,16 +1,11 @@
-use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
-use rmcp::{ErrorData as McpError, ServerHandler};
+use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use crate::graph::{is_completed, GraphNode};
 use crate::graph_store::GraphStore;
 
-use super::{PkbSearchServer, MAX_RESULTS, GOAL_TYPE_ENUM};
+use super::{PkbSearchServer, MAX_RESULTS};
 
 /// Parse and validate the `status` filter parameter for `list_tasks`.
 /// Supports:
@@ -321,8 +316,7 @@ impl PkbSearchServer {
                 .map(String::from),
             contributes_to: args
                 .get("contributes_to")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.clone())
+                .and_then(|v| v.as_array()).cloned()
                 .unwrap_or_default(),
         };
 
@@ -347,16 +341,13 @@ impl PkbSearchServer {
                             if suggestions.len() >= 5 {
                                 break;
                             }
-                            match r.doc_type.as_deref() {
-                                Some("epic") => {
-                                    suggestions.push(serde_json::json!({
-                                        "id": r.id,
-                                        "title": r.title,
-                                        "type": r.doc_type,
-                                        "score": r.score,
-                                    }));
-                                }
-                                _ => {}
+                            if let Some("epic") = r.doc_type.as_deref() {
+                                suggestions.push(serde_json::json!({
+                                    "id": r.id,
+                                    "title": r.title,
+                                    "type": r.doc_type,
+                                    "score": r.score,
+                                }));
                             }
                         }
                         if suggestions.is_empty() {
@@ -1217,7 +1208,7 @@ impl PkbSearchServer {
         }
 
         if let Some(want_superseded) = has_superseded_by {
-            tasks.retain(|t| !t.superseded_by.is_empty() == want_superseded);
+            tasks.retain(|t| t.superseded_by.is_empty() != want_superseded);
         }
 
         if let Some(min_score) = focus_score_gte {
@@ -1252,7 +1243,7 @@ impl PkbSearchServer {
             tasks.retain(|t| {
                 !t.node_type
                     .as_deref()
-                    .map_or(false, |s| s.eq_ignore_ascii_case("target"))
+                    .is_some_and(|s| s.eq_ignore_ascii_case("target"))
             });
         }
 
