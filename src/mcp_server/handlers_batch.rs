@@ -17,6 +17,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),
@@ -148,8 +149,21 @@ impl PkbSearchServer {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let updates = args
             .get("updates")
-            .cloned()
-            .unwrap_or(JsonValue::Object(serde_json::Map::new()));
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: updates"),
+                data: None,
+            })?;
+
+        if updates.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Parameter 'updates' must be a non-empty object"),
+                data: None,
+            });
+        }
+
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -160,10 +174,10 @@ impl PkbSearchServer {
             return Err(Self::reject_agent_intent("batch_update"));
         }
 
-        if filters.is_empty() && updates.as_object().map(|m| m.is_empty()).unwrap_or(true) {
+        if filters.is_empty() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("At least one filter and one update field required"),
+                message: Cow::from("At least one filter is required for batch update"),
                 data: None,
             });
         }
@@ -182,11 +196,12 @@ impl PkbSearchServer {
                 }
             }
         }
+        let updates_val = JsonValue::Object(updates.clone());
         let summary = crate::batch_ops::update::batch_update(
             &graph,
             &self.pkb_root,
             &filters,
-            &updates,
+            &updates_val,
             dry_run,
         );
         drop(graph);
@@ -208,6 +223,7 @@ impl PkbSearchServer {
         let new_parent = args
             .get("new_parent")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("new_parent is required"),
@@ -287,6 +303,7 @@ impl PkbSearchServer {
         let canonical_id = args
             .get("canonical_id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("canonical_id is required"),
@@ -405,6 +422,7 @@ impl PkbSearchServer {
         let canvas_str = args
             .get("canvas")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: canvas"),
@@ -451,6 +469,7 @@ impl PkbSearchServer {
         let canvas_str = args
             .get("canvas")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: canvas"),
@@ -619,6 +638,7 @@ impl PkbSearchServer {
         let canonical = args
             .get("canonical")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("canonical is required"),
@@ -776,6 +796,7 @@ impl PkbSearchServer {
         let new_type = args
             .get("new_type")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("new_type is required"),
@@ -914,11 +935,15 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_apply_consolidation_batch(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let seed_id = args.get("seed_id").and_then(|v| v.as_str()).ok_or_else(|| McpError {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from("Missing required parameter: seed_id"),
-            data: None,
-        })?;
+        let seed_id = args
+            .get("seed_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: seed_id"),
+                data: None,
+            })?;
         
         let updates_val = args.get("updates").ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
@@ -931,6 +956,14 @@ impl PkbSearchServer {
             message: Cow::from(format!("Invalid updates format: {}", e)),
             data: None,
         })?;
+
+        if updates.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Parameter 'updates' must be a non-empty object"),
+                data: None,
+            });
+        }
         
         let dry_run = args
             .get("dry_run")
