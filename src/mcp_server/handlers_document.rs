@@ -566,6 +566,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),
@@ -580,6 +581,16 @@ impl PkbSearchServer {
                 message: Cow::from("Missing required parameter: new_body"),
                 data: None,
             })?;
+
+        if new_body.trim().is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Parameter 'new_body' cannot be empty or whitespace only. To delete a document, use 'delete'.",
+                ),
+                data: None,
+            });
+        }
 
         let preserve_frontmatter = args
             .get("preserve_frontmatter")
