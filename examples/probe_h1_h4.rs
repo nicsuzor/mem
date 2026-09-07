@@ -376,7 +376,7 @@ fn probe_h2() {
     let mut stripped_obj = obj.clone();
     stripped_obj.remove("frontmatter");
     for k in &always_null_keys {
-        if stripped_obj.get(*k).map_or(false, |v| v.is_null() || v == &json!(false)) {
+        if stripped_obj.get(*k).is_some_and(|v| v.is_null() || v == &json!(false)) {
             stripped_obj.remove(*k);
         }
     }

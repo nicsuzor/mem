@@ -8,7 +8,6 @@
 
 use crate::excalidraw::schema::*;
 use crate::graph::{Edge, EdgeType, GraphNode};
-use crate::graph_store::GraphStore;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 // ===========================================================================
@@ -465,7 +464,6 @@ fn truncate_title(s: &str, max_len: usize) -> String {
 }
 
 /// Generate a complete [`ExcalidrawFile`] from a list of nodes and edges with Sugiyama layout.
-
 pub fn compute_radial_layout(
     nodes: &[GraphNode],
     edges: &[Edge],

@@ -197,7 +197,7 @@ impl FilterSet {
         }
 
         // Subtree filter
-        if let Some(ref ids) = subtree_ids {
+        if let Some(ids) = subtree_ids {
             if !ids.contains(&node.id) {
                 return false;
             }
@@ -266,17 +266,16 @@ impl FilterSet {
             });
 
             let include_untagged = self.include_untagged.unwrap_or(false);
-            if !matches_project && !(include_untagged && node.project.is_none()) {
+            if !(matches_project || (include_untagged && node.project.is_none())) {
                 return false;
             }
         }
 
         // Orphan: no parent AND no project
-        if self.orphan == Some(true) {
-            if node.parent.is_some() || node.project.is_some() {
+        if self.orphan == Some(true)
+            && (node.parent.is_some() || node.project.is_some()) {
                 return false;
             }
-        }
 
         // Title contains (case-insensitive)
         if let Some(ref needle) = self.title_contains {

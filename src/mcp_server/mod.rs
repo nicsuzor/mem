@@ -23,8 +23,7 @@ mod claim_task_tests;
 
 use crate::embeddings::Embedder;
 use crate::facts::FactsProvider;
-use crate::graph::is_completed;
-use crate::graph_store::{GraphStore, DEFAULT_DIVERGENCE_THRESHOLD_DAYS};
+use crate::graph_store::GraphStore;
 use crate::vectordb::VectorStore;
 use parking_lot::{Mutex, RwLock};
 use rayon::prelude::*;
