@@ -2806,6 +2806,14 @@ pub fn rewrite_body(
     };
     let trimmed_body = body_to_write.trim_end_matches('\n');
 
+    if trimmed_body.trim().is_empty() {
+        anyhow::bail!(
+            "Refusing to rewrite body of {} with empty content. \
+             To delete a document, use delete instead.",
+            path.display()
+        );
+    }
+
     let (new_content, body_chars_before, body_chars_after, modified) = if !preserve_frontmatter {
         // No frontmatter to key a precondition off in this mode — CAS is
         // meaningless here, same as today's behaviour.
@@ -4686,6 +4694,29 @@ mod tests {
             !content.contains("---"),
             "frontmatter should be gone when preserve_frontmatter=false"
         );
+    }
+
+    #[test]
+    fn rewrite_body_rejects_empty_or_whitespace_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        fs::write(&path, "---\nid: doc\ntitle: Doc\n---\n\nExisting body content.\n").unwrap();
+
+        // Empty string
+        let err = rewrite_body(&path, "", true, None).expect_err("empty body must be rejected");
+        assert!(err.to_string().contains("Refusing to rewrite body"));
+
+        // Whitespace only
+        let err = rewrite_body(&path, "   \n\t\n  ", true, None).expect_err("whitespace body must be rejected");
+        assert!(err.to_string().contains("Refusing to rewrite body"));
+
+        // When preserve_frontmatter=false, empty body must also be rejected
+        let err = rewrite_body(&path, "", false, None).expect_err("empty body with preserve_frontmatter=false must be rejected");
+        assert!(err.to_string().contains("Refusing to rewrite body"));
+
+        // Verify disk content untouched
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("Existing body content."));
     }
 
     // =====================================================================

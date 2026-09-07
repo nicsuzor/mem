@@ -13,6 +13,7 @@ impl PkbSearchServer {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: query"),
@@ -297,6 +298,7 @@ impl PkbSearchServer {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: query"),
@@ -471,6 +473,7 @@ impl PkbSearchServer {
         let from = args
             .get("from")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
@@ -482,6 +485,7 @@ impl PkbSearchServer {
         let to = args
             .get("to")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
@@ -669,6 +673,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),

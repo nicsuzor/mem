@@ -339,8 +339,8 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
-                        "new_body": { "type": "string", "description": "New markdown body content (full replacement — not appended)" },
+                        "id": { "type": "string", "minLength": 1, "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
+                        "new_body": { "type": "string", "minLength": 1, "description": "New markdown body content (full replacement — not appended; cannot be empty)" },
                         "preserve_frontmatter": { "type": "boolean", "description": "Keep YAML frontmatter and bump modified timestamp (default: true). Set false only when replacing scratch documents with no meaningful frontmatter." },
                         "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
                     },
