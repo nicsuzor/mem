@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use parking_lot::RwLock;
 use rmcp::ServiceExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -916,7 +916,7 @@ fn default_db_path() -> String {
         .to_string()
 }
 
-fn load_store(db_path: &PathBuf, dim: usize) -> Result<Arc<RwLock<vectordb::VectorStore>>> {
+fn load_store(db_path: &Path, dim: usize) -> Result<Arc<RwLock<vectordb::VectorStore>>> {
     Ok(Arc::new(RwLock::new(
         vectordb::VectorStore::load_or_create(db_path, dim)?,
     )))
@@ -1407,7 +1407,7 @@ async fn main() -> Result<()> {
             println!("DB size:     {:.1} MB", db_size as f64 / 1_048_576.0);
 
             // Index freshness
-            let num_stale_documents = mem::check_index_staleness(&pkb_root, &store);
+            let num_stale_documents = mem::check_index_staleness(&pkb_root, store);
             if num_stale_documents > 0 {
                 println!(
                     "Index:       {}⚠ stale — {} document(s) need re-indexing{}",
@@ -1501,9 +1501,8 @@ async fn main() -> Result<()> {
                 print_dashboard(&tasks, &filter);
                 println!();
                 println!(
-                    "  {}{}  {:<50}  {:>6}  {:<14}{}",
+                    "  {}PRI  {:<50}  {:>6}  {:<14}{}",
                     colors::BOLD,
-                    "PRI",
                     "TITLE",
                     "WEIGHT",
                     "ID",
@@ -1644,7 +1643,7 @@ async fn main() -> Result<()> {
 
                         // Breathing room between epic groups
                         if child_is_context && prev_was_context && i > 0 {
-                            output.push(format!("{child_prefix}"));
+                            output.push(child_prefix.to_string());
                         }
 
                         render_tree(
@@ -3326,7 +3325,7 @@ async fn main() -> Result<()> {
                     "Semantic neighbors for '{}' (threshold {:.2}):\n",
                     id, threshold
                 );
-                println!("  {:<24} {:<48} {:<8} {}", "ID", "Title", "Score", "Edge");
+                println!("  {:<24} {:<48} {:<8} Edge", "ID", "Title", "Score");
                 println!("  {}", "─".repeat(88));
                 for n in neighbors {
                     let edge = if n.is_explicit_edge {
@@ -3389,12 +3388,12 @@ async fn main() -> Result<()> {
 
             let mut entries: Vec<_> = stats.into_iter().collect();
             match sort.as_str() {
-                "bytes" => entries.sort_by(|a, b| b.1.total_bytes.cmp(&a.1.total_bytes)),
+                "bytes" => entries.sort_by_key(|b| std::cmp::Reverse(b.1.total_bytes)),
                 "latency" => {
-                    entries.sort_by(|a, b| b.1.total_latency_ms.cmp(&a.1.total_latency_ms))
+                    entries.sort_by_key(|b| std::cmp::Reverse(b.1.total_latency_ms))
                 }
-                "errors" => entries.sort_by(|a, b| b.1.error_count.cmp(&a.1.error_count)),
-                _ => entries.sort_by(|a, b| b.1.count.cmp(&a.1.count)),
+                "errors" => entries.sort_by_key(|b| std::cmp::Reverse(b.1.error_count)),
+                _ => entries.sort_by_key(|b| std::cmp::Reverse(b.1.count)),
             }
 
             println!();
@@ -3550,8 +3549,8 @@ fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
         intent_gte: args.intent_gte,
         tags: args.tags.clone(),
         doc_type: args.doc_type.clone(),
-        older_than_days: args.older_than.as_ref().and_then(parse_duration_days),
-        stale_days: args.stale.as_ref().and_then(parse_duration_days),
+        older_than_days: args.older_than.as_deref().and_then(parse_duration_days),
+        stale_days: args.stale.as_deref().and_then(parse_duration_days),
         orphan: if args.orphan { Some(true) } else { None },
         title_contains: args.title_contains.clone(),
         assignee: None,
@@ -3567,10 +3566,10 @@ fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
 }
 
 /// Parse duration like "90d" into days.
-fn parse_duration_days(s: &String) -> Option<u64> {
+fn parse_duration_days(s: &str) -> Option<u64> {
     let s = s.trim();
-    if s.ends_with('d') {
-        s[..s.len() - 1].parse().ok()
+    if let Some(stripped) = s.strip_suffix('d') {
+        stripped.parse().ok()
     } else {
         s.parse().ok()
     }

@@ -303,8 +303,8 @@ impl Bm25Index {
                 match doc.modified.as_deref() {
                     Some(m) => {
                         let date_prefix = &m[..m.floor_char_boundary(10)];
-                        if since.map_or(false, |s| date_prefix < s)
-                            || before.map_or(false, |b| date_prefix > b)
+                        if since.is_some_and(|s| date_prefix < s)
+                            || before.is_some_and(|b| date_prefix > b)
                         {
                             continue;
                         }

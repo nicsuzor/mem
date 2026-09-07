@@ -1,15 +1,11 @@
-use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
-use rmcp::{ErrorData as McpError, ServerHandler};
+use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use crate::graph_store::{GraphStore, DEFAULT_DIVERGENCE_THRESHOLD_DAYS};
+use crate::graph_store::DEFAULT_DIVERGENCE_THRESHOLD_DAYS;
 
-use super::{PkbSearchServer, ReindexStatus, MAX_RESULTS, DRY_RUN_WARNING};
+use super::{PkbSearchServer, MAX_RESULTS, DRY_RUN_WARNING};
 
 impl PkbSearchServer {
     pub(crate) fn handle_get_network_metrics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -996,6 +992,7 @@ impl PkbSearchServer {
 #[cfg(test)]
 mod batch_finalize_tests {
     use super::*;
+    use parking_lot::RwLock;
     use crate::embeddings::Embedder;
     use crate::graph_store::GraphStore;
     use crate::vectordb::VectorStore;

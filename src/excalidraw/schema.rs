@@ -65,16 +65,16 @@ impl ElementColorStyle {
 
 /// Returns true if a status should be excluded from visual rendering.
 pub fn is_excluded_status(status: Option<&str>) -> bool {
-    match status.map(|s| s.to_lowercase()).as_deref() {
-        Some("someday") | Some("cancelled") | Some("abandoned") => true,
-        _ => false,
-    }
+    matches!(
+        status.map(|s| s.to_lowercase()).as_deref(),
+        Some("someday") | Some("cancelled") | Some("abandoned")
+    )
 }
 
 /// Returns true if the node should receive a prominent red ring (someone waiting on Nic).
 pub fn is_red_ring(has_stakeholder: bool, status: Option<&str>) -> bool {
     has_stakeholder
-        || status.map_or(false, |s| {
+        || status.is_some_and(|s| {
             s.eq_ignore_ascii_case("review") || s.eq_ignore_ascii_case("testing")
         })
 }
@@ -102,12 +102,10 @@ pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
         } else {
             "M"
         }
+    } else if p <= 3 {
+        "M"
     } else {
-        if p <= 3 {
-            "M"
-        } else {
-            "S"
-        }
+        "S"
     };
 
     // Focus score >= 1000 bump
@@ -116,7 +114,6 @@ pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
         match base_tier {
             "S" => "M",
             "M" => "L",
-            "L" => "A",
             _ => "A",
         }
     } else {
@@ -133,11 +130,8 @@ pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
     (w, CARD_HEIGHT)
 }
 
-/// Returns the visual styling for a node given its status and type.
-
-/// Returns visual styling presets for a node based on its preset string.
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 #[derive(Deserialize)]
@@ -565,7 +559,7 @@ impl Default for ExcalidrawElement {
 impl ExcalidrawElement {
     pub fn is_card(&self) -> bool {
         (self.element_type == "rectangle" || self.element_type == "diamond" || self.element_type == "ellipse")
-            && self.custom_data.as_ref().map_or(false, |c| c.pkb.as_ref().map_or(false, |p| p.node_id.is_some()))
+            && self.custom_data.as_ref().is_some_and(|c| c.pkb.as_ref().is_some_and(|p| p.node_id.is_some()))
     }
 
     pub fn is_frame(&self) -> bool {

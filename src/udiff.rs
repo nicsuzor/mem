@@ -122,7 +122,7 @@ impl RelativeIndenter {
 
     pub fn make_absolute(&self, text: &str) -> Result<String, String> {
         let lines = split_keepends(text);
-        if lines.len() % 2 != 0 {
+        if !lines.len().is_multiple_of(2) {
             return Err("Invalid relative format: odd number of line segments".to_string());
         }
 
@@ -609,9 +609,9 @@ pub fn find_diffs(content: &str) -> Vec<RawDiffEdit> {
 
 fn process_fenced_block(lines: &[String], start_line_num: usize) -> (usize, Vec<RawDiffEdit>) {
     let mut end_line_num = lines.len();
-    for line_num in start_line_num..lines.len() {
-        if lines[line_num].starts_with("```") {
-            end_line_num = line_num;
+    for (idx, line) in lines.iter().enumerate().skip(start_line_num) {
+        if line.starts_with("```") {
+            end_line_num = idx;
             break;
         }
     }
