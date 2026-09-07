@@ -55,12 +55,47 @@ impl PkbSearchServer {
 
     pub(crate) fn handle_top_n_by_metric(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
+
+        if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
+            let graph = self.graph.read();
+            let node = graph.get_node(id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Node not found: {id}")),
+                data: None,
+            })?;
+
+            let node_ids: Vec<String> = graph.nodes().map(|n| n.id.clone()).collect();
+            let edges = graph.edges();
+
+            let m = crate::metrics::compute_network_metrics(
+                id,
+                &node_ids,
+                edges,
+                node.downstream_weight,
+                node.stakeholder_exposure,
+            );
+
+            return match m {
+                Some(metrics) => {
+                    let json = serde_json::to_string_pretty(&metrics).unwrap_or_default();
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "## Network metrics for {id}\n\n```json\n{json}\n```"
+                    ))]))
+                }
+                None => Err(McpError {
+                    code: ErrorCode::INTERNAL_ERROR,
+                    message: Cow::from("Failed to compute metrics"),
+                    data: None,
+                }),
+            };
+        }
+
         let metric = args
             .get("metric")
             .and_then(|v| v.as_str())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: metric"),
+                message: Cow::from("Missing required parameter: metric (or id for single-node metrics)"),
                 data: None,
             })?;
 
@@ -633,17 +668,19 @@ impl PkbSearchServer {
     pub(crate) fn handle_batch_merge(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let canonical = args
             .get("canonical")
+            .or_else(|| args.get("canonical_id"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("canonical is required"),
+                message: Cow::from("canonical (or canonical_id) is required"),
                 data: None,
             })?
             .to_string();
 
         let merge_ids: Vec<String> = args
             .get("merge_ids")
+            .or_else(|| args.get("source_ids"))
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()

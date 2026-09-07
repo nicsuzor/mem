@@ -352,21 +352,20 @@ fn test_pkb_trace_missing_params_rejection_examples() {
 #[test]
 fn test_search_family_descriptions_document_latency_and_timeout_guidance() {
     let tools = PkbSearchServer::get_all_tools();
-    for tool_name in ["search", "task_search", "retrieve_memory"] {
-        let tool = tools
-            .iter()
-            .find(|t| t.name.as_ref() == tool_name)
-            .unwrap_or_else(|| panic!("tool {tool_name} must exist"));
-        let desc = tool.description.as_deref().unwrap_or("");
-        assert!(
-            desc.to_lowercase().contains("onnx") || desc.to_lowercase().contains("embedding"),
-            "tool {tool_name} description must mention ONNX / embedding search: {desc}"
-        );
-        assert!(
-            desc.to_lowercase().contains("retry") || desc.to_lowercase().contains("back off"),
-            "tool {tool_name} description must advise retry / back off on timeout: {desc}"
-        );
-    }
+    let tool_name = "search";
+    let tool = tools
+        .iter()
+        .find(|t| t.name.as_ref() == tool_name)
+        .unwrap_or_else(|| panic!("tool {tool_name} must exist"));
+    let desc = tool.description.as_deref().unwrap_or("");
+    assert!(
+        desc.to_lowercase().contains("onnx") || desc.to_lowercase().contains("embedding"),
+        "tool {tool_name} description must mention ONNX / embedding search: {desc}"
+    );
+    assert!(
+        desc.to_lowercase().contains("retry") || desc.to_lowercase().contains("back off"),
+        "tool {tool_name} description must advise retry / back off on timeout: {desc}"
+    );
 }
 
 // ── 8. Universal Sweep: Every tool with declared required fields enforces them ──

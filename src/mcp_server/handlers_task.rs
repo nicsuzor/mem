@@ -2,6 +2,7 @@ use rmcp::model::*;
 use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
+use std::collections::HashSet;
 use crate::graph::{is_completed, GraphNode};
 use crate::graph_store::GraphStore;
 
@@ -798,13 +799,22 @@ impl PkbSearchServer {
             })
             .collect();
 
-        let result = serde_json::json!({
+        let fields_filter: Option<HashSet<String>> = args.get("fields").and_then(|v| {
+            if let Some(arr) = v.as_array() {
+                Some(arr.iter().filter_map(|s| s.as_str().map(|k| k.to_string())).collect())
+            } else {
+                v.as_str().map(|s| s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect())
+            }
+        });
+        let include_signals = args.get("include_signals").and_then(|v| v.as_bool()).unwrap_or(true);
+        let metadata_only = args.get("metadata_only").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let mut result = serde_json::json!({
             "id": node.task_id.as_deref().unwrap_or(&node.id),
             "status": node.status,
             "project": node.project,
             "classification": node.classification,
             "frontmatter": frontmatter,
-            "body": body,
             "depends_on": depends_on,
             "blocks": blocks,
             "children": children,
@@ -820,19 +830,6 @@ impl PkbSearchServer {
             "effective_intent": node.effective_intent.unwrap_or(node.intent.unwrap_or(4)),
             "focus_score": node.focus_score,
             "blocked": graph.is_blocked(&node.id),
-            "signals": {
-                "criticality": node.criticality,
-                "urgency": node.urgency,
-                "downstream_weight": node.downstream_weight,
-                "scope": node.scope,
-                "uncertainty": node.uncertainty,
-                "voi_value": node.voi_value,
-                "affordable_loss": node.affordable_loss,
-                "affordable_loss_filtered": node.affordable_loss_filtered,
-                "chain_slack": node.chain_slack,
-                "unlock_breadth": node.unlock_breadth,
-                "value_lineage": node.value_lineage,
-            },
             "stakeholder_exposure": node.stakeholder_exposure,
             "stakeholder": node.stakeholder,
             "waiting_since": node.waiting_since,
@@ -847,6 +844,32 @@ impl PkbSearchServer {
             "days_until_due": days_until_due,
             "urgency_ratio": urgency_ratio,
         });
+
+        if !metadata_only {
+            result["body"] = serde_json::json!(body);
+        }
+
+        if include_signals {
+            result["signals"] = serde_json::json!({
+                "criticality": node.criticality,
+                "urgency": node.urgency,
+                "downstream_weight": node.downstream_weight,
+                "scope": node.scope,
+                "uncertainty": node.uncertainty,
+                "voi_value": node.voi_value,
+                "affordable_loss": node.affordable_loss,
+                "affordable_loss_filtered": node.affordable_loss_filtered,
+                "chain_slack": node.chain_slack,
+                "unlock_breadth": node.unlock_breadth,
+                "value_lineage": node.value_lineage,
+            });
+        }
+
+        if let Some(ref filter) = fields_filter {
+            if let Some(map) = result.as_object_mut() {
+                map.retain(|k, _| filter.contains(k));
+            }
+        }
 
         let json = serde_json::to_string_pretty(&result).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -872,6 +895,14 @@ impl PkbSearchServer {
             .get("direction")
             .and_then(|v| v.as_str())
             .unwrap_or("upstream");
+        let format = args
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("markdown");
+        let recursive = args
+            .get("recursive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         // Bounds traversal depth so a densely-linked graph can't return an
         // unbounded tree. MAX_RESULTS is not the right cap here (this bounds
         // hops, not row count) so it just gets a sane ceiling of its own.
@@ -886,14 +917,58 @@ impl PkbSearchServer {
         let node_id = node.id.clone();
         let node_label = node.label.clone();
 
-        let tree = if direction.eq_ignore_ascii_case("downstream") {
+        let is_children = direction.eq_ignore_ascii_case("children") || direction.eq_ignore_ascii_case("subtasks");
+        let tree: Vec<(String, usize)> = if is_children {
+            if recursive {
+                let mut res = Vec::new();
+                fn collect_children(g: &GraphStore, nid: &str, depth: usize, max: usize, out: &mut Vec<(String, usize)>) {
+                    if depth > max { return; }
+                    if let Some(n) = g.get_node(nid) {
+                        for c in &n.children {
+                            out.push((c.clone(), depth));
+                            collect_children(g, c, depth + 1, max, out);
+                        }
+                    }
+                }
+                collect_children(&graph, &node_id, 1, max_depth, &mut res);
+                res
+            } else {
+                node.children.iter().map(|c| (c.clone(), 1)).collect()
+            }
+        } else if direction.eq_ignore_ascii_case("downstream") {
             graph.blocks_tree_bounded(&node_id, max_depth)
         } else {
             graph.dependency_tree_bounded(&node_id, max_depth)
         };
 
+        if format.eq_ignore_ascii_case("json") {
+            let tree_json: Vec<serde_json::Value> = tree
+                .iter()
+                .map(|(dep_id, depth)| {
+                    let dep_node = graph.resolve(dep_id);
+                    let label = dep_node.map(|n| n.label.as_str()).unwrap_or("?");
+                    let status = dep_node.and_then(|n| n.status.as_deref()).unwrap_or("?");
+                    serde_json::json!({
+                        "id": dep_id,
+                        "depth": depth,
+                        "title": label,
+                        "status": status,
+                    })
+                })
+                .collect();
+            let payload = serde_json::json!({
+                "id": id,
+                "direction": direction,
+                "tree": tree_json,
+            });
+            let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
+            return Ok(CallToolResult::success(vec![Content::text(json_str)]));
+        }
+
         if tree.is_empty() {
-            let dir_label = if direction.eq_ignore_ascii_case("downstream") {
+            let dir_label = if is_children {
+                "children"
+            } else if direction.eq_ignore_ascii_case("downstream") {
                 "downstream"
             } else {
                 "upstream"
@@ -903,7 +978,9 @@ impl PkbSearchServer {
             ))]));
         }
 
-        let dir_label = if direction.eq_ignore_ascii_case("downstream") {
+        let dir_label = if is_children {
+            "Children"
+        } else if direction.eq_ignore_ascii_case("downstream") {
             "Downstream (blocks)"
         } else {
             "Upstream (depends on)"
@@ -1095,6 +1172,13 @@ impl PkbSearchServer {
             .get("format")
             .and_then(|v| v.as_str())
             .unwrap_or("markdown");
+        let fields_filter: Option<HashSet<String>> = args.get("fields").and_then(|v| {
+            if let Some(arr) = v.as_array() {
+                Some(arr.iter().filter_map(|s| s.as_str().map(|k| k.to_string())).collect())
+            } else {
+                v.as_str().map(|s| s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect())
+            }
+        });
 
         // Computed before taking the graph read lock below: list_staleness_signal
         // takes its own read lock internally, and parking_lot's RwLock is not
@@ -1358,6 +1442,11 @@ impl PkbSearchServer {
                                         .collect(),
                                 ),
                             );
+                        }
+                    }
+                    if let Some(ref filter) = fields_filter {
+                        if let Some(map) = obj.as_object_mut() {
+                            map.retain(|k, _| filter.contains(k));
                         }
                     }
                     obj

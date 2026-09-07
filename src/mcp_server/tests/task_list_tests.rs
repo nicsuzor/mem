@@ -514,17 +514,16 @@ use super::*;
     // different set). Self-contained temp dir so create/release writes don't touch
     // the shared /tmp fixture other tests rely on.
     #[test]
-
-    fn test_task_search_schema_includes_include_done() {
+    fn test_search_schema_includes_include_done() {
         let tools = PkbSearchServer::get_all_tools();
-        let task_search = tools
+        let search = tools
             .iter()
-            .find(|t| t.name.as_ref() == "task_search")
-            .expect("task_search tool should exist");
-        let schema = serde_json::to_string(&task_search.input_schema).unwrap();
+            .find(|t| t.name.as_ref() == "search")
+            .expect("search tool should exist");
+        let schema = serde_json::to_string(&search.input_schema).unwrap();
         assert!(
             schema.contains("\"include_done\""),
-            "task_search schema should advertise include_done parameter"
+            "search schema should advertise include_done parameter"
         );
     }
 

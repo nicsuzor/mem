@@ -78,6 +78,46 @@ impl PkbSearchServer {
             .get("max_bytes")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
+        let metadata_only = args
+            .get("metadata_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let format = args
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("markdown");
+
+        let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+        let parsed = matter.parse(&content);
+        let frontmatter = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<JsonValue>().ok())
+            .unwrap_or(JsonValue::Object(serde_json::Map::new()));
+
+        if format.eq_ignore_ascii_case("json") {
+            let mut obj = serde_json::json!({
+                "id": query,
+                "title": label,
+                "frontmatter": frontmatter,
+            });
+            if !metadata_only {
+                let body = parsed.content.trim().to_string();
+                let body = Self::truncate_body(body, max_bytes);
+                obj["content"] = serde_json::json!(body);
+            }
+            let json_str = serde_json::to_string_pretty(&obj).unwrap_or_default();
+            return Ok(CallToolResult::success(vec![Content::text(json_str)]));
+        }
+
+        if metadata_only {
+            let fm_yaml = serde_yaml::to_string(&frontmatter).unwrap_or_default();
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "## {} (metadata only)\n\n```yaml\n{}\n```",
+                label, fm_yaml.trim()
+            ))]));
+        }
+
         let content = Self::truncate_body(content, max_bytes);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -88,8 +128,19 @@ impl PkbSearchServer {
 
     pub(crate) fn handle_list_documents(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let tag = args.get("tag").and_then(|v| v.as_str());
+        let tags_vec: Option<Vec<String>> = args.get("tags").and_then(|v| {
+            if let Some(arr) = v.as_array() {
+                Some(arr.iter().filter_map(|x| x.as_str().map(|s| s.to_ascii_lowercase())).collect())
+            } else {
+                v.as_str().map(|s| s.split(',').map(|x| x.trim().to_ascii_lowercase()).filter(|x| !x.is_empty()).collect())
+            }
+        });
         let doc_type = args.get("type").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
+        let format = args
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("markdown");
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -97,7 +148,16 @@ impl PkbSearchServer {
         let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         let store = self.store.read();
-        let results = store.list_documents(tag, doc_type, status, &self.pkb_root);
+        let mut results = store.list_documents(tag, doc_type, status, &self.pkb_root);
+
+        if let Some(ref req_tags) = tags_vec {
+            results.retain(|r| {
+                req_tags.iter().all(|want| {
+                    r.tags.iter().any(|have| have.eq_ignore_ascii_case(want))
+                })
+            });
+        }
+
         let total = results.len();
 
         if total == 0 {
@@ -115,6 +175,33 @@ impl PkbSearchServer {
             .take(limit.unwrap_or(total).min(MAX_RESULTS))
             .collect();
         let showing = page.len();
+
+        if format.eq_ignore_ascii_case("json") {
+            let docs: Vec<serde_json::Value> = page
+                .iter()
+                .map(|r| {
+                    let mut obj = serde_json::json!({
+                        "id": r.id,
+                        "title": r.title,
+                        "type": r.doc_type,
+                        "tags": r.tags,
+                    });
+                    if let Some(ref st) = r.status {
+                        obj["status"] = serde_json::json!(st);
+                    }
+                    obj
+                })
+                .collect();
+
+            let payload = serde_json::json!({
+                "total": total,
+                "showing": showing,
+                "offset": offset,
+                "documents": docs,
+            });
+            let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
+            return Ok(CallToolResult::success(vec![Content::text(json_str)]));
+        }
 
         let mut output =
             format!("**{total} documents found** (showing {showing}, offset {offset})\n\n");
