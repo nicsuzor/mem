@@ -91,6 +91,7 @@ These appear in task operations (`list_tasks`, `task_search`, ready/blocked queu
 | `epic`  | Bundle of related work | None (root-level) or another epic                          |
 | `task`  | Discrete deliverable   | Epic or task; root-level allowed for trivial standalones   |
 | `learn` | Observational tracking | Epic or task                                               |
+| `pr`    | PR tracking deliverable| Epic or task                                               |
 
 **`target` and `goal` are not tree nodes.** Target nodes (type: target) join tasks to goals (type: goal) with an impact factor. They are excluded from the work-item tree: they have no children and never serve as a parent. Work links to targets via `contributes_to` metadata (formerly `goals: []`). Targets participate in priority/severity propagation but not in tree traversal, orphan detection, or task operations.
 
@@ -226,7 +227,7 @@ All layers must use the same constant for determining what is a work item:
 
 ```rust
 pub const ACTIONABLE_TYPES: &[&str] = &[
-    "epic", "task", "learn",
+    "epic", "task", "learn", "pr",
 ];
 ```
 

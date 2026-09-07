@@ -99,6 +99,15 @@ pub fn batch_reparent(
             continue;
         }
 
+        // Reject cycle creation
+        if let Err(msg) = graph.would_create_hard_cycle(id, &canonical_parent_id) {
+            summary.errors.push(TaskError {
+                id: id.clone(),
+                error: msg,
+            });
+            continue;
+        }
+
         let old_parent = node.parent.clone();
 
         if dry_run {

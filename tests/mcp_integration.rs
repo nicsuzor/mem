@@ -88,17 +88,7 @@ fn pid_is_live(pid: i32) -> bool {
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 fn pkb_binary() -> PathBuf {
-    // Prefer release build, fall back to debug
-    let release = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/pkb");
-    if release.exists() {
-        return release;
-    }
-    let debug = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/pkb");
-    if debug.exists() {
-        return debug;
-    }
-    // Fall back to PATH
-    PathBuf::from("pkb")
+    PathBuf::from(env!("CARGO_BIN_EXE_pkb"))
 }
 
 /// Create an isolated, synthetic fixture PKB for integration testing.
@@ -184,6 +174,7 @@ fn stdio_session(messages: &[String]) -> Vec<Value> {
             "mcp",
         ])
         .env("ACA_DATA", pkb_root.to_str().unwrap())
+        .env("AOPS_DUMMY_EMBEDDER", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -248,6 +239,8 @@ fn spawn_http_mcp(mut cmd: Command) -> (Child, u16) {
 
     let stderr = child.stderr.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
+    let stderr_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stderr_lines_clone = stderr_lines.clone();
     std::thread::spawn(move || {
         use std::io::{BufRead, BufReader};
         let mut reader = BufReader::new(stderr);
@@ -255,6 +248,7 @@ fn spawn_http_mcp(mut cmd: Command) -> (Child, u16) {
         let mut sent = false;
         while let Ok(bytes) = reader.read_line(&mut line) {
             if bytes == 0 { break; }
+            stderr_lines_clone.lock().unwrap().push(line.clone());
             if !sent {
                 if let Some(idx) = line.find("Starting MCP HTTP/SSE server on http://") {
                     let start = idx + "Starting MCP HTTP/SSE server on http://".len();
@@ -280,7 +274,10 @@ fn spawn_http_mcp(mut cmd: Command) -> (Child, u16) {
         .and_then(|s| s.parse().ok())
         .map(Duration::from_secs)
         .unwrap_or(Duration::from_secs(60));
-    let port = rx.recv_timeout(startup_timeout).expect("failed to parse port from stderr");
+    let port = rx.recv_timeout(startup_timeout).unwrap_or_else(|err| {
+        let lines = stderr_lines.lock().unwrap().join("");
+        panic!("failed to parse port from stderr ({err:?}). Full server stderr:\n{lines}");
+    });
     (child, port)
 }
 
@@ -307,6 +304,7 @@ impl HttpServer {
                 "0",
             ])
             .env("ACA_DATA", pkb_root.to_str().unwrap())
+            .env("AOPS_DUMMY_EMBEDDER", "1")
             .stdin(Stdio::null());
 
         let (child, port) = spawn_http_mcp(cmd);
@@ -536,6 +534,7 @@ fn test_stdio_stdout_purity() {
             "mcp",
         ])
         .env("ACA_DATA", pkb_root.to_str().unwrap())
+        .env("AOPS_DUMMY_EMBEDDER", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

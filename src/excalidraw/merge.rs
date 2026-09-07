@@ -248,7 +248,10 @@ pub fn merge_live_into_canvas(
                         }
                     }
                 }
-                // If status is unchanged, preserve user's custom background_color, stroke_color, stroke_width, roughness
+                if is_red_ring(ln.stakeholder.is_some(), ln.status.as_deref()) {
+                    existing_card.stroke_color = "#e03131".to_string();
+                    existing_card.stroke_width = 2.5;
+                }
             }
 
             elements_out.push(existing_card);
@@ -256,16 +259,60 @@ pub fn merge_live_into_canvas(
             if let Some(mut bound_text) = existing_text_map.remove(nid) {
                 if let Some(ln) = live_node {
                     // Update text label to reflect current live title/status
-                    let status_str = ln.status.as_deref().unwrap_or("inbox").to_uppercase();
-                    let header = format!("[{}]", status_str);
-                    let new_text = format!("{}\n{}", header, ln.label);
+                    let status_raw = ln.status.as_deref().unwrap_or("inbox");
+                    let status_str = status_raw.to_uppercase();
+                    let prio_str = ln.intent.map(|p| format!("P{}", p)).unwrap_or_default();
+                    let is_in_progress = status_raw.eq_ignore_ascii_case("in_progress")
+                        || status_raw.eq_ignore_ascii_case("active")
+                        || status_raw.eq_ignore_ascii_case("doing");
+
+                    let header = match (!prio_str.is_empty(), is_in_progress) {
+                        (true, true) => format!("[{} · {} · now]", status_str, prio_str),
+                        (true, false) => format!("[{} · {}]", status_str, prio_str),
+                        (false, true) => format!("[{} · now]", status_str),
+                        (false, false) => format!("[{}]", status_str),
+                    };
+
+                    let mut markers = Vec::new();
+                    if ln.focus_score.unwrap_or(0) >= 1000 {
+                        markers.push("START".to_string());
+                    }
+                    if ln.contributes_to.iter().any(|c| {
+                        c.to == "targ_4e2cc92a"
+                            || c.resolved_to.as_deref() == Some("targ_4e2cc92a")
+                            || c.to.contains("targ_4e2cc92a")
+                    }) {
+                        markers.push("LSL".to_string());
+                    }
+                    if ln.project.as_deref() == Some("admin") {
+                        markers.push("WORK".to_string());
+                    }
+                    if let Some(ref eff) = ln.effort {
+                        if !eff.is_empty() {
+                            markers.push(eff.clone());
+                        }
+                    }
+
+                    let markers_line = if markers.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n[{}]", markers.join(" · "))
+                    };
+
+                    let new_text = format!("{}{}\n{}", header, markers_line, ln.label);
                     bound_text.text = Some(new_text.clone());
                     bound_text.original_text = Some(new_text);
                 }
                 elements_out.push(bound_text);
             }
         } else if let Some(ln) = live_node {
+            if is_excluded_status(ln.status.as_deref()) {
+                continue;
+            }
+
             // Newly discovered backend node: place using Archimedean spiral probe
+            let (card_w, card_h) = compute_card_dimensions(ln);
+
             let center_x = occupied_boxes
                 .first()
                 .map(|b| b[0] + 100.0)
@@ -278,34 +325,48 @@ pub fn merge_live_into_canvas(
             let (place_x, place_y) = find_spiral_placement(
                 center_x,
                 center_y,
-                CARD_WIDTH,
-                CARD_HEIGHT,
+                card_w,
+                card_h,
                 &occupied_boxes,
             );
 
             occupied_boxes.push([
                 place_x,
                 place_y,
-                place_x + CARD_WIDTH,
-                place_y + CARD_HEIGHT,
+                place_x + card_w,
+                place_y + card_h,
             ]);
             existing_positions.insert(nid.clone(), (place_x, place_y));
 
-            let card_id = format!("card-{}", nid);
+            let card_id = nid.clone();
             let text_id = format!("text-{}", nid);
             card_elem_map.insert(nid.clone(), card_id.clone());
 
             let color_style = node_color_style(ln.status.as_deref(), ln.node_type.as_deref());
+            let red_ring = is_red_ring(ln.stakeholder.is_some(), ln.status.as_deref());
 
             let mut card_elem = ExcalidrawElement::default();
             card_elem.id = card_id.clone();
-            card_elem.element_type = "rectangle".to_string();
+            card_elem.element_type = match ln.node_type.as_deref() {
+                Some("target") | Some("goal") => "diamond".to_string(),
+                Some("area") => "ellipse".to_string(),
+                _ => "rectangle".to_string(),
+            };
             card_elem.x = place_x;
             card_elem.y = place_y;
-            card_elem.width = CARD_WIDTH;
-            card_elem.height = CARD_HEIGHT;
+            card_elem.width = card_w;
+            card_elem.height = card_h;
             card_elem.background_color = color_style.bg_color.to_string();
-            card_elem.stroke_color = color_style.stroke_color.to_string();
+            if red_ring {
+                card_elem.stroke_color = "#e03131".to_string();
+                card_elem.stroke_width = 2.5;
+            } else {
+                card_elem.stroke_color = color_style.stroke_color.to_string();
+                card_elem.stroke_width = 1.5;
+            }
+            card_elem.stroke_style = color_style.stroke_style.to_string();
+            card_elem.fill_style = color_style.fill_style.to_string();
+            card_elem.opacity = color_style.opacity as f64;
             card_elem.bound_elements = Some(vec![BoundElement {
                 id: text_id.clone(),
                 element_type: "text".to_string(),
@@ -323,8 +384,47 @@ pub fn merge_live_into_canvas(
                 extra: HashMap::new(),
             });
 
-            let status_str = ln.status.as_deref().unwrap_or("inbox").to_uppercase();
-            let text_content = format!("[{}]\n{}", status_str, ln.label);
+            let status_raw = ln.status.as_deref().unwrap_or("inbox");
+            let status_str = status_raw.to_uppercase();
+            let prio_str = ln.intent.map(|p| format!("P{}", p)).unwrap_or_default();
+            let is_in_progress = status_raw.eq_ignore_ascii_case("in_progress")
+                || status_raw.eq_ignore_ascii_case("active")
+                || status_raw.eq_ignore_ascii_case("doing");
+
+            let header = match (!prio_str.is_empty(), is_in_progress) {
+                (true, true) => format!("[{} · {} · now]", status_str, prio_str),
+                (true, false) => format!("[{} · {}]", status_str, prio_str),
+                (false, true) => format!("[{} · now]", status_str),
+                (false, false) => format!("[{}]", status_str),
+            };
+
+            let mut markers = Vec::new();
+            if ln.focus_score.unwrap_or(0) >= 1000 {
+                markers.push("START".to_string());
+            }
+            if ln.contributes_to.iter().any(|c| {
+                c.to == "targ_4e2cc92a"
+                    || c.resolved_to.as_deref() == Some("targ_4e2cc92a")
+                    || c.to.contains("targ_4e2cc92a")
+            }) {
+                markers.push("LSL".to_string());
+            }
+            if ln.project.as_deref() == Some("admin") {
+                markers.push("WORK".to_string());
+            }
+            if let Some(ref eff) = ln.effort {
+                if !eff.is_empty() {
+                    markers.push(eff.clone());
+                }
+            }
+
+            let markers_line = if markers.is_empty() {
+                String::new()
+            } else {
+                format!("\n[{}]", markers.join(" · "))
+            };
+
+            let text_content = format!("{}{}\n{}", header, markers_line, ln.label);
 
             let mut text_elem = ExcalidrawElement::default();
             text_elem.id = text_id;
@@ -334,8 +434,8 @@ pub fn merge_live_into_canvas(
             text_elem.original_text = Some(text_content);
             text_elem.x = place_x + 8.0;
             text_elem.y = place_y + 8.0;
-            text_elem.width = CARD_WIDTH - 16.0;
-            text_elem.height = CARD_HEIGHT - 16.0;
+            text_elem.width = card_w - 16.0;
+            text_elem.height = card_h - 16.0;
 
             elements_out.push(card_elem);
             elements_out.push(text_elem);

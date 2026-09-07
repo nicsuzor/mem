@@ -339,6 +339,7 @@ In-memory graph built from frontmatter relationships and wikilinks on each start
 | `ACA_DATA`            | `~/brain` | PKB root directory (the files)                      |
 | `RUST_LOG`            | `info`    | Log level                                           |
 | `AOPS_OFFLINE`        | `false`   | Disable model auto-download                         |
+| `AOPS_DUMMY_EMBEDDER` | `false`   | Use zero-vector dummy embedder (for tests/offline)  |
 | `AOPS_POLECAT_CONFIG` | unset     | Explicit path to polecat.yaml (project registry)    |
 | `AOPS_SESSIONS`       | unset     | Sessions repo; fallback home of polecat.yaml        |
 

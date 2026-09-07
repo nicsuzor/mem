@@ -58,6 +58,27 @@ pub fn batch_create_epics(
                 }
             }
         }
+        // Validate that reparenting tasks under the epic and connecting epic dependencies
+        // does not create a hard dependency cycle (DependsOn + Parent DAG rule).
+        let ph_id = epic_def.id.clone().unwrap_or_else(|| format!("__new_epic_{}__", epic_def.title));
+        let mut proposed_edges: Vec<(&str, &str)> = Vec::new();
+        for tid in &valid_task_ids {
+            proposed_edges.push((tid.as_str(), ph_id.as_str()));
+        }
+        if let Some(p) = parent {
+            proposed_edges.push((ph_id.as_str(), p));
+        }
+        for dep in &epic_def.depends_on {
+            proposed_edges.push((ph_id.as_str(), dep.as_str()));
+        }
+
+        if let Err(msg) = graph.would_create_hard_cycle_edges(&proposed_edges) {
+            summary.errors.push(TaskError {
+                id: epic_def.id.clone().unwrap_or_default(),
+                error: format!("batch_create_epics rejected: {msg}"),
+            });
+            continue;
+        }
 
         if dry_run {
             summary.changed += 1;

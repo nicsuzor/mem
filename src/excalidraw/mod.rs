@@ -26,9 +26,11 @@ pub use merge::{
 };
 pub use reader::{CanvasArrow, CanvasCard, CanvasFrame, CanvasModel, CanvasReader};
 pub use schema::{
-    edge_color_style, node_color_style, AppState, BoundElement, CustomData, ElementColorStyle,
-    ExcalidrawElement, ExcalidrawFile, PkbCustomData, PointBinding, Roundness, CARD_HEIGHT,
-    CARD_WIDTH, FRAME_HEADER_HEIGHT, FRAME_PADDING, PORT_BOTTOM, PORT_IN, PORT_OUT, PORT_TOP,
+    compute_card_dimensions, edge_color_style, is_excluded_status, is_red_ring, node_color_style,
+    AppState, BoundElement, CustomData, ElementColorStyle, ExcalidrawElement, ExcalidrawFile,
+    PkbCustomData, PointBinding, Roundness, CARD_HEIGHT, CARD_WIDTH, CARD_WIDTH_A, CARD_WIDTH_L,
+    CARD_WIDTH_M, CARD_WIDTH_S, FRAME_HEADER_HEIGHT, FRAME_PADDING, PORT_BOTTOM, PORT_IN,
+    PORT_OUT, PORT_TOP,
 };
 
 use crate::graph::{Edge, GraphNode};
