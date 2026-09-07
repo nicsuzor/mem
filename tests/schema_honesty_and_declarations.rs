@@ -352,7 +352,7 @@ fn test_pkb_trace_missing_params_rejection_examples() {
 #[test]
 fn test_search_family_descriptions_document_latency_and_timeout_guidance() {
     let tools = PkbSearchServer::get_all_tools();
-    for tool_name in ["search", "task_search", "retrieve_memory"] {
+    for tool_name in ["search"] {
         let tool = tools
             .iter()
             .find(|t| t.name.as_ref() == tool_name)

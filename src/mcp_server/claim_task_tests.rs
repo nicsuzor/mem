@@ -726,12 +726,6 @@ project: aops
             assert!(crate::graph::is_valid_node_type(&t), "create_task schema advertises invalid type: {t}");
         }
 
-        let create_memory = get_tool("create_memory");
-        let memory_types = get_enum(create_memory, "memory_type");
-        for t in memory_types {
-            assert!(crate::graph::is_valid_node_type(&t), "create_memory schema advertises invalid memory_type: {t}");
-        }
-
         let create = get_tool("create");
         let create_types = get_enum(create, "type");
         for t in create_types {

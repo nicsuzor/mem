@@ -1,16 +1,12 @@
-use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
-use rmcp::{ErrorData as McpError, ServerHandler};
+use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use crate::graph::is_completed;
+use std::path::PathBuf;
 use crate::graph_store::GraphStore;
 
-use super::{PkbSearchServer, MAX_RESULTS};
+use super::PkbSearchServer;
 
 impl PkbSearchServer {
     pub(crate) fn handle_claim_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -856,10 +852,11 @@ impl PkbSearchServer {
         let summary = args
             .get("summary")
             .and_then(|v| v.as_str())
+            .or_else(|| args.get("completion_evidence").and_then(|v| v.as_str()))
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
-                    "Missing required parameter: summary. Describe what was done before releasing this task.\n\
+                    "Missing required parameter: summary (or completion_evidence). Describe what was done before releasing this task.\n\
                      Example: release_task(id=\"task-abc\", status=\"merge_ready\", summary=\"Implemented X with Y\", pr_url=\"https://...\")",
                 ),
                 data: None,
