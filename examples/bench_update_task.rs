@@ -241,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
             handles.push(tokio::spawn(async move {
                 let mut latencies = Vec::with_capacity(m);
                 for i in 0..m {
-                    let prio = if (w * m + i) % 2 == 0 { 2 } else { 3 };
+                    let prio = if (w * m + i).is_multiple_of(2) { 2 } else { 3 };
                     let args = json!({
                         "id": target_id,
                         "priority": prio,

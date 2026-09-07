@@ -2,11 +2,9 @@
 
 use crate::batch_ops::{BatchContext, BatchSummary};
 use crate::graph::ContributesTo;
-use crate::pkb;
 use anyhow::Result;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// Preserves authored key names (e.g. `target:`, `why:`, `weight:`) by patching `current_weight`
 /// directly into the existing frontmatter JSON structure rather than re-serializing the parsed struct.
@@ -19,9 +17,7 @@ fn patch_contributes_to_frontmatter(
         let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
         let parsed = matter.parse(&content);
         let data = parsed.data?.deserialize::<JsonValue>().ok()?;
-        let mut raw_edges = match data.get("contributes_to")?.as_array()?.clone() {
-            arr => arr,
-        };
+        let mut raw_edges = data.get("contributes_to")?.as_array()?.clone();
         if raw_edges.len() != new_edges.len() {
             return None;
         }
@@ -122,7 +118,6 @@ pub fn run_decay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::GraphNode;
 
     /// `run_decay` with `dry_run: true` must leave every byte under the PKB root
     /// untouched. Proved non-vacuous by running the same decay for real

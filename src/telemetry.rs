@@ -77,16 +77,14 @@ pub fn get_stats() -> HashMap<String, ToolStats> {
 
     if let Ok(file) = File::open(telemetry_path) {
         let reader = BufReader::new(file);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(entry) = serde_json::from_str::<ToolCallTelemetry>(&line) {
-                    let s = stats.entry(entry.tool_name).or_default();
-                    s.count += 1;
-                    s.total_bytes += entry.response_bytes;
-                    s.total_latency_ms += entry.latency_ms;
-                    if entry.is_error {
-                        s.error_count += 1;
-                    }
+        for line in reader.lines().map_while(Result::ok) {
+            if let Ok(entry) = serde_json::from_str::<ToolCallTelemetry>(&line) {
+                let s = stats.entry(entry.tool_name).or_default();
+                s.count += 1;
+                s.total_bytes += entry.response_bytes;
+                s.total_latency_ms += entry.latency_ms;
+                if entry.is_error {
+                    s.error_count += 1;
                 }
             }
         }

@@ -138,6 +138,7 @@ impl PkbSearchServer {
             .get("title")
             .and_then(|v| v.as_str())
             .or_else(|| args.get("task_title").and_then(|v| v.as_str()))
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: title"),
@@ -318,8 +319,7 @@ impl PkbSearchServer {
                 .map(String::from),
             contributes_to: args
                 .get("contributes_to")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.clone())
+                .and_then(|v| v.as_array()).cloned()
                 .unwrap_or_default(),
             classification: args
                 .get("classification")
@@ -348,16 +348,13 @@ impl PkbSearchServer {
                             if suggestions.len() >= 5 {
                                 break;
                             }
-                            match r.doc_type.as_deref() {
-                                Some("epic") => {
-                                    suggestions.push(serde_json::json!({
-                                        "id": r.id,
-                                        "title": r.title,
-                                        "type": r.doc_type,
-                                        "score": r.score,
-                                    }));
-                                }
-                                _ => {}
+                            if let Some("epic") = r.doc_type.as_deref() {
+                                suggestions.push(serde_json::json!({
+                                    "id": r.id,
+                                    "title": r.title,
+                                    "type": r.doc_type,
+                                    "score": r.score,
+                                }));
                             }
                         }
                         if suggestions.is_empty() {
@@ -569,6 +566,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),
@@ -804,10 +802,8 @@ impl PkbSearchServer {
         let fields_filter: Option<HashSet<String>> = args.get("fields").and_then(|v| {
             if let Some(arr) = v.as_array() {
                 Some(arr.iter().filter_map(|s| s.as_str().map(|k| k.to_string())).collect())
-            } else if let Some(s) = v.as_str() {
-                Some(s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect())
             } else {
-                None
+                v.as_str().map(|s| s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect())
             }
         });
         let include_signals = args.get("include_signals").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -888,6 +884,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),
@@ -1010,6 +1007,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),
@@ -1177,10 +1175,8 @@ impl PkbSearchServer {
         let fields_filter: Option<HashSet<String>> = args.get("fields").and_then(|v| {
             if let Some(arr) = v.as_array() {
                 Some(arr.iter().filter_map(|s| s.as_str().map(|k| k.to_string())).collect())
-            } else if let Some(s) = v.as_str() {
-                Some(s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect())
             } else {
-                None
+                v.as_str().map(|s| s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect())
             }
         });
 
@@ -1320,7 +1316,7 @@ impl PkbSearchServer {
         }
 
         if let Some(want_superseded) = has_superseded_by {
-            tasks.retain(|t| !t.superseded_by.is_empty() == want_superseded);
+            tasks.retain(|t| t.superseded_by.is_empty() != want_superseded);
         }
 
         if let Some(min_score) = focus_score_gte {
@@ -1355,7 +1351,7 @@ impl PkbSearchServer {
             tasks.retain(|t| {
                 !t.node_type
                     .as_deref()
-                    .map_or(false, |s| s.eq_ignore_ascii_case("target"))
+                    .is_some_and(|s| s.eq_ignore_ascii_case("target"))
             });
         }
 
@@ -1673,6 +1669,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),

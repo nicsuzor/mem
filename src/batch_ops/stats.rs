@@ -278,11 +278,10 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         }
 
         // Flat tasks: actionable nodes with no parent AND no children
-        if node.parent.is_none() && node.children.is_empty() {
-            if ACTIONABLE_FLAT_TYPES.contains(&node_type) {
+        if node.parent.is_none() && node.children.is_empty()
+            && ACTIONABLE_FLAT_TYPES.contains(&node_type) {
                 flat_tasks += 1;
             }
-        }
 
         // Stale check
         let date_str = node.modified.as_deref().or(node.created.as_deref());
@@ -312,11 +311,10 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         // Projects without goals: traverse full parent chain for goal ancestor.
         // DEAD METRIC — see the note on total_projects above; node_type is
         // never "project" post-retirement.
-        if node_type == "project" {
-            if !has_ancestor_of_type(graph, node, &["goal"]) {
+        if node_type == "project"
+            && !has_ancestor_of_type(graph, node, &["goal"]) {
                 projects_without_goals += 1;
             }
-        }
     }
 
     // Detect dependency cycles via Tarjan's SCC

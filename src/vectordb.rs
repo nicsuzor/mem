@@ -18,6 +18,7 @@ mod path_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::path::PathBuf;
 
+    #[allow(clippy::ptr_arg)]
     pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -322,6 +323,7 @@ impl VectorStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)?;
 
         Ok(RwLock::new(file))
@@ -359,10 +361,7 @@ impl VectorStore {
         if !wal_path.exists() {
             return Ok(0);
         }
-        let mut file = match std::fs::File::open(wal_path) {
-            Ok(f) => f,
-            Err(e) => return Err(e.into()),
-        };
+        let mut file = std::fs::File::open(wal_path)?;
         use std::io::Read;
         let mut count = 0;
         const MAX_RECORD_SIZE: usize = 16 * 1024 * 1024; // 16 MB max record size guard
@@ -691,11 +690,11 @@ impl VectorStore {
             let body_match = existing
                 .content_hash
                 .as_deref()
-                .map_or(false, |h| h == incoming_body_hash)
+                .is_some_and(|h| h == incoming_body_hash)
                 || existing
                     .body_hash
                     .as_deref()
-                    .map_or(false, |h| h == incoming_body_hash);
+                    .is_some_and(|h| h == incoming_body_hash);
             if body_match {
                 let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
                 let canonical_id = id.unwrap_or_else(|| doc.id());
@@ -1038,8 +1037,8 @@ impl VectorStore {
                 match entry.modified.as_deref() {
                     Some(m) => {
                         let date_prefix = &m[..m.floor_char_boundary(10)];
-                        if since.map_or(false, |s| date_prefix < s)
-                            || before.map_or(false, |b| date_prefix > b)
+                        if since.is_some_and(|s| date_prefix < s)
+                            || before.is_some_and(|b| date_prefix > b)
                         {
                             continue;
                         }
@@ -1674,7 +1673,6 @@ mod tests {
         // Actually 2019-06-01 <= 2020-01-01 so it should appear.
         // The key correctness check: no entry from 2023 or 2026 appears.
         for r in &results {
-            let date_prefix = r.date.as_deref().unwrap_or("");
             let mod_prefix = &r.path.to_string_lossy().to_string();
             // verify only the 2019 entry slips through
             assert!(
@@ -2491,7 +2489,7 @@ mod tests {
 
         // 7. Test corrupted store bytes (neither VectorStore nor OldVectorStore):
         let corrupt_db_path = dir.path().join("pkb_vectors_corrupt.bin");
-        std::fs::write(&corrupt_db_path, &[0xFF, 0xFE, 0xFD, 0xFC, 0x00, 0x01]).unwrap();
+        std::fs::write(&corrupt_db_path, [0xFF, 0xFE, 0xFD, 0xFC, 0x00, 0x01]).unwrap();
 
         let corrupt_store = VectorStore::load_or_create(&corrupt_db_path, 3).unwrap();
         assert_eq!(corrupt_store.dimension, 3);

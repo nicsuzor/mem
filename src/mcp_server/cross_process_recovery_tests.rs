@@ -1,6 +1,5 @@
 use super::*;
 #[cfg(test)]
-#[cfg(test)]
 mod cross_process_recovery_tests {
     use super::*;
     use crate::embeddings::{Embedder, EMBEDDING_DIM};

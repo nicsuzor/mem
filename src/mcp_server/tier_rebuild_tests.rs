@@ -1,10 +1,8 @@
 use super::*;
 #[cfg(test)]
-#[cfg(test)]
 mod tier_rebuild_tests {
     use super::*;
     use crate::embeddings::Embedder;
-    use crate::graph::GraphNode;
     use crate::graph_store::GraphStore;
     use crate::pkb::PkbDocument;
     use crate::vectordb::VectorStore;

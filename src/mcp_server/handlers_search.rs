@@ -1,4 +1,3 @@
-use parking_lot::RwLock;
 use rmcp::model::*;
 use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
@@ -14,6 +13,7 @@ impl PkbSearchServer {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: query"),
@@ -298,6 +298,7 @@ impl PkbSearchServer {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: query"),
@@ -570,6 +571,7 @@ impl PkbSearchServer {
         let from = args
             .get("from")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
@@ -581,6 +583,7 @@ impl PkbSearchServer {
         let to = args
             .get("to")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
@@ -729,7 +732,7 @@ impl PkbSearchServer {
             if total > max {
                 output.push_str(&format!("\n...and {} more\n", total - max));
             }
-            output.push_str("\n");
+            output.push('\n');
         }
 
         if !lint_warnings.is_empty() {
@@ -768,6 +771,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),
@@ -1120,6 +1124,7 @@ mod title_match_ranking_tests {
 #[cfg(test)]
 mod search_status_projection_tests {
     use super::*;
+    use parking_lot::RwLock;
     use crate::embeddings::{Embedder, EMBEDDING_DIM};
     use crate::graph_store::GraphStore;
     use crate::vectordb::VectorStore;
