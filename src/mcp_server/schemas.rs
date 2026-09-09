@@ -468,12 +468,53 @@ impl PkbSearchServer {
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
                         "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (silently hides closed tasks so the list shows actionable work, which can cause state blindness if you aren't expecting it). Ignored when an explicit `status` filter is provided." },
-                        "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format. 'json' returns structured {total, showing, tasks[]} for programmatic use. Default: 'markdown'." }
+                        "nested": { "type": "boolean", "description": "When true, returns nested tasks grouped by project and epic (metadata only) matching `pkb tasks`. Default: false." },
+                        "view": { "type": "string", "enum": ["flat", "tree"], "description": "View mode: 'flat' (default table/list) or 'tree' (hierarchical nested tree matching `pkb tasks`)." },
+                        "format": { "type": "string", "enum": ["markdown", "json", "tree", "ascii_tree", "nested_json"], "description": "Output format. 'markdown' returns a table (default); 'json' returns structured {total, showing, tasks[]}; 'tree' or 'ascii_tree' returns a hierarchical ASCII tree matching `pkb tasks`; 'nested_json' returns hierarchical JSON (brief metadata only). Default: 'markdown'." }
                     }
                 }))
                 .unwrap(),
             )
             .with_title("List Tasks")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "nested_tasks",
+                "List tasks in a hierarchical tree view grouped by project and epic (metadata only), mirroring the `pkb tasks` CLI command. Supports ASCII tree or brief JSON output. Ideal for understanding work hierarchy and structure without heavy body text or signal payloads.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "project": { "type": "string", "description": "Filter by project slug or any polecat.yaml alias (case-insensitive)." },
+                        "status": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ],
+                            "description": "Filter by task status (e.g. 'ready', 'blocked', 'in_progress')."
+                        },
+                        "intent": { "type": "integer", "description": "Filter to tasks whose effective intent ≤ N." },
+                        "severity": { "type": "integer", "description": "Filter by exact severity" },
+                        "goal_type": { "type": "string", "description": "Filter by goal type" },
+                        "assignee": { "type": "string", "description": "Filter by assignee" },
+                        "type": { "type": "string", "description": "Filter by document type (e.g. 'task', 'epic')" },
+                        "title_contains": { "type": "string", "description": "Filter by title substring (case-insensitive)" },
+                        "complexity": { "type": "string", "description": "Filter by complexity (e.g. 'low', 'medium', 'high')" },
+                        "weight_gte": { "type": "integer", "description": "Filter to tasks with downstream weight ≥ N" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags (all must match)." },
+                        "since": { "type": "string", "description": "Filter: return only tasks whose modified date is on or after YYYY-MM-DD." },
+                        "before": { "type": "string", "description": "Filter: return only tasks whose modified date is on or before YYYY-MM-DD." },
+                        "limit": { "type": "integer", "description": "Max results (default: 50)" },
+                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask). Default: false." },
+                        "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false." },
+                        "format": {
+                            "type": "string",
+                            "enum": ["tree", "ascii_tree", "json", "markdown"],
+                            "description": "Output format: 'tree' or 'ascii_tree' (default) returns an ASCII tree formatted like `pkb tasks`; 'json' returns hierarchical JSON with brief metadata only."
+                        }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("Nested Tasks Tree")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",

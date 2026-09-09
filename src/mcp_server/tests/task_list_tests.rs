@@ -1371,4 +1371,165 @@ use super::*;
         );
     }
 
+    #[test]
+    fn test_list_tasks_format_ascii_tree_and_nested_flag() {
+        let server = build_test_server();
+
+        // 1. list_tasks with format="ascii_tree"
+        let res_tree = server
+            .handle_list_tasks(&json!({"format": "ascii_tree"}))
+            .unwrap();
+        let text_tree = res_tree.content[0].raw.as_text().unwrap().text.as_str();
+
+        assert!(
+            text_tree.contains("├── ") || text_tree.contains("└── "),
+            "ascii_tree output must contain tree connectors: {text_tree}"
+        );
+        assert!(
+            text_tree.contains("▌"),
+            "ascii_tree output must contain context indicator ▌: {text_tree}"
+        );
+        assert!(
+            text_tree.contains("tasks"),
+            "ascii_tree output must contain task count footer: {text_tree}"
+        );
+        assert!(
+            !text_tree.contains("\x1b["),
+            "ascii_tree MCP output must not contain raw ANSI escape codes: {text_tree}"
+        );
+
+        // 2. list_tasks with format="tree"
+        let res_tree2 = server
+            .handle_list_tasks(&json!({"format": "tree"}))
+            .unwrap();
+        let text_tree2 = res_tree2.content[0].raw.as_text().unwrap().text.as_str();
+        assert!(text_tree2.contains("▌"));
+
+        // 3. list_tasks with nested=true (default format -> ascii_tree)
+        let res_nested = server
+            .handle_list_tasks(&json!({"nested": true}))
+            .unwrap();
+        let text_nested = res_nested.content[0].raw.as_text().unwrap().text.as_str();
+        assert!(text_nested.contains("▌"));
+        assert!(text_nested.contains("├── ") || text_nested.contains("└── "));
+
+        // 4. list_tasks with view="tree"
+        let res_view = server
+            .handle_list_tasks(&json!({"view": "tree"}))
+            .unwrap();
+        let text_view = res_view.content[0].raw.as_text().unwrap().text.as_str();
+        assert!(text_view.contains("▌"));
+    }
+
+    #[test]
+    fn test_list_tasks_nested_json_brief_metadata() {
+        let server = build_test_server();
+
+        // 1. list_tasks with nested=true and format="json"
+        let res = server
+            .handle_list_tasks(&json!({"nested": true, "format": "json"}))
+            .unwrap();
+        let text = res.content[0].raw.as_text().unwrap().text.as_str();
+        let val: serde_json::Value = serde_json::from_str(text).expect("nested json must be valid JSON");
+
+        assert!(val.get("total").is_some());
+        assert!(val.get("showing").is_some());
+
+        let tasks_arr = val.get("tasks").and_then(|v| v.as_array()).expect("must have tasks array");
+        assert!(!tasks_arr.is_empty(), "fixture tasks should be returned");
+
+        // Container epics should have children nested inside
+        let alpha_container = tasks_arr
+            .iter()
+            .find(|t| t.get("id").and_then(|id| id.as_str()) == Some("proj-alpha"))
+            .expect("proj-alpha container must exist in nested tree");
+
+        assert_eq!(
+            alpha_container.get("is_context").and_then(|v| v.as_bool()),
+            Some(true),
+            "ancestor container node must have is_context: true"
+        );
+
+        let alpha_children = alpha_container
+            .get("children")
+            .and_then(|c| c.as_array())
+            .expect("container must have children array");
+
+        assert!(
+            !alpha_children.is_empty(),
+            "proj-alpha must contain child tasks nested under it"
+        );
+
+        let a1_task = alpha_children
+            .iter()
+            .find(|t| t.get("id").and_then(|id| id.as_str()) == Some("task-a1"))
+            .expect("task-a1 must be nested under proj-alpha");
+
+        assert_eq!(a1_task.get("title").and_then(|t| t.as_str()), Some("Alpha Task 1"));
+        assert_eq!(a1_task.get("status").and_then(|s| s.as_str()), Some("ready"));
+        assert_eq!(a1_task.get("intent").and_then(|i| i.as_i64()), Some(1));
+
+        // Brief metadata: heavy signals and full body must NOT be present
+        assert!(a1_task.get("signals").is_none(), "brief metadata must not contain heavy signals object");
+        assert!(a1_task.get("body").is_none(), "brief metadata must not contain document body");
+
+        // 2. list_tasks with format="nested_json" should give the exact same nested JSON
+        let res_alias = server
+            .handle_list_tasks(&json!({"format": "nested_json"}))
+            .unwrap();
+        let val_alias: serde_json::Value = serde_json::from_str(
+            res_alias.content[0].raw.as_text().unwrap().text.as_str(),
+        ).expect("nested_json must be valid JSON");
+
+        assert_eq!(val["total"], val_alias["total"]);
+        assert_eq!(val["showing"], val_alias["showing"]);
+    }
+
+    #[test]
+    fn test_nested_tasks_tool_ascii_tree_and_json_options() {
+        let server = build_test_server();
+
+        // 1. nested_tasks defaults to ascii_tree
+        let res_default = server
+            .handle_nested_tasks(&json!({}))
+            .unwrap();
+        let text_default = res_default.content[0].raw.as_text().unwrap().text.as_str();
+        assert!(text_default.contains("▌"), "nested_tasks default must be ascii tree with ▌ context indicators");
+        assert!(text_default.contains("├── ") || text_default.contains("└── "));
+        assert!(!text_default.contains("\x1b["), "nested_tasks ascii tree must not contain ANSI escapes");
+
+        // 2. nested_tasks with format="json"
+        let res_json = server
+            .handle_nested_tasks(&json!({"format": "json"}))
+            .unwrap();
+        let text_json = res_json.content[0].raw.as_text().unwrap().text.as_str();
+        let val_json: serde_json::Value = serde_json::from_str(text_json).expect("nested_tasks json must be valid JSON");
+        assert!(val_json.get("tasks").is_some());
+
+        // 3. nested_tasks with filters: project="proj-alpha", status="ready"
+        let res_filtered = server
+            .handle_nested_tasks(&json!({
+                "project": "proj-alpha",
+                "status": "ready",
+                "format": "json"
+            }))
+            .unwrap();
+        let val_filtered: serde_json::Value = serde_json::from_str(
+            res_filtered.content[0].raw.as_text().unwrap().text.as_str(),
+        ).unwrap();
+        let tasks_filtered = val_filtered["tasks"].as_array().unwrap();
+        assert_eq!(tasks_filtered.len(), 1, "only proj-alpha container should be returned");
+        let children = tasks_filtered[0]["children"].as_array().unwrap();
+        for child in children {
+            assert_eq!(child["status"], "ready");
+        }
+
+        // 4. dispatch_tool_sync for "nested_tasks"
+        let res_dispatch = server
+            .dispatch_tool_sync("nested_tasks", &json!({"format": "tree"}))
+            .expect("dispatch_tool_sync for nested_tasks must succeed");
+        let text_dispatch = res_dispatch.content[0].raw.as_text().unwrap().text.as_str();
+        assert!(text_dispatch.contains("▌"));
+    }
+
 

@@ -1542,124 +1542,7 @@ async fn main() -> Result<()> {
                 );
             } else {
                 // ── Tree view (default) ──
-                use std::collections::HashSet;
                 let width = term_width();
-
-                // Build set of visible task IDs for filtering
-                let mut visible: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-
-                // Collect ancestor context nodes (projects, epics, goals)
-                let context_types = ["project", "epic"];
-                let mut context_ids: HashSet<String> = HashSet::new();
-
-                for task in &tasks {
-                    let mut current_id = task.parent.as_deref();
-                    while let Some(pid) = current_id {
-                        if visible.contains(pid) {
-                            break;
-                        }
-                        if context_ids.contains(pid) {
-                            break;
-                        }
-                        if let Some(parent_node) = gs.get_node(pid) {
-                            if parent_node
-                                .node_type
-                                .as_deref()
-                                .map(|t| context_types.contains(&t))
-                                .unwrap_or(false)
-                            {
-                                context_ids.insert(pid.to_string());
-                            }
-                            current_id = parent_node.parent.as_deref();
-                        } else {
-                            break;
-                        }
-                    }
-                }
-
-                for cid in &context_ids {
-                    visible.insert(cid.as_str());
-                }
-
-                // Sort siblings — context nodes first (by label), then tasks by canonical focus ranking
-                fn sort_siblings(nodes: &mut [&graph::GraphNode], context_ids: &HashSet<String>) {
-                    nodes.sort_by(|a, b| {
-                        let a_ctx = context_ids.contains(&a.id);
-                        let b_ctx = context_ids.contains(&b.id);
-                        match (a_ctx, b_ctx) {
-                            (true, false) => std::cmp::Ordering::Less,
-                            (false, true) => std::cmp::Ordering::Greater,
-                            (true, true) => a.label.cmp(&b.label),
-                            (false, false) => graph_store::GraphStore::focus_cmp(a, b),
-                        }
-                    });
-                }
-
-                // Recursive tree renderer
-                fn render_tree(
-                    gs: &graph_store::GraphStore,
-                    node: &graph::GraphNode,
-                    visible: &HashSet<&str>,
-                    context_ids: &HashSet<String>,
-                    prefix: &str,
-                    is_last: bool,
-                    output: &mut Vec<String>,
-                    width: usize,
-                ) {
-                    let connector = if is_last {
-                        "\u{2514}\u{2500}\u{2500} "
-                    } else {
-                        "\u{251C}\u{2500}\u{2500} "
-                    };
-                    let prefix_vis = strip_ansi(prefix).len() + 4;
-                    let available = width.saturating_sub(prefix_vis);
-
-                    let is_context = context_ids.contains(&node.id);
-                    let line = if is_context {
-                        let task_count = count_visible_tasks(gs, &node.id, visible, context_ids);
-                        format_context_line(node, task_count)
-                    } else {
-                        format_task_line(node, available)
-                    };
-                    output.push(format!("{prefix}{connector}{line}"));
-
-                    let mut children: Vec<&graph::GraphNode> = node
-                        .children
-                        .iter()
-                        .filter(|cid| visible.contains(cid.as_str()))
-                        .filter_map(|cid| gs.get_node(cid))
-                        .collect();
-                    sort_siblings(&mut children, context_ids);
-
-                    let child_prefix = if is_last {
-                        format!("{prefix}    ")
-                    } else {
-                        format!("{prefix}\u{2502}   ")
-                    };
-
-                    let mut prev_was_context = false;
-                    for (i, child) in children.iter().enumerate() {
-                        let child_is_last = i == children.len() - 1;
-                        let child_is_context = context_ids.contains(&child.id);
-
-                        // Breathing room between epic groups
-                        if child_is_context && prev_was_context && i > 0 {
-                            output.push(format!("{child_prefix}"));
-                        }
-
-                        render_tree(
-                            gs,
-                            child,
-                            visible,
-                            context_ids,
-                            &child_prefix,
-                            child_is_last,
-                            output,
-                            width,
-                        );
-                        prev_was_context = child_is_context;
-                    }
-                }
 
                 // ── Dashboard ──
                 println!();
@@ -1697,30 +1580,7 @@ async fn main() -> Result<()> {
                 let total = tasks.len();
                 println!();
 
-                let mut roots: Vec<&graph::GraphNode> = visible
-                    .iter()
-                    .filter_map(|id| gs.get_node(id))
-                    .filter(|n| match &n.parent {
-                        None => true,
-                        Some(pid) => !visible.contains(pid.as_str()),
-                    })
-                    .collect();
-                sort_siblings(&mut roots, &context_ids);
-
-                let mut lines: Vec<String> = Vec::new();
-                for (i, root) in roots.iter().enumerate() {
-                    let is_last = i == roots.len() - 1;
-                    render_tree(
-                        &gs,
-                        root,
-                        &visible,
-                        &context_ids,
-                        "",
-                        is_last,
-                        &mut lines,
-                        width,
-                    );
-                }
+                let lines = graph_display::render_nested_task_ascii_tree(&gs, &tasks, width, false);
                 for line in &lines {
                     println!("{line}");
                 }

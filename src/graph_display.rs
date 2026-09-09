@@ -1,3 +1,4 @@
+use crate::graph::GraphNode;
 use crate::graph_store::GraphStore;
 use std::collections::HashSet;
 
@@ -729,6 +730,451 @@ pub fn render_neighbourhood(
     }
 
     out
+}
+
+// ── Nested Task Tree Display & Brief JSON ─────────────────────────────────────
+
+/// Brief metadata for a node in a nested task tree.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct NestedTaskNode {
+    pub id: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_intent: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downstream_weight: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub complexity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_context: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<bool>,
+    pub children: Vec<NestedTaskNode>,
+}
+
+fn strip_ansi(s: &str) -> String {
+    static RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap());
+    RE.replace_all(s, "").to_string()
+}
+
+pub fn days_since_created(created: Option<&str>) -> Option<i64> {
+    let created = created?;
+    if created.len() < 10 {
+        return None;
+    }
+    let created_dt = chrono::NaiveDate::parse_from_str(&created[..10], "%Y-%m-%d").ok()?;
+    let today = chrono::Utc::now().date_naive();
+    Some((today - created_dt).num_days())
+}
+
+pub fn format_context_line(node: &GraphNode, child_task_count: usize, plain: bool) -> String {
+    let ntype = node.node_type.as_deref().unwrap_or("group");
+    let tid = node.task_id.as_deref().unwrap_or(&node.id);
+
+    let count_str = if child_task_count > 0 {
+        if plain {
+            format!(" ({child_task_count})")
+        } else {
+            format!(" \x1b[2m({child_task_count})\x1b[0m")
+        }
+    } else {
+        String::new()
+    };
+
+    if plain {
+        format!("▌ {}{count_str}  [{tid}]", node.label)
+    } else {
+        let block_color = match ntype {
+            "epic" => "\x1b[36m",
+            "goal" => "\x1b[33m",
+            "project" => "\x1b[1;36m",
+            _ => "\x1b[2m",
+        };
+        format!(
+            "{block_color}▌\x1b[0m \x1b[1m{}\x1b[0m{count_str}  \x1b[2;37m[{tid}]\x1b[0m",
+            node.label,
+        )
+    }
+}
+
+pub fn format_task_line(task: &GraphNode, width: usize, plain: bool) -> String {
+    let pri = task.intent.unwrap_or(4);
+    let exposure = if task.stakeholder_exposure { "!" } else { " " };
+
+    let left = if plain {
+        format!("P{pri}{exposure} {}", task.label)
+    } else {
+        let color = match pri {
+            0 => "\x1b[1;31m",
+            1 => "\x1b[31m",
+            2 => "\x1b[33m",
+            _ => "\x1b[34m",
+        };
+        format!("{color}P{pri}{exposure}\x1b[0m {}", task.label)
+    };
+
+    let mut right_parts: Vec<String> = Vec::new();
+
+    if task.downstream_weight > 0.0 {
+        let wt = format!("wt:{:.1}", task.downstream_weight);
+        if plain {
+            right_parts.push(wt);
+        } else {
+            right_parts.push(format!("\x1b[2m{wt}\x1b[0m"));
+        }
+    }
+    if let Some(ref cx) = task.complexity {
+        if plain {
+            right_parts.push(format!("[{cx}]"));
+        } else {
+            right_parts.push(format!("\x1b[2m[{cx}]\x1b[0m"));
+        }
+    }
+    if let Some(ref due) = task.due {
+        if plain {
+            let len = std::cmp::min(10, due.len());
+            let due_str = &due[..due.floor_char_boundary(len)];
+            right_parts.push(format!("due:{due_str}"));
+        } else {
+            let today = chrono::Utc::now().date_naive();
+            let len = std::cmp::min(10, due.len());
+            let due_substr = &due[..due.floor_char_boundary(len)];
+            let color = if let Ok(due_date) = chrono::NaiveDate::parse_from_str(due_substr, "%Y-%m-%d") {
+                let days_until = (due_date - today).num_days();
+                if days_until < 0 {
+                    "\x1b[31m"
+                } else if days_until <= 7 {
+                    "\x1b[33m"
+                } else {
+                    "\x1b[2m"
+                }
+            } else {
+                "\x1b[2m"
+            };
+            right_parts.push(format!("{color}due:{due_substr}\x1b[0m"));
+        }
+    }
+    if let Some(days) = days_since_created(task.created.as_deref()) {
+        if plain {
+            right_parts.push(format!("{days}d"));
+        } else {
+            let color = if days > 30 {
+                "\x1b[31m"
+            } else if days >= 14 {
+                "\x1b[33m"
+            } else {
+                "\x1b[2m"
+            };
+            right_parts.push(format!("{color}{days}d\x1b[0m"));
+        }
+    }
+    let tid = task.task_id.as_deref().unwrap_or(&task.id);
+    if plain {
+        right_parts.push(format!("[{tid}]"));
+    } else {
+        right_parts.push(format!("\x1b[2;37m[{tid}]\x1b[0m"));
+    }
+
+    let right = right_parts.join("  ");
+
+    let left_len = if plain { left.chars().count() } else { strip_ansi(&left).chars().count() };
+    let right_len = if plain { right.chars().count() } else { strip_ansi(&right).chars().count() };
+    let padding = width
+        .saturating_sub(left_len)
+        .saturating_sub(right_len)
+        .max(2);
+
+    format!("{left}{:>pad$}{right}", "", pad = padding)
+}
+
+pub fn sort_siblings(nodes: &mut [&GraphNode], context_ids: &HashSet<String>) {
+    nodes.sort_by(|a, b| {
+        let a_ctx = context_ids.contains(&a.id);
+        let b_ctx = context_ids.contains(&b.id);
+        match (a_ctx, b_ctx) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (true, true) => a.label.cmp(&b.label),
+            (false, false) => GraphStore::focus_cmp(a, b),
+        }
+    });
+}
+
+pub fn count_visible_tasks(
+    gs: &GraphStore,
+    node_id: &str,
+    visible: &HashSet<&str>,
+    context_ids: &HashSet<String>,
+) -> usize {
+    let mut count = 0;
+    if let Some(node) = gs.get_node(node_id) {
+        for cid in &node.children {
+            if !visible.contains(cid.as_str()) {
+                continue;
+            }
+            if context_ids.contains(cid) {
+                count += count_visible_tasks(gs, cid, visible, context_ids);
+            } else {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+pub fn collect_tree_roots<'a>(
+    gs: &'a GraphStore,
+    tasks: &[&'a GraphNode],
+) -> (Vec<&'a GraphNode>, HashSet<&'a str>, HashSet<String>) {
+    let mut visible: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+    let context_types = ["project", "epic", "goal"];
+    let mut context_ids: HashSet<String> = HashSet::new();
+
+    for task in tasks {
+        let mut current_id = task.parent.as_deref();
+        let mut visited_ancestors = HashSet::new();
+        visited_ancestors.insert(task.id.as_str());
+
+        while let Some(pid) = current_id {
+            if !visited_ancestors.insert(pid) {
+                break;
+            }
+            if visible.contains(pid) || context_ids.contains(pid) {
+                break;
+            }
+            if let Some(parent_node) = gs.get_node(pid) {
+                if parent_node
+                    .node_type
+                    .as_deref()
+                    .map(|t| context_types.contains(&t))
+                    .unwrap_or(false)
+                {
+                    context_ids.insert(pid.to_string());
+                }
+                current_id = parent_node.parent.as_deref();
+            } else {
+                break;
+            }
+        }
+    }
+
+    for cid in &context_ids {
+        visible.insert(cid.as_str());
+    }
+
+    let mut roots: Vec<&GraphNode> = visible
+        .iter()
+        .filter_map(|id| gs.get_node(id))
+        .filter(|n| match &n.parent {
+            None => true,
+            Some(pid) => !visible.contains(pid.as_str()),
+        })
+        .collect();
+
+    sort_siblings(&mut roots, &context_ids);
+
+    (roots, visible, context_ids)
+}
+
+fn render_tree_ascii_node(
+    gs: &GraphStore,
+    node: &GraphNode,
+    visible: &HashSet<&str>,
+    context_ids: &HashSet<String>,
+    prefix: &str,
+    is_last: bool,
+    output: &mut Vec<String>,
+    width: usize,
+    plain: bool,
+    ancestor_path: &mut HashSet<String>,
+) {
+    if !ancestor_path.insert(node.id.clone()) {
+        return;
+    }
+
+    let connector = if is_last {
+        "└── "
+    } else {
+        "├── "
+    };
+    let prefix_vis = if plain {
+        prefix.chars().count() + 4
+    } else {
+        strip_ansi(prefix).chars().count() + 4
+    };
+    let available = width.saturating_sub(prefix_vis);
+
+    let is_context = context_ids.contains(&node.id);
+    let line = if is_context {
+        let task_count = count_visible_tasks(gs, &node.id, visible, context_ids);
+        format_context_line(node, task_count, plain)
+    } else {
+        format_task_line(node, available, plain)
+    };
+    output.push(format!("{prefix}{connector}{line}"));
+
+    let mut children: Vec<&GraphNode> = node
+        .children
+        .iter()
+        .filter(|cid| visible.contains(cid.as_str()))
+        .filter_map(|cid| gs.get_node(cid))
+        .collect();
+    sort_siblings(&mut children, context_ids);
+
+    let child_prefix = if is_last {
+        format!("{prefix}    ")
+    } else {
+        format!("{prefix}│   ")
+    };
+
+    let mut prev_was_context = false;
+    for (i, child) in children.iter().enumerate() {
+        let child_is_last = i == children.len() - 1;
+        let child_is_context = context_ids.contains(&child.id);
+
+        if child_is_context && prev_was_context && i > 0 {
+            output.push(child_prefix.clone());
+        }
+
+        render_tree_ascii_node(
+            gs,
+            child,
+            visible,
+            context_ids,
+            &child_prefix,
+            child_is_last,
+            output,
+            width,
+            plain,
+            ancestor_path,
+        );
+        prev_was_context = child_is_context;
+    }
+
+    ancestor_path.remove(&node.id);
+}
+
+pub fn render_nested_task_ascii_tree(
+    gs: &GraphStore,
+    tasks: &[&GraphNode],
+    width: usize,
+    plain: bool,
+) -> Vec<String> {
+    let (roots, visible, context_ids) = collect_tree_roots(gs, tasks);
+    let mut lines = Vec::new();
+    let mut ancestor_path = HashSet::new();
+
+    for (i, root) in roots.iter().enumerate() {
+        let is_last = i == roots.len() - 1;
+        render_tree_ascii_node(
+            gs,
+            root,
+            &visible,
+            &context_ids,
+            "",
+            is_last,
+            &mut lines,
+            width,
+            plain,
+            &mut ancestor_path,
+        );
+    }
+    lines
+}
+
+fn build_nested_json_node(
+    gs: &GraphStore,
+    node: &GraphNode,
+    visible: &HashSet<&str>,
+    context_ids: &HashSet<String>,
+    ancestor_path: &mut HashSet<String>,
+) -> NestedTaskNode {
+    let tid = node.task_id.as_deref().unwrap_or(&node.id).to_string();
+    let is_ctx = context_ids.contains(&node.id);
+
+    if !ancestor_path.insert(node.id.clone()) {
+        return NestedTaskNode {
+            id: tid,
+            title: node.label.clone(),
+            node_type: node.node_type.clone(),
+            status: node.status.clone(),
+            intent: node.intent,
+            effective_intent: node.effective_intent,
+            downstream_weight: if node.downstream_weight > 0.0 {
+                Some(node.downstream_weight)
+            } else {
+                None
+            },
+            complexity: node.complexity.clone(),
+            due: node.due.clone(),
+            assignee: node.assignee.clone(),
+            project: node.project.clone(),
+            is_context: if is_ctx { Some(true) } else { None },
+            blocked: if is_ctx { None } else { Some(gs.is_blocked(&node.id)) },
+            children: Vec::new(),
+        };
+    }
+
+    let mut children_nodes: Vec<&GraphNode> = node
+        .children
+        .iter()
+        .filter(|cid| visible.contains(cid.as_str()))
+        .filter_map(|cid| gs.get_node(cid))
+        .collect();
+    sort_siblings(&mut children_nodes, context_ids);
+
+    let children = children_nodes
+        .into_iter()
+        .map(|child| build_nested_json_node(gs, child, visible, context_ids, ancestor_path))
+        .collect();
+
+    ancestor_path.remove(&node.id);
+
+    NestedTaskNode {
+        id: tid,
+        title: node.label.clone(),
+        node_type: node.node_type.clone(),
+        status: node.status.clone(),
+        intent: node.intent,
+        effective_intent: node.effective_intent,
+        downstream_weight: if node.downstream_weight > 0.0 {
+            Some(node.downstream_weight)
+        } else {
+            None
+        },
+        complexity: node.complexity.clone(),
+        due: node.due.clone(),
+        assignee: node.assignee.clone(),
+        project: node.project.clone(),
+        is_context: if is_ctx { Some(true) } else { None },
+        blocked: if is_ctx { None } else { Some(gs.is_blocked(&node.id)) },
+        children,
+    }
+}
+
+pub fn build_nested_task_json(
+    gs: &GraphStore,
+    tasks: &[&GraphNode],
+) -> Vec<NestedTaskNode> {
+    let (roots, visible, context_ids) = collect_tree_roots(gs, tasks);
+    let mut ancestor_path = HashSet::new();
+    roots
+        .into_iter()
+        .map(|root| build_nested_json_node(gs, root, &visible, &context_ids, &mut ancestor_path))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1540,4 +1986,157 @@ mod tests {
         assert!(combined.contains("\u{2605} Lonely"));
         assert!(combined.contains("no dependency relationships"));
     }
-}
+
+    #[test]
+    fn test_nested_task_ascii_tree_renders_hierarchy_and_metadata() {
+        let mut fm_a = serde_json::Map::new();
+        fm_a.insert("title".to_string(), serde_json::json!("Task A"));
+        fm_a.insert("type".to_string(), serde_json::json!("task"));
+        fm_a.insert("status".to_string(), serde_json::json!("ready"));
+        fm_a.insert("id".to_string(), serde_json::json!("task-a"));
+        fm_a.insert("priority".to_string(), serde_json::json!(1));
+        fm_a.insert("parent".to_string(), serde_json::json!("epic-1"));
+        fm_a.insert("due".to_string(), serde_json::json!("2026-09-15"));
+        fm_a.insert("complexity".to_string(), serde_json::json!("medium"));
+
+        let mut fm_b = serde_json::Map::new();
+        fm_b.insert("title".to_string(), serde_json::json!("Task B"));
+        fm_b.insert("type".to_string(), serde_json::json!("task"));
+        fm_b.insert("status".to_string(), serde_json::json!("blocked"));
+        fm_b.insert("id".to_string(), serde_json::json!("task-b"));
+        fm_b.insert("priority".to_string(), serde_json::json!(2));
+        fm_b.insert("parent".to_string(), serde_json::json!("epic-1"));
+
+        let mut fm_lone = serde_json::Map::new();
+        fm_lone.insert("title".to_string(), serde_json::json!("Orphan Task"));
+        fm_lone.insert("type".to_string(), serde_json::json!("task"));
+        fm_lone.insert("status".to_string(), serde_json::json!("ready"));
+        fm_lone.insert("id".to_string(), serde_json::json!("orphan-1"));
+        fm_lone.insert("priority".to_string(), serde_json::json!(0));
+
+        let docs = vec![
+            make_doc("tasks/epic-1.md", "Epic One", "epic", "active", "epic-1", None, &[]),
+            PkbDocument {
+                path: PathBuf::from("tasks/task-a.md"),
+                title: "Task A".to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("ready".to_string()),
+                consolidated: None,
+                consolidated_at: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm_a)),
+                modified: None,
+                content_hash: String::new(),
+                file_hash: String::new(),
+            },
+            PkbDocument {
+                path: PathBuf::from("tasks/task-b.md"),
+                title: "Task B".to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("blocked".to_string()),
+                consolidated: None,
+                consolidated_at: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm_b)),
+                modified: None,
+                content_hash: String::new(),
+                file_hash: String::new(),
+            },
+            PkbDocument {
+                path: PathBuf::from("tasks/orphan.md"),
+                title: "Orphan Task".to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("ready".to_string()),
+                consolidated: None,
+                consolidated_at: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm_lone)),
+                modified: None,
+                content_hash: String::new(),
+                file_hash: String::new(),
+            },
+        ];
+
+        let gs = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let node_a = gs.get_node("task-a").unwrap();
+        let node_b = gs.get_node("task-b").unwrap();
+        let node_lone = gs.get_node("orphan-1").unwrap();
+
+        let lines = render_nested_task_ascii_tree(&gs, &[node_a, node_b, node_lone], 100, true);
+        let output = lines.join("\n");
+
+        // Epic One should appear as a context container with count 2
+        assert!(output.contains("▌ Epic One (2)  [epic-1]"), "expected context epic in output:\n{output}");
+        // Both tasks should be nested with priority and metadata
+        assert!(output.contains("P1  Task A"), "expected Task A line in output:\n{output}");
+        assert!(output.contains("[medium]"), "expected complexity on Task A in output:\n{output}");
+        assert!(output.contains("due:2026-09-15"), "expected due date on Task A in output:\n{output}");
+        assert!(output.contains("P2  Task B"), "expected Task B line in output:\n{output}");
+        // Orphan task should be a root
+        assert!(output.contains("P0  Orphan Task"), "expected Orphan Task in output:\n{output}");
+        // Connectors should be used
+        assert!(output.contains("├── ") || output.contains("└── "), "expected box drawing connectors in output:\n{output}");
+        // Plain output must not contain raw ANSI escapes
+        assert!(!output.contains("\x1b["), "plain output should have no ANSI escapes:\n{output}");
+    }
+
+    #[test]
+    fn test_nested_task_json_structure_brief_metadata() {
+        let mut fm_a = serde_json::Map::new();
+        fm_a.insert("title".to_string(), serde_json::json!("Task A"));
+        fm_a.insert("type".to_string(), serde_json::json!("task"));
+        fm_a.insert("status".to_string(), serde_json::json!("ready"));
+        fm_a.insert("id".to_string(), serde_json::json!("task-a"));
+        fm_a.insert("priority".to_string(), serde_json::json!(1));
+        fm_a.insert("parent".to_string(), serde_json::json!("epic-1"));
+        fm_a.insert("complexity".to_string(), serde_json::json!("low"));
+
+        let docs = vec![
+            make_doc("tasks/epic-1.md", "Epic One", "epic", "active", "epic-1", None, &[]),
+            PkbDocument {
+                path: PathBuf::from("tasks/task-a.md"),
+                title: "Task A".to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some("ready".to_string()),
+                consolidated: None,
+                consolidated_at: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm_a)),
+                modified: None,
+                content_hash: String::new(),
+                file_hash: String::new(),
+            },
+        ];
+
+        let gs = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
+        let node_a = gs.get_node("task-a").unwrap();
+
+        let json_tree = build_nested_task_json(&gs, &[node_a]);
+        assert_eq!(json_tree.len(), 1, "expected 1 root (epic-1)");
+
+        let root = &json_tree[0];
+        assert_eq!(root.id, "epic-1");
+        assert_eq!(root.title, "Epic One");
+        assert_eq!(root.is_context, Some(true));
+        assert_eq!(root.children.len(), 1);
+
+        let child = &root.children[0];
+        assert_eq!(child.id, "task-a");
+        assert_eq!(child.title, "Task A");
+        assert_eq!(child.status.as_deref(), Some("ready"));
+        assert_eq!(child.intent, Some(1));
+        assert_eq!(child.complexity.as_deref(), Some("low"));
+        assert_eq!(child.is_context, None);
+        assert_eq!(child.children.len(), 0);
+
+        // Serialize and verify JSON structure
+        let serialized = serde_json::to_string_pretty(&json_tree).unwrap();
+        assert!(serialized.contains("\"id\": \"epic-1\""));
+        assert!(serialized.contains("\"id\": \"task-a\""));
+        assert!(!serialized.contains("\"signals\""), "brief metadata JSON must not contain signals");
+        assert!(!serialized.contains("\"body\""), "brief metadata JSON must not contain body");
+    }

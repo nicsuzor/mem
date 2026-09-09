@@ -1048,6 +1048,17 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    pub(crate) fn handle_nested_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let mut forwarded = args.clone();
+        if let Some(obj) = forwarded.as_object_mut() {
+            obj.insert("nested".to_string(), serde_json::json!(true));
+            if !obj.contains_key("format") {
+                obj.insert("format".to_string(), serde_json::json!("tree"));
+            }
+        }
+        self.handle_list_tasks(&forwarded)
+    }
+
     pub(crate) fn handle_list_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let status_filter = parse_status_filter(args.get("status"))?;
         let intent = args
@@ -1309,6 +1320,67 @@ impl PkbSearchServer {
 
         let total = tasks.len();
         tasks.truncate(limit);
+
+        let nested = args
+            .get("nested")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || args
+                .get("view")
+                .and_then(|v| v.as_str())
+                .map(|v| v.eq_ignore_ascii_case("tree"))
+                .unwrap_or(false);
+
+        let is_ascii_tree = format.eq_ignore_ascii_case("tree")
+            || format.eq_ignore_ascii_case("ascii_tree")
+            || (nested && (format.eq_ignore_ascii_case("markdown") || format.eq_ignore_ascii_case("tree") || format.eq_ignore_ascii_case("ascii_tree")));
+
+        let is_nested_json = format.eq_ignore_ascii_case("nested_json")
+            || format.eq_ignore_ascii_case("json_tree")
+            || (nested && format.eq_ignore_ascii_case("json"));
+
+        if is_nested_json {
+            let json_tasks = crate::graph_display::build_nested_task_json(&graph, &tasks);
+            let mut result = serde_json::json!({
+                "total": total,
+                "showing": tasks.len(),
+                "tasks": json_tasks,
+            });
+            if let Some((disk_count, index_count)) = staleness {
+                if let Some(obj) = result.as_object_mut() {
+                    obj.insert(
+                        "index_warning".to_string(),
+                        serde_json::json!({
+                            "message": "the in-memory index disagrees with disk; results above may under- or over-count. Call refresh_graph and retry.",
+                            "disk_file_count": disk_count,
+                            "index_node_count": index_count,
+                        }),
+                    );
+                }
+            }
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            )]));
+        }
+
+        if is_ascii_tree {
+            let tree_lines = crate::graph_display::render_nested_task_ascii_tree(&graph, &tasks, 100, true);
+            let mut out = tree_lines.join("\n");
+            let count_label = if total != tasks.len() {
+                format!("\n\n  {} tasks (showing {})", total, tasks.len())
+            } else {
+                format!("\n\n  {} tasks", total)
+            };
+            out.push_str(&count_label);
+            if let Some((disk_count, index_count)) = staleness {
+                out.push_str(&format!(
+                    "\n\nWARNING: the in-memory index ({index_count} nodes) disagrees \
+                     with disk ({disk_count} files) — results above may under- or over-count. \
+                     Call refresh_graph and retry."
+                ));
+            }
+            return Ok(CallToolResult::success(vec![Content::text(out)]));
+        }
 
         // JSON output mode
         if format.eq_ignore_ascii_case("json") {
