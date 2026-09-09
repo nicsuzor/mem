@@ -227,6 +227,14 @@ impl PkbSearchServer {
     // =========================================================================
 
     pub(crate) fn handle_create_memory(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        if args.get("filename").is_some() || args.get("path").is_some() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("filename and path arguments are no longer supported. Use dir and project instead."),
+                data: None,
+            });
+        }
+
         let title = args
             .get("title")
             .and_then(|v| v.as_str())
@@ -261,6 +269,14 @@ impl PkbSearchServer {
             confidence: args.get("confidence").and_then(|v| v.as_f64()),
             supersedes: args
                 .get("supersedes")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            project: args
+                .get("project")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            dir: args
+                .get("dir")
                 .and_then(|v| v.as_str())
                 .map(String::from),
         };
@@ -319,6 +335,14 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_create_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        if args.get("filename").is_some() || args.get("path").is_some() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("filename and path arguments are no longer supported. Use dir instead."),
+                data: None,
+            });
+        }
+
         let title = args
             .get("title")
             .and_then(|v| v.as_str())

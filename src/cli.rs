@@ -256,15 +256,19 @@ enum Commands {
         depends_on: Option<Vec<String>>,
 
         /// Assignee
-        #[arg(short, long)]
+        #[arg(long)]
         assignee: Option<String>,
 
-        /// Complexity (mechanical, requires-judgment, multi-step, needs-decomposition, blocked-human)
-        #[arg(long)]
+        /// Complexity/Size
+        #[arg(short, long)]
         complexity: Option<String>,
 
-        /// Body text / description
-        #[arg(short, long)]
+        /// Override subdirectory placement
+        #[arg(long)]
+        dir: Option<String>,
+
+        /// Markdown body
+        #[arg(long)]
         body: Option<String>,
     },
 
@@ -2009,6 +2013,7 @@ async fn main() -> Result<()> {
             depends_on,
             assignee,
             complexity,
+            dir,
             body,
         } => {
             let title_str = title.join(" ");
@@ -2074,6 +2079,7 @@ async fn main() -> Result<()> {
                 depends_on: depends_on.unwrap_or_default(),
                 assignee,
                 complexity,
+                dir,
                 body,
                 ..Default::default()
             };

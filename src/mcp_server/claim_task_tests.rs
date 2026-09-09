@@ -667,7 +667,7 @@ project: aops
         );
 
         // 2. The task file must exist on disk with bounded filename
-        let tasks_dir = root.join("tasks");
+        let tasks_dir = root.join("adhoc-sessions");
         let entries: Vec<_> = std::fs::read_dir(&tasks_dir)
             .unwrap()
             .map(|r| r.unwrap().file_name().to_string_lossy().to_string())
@@ -680,7 +680,7 @@ project: aops
 
         // Filename stem (excluding .md) has slug capped at 80 chars
         let stem = matching_file.strip_suffix(".md").unwrap();
-        let slug_part = stem.strip_prefix(&format!("{task_id}-")).unwrap_or(stem);
+        let slug_part = stem.strip_prefix(&format!("{task_id}_")).unwrap_or(stem);
         assert!(
             slug_part.len() <= 80,
             "slug portion of filename must be <= 80 chars, got {} (length {})",

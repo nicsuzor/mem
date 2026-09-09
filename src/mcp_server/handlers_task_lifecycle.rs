@@ -1559,6 +1559,7 @@ impl PkbSearchServer {
                     .get("consequence")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                dir: None,
                 project: subtask
                     .get("project")
                     .and_then(|v| v.as_str())

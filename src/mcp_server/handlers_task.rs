@@ -133,6 +133,14 @@ pub(crate) fn parse_status_filter(val: Option<&JsonValue>) -> Result<Option<Vec<
 
 impl PkbSearchServer {
     pub(crate) fn handle_create_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        if args.get("filename").is_some() || args.get("path").is_some() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("filename and path arguments are no longer supported. Use dir and project instead."),
+                data: None,
+            });
+        }
+
         // Accept `title` (preferred) or `task_title` (alias — some skill docs use this name)
         let title = args
             .get("title")
@@ -173,6 +181,7 @@ impl PkbSearchServer {
                 "waiting_since",
                 "due",
                 "project",
+                "dir",
                 "type",
                 "status",
                 "session_id",
@@ -291,6 +300,7 @@ impl PkbSearchServer {
                 .map(String::from),
             due: args.get("due").and_then(|v| v.as_str()).map(String::from),
             project,
+            dir: args.get("dir").and_then(|v| v.as_str()).map(String::from),
             task_type: args.get("type").and_then(|v| v.as_str()).map(String::from),
             status: args
                 .get("status")

@@ -26,9 +26,9 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "seed_id": { "type": "string", "description": "The seed node ID being consolidated" },
-                        "updates": { 
-                            "type": "object", 
-                            "description": "Map of node ID to frontmatter modifications and/or 'body' replacement." 
+                        "updates": {
+                            "type": "object",
+                            "description": "Map of node ID to frontmatter modifications and/or 'body' replacement."
                         },
                         "dry_run": {
                             "type": "boolean",
