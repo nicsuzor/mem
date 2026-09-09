@@ -348,7 +348,7 @@ pub fn lint_file(
         .data
         .as_ref()
         .and_then(|d| d.deserialize::<serde_json::Value>().ok())
-        .and_then(|v| if v.is_object() { Some(v) } else { None });
+        .filter(|v| v.is_object());
     let used_fallback = yaml_ok.is_none() && content.starts_with("---");
     let fm_data = yaml_ok.or_else(|| fallback_parse_frontmatter(&content));
 
@@ -757,8 +757,7 @@ fn check_frontmatter(
             diags.push(Diagnostic {
                 severity: Severity::Style,
                 rule: "fm-block-scalar-whitespace",
-                message: "YAML block-scalar value in frontmatter has leading blank line(s)"
-                    .into(),
+                message: "YAML block-scalar value in frontmatter has leading blank line(s)".into(),
                 line: None,
                 fixable: true,
             });
@@ -858,7 +857,9 @@ fn check_frontmatter(
         // `supersedes` accepts a scalar, comma-joined string, or YAML
         // sequence (mem_8035b002) — check every named target, not just a
         // bare scalar.
-        for ref_id in crate::graph::parse_string_array(&serde_json::Value::Object(fm.clone()), "supersedes") {
+        for ref_id in
+            crate::graph::parse_string_array(&serde_json::Value::Object(fm.clone()), "supersedes")
+        {
             if !known_ids.contains(ref_id.as_str()) {
                 diags.push(Diagnostic {
                     severity: Severity::Warning,
@@ -932,29 +933,31 @@ fn check_frontmatter(
         // Parentless node check: severity depends on whether the node has children.
         // A node with children (scope > 0) but no parent is likely a structural gap.
         // A standalone leaf with no parent is valid under the information-theoretic model.
-        if (node_type == "task" || node_type == "epic")
-            && !fm.contains_key("parent") {
-                let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let has_children = children_set.map(|cs| cs.contains(node_id)).unwrap_or(false);
-                let (severity, message) = if has_children {
-                    (
-                        Severity::Warning,
-                        format!("Type '{}' has children but no parent — consider connecting to the graph", node_type),
-                    )
-                } else {
-                    (
-                        Severity::Style,
-                        format!("Type '{}' has no parent (standalone leaf)", node_type),
-                    )
-                };
-                diags.push(Diagnostic {
-                    severity,
-                    rule: "task-no-parent",
-                    message,
-                    line: None,
-                    fixable: false,
-                });
-            }
+        if (node_type == "task" || node_type == "epic") && !fm.contains_key("parent") {
+            let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let has_children = children_set.map(|cs| cs.contains(node_id)).unwrap_or(false);
+            let (severity, message) = if has_children {
+                (
+                    Severity::Warning,
+                    format!(
+                        "Type '{}' has children but no parent — consider connecting to the graph",
+                        node_type
+                    ),
+                )
+            } else {
+                (
+                    Severity::Style,
+                    format!("Type '{}' has no parent (standalone leaf)", node_type),
+                )
+            };
+            diags.push(Diagnostic {
+                severity,
+                rule: "task-no-parent",
+                message,
+                line: None,
+                fixable: false,
+            });
+        }
 
         // Triage lint: missing acceptance criteria (demoted from scoring proxy in Phase 3)
         if node_type == "task" && !graph::detect_acceptance_criteria(content) {
@@ -1078,8 +1081,7 @@ fn is_block_scalar_opener(line: &str) -> bool {
 fn has_leading_blank_block_scalar(fm_section: &str) -> bool {
     let lines: Vec<&str> = fm_section.lines().collect();
     lines.iter().enumerate().any(|(i, line)| {
-        is_block_scalar_opener(line)
-            && lines.get(i + 1).is_some_and(|next| next.trim().is_empty())
+        is_block_scalar_opener(line) && lines.get(i + 1).is_some_and(|next| next.trim().is_empty())
     })
 }
 
@@ -1167,7 +1169,12 @@ fn fix_project_alias(content: &str, old_proj: &str, new_proj: &str) -> String {
                 let stripped_val = val_part.trim_matches(|c| c == '"' || c == '\'');
                 if stripped_val == old_proj {
                     let indent = line.len() - line.trim_start().len();
-                    lines.push(format!("{:indent$}project: {}", "", new_proj, indent = indent));
+                    lines.push(format!(
+                        "{:indent$}project: {}",
+                        "",
+                        new_proj,
+                        indent = indent
+                    ));
                     replaced = true;
                     continue;
                 }
@@ -1215,7 +1222,11 @@ fn apply_fixes(
         }
 
         // Fix 4: Fix "p1"/"P2" style intent → integer
-        if let Some(s) = fm.get("intent").or_else(|| fm.get("priority")).and_then(|v| v.as_str()) {
+        if let Some(s) = fm
+            .get("intent")
+            .or_else(|| fm.get("priority"))
+            .and_then(|v| v.as_str())
+        {
             let stripped = s.strip_prefix('p').or_else(|| s.strip_prefix('P'));
             if let Some(num_str) = stripped {
                 if let Ok(n) = num_str.parse::<i64>() {
@@ -1355,46 +1366,45 @@ fn apply_fixes(
                 }
 
                 // Add to depends_on
-                if !tasks_to_add.is_empty()
-                    && result.starts_with("---\n") {
-                        if let Some(fm_end_rel) = result[3..].find("\n---") {
-                            let fm_end = fm_end_rel + 3;
-                            let fm_section = &result[4..fm_end];
-                            let mut lines: Vec<String> =
-                                fm_section.lines().map(|l| l.to_string()).collect();
-                            // Find the insertion point: after all existing list items under
-                            // depends_on:, or append a new depends_on: block if absent.
-                            let mut insert_idx: Option<usize> = None;
-                            let mut in_depends_on = false;
-                            for (i, line) in lines.iter().enumerate() {
-                                if line.starts_with("depends_on:") {
-                                    in_depends_on = true;
+                if !tasks_to_add.is_empty() && result.starts_with("---\n") {
+                    if let Some(fm_end_rel) = result[3..].find("\n---") {
+                        let fm_end = fm_end_rel + 3;
+                        let fm_section = &result[4..fm_end];
+                        let mut lines: Vec<String> =
+                            fm_section.lines().map(|l| l.to_string()).collect();
+                        // Find the insertion point: after all existing list items under
+                        // depends_on:, or append a new depends_on: block if absent.
+                        let mut insert_idx: Option<usize> = None;
+                        let mut in_depends_on = false;
+                        for (i, line) in lines.iter().enumerate() {
+                            if line.starts_with("depends_on:") {
+                                in_depends_on = true;
+                                insert_idx = Some(i + 1);
+                            } else if in_depends_on {
+                                if line.starts_with("  - ") || line.starts_with("- ") {
                                     insert_idx = Some(i + 1);
-                                } else if in_depends_on {
-                                    if line.starts_with("  - ") || line.starts_with("- ") {
-                                        insert_idx = Some(i + 1);
-                                    } else {
-                                        break;
-                                    }
+                                } else {
+                                    break;
                                 }
                             }
-                            let formatted: Vec<String> =
-                                tasks_to_add.iter().map(|t| format!("  - {}", t)).collect();
-                            if let Some(idx) = insert_idx {
-                                for (offset, item) in formatted.into_iter().enumerate() {
-                                    lines.insert(idx + offset, item);
-                                }
-                            } else {
-                                lines.push("depends_on:".to_string());
-                                lines.extend(formatted);
-                            }
-                            let mut new_fm = lines.join("\n");
-                            if !new_fm.ends_with('\n') {
-                                new_fm.push('\n');
-                            }
-                            result = format!("---\n{}---{}", new_fm, &result[fm_end + 4..]);
                         }
+                        let formatted: Vec<String> =
+                            tasks_to_add.iter().map(|t| format!("  - {}", t)).collect();
+                        if let Some(idx) = insert_idx {
+                            for (offset, item) in formatted.into_iter().enumerate() {
+                                lines.insert(idx + offset, item);
+                            }
+                        } else {
+                            lines.push("depends_on:".to_string());
+                            lines.extend(formatted);
+                        }
+                        let mut new_fm = lines.join("\n");
+                        if !new_fm.ends_with('\n') {
+                            new_fm.push('\n');
+                        }
+                        result = format!("---\n{}---{}", new_fm, &result[fm_end + 4..]);
                     }
+                }
 
                 // Add to body as prose
                 if !prose_to_add.is_empty() {
@@ -2168,10 +2178,9 @@ pub fn rename_id(pkb_root: &Path, old_id: &str, new_id: &str) -> Result<(usize, 
             refs_updated += 1;
         }
 
-        if modified
-            && std::fs::write(file_path, &new_content).is_ok() {
-                files_modified += 1;
-            }
+        if modified && std::fs::write(file_path, &new_content).is_ok() {
+            files_modified += 1;
+        }
     }
 
     Ok((files_modified, refs_updated))
@@ -2974,7 +2983,8 @@ Body.\n",
                 .diagnostics
                 .iter()
                 .any(|d| d.rule == "fm-project-alias"
-                    && d.message.contains("Project 'academicOps' should be canonical 'aops'")),
+                    && d.message
+                        .contains("Project 'academicOps' should be canonical 'aops'")),
             "expected fm-project-alias diagnostic, got: {:?}",
             task_res.diagnostics
         );
@@ -3003,11 +3013,7 @@ Body.\n",
     fn test_lint_directory_flags_unregistered_project() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        std::fs::write(
-            root.join("polecat.yaml"),
-            "projects:\n  aops: {}\n",
-        )
-        .unwrap();
+        std::fs::write(root.join("polecat.yaml"), "projects:\n  aops: {}\n").unwrap();
 
         let goal_file = root.join("goal-11223355.md");
         std::fs::write(
@@ -3040,14 +3046,23 @@ Body.\n",
     fn test_fix_project_alias_quoted_and_unquoted() {
         let content1 = "---\nid: t1\nproject: \"academicOps\"\ntitle: T1\n---\n\nBody\n";
         let fixed1 = fix_project_alias(content1, "academicOps", "aops");
-        assert_eq!(fixed1, "---\nid: t1\nproject: aops\ntitle: T1\n---\n\nBody\n");
+        assert_eq!(
+            fixed1,
+            "---\nid: t1\nproject: aops\ntitle: T1\n---\n\nBody\n"
+        );
 
         let content2 = "---\nid: t2\nproject: 'academicOps'\ntitle: T2\n---\n\nBody\n";
         let fixed2 = fix_project_alias(content2, "academicOps", "aops");
-        assert_eq!(fixed2, "---\nid: t2\nproject: aops\ntitle: T2\n---\n\nBody\n");
+        assert_eq!(
+            fixed2,
+            "---\nid: t2\nproject: aops\ntitle: T2\n---\n\nBody\n"
+        );
 
         let content3 = "---\nid: t3\nproject: academicOps\ntitle: T3\n---\n\nBody\n";
         let fixed3 = fix_project_alias(content3, "academicOps", "aops");
-        assert_eq!(fixed3, "---\nid: t3\nproject: aops\ntitle: T3\n---\n\nBody\n");
+        assert_eq!(
+            fixed3,
+            "---\nid: t3\nproject: aops\ntitle: T3\n---\n\nBody\n"
+        );
     }
 }

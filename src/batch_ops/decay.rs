@@ -22,14 +22,11 @@ fn patch_contributes_to_frontmatter(
             return None;
         }
         for (i, edge) in new_edges.iter().enumerate() {
-            if let Some(obj) = raw_edges[i].as_object_mut() {
-                if let Some(cw) = edge.current_weight {
-                    obj.insert("current_weight".to_string(), serde_json::json!(cw));
-                } else {
-                    obj.remove("current_weight");
-                }
+            let obj = raw_edges[i].as_object_mut()?;
+            if let Some(cw) = edge.current_weight {
+                obj.insert("current_weight".to_string(), serde_json::json!(cw));
             } else {
-                return None;
+                obj.remove("current_weight");
             }
         }
         Some(JsonValue::Array(raw_edges))
@@ -39,11 +36,7 @@ fn patch_contributes_to_frontmatter(
 }
 
 /// Runs exponential decay on ContributesTo edges.
-pub fn run_decay(
-    ctx: &mut BatchContext,
-    lambda: f64,
-    dry_run: bool,
-) -> Result<BatchSummary> {
+pub fn run_decay(ctx: &mut BatchContext, lambda: f64, dry_run: bool) -> Result<BatchSummary> {
     let mut summary = BatchSummary::new("decay", dry_run);
     let now = chrono::Utc::now();
 
@@ -69,12 +62,12 @@ pub fn run_decay(
                 .as_deref()
                 .or(node.created.as_deref())
                 .unwrap_or("2000-01-01T00:00:00Z");
-            
+
             if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(timestamp_str) {
                 let days_elapsed = (now - ts.with_timezone(&chrono::Utc)).num_days() as f64;
                 if days_elapsed > 0.0 {
                     let new_weight = base_weight * (-lambda * days_elapsed).exp();
-                    
+
                     // Only update if difference is meaningful
                     let diff = edge.current_weight.unwrap_or(base_weight) - new_weight;
                     if diff.abs() > 0.01 {
@@ -180,7 +173,7 @@ mod tests {
         let base_weight: f64 = 1.0;
         let lambda: f64 = 0.05;
         let days_elapsed: f64 = 10.0;
-        
+
         let new_weight = base_weight * (-lambda * days_elapsed).exp();
         assert!(new_weight < base_weight);
         assert!((new_weight - 0.6065).abs() < 0.001);

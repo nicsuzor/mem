@@ -87,7 +87,10 @@ fn test_create_get_indexer_bind_replay() {
         }))
         .expect("bench_create_task failed");
 
-    assert!(!res.content.is_empty(), "Expected non-empty response content");
+    assert!(
+        !res.content.is_empty(),
+        "Expected non-empty response content"
+    );
 
     // Immediately resolve the node in the graph.
     // If there were index lag/race, resolve() or get_node() would return None.
@@ -267,8 +270,11 @@ fn test_add_depends_on_persistence_replay() {
 
     // 1. Verify that the task file on disk does NOT contain "_add_depends_on" in frontmatter,
     // but contains "depends_on" with "task-b".
-    // Explicit IDs are used as-is for the filename: tasks/task-a.md.
-    let path = tmp.path().join("tasks/task-a.md");
+    let path = {
+        let g = graph.read();
+        let node = g.resolve("task-a").expect("task-a must exist in graph");
+        tmp.path().join(&node.path)
+    };
     let content = fs::read_to_string(&path).unwrap();
     assert!(
         !content.contains("_add_depends_on"),

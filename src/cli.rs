@@ -1201,7 +1201,8 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode_query(&query_text)?;
-            let reranker = mem::rerank::CrossEncoderReranker::new(mem::rerank::RerankerConfig::default());
+            let reranker =
+                mem::rerank::CrossEncoderReranker::new(mem::rerank::RerankerConfig::default());
             let results = store.read().search_hybrid(
                 &query_text,
                 &query_embedding,
@@ -1314,7 +1315,10 @@ async fn main() -> Result<()> {
                 } else {
                     String::new()
                 };
-                println!("  - \x1b[1m{}\x1b[0m{type_str}{tags_str} — \x1b[36m`{}`\x1b[0m", r.title, id);
+                println!(
+                    "  - \x1b[1m{}\x1b[0m{type_str}{tags_str} — \x1b[36m`{}`\x1b[0m",
+                    r.title, id
+                );
             }
         }
 
@@ -1545,124 +1549,7 @@ async fn main() -> Result<()> {
                 );
             } else {
                 // ── Tree view (default) ──
-                use std::collections::HashSet;
                 let width = term_width();
-
-                // Build set of visible task IDs for filtering
-                let mut visible: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-
-                // Collect ancestor context nodes (projects, epics, goals)
-                let context_types = ["project", "epic"];
-                let mut context_ids: HashSet<String> = HashSet::new();
-
-                for task in &tasks {
-                    let mut current_id = task.parent.as_deref();
-                    while let Some(pid) = current_id {
-                        if visible.contains(pid) {
-                            break;
-                        }
-                        if context_ids.contains(pid) {
-                            break;
-                        }
-                        if let Some(parent_node) = gs.get_node(pid) {
-                            if parent_node
-                                .node_type
-                                .as_deref()
-                                .map(|t| context_types.contains(&t))
-                                .unwrap_or(false)
-                            {
-                                context_ids.insert(pid.to_string());
-                            }
-                            current_id = parent_node.parent.as_deref();
-                        } else {
-                            break;
-                        }
-                    }
-                }
-
-                for cid in &context_ids {
-                    visible.insert(cid.as_str());
-                }
-
-                // Sort siblings — context nodes first (by label), then tasks by canonical focus ranking
-                fn sort_siblings(nodes: &mut [&graph::GraphNode], context_ids: &HashSet<String>) {
-                    nodes.sort_by(|a, b| {
-                        let a_ctx = context_ids.contains(&a.id);
-                        let b_ctx = context_ids.contains(&b.id);
-                        match (a_ctx, b_ctx) {
-                            (true, false) => std::cmp::Ordering::Less,
-                            (false, true) => std::cmp::Ordering::Greater,
-                            (true, true) => a.label.cmp(&b.label),
-                            (false, false) => graph_store::GraphStore::focus_cmp(a, b),
-                        }
-                    });
-                }
-
-                // Recursive tree renderer
-                fn render_tree(
-                    gs: &graph_store::GraphStore,
-                    node: &graph::GraphNode,
-                    visible: &HashSet<&str>,
-                    context_ids: &HashSet<String>,
-                    prefix: &str,
-                    is_last: bool,
-                    output: &mut Vec<String>,
-                    width: usize,
-                ) {
-                    let connector = if is_last {
-                        "\u{2514}\u{2500}\u{2500} "
-                    } else {
-                        "\u{251C}\u{2500}\u{2500} "
-                    };
-                    let prefix_vis = strip_ansi(prefix).len() + 4;
-                    let available = width.saturating_sub(prefix_vis);
-
-                    let is_context = context_ids.contains(&node.id);
-                    let line = if is_context {
-                        let task_count = count_visible_tasks(gs, &node.id, visible, context_ids);
-                        format_context_line(node, task_count)
-                    } else {
-                        format_task_line(node, available)
-                    };
-                    output.push(format!("{prefix}{connector}{line}"));
-
-                    let mut children: Vec<&graph::GraphNode> = node
-                        .children
-                        .iter()
-                        .filter(|cid| visible.contains(cid.as_str()))
-                        .filter_map(|cid| gs.get_node(cid))
-                        .collect();
-                    sort_siblings(&mut children, context_ids);
-
-                    let child_prefix = if is_last {
-                        format!("{prefix}    ")
-                    } else {
-                        format!("{prefix}\u{2502}   ")
-                    };
-
-                    let mut prev_was_context = false;
-                    for (i, child) in children.iter().enumerate() {
-                        let child_is_last = i == children.len() - 1;
-                        let child_is_context = context_ids.contains(&child.id);
-
-                        // Breathing room between epic groups
-                        if child_is_context && prev_was_context && i > 0 {
-                            output.push(child_prefix.to_string());
-                        }
-
-                        render_tree(
-                            gs,
-                            child,
-                            visible,
-                            context_ids,
-                            &child_prefix,
-                            child_is_last,
-                            output,
-                            width,
-                        );
-                        prev_was_context = child_is_context;
-                    }
-                }
 
                 // ── Dashboard ──
                 println!();
@@ -1671,10 +1558,8 @@ async fn main() -> Result<()> {
                 // ── Focus picks (only for default ready view) ──
                 if matches!(filter, TaskFilter::Ready) {
                     let pick_ids = gs.focus_picks(5);
-                    let picks: Vec<&graph::GraphNode> = pick_ids
-                        .iter()
-                        .filter_map(|id| gs.get_node(id))
-                        .collect();
+                    let picks: Vec<&graph::GraphNode> =
+                        pick_ids.iter().filter_map(|id| gs.get_node(id)).collect();
                     if !picks.is_empty() {
                         println!();
                         println!(
@@ -1700,30 +1585,7 @@ async fn main() -> Result<()> {
                 let total = tasks.len();
                 println!();
 
-                let mut roots: Vec<&graph::GraphNode> = visible
-                    .iter()
-                    .filter_map(|id| gs.get_node(id))
-                    .filter(|n| match &n.parent {
-                        None => true,
-                        Some(pid) => !visible.contains(pid.as_str()),
-                    })
-                    .collect();
-                sort_siblings(&mut roots, &context_ids);
-
-                let mut lines: Vec<String> = Vec::new();
-                for (i, root) in roots.iter().enumerate() {
-                    let is_last = i == roots.len() - 1;
-                    render_tree(
-                        &gs,
-                        root,
-                        &visible,
-                        &context_ids,
-                        "",
-                        is_last,
-                        &mut lines,
-                        width,
-                    );
-                }
+                let lines = graph_display::render_nested_task_ascii_tree(&gs, &tasks, width, false);
                 for line in &lines {
                     println!("{line}");
                 }
@@ -2362,7 +2224,9 @@ async fn main() -> Result<()> {
                     }
 
                     if updates.is_empty() {
-                        eprintln!("No updates specified. Use --status, --intent, --assignee, or --tags.");
+                        eprintln!(
+                            "No updates specified. Use --status, --intent, --assignee, or --tags."
+                        );
                         std::process::exit(1);
                     }
 
@@ -2665,7 +2529,8 @@ async fn main() -> Result<()> {
                     }
                 }
                 "excalidraw" => {
-                    let (content, n_nodes, n_edges) = gs.output_excalidraw(focus.as_deref(), hops)?;
+                    let (content, n_nodes, n_edges) =
+                        gs.output_excalidraw(focus.as_deref(), hops)?;
                     match output {
                         Some(path) => {
                             std::fs::write(&path, &content)?;
@@ -2696,9 +2561,10 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode(&query_text)?;
-            let results = store
-                .read()
-                .search(&query_embedding, limit * 3, &pkb_root, None, None, None);
+            let results =
+                store
+                    .read()
+                    .search(&query_embedding, limit * 3, &pkb_root, None, None, None);
 
             let memory_types = ["memory", "note", "insight", "observation"];
             let mut count = 0;
@@ -3226,11 +3092,28 @@ async fn main() -> Result<()> {
                 },
             ];
 
-            let baseline = eval::evaluate_with_mode(&store_read, embedder, &queries, &pkb_root, top_k, eval::EvalMode::VectorOnly);
-            let hybrid = eval::evaluate_with_mode(&store_read, embedder, &queries, &pkb_root, top_k, eval::EvalMode::HybridReranked);
+            let baseline = eval::evaluate_with_mode(
+                &store_read,
+                embedder,
+                &queries,
+                &pkb_root,
+                top_k,
+                eval::EvalMode::VectorOnly,
+            );
+            let hybrid = eval::evaluate_with_mode(
+                &store_read,
+                embedder,
+                &queries,
+                &pkb_root,
+                top_k,
+                eval::EvalMode::HybridReranked,
+            );
 
             println!("{}", eval::format_report(&baseline, "Vector-Only Baseline"));
-            println!("{}", eval::format_report(&hybrid, "Hybrid BM25 + Vector + Rerank"));
+            println!(
+                "{}",
+                eval::format_report(&hybrid, "Hybrid BM25 + Vector + Rerank")
+            );
             println!("{}", eval::format_comparison(&baseline, &hybrid));
         }
 
@@ -3395,9 +3278,7 @@ async fn main() -> Result<()> {
             let mut entries: Vec<_> = stats.into_iter().collect();
             match sort.as_str() {
                 "bytes" => entries.sort_by_key(|b| std::cmp::Reverse(b.1.total_bytes)),
-                "latency" => {
-                    entries.sort_by_key(|b| std::cmp::Reverse(b.1.total_latency_ms))
-                }
+                "latency" => entries.sort_by_key(|b| std::cmp::Reverse(b.1.total_latency_ms)),
                 "errors" => entries.sort_by_key(|b| std::cmp::Reverse(b.1.error_count)),
                 _ => entries.sort_by_key(|b| std::cmp::Reverse(b.1.count)),
             }
@@ -4431,8 +4312,6 @@ mod colors {
     pub const RED: &str = "\x1b[31m";
     pub const GREEN: &str = "\x1b[32m";
     pub const YELLOW: &str = "\x1b[33m";
-    pub const CYAN: &str = "\x1b[36m";
-    pub const BOLD_CYAN: &str = "\x1b[1;36m";
     pub const DIM_GRAY: &str = "\x1b[2;37m";
     pub const BOLD_WHITE: &str = "\x1b[1;37m";
 }
@@ -4544,62 +4423,9 @@ fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     format!("{left}{:>pad$}{right}", "", pad = padding)
 }
 
-fn format_context_line(node: &graph::GraphNode, child_task_count: usize) -> String {
-    let ntype = node.node_type.as_deref().unwrap_or("group");
-    let tid = node.task_id.as_deref().unwrap_or(&node.id);
-
-    let block_color = match ntype {
-        "epic" => colors::CYAN,
-        "goal" => colors::YELLOW,
-        "project" => colors::BOLD_CYAN,
-        _ => colors::DIM,
-    };
-
-    let count_str = if child_task_count > 0 {
-        format!(" {}({child_task_count}){}", colors::DIM, colors::RESET)
-    } else {
-        String::new()
-    };
-
-    format!(
-        "{block_color}\u{258E}{} {}{}{}{count_str}  {}[{tid}]{}",
-        colors::RESET,
-        colors::BOLD,
-        node.label,
-        colors::RESET,
-        colors::DIM_GRAY,
-        colors::RESET,
-    )
-}
-
-fn count_visible_tasks(
-    gs: &graph_store::GraphStore,
-    node_id: &str,
-    visible: &std::collections::HashSet<&str>,
-    context_ids: &std::collections::HashSet<String>,
-) -> usize {
-    let mut count = 0;
-    if let Some(node) = gs.get_node(node_id) {
-        for cid in &node.children {
-            if !visible.contains(cid.as_str()) {
-                continue;
-            }
-            if context_ids.contains(cid) {
-                count += count_visible_tasks(gs, cid, visible, context_ids);
-            } else {
-                count += 1;
-            }
-        }
-    }
-    count
-}
-
 fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
     let total = tasks.len();
-    let urgent = tasks
-        .iter()
-        .filter(|t| t.intent.unwrap_or(4) <= 1)
-        .count();
+    let urgent = tasks.iter().filter(|t| t.intent.unwrap_or(4) <= 1).count();
     let with_due = tasks.iter().filter(|t| t.due.is_some()).count();
     let overdue_count = {
         let today = chrono::Utc::now().date_naive();

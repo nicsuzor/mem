@@ -253,6 +253,10 @@ impl PkbSearchServer {
         self.handle_list_tasks(args)
     }
     #[doc(hidden)]
+    pub fn bench_nested_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_nested_tasks(args)
+    }
+    #[doc(hidden)]
     pub fn bench_get_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.handle_get_task(args)
     }
@@ -1378,6 +1382,7 @@ impl PkbSearchServer {
             "complete_task" => self.handle_complete_task(args),
             "release_task" => self.handle_release_task(args),
             "list_tasks" => self.handle_list_tasks(args),
+            "nested_tasks" => self.handle_nested_tasks(args),
             "get_task" => self.handle_get_task(args),
             "update_task" => self.handle_update_task(args),
             "retrieve_memory" => self.handle_retrieve_memory(args),

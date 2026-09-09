@@ -324,11 +324,7 @@ impl GraphStore {
                 match key_owner.get(key) {
                     // Already claimed in this same pass — a genuine ambiguity.
                     Some(prev) if authoritative && prev != owner_id => {
-                        ambiguous_keys.push((
-                            key.to_string(),
-                            prev.clone(),
-                            owner_id.to_string(),
-                        ));
+                        ambiguous_keys.push((key.to_string(), prev.clone(), owner_id.to_string()));
                     }
                     Some(_) => {}
                     None => {
@@ -1214,10 +1210,11 @@ impl GraphStore {
             if current == target_canonical {
                 return Some(chain);
             }
-            let parent_id = match self.nodes.get(&current).and_then(|n| n.parent.as_deref()) {
-                Some(p) => p.to_string(),
-                None => return None,
-            };
+            let parent_id = self
+                .nodes
+                .get(&current)
+                .and_then(|n| n.parent.as_deref())?
+                .to_string();
             current = self
                 .resolve(&parent_id)
                 .map(|n| n.id.clone())
@@ -1613,14 +1610,21 @@ impl GraphStore {
 
     /// Check if adding multiple hard dependency edges from `from` to `targets`
     /// would create a cycle using Tarjan's SCC.
-    pub fn would_create_hard_cycle_multi(&self, from: &str, targets: &[&str]) -> Result<(), String> {
+    pub fn would_create_hard_cycle_multi(
+        &self,
+        from: &str,
+        targets: &[&str],
+    ) -> Result<(), String> {
         let edges: Vec<(&str, &str)> = targets.iter().map(|&t| (from, t)).collect();
         self.would_create_hard_cycle_edges(&edges)
     }
 
     /// Check if adding a batch of hard dependency edges (DependsOn or Parent)
     /// would create a cycle using Tarjan's SCC.
-    pub fn would_create_hard_cycle_edges(&self, extra_edges: &[(&str, &str)]) -> Result<(), String> {
+    pub fn would_create_hard_cycle_edges(
+        &self,
+        extra_edges: &[(&str, &str)],
+    ) -> Result<(), String> {
         let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
         for edge in &self.edges {
             if matches!(edge.edge_type, EdgeType::DependsOn | EdgeType::Parent) {
@@ -1652,10 +1656,7 @@ impl GraphStore {
             touched_nodes.insert(from_id.clone());
             touched_nodes.insert(to_id.clone());
 
-            adjacency
-                .entry(from_id)
-                .or_default()
-                .push(to_id);
+            adjacency.entry(from_id).or_default().push(to_id);
         }
 
         let sccs = tarjan_scc(&adjacency);
@@ -1880,10 +1881,9 @@ impl GraphStore {
                     if !has_real_stakes {
                         let days_overdue = -days_until;
                         if days_overdue > COURTESY_GRACE_DAYS {
-                            let decay_days =
-                                (days_overdue - COURTESY_GRACE_DAYS).min(COURTESY_DECAY_WINDOW_DAYS);
-                            let decay_frac =
-                                decay_days as f64 / COURTESY_DECAY_WINDOW_DAYS as f64;
+                            let decay_days = (days_overdue - COURTESY_GRACE_DAYS)
+                                .min(COURTESY_DECAY_WINDOW_DAYS);
+                            let decay_frac = decay_days as f64 / COURTESY_DECAY_WINDOW_DAYS as f64;
 
                             deadline_points -= (deadline_points as f64 * decay_frac) as i64;
                             deadline_band = if decay_frac < 0.25 {
@@ -2079,10 +2079,9 @@ impl GraphStore {
                     .map(|s| s.eq_ignore_ascii_case("review"))
                     .unwrap_or(false);
                 let is_unblocked = !self.is_blocked(&node.id);
-                if (is_review || is_unblocked)
-                    && candidate_ids.insert(node.id.as_str()) {
-                        candidates.push(node);
-                    }
+                if (is_review || is_unblocked) && candidate_ids.insert(node.id.as_str()) {
+                    candidates.push(node);
+                }
             }
         }
 
@@ -2159,7 +2158,11 @@ impl GraphStore {
     /// Export graph or ego network to Excalidraw JSON canvas format.
     /// If `focus_id` is provided, exports an ego-network with given `hops`.
     /// Otherwise exports all nodes.
-    pub fn output_excalidraw(&self, focus_id: Option<&str>, hops: usize) -> Result<(String, usize, usize)> {
+    pub fn output_excalidraw(
+        &self,
+        focus_id: Option<&str>,
+        hops: usize,
+    ) -> Result<(String, usize, usize)> {
         let (file, node_count, edge_count) = if let Some(focus) = focus_id {
             let resolved_id = self.resolve(focus).map(|n| n.id.as_str()).unwrap_or(focus);
             let file = crate::excalidraw::export_ego_network(self, resolved_id, hops, None)?;
@@ -2168,7 +2171,7 @@ impl GraphStore {
         } else {
             // Default to highest focus tasks tree instead of entire graph
             let focus_roots = self.focus_picks(10);
-            
+
             let mut node_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
             for root in &focus_roots {
                 let (sub_nodes, _) = crate::excalidraw::extract_ego_subgraph(self, root, hops);
@@ -2179,7 +2182,7 @@ impl GraphStore {
             let mut all_ids: Vec<String> = node_ids.into_iter().collect();
             all_ids.sort();
             let file = crate::excalidraw::export_subgraph(self, &all_ids, None)?;
-            
+
             let mut edge_count = 0;
             let node_set: std::collections::HashSet<_> = all_ids.iter().cloned().collect();
             for edge in self.edges() {
@@ -2320,7 +2323,9 @@ impl GraphStore {
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
 
         let kept_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-        edges.retain(|e| kept_ids.contains(e.source.as_str()) && kept_ids.contains(e.target.as_str()));
+        edges.retain(|e| {
+            kept_ids.contains(e.source.as_str()) && kept_ids.contains(e.target.as_str())
+        });
 
         let mut dot = String::from("digraph PKB {\n  rankdir=LR;\n");
         for node in &nodes {
@@ -3822,16 +3827,20 @@ fn compute_unlock_breadth(nodes: &mut [GraphNode]) {
             if completed.contains(target.status.as_deref().unwrap_or("")) {
                 continue;
             }
-            let last_blocker = target.depends_on.iter().filter(|d| d.as_str() != n.id).all(|d| {
-                id_to_idx
-                    .get(d.as_str())
-                    .map(|&di| completed.contains(nodes[di].status.as_deref().unwrap_or("")))
-                    // A dangling/unresolved dependency reference cannot be
-                    // confirmed complete; treat conservatively as still
-                    // blocking so `x` is not credited with an unlock it
-                    // cannot actually deliver alone.
-                    .unwrap_or(false)
-            });
+            let last_blocker = target
+                .depends_on
+                .iter()
+                .filter(|d| d.as_str() != n.id)
+                .all(|d| {
+                    id_to_idx
+                        .get(d.as_str())
+                        .map(|&di| completed.contains(nodes[di].status.as_deref().unwrap_or("")))
+                        // A dangling/unresolved dependency reference cannot be
+                        // confirmed complete; treat conservatively as still
+                        // blocking so `x` is not credited with an unlock it
+                        // cannot actually deliver alone.
+                        .unwrap_or(false)
+                });
             if last_blocker {
                 breadth[i] += cod[t_idx].max(0) as f64;
             }
@@ -3962,7 +3971,10 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
         }
         task_ids.push(id.clone());
 
-        let has_unmet = node.depends_on.iter().any(|d| !completed_ids.contains(&d.to_lowercase()));
+        let has_unmet = node
+            .depends_on
+            .iter()
+            .any(|d| !completed_ids.contains(&d.to_lowercase()));
         if has_unmet || status == "blocked" {
             directly_blocked.insert(id.clone());
         }
@@ -4169,12 +4181,13 @@ fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
             | EdgeType::DependsOn
             | EdgeType::SoftDependsOn
             | EdgeType::ContributesTo
-                if all_ids.contains(edge.target.as_str()) => {
-                    upstream_of
-                        .entry(edge.source.as_str())
-                        .or_default()
-                        .push(edge.target.as_str());
-                }
+                if all_ids.contains(edge.target.as_str()) =>
+            {
+                upstream_of
+                    .entry(edge.source.as_str())
+                    .or_default()
+                    .push(edge.target.as_str());
+            }
             _ => {}
         }
     }
@@ -4797,12 +4810,12 @@ mod tests {
     ///   unrelated (P3, active) -- standalone
     fn build_priority_test_graph() -> GraphStore {
         let make_with_intent = |path: &str,
-                                      title: &str,
-                                      id: &str,
-                                      intent: i32,
-                                      status: &str,
-                                      parent: Option<&str>,
-                                      depends_on: &[&str]|
+                                title: &str,
+                                id: &str,
+                                intent: i32,
+                                status: &str,
+                                parent: Option<&str>,
+                                depends_on: &[&str]|
          -> PkbDocument {
             let mut fm = serde_json::Map::new();
             fm.insert("title".to_string(), serde_json::json!(title));
@@ -5023,7 +5036,15 @@ mod tests {
     fn test_exact_id_beats_another_nodes_filename_stem() {
         let docs = vec![
             // Genuinely owns the id "personal".
-            make_doc("roots/personal-root.md", "Personal Root", "epic", "ready", "personal", None, &[]),
+            make_doc(
+                "roots/personal-root.md",
+                "Personal Root",
+                "epic",
+                "ready",
+                "personal",
+                None,
+                &[],
+            ),
             // Filename stem "personal" — a derived claim on that string. Listed
             // AFTER the id owner on purpose: last-write-wins is what let the
             // derived key seize the string in the live incident.
@@ -5127,8 +5148,24 @@ mod tests {
     fn test_identity_precedence_is_independent_of_scan_order() {
         let mk = || {
             vec![
-                make_doc("personal/personal.md", "Personal", "epic", "ready", "personal-66647271", None, &[]),
-                make_doc("roots/personal-root.md", "Personal Root", "epic", "ready", "personal", None, &[]),
+                make_doc(
+                    "personal/personal.md",
+                    "Personal",
+                    "epic",
+                    "ready",
+                    "personal-66647271",
+                    None,
+                    &[],
+                ),
+                make_doc(
+                    "roots/personal-root.md",
+                    "Personal Root",
+                    "epic",
+                    "ready",
+                    "personal",
+                    None,
+                    &[],
+                ),
             ]
         };
         let forward = mk();
@@ -5141,11 +5178,20 @@ mod tests {
             // unlike `resolve()`, which short-circuits on an exact id hit —
             // actually exercises the contested namespace.
             docs.push(make_doc(
-                "projects/child.md", "Child", "epic", "ready", "child-1", Some("personal"), &[],
+                "projects/child.md",
+                "Child",
+                "epic",
+                "ready",
+                "child-1",
+                Some("personal"),
+                &[],
             ));
             let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
             assert_eq!(
-                graph.resolve("child-1").and_then(|n| n.parent.clone()).as_deref(),
+                graph
+                    .resolve("child-1")
+                    .and_then(|n| n.parent.clone())
+                    .as_deref(),
                 Some("personal"),
                 "scan order `{label}` changed which node `parent: personal` bound to"
             );
@@ -5174,14 +5220,20 @@ mod tests {
         );
     }
 
-
-
     /// `parent_raw` preserves what the file says even when `parent` is rewritten
     /// to the resolved id. This is the field the write paths compare against.
     #[test]
     fn test_parent_raw_preserves_the_stored_string() {
         let docs = vec![
-            make_doc("personal/personal.md", "Personal", "epic", "ready", "personal-66647271", None, &[]),
+            make_doc(
+                "personal/personal.md",
+                "Personal",
+                "epic",
+                "ready",
+                "personal-66647271",
+                None,
+                &[],
+            ),
             make_doc(
                 "projects/proj-04dcf372-life-admin.md",
                 "Handle life admin",
@@ -5374,10 +5426,42 @@ mod tests {
     #[test]
     fn test_all_tasks_filters_non_actionable_and_completed() {
         let docs = vec![
-            make_doc("tasks/task-open.md", "Open Task", "task", "ready", "task-open", None, &[]),
-            make_doc("tasks/task-done.md", "Done Task", "task", "done", "task-done", None, &[]),
-            make_doc("tasks/task-archived.md", "Archived Task", "task", "archived", "task-archived", None, &[]),
-            make_doc("notes/note-1.md", "Random Note", "note", "inbox", "note-1", None, &[]),
+            make_doc(
+                "tasks/task-open.md",
+                "Open Task",
+                "task",
+                "ready",
+                "task-open",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/task-done.md",
+                "Done Task",
+                "task",
+                "done",
+                "task-done",
+                None,
+                &[],
+            ),
+            make_doc(
+                "tasks/task-archived.md",
+                "Archived Task",
+                "task",
+                "archived",
+                "task-archived",
+                None,
+                &[],
+            ),
+            make_doc(
+                "notes/note-1.md",
+                "Random Note",
+                "note",
+                "inbox",
+                "note-1",
+                None,
+                &[],
+            ),
         ];
         let root = Path::new("/tmp/test-pkb");
         let graph = GraphStore::build(&docs, root);
@@ -5598,19 +5682,41 @@ mod tests {
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
 
         // 1. Downstream tasks depending on completed blocker (with mixed case) must NOT be blocked
-        assert!(!graph.is_blocked("academicops-4a31fae0"), "task-4a31fae0 should not be blocked");
-        assert!(!graph.is_blocked("academicops-2200e5e8"), "task-2200e5e8 should not be blocked");
-        assert!(graph.ready.contains(&"academicops-4a31fae0".to_string()), "task-4a31fae0 should be in ready queue");
-        assert!(graph.ready.contains(&"academicops-2200e5e8".to_string()), "task-2200e5e8 should be in ready queue");
+        assert!(
+            !graph.is_blocked("academicops-4a31fae0"),
+            "task-4a31fae0 should not be blocked"
+        );
+        assert!(
+            !graph.is_blocked("academicops-2200e5e8"),
+            "task-2200e5e8 should not be blocked"
+        );
+        assert!(
+            graph.ready.contains(&"academicops-4a31fae0".to_string()),
+            "task-4a31fae0 should be in ready queue"
+        );
+        assert!(
+            graph.ready.contains(&"academicops-2200e5e8".to_string()),
+            "task-2200e5e8 should be in ready queue"
+        );
 
         // 2. Downstream task depending on open blocker (with mixed case) MUST be blocked
-        assert!(graph.is_blocked("blocked-task-5678"), "blocked-task-5678 should be blocked");
-        assert!(graph.blocked.contains(&"blocked-task-5678".to_string()), "blocked-task-5678 should be in blocked list");
+        assert!(
+            graph.is_blocked("blocked-task-5678"),
+            "blocked-task-5678 should be blocked"
+        );
+        assert!(
+            graph.blocked.contains(&"blocked-task-5678".to_string()),
+            "blocked-task-5678 should be in blocked list"
+        );
 
         // 3. Blocks relationship symmetry is populated on the blocker
         let upstream = graph.resolve("academicops-d067e425").unwrap();
-        assert!(upstream.blocks.contains(&"academicops-4a31fae0".to_string()));
-        assert!(upstream.blocks.contains(&"academicops-2200e5e8".to_string()));
+        assert!(upstream
+            .blocks
+            .contains(&"academicops-4a31fae0".to_string()));
+        assert!(upstream
+            .blocks
+            .contains(&"academicops-2200e5e8".to_string()));
 
         // 4. Depends_on relationship on downstream task is canonicalized
         let downstream_a = graph.resolve("academicops-4a31fae0").unwrap();
@@ -6165,22 +6271,33 @@ mod tests {
         // 1. Live Exemplar A: task_72b7886e (status: review, assignee: Nic, priority: 2, created: 14d ago)
         let mut task_72b7886e = GraphNode::default();
         task_72b7886e.id = "task_72b7886e".to_string();
-        task_72b7886e.label = "DECISION (Nic): push the rtk-enabled polecat worker image to ghcr".to_string();
+        task_72b7886e.label =
+            "DECISION (Nic): push the rtk-enabled polecat worker image to ghcr".to_string();
         task_72b7886e.status = Some("review".to_string());
         task_72b7886e.assignee = Some("Nic".to_string());
         task_72b7886e.intent = Some(2);
         task_72b7886e.created = Some(d14_ago.clone());
-        task_72b7886e.tags = vec!["decision".to_string(), "needs-nic".to_string(), "human-approval".to_string()];
+        task_72b7886e.tags = vec![
+            "decision".to_string(),
+            "needs-nic".to_string(),
+            "human-approval".to_string(),
+        ];
 
         // 2. Live Exemplar B: task_21d3ece0 (status: review, assignee: Nic, priority: 2, created: 14d ago)
         let mut task_21d3ece0 = GraphNode::default();
         task_21d3ece0.id = "task_21d3ece0".to_string();
-        task_21d3ece0.label = "DECISION (Nic): run one aops-slug Claude Code session to a normal turn-end".to_string();
+        task_21d3ece0.label =
+            "DECISION (Nic): run one aops-slug Claude Code session to a normal turn-end"
+                .to_string();
         task_21d3ece0.status = Some("review".to_string());
         task_21d3ece0.assignee = Some("Nic".to_string());
         task_21d3ece0.intent = Some(2);
         task_21d3ece0.created = Some(d14_ago.clone());
-        task_21d3ece0.tags = vec!["decision".to_string(), "needs-nic".to_string(), "human-approval".to_string()];
+        task_21d3ece0.tags = vec![
+            "decision".to_string(),
+            "needs-nic".to_string(),
+            "human-approval".to_string(),
+        ];
 
         // 3. Live Exemplar C: aops_ee205f8f (status: queued, tags: human-approval/sign-off, priority: 4, created: 14d ago)
         let mut aops_ee205f8f = GraphNode::default();
@@ -6189,7 +6306,11 @@ mod tests {
         aops_ee205f8f.status = Some("queued".to_string());
         aops_ee205f8f.intent = Some(4);
         aops_ee205f8f.created = Some(d14_ago.clone());
-        aops_ee205f8f.tags = vec!["sign-off".to_string(), "doctrine".to_string(), "human-approval".to_string()];
+        aops_ee205f8f.tags = vec![
+            "sign-off".to_string(),
+            "doctrine".to_string(),
+            "human-approval".to_string(),
+        ];
 
         // 4. Reference Exemplar: aops_3d6c268f (has hand-written stakeholder: Nic, status: inbox, created: 14d ago)
         let mut aops_3d6c268f = GraphNode::default();
@@ -6226,7 +6347,10 @@ mod tests {
         let score_norm = nodes[4].focus_score.unwrap();
 
         // Reference score with stakeholder: Nic is 4814 (2000 base + 14*200 ramp + 14 age staleness)
-        assert_eq!(score_3d6, 4814, "reference node with stakeholder: Nic scores 4814");
+        assert_eq!(
+            score_3d6, 4814,
+            "reference node with stakeholder: Nic scores 4814"
+        );
 
         // AC1: Structurally identified human gates score in the same 4814 band WITHOUT hand-written stakeholder
         assert_eq!(
@@ -7114,7 +7238,9 @@ mod tests {
         let mut nodes = vec![t_high, t_low, c_high, c_low];
         compute_value_lineage(&mut nodes);
 
-        let vl = |nodes: &[GraphNode], id: &str| nodes.iter().find(|n| n.id == id).unwrap().value_lineage;
+        let vl = |nodes: &[GraphNode], id: &str| {
+            nodes.iter().find(|n| n.id == id).unwrap().value_lineage
+        };
         let vl_high = vl(&nodes, "c-high");
         let vl_low = vl(&nodes, "c-low");
 
@@ -7182,10 +7308,24 @@ mod tests {
         let mut nodes = vec![target, sib_a, sib_b];
         compute_value_lineage(&mut nodes);
 
-        let a = nodes.iter().find(|n| n.id == "sib-a").unwrap().value_lineage;
-        let b = nodes.iter().find(|n| n.id == "sib-b").unwrap().value_lineage;
-        assert!((a - 10000.0).abs() < 1e-6, "sib-a must get full, undiminished credit, got {a}");
-        assert!((b - 10000.0).abs() < 1e-6, "sib-b must get full, undiminished credit, got {b}");
+        let a = nodes
+            .iter()
+            .find(|n| n.id == "sib-a")
+            .unwrap()
+            .value_lineage;
+        let b = nodes
+            .iter()
+            .find(|n| n.id == "sib-b")
+            .unwrap()
+            .value_lineage;
+        assert!(
+            (a - 10000.0).abs() < 1e-6,
+            "sib-a must get full, undiminished credit, got {a}"
+        );
+        assert!(
+            (b - 10000.0).abs() < 1e-6,
+            "sib-b must get full, undiminished credit, got {b}"
+        );
         assert_eq!(
             a, b,
             "sibling contributors to the same target must each receive full, independent \
@@ -7200,7 +7340,10 @@ mod tests {
     #[test]
     fn test_stated_weight_out_of_scale_rejected_at_parse_time_not_defaulted() {
         let mut fm = serde_json::Map::new();
-        fm.insert("title".to_string(), serde_json::json!("garbage weight test"));
+        fm.insert(
+            "title".to_string(),
+            serde_json::json!("garbage weight test"),
+        );
         fm.insert("type".to_string(), serde_json::json!("task"));
         fm.insert("id".to_string(), serde_json::json!("garbage-weight-task"));
         fm.insert(
@@ -7229,8 +7372,7 @@ mod tests {
             "an unrecognized stated_weight must contribute zero, not the legacy 0.3 default"
         );
         assert!(
-            node
-                .parse_warnings
+            node.parse_warnings
                 .iter()
                 .any(|w| w.field == "contributes_to.stated_weight"),
             "an unrecognized non-empty stated_weight must be flagged via ParseWarning, not \
@@ -7245,7 +7387,10 @@ mod tests {
     #[test]
     fn test_stated_weight_omitted_is_silently_zero_no_warning() {
         let mut fm = serde_json::Map::new();
-        fm.insert("title".to_string(), serde_json::json!("unstated weight test"));
+        fm.insert(
+            "title".to_string(),
+            serde_json::json!("unstated weight test"),
+        );
         fm.insert("type".to_string(), serde_json::json!("task"));
         fm.insert("id".to_string(), serde_json::json!("unstated-weight-task"));
         fm.insert(
@@ -7305,7 +7450,9 @@ mod tests {
 
         assert_eq!(node.standing_weight, None);
         assert!(
-            node.parse_warnings.iter().any(|w| w.field == "standing_weight"),
+            node.parse_warnings
+                .iter()
+                .any(|w| w.field == "standing_weight"),
             "out-of-range standing_weight must be flagged, not clamped or defaulted; got {:?}",
             node.parse_warnings
         );
@@ -7527,8 +7674,24 @@ mod tests {
     #[test]
     fn test_hard_cycle_depends_on_two_node() {
         let docs = vec![
-            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &["task-b"]),
-            make_doc("tasks/b.md", "Task B", "task", "active", "task-b", None, &[]),
+            make_doc(
+                "tasks/a.md",
+                "Task A",
+                "task",
+                "active",
+                "task-a",
+                None,
+                &["task-b"],
+            ),
+            make_doc(
+                "tasks/b.md",
+                "Task B",
+                "task",
+                "active",
+                "task-b",
+                None,
+                &[],
+            ),
         ];
         let g = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let err = g.would_create_hard_cycle("task-b", "task-a").unwrap_err();
@@ -7538,9 +7701,33 @@ mod tests {
     #[test]
     fn test_hard_cycle_depends_on_transitive() {
         let docs = vec![
-            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &["task-b"]),
-            make_doc("tasks/b.md", "Task B", "task", "active", "task-b", None, &["task-c"]),
-            make_doc("tasks/c.md", "Task C", "task", "active", "task-c", None, &[]),
+            make_doc(
+                "tasks/a.md",
+                "Task A",
+                "task",
+                "active",
+                "task-a",
+                None,
+                &["task-b"],
+            ),
+            make_doc(
+                "tasks/b.md",
+                "Task B",
+                "task",
+                "active",
+                "task-b",
+                None,
+                &["task-c"],
+            ),
+            make_doc(
+                "tasks/c.md",
+                "Task C",
+                "task",
+                "active",
+                "task-c",
+                None,
+                &[],
+            ),
         ];
         let g = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let err = g.would_create_hard_cycle("task-c", "task-a").unwrap_err();
@@ -7553,9 +7740,33 @@ mod tests {
         // task-b depends on task-c (edge task-b -> task-c)
         // Attempting to make task-c depend on task-a (edge task-c -> task-a) closes cycle: task-a -> task-b -> task-c -> task-a
         let docs = vec![
-            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", Some("task-b"), &[]),
-            make_doc("tasks/b.md", "Task B", "epic", "active", "task-b", None, &["task-c"]),
-            make_doc("tasks/c.md", "Task C", "task", "active", "task-c", None, &[]),
+            make_doc(
+                "tasks/a.md",
+                "Task A",
+                "task",
+                "active",
+                "task-a",
+                Some("task-b"),
+                &[],
+            ),
+            make_doc(
+                "tasks/b.md",
+                "Task B",
+                "epic",
+                "active",
+                "task-b",
+                None,
+                &["task-c"],
+            ),
+            make_doc(
+                "tasks/c.md",
+                "Task C",
+                "task",
+                "active",
+                "task-c",
+                None,
+                &[],
+            ),
         ];
         let g = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let err = g.would_create_hard_cycle("task-c", "task-a").unwrap_err();
@@ -7564,22 +7775,63 @@ mod tests {
 
     #[test]
     fn test_hard_cycle_self_depends_on_rejected() {
-        let docs = vec![
-            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &[]),
-        ];
+        let docs = vec![make_doc(
+            "tasks/a.md",
+            "Task A",
+            "task",
+            "active",
+            "task-a",
+            None,
+            &[],
+        )];
         let g = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let err = g.would_create_hard_cycle("task-a", "task-a").unwrap_err();
-        assert!(err.contains("cannot be its own parent or depend on itself"), "got: {err}");
+        assert!(
+            err.contains("cannot be its own parent or depend on itself"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn test_hard_cycle_dag_allowed() {
         // Diamond graph: A -> B, A -> C, B -> D, C -> D
         let docs = vec![
-            make_doc("tasks/a.md", "Task A", "task", "active", "task-a", None, &["task-b", "task-c"]),
-            make_doc("tasks/b.md", "Task B", "task", "active", "task-b", None, &["task-d"]),
-            make_doc("tasks/c.md", "Task C", "task", "active", "task-c", None, &["task-d"]),
-            make_doc("tasks/d.md", "Task D", "task", "active", "task-d", None, &[]),
+            make_doc(
+                "tasks/a.md",
+                "Task A",
+                "task",
+                "active",
+                "task-a",
+                None,
+                &["task-b", "task-c"],
+            ),
+            make_doc(
+                "tasks/b.md",
+                "Task B",
+                "task",
+                "active",
+                "task-b",
+                None,
+                &["task-d"],
+            ),
+            make_doc(
+                "tasks/c.md",
+                "Task C",
+                "task",
+                "active",
+                "task-c",
+                None,
+                &["task-d"],
+            ),
+            make_doc(
+                "tasks/d.md",
+                "Task D",
+                "task",
+                "active",
+                "task-d",
+                None,
+                &[],
+            ),
         ];
         let g = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         assert!(g.would_create_hard_cycle("task-a", "task-d").is_ok());
@@ -8197,7 +8449,6 @@ mod tests {
         );
     }
 
-
     // ── Cone-walk invariants ────────────────────────────────────────────────
     //
     // These exercise the shared `walk_cone` that both `downstream_weight` and the
@@ -8229,7 +8480,10 @@ mod tests {
     /// Wire `from` -> `to` as a hard `blocks` edge (edge factor 1.0), which is
     /// what `depends_on` materialises to via `compute_inverses`.
     fn cone_blocks(nodes: &mut [GraphNode], from: &str, to: &str) {
-        let ti = nodes.iter().position(|n| n.id == to).expect("target exists");
+        let ti = nodes
+            .iter()
+            .position(|n| n.id == to)
+            .expect("target exists");
         nodes[ti].depends_on.push(from.to_string());
         let fi = nodes
             .iter()
@@ -8495,7 +8749,6 @@ mod tests {
         );
     }
 
-
     /// Quantifies the defect this change fixes, on one fixture, in both shapes.
     ///
     /// Topology — a diamond with a heavy shared tail:
@@ -8552,7 +8805,10 @@ mod tests {
 
         // downstream_weight is unchanged by this refactor — it already deduped.
         assert_eq!(b.downstream_weight, 5.17, "dw(B) = 1.0 + 2.5 + 1.667");
-        assert_eq!(a.downstream_weight, 5.42, "dw(A) = 1.0 + 1.0 + 0.5 + 1.667 + 1.25");
+        assert_eq!(
+            a.downstream_weight, 5.42,
+            "dw(A) = 1.0 + 1.0 + 0.5 + 1.667 + 1.25"
+        );
 
         // Reconstruct exactly what the legacy term computed, from the same
         // (unchanged) downstream_weight values it read.
@@ -8779,14 +9035,20 @@ mod tests {
             let mut voi_sum = vec![0.0f64; nodes.len()];
             for start in 0..nodes.len() {
                 let (mut d, mut v) = (0.0f64, 0.0f64);
-                walk_cone(start, &adj, &mut visited, &mut queue, |tid, depth, factor| {
-                    let bw = base_weights[tid];
-                    if bw > 0.0 {
-                        let term = (1.0 / depth as f64) * bw * factor;
-                        d += term;
-                        v += term * nodes[tid].uncertainty;
-                    }
-                });
+                walk_cone(
+                    start,
+                    &adj,
+                    &mut visited,
+                    &mut queue,
+                    |tid, depth, factor| {
+                        let bw = base_weights[tid];
+                        if bw > 0.0 {
+                            let term = (1.0 / depth as f64) * bw * factor;
+                            d += term;
+                            v += term * nodes[tid].uncertainty;
+                        }
+                    },
+                );
                 dw_sum[start] = d;
                 voi_sum[start] = v;
             }
@@ -8963,18 +9225,24 @@ mod tests {
         let gs = GraphStore::build(&[doc1, doc2], Path::new("/tmp"));
 
         // Test output_excalidraw with ego focus
-        let (ex_ego, _, _) = gs.output_excalidraw(Some("task-a"), 1).expect("output ego excalidraw");
+        let (ex_ego, _, _) = gs
+            .output_excalidraw(Some("task-a"), 1)
+            .expect("output ego excalidraw");
         assert!(ex_ego.contains("Task A"), "ego excalidraw contains Task A");
 
         // Test output_excalidraw without focus (all nodes)
-        let (ex_all, _, _) = gs.output_excalidraw(None, 1).expect("output all excalidraw");
+        let (ex_all, _, _) = gs
+            .output_excalidraw(None, 1)
+            .expect("output all excalidraw");
         assert!(ex_all.contains("Task A"), "all excalidraw contains Task A");
         assert!(ex_all.contains("Task B"), "all excalidraw contains Task B");
 
         // Test output_all_files writes .excalidraw alongside .json and .graphml
         let temp = tempfile::tempdir().expect("tempdir");
         let base = temp.path().join("export_test");
-        let written = gs.output_all_files(base.to_str().unwrap()).expect("output all files");
+        let written = gs
+            .output_all_files(base.to_str().unwrap())
+            .expect("output all files");
         assert_eq!(written.len(), 3);
         assert!(written.iter().any(|p| p.ends_with(".json")));
         assert!(written.iter().any(|p| p.ends_with(".graphml")));
@@ -9004,7 +9272,11 @@ mod tests {
             node.status = Some("active".to_string());
             node.severity = Some(3);
             node.effort = Some("0d".to_string()); // effort 0 so slack = days_until
-            node.due = Some((today + chrono::Duration::days(days)).format("%Y-%m-%d").to_string());
+            node.due = Some(
+                (today + chrono::Duration::days(days))
+                    .format("%Y-%m-%d")
+                    .to_string(),
+            );
 
             let mut nodes = vec![node];
             compute_urgency(&mut nodes);
@@ -9032,7 +9304,11 @@ mod tests {
             target.status = Some("active".to_string());
             target.severity = Some(3);
             target.effort = Some("0d".to_string());
-            target.due = Some((today + chrono::Duration::days(days)).format("%Y-%m-%d").to_string());
+            target.due = Some(
+                (today + chrono::Duration::days(days))
+                    .format("%Y-%m-%d")
+                    .to_string(),
+            );
 
             let mut nodes = vec![blocker, target];
             compute_urgency(&mut nodes);
@@ -9060,14 +9336,22 @@ mod tests {
         node_31.status = Some("active".to_string());
         node_31.severity = Some(2);
         node_31.effort = Some("0d".to_string());
-        node_31.due = Some((today + chrono::Duration::days(31)).format("%Y-%m-%d").to_string());
+        node_31.due = Some(
+            (today + chrono::Duration::days(31))
+                .format("%Y-%m-%d")
+                .to_string(),
+        );
 
         let mut node_30 = GraphNode::default();
         node_30.id = "node-30".to_string();
         node_30.status = Some("active".to_string());
         node_30.severity = Some(2);
         node_30.effort = Some("0d".to_string());
-        node_30.due = Some((today + chrono::Duration::days(30)).format("%Y-%m-%d").to_string());
+        node_30.due = Some(
+            (today + chrono::Duration::days(30))
+                .format("%Y-%m-%d")
+                .to_string(),
+        );
 
         let mut nodes = vec![node_31, node_30];
         compute_urgency(&mut nodes);
@@ -9087,12 +9371,20 @@ mod tests {
         let mut node_d31 = GraphNode::default();
         node_d31.id = "d31".to_string();
         node_d31.effort = Some("1d".to_string());
-        node_d31.due = Some((today + chrono::Duration::days(31)).format("%Y-%m-%d").to_string());
+        node_d31.due = Some(
+            (today + chrono::Duration::days(31))
+                .format("%Y-%m-%d")
+                .to_string(),
+        );
 
         let mut node_d30 = GraphNode::default();
         node_d30.id = "d30".to_string();
         node_d30.effort = Some("1d".to_string());
-        node_d30.due = Some((today + chrono::Duration::days(30)).format("%Y-%m-%d").to_string());
+        node_d30.due = Some(
+            (today + chrono::Duration::days(30))
+                .format("%Y-%m-%d")
+                .to_string(),
+        );
 
         let mut d_nodes = vec![node_d31, node_d30];
         GraphStore::compute_focus_scores(&mut d_nodes);
@@ -9227,7 +9519,10 @@ mod tests {
         fm_contrib_a.insert("id".to_string(), serde_json::json!("contrib-a"));
         fm_contrib_a.insert("priority".to_string(), serde_json::json!(2));
         fm_contrib_a.insert("status".to_string(), serde_json::json!("ready"));
-        fm_contrib_a.insert("contributes_to".to_string(), serde_json::json!([{"to": "target-goal", "weight": "probable"}]));
+        fm_contrib_a.insert(
+            "contributes_to".to_string(),
+            serde_json::json!([{"to": "target-goal", "weight": "probable"}]),
+        );
         fm_contrib_a.insert("blocks".to_string(), serde_json::json!(["shared-leaf"]));
 
         let mut fm_contrib_b = serde_json::Map::new();
@@ -9236,8 +9531,14 @@ mod tests {
         fm_contrib_b.insert("id".to_string(), serde_json::json!("contrib-b"));
         fm_contrib_b.insert("priority".to_string(), serde_json::json!(3));
         fm_contrib_b.insert("status".to_string(), serde_json::json!("ready"));
-        fm_contrib_b.insert("contributes_to".to_string(), serde_json::json!([{"to": "target-goal", "weight": "uncertain"}]));
-        fm_contrib_b.insert("soft_blocks".to_string(), serde_json::json!(["shared-leaf"]));
+        fm_contrib_b.insert(
+            "contributes_to".to_string(),
+            serde_json::json!([{"to": "target-goal", "weight": "uncertain"}]),
+        );
+        fm_contrib_b.insert(
+            "soft_blocks".to_string(),
+            serde_json::json!(["shared-leaf"]),
+        );
 
         let mut fm_leaf = serde_json::Map::new();
         fm_leaf.insert("title".to_string(), serde_json::json!("Shared Leaf"));
@@ -9308,8 +9609,18 @@ mod tests {
             file_hash: "test".to_string(),
         };
 
-        let docs1 = vec![doc_target.clone(), doc_contrib_a.clone(), doc_contrib_b.clone(), doc_leaf.clone()];
-        let docs2 = vec![doc_leaf.clone(), doc_contrib_b.clone(), doc_contrib_a.clone(), doc_target.clone()];
+        let docs1 = vec![
+            doc_target.clone(),
+            doc_contrib_a.clone(),
+            doc_contrib_b.clone(),
+            doc_leaf.clone(),
+        ];
+        let docs2 = vec![
+            doc_leaf.clone(),
+            doc_contrib_b.clone(),
+            doc_contrib_a.clone(),
+            doc_target.clone(),
+        ];
 
         let g_cold1 = GraphStore::build(&docs1, root);
         let g_cold2 = GraphStore::build(&docs2, root);
@@ -9609,13 +9920,7 @@ mod tests {
         let mut n_none = GraphNode::default();
         n_none.id = "t-none".to_string();
 
-        let mut nodes = vec![
-            n_overdue,
-            n_imminent,
-            n_urgent,
-            n_approaching,
-            n_none,
-        ];
+        let mut nodes = vec![n_overdue, n_imminent, n_urgent, n_approaching, n_none];
         GraphStore::compute_focus_scores(&mut nodes);
 
         assert_eq!(
@@ -10009,20 +10314,38 @@ mod tests {
         let graph = build_dot_test_graph();
         let dot = graph.output_dot(None, 2, None, false);
 
-        assert!(dot.starts_with("digraph PKB {"), "must open with digraph PKB {{, got: {dot}");
-        assert!(dot.trim_end().ends_with('}'), "must close with }}, got: {dot}");
+        assert!(
+            dot.starts_with("digraph PKB {"),
+            "must open with digraph PKB {{, got: {dot}"
+        );
+        assert!(
+            dot.trim_end().ends_with('}'),
+            "must close with }}, got: {dot}"
+        );
         assert!(dot.contains("\"task-a\""), "must contain task-a node id");
-        assert!(dot.contains("\"task-a\" -> \"epic-1\""), "parent edge must run child -> parent");
-        assert!(dot.contains("\"task-b\" -> \"task-a\""), "depends_on edge must run dependent -> dependency");
+        assert!(
+            dot.contains("\"task-a\" -> \"epic-1\""),
+            "parent edge must run child -> parent"
+        );
+        assert!(
+            dot.contains("\"task-b\" -> \"task-a\""),
+            "depends_on edge must run dependent -> dependency"
+        );
         // done task excluded by default (include_done=false)
-        assert!(!dot.contains("\"task-c\""), "done task must be excluded when include_done=false");
+        assert!(
+            !dot.contains("\"task-c\""),
+            "done task must be excluded when include_done=false"
+        );
     }
 
     #[test]
     fn test_output_dot_include_done_true_includes_completed_nodes() {
         let graph = build_dot_test_graph();
         let dot = graph.output_dot(None, 2, None, true);
-        assert!(dot.contains("\"task-c\""), "done task must be included when include_done=true");
+        assert!(
+            dot.contains("\"task-c\""),
+            "done task must be included when include_done=true"
+        );
     }
 
     #[test]
@@ -10032,24 +10355,25 @@ mod tests {
         let dot = graph.output_dot(Some("epic-1"), 1, None, true);
         assert!(dot.contains("\"epic-1\""));
         assert!(dot.contains("\"task-a\""));
-        assert!(!dot.contains("\"task-b\""), "task-b is 2 hops away, must be excluded at max_depth=1");
+        assert!(
+            !dot.contains("\"task-b\""),
+            "task-b is 2 hops away, must be excluded at max_depth=1"
+        );
     }
 
     #[test]
     fn test_output_dot_project_filter() {
-        let mut docs = vec![
-            make_doc_with_fields(
-                "tasks/proj-a.md",
-                "Project A Task",
-                "task",
-                "active",
-                "proj-a-task",
-                None,
-                &[],
-                None,
-                &[],
-            ),
-        ];
+        let mut docs = vec![make_doc_with_fields(
+            "tasks/proj-a.md",
+            "Project A Task",
+            "task",
+            "active",
+            "proj-a-task",
+            None,
+            &[],
+            None,
+            &[],
+        )];
         if let Some(fm) = docs[0].frontmatter.as_mut().and_then(|f| f.as_object_mut()) {
             fm.insert("project".to_string(), serde_json::json!("alpha"));
         }
@@ -10065,8 +10389,14 @@ mod tests {
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
 
         let dot = graph.output_dot(None, 2, Some("alpha"), true);
-        assert!(dot.contains("\"proj-a-task\""), "node in project 'alpha' must be included");
-        assert!(!dot.contains("\"proj-b-task\""), "node without matching project must be excluded");
+        assert!(
+            dot.contains("\"proj-a-task\""),
+            "node in project 'alpha' must be included"
+        );
+        assert!(
+            !dot.contains("\"proj-b-task\""),
+            "node without matching project must be excluded"
+        );
     }
 
     #[test]
@@ -10090,7 +10420,10 @@ mod tests {
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
         let dot = graph.output_dot(None, 2, None, true);
         assert!(dot.contains("\"solo-task\""));
-        assert!(!dot.contains("->"), "single node with no edges must have no edge lines");
+        assert!(
+            !dot.contains("->"),
+            "single node with no edges must have no edge lines"
+        );
     }
 
     #[test]
@@ -10107,7 +10440,7 @@ mod tests {
                 // and the line must not contain a raw (unescaped) newline — i.e.
                 // this must be a single line of output.
                 assert!(
-                    !line.contains("\\\"\\\"") ,
+                    !line.contains("\\\"\\\""),
                     "label quoting must be properly escaped, not doubled: {line}"
                 );
                 assert!(
@@ -10118,7 +10451,10 @@ mod tests {
         }
         // wikilink/markdown syntax in task-a's title must survive verbatim
         // inside the quoted label (not special in DOT, just needs quote-safety).
-        assert!(dot.contains("[[wikilink]]"), "markdown/wikilink syntax must appear in output: {dot}");
+        assert!(
+            dot.contains("[[wikilink]]"),
+            "markdown/wikilink syntax must appear in output: {dot}"
+        );
     }
 
     #[test]
@@ -10188,7 +10524,13 @@ mod tests {
 Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are superseded: the original plan's contact cement (never used), and PVA recorded in April. The April adhesion test that passed remains real evidence that a craft-type PVA-family glue bonds acceptably to the porous fibre cement — it is the reason this question is closed rather than open.
 "#.to_string();
         {
-            let mut fm = craft_glue.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            let mut fm = craft_glue
+                .frontmatter
+                .as_ref()
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
             fm.insert("priority".to_string(), serde_json::json!(3));
             craft_glue.frontmatter = Some(serde_json::Value::Object(fm));
         }
@@ -10227,9 +10569,16 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         open_spike.body = r#"## Open Questions
 - Will the craft glue hold under 80C thermal cycling behind the cooktop?
 - What degradation occurs after 100 heat cycles?
-"#.to_string();
+"#
+        .to_string();
         {
-            let mut fm = open_spike.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            let mut fm = open_spike
+                .frontmatter
+                .as_ref()
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
             fm.insert("priority".to_string(), serde_json::json!(3));
             fm.insert("confidence".to_string(), serde_json::json!("fifty-fifty"));
             open_spike.frontmatter = Some(serde_json::Value::Object(fm));
@@ -10254,7 +10603,14 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             &["open-spike"],
         );
 
-        let docs = vec![craft_glue, panel_1, panel_2, open_spike, dep_spike_1, dep_spike_2];
+        let docs = vec![
+            craft_glue,
+            panel_1,
+            panel_2,
+            open_spike,
+            dep_spike_1,
+            dep_spike_2,
+        ];
         let graph = GraphStore::build(&docs, root);
 
         let cg_node = graph.get_node("craft-glue").unwrap();
@@ -10262,11 +10618,18 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
 
         // Craft glue has NO open question (settled) -> VoI = 0.0
         assert!(!cg_node.has_open_question);
-        assert_eq!(cg_node.voi_value.unwrap_or(0.0), 0.0, "settled craft-glue must earn 0 VoI");
+        assert_eq!(
+            cg_node.voi_value.unwrap_or(0.0),
+            0.0,
+            "settled craft-glue must earn 0 VoI"
+        );
 
         // Genuinely open spike has open question -> VoI > 0.0
         assert!(os_node.has_open_question);
-        assert!(os_node.voi_value.unwrap_or(0.0) > 0.0, "open spike must earn positive VoI");
+        assert!(
+            os_node.voi_value.unwrap_or(0.0) > 0.0,
+            "open spike must earn positive VoI"
+        );
 
         // Craft glue ranks below genuinely open node
         let cg_score = cg_node.focus_score.unwrap_or(0);
@@ -10274,7 +10637,8 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         assert!(
             cg_score < os_score,
             "settled craft glue (score {}) must rank below open spike (score {})",
-            cg_score, os_score
+            cg_score,
+            os_score
         );
     }
 
@@ -10292,7 +10656,8 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             None,
             &[],
         );
-        open_no_divergence.body = "## Open Questions\n- What is the optimum batch size?\n".to_string();
+        open_no_divergence.body =
+            "## Open Questions\n- What is the optimum batch size?\n".to_string();
 
         let linear_dep = make_doc(
             "tasks/linear-dep.md",
@@ -10314,9 +10679,16 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             None,
             &[],
         );
-        div_no_open.body = "## Adhesive — settled\nEverything is confirmed and closed.\n".to_string();
+        div_no_open.body =
+            "## Adhesive — settled\nEverything is confirmed and closed.\n".to_string();
         {
-            let mut fm = div_no_open.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            let mut fm = div_no_open
+                .frontmatter
+                .as_ref()
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
             fm.insert("confidence".to_string(), serde_json::json!("certain"));
             div_no_open.frontmatter = Some(serde_json::Value::Object(fm));
         }
@@ -10350,9 +10722,16 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             None,
             &[],
         );
-        both_open_and_div.body = "## Open Questions\n- Which protocol performs best under load?\n".to_string();
+        both_open_and_div.body =
+            "## Open Questions\n- Which protocol performs best under load?\n".to_string();
         {
-            let mut fm = both_open_and_div.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            let mut fm = both_open_and_div
+                .frontmatter
+                .as_ref()
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
             fm.insert("confidence".to_string(), serde_json::json!(0.5));
             both_open_and_div.frontmatter = Some(serde_json::Value::Object(fm));
         }
@@ -10377,9 +10756,14 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         );
 
         let docs = vec![
-            open_no_divergence, linear_dep,
-            div_no_open, div_dep_1, div_dep_2,
-            both_open_and_div, both_dep_1, both_dep_2,
+            open_no_divergence,
+            linear_dep,
+            div_no_open,
+            div_dep_1,
+            div_dep_2,
+            both_open_and_div,
+            both_dep_1,
+            both_dep_2,
         ];
         let graph = GraphStore::build(&docs, root);
 
@@ -10388,11 +10772,13 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         let node_both = graph.get_node("both").unwrap();
 
         assert_eq!(
-            node_open_only.voi_value.unwrap_or(0.0), 0.0,
+            node_open_only.voi_value.unwrap_or(0.0),
+            0.0,
             "open question alone with no downstream divergence must earn 0 VoI"
         );
         assert_eq!(
-            node_div_only.voi_value.unwrap_or(0.0), 0.0,
+            node_div_only.voi_value.unwrap_or(0.0),
+            0.0,
             "downstream divergence alone with no open question must earn 0 VoI"
         );
         assert!(
@@ -10404,22 +10790,61 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
     #[test]
     fn test_phase3_elicited_confidence_verbal_anchors() {
         assert_eq!(crate::graph::parse_verbal_confidence("certain"), Some(1.00));
-        assert_eq!(crate::graph::parse_verbal_confidence("almost certain"), Some(1.00));
-        assert_eq!(crate::graph::parse_verbal_confidence("very probable"), Some(0.85));
-        assert_eq!(crate::graph::parse_verbal_confidence("probable"), Some(0.85));
-        assert_eq!(crate::graph::parse_verbal_confidence("highly likely"), Some(0.85));
-        assert_eq!(crate::graph::parse_verbal_confidence("expected"), Some(0.75));
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("almost certain"),
+            Some(1.00)
+        );
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("very probable"),
+            Some(0.85)
+        );
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("probable"),
+            Some(0.85)
+        );
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("highly likely"),
+            Some(0.85)
+        );
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("expected"),
+            Some(0.75)
+        );
         assert_eq!(crate::graph::parse_verbal_confidence("likely"), Some(0.75));
-        assert_eq!(crate::graph::parse_verbal_confidence("fifty-fifty"), Some(0.50));
-        assert_eq!(crate::graph::parse_verbal_confidence("even chance"), Some(0.50));
-        assert_eq!(crate::graph::parse_verbal_confidence("uncertain"), Some(0.25));
-        assert_eq!(crate::graph::parse_verbal_confidence("possible"), Some(0.25));
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("fifty-fifty"),
+            Some(0.50)
+        );
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("even chance"),
+            Some(0.50)
+        );
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("uncertain"),
+            Some(0.25)
+        );
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("possible"),
+            Some(0.25)
+        );
         assert_eq!(crate::graph::parse_verbal_confidence("perhaps"), Some(0.25));
         assert_eq!(crate::graph::parse_verbal_confidence("maybe"), Some(0.25));
-        assert_eq!(crate::graph::parse_verbal_confidence("improbable"), Some(0.15));
-        assert_eq!(crate::graph::parse_verbal_confidence("unlikely"), Some(0.15));
-        assert_eq!(crate::graph::parse_verbal_confidence("very unlikely"), Some(0.15));
-        assert_eq!(crate::graph::parse_verbal_confidence("impossible"), Some(0.00));
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("improbable"),
+            Some(0.15)
+        );
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("unlikely"),
+            Some(0.15)
+        );
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("very unlikely"),
+            Some(0.15)
+        );
+        assert_eq!(
+            crate::graph::parse_verbal_confidence("impossible"),
+            Some(0.00)
+        );
         assert_eq!(crate::graph::parse_verbal_confidence("none"), Some(0.00));
 
         // Structured JSON object with mandatory prose why/justification
@@ -10478,9 +10903,18 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             &["blocker"],
         );
 
-        let docs_before = vec![task_a.clone(), blocker.clone(), blocked_1.clone(), blocked_2.clone()];
+        let docs_before = vec![
+            task_a.clone(),
+            blocker.clone(),
+            blocked_1.clone(),
+            blocked_2.clone(),
+        ];
         let graph_before = GraphStore::build(&docs_before, root);
-        let blocker_score_before = graph_before.get_node("blocker").unwrap().focus_score.unwrap();
+        let blocker_score_before = graph_before
+            .get_node("blocker")
+            .unwrap()
+            .focus_score
+            .unwrap();
         let blocker_voi_before = graph_before.get_node("blocker").unwrap().voi_value.unwrap();
 
         // Now add AC heading to blocked_1: "## Acceptance Criteria\n- [ ] Done when tests pass\n"
@@ -10488,7 +10922,11 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
 
         let docs_after = vec![task_a, blocker.clone(), blocked_1, blocked_2.clone()];
         let graph_after = GraphStore::build(&docs_after, root);
-        let blocker_score_after = graph_after.get_node("blocker").unwrap().focus_score.unwrap();
+        let blocker_score_after = graph_after
+            .get_node("blocker")
+            .unwrap()
+            .focus_score
+            .unwrap();
         let blocker_voi_after = graph_after.get_node("blocker").unwrap().voi_value.unwrap();
 
         // Adding AC to blocked_1 cannot lower blocker's VoI or focus score
@@ -10512,9 +10950,25 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             &[],
         );
         let docs_decomp = vec![
-            make_doc("tasks/task-a.md", "Task A", "task", "ready", "task-a", None, &[]),
+            make_doc(
+                "tasks/task-a.md",
+                "Task A",
+                "task",
+                "ready",
+                "task-a",
+                None,
+                &[],
+            ),
             blocker,
-            make_doc("tasks/blocked-1.md", "Blocked task 1", "task", "ready", "blocked-1", None, &["blocker"]),
+            make_doc(
+                "tasks/blocked-1.md",
+                "Blocked task 1",
+                "task",
+                "ready",
+                "blocked-1",
+                None,
+                &["blocker"],
+            ),
             blocked_2,
             child_doc,
         ];
@@ -10528,7 +10982,10 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
 
     #[test]
     fn test_phase3_ready_classification_unchanged() {
-        assert!(!is_ready_status("inbox", false), "inbox without AC is not ready");
+        assert!(
+            !is_ready_status("inbox", false),
+            "inbox without AC is not ready"
+        );
         assert!(is_ready_status("inbox", true), "inbox with AC is ready");
         assert!(is_ready_status("ready", false), "ready without AC is ready");
         assert!(is_ready_status("ready", true), "ready with AC is ready");
@@ -10563,10 +11020,22 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
         filler_heading.body = "## Questions\ntbd\n".to_string();
 
         let fh_dep_1 = make_doc(
-            "tasks/fh-dep-1.md", "FH dep 1", "task", "ready", "fh-dep-1", None, &["filler-heading"],
+            "tasks/fh-dep-1.md",
+            "FH dep 1",
+            "task",
+            "ready",
+            "fh-dep-1",
+            None,
+            &["filler-heading"],
         );
         let fh_dep_2 = make_doc(
-            "tasks/fh-dep-2.md", "FH dep 2", "task", "ready", "fh-dep-2", None, &["filler-heading"],
+            "tasks/fh-dep-2.md",
+            "FH dep 2",
+            "task",
+            "ready",
+            "fh-dep-2",
+            None,
+            &["filler-heading"],
         );
 
         // Attack F (mem_7b139fb6): the exact "question is settled" phrase typed
@@ -10588,15 +11057,31 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
                 .to_string();
 
         let ds_dep_1 = make_doc(
-            "tasks/ds-dep-1.md", "DS dep 1", "task", "ready", "ds-dep-1", None, &["dead-settled"],
+            "tasks/ds-dep-1.md",
+            "DS dep 1",
+            "task",
+            "ready",
+            "ds-dep-1",
+            None,
+            &["dead-settled"],
         );
         let ds_dep_2 = make_doc(
-            "tasks/ds-dep-2.md", "DS dep 2", "task", "ready", "ds-dep-2", None, &["dead-settled"],
+            "tasks/ds-dep-2.md",
+            "DS dep 2",
+            "task",
+            "ready",
+            "ds-dep-2",
+            None,
+            &["dead-settled"],
         );
 
         let docs = vec![
-            filler_heading, fh_dep_1, fh_dep_2,
-            dead_settled_check, ds_dep_1, ds_dep_2,
+            filler_heading,
+            fh_dep_1,
+            fh_dep_2,
+            dead_settled_check,
+            ds_dep_1,
+            ds_dep_2,
         ];
         let graph = GraphStore::build(&docs, root);
 
@@ -10606,7 +11091,8 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             "a heading match plus one filler word must not count as an open question"
         );
         assert_eq!(
-            fh_node.voi_value.unwrap_or(0.0), 0.0,
+            fh_node.voi_value.unwrap_or(0.0),
+            0.0,
             "filler-heading spike must earn 0 VoI"
         );
 
@@ -10616,7 +11102,8 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             "an explicitly settled question inside a matched section must not count as open, regardless of scan order"
         );
         assert_eq!(
-            ds_node.voi_value.unwrap_or(0.0), 0.0,
+            ds_node.voi_value.unwrap_or(0.0),
+            0.0,
             "explicitly-settled spike must earn 0 VoI"
         );
     }
@@ -10640,17 +11127,35 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             &[],
         );
         {
-            let mut fm = bare_confidence.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            let mut fm = bare_confidence
+                .frontmatter
+                .as_ref()
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
             fm.insert("confidence".to_string(), serde_json::json!(0.01));
             bare_confidence.frontmatter = Some(serde_json::Value::Object(fm));
         }
         // body stays empty — no corroborating open-question content.
 
         let bc_dep_1 = make_doc(
-            "tasks/bc-dep-1.md", "BC dep 1", "task", "ready", "bc-dep-1", None, &["bare-confidence"],
+            "tasks/bc-dep-1.md",
+            "BC dep 1",
+            "task",
+            "ready",
+            "bc-dep-1",
+            None,
+            &["bare-confidence"],
         );
         let bc_dep_2 = make_doc(
-            "tasks/bc-dep-2.md", "BC dep 2", "task", "ready", "bc-dep-2", None, &["bare-confidence"],
+            "tasks/bc-dep-2.md",
+            "BC dep 2",
+            "task",
+            "ready",
+            "bc-dep-2",
+            None,
+            &["bare-confidence"],
         );
 
         let docs = vec![bare_confidence, bc_dep_1, bc_dep_2];
@@ -10681,17 +11186,35 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             &[],
         );
         {
-            let mut fm = frontmatter_flag.frontmatter.as_ref().unwrap().as_object().unwrap().clone();
+            let mut fm = frontmatter_flag
+                .frontmatter
+                .as_ref()
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
             fm.insert("open_question".to_string(), serde_json::json!(true));
             frontmatter_flag.frontmatter = Some(serde_json::Value::Object(fm));
         }
         // body stays empty.
 
         let ff_dep_1 = make_doc(
-            "tasks/ff-dep-1.md", "FF dep 1", "task", "ready", "ff-dep-1", None, &["frontmatter-flag"],
+            "tasks/ff-dep-1.md",
+            "FF dep 1",
+            "task",
+            "ready",
+            "ff-dep-1",
+            None,
+            &["frontmatter-flag"],
         );
         let ff_dep_2 = make_doc(
-            "tasks/ff-dep-2.md", "FF dep 2", "task", "ready", "ff-dep-2", None, &["frontmatter-flag"],
+            "tasks/ff-dep-2.md",
+            "FF dep 2",
+            "task",
+            "ready",
+            "ff-dep-2",
+            None,
+            &["frontmatter-flag"],
         );
 
         let docs = vec![frontmatter_flag, ff_dep_1, ff_dep_2];
@@ -10703,11 +11226,9 @@ Standard craft glue, confirmed by Nic 2026-08-21. Two earlier positions are supe
             "a bare frontmatter open_question flag with no body content must not set has_open_question"
         );
         assert_eq!(
-            ff_node.voi_value.unwrap_or(0.0), 0.0,
+            ff_node.voi_value.unwrap_or(0.0),
+            0.0,
             "a frontmatter-only open_question flag must earn 0 VoI"
         );
     }
 }
-
-
-
