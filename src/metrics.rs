@@ -169,8 +169,8 @@ pub fn compute_pagerank(node_ids: &[String], edges: &[Edge]) -> HashMap<String, 
             } else {
                 // Dangling node: distribute evenly
                 let share = rank[i] / n as f64;
-                for j in 0..n {
-                    new_rank[j] += d * share;
+                for r in &mut new_rank {
+                    *r += d * share;
                 }
             }
         }

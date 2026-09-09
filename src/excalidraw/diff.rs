@@ -313,8 +313,8 @@ impl DiffEngine {
                 if let Some(base_snap) = base {
                     if let Some(bn) = base_snap.nodes.get(&node_id) {
                         let pos_changed = (card.x - bn.x).abs() > 0.5 || (card.y - bn.y).abs() > 0.5;
-                        let color_changed = bn.stroke_color.as_ref().map_or(false, |sc| sc != &card.stroke_color)
-                            || bn.background_color.as_ref().map_or(false, |bg| bg != &card.background_color);
+                        let color_changed = bn.stroke_color.as_ref().is_some_and(|sc| sc != &card.stroke_color)
+                            || bn.background_color.as_ref().is_some_and(|bg| bg != &card.background_color);
 
                         if pos_changed || color_changed {
                             diff.visual_mutations.push(VisualMutation {

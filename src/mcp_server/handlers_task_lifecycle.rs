@@ -1,16 +1,12 @@
-use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
-use rmcp::{ErrorData as McpError, ServerHandler};
+use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use crate::graph::is_completed;
+use std::path::PathBuf;
 use crate::graph_store::GraphStore;
 
-use super::{PkbSearchServer, MAX_RESULTS};
+use super::PkbSearchServer;
 
 impl PkbSearchServer {
     pub(crate) fn handle_claim_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -18,6 +14,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),
@@ -385,6 +382,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),
@@ -819,6 +817,7 @@ impl PkbSearchServer {
         let status = args
             .get("status")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
@@ -856,10 +855,11 @@ impl PkbSearchServer {
         let summary = args
             .get("summary")
             .and_then(|v| v.as_str())
+            .or_else(|| args.get("completion_evidence").and_then(|v| v.as_str()))
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
-                    "Missing required parameter: summary. Describe what was done before releasing this task.\n\
+                    "Missing required parameter: summary (or completion_evidence). Describe what was done before releasing this task.\n\
                      Example: release_task(id=\"task-abc\", status=\"merge_ready\", summary=\"Implemented X with Y\", pr_url=\"https://...\")",
                 ),
                 data: None,
@@ -987,9 +987,9 @@ impl PkbSearchServer {
         // above, unchanged. Presence-only: no content inspection.
         if Self::FAILURE_HANDBACK_STATUSES.contains(&status)
         {
-            let has_reason = reason.map_or(false, |r| !r.trim().is_empty());
+            let has_reason = reason.is_some_and(|r| !r.trim().is_empty());
             let has_blocker =
-                status == "blocked" && blocker.map_or(false, |b| !b.trim().is_empty());
+                status == "blocked" && blocker.is_some_and(|b| !b.trim().is_empty());
             if !has_reason && !has_blocker {
                 let field_hint = if status == "blocked" {
                     "reason or blocker"
@@ -1230,11 +1230,11 @@ impl PkbSearchServer {
         if status == "merge_ready" && pr_url.is_none() {
             warnings.push("WARNING: No pr_url for merge_ready. Update the task with the PR URL when available.");
         }
-        if status == "blocked" && blocker.map_or(true, |b| b.trim().is_empty()) {
+        if status == "blocked" && blocker.is_none_or(|b| b.trim().is_empty()) {
             warnings.push("WARNING: No blocker description. Consider updating with what's blocking this task.");
         }
         if (status == "cancelled" || status == "review")
-            && reason.map_or(true, |r| r.trim().is_empty())
+            && reason.is_none_or(|r| r.trim().is_empty())
         {
             warnings.push("WARNING: No reason provided. Future you will want to know why.");
         }
@@ -1281,6 +1281,7 @@ impl PkbSearchServer {
         let parent_id = args
             .get("parent_id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: parent_id"),
@@ -1416,19 +1417,18 @@ impl PkbSearchServer {
                 if let Some(deps) = subtask.get("depends_on").and_then(|v| v.as_array()) {
                     for dep_val in deps {
                         if let Some(dep) = dep_val.as_str() {
-                            if dep.starts_with('$') {
-                                if let Ok(idx) = dep[1..].parse::<usize>() {
+                            if let Some(rest) = dep.strip_prefix('$') {
+                                if let Ok(idx) = rest.parse::<usize>() {
                                     if idx == 0 || idx > subtask_ids.len() {
                                         unresolvable.push(dep.to_string());
                                     }
                                 } else {
                                     unresolvable.push(dep.to_string());
                                 }
-                            } else if !title_to_id.contains_key(&dep.to_lowercase()) {
-                                if graph.resolve(dep).is_none() {
+                            } else if !title_to_id.contains_key(&dep.to_lowercase())
+                                && graph.resolve(dep).is_none() {
                                     unresolvable.push(dep.to_string());
                                 }
-                            }
                         }
                     }
                 }
@@ -1559,6 +1559,7 @@ impl PkbSearchServer {
                     .get("consequence")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                dir: None,
                 project: subtask
                     .get("project")
                     .and_then(|v| v.as_str())

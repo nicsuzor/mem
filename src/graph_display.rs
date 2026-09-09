@@ -282,7 +282,7 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
 
     // --- Dependencies ---
     if !ctx.depends_on.is_empty() {
-        lines.push(format!("    \x1b[2mdepends on:\x1b[0m"));
+        lines.push("    \x1b[2mdepends on:\x1b[0m".to_string());
         for dep in &ctx.depends_on {
             lines.push(format!("      \x1b[33m← {}\x1b[0m", fmt_node(dep)));
         }
@@ -290,7 +290,7 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
 
     // --- Blocks ---
     if !ctx.blocks.is_empty() {
-        lines.push(format!("    \x1b[2mblocks:\x1b[0m"));
+        lines.push("    \x1b[2mblocks:\x1b[0m".to_string());
         for blocked in &ctx.blocks {
             lines.push(format!("      \x1b[36m→ {}\x1b[0m", fmt_node(blocked)));
         }
@@ -298,14 +298,14 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
 
     // --- Contributions ---
     if !ctx.contributes_to.is_empty() {
-        lines.push(format!("    \x1b[2mcontributes to:\x1b[0m"));
+        lines.push("    \x1b[2mcontributes to:\x1b[0m".to_string());
         for target in &ctx.contributes_to {
             lines.push(format!("      \x1b[1;34m↗ {}\x1b[0m", fmt_node(target)));
         }
     }
 
     if !ctx.contributed_by.is_empty() {
-        lines.push(format!("    \x1b[2mcontributed by:\x1b[0m"));
+        lines.push("    \x1b[2mcontributed by:\x1b[0m".to_string());
         for source in &ctx.contributed_by {
             lines.push(format!("      \x1b[34m↙ {}\x1b[0m", fmt_node(source)));
         }
@@ -313,7 +313,7 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
 
     // --- Similar to ---
     if !ctx.similar_to.is_empty() {
-        lines.push(format!("    \x1b[2msimilar to:\x1b[0m"));
+        lines.push("    \x1b[2msimilar to:\x1b[0m".to_string());
         for sim in &ctx.similar_to {
             lines.push(format!("      \x1b[2m≈ {}\x1b[0m", fmt_node(sim)));
         }
@@ -321,7 +321,7 @@ pub fn render_ascii_graph(gs: &GraphStore, node_id: &str) -> Vec<String> {
 
     // --- Children ---
     if !ctx.children.is_empty() {
-        lines.push(format!("    \x1b[2mchildren:\x1b[0m"));
+        lines.push("    \x1b[2mchildren:\x1b[0m".to_string());
         for (i, child) in ctx.children.iter().enumerate() {
             let is_last = i == ctx.children.len() - 1 && ctx.children_total <= ctx.children.len();
             let branch = if is_last { "└─" } else { "├─" };
@@ -852,18 +852,19 @@ pub fn format_task_line(task: &GraphNode, width: usize, plain: bool) -> String {
             let today = chrono::Utc::now().date_naive();
             let len = std::cmp::min(10, due.len());
             let due_substr = &due[..due.floor_char_boundary(len)];
-            let color = if let Ok(due_date) = chrono::NaiveDate::parse_from_str(due_substr, "%Y-%m-%d") {
-                let days_until = (due_date - today).num_days();
-                if days_until < 0 {
-                    "\x1b[31m"
-                } else if days_until <= 7 {
-                    "\x1b[33m"
+            let color =
+                if let Ok(due_date) = chrono::NaiveDate::parse_from_str(due_substr, "%Y-%m-%d") {
+                    let days_until = (due_date - today).num_days();
+                    if days_until < 0 {
+                        "\x1b[31m"
+                    } else if days_until <= 7 {
+                        "\x1b[33m"
+                    } else {
+                        "\x1b[2m"
+                    }
                 } else {
                     "\x1b[2m"
-                }
-            } else {
-                "\x1b[2m"
-            };
+                };
             right_parts.push(format!("{color}due:{due_substr}\x1b[0m"));
         }
     }
@@ -890,8 +891,16 @@ pub fn format_task_line(task: &GraphNode, width: usize, plain: bool) -> String {
 
     let right = right_parts.join("  ");
 
-    let left_len = if plain { left.chars().count() } else { strip_ansi(&left).chars().count() };
-    let right_len = if plain { right.chars().count() } else { strip_ansi(&right).chars().count() };
+    let left_len = if plain {
+        left.chars().count()
+    } else {
+        strip_ansi(&left).chars().count()
+    };
+    let right_len = if plain {
+        right.chars().count()
+    } else {
+        strip_ansi(&right).chars().count()
+    };
     let padding = width
         .saturating_sub(left_len)
         .saturating_sub(right_len)
@@ -939,9 +948,18 @@ pub fn collect_tree_roots<'a>(
     gs: &'a GraphStore,
     tasks: &[&'a GraphNode],
 ) -> (Vec<&'a GraphNode>, HashSet<&'a str>, HashSet<String>) {
-    let mut visible: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
     let context_types = ["project", "epic", "goal"];
     let mut context_ids: HashSet<String> = HashSet::new();
+
+    for task in tasks {
+        if let Some(ref t) = task.node_type {
+            if context_types.contains(&t.as_str()) {
+                context_ids.insert(task.id.clone());
+            }
+        }
+    }
+
+    let mut visible: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
 
     for task in tasks {
         let mut current_id = task.parent.as_deref();
@@ -952,9 +970,6 @@ pub fn collect_tree_roots<'a>(
             if !visited_ancestors.insert(pid) {
                 break;
             }
-            if visible.contains(pid) || context_ids.contains(pid) {
-                break;
-            }
             if let Some(parent_node) = gs.get_node(pid) {
                 if parent_node
                     .node_type
@@ -963,16 +978,13 @@ pub fn collect_tree_roots<'a>(
                     .unwrap_or(false)
                 {
                     context_ids.insert(pid.to_string());
+                    visible.insert(parent_node.id.as_str());
                 }
                 current_id = parent_node.parent.as_deref();
             } else {
                 break;
             }
         }
-    }
-
-    for cid in &context_ids {
-        visible.insert(cid.as_str());
     }
 
     let mut roots: Vec<&GraphNode> = visible
@@ -1005,11 +1017,7 @@ fn render_tree_ascii_node(
         return;
     }
 
-    let connector = if is_last {
-        "└── "
-    } else {
-        "├── "
-    };
+    let connector = if is_last { "└── " } else { "├── " };
     let prefix_vis = if plain {
         prefix.chars().count() + 4
     } else {
@@ -1123,7 +1131,11 @@ fn build_nested_json_node(
             assignee: node.assignee.clone(),
             project: node.project.clone(),
             is_context: if is_ctx { Some(true) } else { None },
-            blocked: if is_ctx { None } else { Some(gs.is_blocked(&node.id)) },
+            blocked: if is_ctx {
+                None
+            } else {
+                Some(gs.is_blocked(&node.id))
+            },
             children: Vec::new(),
         };
     }
@@ -1160,15 +1172,16 @@ fn build_nested_json_node(
         assignee: node.assignee.clone(),
         project: node.project.clone(),
         is_context: if is_ctx { Some(true) } else { None },
-        blocked: if is_ctx { None } else { Some(gs.is_blocked(&node.id)) },
+        blocked: if is_ctx {
+            None
+        } else {
+            Some(gs.is_blocked(&node.id))
+        },
         children,
     }
 }
 
-pub fn build_nested_task_json(
-    gs: &GraphStore,
-    tasks: &[&GraphNode],
-) -> Vec<NestedTaskNode> {
+pub fn build_nested_task_json(gs: &GraphStore, tasks: &[&GraphNode]) -> Vec<NestedTaskNode> {
     let (roots, visible, context_ids) = collect_tree_roots(gs, tasks);
     let mut ancestor_path = HashSet::new();
     roots
@@ -2015,7 +2028,15 @@ mod tests {
         fm_lone.insert("priority".to_string(), serde_json::json!(0));
 
         let docs = vec![
-            make_doc("tasks/epic-1.md", "Epic One", "epic", "active", "epic-1", None, &[]),
+            make_doc(
+                "tasks/epic-1.md",
+                "Epic One",
+                "epic",
+                "active",
+                "epic-1",
+                None,
+                &[],
+            ),
             PkbDocument {
                 path: PathBuf::from("tasks/task-a.md"),
                 title: "Task A".to_string(),
@@ -2069,18 +2090,42 @@ mod tests {
         let output = lines.join("\n");
 
         // Epic One should appear as a context container with count 2
-        assert!(output.contains("▌ Epic One (2)  [epic-1]"), "expected context epic in output:\n{output}");
+        assert!(
+            output.contains("▌ Epic One (2)  [epic-1]"),
+            "expected context epic in output:\n{output}"
+        );
         // Both tasks should be nested with priority and metadata
-        assert!(output.contains("P1  Task A"), "expected Task A line in output:\n{output}");
-        assert!(output.contains("[medium]"), "expected complexity on Task A in output:\n{output}");
-        assert!(output.contains("due:2026-09-15"), "expected due date on Task A in output:\n{output}");
-        assert!(output.contains("P2  Task B"), "expected Task B line in output:\n{output}");
+        assert!(
+            output.contains("P1  Task A"),
+            "expected Task A line in output:\n{output}"
+        );
+        assert!(
+            output.contains("[medium]"),
+            "expected complexity on Task A in output:\n{output}"
+        );
+        assert!(
+            output.contains("due:2026-09-15"),
+            "expected due date on Task A in output:\n{output}"
+        );
+        assert!(
+            output.contains("P2  Task B"),
+            "expected Task B line in output:\n{output}"
+        );
         // Orphan task should be a root
-        assert!(output.contains("P0  Orphan Task"), "expected Orphan Task in output:\n{output}");
+        assert!(
+            output.contains("P0  Orphan Task"),
+            "expected Orphan Task in output:\n{output}"
+        );
         // Connectors should be used
-        assert!(output.contains("├── ") || output.contains("└── "), "expected box drawing connectors in output:\n{output}");
+        assert!(
+            output.contains("├── ") || output.contains("└── "),
+            "expected box drawing connectors in output:\n{output}"
+        );
         // Plain output must not contain raw ANSI escapes
-        assert!(!output.contains("\x1b["), "plain output should have no ANSI escapes:\n{output}");
+        assert!(
+            !output.contains("\x1b["),
+            "plain output should have no ANSI escapes:\n{output}"
+        );
     }
 
     #[test]
@@ -2095,7 +2140,15 @@ mod tests {
         fm_a.insert("complexity".to_string(), serde_json::json!("low"));
 
         let docs = vec![
-            make_doc("tasks/epic-1.md", "Epic One", "epic", "active", "epic-1", None, &[]),
+            make_doc(
+                "tasks/epic-1.md",
+                "Epic One",
+                "epic",
+                "active",
+                "epic-1",
+                None,
+                &[],
+            ),
             PkbDocument {
                 path: PathBuf::from("tasks/task-a.md"),
                 title: "Task A".to_string(),
@@ -2137,6 +2190,13 @@ mod tests {
         let serialized = serde_json::to_string_pretty(&json_tree).unwrap();
         assert!(serialized.contains("\"id\": \"epic-1\""));
         assert!(serialized.contains("\"id\": \"task-a\""));
-        assert!(!serialized.contains("\"signals\""), "brief metadata JSON must not contain signals");
-        assert!(!serialized.contains("\"body\""), "brief metadata JSON must not contain body");
+        assert!(
+            !serialized.contains("\"signals\""),
+            "brief metadata JSON must not contain signals"
+        );
+        assert!(
+            !serialized.contains("\"body\""),
+            "brief metadata JSON must not contain body"
+        );
     }
+}

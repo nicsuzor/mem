@@ -167,10 +167,13 @@ fn test_update_task_setting_done_requires_completion_evidence_and_succeeds_with_
 
     // 1. Calling update_task setting status=done without completion_evidence fails
     let err = server
-        .dispatch_tool_sync("update_task", &json!({
-            "id": "task-seed1",
-            "status": "done"
-        }))
+        .dispatch_tool_sync(
+            "update_task",
+            &json!({
+                "id": "task-seed1",
+                "status": "done"
+            }),
+        )
         .expect_err("setting status=done without completion_evidence must fail");
     assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     assert!(
@@ -186,11 +189,14 @@ fn test_update_task_setting_done_requires_completion_evidence_and_succeeds_with_
 
     // 2. Calling update_task setting status=done with valid completion_evidence succeeds
     let res = server
-        .dispatch_tool_sync("update_task", &json!({
-            "id": "task-seed1",
-            "status": "done",
-            "completion_evidence": "Implemented feature and verified with tests."
-        }))
+        .dispatch_tool_sync(
+            "update_task",
+            &json!({
+                "id": "task-seed1",
+                "status": "done",
+                "completion_evidence": "Implemented feature and verified with tests."
+            }),
+        )
         .expect("setting status=done with valid completion_evidence must succeed");
     assert!(
         !res.content.is_empty(),
@@ -206,9 +212,12 @@ fn test_create_task_missing_parent_rejection_and_success() {
 
     // Bare task without parent fails with clear error and example
     let err = server
-        .dispatch_tool_sync("create_task", &json!({
-            "title": "A task without parent"
-        }))
+        .dispatch_tool_sync(
+            "create_task",
+            &json!({
+                "title": "A task without parent"
+            }),
+        )
         .expect_err("create_task without parent must fail");
     assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     assert!(
@@ -224,10 +233,13 @@ fn test_create_task_missing_parent_rejection_and_success() {
 
     // Task with parent succeeds
     let res = server
-        .dispatch_tool_sync("create_task", &json!({
-            "title": "A properly parented task",
-            "parent": "proj-root"
-        }))
+        .dispatch_tool_sync(
+            "create_task",
+            &json!({
+                "title": "A properly parented task",
+                "parent": "proj-root"
+            }),
+        )
         .expect("create_task with parent must succeed");
     assert!(!res.content.is_empty());
 }
@@ -240,11 +252,14 @@ fn test_effort_vs_complexity_error_and_descriptions() {
 
     // Calling create_task with effort="S" fails with clear message directing to complexity
     let err = server
-        .dispatch_tool_sync("create_task", &json!({
-            "title": "Bad effort task",
-            "parent": "proj-root",
-            "effort": "S"
-        }))
+        .dispatch_tool_sync(
+            "create_task",
+            &json!({
+                "title": "Bad effort task",
+                "parent": "proj-root",
+                "effort": "S"
+            }),
+        )
         .expect_err("effort='S' must be rejected");
     assert!(
         err.message.contains("Invalid effort"),
@@ -260,14 +275,19 @@ fn test_effort_vs_complexity_error_and_descriptions() {
     // Tool descriptions for create_task and create must disambiguate effort and complexity
     let tools = PkbSearchServer::get_all_tools();
     for tool_name in ["create_task", "create"] {
-        let tool = tools
-            .iter()
-            .find(|t| t.name.as_ref() == tool_name)
-            .unwrap();
+        let tool = tools.iter().find(|t| t.name.as_ref() == tool_name).unwrap();
         let schema = serde_json::to_value(&tool.input_schema).unwrap();
         let props = schema.get("properties").unwrap();
-        let effort_desc = props.get("effort").and_then(|p| p.get("description")).and_then(|d| d.as_str()).unwrap_or("");
-        let complexity_desc = props.get("complexity").and_then(|p| p.get("description")).and_then(|d| d.as_str()).unwrap_or("");
+        let effort_desc = props
+            .get("effort")
+            .and_then(|p| p.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or("");
+        let complexity_desc = props
+            .get("complexity")
+            .and_then(|p| p.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or("");
         assert!(
             effort_desc.contains("complexity") || effort_desc.contains("size"),
             "tool {tool_name} effort description must mention complexity/size labels: {effort_desc}"
@@ -287,16 +307,27 @@ fn test_soft_depends_on_accepted_in_create_task_and_persisted() {
 
     // create_task with soft_depends_on must be accepted (not rejected as unknown key)
     let res = server
-        .dispatch_tool_sync("create_task", &json!({
-            "id": "task-soft-dep",
-            "title": "Task with soft deps",
-            "parent": "proj-root",
-            "soft_depends_on": ["task-seed1"]
-        }))
+        .dispatch_tool_sync(
+            "create_task",
+            &json!({
+                "id": "task-soft-dep",
+                "title": "Task with soft deps",
+                "parent": "proj-root",
+                "soft_depends_on": ["task-seed1"]
+            }),
+        )
         .expect("create_task with soft_depends_on must succeed");
     assert!(!res.content.is_empty());
 
-    let task_file = tmp.path().join("tasks/task-soft-dep.md");
+    let task_file = mem::pkb::scan_directory(tmp.path())
+        .into_iter()
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("task-soft-dep") && n.ends_with(".md"))
+                .unwrap_or(false)
+        })
+        .expect("task file must exist");
     let content = fs::read_to_string(&task_file).expect("task file must exist");
     assert!(
         content.contains("soft_depends_on:"),
@@ -315,12 +346,17 @@ fn test_pkb_trace_missing_params_rejection_examples() {
     let (server, _tmp) = setup_fixture_pkb();
 
     let err_from = server
-        .dispatch_tool_sync("pkb_trace", &json!({
-            "to": "task-seed2"
-        }))
+        .dispatch_tool_sync(
+            "pkb_trace",
+            &json!({
+                "to": "task-seed2"
+            }),
+        )
         .expect_err("pkb_trace without from must fail");
     assert!(
-        err_from.message.contains("Missing required parameter: from"),
+        err_from
+            .message
+            .contains("Missing required parameter: from"),
         "error must name missing 'from': {}",
         err_from.message
     );
@@ -331,9 +367,12 @@ fn test_pkb_trace_missing_params_rejection_examples() {
     );
 
     let err_to = server
-        .dispatch_tool_sync("pkb_trace", &json!({
-            "from": "task-seed1"
-        }))
+        .dispatch_tool_sync(
+            "pkb_trace",
+            &json!({
+                "from": "task-seed1"
+            }),
+        )
         .expect_err("pkb_trace without to must fail");
     assert!(
         err_to.message.contains("Missing required parameter: to"),
@@ -352,21 +391,20 @@ fn test_pkb_trace_missing_params_rejection_examples() {
 #[test]
 fn test_search_family_descriptions_document_latency_and_timeout_guidance() {
     let tools = PkbSearchServer::get_all_tools();
-    for tool_name in ["search", "task_search", "retrieve_memory"] {
-        let tool = tools
-            .iter()
-            .find(|t| t.name.as_ref() == tool_name)
-            .unwrap_or_else(|| panic!("tool {tool_name} must exist"));
-        let desc = tool.description.as_deref().unwrap_or("");
-        assert!(
-            desc.to_lowercase().contains("onnx") || desc.to_lowercase().contains("embedding"),
-            "tool {tool_name} description must mention ONNX / embedding search: {desc}"
-        );
-        assert!(
-            desc.to_lowercase().contains("retry") || desc.to_lowercase().contains("back off"),
-            "tool {tool_name} description must advise retry / back off on timeout: {desc}"
-        );
-    }
+    let tool_name = "search";
+    let tool = tools
+        .iter()
+        .find(|t| t.name.as_ref() == tool_name)
+        .unwrap_or_else(|| panic!("tool {tool_name} must exist"));
+    let desc = tool.description.as_deref().unwrap_or("");
+    assert!(
+        desc.to_lowercase().contains("onnx") || desc.to_lowercase().contains("embedding"),
+        "tool {tool_name} description must mention ONNX / embedding search: {desc}"
+    );
+    assert!(
+        desc.to_lowercase().contains("retry") || desc.to_lowercase().contains("back off"),
+        "tool {tool_name} description must advise retry / back off on timeout: {desc}"
+    );
 }
 
 // ── 8. Universal Sweep: Every tool with declared required fields enforces them ──
@@ -405,4 +443,212 @@ fn test_every_tool_enforces_declared_required_fields() {
             err.code
         );
     }
+}
+
+// ── 9. Universal Sweep: Every required field individually rejected when omitted or null ──
+
+#[test]
+fn test_every_tool_rejects_when_any_required_field_is_missing() {
+    let (server, _tmp) = setup_fixture_pkb();
+    let tools = PkbSearchServer::get_all_tools();
+
+    let mut valid_samples: std::collections::HashMap<&str, serde_json::Value> =
+        std::collections::HashMap::new();
+    valid_samples.insert(
+        "apply_consolidation_batch",
+        json!({ "seed_id": "task-seed1", "updates": { "task-seed1": { "status": "inbox" } } }),
+    );
+    valid_samples.insert("search", json!({ "query": "seed" }));
+    valid_samples.insert("get_document", json!({ "id": "task-seed1" }));
+    valid_samples.insert("task_search", json!({ "query": "seed" }));
+    valid_samples.insert("get_network_metrics", json!({ "id": "task-seed1" }));
+    valid_samples.insert("top_n_by_metric", json!({ "metric": "pagerank" }));
+    valid_samples.insert(
+        "create_task",
+        json!({ "title": "Test Task", "parent": "proj-root" }),
+    );
+    valid_samples.insert("claim_task", json!({ "id": "task-seed1" }));
+    valid_samples.insert("create_memory", json!({ "title": "Test Memory" }));
+    valid_samples.insert("create", json!({ "title": "Test Doc", "type": "note" }));
+    valid_samples.insert(
+        "append",
+        json!({ "id": "task-seed1", "content": "Log entry" }),
+    );
+    valid_samples.insert(
+        "add_observations",
+        json!({ "id": "task-seed1", "lines": ["Observation 1"] }),
+    );
+    valid_samples.insert(
+        "delete_observations",
+        json!({ "id": "task-seed1", "selectors": ["Observation 1"] }),
+    );
+    valid_samples.insert(
+        "update_body",
+        json!({ "id": "task-seed1", "new_body": "Updated body" }),
+    );
+    valid_samples.insert(
+        "edit_body",
+        json!({ "id": "task-seed1", "diff": "@@ -1,1 +1,1 @@\n-Seed\n+Seed edited" }),
+    );
+    valid_samples.insert("delete", json!({ "id": "task-seed1" }));
+    valid_samples.insert(
+        "complete_task",
+        json!({ "id": "task-seed1", "completion_evidence": "Done with tests" }),
+    );
+    valid_samples.insert(
+        "release_task",
+        json!({ "id": "task-seed1", "status": "done", "summary": "Finished work" }),
+    );
+    valid_samples.insert("get_task", json!({ "id": "task-seed1" }));
+    valid_samples.insert(
+        "update_task",
+        json!({ "id": "task-seed1", "status": "inbox" }),
+    );
+    valid_samples.insert("retrieve_memory", json!({ "query": "seed" }));
+    valid_samples.insert("search_by_tag", json!({ "tags": ["seed"] }));
+    valid_samples.insert(
+        "decompose_task",
+        json!({ "parent_id": "task-seed1", "subtasks": [{ "title": "Subtask 1" }] }),
+    );
+    valid_samples.insert("get_dependency_tree", json!({ "id": "task-seed1" }));
+    valid_samples.insert("get_task_children", json!({ "id": "task-seed1" }));
+    valid_samples.insert(
+        "pkb_trace",
+        json!({ "from": "task-seed1", "to": "task-seed2" }),
+    );
+    valid_samples.insert(
+        "batch_update",
+        json!({ "ids": ["task-seed1"], "updates": { "status": "inbox" } }),
+    );
+    valid_samples.insert(
+        "batch_reparent",
+        json!({ "ids": ["task-seed1"], "new_parent": "proj-root" }),
+    );
+    valid_samples.insert("get_semantic_neighbors", json!({ "id": "task-seed1" }));
+    valid_samples.insert("diff_excalidraw", json!({ "canvas": "{}" }));
+    valid_samples.insert("sync_excalidraw", json!({ "canvas": "{}" }));
+    valid_samples.insert(
+        "batch_merge",
+        json!({ "canonical": "task-seed1", "merge_ids": ["task-seed2"] }),
+    );
+    valid_samples.insert(
+        "merge_node",
+        json!({ "canonical_id": "task-seed1", "source_ids": ["task-seed2"] }),
+    );
+    valid_samples.insert(
+        "batch_create_epics",
+        json!({ "epics": [{ "title": "Epic 1", "task_ids": ["task-seed1"] }] }),
+    );
+    valid_samples.insert(
+        "batch_reclassify",
+        json!({ "ids": ["task-seed1"], "new_type": "task" }),
+    );
+
+    let mut failures = Vec::new();
+
+    for tool in tools {
+        let name = tool.name.as_ref();
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        let required = schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<&str>>())
+            .unwrap_or_default();
+
+        if required.is_empty() {
+            continue;
+        }
+
+        let base_sample = valid_samples
+            .get(name)
+            .unwrap_or_else(|| panic!("Missing valid test sample for tool '{name}'"));
+
+        for &req_field in &required {
+            // Case 1: Parameter omitted entirely
+            let mut omitted_args = base_sample.as_object().unwrap().clone();
+            omitted_args.remove(req_field);
+            let result_omitted =
+                server.dispatch_tool_sync(name, &serde_json::Value::Object(omitted_args));
+            match result_omitted {
+                Ok(_) => {
+                    failures.push(format!(
+                        "Tool '{name}' SUCCEEDED when required parameter '{req_field}' was omitted"
+                    ));
+                }
+                Err(e) if e.code != ErrorCode::INVALID_PARAMS => {
+                    failures.push(format!("Tool '{name}' returned code {:?} (expected INVALID_PARAMS) when required parameter '{req_field}' was omitted: {}", e.code, e.message));
+                }
+                Err(_) => {}
+            }
+
+            // Case 2: Parameter explicitly null
+            let mut null_args = base_sample.as_object().unwrap().clone();
+            null_args.insert(req_field.to_string(), serde_json::Value::Null);
+            let result_null =
+                server.dispatch_tool_sync(name, &serde_json::Value::Object(null_args));
+            match result_null {
+                Ok(_) => {
+                    failures.push(format!(
+                        "Tool '{name}' SUCCEEDED when required parameter '{req_field}' was null"
+                    ));
+                }
+                Err(e) if e.code != ErrorCode::INVALID_PARAMS => {
+                    failures.push(format!("Tool '{name}' returned code {:?} (expected INVALID_PARAMS) when required parameter '{req_field}' was null: {}", e.code, e.message));
+                }
+                Err(_) => {}
+            }
+
+            // Case 3: Parameter empty (empty string, empty array, or empty object depending on base type)
+            let base_val = base_sample.get(req_field).unwrap();
+            let empty_val = match base_val {
+                serde_json::Value::String(_) => Some(serde_json::Value::String(String::new())),
+                serde_json::Value::Array(_) => Some(serde_json::Value::Array(Vec::new())),
+                serde_json::Value::Object(_) => {
+                    Some(serde_json::Value::Object(serde_json::Map::new()))
+                }
+                _ => None,
+            };
+            if let Some(empty) = empty_val {
+                let mut empty_args = base_sample.as_object().unwrap().clone();
+                empty_args.insert(req_field.to_string(), empty);
+                let result_empty =
+                    server.dispatch_tool_sync(name, &serde_json::Value::Object(empty_args));
+                match result_empty {
+                    Ok(_) => {
+                        failures.push(format!("Tool '{name}' SUCCEEDED when required parameter '{req_field}' was empty (empty string/array/object)"));
+                    }
+                    Err(e) if e.code != ErrorCode::INVALID_PARAMS => {
+                        failures.push(format!("Tool '{name}' returned code {:?} (expected INVALID_PARAMS) when required parameter '{req_field}' was empty: {}", e.code, e.message));
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            // Case 4: Parameter whitespace-only string
+            if let serde_json::Value::String(_) = base_val {
+                let mut ws_args = base_sample.as_object().unwrap().clone();
+                ws_args.insert(
+                    req_field.to_string(),
+                    serde_json::Value::String("   ".to_string()),
+                );
+                let result_ws =
+                    server.dispatch_tool_sync(name, &serde_json::Value::Object(ws_args));
+                match result_ws {
+                    Ok(_) => {
+                        failures.push(format!("Tool '{name}' SUCCEEDED when required parameter '{req_field}' was whitespace-only"));
+                    }
+                    Err(e) if e.code != ErrorCode::INVALID_PARAMS => {
+                        failures.push(format!("Tool '{name}' returned code {:?} (expected INVALID_PARAMS) when required parameter '{req_field}' was whitespace-only: {}", e.code, e.message));
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Required parameter validation failures found:\n{}",
+        failures.join("\n")
+    );
 }

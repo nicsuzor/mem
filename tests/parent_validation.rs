@@ -82,12 +82,15 @@ fn pkb_new_rejects_nonexistent_parent() {
     );
 
     // The task file must NOT have been created.
-    let any_task = std::fs::read_dir(pkb.path().join("tasks"))
-        .unwrap()
-        .any(|e| {
-            e.ok()
-                .map(|e| e.file_name().to_string_lossy().starts_with("aops_"))
-                .unwrap_or(false)
+    let any_task = [pkb.path().join("tasks"), pkb.path().join("aops")]
+        .into_iter()
+        .filter(|d| d.exists())
+        .any(|d| {
+            std::fs::read_dir(d).unwrap().any(|e| {
+                e.ok()
+                    .map(|e| e.file_name().to_string_lossy().starts_with("aops_"))
+                    .unwrap_or(false)
+            })
         });
     assert!(
         !any_task,
@@ -127,16 +130,19 @@ fn pkb_new_with_allow_missing_parent_proceeds_with_warning() {
     // The task file SHOULD exist, with the (unresolvable) parent recorded —
     // the override deliberately preserves the originally-requested edge so it
     // shows up in orphan/lint reports rather than silently vanishing.
-    let task_file = std::fs::read_dir(pkb.path().join("tasks"))
-        .unwrap()
-        .find_map(|e| {
-            let e = e.ok()?;
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("aops_") {
-                Some(e.path())
-            } else {
-                None
-            }
+    let task_file = [pkb.path().join("tasks"), pkb.path().join("aops")]
+        .into_iter()
+        .filter(|d| d.exists())
+        .find_map(|d| {
+            std::fs::read_dir(d).ok()?.find_map(|e| {
+                let e = e.ok()?;
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("aops_") {
+                    Some(e.path())
+                } else {
+                    None
+                }
+            })
         })
         .expect("task file should have been created");
     let body = std::fs::read_to_string(&task_file).unwrap();

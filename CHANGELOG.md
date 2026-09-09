@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.91](https://github.com/nicsuzor/mem/compare/mem-v0.3.90...mem-v0.3.91) (2026-09-07)
+
+
+### Features
+
+* **mcp:** consolidate redundant tools and optimize agent-facing output schemas ([ba9e560](https://github.com/nicsuzor/mem/commit/ba9e5609dc88255fc3dac9342f6a9fe00d617cd2))
+* **mcp:** consolidate redundant tools and optimize agent-facing output schemas ([5317598](https://github.com/nicsuzor/mem/commit/5317598b401a9f96d9dae93659fb19b462000ad4))
+* **mcp:** merge origin/main into polecat/session-c8bf2121 and resolve conflicts ([6110da8](https://github.com/nicsuzor/mem/commit/6110da8004e63b4cfeb4644e1fcd130ab6b7aeed))
+
+
+### Bug Fixes
+
+* **build:** embed short commit SHA in BUILD_GIT_HASH instead of ancient tag ([571d1c0](https://github.com/nicsuzor/mem/commit/571d1c0aee0603ebd13a1806848ffcf8381bd494))
+* **mcp:** reject missing, empty, or whitespace-only new_body on update_body ([3d98b56](https://github.com/nicsuzor/mem/commit/3d98b562a7a21eaa0d0a51867d986174b76608c7))
+* **mcp:** reject missing, empty, or whitespace-only new_body on update_body ([d3727f7](https://github.com/nicsuzor/mem/commit/d3727f7f7c0bb6cffa27a6ab2a0d4f643d2ffd1b))
+* **mcp:** strictly enforce required parameters across all tools ([8708ca3](https://github.com/nicsuzor/mem/commit/8708ca3340c2e22c691d42d9a5a991683d72bb33))
+
+
+### Documentation
+
+* **excalidraw:** add README documentation for excalidraw component ([5e5fd4f](https://github.com/nicsuzor/mem/commit/5e5fd4f8588bed5828cf1f3d68dec3fc7fb623a3))
+
+
+### Miscellaneous
+
+* **ci:** clean sweep clippy warnings and add clippy to PR pipeline ([d2bdef3](https://github.com/nicsuzor/mem/commit/d2bdef3241521ac41d026204fe903d034c770fab))
+* **ci:** clean sweep clippy warnings and add clippy to PR pipeline ([095ebcb](https://github.com/nicsuzor/mem/commit/095ebcbf28db6c4f973e7ab55eba0b034230c676))
+* merge origin/main into chore/ci-cargo-clippy and resolve schema conflict ([2281dbd](https://github.com/nicsuzor/mem/commit/2281dbd9e68f101b18376ab6ed4b3ca058d9174c))
+
 ## [0.3.90](https://github.com/nicsuzor/mem/compare/mem-v0.3.89...mem-v0.3.90) (2026-09-03)
 
 

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 static TASK_ID_PREFIX_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^([a-z0-9_]{1,20}_[a-z0-9]+|[a-z]{1,10}-[a-z0-9]+)-").unwrap());
+    LazyLock::new(|| Regex::new(r"^([a-zA-Z0-9]+[_-][a-zA-Z0-9]+)(?:[_-]|$)").unwrap());
 
 // ===========================================================================
 // Types
@@ -2125,5 +2125,23 @@ mod target_prototype_tests {
         });
         let n2 = GraphNode::from_pkb_document(&doc_with_fm(fm_new));
         assert_eq!(n2.intent, Some(0));
+    }
+}
+
+#[cfg(test)]
+mod regex_tests {
+    use super::*;
+
+    #[test]
+    fn test_task_id_prefix_re() {
+        assert_eq!(
+            TASK_ID_PREFIX_RE.captures("aops_1234_some_title").unwrap().get(1).unwrap().as_str(),
+            "aops_1234"
+        );
+        assert_eq!(
+            TASK_ID_PREFIX_RE.captures("task-1234-some-title").unwrap().get(1).unwrap().as_str(),
+            "task-1234"
+        );
+        assert!(TASK_ID_PREFIX_RE.captures("invalid1234").is_none());
     }
 }

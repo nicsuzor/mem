@@ -2,11 +2,9 @@
 
 use crate::batch_ops::{BatchContext, BatchSummary};
 use crate::graph::ContributesTo;
-use crate::pkb;
 use anyhow::Result;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// Preserves authored key names (e.g. `target:`, `why:`, `weight:`) by patching `current_weight`
 /// directly into the existing frontmatter JSON structure rather than re-serializing the parsed struct.
@@ -19,21 +17,16 @@ fn patch_contributes_to_frontmatter(
         let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
         let parsed = matter.parse(&content);
         let data = parsed.data?.deserialize::<JsonValue>().ok()?;
-        let mut raw_edges = match data.get("contributes_to")?.as_array()?.clone() {
-            arr => arr,
-        };
+        let mut raw_edges = data.get("contributes_to")?.as_array()?.clone();
         if raw_edges.len() != new_edges.len() {
             return None;
         }
         for (i, edge) in new_edges.iter().enumerate() {
-            if let Some(obj) = raw_edges[i].as_object_mut() {
-                if let Some(cw) = edge.current_weight {
-                    obj.insert("current_weight".to_string(), serde_json::json!(cw));
-                } else {
-                    obj.remove("current_weight");
-                }
+            let obj = raw_edges[i].as_object_mut()?;
+            if let Some(cw) = edge.current_weight {
+                obj.insert("current_weight".to_string(), serde_json::json!(cw));
             } else {
-                return None;
+                obj.remove("current_weight");
             }
         }
         Some(JsonValue::Array(raw_edges))
@@ -43,11 +36,7 @@ fn patch_contributes_to_frontmatter(
 }
 
 /// Runs exponential decay on ContributesTo edges.
-pub fn run_decay(
-    ctx: &mut BatchContext,
-    lambda: f64,
-    dry_run: bool,
-) -> Result<BatchSummary> {
+pub fn run_decay(ctx: &mut BatchContext, lambda: f64, dry_run: bool) -> Result<BatchSummary> {
     let mut summary = BatchSummary::new("decay", dry_run);
     let now = chrono::Utc::now();
 
@@ -73,12 +62,12 @@ pub fn run_decay(
                 .as_deref()
                 .or(node.created.as_deref())
                 .unwrap_or("2000-01-01T00:00:00Z");
-            
+
             if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(timestamp_str) {
                 let days_elapsed = (now - ts.with_timezone(&chrono::Utc)).num_days() as f64;
                 if days_elapsed > 0.0 {
                     let new_weight = base_weight * (-lambda * days_elapsed).exp();
-                    
+
                     // Only update if difference is meaningful
                     let diff = edge.current_weight.unwrap_or(base_weight) - new_weight;
                     if diff.abs() > 0.01 {
@@ -122,7 +111,6 @@ pub fn run_decay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::GraphNode;
 
     /// `run_decay` with `dry_run: true` must leave every byte under the PKB root
     /// untouched. Proved non-vacuous by running the same decay for real
@@ -185,7 +173,7 @@ mod tests {
         let base_weight: f64 = 1.0;
         let lambda: f64 = 0.05;
         let days_elapsed: f64 = 10.0;
-        
+
         let new_weight = base_weight * (-lambda * days_elapsed).exp();
         assert!(new_weight < base_weight);
         assert!((new_weight - 0.6065).abs() < 0.001);

@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use parking_lot::RwLock;
 use rmcp::ServiceExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -256,15 +256,19 @@ enum Commands {
         depends_on: Option<Vec<String>>,
 
         /// Assignee
-        #[arg(short, long)]
+        #[arg(long)]
         assignee: Option<String>,
 
-        /// Complexity (mechanical, requires-judgment, multi-step, needs-decomposition, blocked-human)
-        #[arg(long)]
+        /// Complexity/Size
+        #[arg(short, long)]
         complexity: Option<String>,
 
-        /// Body text / description
-        #[arg(short, long)]
+        /// Override subdirectory placement
+        #[arg(long)]
+        dir: Option<String>,
+
+        /// Markdown body
+        #[arg(long)]
         body: Option<String>,
     },
 
@@ -916,7 +920,7 @@ fn default_db_path() -> String {
         .to_string()
 }
 
-fn load_store(db_path: &PathBuf, dim: usize) -> Result<Arc<RwLock<vectordb::VectorStore>>> {
+fn load_store(db_path: &Path, dim: usize) -> Result<Arc<RwLock<vectordb::VectorStore>>> {
     Ok(Arc::new(RwLock::new(
         vectordb::VectorStore::load_or_create(db_path, dim)?,
     )))
@@ -1197,7 +1201,8 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode_query(&query_text)?;
-            let reranker = mem::rerank::CrossEncoderReranker::new(mem::rerank::RerankerConfig::default());
+            let reranker =
+                mem::rerank::CrossEncoderReranker::new(mem::rerank::RerankerConfig::default());
             let results = store.read().search_hybrid(
                 &query_text,
                 &query_embedding,
@@ -1310,7 +1315,10 @@ async fn main() -> Result<()> {
                 } else {
                     String::new()
                 };
-                println!("  - \x1b[1m{}\x1b[0m{type_str}{tags_str} — \x1b[36m`{}`\x1b[0m", r.title, id);
+                println!(
+                    "  - \x1b[1m{}\x1b[0m{type_str}{tags_str} — \x1b[36m`{}`\x1b[0m",
+                    r.title, id
+                );
             }
         }
 
@@ -1407,7 +1415,7 @@ async fn main() -> Result<()> {
             println!("DB size:     {:.1} MB", db_size as f64 / 1_048_576.0);
 
             // Index freshness
-            let num_stale_documents = mem::check_index_staleness(&pkb_root, &store);
+            let num_stale_documents = mem::check_index_staleness(&pkb_root, store);
             if num_stale_documents > 0 {
                 println!(
                     "Index:       {}⚠ stale — {} document(s) need re-indexing{}",
@@ -1501,9 +1509,8 @@ async fn main() -> Result<()> {
                 print_dashboard(&tasks, &filter);
                 println!();
                 println!(
-                    "  {}{}  {:<50}  {:>6}  {:<14}{}",
+                    "  {}PRI  {:<50}  {:>6}  {:<14}{}",
                     colors::BOLD,
-                    "PRI",
                     "TITLE",
                     "WEIGHT",
                     "ID",
@@ -1551,10 +1558,8 @@ async fn main() -> Result<()> {
                 // ── Focus picks (only for default ready view) ──
                 if matches!(filter, TaskFilter::Ready) {
                     let pick_ids = gs.focus_picks(5);
-                    let picks: Vec<&graph::GraphNode> = pick_ids
-                        .iter()
-                        .filter_map(|id| gs.get_node(id))
-                        .collect();
+                    let picks: Vec<&graph::GraphNode> =
+                        pick_ids.iter().filter_map(|id| gs.get_node(id)).collect();
                     if !picks.is_empty() {
                         println!();
                         println!(
@@ -1870,6 +1875,7 @@ async fn main() -> Result<()> {
             depends_on,
             assignee,
             complexity,
+            dir,
             body,
         } => {
             let title_str = title.join(" ");
@@ -1935,6 +1941,7 @@ async fn main() -> Result<()> {
                 depends_on: depends_on.unwrap_or_default(),
                 assignee,
                 complexity,
+                dir,
                 body,
                 ..Default::default()
             };
@@ -2217,7 +2224,9 @@ async fn main() -> Result<()> {
                     }
 
                     if updates.is_empty() {
-                        eprintln!("No updates specified. Use --status, --intent, --assignee, or --tags.");
+                        eprintln!(
+                            "No updates specified. Use --status, --intent, --assignee, or --tags."
+                        );
                         std::process::exit(1);
                     }
 
@@ -2520,7 +2529,8 @@ async fn main() -> Result<()> {
                     }
                 }
                 "excalidraw" => {
-                    let (content, n_nodes, n_edges) = gs.output_excalidraw(focus.as_deref(), hops)?;
+                    let (content, n_nodes, n_edges) =
+                        gs.output_excalidraw(focus.as_deref(), hops)?;
                     match output {
                         Some(path) => {
                             std::fs::write(&path, &content)?;
@@ -2551,9 +2561,10 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode(&query_text)?;
-            let results = store
-                .read()
-                .search(&query_embedding, limit * 3, &pkb_root, None, None, None);
+            let results =
+                store
+                    .read()
+                    .search(&query_embedding, limit * 3, &pkb_root, None, None, None);
 
             let memory_types = ["memory", "note", "insight", "observation"];
             let mut count = 0;
@@ -3081,11 +3092,28 @@ async fn main() -> Result<()> {
                 },
             ];
 
-            let baseline = eval::evaluate_with_mode(&store_read, embedder, &queries, &pkb_root, top_k, eval::EvalMode::VectorOnly);
-            let hybrid = eval::evaluate_with_mode(&store_read, embedder, &queries, &pkb_root, top_k, eval::EvalMode::HybridReranked);
+            let baseline = eval::evaluate_with_mode(
+                &store_read,
+                embedder,
+                &queries,
+                &pkb_root,
+                top_k,
+                eval::EvalMode::VectorOnly,
+            );
+            let hybrid = eval::evaluate_with_mode(
+                &store_read,
+                embedder,
+                &queries,
+                &pkb_root,
+                top_k,
+                eval::EvalMode::HybridReranked,
+            );
 
             println!("{}", eval::format_report(&baseline, "Vector-Only Baseline"));
-            println!("{}", eval::format_report(&hybrid, "Hybrid BM25 + Vector + Rerank"));
+            println!(
+                "{}",
+                eval::format_report(&hybrid, "Hybrid BM25 + Vector + Rerank")
+            );
             println!("{}", eval::format_comparison(&baseline, &hybrid));
         }
 
@@ -3186,7 +3214,7 @@ async fn main() -> Result<()> {
                     "Semantic neighbors for '{}' (threshold {:.2}):\n",
                     id, threshold
                 );
-                println!("  {:<24} {:<48} {:<8} {}", "ID", "Title", "Score", "Edge");
+                println!("  {:<24} {:<48} {:<8} Edge", "ID", "Title", "Score");
                 println!("  {}", "─".repeat(88));
                 for n in neighbors {
                     let edge = if n.is_explicit_edge {
@@ -3249,12 +3277,10 @@ async fn main() -> Result<()> {
 
             let mut entries: Vec<_> = stats.into_iter().collect();
             match sort.as_str() {
-                "bytes" => entries.sort_by(|a, b| b.1.total_bytes.cmp(&a.1.total_bytes)),
-                "latency" => {
-                    entries.sort_by(|a, b| b.1.total_latency_ms.cmp(&a.1.total_latency_ms))
-                }
-                "errors" => entries.sort_by(|a, b| b.1.error_count.cmp(&a.1.error_count)),
-                _ => entries.sort_by(|a, b| b.1.count.cmp(&a.1.count)),
+                "bytes" => entries.sort_by_key(|b| std::cmp::Reverse(b.1.total_bytes)),
+                "latency" => entries.sort_by_key(|b| std::cmp::Reverse(b.1.total_latency_ms)),
+                "errors" => entries.sort_by_key(|b| std::cmp::Reverse(b.1.error_count)),
+                _ => entries.sort_by_key(|b| std::cmp::Reverse(b.1.count)),
             }
 
             println!();
@@ -3410,8 +3436,8 @@ fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
         intent_gte: args.intent_gte,
         tags: args.tags.clone(),
         doc_type: args.doc_type.clone(),
-        older_than_days: args.older_than.as_ref().and_then(parse_duration_days),
-        stale_days: args.stale.as_ref().and_then(parse_duration_days),
+        older_than_days: args.older_than.as_deref().and_then(parse_duration_days),
+        stale_days: args.stale.as_deref().and_then(parse_duration_days),
         orphan: if args.orphan { Some(true) } else { None },
         title_contains: args.title_contains.clone(),
         assignee: None,
@@ -3427,10 +3453,10 @@ fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
 }
 
 /// Parse duration like "90d" into days.
-fn parse_duration_days(s: &String) -> Option<u64> {
+fn parse_duration_days(s: &str) -> Option<u64> {
     let s = s.trim();
-    if s.ends_with('d') {
-        s[..s.len() - 1].parse().ok()
+    if let Some(stripped) = s.strip_suffix('d') {
+        stripped.parse().ok()
     } else {
         s.parse().ok()
     }
@@ -4286,8 +4312,6 @@ mod colors {
     pub const RED: &str = "\x1b[31m";
     pub const GREEN: &str = "\x1b[32m";
     pub const YELLOW: &str = "\x1b[33m";
-    pub const CYAN: &str = "\x1b[36m";
-    pub const BOLD_CYAN: &str = "\x1b[1;36m";
     pub const DIM_GRAY: &str = "\x1b[2;37m";
     pub const BOLD_WHITE: &str = "\x1b[1;37m";
 }
@@ -4399,62 +4423,9 @@ fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     format!("{left}{:>pad$}{right}", "", pad = padding)
 }
 
-fn format_context_line(node: &graph::GraphNode, child_task_count: usize) -> String {
-    let ntype = node.node_type.as_deref().unwrap_or("group");
-    let tid = node.task_id.as_deref().unwrap_or(&node.id);
-
-    let block_color = match ntype {
-        "epic" => colors::CYAN,
-        "goal" => colors::YELLOW,
-        "project" => colors::BOLD_CYAN,
-        _ => colors::DIM,
-    };
-
-    let count_str = if child_task_count > 0 {
-        format!(" {}({child_task_count}){}", colors::DIM, colors::RESET)
-    } else {
-        String::new()
-    };
-
-    format!(
-        "{block_color}\u{258E}{} {}{}{}{count_str}  {}[{tid}]{}",
-        colors::RESET,
-        colors::BOLD,
-        node.label,
-        colors::RESET,
-        colors::DIM_GRAY,
-        colors::RESET,
-    )
-}
-
-fn count_visible_tasks(
-    gs: &graph_store::GraphStore,
-    node_id: &str,
-    visible: &std::collections::HashSet<&str>,
-    context_ids: &std::collections::HashSet<String>,
-) -> usize {
-    let mut count = 0;
-    if let Some(node) = gs.get_node(node_id) {
-        for cid in &node.children {
-            if !visible.contains(cid.as_str()) {
-                continue;
-            }
-            if context_ids.contains(cid) {
-                count += count_visible_tasks(gs, cid, visible, context_ids);
-            } else {
-                count += 1;
-            }
-        }
-    }
-    count
-}
-
 fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
     let total = tasks.len();
-    let urgent = tasks
-        .iter()
-        .filter(|t| t.intent.unwrap_or(4) <= 1)
-        .count();
+    let urgent = tasks.iter().filter(|t| t.intent.unwrap_or(4) <= 1).count();
     let with_due = tasks.iter().filter(|t| t.due.is_some()).count();
     let overdue_count = {
         let today = chrono::Utc::now().date_naive();

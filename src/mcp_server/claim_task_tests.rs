@@ -1,12 +1,10 @@
 use super::*;
 #[cfg(test)]
-#[cfg(test)]
 mod claim_task_tests {
     use super::*;
     use crate::embeddings::Embedder;
     use crate::graph_store::GraphStore;
     use crate::vectordb::VectorStore;
-    use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -669,7 +667,7 @@ project: aops
         );
 
         // 2. The task file must exist on disk with bounded filename
-        let tasks_dir = root.join("tasks");
+        let tasks_dir = root.join("adhoc-sessions");
         let entries: Vec<_> = std::fs::read_dir(&tasks_dir)
             .unwrap()
             .map(|r| r.unwrap().file_name().to_string_lossy().to_string())
@@ -682,7 +680,7 @@ project: aops
 
         // Filename stem (excluding .md) has slug capped at 80 chars
         let stem = matching_file.strip_suffix(".md").unwrap();
-        let slug_part = stem.strip_prefix(&format!("{task_id}-")).unwrap_or(stem);
+        let slug_part = stem.strip_prefix(&format!("{task_id}_")).unwrap_or(stem);
         assert!(
             slug_part.len() <= 80,
             "slug portion of filename must be <= 80 chars, got {} (length {})",
@@ -724,12 +722,6 @@ project: aops
         let task_types = get_enum(create_task, "type");
         for t in task_types {
             assert!(crate::graph::is_valid_node_type(&t), "create_task schema advertises invalid type: {t}");
-        }
-
-        let create_memory = get_tool("create_memory");
-        let memory_types = get_enum(create_memory, "memory_type");
-        for t in memory_types {
-            assert!(crate::graph::is_valid_node_type(&t), "create_memory schema advertises invalid memory_type: {t}");
         }
 
         let create = get_tool("create");

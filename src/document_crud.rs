@@ -102,6 +102,8 @@ pub struct TaskFields {
     pub release_summary: Option<String>,
     pub contributes_to: Vec<serde_json::Value>,
     pub classification: Option<String>,
+    /// Override subdirectory placement
+    pub dir: Option<String>,
 }
 
 /// Fields for creating a new memory.
@@ -117,6 +119,8 @@ pub struct MemoryFields {
     pub source: Option<String>,
     pub confidence: Option<f64>,
     pub supersedes: Option<String>,
+    pub project: Option<String>,
+    pub dir: Option<String>,
 }
 
 /// Create a new document file with YAML frontmatter.
@@ -133,6 +137,11 @@ pub struct MemoryFields {
 /// - `goal` → `goals/`
 /// - Everything else → `notes/`
 pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
+    if let Some(ref dir) = fields.dir {
+        if !is_safe_relative_path(dir) {
+            anyhow::bail!("Invalid dir path: must be relative and cannot contain '..'");
+        }
+    }
     if let Some(c) = fields.confidence {
         if !(0.0..=1.0).contains(&c) {
             anyhow::bail!("confidence must be between 0.0 and 1.0, got {}", c);
@@ -218,16 +227,14 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
             // Explicit ID: sanitize to prevent path traversal, preserving
             // the caller's separator convention (see sanitize_explicit_id).
             let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = format!("{}.md", safe_id);
+            let filename = generate_filename(&safe_id, &fields.title);
             (safe_id, filename)
         }
         None => {
             // Use project as prefix when available, otherwise type-based prefix
             let prefix = type_prefix;
             let id = generate_id(prefix);
-            let slug = slugify(&fields.title);
-            let slug = truncate_slug(&slug, MAX_FILENAME_SLUG_LEN);
-            let filename = format!("{}-{}.md", id, slug);
+            let filename = generate_filename(&id, &fields.title);
             (id, filename)
         }
     };
@@ -270,10 +277,14 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     fm.push_str(&format!("last_modified: {}\n", local_now));
 
     // Alias and permalink
-    let slug = slugify(&fields.title);
+    let slug = title_to_snake_case(&fields.title);
     fm.push_str("alias:\n");
-    fm.push_str(&format!("  - \"{}-{}\"\n", id, slug));
-    fm.push_str(&format!("  - \"{}\"\n", id));
+    if slug.is_empty() {
+        fm.push_str(&format!("  - \"{}\"\n", id));
+    } else {
+        fm.push_str(&format!("  - \"{}_{}\"\n", id, slug));
+        fm.push_str(&format!("  - \"{}\"\n", id));
+    }
     fm.push_str(&format!("permalink: {}\n", id));
 
     if let Some(s) = &fields.status {
@@ -522,6 +533,16 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
 }
 
 pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
+    if let Some(ref dir) = fields.dir {
+        if !is_safe_relative_path(dir) {
+            anyhow::bail!("Invalid dir path: must be relative and cannot contain '..'");
+        }
+    }
+    if let Some(ref project) = fields.project {
+        if !is_safe_relative_path(project) {
+            anyhow::bail!("Invalid project path: must be relative and cannot contain '..'");
+        }
+    }
     // parent is required for plain tasks — they must be linked to an existing
     // node. Root-able types are exempt: goals/targets live beside the work
     // tree (never parented), and epics/learn nodes may be tree roots. Mirrors
@@ -631,7 +652,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             // Explicit ID: sanitize to prevent path traversal, preserving
             // the caller's separator convention (see sanitize_explicit_id).
             let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = format!("{}.md", safe_id);
+            let filename = generate_filename(&safe_id, &fields.title);
             (safe_id, filename)
         }
         None => {
@@ -645,20 +666,28 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             // frontmatter `type:` field, not the ID prefix.
             let prefix = project.as_deref().unwrap_or("task");
             let id = generate_id(prefix);
-            let slug = slugify(&fields.title);
-            let slug = truncate_slug(&slug, MAX_FILENAME_SLUG_LEN);
-            let filename = format!("{}-{}.md", id, slug);
+            let filename = generate_filename(&id, &fields.title);
             (id, filename)
         }
     };
 
-    // Use tasks/ subdirectory if it exists, otherwise root
-    let tasks_dir = root.join("tasks");
-    let dir = if tasks_dir.is_dir() {
-        tasks_dir
-    } else {
-        root.to_path_buf()
-    };
+    // Determine subdirectory
+    let subdir = fields.dir.as_ref().map(|d| expand_env_vars(d)).unwrap_or_else(|| {
+        if let Some(ref p) = project {
+            p.clone()
+        } else {
+            match fields.task_type.as_deref().unwrap_or("task") {
+                "goal" => "goals".to_string(),
+                _ => "tasks".to_string(),
+            }
+        }
+    });
+
+    let dir = root.join(&subdir);
+    if !dir.is_dir() {
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create directory: {}", dir.display()))?;
+    }
     let path = dir.join(&filename);
 
     if path.exists() {
@@ -682,6 +711,18 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
     fm.push_str(&format!("last_modified: {}\n", local_now));
+
+    // Alias and permalink
+    let slug = title_to_snake_case(&fields.title);
+    fm.push_str("alias:\n");
+    if slug.is_empty() {
+        fm.push_str(&format!("  - \"{}\"\n", id));
+    } else {
+        fm.push_str(&format!("  - \"{}_{}\"\n", id, slug));
+        fm.push_str(&format!("  - \"{}\"\n", id));
+    }
+    fm.push_str(&format!("permalink: {}\n", id));
+
     fm.push_str(&format!(
         "status: {}\n",
         fields.status.as_deref().unwrap_or("inbox")
@@ -1077,6 +1118,16 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
 /// Returns the path to the created file. Creates the `memories/` subdirectory
 /// if it doesn't exist.
 pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
+    if let Some(ref dir) = fields.dir {
+        if !is_safe_relative_path(dir) {
+            anyhow::bail!("Invalid dir path: must be relative and cannot contain '..'");
+        }
+    }
+    if let Some(ref project) = fields.project {
+        if !is_safe_relative_path(project) {
+            anyhow::bail!("Invalid project path: must be relative and cannot contain '..'");
+        }
+    }
     if let Some(c) = fields.confidence {
         if !(0.0..=1.0).contains(&c) {
             anyhow::bail!("confidence must be between 0.0 and 1.0, got {}", c);
@@ -1094,6 +1145,9 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     if let Some(ref s) = fields.supersedes {
         validate_str_scalar("supersedes", s, max_len)?;
     }
+    if let Some(ref s) = fields.project {
+        validate_str_scalar("project", s, max_len)?;
+    }
     for tag in &fields.tags {
         validate_str_scalar("tags", tag, max_len)?;
     }
@@ -1107,30 +1161,40 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
 
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
-            // Explicit ID: use as-is for both frontmatter and filename
-            let filename = format!("{}.md", explicit_id);
-            (explicit_id, filename)
+            let safe_id = sanitize_explicit_id(&explicit_id);
+            let filename = generate_filename(&safe_id, &fields.title);
+            (safe_id, filename)
         }
         None => {
             let id = generate_id("mem");
-            let slug = slugify(&fields.title);
-            let slug = truncate_slug(&slug, MAX_FILENAME_SLUG_LEN);
-            let filename = format!("{}-{}.md", id, slug);
+            let filename = generate_filename(&id, &fields.title);
             (id, filename)
         }
     };
 
-    // Create memories/ subdirectory if needed
-    let dir = root.join("memories");
+    // Determine subdirectory
+    let subdir = fields.dir.as_ref().map(|d| expand_env_vars(d)).unwrap_or_else(|| {
+        if let Some(ref p) = fields.project {
+            p.clone()
+        } else {
+            "memories".to_string()
+        }
+    });
+
+    // Create subdirectory if needed
+    let dir = root.join(&subdir);
     if !dir.is_dir() {
         std::fs::create_dir_all(&dir)
-            .with_context(|| format!("Failed to create memories directory: {}", dir.display()))?;
+            .with_context(|| format!("Failed to create directory: {}", dir.display()))?;
     }
     let path = dir.join(&filename);
 
     if path.exists() {
         anyhow::bail!("Memory file already exists: {}", path.display());
     }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let local_now = chrono::Local::now().to_rfc3339();
 
     // Build YAML frontmatter
     let mut fm = String::from("---\n");
@@ -1139,10 +1203,23 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
         "title: \"{}\"\n",
         yaml_escape_double_quoted(&fields.title)
     ));
-
-    let mem_type = fields.memory_type.as_deref().unwrap_or("memory");
     fm.push_str(&format!("type: {}\n", mem_type));
+    if let Some(ref p) = fields.project {
+        fm.push_str(&format!("project: {}\n", p));
+    }
+    fm.push_str(&format!("created: {}\n", now));
+    fm.push_str(&format!("modified: {}\n", now));
+    fm.push_str(&format!("last_modified: {}\n", local_now));
 
+    let slug = title_to_snake_case(&fields.title);
+    fm.push_str("alias:\n");
+    if slug.is_empty() {
+        fm.push_str(&format!("  - \"{}\"\n", id));
+    } else {
+        fm.push_str(&format!("  - \"{}_{}\"\n", id, slug));
+        fm.push_str(&format!("  - \"{}\"\n", id));
+    }
+    fm.push_str(&format!("permalink: {}\n", id));
     if !fields.tags.is_empty() {
         fm.push_str("tags:\n");
         for tag in &fields.tags {
@@ -1168,11 +1245,6 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
         ));
     }
 
-    let now = chrono::Utc::now().to_rfc3339();
-    let local_now = chrono::Local::now().to_rfc3339();
-    fm.push_str(&format!("created: {}\n", now));
-    fm.push_str(&format!("modified: {}\n", now));
-    fm.push_str(&format!("last_modified: {}\n", local_now));
     fm.push_str("---\n\n");
 
     let body = fields
@@ -1214,9 +1286,12 @@ fn find_node_file(pkb_root: &Path, node_id: &str) -> Option<PathBuf> {
 
     // Slow path: scan the PKB and match by frontmatter id or filename stem.
     for path in crate::pkb::scan_directory(pkb_root) {
-        // Match by stem prefix (e.g. "task-abc123-some-title.md" -> "task-abc123")
+        // Match by stem prefix (e.g. "task-abc123-some-title.md" -> "task-abc123" or "task_abc123_some_title.md")
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            if stem == node_id || stem.starts_with(&format!("{}-", node_id)) {
+            if stem == node_id
+                || stem.starts_with(&format!("{}-", node_id))
+                || stem.starts_with(&format!("{}_", node_id))
+            {
                 return Some(path);
             }
         }
@@ -2102,7 +2177,7 @@ fn split_raw_frontmatter_and_body(content: &str) -> SplitFrontmatter<'_> {
 /// If no frontmatter block is present, the input is returned unchanged, preserving byte-identity.
 pub fn extract_body_content(input: &str) -> &str {
     let clean = input.strip_prefix('\u{feff}').unwrap_or(input);
-    let trimmed_start = clean.trim_start_matches(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n');
+    let trimmed_start = clean.trim_start_matches([' ', '\t', '\r', '\n']);
 
     // Case 1: Starts directly with frontmatter delimiter `---`
     if let SplitFrontmatter::Present(raw_fm, body) = split_raw_frontmatter_and_body(trimmed_start) {
@@ -2110,7 +2185,7 @@ pub fn extract_body_content(input: &str) -> &str {
             .map(|v| v.is_object())
             .unwrap_or(false)
         {
-            return body.trim_start_matches(|c| c == '\r' || c == '\n');
+            return body.trim_start_matches(['\r', '\n']);
         }
     }
 
@@ -2121,13 +2196,13 @@ pub fn extract_body_content(input: &str) -> &str {
             let first_trimmed = first_line.trim();
             if first_trimmed.starts_with('#') {
                 let rest = &trimmed_start[first_line.len()..];
-                let rest_trimmed = rest.trim_start_matches(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n');
+                let rest_trimmed = rest.trim_start_matches([' ', '\t', '\r', '\n']);
                 if let SplitFrontmatter::Present(raw_fm, body) = split_raw_frontmatter_and_body(rest_trimmed) {
                     if serde_yaml::from_str::<serde_json::Value>(&raw_fm)
                         .map(|v| v.is_object())
                         .unwrap_or(false)
                     {
-                        return body.trim_start_matches(|c| c == '\r' || c == '\n');
+                        return body.trim_start_matches(['\r', '\n']);
                     }
                 }
             }
@@ -2806,6 +2881,14 @@ pub fn rewrite_body(
     };
     let trimmed_body = body_to_write.trim_end_matches('\n');
 
+    if trimmed_body.trim().is_empty() {
+        anyhow::bail!(
+            "Refusing to rewrite body of {} with empty content. \
+             To delete a document, use delete instead.",
+            path.display()
+        );
+    }
+
     let (new_content, body_chars_before, body_chars_after, modified) = if !preserve_frontmatter {
         // No frontmatter to key a precondition off in this mode — CAS is
         // meaningless here, same as today's behaviour.
@@ -3084,7 +3167,7 @@ pub fn append_to_document(
     let commit_msg = format!(
         "append({}): {}",
         doc_id,
-        section.as_deref().unwrap_or("body")
+        section.unwrap_or("body")
     );
     let _ = git_commit_file(path, &commit_msg);
 
@@ -3197,7 +3280,7 @@ pub fn sanitize_prefix(prefix: &str) -> String {
         .to_lowercase();
     // Collapse consecutive hyphens and underscores, then join with underscore
     let collapsed: String = sanitized
-        .split(|c| c == '-' || c == '_')
+        .split(['-', '_'])
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("_");
@@ -3454,7 +3537,62 @@ fn slugify(title: &str) -> String {
 /// Keeps generated filenames short enough to be comfortable on any filesystem
 /// and readable in directory listings. IDs are excluded — only the title-derived
 /// slug is capped.
-const MAX_FILENAME_SLUG_LEN: usize = 80;
+pub const MAX_FILENAME_SLUG_LEN: usize = 80;
+
+/// Validate a path is relative and safe from traversal.
+pub fn is_safe_relative_path(path: &str) -> bool {
+    if path.starts_with('/') {
+        return false;
+    }
+    for component in std::path::Path::new(path).components() {
+        if matches!(component, std::path::Component::ParentDir | std::path::Component::RootDir) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Convert a title to a snake_case slug.
+pub fn title_to_snake_case(title: &str) -> String {
+    title
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split('_')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+/// Truncate a snake slug to a max length, ensuring no trailing underscore.
+pub fn truncate_snake_slug(slug: &str, max_len: usize) -> &str {
+    if slug.len() <= max_len {
+        return slug.trim_end_matches('_');
+    }
+    let truncated = match slug.char_indices().nth(max_len) {
+        Some((idx, _)) => &slug[..idx],
+        None => slug,
+    };
+    truncated.trim_end_matches('_')
+}
+
+/// Helper to generate a unified prefix-based filename.
+pub fn generate_filename(prefix: &str, title: &str) -> String {
+    let slug = title_to_snake_case(title);
+    let slug = truncate_snake_slug(&slug, MAX_FILENAME_SLUG_LEN);
+    if slug.is_empty() {
+        format!("{}.md", prefix)
+    } else {
+        format!("{}_{}.md", prefix, slug)
+    }
+}
 
 /// Truncate a slug to `max_len` characters, trimming trailing hyphens.
 ///
@@ -3976,8 +4114,8 @@ mod tests {
         let path = create_task(root, fields).unwrap();
         let filename = path.file_name().unwrap().to_string_lossy().to_string();
         assert!(
-            filename.starts_with("aops_") && filename.ends_with("-foo.md"),
-            "filename must be aops_<hash>-foo.md, got {filename}"
+            filename.starts_with("aops_") && filename.ends_with("_foo.md"),
+            "filename must be aops_<hash>_foo.md, got {filename}"
         );
 
         let content = fs::read_to_string(&path).unwrap();
@@ -4259,7 +4397,7 @@ mod tests {
         for i in 1..=7 {
             body.push_str(&format!("## Section {i}\n\n"));
             body.push_str(
-                &format!("Some prose content for section {i}. ")
+                format!("Some prose content for section {i}. ")
                     .repeat(20)
                     .trim(),
             );
@@ -4505,8 +4643,8 @@ mod tests {
 
             let barrier = Arc::new(Barrier::new(THREADS));
             let mut handles = Vec::new();
-            for i in 0..THREADS {
-                let p = paths[i].clone();
+            for (i, path) in paths.iter().enumerate().take(THREADS) {
+                let p = path.clone();
                 let b = Arc::clone(&barrier);
                 handles.push(std::thread::spawn(move || {
                     let body = format!("## body of node {i} round {round}\n");
@@ -4518,8 +4656,8 @@ mod tests {
                 h.join().unwrap();
             }
 
-            for i in 0..THREADS {
-                let got = fs::read_to_string(&paths[i]).unwrap();
+            for (i, path) in paths.iter().enumerate().take(THREADS) {
+                let got = fs::read_to_string(path).unwrap();
                 assert!(
                     got.contains(&format!("body of node {i} round {round}")),
                     "round {round}: node_{i}.md does not hold its own body — \
@@ -4686,6 +4824,29 @@ mod tests {
             !content.contains("---"),
             "frontmatter should be gone when preserve_frontmatter=false"
         );
+    }
+
+    #[test]
+    fn rewrite_body_rejects_empty_or_whitespace_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("doc.md");
+        fs::write(&path, "---\nid: doc\ntitle: Doc\n---\n\nExisting body content.\n").unwrap();
+
+        // Empty string
+        let err = rewrite_body(&path, "", true, None).expect_err("empty body must be rejected");
+        assert!(err.to_string().contains("Refusing to rewrite body"));
+
+        // Whitespace only
+        let err = rewrite_body(&path, "   \n\t\n  ", true, None).expect_err("whitespace body must be rejected");
+        assert!(err.to_string().contains("Refusing to rewrite body"));
+
+        // When preserve_frontmatter=false, empty body must also be rejected
+        let err = rewrite_body(&path, "", false, None).expect_err("empty body with preserve_frontmatter=false must be rejected");
+        assert!(err.to_string().contains("Refusing to rewrite body"));
+
+        // Verify disk content untouched
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("Existing body content."));
     }
 
     // =====================================================================
@@ -7014,3 +7175,22 @@ pub fn expand_special_update_keys(
     Ok(effective)
 }
 
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn test_title_to_snake_case() {
+        assert_eq!(title_to_snake_case("Hello World"), "hello_world");
+        assert_eq!(title_to_snake_case("A & B: C!"), "a_b_c");
+        assert_eq!(title_to_snake_case("  spaces  "), "spaces");
+    }
+
+    #[test]
+    fn test_generate_filename() {
+        assert_eq!(generate_filename("task-123", "Hello World"), "task-123_hello_world.md");
+        assert_eq!(generate_filename("task-123", "   "), "task-123.md");
+        assert_eq!(generate_filename("task-123", "a b"), "task-123_a_b.md");
+    }
+}

@@ -643,8 +643,6 @@ use super::*;
 
     // ── task_search: schema advertises include_done ──
 
-    #[test]
-
     // ── Closed-parent validation (task-8f232401) ──────────────────────────────
 
     #[test]
@@ -2357,6 +2355,95 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
         assert_eq!(
             get_doc_delim_count, 2,
             "get_document must reflect exactly one frontmatter block.\nGot:\n{get_doc_text}"
+        );
+    }
+
+    #[test]
+    fn test_update_body_rejects_missing_null_empty_or_whitespace_new_body() {
+        let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-empty-body.md",
+            "---\nid: task-empty-body\ntitle: Empty Body Test\ntype: task\nstatus: ready\nmodified: 2026-08-31T01:37:26Z\n---\n\nExisting body that must not be wiped.\n",
+        )]);
+        let path = tmp.path().join("tasks/task-empty-body.md");
+
+        // 1. Missing new_body argument entirely
+        let err = server
+            .handle_update_body(&json!({
+                "id": "task-empty-body",
+            }))
+            .expect_err("update_body must reject missing new_body parameter");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("Missing required parameter: new_body"),
+            "error message must cite missing new_body: {}",
+            err.message
+        );
+
+        // 2. Explicit null new_body
+        let err = server
+            .handle_update_body(&json!({
+                "id": "task-empty-body",
+                "new_body": null,
+            }))
+            .expect_err("update_body must reject null new_body");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("Missing required parameter: new_body"),
+            "error message must cite missing new_body: {}",
+            err.message
+        );
+
+        // 3. Empty string new_body
+        let err = server
+            .handle_update_body(&json!({
+                "id": "task-empty-body",
+                "new_body": "",
+            }))
+            .expect_err("update_body must reject empty string new_body");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("cannot be empty"),
+            "error message must explain new_body cannot be empty: {}",
+            err.message
+        );
+
+        // 4. Whitespace-only new_body
+        let err = server
+            .handle_update_body(&json!({
+                "id": "task-empty-body",
+                "new_body": "   \n\t\r\n  ",
+            }))
+            .expect_err("update_body must reject whitespace-only new_body");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("cannot be empty"),
+            "error message must explain new_body cannot be empty: {}",
+            err.message
+        );
+
+        // 5. Missing / empty id parameter
+        let err = server
+            .handle_update_body(&json!({
+                "new_body": "valid body",
+            }))
+            .expect_err("update_body must reject missing id");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("Missing required parameter: id"));
+
+        let err = server
+            .handle_update_body(&json!({
+                "id": "   ",
+                "new_body": "valid body",
+            }))
+            .expect_err("update_body must reject whitespace id");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("Missing required parameter: id"));
+
+        // Verify disk content was completely preserved and not wiped
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("Existing body that must not be wiped."),
+            "file body must be intact after rejected calls; actual:\n{on_disk}"
         );
     }
 

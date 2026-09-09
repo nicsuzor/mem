@@ -1,13 +1,9 @@
-use parking_lot::{Mutex, RwLock};
 use rmcp::model::*;
-use rmcp::{ErrorData as McpError, ServerHandler};
+use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use crate::graph_store::GraphStore;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 use super::{PkbSearchServer, MAX_RESULTS};
 
@@ -17,6 +13,7 @@ impl PkbSearchServer {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: query"),
@@ -301,6 +298,7 @@ impl PkbSearchServer {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: query"),
@@ -314,6 +312,24 @@ impl PkbSearchServer {
             .get("detail")
             .and_then(|v| v.as_str())
             .unwrap_or("chunk");
+        let actionable_only = args
+            .get("actionable_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_done = args
+            .get("include_done")
+            .and_then(|v| v.as_bool())
+            .or_else(|| args.get("include_closed").and_then(|v| v.as_bool()))
+            .unwrap_or(false);
+        let max_bytes = args
+            .get("max_bytes")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(4000);
+        let format = args
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("markdown");
 
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -326,7 +342,7 @@ impl PkbSearchServer {
         let doc_type = args.get("type").and_then(|v| v.as_str());
 
         let store = self.store.read();
-        let fetch_limit = if doc_type.is_some() {
+        let fetch_limit = if doc_type.is_some() || actionable_only {
             limit * 10
         } else {
             limit * 2
@@ -378,6 +394,29 @@ impl PkbSearchServer {
             })
             .collect();
 
+        if actionable_only {
+            scored.retain(|(r, _)| {
+                let node = graph.get_node(&r.id);
+                let node_type = r
+                    .doc_type
+                    .as_deref()
+                    .or_else(|| node.and_then(|n| n.node_type.as_deref()))
+                    .unwrap_or("untyped");
+                let is_actionable = crate::graph::TASK_TYPES.contains(&node_type)
+                    || matches!(node_type, "project" | "epic" | "task" | "learn");
+                if !is_actionable {
+                    return false;
+                }
+                if !include_done {
+                    let status = node.and_then(|n| n.status.as_deref());
+                    if crate::graph::is_completed(status) {
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         scored.truncate(limit);
@@ -386,6 +425,54 @@ impl PkbSearchServer {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No results found.",
             )]));
+        }
+
+        if format.eq_ignore_ascii_case("json") {
+            let json_results: Vec<serde_json::Value> = scored
+                .iter()
+                .map(|(r, score)| {
+                    let node = graph.get_node(&r.id);
+                    let display_id = node
+                        .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
+                        .unwrap_or(&r.id);
+                    let node_type = r
+                        .doc_type
+                        .as_deref()
+                        .or_else(|| node.and_then(|n| n.node_type.as_deref()))
+                        .unwrap_or("untyped");
+                    let status = node.and_then(|n| n.status.clone());
+                    let project = node.and_then(|n| n.project.clone());
+                    let mut obj = serde_json::json!({
+                        "id": display_id,
+                        "title": r.title,
+                        "type": node_type,
+                        "score": score,
+                        "tags": r.tags,
+                    });
+                    if let Some(s) = status {
+                        obj["status"] = serde_json::json!(s);
+                    }
+                    if let Some(p) = project {
+                        obj["project"] = serde_json::json!(p);
+                    }
+                    if detail != "metadata" {
+                        let ext = match detail {
+                            "snippet" => &r.snippet,
+                            _ => &r.chunk_text,
+                        };
+                        obj["extract"] = serde_json::json!(ext);
+                    }
+                    obj
+                })
+                .collect();
+
+            let payload = serde_json::json!({
+                "query": query,
+                "count": json_results.len(),
+                "results": json_results,
+            });
+            let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
+            return Ok(CallToolResult::success(vec![Content::text(json_str)]));
         }
 
         let mut output = format!(
@@ -444,6 +531,7 @@ impl PkbSearchServer {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
             }
             let extract: std::borrow::Cow<'_, str> = match detail {
+                "metadata" => std::borrow::Cow::Borrowed(""),
                 "snippet" => std::borrow::Cow::Borrowed(&r.snippet),
                 "full" => {
                     // Read full document from disk
@@ -452,7 +540,15 @@ impl PkbSearchServer {
                         .unwrap_or_else(|| if r.path.as_os_str().is_empty() { PathBuf::new() } else { r.path.clone() });
                     if !abs_path.as_os_str().is_empty() {
                         match std::fs::read_to_string(&abs_path) {
-                            Ok(content) => std::borrow::Cow::Owned(content),
+                            Ok(content) => {
+                                if content.len() > max_bytes {
+                                    let mut truncated = Self::truncate_body(content, Some(max_bytes));
+                                    truncated.push_str(&format!("\n... [truncated at {max_bytes} bytes]"));
+                                    std::borrow::Cow::Owned(truncated)
+                                } else {
+                                    std::borrow::Cow::Owned(content)
+                                }
+                            }
                             Err(_) => std::borrow::Cow::Borrowed(&r.chunk_text),
                         }
                     } else {
@@ -475,6 +571,7 @@ impl PkbSearchServer {
         let from = args
             .get("from")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
@@ -486,6 +583,7 @@ impl PkbSearchServer {
         let to = args
             .get("to")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
@@ -634,7 +732,7 @@ impl PkbSearchServer {
             if total > max {
                 output.push_str(&format!("\n...and {} more\n", total - max));
             }
-            output.push_str("\n");
+            output.push('\n');
         }
 
         if !lint_warnings.is_empty() {
@@ -673,6 +771,7 @@ impl PkbSearchServer {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from("Missing required parameter: id"),
@@ -1025,6 +1124,7 @@ mod title_match_ranking_tests {
 #[cfg(test)]
 mod search_status_projection_tests {
     use super::*;
+    use parking_lot::RwLock;
     use crate::embeddings::{Embedder, EMBEDDING_DIM};
     use crate::graph_store::GraphStore;
     use crate::vectordb::VectorStore;
