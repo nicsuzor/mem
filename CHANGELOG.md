@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.92](https://github.com/nicsuzor/mem/compare/mem-v0.3.91...mem-v0.3.92) (2026-09-09)
+
+
+### Features
+
+* **mcp:** add nested task output with ascii tree and brief json modes ([e170e73](https://github.com/nicsuzor/mem/commit/e170e73c1e80ea102c69bf0f72defc649d96fe97))
+* **mcp:** add nested task output with ascii tree and brief json modes ([d083d15](https://github.com/nicsuzor/mem/commit/d083d15f2430ac7b31e4a9aca6ae02b39638d3cb))
+
 ## [0.3.91](https://github.com/nicsuzor/mem/compare/mem-v0.3.90...mem-v0.3.91) (2026-09-07)
 
 
