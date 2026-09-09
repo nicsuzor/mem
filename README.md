@@ -85,11 +85,12 @@ mem works with plain markdown files that have YAML frontmatter:
 id: my-task-123
 title: Implement user auth
 type: task
-status: active
+status: inbox
 priority: 2
 tags: [backend, security]
 depends_on: [design-doc-456]
-parent: project-789
+parent: epic-auth-789
+project: aops
 ---
 
 The actual content of the document goes here.
@@ -98,64 +99,234 @@ Any markdown is fine.
 
 All frontmatter fields are optional. Files without frontmatter are indexed by filename and content.
 
-### Status values
+### Status Values and Transitions
 
-| Status | Meaning |
-|--------|---------|
-| `active` | Open, ready to work on (default) |
-| `in_progress` | Currently being worked on |
-| `blocked` | Waiting on dependencies |
-| `review` | In review / awaiting feedback |
-| `paused` | Intentionally deferred |
-| `someday` | Low priority / maybe later |
-| `done` | Completed successfully |
-| `cancelled` | Abandoned / no longer relevant |
+All nodes progress through a canonical lifecycle (`src/graph.rs:880-893`):
 
-**Aliases** (automatically normalized): `inbox`, `todo`, `open` → `active`; `in-progress` → `in_progress`; `in_review`, `in-review` → `review`; `complete`, `completed`, `closed`, `archived` → `done`; `dead` → `cancelled`.
+$$\text{inbox} \longrightarrow \text{ready} \longrightarrow \text{queued} \longrightarrow \text{in\_progress} \longrightarrow \text{merge\_ready} \longrightarrow \text{done}$$
 
-### Node types
+with branching states to `review`, `blocked`, `paused`, `someday`, `cancelled`, and `partial`.
 
-| Category | Types | Role |
-|----------|-------|------|
-| **Actionable** | `goal`, `project`, `subproject`, `epic`, `task`, `action`, `bug`, `feature`, `milestone`, `learn` | Executed; appear in ready/blocked queues |
-| **Obligation** | `target`, `prototype` | Declared deadline-bound obligations or class templates; not executed but propagate urgency to contributing tasks (see Focus Scoring) |
-| **Reference** | `note`, `knowledge`, `memory`, `contact` | Knowledge content; searchable but excluded from task workflows |
+| Status | Category | Meaning |
+|---|---|---|
+| `inbox` | Open | **Default.** Captured but untriaged — unknown priority or readiness. |
+| `ready` | Open | Fully decomposed to a leaf task with all hard dependencies resolved (auto-computed). |
+| `queued` | Open | **Human-gated.** Promoted manually by the user; agents pull strictly from `queued`. |
+| `in_progress` | Open | Claimed and actively being executed by a human or agent. |
+| `merge_ready` | Open | Work complete and committed, awaiting review/merge. |
+| `review` | Open | Awaiting human review (mid-flight attention or post-PR requested changes). |
+| `paused` | Open | Intentionally deferred mid-flight with intent to resume. |
+| `someday` | Open | Explicitly deferred idea; differs from inbox by conscious deferral. |
+| `partial` | Open | Worker stopped at a legitimate scope seam (draft PR + live follow-up task). |
+| `blocked` | Blocked | Blocked by an unresolved hard dependency (`depends_on`). |
+| `done` | Terminal | Completed and verified successfully. |
+| `cancelled` | Terminal | Will not be done; discarded. |
 
-`target` represents a one-shot terminal obligation (a deadline you must not miss). `prototype` is a class template for recurring obligations (e.g. peer review load) whose instances inherit `severity`, `goal_type`, and edge defaults at creation.
+### Valid Node Types
 
-### Priority levels
+Every entity in the PKB is an instance of the fundamental `GraphNode` structure (`src/graph.rs:19`). There are exactly **23 valid canonical node types** defined in `VALID_NODE_TYPES` (`src/graph.rs:970-998`). Writes specifying any other type are rejected at parse and write boundaries (`src/document_crud.rs:191-194`).
+
+#### 1. Actionable Work Items (`TASK_TYPES`)
+
+Participate in active execution queues, ready/blocked triage, and dashboards (`src/graph.rs:952`):
+
+| Type | Role & Semantics | Hierarchy & Parenting Rules | Source |
+|---|---|---|---|
+| `epic` | Bundle of related work that together achieves a coherent aim. | Root-level container or child of another epic. Never parented under a task, goal, or target. | `src/graph.rs:952, 972` |
+| `task` | Discrete, concrete deliverable completable in a single focused session. Primary actionable unit. | Child of an epic or parent task. Allowed root-level for standalones. | `src/graph.rs:952, 973` |
+| `learn` | Observational tracking item: discovery, research probe, or investigation spike. | Child of an epic or task. **Excluded from `ready_tasks()`** until decomposed into actionable follow-up tasks. | `src/graph.rs:952, 974` |
+| `pr` | Pull request deliverable tracking an external code review or branch merge. | Child of an epic or task. | `src/graph.rs:952, 975` |
+
+#### 2. Workflow Templates
+
+Meta-artifacts that standardise repeatable procedures (`src/graph.rs:950-951, 977`):
+
+| Type | Role & Semantics | Lifecycle & Instantiation | Source |
+|---|---|---|---|
+| `template` | Reusable canonical body and metadata for recurring workflows (daily standup, issue sweep, retrospective). | **Not an actionable work item.** Calling `claim_task(id)` on a template instantiates a fresh datestamped `type: task` instance (`<slug>-<date>-<host>.md`). Excluded from ready queues. | `src/graph.rs:950-951, 977` |
+
+#### 3. Strategic Priorities & Knowledge References
+
+Out-of-tree strategic attractors and reference knowledge (`src/graph.rs:954-963, 979-992`):
+
+| Type | Role & Semantics | Operational Constraints | Source |
+|---|---|---|---|
+| `goal` | Strategic identity-level commitment (*why*). Roots of meaning. | **Out of the work tree.** Never a parent, never parented. **Unquantifiable**: carries NO `severity`, NO `consequence`, NO `due`. Connected to work only via `contributes_to`. | `src/graph.rs:957-963, 979` |
+| `target` | Countable, measurable milestone (*what*) — done / not done. | **Out of the work tree.** Never a parent, never parented (`STRATEGIC_TARGET_TYPES`). Carries `severity` (SEV0–SEV4) + `consequence` (+ optional `due`). Propagates stakes to work via `contributes_to`. | `src/graph.rs:957-963, 980` |
+| `note` | General knowledge note, atomic thought, meeting record, or insight. | Reference tier. Searchable, excluded from task queues. | `src/graph.rs:981` |
+| `knowledge` | Durable, consolidated, and synthesised topic document. | Reference tier. High-authority search target. | `src/graph.rs:982` |
+| `memory` | Atomic system or agent memory: durable fact, decision, or constraint. | Reference tier. Managed via `create_memory`. | `src/graph.rs:983` |
+| `insight` | High-level synthesis or breakthrough conceptual finding. | Reference tier. | `src/graph.rs:984` |
+| `observation` | Empirical finding, audit observation, or system test note. | Reference tier. | `src/graph.rs:985` |
+| `contact` | Profile note for a collaborator, stakeholder, or person. | Reference tier. | `src/graph.rs:986` |
+| `document` | General unstructured document, imported file, or instructions. | Reference tier. Catch-all for imported references. | `src/graph.rs:987` |
+| `reference` | External literature reference, article summary, or reading guide. | Reference tier. | `src/graph.rs:988` |
+| `review` | Peer review, manuscript evaluation, or grant assessment. | Reference tier. | `src/graph.rs:989` |
+| `case` | Case study or legal analysis. | Reference tier. | `src/graph.rs:990` |
+| `spec` | Technical architecture specification or RFC. | Reference tier. | `src/graph.rs:991` |
+| `prototype` | Obligation class template (e.g. peer review load) whose instances inherit defaults. | Reference tier. Urgency template. | `src/graph.rs:992` |
+
+#### 4. Structural & Logging Infrastructure
+
+Navigation and audit infrastructure (`src/graph.rs:994-997`):
+
+| Type | Role & Semantics | Operational Role | Source |
+|---|---|---|---|
+| `index` | Map of Content (MOC) or navigational hub. | Structural navigation. | `src/graph.rs:994` |
+| `daily` | Daily tracking and planning note. | Structural time-anchor. | `src/graph.rs:995` |
+| `session-log` | Raw session transcript or agent execution log. | Ephemeral execution record. | `src/graph.rs:996` |
+| `audit-report` | System, code, or data audit output. | Automated verification record. | `src/graph.rs:997` |
+
+#### 5. Retired Types, Invalid Labels, and Secondary Classifications
+
+- **`project` is RETIRED as a node type** (`src/graph.rs:967-969`): "Project" is strictly an operational repository routing slug carried in `project:` frontmatter (referencing `polecat.yaml`). Legacy files with `type: project` are read-coerced to `epic`.
+- **`bug`, `feature`, `action`, `subproject`, `milestone` are NOT node types**: These are legacy aliases mapped to canonical types (`bug`/`feature`/`action` $\to$ `task`; `subproject`/`milestone` $\to$ `epic`) (`src/lint.rs:204-227`).
+- **`classification` is an orthogonal secondary label**: Records semantic subtypes (`bug`, `feature`, `spike`, `chore`, `refactor`, `docs`) without multiplying structural node types (`references/TAXONOMY.md:141-154`). Ranking deliberately ignores `classification`.
+- **Target parenting is strictly forbidden**: Targets and goals cannot serve as structural parents (`GraphStore::reject_target_as_parent`). Work links upward to targets via `contributes_to`, never `parent`.
+
+### Priority Levels
 
 | Level | Label | Use |
-|-------|-------|-----|
-| `0` | P0 — Critical | Drop everything; this is what you're doing now |
+|---|---|---|
+| `0` | P0 — Critical | Immediate emergency; top priority |
 | `1` | P1 — High | Active commitment; this week |
-| `2` | P2 — Standard | Default; ordinary work |
+| `2` | P2 — Standard | Default; normal scheduled work |
 | `3` | P3 — Low | Background; pick up when capacity exists |
 | `4` | P4 — Backlog | May never happen; keep visible |
 
-Priority propagates upward via `effective_priority`: a P3 task blocking a P0 inherits P0 weighting in scoring even though its own field stays P3. See Focus Scoring for how priority composes with severity and urgency.
+Priority propagates upward via `effective_priority` (or `effective_intent`): a P3 task blocking a P0 inherits P0 priority in scoring even though its own authored field remains P3.
 
-### Edge types
+### Edge Types
 
-The knowledge graph has seven edge types. Some are derived from frontmatter, others are computed automatically.
+The knowledge graph supports seven edge types extracted from frontmatter and content:
 
 | Edge type | Source | Affects ready/blocked? | Affects importance propagation? | Notes |
-|-----------|--------|-------------------------|----------------------------------|-------|
-| `parent` | `parent:` frontmatter or `children:` list | ✅ (via unfinished children) | ✅ | Hierarchy |
-| `depends_on` | `depends_on:` list | ✅ blocks task | ✅ | Hard dependency |
-| `soft_depends_on` | `soft_depends_on:` list | ❌ | ✅ | Informational ordering |
+|---|---|---|---|---|
+| `parent` | `parent:` frontmatter or `children:` list | ✅ (via unfinished children) | ✅ (0.5 factor) | Structural containment hierarchy |
+| `depends_on` | `depends_on:` list | ✅ blocks task | ✅ (1.0 factor) | Hard dependency blocker |
+| `soft_depends_on` | `soft_depends_on:` list | ❌ | ✅ (0.3 factor) | Enabling / informational ordering |
 | `link` | `[[wikilinks]]` and markdown links in body | ❌ | ❌ | Cross-references; counted as backlinks |
-| `supersedes` | `supersedes:` frontmatter | ❌ | ❌ | This node replaces the target |
-| `contributes_to` | `contributes_to:` list with verbal weights | ❌ | ✅ | Strategic priority (verbal contribution weights with Renooij-Witteman terms) |
-| `similar_to` | Computed from BGE-M3 embeddings (cosine ≥ 0.85) | ❌ | ❌ | Auto-discovered semantic similarity; appears in `pkb_trace` |
+| `supersedes` | `supersedes:` frontmatter | ❌ | ❌ | Node replaces another |
+| `contributes_to` | `contributes_to:` list with verbal weights | ❌ | ✅ (verbal scale factor) | Strategic priority toward targets/goals |
+| `similar_to` | BGE-M3 vector cosine $\ge 0.85$ | ❌ | ❌ | Semantic proximity; excluded from causal paths |
 
-`similar_to` edges are materialised when the graph is built with the vector store available (e.g. via the MCP server). They participate in pathfinding (`pkb_trace`) but are deliberately excluded from blocking analysis and ready/blocked classification — semantic similarity is informational, not causal.
+---
 
-## Focus Scoring
+## Ranking System & Prioritisation Model
 
-Tasks are ranked by one composite integer, **`focus_score`** — the sum of priority, severity, deadline pressure, age, structural blast radius, stakeholder waiting time, urgency (target propagation), and a value-of-information premium. Sort by it; ignore the components unless you're debugging a ranking.
+Tasks in `mem` are ranked by an explicit 4-component lexicographical sort tuple (`src/graph.rs:104-109`):
 
-For deadline-bound obligations that aren't tasks themselves (ARC submissions, contract signings, anything you must not fail), declare a **target node** and link contributing tasks to it:
+$$\mathbf{focus\_tuple} = (\text{severity\_gate}, \text{deadline\_band}, \text{cost\_of\_delay}, \text{tie\_breakers})$$
+
+All task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) sort through this single tuple comparator (`src/graph_store.rs:937-949`, `GraphStore::focus_cmp`).
+
+### 1. Non-Compensatory Pre-Filters
+
+Before tuple evaluation, tasks are checked against two absolute gates:
+1. **Affordable Loss Filter** (`src/graph_store.rs:1989-1995`): If `node.affordable_loss == Some(false)`, the node is completely zeroed and excluded from rankings (`focus_tuple = None`, `focus_score = None`).
+2. **Terminal Status Filter** (`src/graph_store.rs:1997-2001`): Completed work (`done`, `cancelled`) is unscored (`focus_tuple = None`, `focus_score = None`).
+
+### 2. Lexicographical Tuple Ordering (`FocusTuple::cmp`)
+
+Pairwise sorting in `FocusTuple::cmp` evaluates components in strict sequence (`src/graph.rs:152-165`):
+
+```text
+1. severity_gate        (Catastrophic > Normal)
+2. deadline_band        (Overdue > Imminent > Urgent > Approaching > None)
+3. cost_of_delay        (DESC: higher cost-of-delay sorts first)
+4. tie_breakers:
+   a. downstream_weight_x10 (DESC: higher downstream mass sorts first)
+   b. unlock_breadth_x10    (DESC: higher unblocked dependent mass sorts first)
+   c. age_staleness         (DESC: older unworked P2+ tasks sort first)
+   d. effective_intent      (ASC: P0 before P1 before P2...)
+   e. order                 (ASC: authored sequence order)
+   f. id                    (ASC: lexicographical total tie-breaker)
+```
+
+### 3. Detailed Component Formulations
+
+#### Component 1: `severity_gate` (`SeverityGate`)
+- **Code Reference**: `src/graph.rs:65-69`, `src/graph_store.rs:2005-2009`
+- **Formula**:
+  $$\text{severity\_gate} = \begin{cases} \text{Catastrophic} & \text{if } \text{severity} \ge 4 \land \text{goal\_type} = \text{"committed"} \\ \text{Normal} & \text{otherwise} \end{cases}$$
+- **Semantics**: Non-linear lexicographic override. Existential obligations bypass standard scalar competition and sort ahead of all normal work regardless of deadline or cost of delay.
+
+#### Component 2: `deadline_band` (`DeadlineBand`)
+- **Code Reference**: `src/graph.rs:72-79`, `src/graph_store.rs:1799-1921`
+- **Formula**:
+  Let $\text{days\_until} = (\text{due} - \text{today}).\text{num\_days}()$ and $\text{effort\_days} = \text{parse\_effort\_days}(\text{effort}).\text{unwrap\_or}(3)$:
+  - If $\text{days\_until} < 0$: Initial band is $\mathbf{Overdue}$.
+  - Else ($\text{days\_until} \ge 0$), let $\text{ratio} = \frac{\text{effort\_days}}{\max(\text{days\_until}, 1)}$:
+    - $\text{ratio} \ge 1.0 \implies \mathbf{Imminent}$
+    - $\text{ratio} > 0.5 \implies \mathbf{Urgent}$
+    - $\text{days\_until} \le 30 \implies \mathbf{Approaching}$
+    - $\text{otherwise} \implies \mathbf{None}$
+- **Courtesy-Review Decay Gate** (`src/graph_store.rs:1871-1901`):
+  If an overdue task carries **no real stakes** ($\text{downstream\_weight} = 0.0 \land \text{stakeholder is None} \land \neg\text{is\_human\_gate}() \land \text{urgency} \le 50.0 \land \text{intent} \ge 2$) and $\text{days\_overdue} > 20$:
+  $$\text{decay\_days} = \min(\text{days\_overdue} - 20, 100), \quad \text{decay\_frac} = \frac{\text{decay\_days}}{100.0}$$
+  The band decays smoothly over 100 days:
+  $<0.25 \to \text{Overdue}, <0.50 \to \text{Imminent}, <0.75 \to \text{Urgent}, <1.00 \to \text{Approaching}, \ge 1.00 \to \text{None}$.
+  Expired courtesy reviews eventually rank as normal undated work.
+
+#### Component 3: `cost_of_delay`
+- **Code Reference**: `src/graph_store.rs:1788-1977`
+- **Formula**:
+  $$\text{cost\_of\_delay} = \text{intent\_pressure} + \text{deadline\_points} + \text{stakeholder\_waiting} + \text{urgency\_term} + \text{voi\_term} + \text{value\_lineage\_term}$$
+  1. **`intent_pressure`** (`src/graph_store.rs:1793-1797`):
+     $\text{intent } 0 \text{ (P0)} \implies 10{,}000$; $\text{intent } 1 \text{ (P1)} \implies 5{,}000$; $\text{intent } \ge 2 \text{ or unset} \implies 0$.
+  2. **`deadline_points`** (`src/graph_store.rs:1803-1921`):
+     - Overdue ($\text{days\_until} < 0$): $8{,}000 + \min((-\text{days\_until}) \times 200, 4{,}000) \in [8{,}000, 12{,}000]$. If courtesy decay applies: $\text{points} \gets \text{points} \times (1 - \text{decay\_frac})$.
+     - Future ($\text{days\_until} \ge 0$): $\text{ratio} \ge 1.0 \implies 6{,}000$; $\text{ratio} > 0.5 \implies 2{,}000 + \lfloor(\text{ratio}-0.5)\times 8{,}000\rfloor$; $\text{days} \le 30 \implies \lfloor\text{ratio}\times 4{,}000\rfloor$; else $0$.
+     - Side-effect: sets $\text{deadline\_ramp\_fired} = \text{deadline\_points} > 0$.
+  3. **`stakeholder_waiting`** (`src/graph_store.rs:1925-1958`):
+     Applies if $\text{node.stakeholder.is\_some}() \lor \text{node.is\_human\_gate}()$:
+     - If $\text{deadline\_ramp\_fired}$ is true: flat $2{,}000$ (suppresses daily lateness growth to prevent double-counting external lateness).
+     - Else: $2{,}000 + \min(\text{days\_waiting} \times 200, 6{,}000) \in [2{,}000, 8{,}000]$, anchored to `waiting_since` or `created`.
+  4. **`urgency_term`** (`src/graph_store.rs:1960, 3074-3222`):
+     $\text{round}(\text{node.urgency}) \in [0, 10{,}000+]$.
+     Propagates target severity backward along incoming dependency paths via relaxation:
+     $$\text{urgency}(x) = S_{\text{lex}}(x) \times f(\text{slack}(x))$$
+     where $S_{\text{lex}} = 10{,}000$ for committed SEV4, else $10^{\min(\text{sev}, 3)}$ ($1, 10, 100, 1000$).
+     Edge propagation factors: `blocks` ($1.0$), `soft_blocks` ($0.3$), `children` ($0.5$), `contributes_to` (verbal weight: certain $1.00$, probable $0.85$, expected $0.75$, fifty-fifty $0.50$, uncertain $0.25$, improbable $0.15$, impossible $0.00$).
+     Piecewise slack function ($k = \ln(10)/30$):
+     $$f(\text{slack}) = \begin{cases} 10.0 & \text{if } \text{slack} \le 0 \\ e^{k(30 - \text{slack})} & \text{if } 0 < \text{slack} \le 30 \\ 0.001 & \text{if } \text{slack} > 30 \end{cases}$$
+  5. **`voi_term`** (`src/graph_store.rs:1961, 3144-3215`):
+     $\text{round}(\text{node.voi\_value}) \in [0, 5{,}000]$. Value of Information bonus.
+     Strictly gated to leaf nodes ($\text{node.leaf} = \text{node.children.is\_empty}()$). Requires two conjunctive gates:
+     - Open question: task itself has open inquiry / $\text{confidence} < 1.0$, OR its unblocking cone contains an open question.
+     - Downstream divergence: unblocking cone contains $\ge 2$ distinct reachable nodes or direct blocks.
+  6. **`value_lineage_term`** (`src/graph_store.rs:1967, 3224-3260`):
+     $\text{round}(\text{node.value\_lineage}) \in [0, 10{,}000+]$.
+     Standing weight elicited on committed targets flowing directly to contributors:
+     $$\text{value\_lineage}(x) = 10{,}000 \times \text{confidence}(x) \times \sum_{ct \in \text{contributes\_to}} ct.\text{stated\_weight} \times ct.\text{target}.\text{standing\_weight}$$
+
+#### Component 4: `tie_breakers` (`FocusTieBreakers`)
+- **Code Reference**: `src/graph.rs:83-97`, `src/graph_store.rs:2027-2037`
+- **Signals**:
+  1. `downstream_weight_x10`: $\lfloor \text{node.downstream\_weight} \times 10.0 \rfloor$. Depth-decayed, edge-factor-discounted sum of weighted base scores over distinct nodes in downstream cone.
+  2. `unlock_breadth_x10`: $\lfloor \text{node.unlock\_breadth} \times 10.0 \rfloor$. Sum of $\text{cost\_of\_delay}$ of direct dependents for which this task is the sole remaining blocker.
+  3. `age_staleness`: If `intent >= 2`: $\min(\max(\text{days\_since\_created}, 0), 200)$, else $0$.
+  4. `effective_intent`: Minimum intent in the downstream cone (P0 before P1...).
+  5. `order`: Explicit manual sequence order integer.
+  6. `id`: String lexicographical tie-breaker ensuring total, deterministic ordering.
+
+### 4. Synthetic Display Score (`focus_score`)
+
+- **Code Reference**: `src/graph.rs:138-148`, `src/graph_store.rs:2046`
+- **Formula**:
+  $$\text{focus\_score} = \text{gate\_pts} + \text{cost\_of\_delay} + \text{downstream\_weight\_x10} + \text{unlock\_breadth\_x10} + \text{age\_staleness}$$
+  where $\text{gate\_pts} = 100{,}000$ if $\text{severity\_gate} = \text{Catastrophic}$ else $0$.
+- **Critical Invariant**: **`focus_score` is a display scalar only, NOT the ranking signal.** It completely omits `deadline_band`, which sorts ahead of `cost_of_delay` in `FocusTuple::cmp`. Two tasks can order one way by `FocusTuple` and the opposite way by `focus_score`. Never sort, compare, or explain queue position by `focus_score` alone.
+
+### 5. Derived Diagnostic Metrics Excluded from Ranking
+
+Per architectural doctrine (`specs/ranking.md` §5):
+- **`pagerank`**, **`betweenness`**, and **`criticality`** **NEVER enter any ranking or focus_score path**.
+- They are unitless structural diagnostics computed strictly for graph gardening, visualization, and overwhelm telemetry (`top_n_by_metric`, `get_network_metrics`, overwhelm dashboard).
+
+### Severity Ladder & Target Linking
+
+For deadline-bound obligations that aren't tasks themselves (submissions, signings, contractual obligations), declare a **target node** and link contributing tasks to it:
 
 ```yaml
 # The obligation
@@ -167,63 +338,38 @@ consequence: "Late review damages standing with the panel."
 
 # A task contributing to it
 contributes_to:
-  - to: <target-id>
-    weight: Certain              # see weight scale below
+  - target: <target-id>
+    stated_weight: Certain       # see weight scale below
     why: "contractual obligation as assigned assessor"
 ```
 
-`mem` propagates `severity × edge_weight × deadline-slack` back from each target to its contributors, writing `node.urgency` and folding it into `focus_score`. A P2 task blocking a SEV3-committed deadline rises automatically as the deadline approaches — no priority bumping.
-
-### Severity ladder
+#### Severity ladder
 
 | Level | Label | Example |
-|-------|-------|---------|
+|---|---|---|
 | 0 | Negligible | Minor annoyance; no consequence beyond self |
 | 1 | Low | Small reputational or time cost |
 | 2 | Moderate | Meaningful commitment; recoverable if missed |
 | 3 | High | Serious consequence; hard to recover |
-| **4** | **Terminal** | **Job loss, bankruptcy, severe health, legal** |
+| **4** | **Catastrophic** | **Job loss, bankruptcy, severe health, legal action** |
 
-SEV0–3 are compensatory (standard scalar math). **SEV4 + `goal_type: committed` is lexicographic** — it gets a 10 000× multiplier so any SEV4-adjacent task outranks any non-SEV4 task regardless of priority, deadline, or anything else. Use sparingly; the cognitive speedbump of writing `consequence:` prose is part of the design.
+SEV0–3 are compensatory. **SEV4 + `goal_type: committed` triggers the lexicographic `severity_gate`** so any SEV4-adjacent task outranks any non-SEV4 task regardless of priority or deadline.
 
-### `goal_type`
+#### Verbal Contribution-Weight Scale (Renooij-Witteman)
 
-| Value | Effect |
-|-------|--------|
-| `committed` | Receives the lexicographic override at SEV4. Standard contractual / non-negotiable obligations. |
-| `aspirational` | Linear propagation only. `consequence:` is reused as opportunity-cost prose. Prevents moonshots from hijacking the queue. |
-| `learning` | Linear propagation only. Marks targets where the value is the attempt, not the outcome. |
+`contributes_to.stated_weight` accepts only verbal terms — raw decimals or unrecognized terms are rejected at parse time (`src/graph.rs:111-134`):
 
-### Weight scale (Renooij-Witteman)
+| Verbal Term | Numeric Anchor | Interpretation |
+|---|---|---|
+| `certain`, `almost certain` | **1.00** | Critical path / single point of failure |
+| `probable`, `very probable`, `highly likely` | **0.85** | Strong primary contributor |
+| `expected`, `likely` | **0.75** | Standard intended contributor |
+| `fifty-fifty`, `even chance` | **0.50** | Moderate, genuinely uncertain contribution |
+| `uncertain`, `possible`, `perhaps`, `maybe` | **0.25** | Exploratory or optional contribution |
+| `improbable`, `unlikely`, `very unlikely` | **0.15** | Minor marginal contribution |
+| `impossible`, `none` | **0.00** | No contribution |
+| *(omitted / empty)* | **0.00** | Unstated edge; contributes zero weight |
 
-`contributes_to.weight` accepts only verbal terms — raw decimals are rejected at parse time. Weights represent a **verbal contribution-weight scale** (Renooij-Witteman elicitation anchors), not "percent contribution":
-
-| Term | Anchor | Reading |
-|------|--------|---------|
-| Certain | 1.00 | Single point of failure — miss this and the target fails |
-| Probable | 0.85 | Strong contributor |
-| Expected | 0.75 | Likely needed |
-| Fifty-Fifty | 0.50 | Redundancy exists |
-| Uncertain | 0.25 | Possibly needed |
-| Improbable | 0.15 | Marginal |
-| Impossible | 0.00 | No contribution |
-
-Non-linearity defeats the spacing and centring biases that corrupt linear scales.
-
-### `focus_score` components
-
-| Term | Range | Trigger |
-|------|-------|---------|
-| `priority_base` | 0 / 5 000 / 10 000 | P0 = 10 000, P1 = 5 000, P2+ = 0 |
-| `severity_bonus` | 0 – 100 000 | SEV0–4 on the task itself; SEV4 lexicographic |
-| `deadline_score` | 0 – 12 000 | Overdue / tight / near-tight. `consequence` applies no multiplier — stakes reach a task via target `severity` |
-| `age_staleness_bonus` | 0 – 200 | P2+ only; min(days_since_created, 200) |
-| `downstream_weight × 10` | 0 – ∞ | Structural blast radius: depth-decayed, edge-weighted sum of base weights over the **distinct** nodes reachable via `blocks` / `soft_blocks` / children / reverse `contributes_to` — not a count |
-| `stakeholder_waiting_bonus` | 0 / 2 000 – 8 000 | When `stakeholder` set; +200/day |
-| `urgency_term` | 0 – 10 000+ | `round(node.urgency)` — target propagation |
-| `voi_term` | 0 – 5 000 | `round(node.voi_value)` — value-of-information premium for a leaf task that unblocks an uncertain cone; 0 for non-leaf nodes |
-
-The formula lives in `compute_urgency`, `compute_voi_term` and `compute_focus_scores` in `src/graph_store.rs`; `downstream_weight` and the VoI sum are both accumulated by the shared `walk_cone` traversal. Prototype nodes (for recurring obligations like peer review) and the deferred calibration ritual extend the model — see the source for current behaviour.
 
 ## CLI Commands
 
