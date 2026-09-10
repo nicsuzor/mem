@@ -1399,7 +1399,6 @@ impl PkbSearchServer {
             "batch_reparent" => self.handle_batch_reparent(args),
             "batch_archive" => self.handle_batch_archive(args),
             "graph_stats" => self.handle_graph_stats(args),
-            "graph_json" => self.handle_graph_json(args),
             "graph_excalidraw" => self.handle_graph_excalidraw(args),
             "export_graph" => self.handle_export_graph(args),
             "diff_excalidraw" => self.handle_diff_excalidraw(args),

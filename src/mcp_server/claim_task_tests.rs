@@ -747,6 +747,8 @@ project: aops
         );
 
         let tools = PkbSearchServer::get_all_tools();
+        assert!(tools.iter().any(|t| t.name.as_ref() == "export_graph"));
+        assert!(!tools.iter().any(|t| t.name.as_ref() == "graph_json"));
         assert!(tools.iter().any(|t| t.name.as_ref() == "graph_excalidraw"));
         assert!(tools.iter().any(|t| t.name.as_ref() == "diff_excalidraw"));
         assert!(tools.iter().any(|t| t.name.as_ref() == "sync_excalidraw"));

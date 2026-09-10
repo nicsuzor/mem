@@ -585,17 +585,6 @@ impl PkbSearchServer {
             .with_title("Detect Weight Divergence")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
-                "graph_json",
-                "Export the full knowledge graph as JSON. Use for external visualization or deep structural analysis.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }))
-                .unwrap(),
-            )
-            .with_title("Knowledge Graph JSON")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
                 "graph_excalidraw",
                 "Generates an Excalidraw JSON diagram for an ego neighborhood around node_id or the full knowledge graph. Returns valid Excalidraw V2 JSON.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -611,10 +600,15 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "export_graph",
-                "Export the knowledge/task graph as GraphViz DOT syntax (`digraph PKB { ... }`) for external rendering (`dot -Tsvg`, `neato`, `sfdp`) or topological analysis pipelines. Unlike graph_excalidraw (round-trip interactive canvas), this is a static, one-way export. Nodes carry id/title/status/type; edges cover depends_on, contributes_to, supersedes, closes, and parent-child hierarchy (blocks: frontmatter is compiled into depends_on edges, so it needs no separate edge type). Labels are escaped for safe DOT syntax.",
+                "Export the knowledge/task graph as GraphViz DOT syntax (`digraph PKB { ... }`) or structured JSON for external rendering (`dot -Tsvg`, `neato`, `sfdp`), deep structural analysis, or visualization dashboards. Unlike graph_excalidraw (round-trip interactive canvas), this is a static, one-way export. Nodes carry id/title/status/type; edges cover depends_on, contributes_to, supersedes, closes, and parent-child hierarchy (blocks: frontmatter is compiled into depends_on edges, so it needs no separate edge type). Labels are escaped for safe DOT syntax.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "format": {
+                            "type": "string",
+                            "enum": ["dot", "json"],
+                            "description": "Output format: 'dot' (GraphViz DOT digraph syntax, default) or 'json' (structured graph JSON with nodes, edges, ready, blocked, roots, and focus)."
+                        },
                         "focus": { "type": "string", "description": "Focus node ID, filename, or title (flexible resolution). If omitted, exports the full active graph." },
                         "max_depth": { "type": "integer", "description": "Traversal depth in hops from focus (1 to 5, default: 2). Ignored if focus is omitted." },
                         "project": { "type": "string", "description": "Filter to nodes whose project field matches exactly." },
@@ -623,7 +617,7 @@ impl PkbSearchServer {
                 }))
                 .unwrap(),
             )
-            .with_title("Export Graph to GraphViz DOT")
+            .with_title("Export Graph")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "diff_excalidraw",

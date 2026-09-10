@@ -84,7 +84,7 @@ src/
 - `pkb_trace` — shortest paths between two nodes
 - `pkb_orphans` — disconnected nodes
 - `graph_stats` — PKB health report: status/priority/type distributions, orphan counts, cycles, disconnected clusters
-- `graph_json` — export the full knowledge graph as JSON
+- `export_graph` — export the knowledge/task graph as GraphViz DOT or JSON
 - `get_semantic_neighbors` — nodes semantically similar to a given node by embedding proximity
 - `detect_weight_divergence` — `contributes_to` edges with high stated weight but stale/zero source-task activity
 - `refresh_graph` — synchronously rebuild in-memory graph index from disk (no ONNX re-embed)

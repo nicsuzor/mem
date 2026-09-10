@@ -2128,31 +2128,78 @@ impl GraphStore {
         result
     }
 
-    /// Full graph as JSON — all task nodes and their edges.
-    pub fn output_json(&self) -> Result<String> {
-        let mut nodes: Vec<GraphNode> = self.nodes.values().cloned().collect();
-        nodes.sort_by(|a, b| a.label.cmp(&b.label));
+    /// Full graph as JSON — all task nodes and their edges, with optional filters.
+    pub fn output_json_filtered(
+        &self,
+        focus: Option<&str>,
+        max_depth: usize,
+        project: Option<&str>,
+        include_done: bool,
+    ) -> Result<String> {
+        let (mut nodes, mut edges): (Vec<GraphNode>, Vec<Edge>) = match focus {
+            Some(query) => match self.resolve(query).map(|n| n.id.clone()) {
+                Some(id) => crate::excalidraw::extract_ego_subgraph(self, &id, max_depth.max(1)),
+                None => (Vec::new(), Vec::new()),
+            },
+            None => (self.nodes.values().cloned().collect(), self.edges.clone()),
+        };
+
         // Only include nodes with explicit task_id (real tasks, not bare notes)
         nodes.retain(|n| n.task_id.is_some());
+
+        if !include_done {
+            nodes.retain(|n| {
+                !crate::graph::COMPLETED_STATUSES.contains(&n.status.as_deref().unwrap_or(""))
+            });
+        }
+        if let Some(proj) = project {
+            nodes.retain(|n| n.project.as_deref() == Some(proj));
+        }
+        nodes.sort_by(|a, b| a.label.cmp(&b.label));
+
         let placed_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-        let edges: Vec<_> = self
-            .edges
+        edges.retain(|e| {
+            placed_ids.contains(e.source.as_str()) && placed_ids.contains(e.target.as_str())
+        });
+
+        let ready: Vec<String> = self
+            .ready
             .iter()
-            .filter(|e| {
-                placed_ids.contains(e.source.as_str()) && placed_ids.contains(e.target.as_str())
-            })
+            .filter(|id| placed_ids.contains(id.as_str()))
             .cloned()
             .collect();
-        let focus = self.focus_picks(50);
+        let blocked: Vec<String> = self
+            .blocked
+            .iter()
+            .filter(|id| placed_ids.contains(id.as_str()))
+            .cloned()
+            .collect();
+        let roots: Vec<String> = self
+            .roots
+            .iter()
+            .filter(|id| placed_ids.contains(id.as_str()))
+            .cloned()
+            .collect();
+        let focus_picks = self.focus_picks(50);
+        let focus_list: Vec<String> = focus_picks
+            .into_iter()
+            .filter(|id| placed_ids.contains(id.as_str()))
+            .collect();
+
         let graph = OutputGraph {
             nodes,
             edges,
-            ready: self.ready.clone(),
-            blocked: self.blocked.clone(),
-            roots: self.roots.clone(),
-            focus,
+            ready,
+            blocked,
+            roots,
+            focus: focus_list,
         };
         Ok(serde_json::to_string_pretty(&graph)?)
+    }
+
+    /// Full graph as JSON — all task nodes and their edges.
+    pub fn output_json(&self) -> Result<String> {
+        self.output_json_filtered(None, 2, None, true)
     }
 
     /// Export graph or ego network to Excalidraw JSON canvas format.
