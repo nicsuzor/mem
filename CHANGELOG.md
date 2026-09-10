@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.93](https://github.com/nicsuzor/mem/compare/mem-v0.3.92...mem-v0.3.93) (2026-09-10)
+
+
+### Features
+
+* **mcp:** add json output format to export_graph and remove graph_json ([218c3e2](https://github.com/nicsuzor/mem/commit/218c3e2c183e90750f7eef11c956b40f323431ec))
+* **mcp:** add json output format to export_graph and remove graph_json ([b70000d](https://github.com/nicsuzor/mem/commit/b70000d21ec0c0e0c0543084936f3bbef8458376))
+
+
+### Bug Fixes
+
+* **mcp:** re-export graph_json tool and verify schema registration ([974afd2](https://github.com/nicsuzor/mem/commit/974afd2ccf089384f79e3428edee91ca67a8b43a))
+
 ## [0.3.92](https://github.com/nicsuzor/mem/compare/mem-v0.3.91...mem-v0.3.92) (2026-09-09)
 
 
