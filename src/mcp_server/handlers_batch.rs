@@ -399,18 +399,6 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
-    pub(crate) fn handle_graph_json(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
-        self.ensure_graph_fresh();
-        let graph = self.graph.read();
-        let json = graph.output_json().map_err(|e| McpError {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Failed to generate graph JSON: {e}")),
-            data: None,
-        })?;
-
-        Ok(CallToolResult::success(vec![Content::text(json)]))
-    }
-
     pub fn handle_graph_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let node_id = args.get("node_id").and_then(|v| v.as_str());
@@ -431,6 +419,7 @@ impl PkbSearchServer {
 
     pub fn handle_export_graph(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
+        let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("dot");
         let focus = args.get("focus").and_then(|v| v.as_str());
         let max_depth = args
             .get("max_depth")
@@ -443,9 +432,29 @@ impl PkbSearchServer {
             .unwrap_or(false);
 
         let graph = self.graph.read();
-        let dot = graph.output_dot(focus, max_depth, project, include_done);
-
-        Ok(CallToolResult::success(vec![Content::text(dot)]))
+        match format {
+            "dot" => {
+                let dot = graph.output_dot(focus, max_depth, project, include_done);
+                Ok(CallToolResult::success(vec![Content::text(dot)]))
+            }
+            "json" => {
+                let json = graph
+                    .output_json_filtered(focus, max_depth, project, include_done)
+                    .map_err(|e| McpError {
+                        code: ErrorCode::INTERNAL_ERROR,
+                        message: Cow::from(format!("Failed to generate graph JSON: {e}")),
+                        data: None,
+                    })?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            other => Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!(
+                    "Unsupported format: '{other}'. Expected 'dot' or 'json'."
+                )),
+                data: None,
+            }),
+        }
     }
 
     pub fn handle_diff_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
