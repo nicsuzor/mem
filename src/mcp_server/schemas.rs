@@ -585,6 +585,17 @@ impl PkbSearchServer {
             .with_title("Detect Weight Divergence")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
+                "graph_json",
+                "Export the full knowledge graph as JSON. Use for external visualization or deep structural analysis.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }))
+                .unwrap(),
+            )
+            .with_title("Knowledge Graph JSON")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
                 "graph_excalidraw",
                 "Generates an Excalidraw JSON diagram for an ego neighborhood around node_id or the full knowledge graph. Returns valid Excalidraw V2 JSON.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
