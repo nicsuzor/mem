@@ -200,11 +200,6 @@ impl PkbSearchServer {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        // task_1381381c: agents must not originate intent bands via batch_update.
-        if updates.get("intent").is_some() || updates.get("priority").is_some() {
-            return Err(Self::reject_agent_intent("batch_update"));
-        }
-
         if filters.is_empty() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -1198,17 +1193,18 @@ mod batch_finalize_tests {
         }
     }
 
-    /// task_1381381c: agents must not be able to set `intent` (or legacy `priority`) via
-    /// `batch_update` — one of the write paths that had only a range check
-    /// (`is_valid_intent`) and no authority guard.
+    /// Agent-set `intent` (or legacy `priority`) via `batch_update` is accepted
+    /// under Nic's standing delegation to agents (kb_ccc17177 Mechanism 1,
+    /// aops_intent_delegation_tooling) — the range check (`is_valid_intent`)
+    /// still applies, but there is no longer an authority guard.
     #[test]
-    fn test_batch_update_rejects_agent_intent() {
+    fn test_batch_update_accepts_agent_intent() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pkb_root = dir.path();
         let server = build_disk_server(pkb_root);
 
         let create_args = json!({
-            "title": "Batch Intent Guard Task",
+            "title": "Batch Intent Task",
             "parent": "test-project",
             "project": "test-project",
             "status": "ready",
@@ -1222,24 +1218,18 @@ mod batch_finalize_tests {
             "updates": { "intent": 0 },
             "dry_run": false
         });
-        let err = server
+        server
             .handle_batch_update(&args)
-            .expect_err("agent-supplied intent via batch_update should be rejected");
-        let msg = format!("{}", err.message);
-        assert!(
-            msg.to_lowercase().contains("intent"),
-            "error should mention intent, got: {msg}"
-        );
+            .expect("agent-supplied intent via batch_update should be accepted");
 
-        // Nothing should have been written despite the filter matching a task.
         let graph = server.graph.read();
         let node = graph
-            .resolve("Batch Intent Guard Task")
+            .resolve("Batch Intent Task")
             .expect("task should exist");
-        assert_ne!(
+        assert_eq!(
             node.intent,
             Some(0),
-            "intent must not have been written despite rejection"
+            "intent must have been written to the graph"
         );
     }
 

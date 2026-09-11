@@ -236,13 +236,15 @@ use super::*;
     }
 
     #[test]
-    fn test_decompose_task_rejects_agent_intent() {
+    fn test_decompose_task_accepts_agent_intent() {
+        // Agent-set subtask intent is accepted under Nic's standing delegation
+        // (kb_ccc17177 Mechanism 1, aops_intent_delegation_tooling).
         let server = build_test_server();
         std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
 
         let parent_res = server
             .handle_create_task(&json!({
-                "title": "Parent Task for Decompose Intent Guard",
+                "title": "Parent Task for Decompose Intent",
                 "type": "epic",
                 "project": "proj-alpha",
                 "parent": "proj-alpha"
@@ -263,24 +265,18 @@ use super::*;
             { "title": "Subtask With Intent", "type": "task", "intent": 1 }
         ]);
 
-        let err = server
+        server
             .handle_decompose_task(&json!({
                 "parent_id": parent_id,
                 "subtasks": subtasks
             }))
-            .expect_err("agent-supplied subtask intent via decompose_task should be rejected");
-        let msg = format!("{}", err.message);
-        assert!(
-            msg.to_lowercase().contains("intent"),
-            "error should mention intent, got: {msg}"
-        );
+            .expect("agent-supplied subtask intent via decompose_task should be accepted");
 
-        // No subtask should have been created (fail before any writes).
         let graph = server.graph.read();
-        assert!(
-            graph.resolve("Subtask With Intent").is_none(),
-            "subtask must not have been created when intent guard rejects the batch"
-        );
+        let node = graph
+            .resolve("Subtask With Intent")
+            .expect("subtask must have been created");
+        assert_eq!(node.intent, Some(1), "subtask intent must have been written");
     }
 
     // ── epic_882b7576: soft session-identity display on subtasks (D1, display-only) ──
@@ -469,46 +465,63 @@ use super::*;
         );
     }
 
-    // ── update_task: agent-originated intent rejection (task_1381381c) ──
+    // ── update_task: agent-set intent under Nic's standing delegation (kb_ccc17177 Mechanism 1, aops_intent_delegation_tooling) ──
 
     #[test]
-    fn test_update_task_rejects_agent_intent_nested() {
+    fn test_update_task_accepts_agent_intent_nested() {
         let server = build_test_server();
-        let err = server
+        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+        server
+            .handle_create_task(&json!({
+                "title": "Update Intent Nested Task",
+                "type": "task",
+                "project": "proj-alpha",
+                "parent": "proj-alpha",
+            }))
+            .expect("create_task failed");
+
+        server
             .handle_update_task(&json!({
-                "id": "task-a1",
+                "id": "Update Intent Nested Task",
                 "updates": { "intent": 1 }
             }))
-            .expect_err("agent-supplied intent via update_task should be rejected");
-        let msg = format!("{}", err.message);
-        assert!(
-            msg.to_lowercase().contains("intent"),
-            "error should mention intent, got: {msg}"
+            .expect("agent-supplied intent via update_task should be accepted");
+
+        let graph = server.graph.read();
+        let node = graph.resolve("Update Intent Nested Task").unwrap();
+        assert_eq!(
+            node.intent,
+            Some(1),
+            "intent must have been written to the graph"
         );
     }
 
     #[test]
-    fn test_update_task_rejects_agent_intent_flat() {
+    fn test_update_task_accepts_agent_intent_flat() {
         let server = build_test_server();
-        let err = server
+        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+        server
+            .handle_create_task(&json!({
+                "title": "Update Intent Flat Task",
+                "type": "task",
+                "project": "proj-alpha",
+                "parent": "proj-alpha",
+            }))
+            .expect("create_task failed");
+
+        server
             .handle_update_task(&json!({
-                "id": "task-a1",
+                "id": "Update Intent Flat Task",
                 "intent": 0
             }))
-            .expect_err("agent-supplied intent via update_task (flat form) should be rejected");
-        let msg = format!("{}", err.message);
-        assert!(
-            msg.to_lowercase().contains("intent"),
-            "error should mention intent, got: {msg}"
-        );
+            .expect("agent-supplied intent via update_task (flat form) should be accepted");
 
-        // The task's intent must be unchanged on disk/graph after the rejection.
         let graph = server.graph.read();
-        let node = graph.resolve("task-a1").unwrap();
-        assert_ne!(
+        let node = graph.resolve("Update Intent Flat Task").unwrap();
+        assert_eq!(
             node.intent,
             Some(0),
-            "intent must not have been written despite rejection"
+            "intent must have been written to the graph"
         );
     }
 
