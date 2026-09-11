@@ -521,6 +521,25 @@ fn test_refresh_graph_closes_disk_gap_and_reports_unparseable_files() {
     );
 }
 
+/// Read a node's tags directly from the in-memory graph, bypassing
+/// `list_tasks`/`ensure_graph_fresh`'s disk-generation self-heal
+/// (`GraphStore::generation`/`scan_generation`, see `pkb::scan_generation`
+/// callers in `mod.rs`). That self-heal exists to catch exactly this kind
+/// of staleness on the *next* read, which is precisely why it must NOT be
+/// used to observe the raw, momentary result of the Tier-1/Tier-2 race
+/// below: any call that goes through `ensure_graph_fresh` (e.g.
+/// `handle_list_tasks`) can silently repair a just-landed stale clobber
+/// before the assertion ever sees it, masking the very defect under test.
+fn node_tags_raw(server: &PkbSearchServer, id: &str) -> Vec<String> {
+    server
+        .graph
+        .read()
+        .nodes_map()
+        .get(id)
+        .map(|n| n.tags.clone())
+        .unwrap_or_default()
+}
+
 fn list_tasks_tag_ids(server: &PkbSearchServer, tag: &str) -> Vec<String> {
     let result = server
         .handle_list_tasks(&json!({"tags": [tag], "format": "json"}))
@@ -609,10 +628,23 @@ fn test_refresh_graph_drops_removed_tag_from_list_tasks() {
 /// removed tag (the "two `refresh_graph` calls did not clear it" symptom,
 /// aops_17c86b89). This variant interleaves a slow Tier-2 rebuild — snapshot
 /// taken while the tag is still present — with the tag removal + explicit
-/// `refresh_graph`, then asserts the *served* `list_tasks` view stays clean
-/// once Tier-2 has fully settled. Without the epoch guard (or with the
-/// TOCTOU gap task_af93030b fixes), Tier-2's stale swap can land after
-/// `refresh_graph`'s and reintroduce "onlytag" into the served list.
+/// `refresh_graph`, then checks the raw in-memory graph node once Tier-2 has
+/// fully settled. Without the epoch guard (or with the TOCTOU gap
+/// task_af93030b fixes), Tier-2's stale swap can land after
+/// `refresh_graph`'s and reintroduce "onlytag" into the graph.
+///
+/// Reads the *raw graph node* (`node_tags_raw`), not `list_tasks`: an
+/// earlier version of this test asserted through `list_tasks_tag_ids` and
+/// passed on pre-fix code too, even with `pre_epoch_bump_delay_ms` widening
+/// the race window to hundreds of milliseconds (confirmed empirically by
+/// reverting the fix locally and tracing the interleaving with timestamped
+/// debug prints). Root cause: `handle_list_tasks` calls `ensure_graph_fresh`,
+/// whose disk-generation self-heal (`scan_generation` vs the cached
+/// `GraphStore::generation()`) detects the post-clobber mismatch and
+/// silently triggers *another* synchronous `rebuild_graph()` before the
+/// assertion ever runs, repairing the very staleness the test exists to
+/// catch. Reading the graph directly observes the actual post-race state
+/// with no such side channel in the way.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_refresh_graph_drops_removed_tag_from_list_tasks_under_concurrent_tier2_rebuild() {
     let tmp = tempfile::tempdir().unwrap();
@@ -652,6 +684,21 @@ async fn test_refresh_graph_drops_removed_tag_from_list_tasks_under_concurrent_t
     // While Tier-2 sleeps, remove the tag on disk and force a full rebuild
     // via the explicit refresh_graph path — disk truth the in-flight Tier-2
     // snapshot has no way to know about.
+    //
+    // Without an injected delay here, the gap between refresh_graph's swap
+    // and its epoch bump is microseconds — far smaller than Tier-2's 300ms
+    // sleep, so Tier-2's write-lock attempt at ~t=300ms would land long
+    // after the bump has already landed regardless of whether the bump is
+    // inside or outside the write lock, and this test would pass on both
+    // pre-fix and post-fix ordering (verified: it does, 5/5 runs, against a
+    // local revert of the fix). `pre_epoch_bump_delay_ms` widens that gap to
+    // ~400ms so Tier-2's lock attempt at t=300ms lands *during* the window —
+    // on the fix, that's still inside refresh_graph's write lock, so Tier-2
+    // blocks until the bump has landed and correctly aborts on stale epoch;
+    // on pre-fix ordering, the lock would already be free with the epoch
+    // not yet bumped, so Tier-2 would acquire it and clobber the fresh
+    // disk-truth swap with its own stale ("onlytag" still present) snapshot.
+    server.set_pre_epoch_bump_delay_ms(400);
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     std::fs::write(
         &task_path,
@@ -660,29 +707,49 @@ async fn test_refresh_graph_drops_removed_tag_from_list_tasks_under_concurrent_t
     .unwrap();
     server.handle_refresh_graph(&json!({})).unwrap();
 
-    // refresh_graph's own swap must be visible through list_tasks immediately.
-    let just_after_refresh_ids = list_tasks_tag_ids(&server, "onlytag");
+    // refresh_graph's own swap must be visible in the raw graph immediately
+    // it returns — checked directly (see `node_tags_raw` doc comment above)
+    // so a concurrent Tier-2 clobber that lands before refresh_graph returns
+    // (as it can on pre-fix ordering: Tier-1 releases the write lock, then
+    // delays, then bumps — leaving Tier-2 a window to acquire the lock,
+    // observe the still-stale epoch, and swap its own pre-removal snapshot
+    // in before Tier-1's `rebuild_graph()` call even returns) is visible
+    // here rather than silently repaired by a side channel.
+    let just_after_refresh_tags = node_tags_raw(&server, "task-tagged");
     assert!(
-        !just_after_refresh_ids.contains(&"task-tagged".to_string()),
-        "refresh_graph's own swap must drop the removed tag from list_tasks \
-         immediately: {just_after_refresh_ids:?}"
+        !just_after_refresh_tags.iter().any(|t| t == "onlytag"),
+        "refresh_graph's own swap must drop the removed tag from the graph \
+         immediately, with no window for a concurrent Tier-2 rebuild to \
+         clobber it back in before refresh_graph returns: {just_after_refresh_tags:?}"
     );
 
     // Wait for the in-flight (and any coalesced follow-up) Tier-2 rebuild to
-    // fully drain.
-    for _ in 0..50 {
+    // fully drain. Generous bound: Tier-2's own bump is also subject to the
+    // injected `pre_epoch_bump_delay_ms`, so a full settle can take ~700ms+.
+    for _ in 0..120 {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         if !server.graph_rebuild_pending() {
             break;
         }
     }
 
+    let settled_tags = node_tags_raw(&server, "task-tagged");
+    assert!(
+        !settled_tags.iter().any(|t| t == "onlytag"),
+        "a stale Tier-2 rebuild snapshotted before the tag removal must not \
+         resurface 'onlytag' in the graph once it settles, after \
+         refresh_graph already swapped in the fresher disk-truth state: \
+         {settled_tags:?}"
+    );
+
+    // Confirm the served `list_tasks` view agrees with the raw graph once
+    // settled (it should, whether by the fix or by `ensure_graph_fresh`'s
+    // self-heal on this read) — this is the user-visible surface the
+    // original defect (aops_17c86b89) was reported against.
     let settled_ids = list_tasks_tag_ids(&server, "onlytag");
     assert!(
         !settled_ids.contains(&"task-tagged".to_string()),
-        "a stale Tier-2 rebuild snapshotted before the tag removal must not \
-         resurface 'onlytag' in list_tasks once it settles, after \
-         refresh_graph already swapped in the fresher disk-truth state: \
-         {settled_ids:?}"
+        "task-tagged must not be served by list_tasks(tags=[onlytag]) once \
+         settled: {settled_ids:?}"
     );
 }
