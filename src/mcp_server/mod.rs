@@ -110,6 +110,23 @@ pub struct PkbSearchServer {
     /// patches aren't reverted by the swap. Cleared at the start of each
     /// Tier-2 rebuild (before the read-state phase).
     pub(crate) patched_during_rebuild: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Monotonic counter bumped every time a *full* graph swap lands —
+    /// either the disk-scanning `rebuild_graph()` (explicit `refresh_graph`,
+    /// `ensure_graph_fresh` auto-heal, batch finalize) or a Tier-2 background
+    /// rebuild's own swap. In-place Tier-1 patches (`upsert_node_in_place`,
+    /// `remove_node_in_place`) do NOT bump this — only whole-graph replacement
+    /// does.
+    ///
+    /// Tier-2 reads this at the start of its (slow) rebuild and compares
+    /// again just before its swap. A mismatch means a full rebuild already
+    /// landed while Tier-2 was computing from an older `nodes_cloned()`
+    /// snapshot; swapping anyway would silently revert whatever that fresher
+    /// rebuild picked up from disk (e.g. a tag removed from frontmatter and
+    /// then `refresh_graph`-ed away, per aops_mem_tag_integrity). On a
+    /// mismatch, Tier-2 discards its stale result and re-marks itself dirty
+    /// so the next iteration re-snapshots from the now-current graph instead
+    /// of clobbering it.
+    pub(crate) full_rebuild_epoch: Arc<std::sync::atomic::AtomicU64>,
     /// Test-only: optional sleep injected into Tier-2 between read and swap,
     /// used by the lost-patch race test to widen the window deterministically.
     #[cfg(test)]
@@ -177,6 +194,7 @@ impl PkbSearchServer {
             graph_rebuild_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             graph_rebuild_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             patched_during_rebuild: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            full_rebuild_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             tier2_sleep_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tier2_executions: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -367,6 +385,13 @@ impl PkbSearchServer {
             *g = new_graph;
             count
         };
+        // Bump the full-rebuild epoch so any Tier-2 rebuild currently in
+        // flight (computed from a `nodes_cloned()` snapshot predating this
+        // disk-scanning rebuild) detects it is stale at swap time and
+        // discards its result instead of reverting what this rebuild just
+        // picked up from disk.
+        self.full_rebuild_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *self.last_reindex.write() = ReindexStatus {
             timestamp: chrono::Utc::now().to_rfc3339(),
             outcome: "ok".to_string(),
@@ -508,6 +533,12 @@ impl PkbSearchServer {
         let patched = self.patched_during_rebuild.clone();
         let executions = self.tier2_executions.clone();
         let last_reindex = self.last_reindex.clone();
+        let full_rebuild_epoch = self.full_rebuild_epoch.clone();
+        // `dirty` itself is still needed by the `worker` loop below (to
+        // decide whether to run another iteration); clone a handle for the
+        // stale-epoch abort path inside `do_rebuild_once` instead of moving
+        // the original in.
+        let dirty_for_abort = dirty.clone();
         #[cfg(test)]
         let sleep_ms = self.tier2_sleep_ms.clone();
 
@@ -518,6 +549,14 @@ impl PkbSearchServer {
             // are recorded for the *next* iteration (the dirty flag will
             // be set by their schedule_graph_rebuild call).
             patched.lock().clear();
+
+            // Snapshot the full-rebuild epoch alongside the node state we're
+            // about to compute from. If a disk-scanning `rebuild_graph()`
+            // (explicit `refresh_graph`, `ensure_graph_fresh` auto-heal, ...)
+            // swaps in a fresher graph while this (slower) Tier-2 rebuild is
+            // still computing, `nodes` below is a stale snapshot relative to
+            // it — checked again at swap time.
+            let start_epoch = full_rebuild_epoch.load(Ordering::SeqCst);
 
             let snapshot = store.read().averaged_embeddings();
             let nodes = graph.read().nodes_cloned();
@@ -563,6 +602,25 @@ impl PkbSearchServer {
             }
 
             let mut g = graph.write();
+
+            // A full rebuild (explicit `refresh_graph`, `ensure_graph_fresh`
+            // auto-heal, batch finalize, ...) landed while we were computing
+            // from the now-stale `nodes` snapshot above. Swapping `merged`
+            // in now would silently revert whatever that fresher rebuild
+            // picked up from disk (aops_mem_tag_integrity). Discard this
+            // iteration's result and re-mark dirty so the worker loop runs
+            // another iteration off the now-current graph instead.
+            if full_rebuild_epoch.load(Ordering::SeqCst) != start_epoch {
+                drop(g);
+                dirty_for_abort.store(true, Ordering::SeqCst);
+                tracing::debug!(
+                    target: "perf::graph_rebuild",
+                    phase = "tier2_aborted_stale_epoch",
+                    elapsed_ms = _t_total.elapsed().as_secs_f64() * 1000.0
+                );
+                return;
+            }
+
             let late: Vec<String> = patched
                 .lock()
                 .iter()
@@ -584,6 +642,7 @@ impl PkbSearchServer {
             }
             *g = merged;
             drop(g);
+            full_rebuild_epoch.fetch_add(1, Ordering::SeqCst);
             let n_merged = initial_patched.len() + late.len();
             let _ = reclassified;
 

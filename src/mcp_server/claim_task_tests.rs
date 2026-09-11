@@ -163,6 +163,186 @@ tags:
         );
     }
 
+    /// Write a template whose body contains `#NNNN`-shaped GitHub issue
+    /// references — the exact shape reported in aops_ad8d9e07 (tpl_daily
+    /// picking up bare-integer tags from body text like "fixes #1847").
+    fn setup_with_template_containing_body_hashtags() -> (PkbSearchServer, TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let tasks_dir = root.join("tasks");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+
+        let template_content = "\
+---
+id: daily-template
+title: \"Daily\"
+type: template
+status: active
+priority: 2
+parent: proj-test
+project: aops
+tags:
+  - daily
+  - recurring
+---
+
+## Daily checklist
+
+- [ ] Merged fixes #1847 and #1849 overnight, verify the fix landed.
+- [ ] Follow up on PR #1850 review comments.
+";
+        std::fs::write(tasks_dir.join("daily-template.md"), template_content).unwrap();
+
+        let projects_dir = root.join("projects");
+        std::fs::create_dir_all(&projects_dir).unwrap();
+        std::fs::write(
+            projects_dir.join("proj-test.md"),
+            "---\nid: proj-test\ntitle: \"Test Project\"\ntype: epic\nproject: proj-test\nstatus: active\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("polecat.yaml"),
+            "projects:\n  proj-test: {}\n  aops: {}\n",
+        )
+        .unwrap();
+
+        let docs = crate::pkb::scan_directory(root)
+            .iter()
+            .filter_map(|p| crate::pkb::parse_file_relative(p, root))
+            .collect::<Vec<_>>();
+
+        let graph = GraphStore::build(&docs, root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+        (server, tmp)
+    }
+
+    /// Read the raw YAML `tags:` list straight out of a claimed instance's
+    /// frontmatter — deliberately bypassing `get_task`/`GraphNode.tags`,
+    /// which (by design, out of scope here) also unions in inline body
+    /// hashtags. The acceptance criteria for aops_ad8d9e07 are about what
+    /// `claim_task` *writes* to frontmatter, not what a later read renders.
+    fn raw_frontmatter_tags(path: &std::path::Path) -> Vec<String> {
+        let content = std::fs::read_to_string(path).unwrap();
+        let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+        let parsed = matter.parse(&content);
+        let fm: serde_json::Value = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+        // Deliberately NOT `parse_string_array` here: an unquoted bare-integer
+        // YAML scalar (`  - 1847`, which is exactly what an unfixed
+        // `claim_template_instance` writes for a scraped `#1847` reference)
+        // round-trips as a YAML *integer*, not a string, and
+        // `parse_string_array`'s `.as_str()` filter silently drops it —
+        // which would hide the exact defect this test exists to catch.
+        // Render every scalar (string or number) to its string form instead,
+        // so this test sees what a human opening the file would see.
+        match fm.get("tags").and_then(|v| v.as_array()) {
+            Some(arr) => arr
+                .iter()
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    fn latest_instance_file(tasks_dir: &std::path::Path) -> std::path::PathBuf {
+        let mut files: Vec<_> = std::fs::read_dir(tasks_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.starts_with("daily-") && name != "daily-template.md"
+            })
+            .map(|e| e.path())
+            .collect();
+        files.sort();
+        files.pop().expect("at least one instance file must exist")
+    }
+
+    /// aops_ad8d9e07 AC2: no bare-integer tag appears on a node instantiated
+    /// from a template whose own frontmatter tags contain none — even though
+    /// the template body is full of `#NNNN` GitHub references.
+    #[test]
+    fn claim_task_does_not_scrape_body_hashtag_references_into_frontmatter_tags() {
+        let (server, tmp) = setup_with_template_containing_body_hashtags();
+
+        server
+            .handle_claim_task(&serde_json::json!({ "id": "daily-template" }))
+            .expect("claim_task should succeed");
+
+        let tasks_dir = tmp.path().join("tasks");
+        let instance_path = latest_instance_file(&tasks_dir);
+        let tags = raw_frontmatter_tags(&instance_path);
+
+        assert_eq!(
+            tags,
+            vec!["daily".to_string(), "recurring".to_string()],
+            "instance frontmatter tags must match the template's own frontmatter \
+             tags exactly, with no bare-integer tags scraped from body #NNNN \
+             references; got: {tags:?}"
+        );
+        for tag in &tags {
+            assert!(
+                tag.parse::<u64>().is_err(),
+                "no frontmatter tag should be a bare integer (GitHub issue \
+                 reference leakage); got: {tag}"
+            );
+        }
+    }
+
+    /// aops_ad8d9e07 AC1: instantiating the same template twice in a row
+    /// yields identical frontmatter tags. Before the fix, the tag set varied
+    /// run to run because it was scraped from the body via a HashSet with
+    /// nondeterministic iteration order and no guarantee of content stability.
+    #[test]
+    fn claim_task_twice_yields_identical_frontmatter_tags() {
+        let (server, tmp) = setup_with_template_containing_body_hashtags();
+        let tasks_dir = tmp.path().join("tasks");
+
+        server
+            .handle_claim_task(&serde_json::json!({ "id": "daily-template" }))
+            .expect("first claim_task should succeed");
+        // Force a distinct filesystem timestamp so the second instance gets
+        // a different filename and both are visible on disk simultaneously.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        server
+            .handle_claim_task(&serde_json::json!({ "id": "daily-template" }))
+            .expect("second claim_task should succeed");
+
+        let mut files: Vec<_> = std::fs::read_dir(&tasks_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.starts_with("daily-") && name != "daily-template.md"
+            })
+            .map(|e| e.path())
+            .collect();
+        files.sort();
+        assert_eq!(files.len(), 2, "two distinct instances expected");
+
+        let tags_1 = raw_frontmatter_tags(&files[0]);
+        let tags_2 = raw_frontmatter_tags(&files[1]);
+        assert_eq!(
+            tags_1, tags_2,
+            "two instantiations of the same template must yield identical \
+             frontmatter tags"
+        );
+    }
+
     #[test]
     fn claim_task_rejects_non_template() {
         let (server, _tmp) = setup_with_template();
@@ -986,4 +1166,3 @@ project: aops
         assert_eq!(s7["write_state"]["save_in_flight"], false);
     }
 }
-
