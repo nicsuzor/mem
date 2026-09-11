@@ -1305,14 +1305,6 @@ impl PkbSearchServer {
             });
         }
 
-        // task_1381381c: agents must not originate intent bands via decompose_task.
-        if let Some(bad) = subtasks.iter().find(|st| st.get("intent").is_some() || st.get("priority").is_some()) {
-            let title = bad.get("title").and_then(|v| v.as_str()).unwrap_or("<untitled>");
-            return Err(Self::reject_agent_intent(&format!(
-                "decompose_task (subtask '{title}')"
-            )));
-        }
-
         let (project_prefix, parent_project) = {
             let graph = self.graph.read();
             match graph.resolve(parent_id) {

@@ -1836,11 +1836,6 @@ impl PkbSearchServer {
             updates.insert("parent".to_string(), serde_json::Value::Null);
         }
 
-        // task_1381381c: agents must not originate intent bands via update_task.
-        if updates.contains_key("intent") || updates.contains_key("priority") {
-            return Err(Self::reject_agent_intent("update_task"));
-        }
-
         // Reject unknown update fields instead of silently writing them into
         // frontmatter (mirrors the `create_task` guard below). Without this,
         // a caller's typo'd or invented field name — e.g. `body_append`,
