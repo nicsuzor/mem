@@ -521,6 +521,32 @@ fn test_refresh_graph_closes_disk_gap_and_reports_unparseable_files() {
     );
 }
 
+fn list_tasks_tag_ids(server: &PkbSearchServer, tag: &str) -> Vec<String> {
+    let result = server
+        .handle_list_tasks(&json!({"tags": [tag], "format": "json"}))
+        .unwrap();
+    // `handle_list_tasks` renders a plain-text "no results" message instead
+    // of `{"tasks": [], ...}` JSON when the filtered set is empty — only
+    // parse as JSON when there's a non-empty result set to inspect.
+    let text: String = result
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+        .collect();
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(json) => json
+            .get("tasks")
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// aops_mem_tag_integrity AC2: removing a tag from a file and calling
 /// `refresh_graph` must drop that node from the tag's `list_tasks` result
 /// set — the tag index (`GraphNode.tags`, read fresh from disk by
@@ -552,20 +578,10 @@ fn test_refresh_graph_drops_removed_tag_from_list_tasks() {
     );
 
     // Sanity: the tag is present before removal.
-    let before = server
-        .handle_list_tasks(&json!({"tags": ["onlytag"], "format": "json"}))
-        .unwrap();
-    let before_json = task_json(&before);
-    let before_ids: Vec<String> = before_json
-        .get("tasks")
-        .and_then(|t| t.as_array())
-        .unwrap()
-        .iter()
-        .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
-        .collect();
+    let before_ids = list_tasks_tag_ids(&server, "onlytag");
     assert!(
         before_ids.contains(&"task-tagged".to_string()),
-        "sanity: task-tagged must be found by its own tag before removal: {before_json}"
+        "sanity: task-tagged must be found by its own tag before removal: {before_ids:?}"
     );
 
     // Remove the tag directly on disk (simulating an external edit/cleanup)
@@ -577,33 +593,96 @@ fn test_refresh_graph_drops_removed_tag_from_list_tasks() {
     .unwrap();
     server.handle_refresh_graph(&json!({})).unwrap();
 
-    let after = server
-        .handle_list_tasks(&json!({"tags": ["onlytag"], "format": "json"}))
-        .unwrap();
-    // `handle_list_tasks` renders a plain-text "no results" message instead
-    // of `{"tasks": [], ...}` JSON when the filtered set is empty — which is
-    // exactly the (correct) outcome expected here. Only parse as JSON when
-    // there's a non-empty result set to inspect.
-    let after_text: String = after
-        .content
-        .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
-        .collect();
-    let after_ids: Vec<String> = match serde_json::from_str::<serde_json::Value>(&after_text) {
-        Ok(after_json) => after_json
-            .get("tasks")
-            .and_then(|t| t.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
+    let after_ids = list_tasks_tag_ids(&server, "onlytag");
     assert!(
         !after_ids.contains(&"task-tagged".to_string()),
         "task-tagged must NOT be returned by list_tasks(tags=[onlytag]) after \
-         the tag was removed on disk and refresh_graph was called: {after_text}"
+         the tag was removed on disk and refresh_graph was called: {after_ids:?}"
+    );
+}
+
+/// task_af93030b: the single-shot version above (`refresh_graph` with no
+/// concurrent activity) cannot fail on the actual defect mechanism this
+/// mechanism (`full_rebuild_epoch`) exists to close — a Tier-2 background
+/// rebuild computed from a *pre-removal* snapshot swapping in after
+/// `refresh_graph`'s fresher disk-truth swap and silently reintroducing the
+/// removed tag (the "two `refresh_graph` calls did not clear it" symptom,
+/// aops_17c86b89). This variant interleaves a slow Tier-2 rebuild — snapshot
+/// taken while the tag is still present — with the tag removal + explicit
+/// `refresh_graph`, then asserts the *served* `list_tasks` view stays clean
+/// once Tier-2 has fully settled. Without the epoch guard (or with the
+/// TOCTOU gap task_af93030b fixes), Tier-2's stale swap can land after
+/// `refresh_graph`'s and reintroduce "onlytag" into the served list.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_refresh_graph_drops_removed_tag_from_list_tasks_under_concurrent_tier2_rebuild() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    write_test_polecat_yaml(root);
+
+    let task_path = root.join("tasks/task-tagged.md");
+    std::fs::write(
+        &task_path,
+        "---\nid: task-tagged\ntitle: Tagged Task\ntype: task\nstatus: ready\nproject: proj-test\ntags:\n  - onlytag\n---\n\nBody.\n",
+    )
+    .unwrap();
+
+    let graph = GraphStore::build_from_directory(root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let server = Arc::new(PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        root.join("db"),
+        Arc::new(RwLock::new(graph)),
+    ));
+
+    let before_ids = list_tasks_tag_ids(&server, "onlytag");
+    assert!(
+        before_ids.contains(&"task-tagged".to_string()),
+        "sanity: task-tagged must be found by its own tag before removal: {before_ids:?}"
+    );
+
+    // Kick off a slow Tier-2 rebuild. It snapshots `nodes_cloned()` NOW —
+    // with "onlytag" present — then sleeps for 300ms before its swap.
+    server.set_tier2_sleep_ms(300);
+    server.schedule_graph_rebuild();
+
+    // While Tier-2 sleeps, remove the tag on disk and force a full rebuild
+    // via the explicit refresh_graph path — disk truth the in-flight Tier-2
+    // snapshot has no way to know about.
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    std::fs::write(
+        &task_path,
+        "---\nid: task-tagged\ntitle: Tagged Task\ntype: task\nstatus: ready\nproject: proj-test\ntags: []\n---\n\nBody.\n",
+    )
+    .unwrap();
+    server.handle_refresh_graph(&json!({})).unwrap();
+
+    // refresh_graph's own swap must be visible through list_tasks immediately.
+    let just_after_refresh_ids = list_tasks_tag_ids(&server, "onlytag");
+    assert!(
+        !just_after_refresh_ids.contains(&"task-tagged".to_string()),
+        "refresh_graph's own swap must drop the removed tag from list_tasks \
+         immediately: {just_after_refresh_ids:?}"
+    );
+
+    // Wait for the in-flight (and any coalesced follow-up) Tier-2 rebuild to
+    // fully drain.
+    for _ in 0..50 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        if !server.graph_rebuild_pending() {
+            break;
+        }
+    }
+
+    let settled_ids = list_tasks_tag_ids(&server, "onlytag");
+    assert!(
+        !settled_ids.contains(&"task-tagged".to_string()),
+        "a stale Tier-2 rebuild snapshotted before the tag removal must not \
+         resurface 'onlytag' in list_tasks once it settles, after \
+         refresh_graph already swapped in the fresher disk-truth state: \
+         {settled_ids:?}"
     );
 }

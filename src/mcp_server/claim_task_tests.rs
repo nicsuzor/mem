@@ -304,9 +304,22 @@ tags:
     }
 
     /// aops_ad8d9e07 AC1: instantiating the same template twice in a row
-    /// yields identical frontmatter tags. Before the fix, the tag set varied
-    /// run to run because it was scraped from the body via a HashSet with
-    /// nondeterministic iteration order and no guarantee of content stability.
+    /// yields frontmatter tags that exactly match the template's own tags —
+    /// on both instances, independently. Before the fix, tags were scraped
+    /// from the body via a HashSet with nondeterministic iteration order and
+    /// no guarantee of content stability, so runs could carry different
+    /// numbers of bare-integer tags (the reported symptom was 6/4/6/14 tags
+    /// varying *across separate daily CLI invocations*, i.e. separate
+    /// processes).
+    ///
+    /// This does NOT assert `tags_1 == tags_2`: within a single test
+    /// process, two `claim_task` calls hit the same `HashSet` hasher state
+    /// (siphash keys are seeded once per process), so a body-hashtag-scraped
+    /// tag set comes out in the same order both times even on unfixed code —
+    /// that equality check cannot fail here regardless of the defect. The
+    /// discriminating assertion is on content: each instance's tags must
+    /// match the template's own tags exactly, with no bare-integer tags
+    /// scraped from the `#1847`/`#1849`/`#1850` body references.
     #[test]
     fn claim_task_twice_yields_identical_frontmatter_tags() {
         let (server, tmp) = setup_with_template_containing_body_hashtags();
@@ -334,13 +347,23 @@ tags:
         files.sort();
         assert_eq!(files.len(), 2, "two distinct instances expected");
 
-        let tags_1 = raw_frontmatter_tags(&files[0]);
-        let tags_2 = raw_frontmatter_tags(&files[1]);
-        assert_eq!(
-            tags_1, tags_2,
-            "two instantiations of the same template must yield identical \
-             frontmatter tags"
-        );
+        let expected = vec!["daily".to_string(), "recurring".to_string()];
+        for (i, file) in files.iter().enumerate() {
+            let tags = raw_frontmatter_tags(file);
+            assert_eq!(
+                tags, expected,
+                "instance {i} frontmatter tags must match the template's own \
+                 tags exactly, with no bare-integer tags scraped from body \
+                 #NNNN references; got: {tags:?}"
+            );
+            for tag in &tags {
+                assert!(
+                    tag.parse::<u64>().is_err(),
+                    "instance {i}: no frontmatter tag should be a bare integer \
+                     (GitHub issue reference leakage); got: {tag}"
+                );
+            }
+        }
     }
 
     #[test]

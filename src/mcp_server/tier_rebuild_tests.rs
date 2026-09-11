@@ -532,5 +532,110 @@ mod tier_rebuild_tests {
             "fast path patch must survive Tier-1 full rebuild swap"
         );
     }
+
+    /// task_af93030b: the `full_rebuild_epoch` bump must be atomic with the
+    /// graph swap it protects — i.e. it must happen under the same write-lock
+    /// critical section, not after the lock is released. If the bump happens
+    /// after `drop(g)`, a window opens where a concurrent Tier-2 rebuild can
+    /// acquire the write lock, observe the *pre-bump* (stale) epoch value,
+    /// and swap in its own stale snapshot — silently reverting a fresher
+    /// Tier-1 disk-scan rebuild that just landed.
+    ///
+    /// This test makes that window deterministically observable (instead of
+    /// relying on a nanosecond-scale race) via `pre_epoch_bump_delay_ms`,
+    /// which injects a sleep immediately before the epoch bump in both
+    /// `rebuild_graph` (Tier-1) and the Tier-2 swap. On correct (lock-atomic)
+    /// code, that delay runs *inside* the write lock, so a concurrent Tier-2
+    /// attempting to acquire the lock simply blocks for the delay's duration
+    /// and only proceeds once the bump has already landed — it then sees the
+    /// new epoch, detects staleness, and aborts instead of clobbering.
+    ///
+    /// If the bump were moved back outside the lock (reintroducing the
+    /// pre-fix TOCTOU gap), Tier-2 would instead acquire the now-free lock
+    /// *during* the delay, see the still-stale epoch, and swap its stale
+    /// snapshot over Tier-1's fresh one — flipping the final assertion below
+    /// from V2 back to V1.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier1_epoch_bump_is_atomic_with_swap_under_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        let file_path = root.join("tasks/task-race.md");
+        std::fs::write(
+            &file_path,
+            "---\nid: task-race\ntitle: V1\ntype: task\nstatus: ready\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let doc = crate::pkb::parse_file(&file_path).unwrap();
+        let graph = GraphStore::build(&[doc], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = Arc::new(PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db"),
+            Arc::new(RwLock::new(graph)),
+        ));
+
+        // Tier-2 pauses briefly after computing its (stale, V1-based)
+        // snapshot, before attempting to acquire the write lock for its swap.
+        server.set_tier2_sleep_ms(100);
+        // Tier-1 holds the write lock for a long delay right before bumping
+        // the epoch, giving Tier-2's write-lock attempt a wide window to
+        // land while Tier-1's critical section is still open.
+        server.set_pre_epoch_bump_delay_ms(400);
+
+        // Kick off Tier-2 first: it snapshots epoch=0 and nodes with V1,
+        // then sleeps for 100ms before trying to swap.
+        server.schedule_graph_rebuild();
+
+        // Give Tier-2 time to complete its read phase (epoch + nodes
+        // snapshot) before Tier-1 starts, then run Tier-1's disk-scanning
+        // rebuild synchronously on a blocking thread: writes V2 to disk and
+        // calls rebuild_graph(), which will hold the write lock across its
+        // 400ms pre-bump delay starting well before Tier-2's ~100ms mark.
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+        let server_for_tier1 = server.clone();
+        let file_path_for_tier1 = file_path.clone();
+        let tier1 = tokio::task::spawn_blocking(move || {
+            std::fs::write(
+                &file_path_for_tier1,
+                "---\nid: task-race\ntitle: V2\ntype: task\nstatus: ready\n---\n\nBody.\n",
+            )
+            .unwrap();
+            server_for_tier1.rebuild_graph();
+        });
+        tier1.await.unwrap();
+
+        // Tier-1's own swap must be visible immediately on return.
+        {
+            let g = server.graph.read();
+            let node = g.get_node("task-race").expect("node must still exist");
+            assert_eq!(node.label, "V2", "Tier-1's own swap must be visible immediately");
+        }
+
+        // Wait for Tier-2 (and any coalesced follow-up it queues after
+        // detecting staleness) to fully drain.
+        for _ in 0..100 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if !server.graph_rebuild_pending() {
+                break;
+            }
+        }
+
+        let g = server.graph.read();
+        let node = g
+            .get_node("task-race")
+            .expect("task-race should still exist after Tier-2 settles");
+        assert_eq!(
+            node.label, "V2",
+            "a Tier-2 rebuild snapshotted before Tier-1's disk-scan swap must not \
+             clobber it after the fact just because it acquired the write lock \
+             before observing the bumped epoch — the bump must be atomic with \
+             the swap"
+        );
+    }
 }
 
