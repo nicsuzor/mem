@@ -520,3 +520,90 @@ fn test_refresh_graph_closes_disk_gap_and_reports_unparseable_files() {
         "list_tasks must not warn after refresh_graph: {list_text}"
     );
 }
+
+/// aops_mem_tag_integrity AC2: removing a tag from a file and calling
+/// `refresh_graph` must drop that node from the tag's `list_tasks` result
+/// set — the tag index (`GraphNode.tags`, read fresh from disk by
+/// `refresh_graph`'s full rebuild) must not retain a tag the file no longer
+/// carries.
+#[test]
+fn test_refresh_graph_drops_removed_tag_from_list_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    write_test_polecat_yaml(root);
+
+    let task_path = root.join("tasks/task-tagged.md");
+    std::fs::write(
+        &task_path,
+        "---\nid: task-tagged\ntitle: Tagged Task\ntype: task\nstatus: ready\nproject: proj-test\ntags:\n  - onlytag\n---\n\nBody.\n",
+    )
+    .unwrap();
+
+    let graph = GraphStore::build_from_directory(root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        root.join("db"),
+        Arc::new(RwLock::new(graph)),
+    );
+
+    // Sanity: the tag is present before removal.
+    let before = server
+        .handle_list_tasks(&json!({"tags": ["onlytag"], "format": "json"}))
+        .unwrap();
+    let before_json = task_json(&before);
+    let before_ids: Vec<String> = before_json
+        .get("tasks")
+        .and_then(|t| t.as_array())
+        .unwrap()
+        .iter()
+        .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    assert!(
+        before_ids.contains(&"task-tagged".to_string()),
+        "sanity: task-tagged must be found by its own tag before removal: {before_json}"
+    );
+
+    // Remove the tag directly on disk (simulating an external edit/cleanup)
+    // and force a full rebuild via the explicit `refresh_graph` escape hatch.
+    std::fs::write(
+        &task_path,
+        "---\nid: task-tagged\ntitle: Tagged Task\ntype: task\nstatus: ready\nproject: proj-test\ntags: []\n---\n\nBody.\n",
+    )
+    .unwrap();
+    server.handle_refresh_graph(&json!({})).unwrap();
+
+    let after = server
+        .handle_list_tasks(&json!({"tags": ["onlytag"], "format": "json"}))
+        .unwrap();
+    // `handle_list_tasks` renders a plain-text "no results" message instead
+    // of `{"tasks": [], ...}` JSON when the filtered set is empty — which is
+    // exactly the (correct) outcome expected here. Only parse as JSON when
+    // there's a non-empty result set to inspect.
+    let after_text: String = after
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+        .collect();
+    let after_ids: Vec<String> = match serde_json::from_str::<serde_json::Value>(&after_text) {
+        Ok(after_json) => after_json
+            .get("tasks")
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    assert!(
+        !after_ids.contains(&"task-tagged".to_string()),
+        "task-tagged must NOT be returned by list_tasks(tags=[onlytag]) after \
+         the tag was removed on disk and refresh_graph was called: {after_text}"
+    );
+}

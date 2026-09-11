@@ -315,6 +315,85 @@ mod tier_rebuild_tests {
         );
     }
 
+    /// aops_mem_tag_integrity: a slow Tier-2 background rebuild whose
+    /// `nodes_cloned()` snapshot predates a tag removal must not clobber the
+    /// fresher state an explicit `refresh_graph` (full disk rescan) swaps in
+    /// while Tier-2 is still computing. Without the `full_rebuild_epoch`
+    /// guard, Tier-2's swap — built from the stale pre-removal snapshot —
+    /// lands after `refresh_graph`'s swap and silently reintroduces the
+    /// removed tag, matching the "two refresh_graph calls did not clear it"
+    /// symptom on this task.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_stale_swap_does_not_revert_refresh_graph_tag_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        let file_path = root.join("tasks/task-tagged.md");
+        std::fs::write(
+            &file_path,
+            "---\nid: task-tagged\ntitle: Tagged\ntype: task\nstatus: ready\ntags:\n  - onlytag\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let doc = crate::pkb::parse_file(&file_path).unwrap();
+        let graph = GraphStore::build(&[doc], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = Arc::new(PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db"),
+            Arc::new(RwLock::new(graph)),
+        ));
+        server.set_tier2_sleep_ms(300);
+
+        // Kick off a Tier-2 rebuild. It snapshots `nodes_cloned()` NOW — with
+        // "onlytag" present — then sleeps for 300ms before its swap.
+        server.schedule_graph_rebuild();
+
+        // While Tier-2 sleeps, remove the tag on disk and force a full
+        // rebuild via the explicit refresh_graph path — disk truth the
+        // in-flight Tier-2 snapshot has no way to know about.
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        std::fs::write(
+            &file_path,
+            "---\nid: task-tagged\ntitle: Tagged\ntype: task\nstatus: ready\ntags: []\n---\n\nBody.\n",
+        )
+        .unwrap();
+        server.handle_refresh_graph(&json!({})).unwrap();
+
+        // refresh_graph's own swap must reflect the removal immediately.
+        {
+            let g = server.graph.read();
+            let node = g.get_node("task-tagged").expect("node must still exist");
+            assert!(
+                !node.tags.iter().any(|t| t == "onlytag"),
+                "refresh_graph's own swap must drop the removed tag immediately"
+            );
+        }
+
+        // Wait for the in-flight (and any coalesced follow-up) Tier-2
+        // rebuild to fully drain.
+        for _ in 0..50 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if !server.graph_rebuild_pending() {
+                break;
+            }
+        }
+
+        let g = server.graph.read();
+        let node = g
+            .get_node("task-tagged")
+            .expect("task-tagged should still exist after Tier-2 settles");
+        assert!(
+            !node.tags.iter().any(|t| t == "onlytag"),
+            "a stale Tier-2 rebuild snapshotted before the tag removal must \
+             not revert refresh_graph's fresher disk-truth state once it \
+             swaps in"
+        );
+    }
+
     /// Concurrent Tier-1 rebuilds must not lose nodes. Two threads each
     /// inserting a new node simultaneously used to race on the
     /// `nodes_cloned()` snapshot: the later-finishing thread's snapshot
