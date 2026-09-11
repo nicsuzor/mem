@@ -467,7 +467,7 @@ impl GraphStore {
         compute_downstream_metrics(&mut nodes);
         tracing::debug!(target: "perf::graph_rebuild", phase = "downstream_metrics", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
-        // 7b. Compute effective_intent (min intent in downstream cone)
+        // 7b. Compute effective_intent (gated blocker + ancestor-pressure channels; mem_intent_ready_weight)
         let _t = std::time::Instant::now();
         compute_effective_intent(&mut nodes);
         compute_blocking_urgency(&mut nodes);
@@ -1790,7 +1790,14 @@ impl GraphStore {
         today: chrono::NaiveDate,
     ) -> (crate::graph::DeadlineBand, i64) {
         let intent_val = node.intent.unwrap_or(4);
-        let intent_pressure: i64 = match intent_val {
+        // intent_pressure bands the gated, propagated `effective_intent`
+        // (mem_intent_ready_weight), not the raw stated `intent` — this is
+        // what lets a high-intent parent's pressure move a ready
+        // descendant's cost_of_delay, not just its tie-break order.
+        // `has_real_stakes` below deliberately keeps reading the raw
+        // `intent_val` (Nic's own curated field), never the propagated one.
+        let effective_intent_val = node.effective_intent.unwrap_or(intent_val);
+        let intent_pressure: i64 = match effective_intent_val {
             0 => 10000,
             1 => 5000,
             _ => 0,
@@ -3269,10 +3276,80 @@ fn compute_downstream_metrics(nodes: &mut [GraphNode]) {
     }
 }
 
-/// Compute effective_intent for each node: min(own intent, min intent in downstream cone).
+/// Per-node "is this node itself effectively blocked" gate, shared by
+/// `compute_effective_intent` (mem_intent_ready_weight).
 ///
-/// Downstream cone = BFS through blocks, soft_blocks, children edges (skipping completed nodes).
-/// A P2 blocker of a P0 child gets effective_intent=0.
+/// Mirrors `classify_tasks`'s blocked predicate (specs/ranking.md §8.2) --
+/// unmet hard `depends_on`, explicit `status: blocked`, or transitively
+/// blocked downstream of one via `blocks` -- but evaluated over every node
+/// rather than only `ACTIONABLE_TYPES`/`CLAIMABLE_TYPES`: a non-task node
+/// (an epic, a target) can equally be blocked and must equally be gated out
+/// of both intent channels below.
+fn compute_effectively_blocked(
+    nodes: &[GraphNode],
+    id_to_idx: &HashMap<String, usize>,
+) -> Vec<bool> {
+    let completed: HashSet<&str> = graph::COMPLETED_STATUSES.iter().copied().collect();
+    let completed_ids: HashSet<String> = nodes
+        .iter()
+        .filter(|n| {
+            n.status
+                .as_deref()
+                .map(|s| completed.contains(s))
+                .unwrap_or(false)
+        })
+        .map(|n| n.id.to_lowercase())
+        .collect();
+
+    let mut blocked = vec![false; nodes.len()];
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+
+    for (i, n) in nodes.iter().enumerate() {
+        let has_unmet = n
+            .depends_on
+            .iter()
+            .any(|d| !completed_ids.contains(&d.to_lowercase()));
+        let explicit = n.status.as_deref() == Some("blocked");
+        if has_unmet || explicit {
+            blocked[i] = true;
+            queue.push_back(i);
+        }
+    }
+
+    while let Some(i) = queue.pop_front() {
+        for bid in &nodes[i].blocks {
+            if let Some(&j) = id_to_idx.get(bid) {
+                if !blocked[j] {
+                    blocked[j] = true;
+                    queue.push_back(j);
+                }
+            }
+        }
+    }
+
+    blocked
+}
+
+/// Compute `effective_intent` for each node via two independently gated
+/// channels (mem_intent_ready_weight; see `kb_pauli_prioritisation_doctrine`
+/// §6, "`effective_intent` -- blocker and parent pressure, kept apart and
+/// gated"):
+///
+///   - **Blocker channel.** A node inherits the lowest (most urgent) intent
+///     found in what it transitively blocks, via `blocks`, `soft_blocks`,
+///     and `contributes_to` (skipping completed nodes). `children` is
+///     deliberately excluded here -- a parent no longer absorbs a child's
+///     urgency this way; an epic's importance already has a purpose-built
+///     signal in `downstream_weight`/`value_lineage`.
+///   - **Ancestor-pressure channel.** A node inherits the lowest intent
+///     found among its ancestors, walking `parent` to the root.
+///
+/// Both channels are gated on the node's OWN blocked status
+/// (`compute_effectively_blocked`): a node that is itself effectively
+/// blocked receives neither channel -- its `effective_intent` is just its
+/// own stated `intent`. A blocked task can't be worked on next, so crediting
+/// it with a blocker's or a parent's pressure would rank it alongside
+/// actionable work without helping identify what to do next.
 fn compute_effective_intent(nodes: &mut [GraphNode]) {
     let excluded: HashSet<&str> = graph::COMPLETED_STATUSES.iter().copied().collect();
 
@@ -3282,6 +3359,8 @@ fn compute_effective_intent(nodes: &mut [GraphNode]) {
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
+    // Blocker-channel adjacency: `blocks`, `soft_blocks`, `contributes_to`.
+    // `children` is deliberately NOT included (mem_intent_ready_weight).
     let adj: Vec<Vec<usize>> = nodes
         .iter()
         .map(|n| {
@@ -3293,11 +3372,6 @@ fn compute_effective_intent(nodes: &mut [GraphNode]) {
             }
             for sbid in &n.soft_blocks {
                 if let Some(&idx) = id_to_idx.get(sbid) {
-                    neighbors.push(idx);
-                }
-            }
-            for cid in &n.children {
-                if let Some(&idx) = id_to_idx.get(cid) {
                     neighbors.push(idx);
                 }
             }
@@ -3324,13 +3398,24 @@ fn compute_effective_intent(nodes: &mut [GraphNode]) {
         })
         .collect();
 
+    let is_blocked = compute_effectively_blocked(nodes, &id_to_idx);
+
     let num_nodes = nodes.len();
     let mut visited = vec![false; num_nodes];
     let mut stack = Vec::new();
 
     for start_idx in 0..num_nodes {
+        if is_blocked[start_idx] {
+            // Gated: neither channel applies. effective_intent is the
+            // node's own stated intent, full stop.
+            nodes[start_idx].effective_intent = Some(intents[start_idx]);
+            continue;
+        }
+
         let mut min_intent = intents[start_idx];
 
+        // Blocker channel: DFS over blocks/soft_blocks/contributes_to,
+        // skipping completed nodes.
         visited.fill(false);
         visited[start_idx] = true;
         stack.clear();
@@ -3348,6 +3433,29 @@ fn compute_effective_intent(nodes: &mut [GraphNode]) {
             for &neighbor_idx in &adj[tid] {
                 dfs_push_if_active(neighbor_idx, &status_completed, &mut visited, &mut stack);
             }
+        }
+
+        // Ancestor-pressure channel: walk `parent` to the root, taking the
+        // lowest intent found among ancestors (own intent already seeded
+        // above).
+        let mut current = nodes[start_idx].parent.clone();
+        let mut climbed: HashSet<usize> = HashSet::new();
+        let mut depth = 0usize;
+        while let Some(pid) = current {
+            if depth >= MAX_CONE_DEPTH {
+                break;
+            }
+            let Some(&pidx) = id_to_idx.get(&pid) else {
+                break;
+            };
+            if !climbed.insert(pidx) {
+                break; // cycle guard
+            }
+            if intents[pidx] < min_intent {
+                min_intent = intents[pidx];
+            }
+            current = nodes[pidx].parent.clone();
+            depth += 1;
         }
 
         nodes[start_idx].effective_intent = Some(min_intent);
@@ -5008,14 +5116,17 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_intent_epic_inherits_from_child() {
+    fn test_effective_intent_parent_no_longer_inherits_from_child() {
+        // mem_intent_ready_weight: `children` was removed from the blocker
+        // channel -- a parent no longer absorbs a child's urgency this way.
+        // epic-p0 (P2) is parent of p0-task (P0); prior to this change the
+        // epic's effective_intent would have been pulled down to 0.
         let graph = build_priority_test_graph();
-        // epic-p0 (P2) is parent of p0-task (P0) → epic's effective_intent should be 0
         let epic = graph.resolve("epic-p0").expect("epic-p0 not found");
         assert_eq!(
             epic.effective_intent,
-            Some(0),
-            "epic should inherit P0 from its child p0-task"
+            Some(2),
+            "epic must keep its own intent -- it no longer inherits from its child"
         );
     }
 
@@ -5035,6 +5146,191 @@ mod tests {
         let graph = build_priority_test_graph();
         let p0 = graph.resolve("p0-task").expect("p0-task not found");
         assert_eq!(p0.effective_intent, Some(0));
+    }
+
+    /// Build a graph to test the ancestor-pressure channel and the
+    /// blocked-gate (mem_intent_ready_weight):
+    ///   epic-hi (P0) / epic-lo (P3) -- two parents, otherwise identical.
+    ///   ready-of-hi   (own P3, parent epic-hi, unblocked)
+    ///   ready-of-lo   (own P3, parent epic-lo, unblocked)
+    ///   blocked-of-hi (own P3, parent epic-hi, blocked by an unmet hard dep)
+    ///   blocked-blocker-of-hi (own P3, parent epic-hi, blocked by an unmet
+    ///     hard dep, and itself blocks p0-target (P0) via p0-target's
+    ///     depends_on)
+    ///   unmet-dep (P3, standalone, active -- never completed)
+    ///   p0-target (P0, standalone)
+    fn build_intent_channels_test_graph() -> GraphStore {
+        let make_with_intent = |path: &str,
+                                title: &str,
+                                id: &str,
+                                intent: i32,
+                                status: &str,
+                                parent: Option<&str>,
+                                depends_on: &[&str]|
+         -> PkbDocument {
+            let mut fm = serde_json::Map::new();
+            fm.insert("title".to_string(), serde_json::json!(title));
+            fm.insert("type".to_string(), serde_json::json!("task"));
+            fm.insert("status".to_string(), serde_json::json!(status));
+            fm.insert("id".to_string(), serde_json::json!(id));
+            fm.insert("intent".to_string(), serde_json::json!(intent));
+            if let Some(p) = parent {
+                fm.insert("parent".to_string(), serde_json::json!(p));
+            }
+            if !depends_on.is_empty() {
+                fm.insert("depends_on".to_string(), serde_json::json!(depends_on));
+            }
+            PkbDocument {
+                path: std::path::PathBuf::from(path),
+                title: title.to_string(),
+                body: String::new(),
+                doc_type: Some("task".to_string()),
+                status: Some(status.to_string()),
+                consolidated: None,
+                consolidated_at: None,
+                modified: None,
+                tags: vec![],
+                frontmatter: Some(serde_json::Value::Object(fm)),
+                content_hash: "test".to_string(),
+                file_hash: "test".to_string(),
+            }
+        };
+
+        let docs = vec![
+            make_with_intent("tasks/epic-hi.md", "Epic Hi", "epic-hi", 0, "active", None, &[]),
+            make_with_intent("tasks/epic-lo.md", "Epic Lo", "epic-lo", 3, "active", None, &[]),
+            make_with_intent(
+                "tasks/ready-of-hi.md",
+                "Ready Of Hi",
+                "ready-of-hi",
+                3,
+                "active",
+                Some("epic-hi"),
+                &[],
+            ),
+            make_with_intent(
+                "tasks/ready-of-lo.md",
+                "Ready Of Lo",
+                "ready-of-lo",
+                3,
+                "active",
+                Some("epic-lo"),
+                &[],
+            ),
+            make_with_intent(
+                "tasks/unmet-dep.md",
+                "Unmet Dep",
+                "unmet-dep",
+                3,
+                "active",
+                None,
+                &[],
+            ),
+            make_with_intent(
+                "tasks/blocked-of-hi.md",
+                "Blocked Of Hi",
+                "blocked-of-hi",
+                3,
+                "active",
+                Some("epic-hi"),
+                &["unmet-dep"],
+            ),
+            make_with_intent(
+                "tasks/p0-target.md",
+                "P0 Target",
+                "p0-target",
+                0,
+                "active",
+                None,
+                &["blocked-blocker-of-hi"],
+            ),
+            make_with_intent(
+                "tasks/blocked-blocker-of-hi.md",
+                "Blocked Blocker Of Hi",
+                "blocked-blocker-of-hi",
+                3,
+                "active",
+                Some("epic-hi"),
+                &["unmet-dep"],
+            ),
+        ];
+        GraphStore::build(&docs, std::path::Path::new("/tmp/test-intent-channels-pkb"))
+    }
+
+    #[test]
+    fn test_effective_intent_ready_child_inherits_ancestor_pressure() {
+        // Ancestor-pressure channel: an unblocked child of a P0 parent
+        // inherits that pressure.
+        let graph = build_intent_channels_test_graph();
+        let ready_of_hi = graph.resolve("ready-of-hi").expect("ready-of-hi not found");
+        assert_eq!(
+            ready_of_hi.effective_intent,
+            Some(0),
+            "unblocked child should inherit P0 pressure from its parent"
+        );
+    }
+
+    #[test]
+    fn test_effective_intent_blocked_child_does_not_inherit_p0_parent() {
+        // Acceptance criterion: a blocked child of a P0 parent does not
+        // inherit P0 pressure.
+        let graph = build_intent_channels_test_graph();
+        let blocked_of_hi = graph
+            .resolve("blocked-of-hi")
+            .expect("blocked-of-hi not found");
+        assert_eq!(
+            blocked_of_hi.effective_intent,
+            Some(3),
+            "a blocked child must keep its own intent, never its parent's pressure"
+        );
+    }
+
+    #[test]
+    fn test_effective_intent_blocked_node_gains_no_weight_from_either_channel() {
+        // Acceptance criterion: a node that is itself blocked gains no
+        // weight from either its parent's intent (P0 epic-hi) or the nodes
+        // it blocks (P0 p0-target) -- both channels are gated off.
+        let graph = build_intent_channels_test_graph();
+        let node = graph
+            .resolve("blocked-blocker-of-hi")
+            .expect("blocked-blocker-of-hi not found");
+        assert_eq!(
+            node.effective_intent,
+            Some(3),
+            "a blocked node must keep its own intent regardless of parent pressure or what it blocks"
+        );
+    }
+
+    #[test]
+    fn test_ready_child_of_p0_parent_outranks_ready_child_of_p3_parent() {
+        // Acceptance criterion: a ready child of a P0 parent outranks an
+        // otherwise identical ready child of a P3 parent.
+        let graph = build_intent_channels_test_graph();
+        let ready_of_hi = graph.resolve("ready-of-hi").expect("ready-of-hi not found");
+        let ready_of_lo = graph.resolve("ready-of-lo").expect("ready-of-lo not found");
+
+        let tuple_hi = ready_of_hi
+            .focus_tuple
+            .as_ref()
+            .expect("ready-of-hi should have a focus_tuple");
+        let tuple_lo = ready_of_lo
+            .focus_tuple
+            .as_ref()
+            .expect("ready-of-lo should have a focus_tuple");
+
+        assert!(
+            tuple_hi.cost_of_delay > tuple_lo.cost_of_delay,
+            "cost_of_delay should be higher for the child of the P0 parent \
+             (intent_pressure driven by effective_intent): {} vs {}",
+            tuple_hi.cost_of_delay,
+            tuple_lo.cost_of_delay
+        );
+
+        assert_eq!(
+            GraphStore::focus_cmp(ready_of_hi, ready_of_lo),
+            std::cmp::Ordering::Less,
+            "ready-of-hi should sort ahead of (outrank) ready-of-lo"
+        );
     }
 
     // ── resolve ──

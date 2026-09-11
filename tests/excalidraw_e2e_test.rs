@@ -1850,10 +1850,14 @@ fn test_real_export_encoding_registry_conformance() {
     assert!(raw_text_p2.contains("[READY · P2]"));
     assert!(raw_text_p2.contains("2h"), "Effort badge must be present");
 
-    // 4. P4 Task with focus_score >= 1000: Bumped from S (200px) to M (240px), deep green (#a3d3a3), now chip, START marker
+    // 4. P4 Task, child of a P2 epic, with focus_score >= 1000: mem_intent_ready_weight's
+    // ancestor-pressure channel means task-p4's effective_intent is the parent
+    // epic's P2, not its own stated P4 (it is unblocked, so the channel applies) --
+    // base tier is therefore already M (240px), and the focus_score >= 1000 bump
+    // takes it one tier further, to L (300px), deep green (#a3d3a3), now chip, START marker.
     let card_p4 = find_card("task-p4");
     assert_eq!(card_p4.id, "task-p4", "Element ID must equal node ID");
-    assert_eq!(card_p4.width, CARD_WIDTH_M, "P4 with focus_score >= 1000 must be bumped to Tier M (240px)");
+    assert_eq!(card_p4.width, CARD_WIDTH_L, "P4 child of a P2 epic with focus_score >= 1000 must be bumped to Tier L (300px)");
     assert_eq!(card_p4.background_color, "#a3d3a3", "In-progress fill must be deep green #a3d3a3");
     let text_p4 = find_text("task-p4");
     let raw_text_p4 = text_p4.text.as_deref().unwrap();
