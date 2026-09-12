@@ -1930,18 +1930,19 @@ impl GraphStore {
         }
 
         let mut stakeholder_waiting: i64 = 0;
-        // Stakeholder waiting urgency & Human gate urgency: someone external is waiting
-        // on this task, or a structurally-identified human gate is awaiting decision/review.
-        // Base +2000 (someone is waiting / human decision required), growing +200/day, capped at +8000 total.
+        // Stakeholder waiting urgency: a named person is waiting on this task.
+        // Base +2000 (someone is waiting), growing +200/day, capped at +8000 total.
         //
-        // The per-day growth is the *lateness* signal. When a hard `due` already
-        // fired the deadline ramp, that lateness is counted there — so we suppress
-        // the per-day growth and keep only the +2000 base, avoiding the additive
-        // double-count of one "late to an external party" fact (mem-830588f3). The
-        // ramp's distinct job is the "I promised, but there's no formal deadline"
-        // case, which has no `due` and so keeps its full time-growth.
-        let is_waiting_or_human_gate = node.stakeholder.is_some() || node.is_human_gate();
-        if is_waiting_or_human_gate {
+        // Ruling (Nic, 2026-09-11, mem_537e44a9 "Verdict: stakeholder_waiting /
+        // human gate"): this clock fires only when `stakeholder` is actually
+        // set — never merely because `is_human_gate()` is true. A bare
+        // `decision`-tagged node (or any `status: review` node) with no named
+        // stakeholder has nobody waiting on it, so it earns no waiting clock.
+        // `is_human_gate()` continues to serve the courtesy-decay gate only
+        // (`has_real_stakes`, above) and `focus_picks` surfacing — never this
+        // accrual.
+        let is_waiting = node.stakeholder.is_some();
+        if is_waiting {
             if deadline_ramp_fired {
                 // Deadline ramp already counts lateness; keep only the base.
                 stakeholder_waiting = 2000;
@@ -6493,6 +6494,51 @@ mod tests {
         assert_eq!(sc, 10600, "deadline ramp alone (13d overdue)");
     }
 
+    /// Ruling (Nic, 2026-09-11, mem_537e44a9 "Verdict: stakeholder_waiting /
+    /// human gate"): the stakeholder-waiting clock fires only when
+    /// `stakeholder` is actually named. A bare `status: review` node (which
+    /// makes `is_human_gate()` true) with no stakeholder has nobody waiting
+    /// on it and must contribute zero `stakeholder_waiting`; a node with a
+    /// stakeholder set is unchanged.
+    #[test]
+    fn test_stakeholder_waiting_fires_only_when_stakeholder_named() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        let d10_ago = (today - chrono::Duration::days(10))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        // A: `status: review` (is_human_gate() == true), NO stakeholder.
+        // Must earn NO stakeholder_waiting credit despite being a human gate.
+        let mut a = GraphNode::default();
+        a.status = Some("review".to_string());
+        a.waiting_since = Some(d10_ago.clone());
+
+        // B: same waiting_since, but WITH a named stakeholder. Must still
+        // ramp exactly as before: 2000 + min(10*200, 6000) = 4000.
+        let mut b = GraphNode::default();
+        b.status = Some("review".to_string());
+        b.stakeholder = Some("nic".to_string());
+        b.waiting_since = Some(d10_ago);
+
+        let mut nodes = vec![a, b];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        let sa = nodes[0].focus_score.unwrap();
+        let sb = nodes[1].focus_score.unwrap();
+
+        assert_eq!(
+            sa, 0,
+            "status:review with no stakeholder must contribute zero stakeholder_waiting, got {sa}"
+        );
+        assert_eq!(
+            sb, 4000,
+            "named stakeholder still ramps 2000 + 10d*200 = 4000, got {sb}"
+        );
+    }
+
     /// mem-830588f3 binding proof (calibration target, epic aops-496a64ee).
     /// Re-scores the live over-ranked node and a sibling under the FIXED formula,
     /// using the exact scoring inputs pulled from the PKB MCP on 2026-06-10.
@@ -6597,10 +6643,16 @@ mod tests {
         );
     }
 
-    /// Task aops_fd5283aa: A structurally-identified human gate (awaiting human decision /
-    /// review / sign-off) must score in the waiting-urgency band (2000-8000) without
-    /// requiring hand-written `stakeholder` or other prohibited fields.
-    /// Ordinary tasks created by working agents must not earn this waiting bonus.
+    /// Task aops_fd5283aa, superseded by ruling (Nic, 2026-09-11,
+    /// mem_537e44a9 "Verdict: stakeholder_waiting / human gate"): a
+    /// structurally-identified human gate (awaiting human decision / review
+    /// / sign-off) with NO named `stakeholder` earns no waiting-urgency
+    /// bonus — nobody is actually waiting on it. Only a real `stakeholder`
+    /// field triggers the 2000-8000 band; `is_human_gate()` alone no longer
+    /// does (it still gates the courtesy-decay mechanism and `focus_picks`
+    /// surfacing, both unaffected here). Ordinary tasks created by working
+    /// agents must likewise not earn this bonus, so both groups now land in
+    /// the same place — pure age-staleness.
     #[test]
     fn test_human_gate_ranking_and_anti_gaming() {
         use crate::graph::GraphNode;
@@ -6695,18 +6747,21 @@ mod tests {
             "reference node with stakeholder: Nic scores 4814"
         );
 
-        // AC1: Structurally identified human gates score in the same 4814 band WITHOUT hand-written stakeholder
+        // AC1 (superseded): structurally-identified human gates WITHOUT a named
+        // stakeholder now score only age staleness (14) — the same as an
+        // ordinary task. `is_human_gate()` alone no longer earns the waiting
+        // band; a real `stakeholder` is required (compare score_3d6 above).
         assert_eq!(
-            score_72b, 4814,
-            "task_72b7886e must score 4814 (was 14 before fix)"
+            score_72b, 14,
+            "task_72b7886e (human gate, no stakeholder) must score only staleness (14)"
         );
         assert_eq!(
-            score_21d, 4814,
-            "task_21d3ece0 must score 4814 (was 14 before fix)"
+            score_21d, 14,
+            "task_21d3ece0 (human gate, no stakeholder) must score only staleness (14)"
         );
         assert_eq!(
-            score_ee2, 4814,
-            "aops_ee205f8f must score 4814 (was 14 before fix)"
+            score_ee2, 14,
+            "aops_ee205f8f (human gate, no stakeholder) must score only staleness (14)"
         );
 
         // AC2: Normal task created by working agent earns only age staleness (14 points), cannot game waiting urgency
@@ -6757,11 +6812,13 @@ mod tests {
             picks.contains(&"claimable-work-1".to_string()),
             "ready task must appear in focus_picks"
         );
-        // Human gate with 2000+ base score ranks higher than ordinary ready task with 0 score
-        assert_eq!(
-            picks[0], "human-gate-1",
-            "human gate with 2000+ score must rank above default P4 ready task"
-        );
+        // Ordering (superseded, mem_537e44a9 "Verdict: stakeholder_waiting /
+        // human gate"): this human gate carries no `stakeholder`, so it no
+        // longer earns an elevated waiting-urgency score purely from
+        // `is_human_gate()` — both nodes score 0 and neither outranks the
+        // other on that basis. `is_human_gate()` still drives *presence* in
+        // focus_picks and *exclusion* from ready_tasks() (AC3/AC4 below),
+        // which is what this test otherwise verifies.
 
         // AC4: ready_tasks() must strictly exclude the review-status human gate (staying non-claimable by polecats)
         let ready_ids: Vec<&str> = graph.ready_tasks().iter().map(|n| n.id.as_str()).collect();
