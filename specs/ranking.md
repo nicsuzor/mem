@@ -415,7 +415,7 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Consumers**: `compute_focus_scores` (`tie_breakers.unlock_breadth_x10` — a tie-breaker, **not** `cost_of_delay`; see the note at the end of §3), `get_task` / `list_tasks` signals.
 
 ### 4.11. `value_lineage` — Phase 2
-- **Code reference**: `compute_value_lineage`, `src/graph_store.rs:4001`.
+- **Code reference**: `compute_value_lineage`, `src/graph_store.rs:4035`.
 - **Definition**: Standing weight elicited on **any** target/goal node that carries one, flowing multiplicatively to a contributor via `contributes_to`. This is the mechanism the doctrine in §7 and the parent plan's "Nic prices the destinations; the system prices the routes" require.
 - **Formula**:
   $$\text{value\_lineage}(x) = K_{\text{VL}} \times \text{confidence}(x) \times \sum_{ct \,\in\, x.\text{contributes\_to}} ct.\text{numeric\_weight}() \times \text{standing\_weight}(ct.\text{target})$$
