@@ -113,24 +113,20 @@ Term 10, `value_lineage_term`, is the fix for the failure terms 5/11 cannot be: 
 - **Zeroing conditions**: `priority >= 2` or unset.
 - **Consumers**: `compute_focus_scores`.
 
-### 2.2. Severity Bonus (`severity_bonus`)
-- **Code reference**: `src/graph_store.rs:1710–1716`
-- **Formula**:
-  ```rust
-  let sev = node.severity.unwrap_or(0);
-  score += match sev {
-      4 => 100000,
-      3 => 20000,
-      2 => 10000,
-      1 => 5000,
-      _ => 0,
-  };
-  ```
-- **Theoretical Range**: `0` to `100,000`.
-- **Observed Range**: `0` on standard work tasks; `10,000`–`100,000` on targets or tasks carrying explicit severity.
-- **Default (absent input)**: `0`.
-- **Zeroing conditions**: `severity` is `0` or unset.
-- **Consumers**: `compute_focus_scores`.
+### 2.2. Severity Bonus (`severity_bonus`) — does not exist; see `severity_gate`
+No additive `severity_bonus` term exists anywhere in the engine, and none
+has since `severity_gate` replaced it (§1, tuple element 1). Severity never
+contributes points to `cost_of_delay`; it only ever (a) gates a node into
+the `Catastrophic` band via `severity_gate` (SEV4 + `goal_type: committed`
+only — a binary admission, never a magnitude), or (b) reaches
+`cost_of_delay` indirectly through `urgency_term` (§2.7), where a target's
+`S_lex` propagates to contributors via `contributes_to`/`blocks`/
+`soft_blocks` (§4.3) — never through `children`, and never landing on a
+container (§4.3, "conduit pass"). The table row above ("Replaced by
+`severity_gate` (no double-count)") is the complete, current story; any
+text elsewhere describing a `severity_bonus` formula with SEV-keyed point
+values (`100,000`/`20,000`/`10,000`/`5,000`) describes a mechanism that
+predates this spec and was never restored.
 
 ### 2.3. Deadline Urgency Ramp (`deadline_score`)
 - **Code reference**: `src/graph_store.rs:1717–1753`
@@ -208,10 +204,11 @@ Without this term, an overdue `due` date is a **permanent, unconditional overrid
 - **Zeroing conditions**: Empty downstream cone or all descendants completed.
 - **Consumers**: `compute_focus_scores`.
 
-### 2.6. Stakeholder & Human-Gate Waiting Urgency (`stakeholder_waiting_bonus`)
-- **Code reference**: `src/graph_store.rs:1767–1798`
+### 2.6. Stakeholder Waiting Urgency (`stakeholder_waiting_bonus`)
+- **Code reference**: `src/graph_store.rs:1932–1965` (`compute_cost_of_delay`).
+- **Ruling (Nic, 2026-09-11, `mem_537e44a9` "Verdict: stakeholder_waiting / human gate"):** this term fires **only when a `stakeholder` is actually named** — never merely because `node.is_human_gate()` is true. A bare `decision`-tagged node, or any node satisfying `is_human_gate()` (`status: review`, or tags `decision`/`sign-off`/`signoff`/`one-way-door`/`human-approval`), with no named stakeholder has nobody waiting on it and earns no waiting clock. `is_human_gate()` continues to gate the courtesy-decay mechanism (§2.3a's `has_real_stakes`) and `focus_picks`/`pkb focus` surfacing (both structurally distinct from this accrual) — it no longer independently triggers this term.
 - **Formula**:
-  Applies when `node.stakeholder.is_some()` or `node.is_human_gate()`:
+  Applies when `node.stakeholder.is_some()`:
   - If `deadline_ramp_fired` is `true`:
     $$\text{score} += 2000 \quad \text{(base only, suppressing per-day lateness growth to prevent double-counting)}$$
   - Else (`deadline_ramp_fired` is `false`):
@@ -221,7 +218,7 @@ Without this term, an overdue `due` date is a **permanent, unconditional overrid
 - **Theoretical Range**: `0`, or `2000` to `8000`.
 - **Observed Range**: `0` (unset) or `2000`–`8000`.
 - **Default (absent input)**: `0`.
-- **Zeroing conditions**: `stakeholder` field is absent (`None`) and `node.is_human_gate()` is `false`.
+- **Zeroing conditions**: `stakeholder` field is absent (`None`) — `node.is_human_gate()` is irrelevant to this term.
 - **Consumers**: `compute_focus_scores`.
 
 ### 2.7. Urgency Term (`urgency_term`)
@@ -251,10 +248,10 @@ Without this term, an overdue `due` date is a **permanent, unconditional overrid
 
 ### 2.9. Value Lineage Term (`value_lineage_term`) — Phase 2
 - **Code reference**: `compute_value_lineage`, `src/graph_store.rs`; folded into `cost_of_delay` in `compute_cost_of_delay`.
-- **Formula**: $\text{term} = \text{round}(\text{node.value\_lineage})$ as `i64`. See §4.11 for how `node.value_lineage` itself is computed.
+- **Formula**: $\text{term} = \text{round}(\text{node.value\_lineage})$ as `i64`. See §4.11 for how `node.value_lineage` itself is computed, including the conduit pass that routes a container's value down to its nearest ready, unblocked leaf (Nic, 2026-09-12, `mem_537e44a9` "Verdict: value flow to children").
 - **Theoretical Range**: `0` to `10,000` (a Critical/1.00 standing weight × a Certain/1.00 edge × full/1.0 confidence).
-- **Observed Range**: `0` for every node as of this phase landing — no target has been priced yet (`pkb-standing-weight-elicitation-instrument` §"Current state"). Elicited standing weights are not a prerequisite for this mechanism to exist; they are a prerequisite for it to produce a nonzero number on the live PKB.
-- **Default (absent input)**: `0` — a contributor with no `contributes_to` edge to a priced committed target, or a target with no `standing_weight` elicited, contributes nothing. No inference, no default weight (Zero Defaults / Zero Inference).
+- **Observed Range**: `0` for nodes with no priced target in their lineage. `[[targ_4e2cc92a]]` is priced (`standing_weight: 0.60`, `goal_type: null`) as of 2026-09-12 — the first live nonzero source, and proof that pricing is not gated on `goal_type` (§4.11).
+- **Default (absent input)**: `0` — a node with no `contributes_to` edge to a priced target anywhere in its own edges or its ancestor chain, or a target with no `standing_weight` elicited, contributes nothing. No inference, no default weight (Zero Defaults / Zero Inference).
 - **Consumers**: `compute_focus_scores`.
 
 ---
@@ -265,17 +262,22 @@ The eight additive terms carry widely disparate theoretical caps versus realised
 
 | Term | Theoretical Range | Observed Range (Typical) |
 | --- | --- | --- |
-| `severity_bonus` | 0 – 100,000 | 0 – 100,000 |
 | `deadline_score` | 0 – 12,000 | 0 – 12,000 |
 | `priority_base` | 0 – 10,000 | 0 – 10,000 |
 | `urgency_term` | 0 – 10,000 | 0 – 10,000 |
-| `value_lineage_term` | 0 – 10,000 | 0 (unpriced — §2.9) |
+| `value_lineage_term` | 0 – 10,000 | 0 – 6,000 (`[[targ_4e2cc92a]]`, priced 0.60 — §2.9) |
 | `stakeholder_waiting` | 0 – 8,000 | 0 – 8,000 |
 | `voi_term` | 0 – 5,000 | 0 – ~1,500 |
 | `age_staleness_bonus` | 0 – 200 | 0 – 200 |
 | `downstream_weight × 10` (tie-breaker) | 0 – $\infty$ | 0 – ~500 |
 | `unlock_breadth × 10` (tie-breaker) | 0 – $\infty$ | not yet measured on the live PKB |
-| **`focus_score` Composite** | **0 – ~155,200** | **0 – ~11,000+** |
+| **`focus_score` Composite** | **0 – ~55,200** | **0 – ~11,000+** |
+
+No `severity_bonus` row exists: the additive severity bonus this table
+once carried was replaced by `severity_gate` (§1, §2.2) — a binary
+admission to the `Catastrophic` band, never an additive point value — so
+it is excluded from this sum. `severity` still reaches `cost_of_delay`
+indirectly through `urgency_term`.
 
 ---
 
@@ -312,22 +314,24 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Consumers**: `top_n_by_metric`, `get_network_metrics`, signals in `get_task` and `list_tasks`, overwhelm dashboard (`focusBreakdown.ts`, `prepareGraphData.ts`).
 
 ### 4.3. `urgency` and Urgency Propagation
-- **Code reference**: `src/graph_store.rs:3074–3222`
+- **Code reference**: `compute_urgency`, `src/graph_store.rs:3691`.
 - **Formula**:
   $$\\text{urgency}(x) = S_{\\text{lex}}(x) \\times f(\\text{Slack}(x))$$
   - Base Severity Score $S_{\\text{lex}}$:
     - If `severity == 4` and `goal_type == "committed"`: $S_{\\text{lex}} = 10000.0$ (lexicographic override).
     - Else: $S_{\\text{lex}} = 10^{\\min(\\text{severity}, 3)}$ (e.g. SEV0 $\\to 1$, SEV1 $\\to 10$, SEV2 $\\to 100$, SEV3 $\\to 1000$).
-  - Slack Calculation: $\\text{slack}(x) = (\\text{due} - \\text{today}).\\text{num\\_days}() - \\text{effort\\_days}$. Default unconstrained slack is $100.0$ days.
+  - Slack Calculation: $\\text{slack}(x) = (\\text{due} - \\text{today}).\\text{num\\_days}() - \\text{effort\\_days}$. `effort_days` is the node's own parsed `effort` field, default `3` days. Default unconstrained slack (no reachable `due`) is $100.0$ days.
   - Urgency Propagation: Urgency propagates backward from blocked tasks to blockers **by relaxation** (Phase 2; previously a single-pass BFS — see 4.3a) over paths up to depth 20:
     - `blocks`: factor $1.0$
     - `soft_blocks`: factor $0.3$
-    - `children` (parent $\\to$ child): factor $0.5$
     - `contributes_to`: verbal weight anchor ($0.00$ to $1.00$)
+    - `children` is **not** a propagation edge (ruling, Nic, 2026-09-12, `mem_537e44a9` "Verdict: value flow to children"; superseded the prior `0.5`-factor parent-inherits-from-children edge, which was the wrong direction — "a child is what advances the parent, so it carries the parent's pressure," not the reverse). See the conduit pass below for how a container's urgency instead reaches its leaves.
     Propagated values: $\\text{propagated\\_s\\_lex}(x) = \\max(S_{\\text{lex}}(x), \\max_{\\text{paths}} S_{\\text{lex}}(t) \\times \\text{path\\_factor})$, and $\\text{min\\_slack}(x) = \\min(\\text{slack}(x), \\min_{t} \\text{slack}(t))$.
-  - Piecewise-Exponential Slack Function $f(\\text{Slack})$ ($\\text{SAFE\\_HORIZON} = 30.0$, $k = \\frac{\\ln(10)}{30.0}$):
-    $$f(\\text{slack}) = \\begin{cases} 0.001 & \\text{if } \\text{slack} > 30.0 \\\\ e^{k(30.0 - \\text{slack})} & \\text{if } 0.0 < \\text{slack} \\le 30.0 \\\\ 10.0 & \\text{if } \\text{slack} \\le 0.0 \\end{cases}$$
-  - Guard: If committed SEV4 and $\\text{slack} \\le 0.0$, urgency is clamped to exactly $10000.0$.
+  - Slack Function $f(\\text{Slack})$ ($\\text{SAFE\\_HORIZON} = 30.0$, $k = \\frac{\\ln(10)}{30.0}$) — a single continuous exponential for all positive slack, **not** a step at `slack = 30`:
+    $$f(\\text{slack}) = \\begin{cases} e^{k(30.0 - \\text{slack})}.\\max(0.001) & \\text{if } \\text{slack} > 0.0 \\\\ 10.0 & \\text{if } \\text{slack} \\le 0.0 \\end{cases}$$
+    The `.max(0.001)` floor is reached only asymptotically — at `slack = 120` days, not `slack = 30`. A node at `slack = 30` still scores `f(30) = 1.0`; the curve keeps decaying smoothly past that point (e.g. `f(100) ≈ 0.0046`) until the floor binds around `slack = 120`.
+  - Guard: If committed SEV4 and $\\text{slack} \\le 0.0$, urgency is clamped to exactly $10000.0$ — **and so is any contributor whose strongest propagation path originates from such a target** (ruling, Nic, 2026-09-12, `mem_537e44a9` "SEV4 overdue pin reaches contributors"): the pin was previously applied only to the target's own node, letting a contributor on, say, an Expected (`0.75`) edge score `10000 × 0.75 × 10 = 75000` uncapped. Contributors now compete among themselves at the same `10000` band instead.
+  - **Conduit pass** (outcome 5, ruling as above, "Verdict: value flow to children"): after the relaxation above, any node with children (`!node.children.is_empty()`) does not keep its own computed `urgency` — it is zeroed. That value is instead pushed down, via one walk up the `parent` chain per leaf (mirroring `compute_effective_intent`'s ancestor-pressure channel, §"`effective_intent`" below), to the nearest ready, unblocked leaf descendant, which inherits the maximum of its own urgency and every ancestor's (pre-conduit) urgency. A blocked or completed leaf is itself a conduit and inherits nothing from this pass — it keeps only whatever it computed on its own account. "A target's weight lands on the ready, unblocked leaves that advance it — never on the container, never on anything itself blocked" (Nic, verbatim).
   - Completed nodes have $\\text{urgency} = 0.0$.
 - **Theoretical Range**: $0.0$ to $10,000.0$.
 - **Consumers**: `compute_focus_scores`, `focus_picks`, `get_task` / `list_tasks` signals.
@@ -404,15 +408,15 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Consumers**: `compute_focus_scores` (`tie_breakers.unlock_breadth_x10` — a tie-breaker, **not** `cost_of_delay`; see the note at the end of §3), `get_task` / `list_tasks` signals.
 
 ### 4.11. `value_lineage` — Phase 2
-- **Code reference**: `compute_value_lineage`, `src/graph_store.rs`.
-- **Definition**: Standing weight elicited on a committed target/goal node, flowing multiplicatively to this node via its own `contributes_to` edges. This is the mechanism the doctrine in §7 and the parent plan's "Nic prices the destinations; the system prices the routes" require.
+- **Code reference**: `compute_value_lineage`, `src/graph_store.rs:4001`.
+- **Definition**: Standing weight elicited on **any** target/goal node that carries one, flowing multiplicatively to a contributor via `contributes_to`. This is the mechanism the doctrine in §7 and the parent plan's "Nic prices the destinations; the system prices the routes" require.
 - **Formula**:
-  $$\text{value\_lineage}(x) = K_{\text{VL}} \times \text{confidence}(x) \times \sum_{\substack{ct \,\in\, x.\text{contributes\_to} \\ \text{goal\_type}(ct.\text{target}) = \text{committed}}} ct.\text{numeric\_weight}() \times \text{standing\_weight}(ct.\text{target})$$
-  where $K_{\text{VL}} = 10{,}000$ (§2.9), $\text{confidence}(x)$ defaults to $1.0$ when unset (mirrors `compute_uncertainty`'s existing "missing confidence, no open question ⇒ certain" default — a default on the *contributor's* stated confidence, never on the target's `standing_weight`, which is strictly `None`-means-zero), and a target contributes nothing to the sum unless it both carries `goal_type: committed` and has a priced `standing_weight` (`pkb-standing-weight-elicitation-instrument` §1 scope guard; "Zero Defaults / Zero Inference").
-- **One hop only**: this walks a node's own `contributes_to` edges directly. It does not chain transitively through a contributor's own further `contributes_to` edges — a contributor of a contributor of a priced target is not credited unless it also has its own direct edge to a priced target. This keeps the computation a local per-node scan, not a new cone-walk mechanism ("no fourth graph computation").
+  $$\text{value\_lineage}(x) = K_{\text{VL}} \times \text{confidence}(x) \times \sum_{ct \,\in\, x.\text{contributes\_to}} ct.\text{numeric\_weight}() \times \text{standing\_weight}(ct.\text{target})$$
+  where $K_{\text{VL}} = 10{,}000$ (§2.9), $\text{confidence}(x)$ defaults to $1.0$ when unset (mirrors `compute_uncertainty`'s existing "missing confidence, no open question ⇒ certain" default — a default on the *contributor's* stated confidence, never on the target's `standing_weight`, which is strictly `None`-means-zero), and a target contributes nothing to the sum unless it has a priced `standing_weight` (`pkb-standing-weight-elicitation-instrument` §1; "Zero Defaults / Zero Inference"). **`goal_type` is not part of this gate** (ruling, Nic, 2026-09-12, `mem_537e44a9` "Verdict: goal_type gating"), verbatim: "price should operate even when targets have null category. we shouldn't encourage that state, but while it's legal, we shouldn't always count [i.e. discount] targets that exist." The prior formula filtered the sum to `goal_type(ct.target) == committed`; that filter is gone. `goal_type: committed` remains load-bearing only at the three SEV4 lexicographic-override sites (`severity_gate`, the `S_lex` base in §4.3, and the overdue-pin guard in §4.3) — those have a recorded rationale ("prevents moonshots from hijacking the focus queue," `specs/multi-parent.md` §1.3) that never applied to ordinary pricing.
+- **One hop from the target, then down to the nearest ready leaf**: the pricing walk itself is one hop — it reads a node's own `contributes_to` edges directly and does not chain transitively through a contributor's own further edges (a contributor of a contributor of a priced target earns nothing unless it also has its own direct edge). But the edge-holder does not necessarily keep the resulting value: if it is a container (`!node.children.is_empty()`), the value is zeroed on the container and instead pushed down — one walk up the `parent` chain per leaf, same shape as `compute_effective_intent`'s ancestor-pressure channel — to its nearest ready, unblocked leaf descendant (ruling, Nic, 2026-09-12, `mem_537e44a9` "Verdict: value flow to children": "A target's weight lands on the ready, unblocked leaves that advance it — never on the container, never on anything itself blocked"). A blocked or completed leaf is itself a conduit and inherits nothing from this pass. This replaces the prior strict one-hop-and-stop reading (`ranking.md:412`, pre-2026-09-12) and is still a local per-node scan, not a new whole-graph cone-walk mechanism ("no fourth graph computation").
 - **Sibling-contributor combination semantics (settled)**: independent and additive. Multiple nodes contributing to the same target are each scored off their own edge alone — nothing reduces a contributor's credit because other contributors also point at the same target. This is a deliberate rejection of a Birnbaum-style reliability combination (cut sets, structure functions) across sibling edges, consistent with the parent plan's "Explicitly not building: Birnbaum importance proper" and §7's existing disclaimer that the verbal scale computes no such thing. See §7 for the corrected gloss this setting fixes.
 - **Theoretical Range**: `0` to `10,000` per contributing edge (§2.9); a node with edges to multiple priced targets sums across them.
-- **Observed Range**: `0` for every node as of this phase landing — no target has been priced yet.
+- **Observed Range**: `0` for nodes with no priced target in their lineage. `[[targ_4e2cc92a]]` is priced (`standing_weight: 0.60`, `goal_type: null`) as of 2026-09-12, the first live nonzero source.
 - **Consumers**: `compute_focus_scores` (`cost_of_delay`, §2.9 — **not** a tie-breaker; this is the term that must be able to move a ranking), `get_task` / `list_tasks` signals.
 
 ---
@@ -435,12 +439,7 @@ This doctrine is grounded in four structural realities:
 
 Three different severity mappings historically coexisted across specifications. The shipped reality is:
 
-1. **`severity_bonus` in `compute_focus_scores`**:
-   - `SEV4` = `100,000` (lexicographic bonus)
-   - `SEV3` = `20,000`
-   - `SEV2` = `10,000`
-   - `SEV1` = `5,000`
-   - `SEV0` / unset = `0`
+1. **`severity_gate` in `compute_focus_scores`** — a binary admission to the `Catastrophic` band, not an additive bonus (§1, §2.2): `Catastrophic` iff `severity >= 4 && goal_type == "committed"`, else `Normal`. No `severity_bonus` term (`100,000`/`20,000`/`10,000`/`5,000` by SEV level) exists in code; that mapping was retired when the additive accumulator was replaced by the lexicographic tuple and was never restored.
 2. **Urgency Base $S_{\\text{lex}}$ in `compute_urgency`**:
    - `SEV4` + `goal_type: committed` = `10,000.0`
    - `SEV0`–`SEV3` = $10^{\\min(\\text{sev}, 3)}$ (`1`, `10`, `100`, `1000`)
