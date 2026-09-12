@@ -3890,18 +3890,22 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
 /// phase (the diagnosed failure this phase exists to fix).
 const K_VALUE_LINEAGE: f64 = 10000.0;
 
-/// Value lineage (outcome 4): standing weight elicited on a committed
-/// target/goal node flows multiplicatively to its direct `contributes_to`
-/// contributors — `contribution size (edge stated_weight) × confidence
-/// discount × target standing_weight`, scaled by [`K_VALUE_LINEAGE`].
+/// Value lineage (outcome 4): standing weight elicited on ANY target/goal
+/// node that carries one flows multiplicatively to its direct
+/// `contributes_to` contributors — `contribution size (edge stated_weight)
+/// × confidence discount × target standing_weight`, scaled by
+/// [`K_VALUE_LINEAGE`]. Pricing is not gated on `goal_type` (ruling, Nic,
+/// 2026-09-12, mem_537e44a9 "Verdict: goal_type gating": "price should
+/// operate even when targets have null category"); an unpriced target
+/// (`standing_weight: None`) still contributes nothing, so this is Zero
+/// Defaults / Zero Inference, not a relaxed default.
 ///
 /// **One hop only.** This walks each node's own `contributes_to` edges
 /// directly; it does not chain transitively through a contributor's own
-/// further `contributes_to` edges. Standing weight is priced on committed
-/// targets specifically (the elicitation instrument's scope guard); a
-/// contributor of a contributor of a priced target is not itself credited
-/// unless it also has a direct edge to a priced target. This keeps the
-/// computation a local per-node scan rather than a new cone-walk mechanism.
+/// further `contributes_to` edges. A contributor of a contributor of a
+/// priced target is not itself credited unless it also has a direct edge to
+/// a priced target. This keeps the computation a local per-node scan rather
+/// than a new cone-walk mechanism.
 ///
 /// **Sibling-contributor semantics (outcome 6):** independent and additive.
 /// Multiple nodes contributing to the same target are each scored off their
@@ -3922,14 +3926,21 @@ const K_VALUE_LINEAGE: f64 = 10000.0;
 /// standing weight, which stays strictly `None`-means-zero (Zero Defaults /
 /// Zero Inference, pkb-standing-weight-elicitation-instrument §1).
 fn compute_value_lineage(nodes: &mut [GraphNode]) {
-    // Only committed targets/goals are eligible to be priced (elicitation
-    // instrument §1 scope guard) — a standing_weight parsed on a
-    // non-committed goal_type is ignored here (defense in depth; nothing
-    // upstream currently writes it there, but this keeps the doctrine true
-    // even if it does).
+    // Any target/goal carrying a priced `standing_weight` is eligible,
+    // regardless of `goal_type` — null included. Ruling (Nic, 2026-09-12,
+    // mem_537e44a9 "Verdict: goal_type gating"), verbatim: "price should
+    // operate even when targets have null category. we shouldn't encourage
+    // that state, but while it's legal, we shouldn't always count [i.e.
+    // discount] targets that exist." The `committed` gate stays only on the
+    // three SEV4 lexicographic-override sites (`severity_gate`, `S_lex`
+    // base in `compute_urgency`, and the overdue clamp above) — those have
+    // a recorded rationale ("prevents moonshots from hijacking the focus
+    // queue", specs/multi-parent.md §1.3); value_lineage pricing itself
+    // never had one, and an unpriced target already contributes nothing
+    // (Zero Defaults / Zero Inference) so this only unlocks targets Nic has
+    // actually elicited a price for.
     let standing_weights: HashMap<&str, f64> = nodes
         .iter()
-        .filter(|n| n.goal_type.as_deref() == Some("committed"))
         .filter_map(|n| n.standing_weight.map(|w| (n.id.as_str(), w)))
         .collect();
 
@@ -7745,6 +7756,38 @@ mod tests {
             std::cmp::Ordering::Less,
             "c-high (contributes to the heavier-weighted target) must outrank c-low despite \
              otherwise identical fields"
+        );
+    }
+
+    /// Ruling (Nic, 2026-09-12, mem_537e44a9 "Verdict: goal_type gating"):
+    /// value_lineage prices any target carrying a `standing_weight`,
+    /// `goal_type` null included — the `committed` gate stays only on the
+    /// three SEV4 lexicographic-override sites, not on ordinary pricing.
+    #[test]
+    fn test_value_lineage_prices_null_goal_type_target() {
+        let t_null = GraphNode {
+            id: "t-null-goal-type".to_string(),
+            status: Some("ready".to_string()),
+            goal_type: None,
+            standing_weight: Some(0.60),
+            ..Default::default()
+        };
+        let c = GraphNode {
+            id: "c".to_string(),
+            status: Some("ready".to_string()),
+            confidence: Some(1.0),
+            contributes_to: vec![ct_edge("t-null-goal-type", "Certain")],
+            ..Default::default()
+        };
+
+        let mut nodes = vec![t_null, c];
+        compute_value_lineage(&mut nodes);
+
+        let vl = nodes.iter().find(|n| n.id == "c").unwrap().value_lineage;
+        assert!(
+            (vl - 6000.0).abs() < 1e-6,
+            "a priced target with null goal_type must still price its contributors \
+             (1.0 Certain x 1.0 confidence x 0.60 standing_weight x 10000 = 6000), got {vl}"
         );
     }
 
