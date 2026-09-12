@@ -103,13 +103,16 @@ pub fn parse_canvas(json_str: &str) -> Result<CanvasModel> {
     let file: ExcalidrawFile =
         serde_json::from_str(json_str).context("Failed to deserialize Excalidraw JSON")?;
 
-    validate::validate_file(&file).map_err(|fails| {
+    let warnings = validate::validate_file(&file).map_err(|fails| {
         anyhow::anyhow!(
             "canvas failed structural validation ({} issue(s)):\n{}",
             fails.len(),
             fails.join("\n")
         )
     })?;
+    for w in &warnings {
+        tracing::warn!(target: "excalidraw", "canvas validation warning (non-blocking): {w}");
+    }
 
     Ok(CanvasReader::parse_file(file))
 }

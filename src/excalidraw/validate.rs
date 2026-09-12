@@ -9,10 +9,17 @@
 //!
 //! This module is the ingestion-side gate: [`validate_raw_shape`] rejects payloads
 //! that don't look like a real Excalidraw scene at all (missing top-level
-//! `elements`/`type`), and [`validate_file`] rejects a syntactically valid
-//! [`super::schema::ExcalidrawFile`] whose elements would corrupt or fail to open
-//! in the actual Excalidraw app. Both name the offending element or field in every
-//! failure message so a caller can act on the report without re-deriving it.
+//! `elements`/`type`), and [`validate_file`] checks a syntactically valid
+//! [`super::schema::ExcalidrawFile`]'s elements. `validate_file` splits its
+//! findings in two: a blocking `Err` for violations that would corrupt or fail
+//! to open in the actual Excalidraw app (half-bound arrows, dangling bindings,
+//! duplicate ids, broken container/text pointers), and a non-fatal `Ok(warnings)`
+//! for the two classes recorded under Evidence on `task_aops_d7b96134` (stale
+//! `boundElements` backrefs, `text`/`originalText` content drift) — both
+//! documented there as things Excalidraw tolerates silently rather than refuses
+//! to open, and both already present 41 times over in the real PKB canvas. Every
+//! finding, blocking or warning, names the offending element or field so a
+//! caller can act on the report without re-deriving it.
 //!
 //! Deliberately out of scope here, both because `generate_excalidraw_scene` —
 //! this crate's own canvas generator, used by `graph_excalidraw` — does not
@@ -77,11 +84,27 @@ pub fn validate_raw_shape(json_str: &str) -> Result<(), Vec<String>> {
 /// crashing, dropping elements, or silently corrupting bindings on the next
 /// interaction (`specs/excalidraw-tooling.md` §3.3–3.5). Every failure names the
 /// offending element by id.
-pub fn validate_file(file: &super::schema::ExcalidrawFile) -> Result<(), Vec<String>> {
+///
+/// Returns `Err(fails)` for violations that Excalidraw itself refuses to open
+/// or actively corrupts on interaction (half-bound arrows, dangling bindings,
+/// duplicate ids, broken container/text pointers). Returns `Ok(warnings)` — a
+/// non-empty vec on an otherwise-valid file is not fatal — for the two classes
+/// recorded under Evidence on `task_aops_d7b96134` (stale `boundElements`
+/// backrefs, `text`/`originalText` content drift): the same investigation that
+/// found them in the real PKB canvas also established Excalidraw tolerates both
+/// silently (stale backrefs accumulate invisibly; text drift only bites on the
+/// *next* edit of that element, per `specs/excalidraw-tooling.md` §3.3's
+/// documented failure mode). Hard-rejecting on them would reject every
+/// already-existing, already-opening canvas that has accumulated this debt —
+/// the real academicops.excalidraw carries 41 such violations — which is a
+/// regression the ingestion gate must not introduce. Callers should surface
+/// warnings (e.g. via `tracing::warn!`) without blocking the write.
+pub fn validate_file(file: &super::schema::ExcalidrawFile) -> Result<Vec<String>, Vec<String>> {
     let elements: Vec<&ExcalidrawElement> =
         file.elements.iter().filter(|e| !e.is_deleted).collect();
 
     let mut fails: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
 
     // 1. Duplicate element ids — Excalidraw keys everything off id; duplicates
     //    make bindings ambiguous and the file will not open cleanly.
@@ -175,10 +198,14 @@ pub fn validate_file(file: &super::schema::ExcalidrawFile) -> Result<(), Vec<Str
             }
         }
 
-        // 5. Forward boundElements entries: target missing, or target no longer
-        //    points back (stale boundElements — the class recorded under Evidence
-        //    on task_aops_d7b96134: a container/shape lists an element that no
-        //    longer binds it at either end).
+        // 5. Forward boundElements entries: target missing (blocking — a genuine
+        //    dangling reference), or target no longer points back (stale
+        //    boundElements — the class recorded under Evidence on
+        //    task_aops_d7b96134: a container/shape lists an element that no
+        //    longer binds it at either end). The reciprocal-mismatch case is a
+        //    warning, not a blocking failure: Excalidraw tolerates it silently
+        //    (see module doc), and it is exactly the debt the real PKB canvas
+        //    has accumulated without failing to open.
         if let Some(bound) = &e.bound_elements {
             for b in bound {
                 match by_id.get(b.id.as_str()) {
@@ -201,7 +228,7 @@ pub fn validate_file(file: &super::schema::ExcalidrawFile) -> Result<(), Vec<Str
                             _ => true,
                         };
                         if !reciprocal {
-                            fails.push(format!(
+                            warnings.push(format!(
                                 "{} lists stale boundElements entry {} (type {:?}) that no longer binds back",
                                 e.id, b.id, b.element_type
                             ));
@@ -212,13 +239,15 @@ pub fn validate_file(file: &super::schema::ExcalidrawFile) -> Result<(), Vec<Str
         }
 
         // 6. Dual text synchronization (law 3.3): text and originalText must agree
-        //    on content, not just wrapping, or one layer silently overwrites the
-        //    other on the next edit.
+        //    on content, not just wrapping. Warning, not blocking: per
+        //    specs/excalidraw-tooling.md §3.3 the documented failure mode is the
+        //    editor silently overwriting `text` with `originalText` on the next
+        //    interaction with that element — lossy, but not a refusal to open.
         if let (Some(t), Some(o)) = (&e.text, &e.original_text) {
             let t_words: Vec<&str> = t.split_whitespace().collect();
             let o_words: Vec<&str> = o.split_whitespace().collect();
             if t_words != o_words {
-                fails.push(format!(
+                warnings.push(format!(
                     "{}: text and originalText disagree in content, not just wrapping",
                     e.id
                 ));
@@ -227,7 +256,7 @@ pub fn validate_file(file: &super::schema::ExcalidrawFile) -> Result<(), Vec<Str
     }
 
     if fails.is_empty() {
-        Ok(())
+        Ok(warnings)
     } else {
         Err(fails)
     }
@@ -286,10 +315,14 @@ mod tests {
     }
 
     #[test]
-    fn stale_bound_elements_backref_is_rejected() {
+    fn stale_bound_elements_backref_is_a_warning_not_a_rejection() {
         // Container claims arrow-9 as a bound element, but arrow-9's own bindings
         // don't point back at either end — exactly the class recorded under
-        // Evidence on task_aops_d7b96134.
+        // Evidence on task_aops_d7b96134. Excalidraw tolerates this silently (it
+        // accumulates invisibly rather than refusing to open), and the real PKB
+        // canvas already carries ~20 of these — so this must be a non-blocking
+        // warning, not a hard rejection, or every real canvas with this debt
+        // would be locked out of sync_excalidraw/diff_excalidraw.
         let mut file = ExcalidrawFile::default();
         let mut container = elem("c1", "rectangle");
         container.bound_elements = Some(vec![BoundElement {
@@ -325,24 +358,33 @@ mod tests {
         file.elements.push(other_b);
         file.elements.push(arrow);
 
-        let err = validate_file(&file).unwrap_err();
+        let warnings = validate_file(&file).expect(
+            "stale boundElements backref must not be a fatal error — real canvases carry this debt",
+        );
         assert!(
-            err.iter()
+            warnings
+                .iter()
                 .any(|f| f.contains("c1") && f.contains("stale") && f.contains("arrow-9")),
-            "expected stale boundElements failure naming c1/arrow-9, got: {err:?}"
+            "expected stale boundElements warning naming c1/arrow-9, got: {warnings:?}"
         );
     }
 
     #[test]
-    fn text_original_text_content_drift_is_rejected() {
+    fn text_original_text_content_drift_is_a_warning_not_a_rejection() {
+        // Per specs/excalidraw-tooling.md §3.3, the documented failure mode for
+        // this drift is the editor silently overwriting `text` with
+        // `originalText` on the *next* edit of that element — not a refusal to
+        // open. The real PKB canvas already carries ~21 of these, so this must
+        // not block ingestion wholesale.
         let mut file = ExcalidrawFile::default();
         let mut text = elem("t1", "text");
         text.text = Some("Hello there".to_string());
         text.original_text = Some("Goodbye there".to_string());
         file.elements.push(text);
 
-        let err = validate_file(&file).unwrap_err();
-        assert!(err
+        let warnings = validate_file(&file)
+            .expect("text/originalText content drift must not be a fatal error");
+        assert!(warnings
             .iter()
             .any(|f| f.contains("t1") && f.contains("originalText")));
     }
@@ -417,5 +459,61 @@ mod tests {
         file.elements.push(arrow);
 
         assert!(validate_file(&file).is_ok());
+    }
+
+    #[test]
+    fn canvas_with_only_evidence_violation_classes_is_accepted_with_warnings() {
+        // Models the real academicops.excalidraw: otherwise well-formed, but
+        // carrying both classes recorded under Evidence on task_aops_d7b96134
+        // simultaneously (stale boundElements backref + text/originalText
+        // drift). Neither class causes Excalidraw to refuse to open the file,
+        // so the canvas as a whole must validate Ok, with both surfaced as
+        // warnings — this is the regression the ingestion gate must not
+        // introduce for real, already-existing PKB canvases.
+        let mut file = ExcalidrawFile::default();
+
+        let mut container = elem("c1", "rectangle");
+        container.bound_elements = Some(vec![BoundElement {
+            id: "arrow-9".to_string(),
+            element_type: "arrow".to_string(),
+        }]);
+        let mut other_a = elem("other-a", "rectangle");
+        let mut other_b = elem("other-b", "rectangle");
+        let mut arrow = elem("arrow-9", "arrow");
+        arrow.start_binding = Some(PointBinding {
+            element_id: "other-a".to_string(),
+            focus: 0.0,
+            gap: 1.0,
+            fixed_point: None,
+        });
+        arrow.end_binding = Some(PointBinding {
+            element_id: "other-b".to_string(),
+            focus: 0.0,
+            gap: 1.0,
+            fixed_point: None,
+        });
+        other_a.bound_elements = Some(vec![BoundElement {
+            id: "arrow-9".to_string(),
+            element_type: "arrow".to_string(),
+        }]);
+        other_b.bound_elements = Some(vec![BoundElement {
+            id: "arrow-9".to_string(),
+            element_type: "arrow".to_string(),
+        }]);
+
+        let mut text = elem("t1", "text");
+        text.text = Some("Renamed label".to_string());
+        text.original_text = Some("Original label".to_string());
+
+        file.elements.push(container);
+        file.elements.push(other_a);
+        file.elements.push(other_b);
+        file.elements.push(arrow);
+        file.elements.push(text);
+
+        let warnings = validate_file(&file)
+            .expect("canvas with only pre-existing evidence-class debt must validate Ok");
+        assert!(warnings.iter().any(|f| f.contains("stale")));
+        assert!(warnings.iter().any(|f| f.contains("originalText")));
     }
 }
